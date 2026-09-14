@@ -148,7 +148,7 @@ test("the action is not a second box inside the card, and the card speaks once",
   page,
 }) => {
   await mockMissions(page);
-    await page.goto("/pulse");
+    await page.goto("/mission");
   await expect(page.getByText(RATIONALE)).toBeVisible();
 
   // --- one statement -------------------------------------------------------------------
@@ -259,7 +259,7 @@ test("a blank rationale keeps the review's reason — the card never says nothin
     }),
   );
   await mockMissions(page);
-    await page.goto("/pulse");
+    await page.goto("/mission");
   await expect(page.getByText(REASON)).toBeVisible();
   await expect(
     page.getByRole("img", { name: /intervention required/i }),

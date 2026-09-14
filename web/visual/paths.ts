@@ -112,7 +112,7 @@ export const VISUAL_PATHS: VisualPath[] = [
   },
   {
     group: "authed",
-    path: "/pulse",
+    path: "/mission",
     name: "pulse",
     description:
       "Missions — searchable sidebar, conversation and collapsible mission details (#944)",

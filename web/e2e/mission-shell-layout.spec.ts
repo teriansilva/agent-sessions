@@ -89,7 +89,7 @@ test.describe("the shell's sidebar is the mission rail (#935)", () => {
     test.skip(testInfo.project.name !== "desktop", "desktop shell");
     await page.setViewportSize({ width: 1600, height: 900 });
     await stub(page);
-    await page.goto("/pulse");
+    await page.goto("/mission");
     await page.getByTestId("mission-console").waitFor();
 
     // The rail is in the SHELL's sidebar, not in the console — asserted structurally, because a
@@ -132,7 +132,7 @@ test.describe("the shell's sidebar is the mission rail (#935)", () => {
       page.getByRole("heading", { name: "Sessions" }),
     ).toBeAttached();
 
-    await page.goto("/pulse");
+    await page.goto("/mission");
     await page.getByTestId("mission-console").waitFor();
     await expect(
       page.getByRole("heading", { name: "Missions" }),
@@ -156,7 +156,7 @@ test.describe("the thread fills the width it was given (#935)", () => {
       test.skip(testInfo.project.name !== "desktop", "desktop shell");
       await page.setViewportSize({ width, height: 900 });
       await stub(page);
-      await page.goto("/pulse");
+      await page.goto("/mission");
       await page.getByTestId("pane").waitFor();
 
       const con = await box(page, "mission-console");
@@ -176,7 +176,7 @@ test.describe("the thread fills the width it was given (#935)", () => {
     test.skip(testInfo.project.name !== "desktop", "desktop shell");
     await page.setViewportSize({ width: 1600, height: 900 });
     await stub(page, [missionRow({ id: "m1", title: "a mission" })]);
-    await page.goto("/pulse");
+    await page.goto("/mission");
     await page.getByTestId("mission-state").waitFor();
 
     const con = await box(page, "mission-console");
@@ -201,7 +201,7 @@ test.describe("the thread fills the width it was given (#935)", () => {
     test.skip(testInfo.project.name !== "desktop", "desktop shell");
     await page.setViewportSize({ width: 1399, height: 900 });
     await stub(page, [missionRow({ id: "m1", title: "a mission" })]);
-    await page.goto("/pulse");
+    await page.goto("/mission");
     await page.getByTestId("pane").waitFor();
     await page.getByTestId("stop-details").click();
     await expect(page.getByTestId("mission-details")).toBeVisible();
@@ -228,7 +228,7 @@ test.describe("the phone gets the same one rail, through the shell (#940)", () =
   }, testInfo) => {
     test.skip(testInfo.project.name !== "mobile", "phone shell");
     await stub(page, [missionRow({ id: "m1", title: "a mission" })]);
-    await page.goto("/pulse");
+    await page.goto("/mission");
     await page.getByTestId("mission-console").waitFor();
 
     // The slot IS offered here now, and the console's own trigger is gone — not hidden, gone.
@@ -265,7 +265,7 @@ test.describe("the phone gets the same one rail, through the shell (#940)", () =
   test("Escape closes it and restores focus", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== "mobile", "phone shell");
     await stub(page, [missionRow({ id: "m1", title: "a mission" })]);
-    await page.goto("/pulse");
+    await page.goto("/mission");
     await page.getByTestId("mission-console").waitFor();
     const trigger = page.getByRole("button", { name: /Open mission list/i });
     await trigger.click();
@@ -280,7 +280,7 @@ test.describe("the phone gets the same one rail, through the shell (#940)", () =
   }, testInfo) => {
     test.skip(testInfo.project.name !== "mobile", "phone shell");
     await stub(page, [missionRow({ id: "m1", title: "a mission" })]);
-    await page.goto("/pulse");
+    await page.goto("/mission");
     await page.getByTestId("mission-console").waitFor();
     const trigger = page.getByRole("button", { name: /Open mission list/i });
     await trigger.click();
@@ -297,7 +297,7 @@ test.describe("the phone gets the same one rail, through the shell (#940)", () =
     test.skip(testInfo.project.name !== "desktop", "desktop shell");
     await page.setViewportSize({ width: 1400, height: 900 });
     await stub(page, [missionRow({ id: "m1", title: "a mission" })]);
-    await page.goto("/pulse");
+    await page.goto("/mission");
     await page.getByTestId("pane").waitFor();
 
     await expect(page.locator("aside.sidebar")).toBeVisible();
@@ -335,7 +335,7 @@ test.describe("the phone gets the same one rail, through the shell (#940)", () =
     test.skip(testInfo.project.name !== "mobile", "phone shell");
     await stub(page, [missionRow({ id: "m1", title: "a mission" })]);
     await page.setViewportSize({ width: 800, height: 900 });
-    await page.goto("/pulse");
+    await page.goto("/mission");
     await page.getByTestId("mission-console").waitFor();
     await page.getByRole("button", { name: /Open mission list/i }).click();
     await expect(page.locator("main.terminal-pane[inert]")).toHaveCount(1);
@@ -361,7 +361,7 @@ test.describe("the phone gets the same one rail, through the shell (#940)", () =
   }, testInfo) => {
     test.skip(testInfo.project.name !== "mobile", "phone shell");
     await stub(page, [missionRow({ id: "m1", title: "a mission" })]);
-    await page.goto("/pulse");
+    await page.goto("/mission");
     await page.getByTestId("mission-console").waitFor();
     await page.waitForLoadState("networkidle");
 
@@ -420,7 +420,7 @@ test.describe("the phone gets the same one rail, through the shell (#940)", () =
       missionRow({ id: "m1", title: "a mission" }),
       missionRow({ id: "m2", title: "another mission" }),
     ]);
-    await page.goto("/pulse");
+    await page.goto("/mission");
     await page.getByTestId("mission-console").waitFor();
     // The console's fetches are what cause the churn: the shell renders at once, then the rail
     // and stops re-render as the mission list and detail land — so an interaction issued in that
@@ -500,7 +500,7 @@ test.describe("the phone gets the same one rail, through the shell (#940)", () =
 
 /** The teardown contract (#935).
  *
- *  The issue is explicit that this does NOT promise a surviving socket: `/pulse` and
+ *  The issue is explicit that this does NOT promise a surviving socket: `/mission` and
  *  `/s/:engine/:id` are sibling routes, so navigating already unmounts `SessionView` and closes
  *  its terminal. That is today's behaviour and this change does not touch routing.
  *
@@ -591,7 +591,7 @@ test("the mission sidebar leads with its own primary action (#935)", async ({
   test.skip(testInfo.project.name !== "desktop", "desktop shell");
   await page.setViewportSize({ width: 1600, height: 900 });
   await stub(page);
-  await page.goto("/pulse");
+  await page.goto("/mission");
 
   const create = page.getByTestId("rail-new-mission");
   await expect(create).toBeVisible();
@@ -616,7 +616,7 @@ test("the archived scope offers no create, because the server refuses one (#935)
   test.skip(testInfo.project.name !== "desktop", "desktop shell");
   await page.setViewportSize({ width: 1600, height: 900 });
   await stub(page);
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await expect(page.getByTestId("rail-new-mission")).toBeVisible();
 
   await page.getByTestId("rail-scope").click();
@@ -640,7 +640,7 @@ test.describe("#937 review 1 — the sidebar with a real list", () => {
     test.skip(testInfo.project.name !== "desktop", "desktop shell");
     await page.setViewportSize({ width: 1600, height: 900 });
     await stub(page, manyRows);
-    await page.goto("/pulse");
+    await page.goto("/mission");
     await page.getByTestId("mission-console").waitFor();
     await page.locator('[data-testid="rail-mission"]').first().waitFor();
 
@@ -689,7 +689,7 @@ test.describe("#937 review 1 — the sidebar with a real list", () => {
     test.skip(testInfo.project.name !== "desktop", "desktop shell");
     await page.setViewportSize({ width: 1600, height: 900 });
     await stub(page, manyRows);
-    await page.goto("/pulse");
+    await page.goto("/mission");
     // A populated list auto-selects, so this is the ORDINARY state — and the one where the first
     // implementation did nothing at all: the console renders `MissionBody`, whose composer sends
     // messages to that mission and has no creation field. The empty-list test passed throughout.
@@ -716,7 +716,7 @@ test.describe("#937 review 1 — the sidebar with a real list", () => {
       await r.fulfill({ json: {} });
     });
 
-    await page.goto("/pulse");
+    await page.goto("/mission");
     await page.getByTestId("mission-console").waitFor();
 
     // RED before the fix: only the "Order" LABEL was hidden, so Recent / Created still rendered
@@ -744,7 +744,7 @@ test("the mission sidebar has no empty header strip where the sort control was (
   test.skip(testInfo.project.name !== "desktop", "desktop shell");
   await page.setViewportSize({ width: 1600, height: 900 });
   await stub(page, [missionRow({ id: "m1", title: "a mission" })]);
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await page.getByTestId("rail-new-mission").waitFor();
 
   // Removing the session sort control left its 38px row rendered and empty, with a rule under
@@ -804,7 +804,7 @@ test("a slow creation settling later cannot close a newer form or eat its draft 
     });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await page.getByTestId("mission-state").waitFor();
 
   // A: start a creation and submit it, leaving the response in flight.

@@ -152,7 +152,7 @@ test("VIEW SCREEN reads the live screen and OPENS NO SOCKET", async ({
     });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openContext(page);
   await page.locator('[data-testid="view-screen"]:visible').first().click();
 
@@ -176,7 +176,7 @@ test("an EMPTY screen says so rather than looking broken", async ({ page }) => {
   await page.route("**/api/missions/*/screen/**", (r) =>
     r.fulfill({ json: { kind: "screen", text: "", available: false } }),
   );
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openContext(page);
   await page.locator('[data-testid="view-screen"]:visible').first().click();
   await expect(
@@ -195,7 +195,7 @@ test("RELAY posts the operator's own text to the mission's session", async ({
       json: { action_id: "a1", state: "delivered", session_key: KEY },
     });
   });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openContext(page);
   await page
     .locator('[data-testid="relay-input"]:visible')
@@ -227,7 +227,7 @@ test("a REFUSED relay says which refusal it was", async ({ page }) => {
       },
     }),
   );
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openContext(page);
   await page
     .locator('[data-testid="relay-input"]:visible')
@@ -261,7 +261,7 @@ test("a DELIVERED relay is the only outcome that empties the box", async ({
       },
     }),
   );
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openContext(page);
   await page
     .locator('[data-testid="relay-input"]:visible')
@@ -308,7 +308,7 @@ test("with TWO sessions each block names its target, and SEND goes to that one",
     });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openContext(page);
 
   const blocks = page.locator('[data-testid="mission-screen"]:visible');
@@ -331,7 +331,7 @@ test("with TWO sessions each block names its target, and SEND goes to that one",
 
 test("every no-terminal control clears 44px", async ({ page }) => {
   await stub(page);
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openContext(page);
   for (const id of ["view-screen", "relay-input", "relay-send"]) {
     const box = await page
@@ -382,7 +382,7 @@ test("a session DETACHED and re-adopted elsewhere stops answering under this mis
     }),
   );
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openContext(page);
   await page.locator('[data-testid="view-screen"]:visible').first().click();
   await expect(
@@ -421,7 +421,7 @@ test("a REFRESH that fails clears the screen rather than freezing it", async ({
       : r.fulfill({ status: 500, json: { detail: "boom" } }),
   );
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openContext(page);
   await page.locator('[data-testid="view-screen"]:visible').first().click();
   await expect(
@@ -473,7 +473,7 @@ test("a relay's OUTCOME survives a reload, and the three answers stay different"
     }),
   );
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await expect(page.getByTestId("mission-console")).toBeVisible();
   // Through the SHELL's control (#940). The console's own `☰` retired with `MissionDrawer`, so
   // `isVisible()` on it was always false and the phone's drawer never opened — leaving every
@@ -523,7 +523,7 @@ test("an AMBIGUOUS delivery is not reported as 'Not sent'", async ({
       },
     }),
   );
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openContext(page);
   await page
     .locator('[data-testid="relay-input"]:visible')
@@ -579,7 +579,7 @@ test("SUB-AGENT is offered beside the session it would work alongside", async ({
   // leaves a tree that cannot be read afterwards — `spawned_by` is where "whose sub-agent is
   // this" is answered — so the button lives in the roster block, next to the key it will name.
   await stub(page, { mission: RUNNING });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openContext(page);
   const row = page.getByTestId("roster-session").first();
   await expect(row.getByTestId("spawn-open")).toBeEnabled();
@@ -604,7 +604,7 @@ test("AT CAP the control is withheld, and says the limit is not a permission", a
       { session_key: SUB_B, role: "sub", removed_at: null },
     ],
   });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openContext(page);
   const open = page.getByTestId("spawn-open").first();
   await expect(open).toBeDisabled();
@@ -629,7 +629,7 @@ test("the panel SHOWS the directory and asserts it back on START", async ({
       body: JSON.stringify({ state: "running", reason: "", session_key: null }),
     });
   });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openContext(page);
   await page.getByTestId("spawn-open").first().click();
   // It is on screen, not merely in the payload.
@@ -675,7 +675,7 @@ test("a POLL that lands mid-spawn does not eat the draft", async ({ page }) => {
     });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openContext(page);
   await page.getByTestId("spawn-open").first().click();
   await page.getByTestId("spawn-brief").fill("Review the open PR");
@@ -716,7 +716,7 @@ test("a FAILED start is reported, even though the mission stays running", async 
       },
     }),
   );
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openContext(page);
   await page.getByTestId("spawn-open").first().click();
   await page.getByTestId("spawn-brief").fill("Review the open PR");
@@ -743,7 +743,7 @@ test("a REFUSED spawn keeps the brief that was typed", async ({ page }) => {
       json: { detail: "autonomy is off — this instance watches and proposes" },
     }),
   );
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openContext(page);
   await page.getByTestId("spawn-open").first().click();
   await page.getByTestId("spawn-brief").fill("Review the open PR");
@@ -773,7 +773,7 @@ test("a spawn that STARTED BUT WAS NOT CONFIRMED is reported, not silently dropp
       },
     }),
   );
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openContext(page);
   await page.getByTestId("spawn-open").first().click();
   await page.getByTestId("spawn-brief").fill("Review the open PR");
@@ -790,7 +790,7 @@ test("the consequence is ANNOUNCED and tied to the button that acts on it", asyn
   // "START SUB-AGENT" would never hear it, so it is a live region AND the button's description —
   // the same gap the plan card's dispatch confirmation had.
   await stub(page, { mission: RUNNING });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openContext(page);
   await page.getByTestId("spawn-open").first().click();
   const consequence = page.getByTestId("spawn-consequence");

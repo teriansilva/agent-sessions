@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 
 import { mockMissions } from "./mission-console";
 
-// Pulse "Ask" (#522): the natural-language session finder embedded at the top of /pulse.
+// Pulse "Ask" (#522): the natural-language session finder embedded at the top of /mission.
 // Real-browser proof (mobile + desktop, per agent-workflow §5), red on pre-#522 builds:
 // type a question → the answer line + the matched session card render → "Jump in" routes
 // to the session view; and a LONG question wraps inside the thread with no horizontal
@@ -102,7 +102,7 @@ test("Ask answers with a matched card and Jump in routes to the session (#522)",
   });
 
   await mockMissions(page);
-    await page.goto("/pulse");
+    await page.goto("/mission");
   const input = page.getByRole("textbox", {
     name: /ask about your past work/i,
   });
@@ -158,7 +158,7 @@ test("a long question + a matched card fit at 320px — no horizontal scroll (#5
   );
 
   await mockMissions(page);
-    await page.goto("/pulse");
+    await page.goto("/mission");
   const input = page.getByRole("textbox", {
     name: /ask about your past work/i,
   });

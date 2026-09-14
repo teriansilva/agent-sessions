@@ -286,9 +286,8 @@ export default function Pulse() {
           route would mean a second fetch of the same thing purely to render a number. */}
       <header className={styles.head}>
         <div className={styles.headLeft}>
-          {/* The feature's own name (#895). The ROUTE stays `/pulse` — #840 named the page
-              deliberately without renaming the URL, and changing it would break every bookmark
-              and every link in the issue history for no benefit. */}
+          {/* The feature's own name (#895). The route became `/mission` in #948; `/pulse` still
+              redirects there, so old bookmarks and notification links keep working. */}
           <h1 className={styles.h1}>MISSION CONTROL</h1>
           <span className={styles.sl} aria-hidden="true">
             //

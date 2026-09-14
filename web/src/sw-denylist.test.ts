@@ -72,6 +72,7 @@ describe("navigation fallback denylist", () => {
     // break it. The anchors matter.
     expect(isDenied("/settings/ai-review")).toBe(false);
     expect(isDenied("/s/claude/term-like-id")).toBe(false);
+    expect(isDenied("/mission")).toBe(false);
     expect(isDenied("/pulse")).toBe(false);
   });
 });

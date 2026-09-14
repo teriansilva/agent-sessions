@@ -196,7 +196,7 @@ test("approve delivers, and only a delivering verb offers the button", async ({
   });
 
   await mockMissions(page);
-    await page.goto("/pulse");
+    await page.goto("/mission");
   // The queue's own heading went in #754 and the panel that carried the "N actions need you"
   // summary went in #929 — the controls ride on the mission's own rows, so wait on the control
   // this test is about rather than on a headline no longer rendered anywhere.
@@ -224,7 +224,7 @@ test("a stale 409 says nothing was sent, distinguishably from an error", async (
   );
 
   await mockMissions(page);
-    await page.goto("/pulse");
+    await page.goto("/mission");
   await page.getByRole("button", { name: /^approve$/i }).click();
   // Compare-and-execute refused: the operator must be able to tell "nothing happened" from
   // "something broke", because the two call for completely different responses.
@@ -250,7 +250,7 @@ test("evidence is pulled from the server on expand, not shipped with the proposa
   });
 
   await mockMissions(page);
-    await page.goto("/pulse");
+    await page.goto("/mission");
   await expect(page.getByRole("button", { name: /^approve$/i })).toBeVisible();
   // Nothing is fetched until the operator asks — the proposal carries a KIND, never content.
   expect(evidenceCalls).toBe(0);
@@ -276,7 +276,7 @@ test("the autonomy copy names the ceiling, not just the tier — in Settings (#9
 
   // And it is genuinely gone from the route — a second copy drifting out of sync with the
   // control is what #929 is about.
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await expect(page.getByText(/acts on its own:/i)).toHaveCount(0);
 });
 
@@ -291,7 +291,7 @@ test.describe("mobile", () => {
     );
 
     await mockMissions(page);
-    await page.goto("/pulse");
+    await page.goto("/mission");
     const approve = page.getByRole("button", { name: /^approve$/i });
     await expect(approve).toBeVisible();
 

@@ -292,7 +292,7 @@ test.describe("map workspace", () => {
 
     // ...and off the map the row navigates exactly as it always did.
     //
-    // NOT `/pulse` — that route's sidebar lists MISSIONS, not sessions (#937), so there is no
+    // NOT `/mission` — that route's sidebar lists MISSIONS, not sessions (#937), so there is no
     // session row on it to press and this asserted against an element that cannot exist. It was
     // red on `main` before #940 touched anything; fixed here because it gates this PR, and the
     // correction is to pick a route that still has a session list rather than to weaken the

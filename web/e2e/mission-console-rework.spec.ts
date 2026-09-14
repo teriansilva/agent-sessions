@@ -188,7 +188,7 @@ for (const [w, h] of [
   }) => {
     await stub(page, ROWS);
     await page.setViewportSize({ width: w, height: h });
-    await page.goto("/pulse");
+    await page.goto("/mission");
     await expect(page.getByTestId("mission-console")).toBeVisible();
     await page.getByTestId("pane").waitFor();
 
@@ -211,7 +211,7 @@ test("the thread takes the slack: a taller viewport grows the pane, not the gap 
 }) => {
   await stub(page, ROWS);
   await page.setViewportSize({ width: 1400, height: 700 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await page.getByTestId("pane").waitFor();
   const short = await page.getByTestId("pane").boundingBox();
 
@@ -234,7 +234,7 @@ for (const w of [1280, 1400, 1600] as const) {
   }) => {
     await stub(page, ROWS);
     await page.setViewportSize({ width: w, height: 900 });
-    await page.goto("/pulse");
+    await page.goto("/mission");
     await expect(page.getByTestId("mission-state")).toBeVisible();
 
     // THE DEFECT: at 1280 this read "Select a mission" while that mission's own `running` state
@@ -267,7 +267,7 @@ test("the header names the mission BEFORE its detail lands (#942)", async ({
   });
 
   await page.setViewportSize({ width: 1280, height: 900 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
 
   // The RAIL has its rows — the list call was never held — and a mission is auto-selected. The
   // detail is still in flight, which is the whole point.
@@ -290,7 +290,7 @@ test("with nothing selected the header says so, and no state is claimed (#942)",
   // The control: the fix must not make the header assert a mission when there is none.
   await stub(page, []);
   await page.setViewportSize({ width: 1400, height: 900 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await expect(page.getByTestId("mission-console")).toBeVisible();
   await expect(page.getByTestId("console-title")).toHaveText(
     /no missions yet/i,
@@ -307,7 +307,7 @@ test("one primary action inline; the destructive lifecycle is behind the overflo
 }) => {
   await stub(page, ROWS);
   await page.setViewportSize({ width: 1600, height: 950 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await expect(page.getByTestId("mission-state")).toBeVisible();
 
   // Inline: the state's own next step, and nothing else.
@@ -339,7 +339,7 @@ test("the overflow is a real menu: Escape closes it and focus returns (#942)", a
 }) => {
   await stub(page, ROWS);
   await page.setViewportSize({ width: 1600, height: 950 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   const trigger = page.getByTestId("mission-overflow");
   await trigger.click();
   await expect(page.getByTestId("mission-overflow-menu")).toBeVisible();
@@ -356,7 +356,7 @@ test("the overflow does NOT claim to be modal — the console stays reachable (#
   // Declaring `aria-modal` on it would tell a screen reader the console had gone away.
   await stub(page, ROWS);
   await page.setViewportSize({ width: 1600, height: 950 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await page.getByTestId("mission-overflow").click();
   await expect(page.getByTestId("mission-overflow-menu")).toBeVisible();
   await expect(
@@ -374,7 +374,7 @@ test("the overflow honours the ARROW KEYS its role promises (#942)", async ({
   // is exactly the "a modal hook is not a menu primitive" note on #942.
   await stub(page, ROWS);
   await page.setViewportSize({ width: 1600, height: 950 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await page.getByTestId("mission-overflow").click();
   const menu = page.getByTestId("mission-overflow-menu");
   await expect(menu).toBeVisible();
@@ -430,7 +430,7 @@ for (const [w, h] of [
       { objectives: OBJ_ROWS },
     );
     await page.setViewportSize({ width: w, height: h });
-    await page.goto("/pulse");
+    await page.goto("/mission");
     await selectFirst(page);
 
     await openMissionDetails(page, "objectives");
@@ -455,7 +455,7 @@ test("the wide workspace uses the available width for conversation and details (
 }) => {
   await stub(page, ROWS, { supervisor: SUPERVISOR }, { objectives: OBJ_ROWS });
   await page.setViewportSize({ width: 1600, height: 950 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await selectFirst(page);
 
   // A GEOMETRY CLAIM, not a class one. The old layout put `grid-template-columns: 1fr 340px` on
@@ -481,7 +481,7 @@ test("a half-typed message survives a tab round trip (#942)", async ({
   // this phase set out to fix.
   await stub(page, ROWS, { supervisor: SUPERVISOR }, { objectives: OBJ_ROWS });
   await page.setViewportSize({ width: 1200, height: 950 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await selectFirst(page);
 
   const draft = "half a thought about the relay";
@@ -507,7 +507,7 @@ test("the supervisor's reading renders ON the objective it describes (#942)", as
 }) => {
   await stub(page, ROWS, { supervisor: SUPERVISOR }, { objectives: OBJ_ROWS });
   await page.setViewportSize({ width: 1600, height: 950 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await selectFirst(page);
   await openMissionDetails(page, "objectives");
   await openMissionDetails(page, "followThrough");
@@ -542,7 +542,7 @@ test("STAND DOWN moved to the row and kept its episode fence (#942)", async ({
 }) => {
   await stub(page, ROWS, { supervisor: SUPERVISOR }, { objectives: OBJ_ROWS });
   await page.setViewportSize({ width: 1600, height: 950 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await selectFirst(page);
   await openMissionDetails(page, "objectives");
   await openMissionDetails(page, "followThrough");
@@ -573,7 +573,7 @@ test("the mission-level notices survive the fold, including the no-rows case (#9
     { objectives: [] },
   );
   await page.setViewportSize({ width: 1600, height: 950 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await selectFirst(page);
   await openMissionDetails(page, "objectives");
   await openMissionDetails(page, "followThrough");
@@ -587,7 +587,7 @@ test("an unmet gate is still counted above the rows (#942)", async ({
 }) => {
   await stub(page, ROWS, { supervisor: SUPERVISOR }, { objectives: OBJ_ROWS });
   await page.setViewportSize({ width: 1600, height: 950 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await selectFirst(page);
   await openMissionDetails(page, "objectives");
   await openMissionDetails(page, "followThrough");
@@ -608,7 +608,7 @@ test("the overflow lets Tab LEAVE — it is a menu, not a trap (#942)", async ({
   // which the flag is observable at all.
   await stub(page, ROWS);
   await page.setViewportSize({ width: 1600, height: 950 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   const trigger = page.getByTestId("mission-overflow");
   const menu = page.getByTestId("mission-overflow-menu");
 
@@ -651,7 +651,7 @@ for (const theme of ["dark", "light"] as const) {
       { objectives: OBJ_ROWS },
     );
     await page.setViewportSize({ width: 1600, height: 950 });
-    await page.goto("/pulse");
+    await page.goto("/mission");
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
     await selectFirst(page);
 
@@ -721,7 +721,7 @@ test("a LONG thread still leaves the composer on the bottom edge, and its last e
   }));
   await stub(page, ROWS, { events, events_next_seq: null });
   await page.setViewportSize({ width: 1280, height: 900 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await expect(page.getByTestId("mission-state")).toBeVisible();
 
   // The dock is still ON the bottom edge — a thread that overflows must scroll, not push it off.
@@ -783,7 +783,7 @@ test("a LONG objective list scrolls inside the pane, composer still docked (#942
   };
   await stub(page, ROWS, { supervisor: sup }, { objectives: many });
   await page.setViewportSize({ width: 412, height: 915 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await selectFirst(page);
   await openMissionDetails(page, "objectives");
   await openMissionDetails(page, "followThrough");
@@ -826,7 +826,7 @@ test("a FAILED objectives read keeps the supervisor's reading and its STAND DOWN
     r.fulfill({ status: 503, json: { detail: "store unwell" } }),
   );
   await page.setViewportSize({ width: 1600, height: 950 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await selectFirst(page);
   await openMissionDetails(page, "objectives");
   await openMissionDetails(page, "followThrough");
@@ -860,7 +860,7 @@ test("a failed objectives read says so instead of 'no objectives yet' (#942)", a
     r.fulfill({ status: 503, json: { detail: "store unwell" } }),
   );
   await page.setViewportSize({ width: 1600, height: 950 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await selectFirst(page);
   await openMissionDetails(page, "objectives");
   await openMissionDetails(page, "followThrough");
@@ -881,7 +881,7 @@ test("a confirmation rerender does not throw focus out of the open menu (#942)",
   // TRIGGER instead of confirming, and the arrows stopped reaching the menu.
   await stub(page, ROWS);
   await page.setViewportSize({ width: 1600, height: 950 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   const trigger = page.getByTestId("mission-overflow");
   await trigger.click();
   const menu = page.getByTestId("mission-overflow-menu");
@@ -912,7 +912,7 @@ test("the ⋯ trigger closes the menu it opened, by real pointer (#942)", async 
   // the click that followed to toggle it straight back open.
   await stub(page, ROWS);
   await page.setViewportSize({ width: 1600, height: 950 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   const trigger = page.getByTestId("mission-overflow");
   const menu = page.getByTestId("mission-overflow-menu");
 
@@ -962,7 +962,7 @@ test("a RECOVERED objectives read stops claiming it could not be read (#942)", a
   });
 
   await page.setViewportSize({ width: 1600, height: 950 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await selectFirst(page);
   await openMissionDetails(page, "objectives");
   await openMissionDetails(page, "followThrough");
@@ -988,7 +988,7 @@ test("CONTEXT with nothing selected explains ITSELF, not the timeline (#942)", a
   // timeline's sentence — an explanation about a surface the operator is not looking at.
   await stub(page, []);
   await page.setViewportSize({ width: 1600, height: 950 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await expect(page.getByTestId("mission-console")).toBeVisible();
 
   await page.getByTestId("stop-details").click();

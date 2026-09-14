@@ -124,7 +124,7 @@ test("Clear sends the ids that were DISPLAYED, and a row that arrived later surv
   const state = { rows: [SHOWN] as unknown[] };
   await mockApp(page, state, posts);
   await mockMissions(page);
-  await page.goto("/pulse");
+  await page.goto("/mission");
 
   const bell = page.getByRole("button", { name: /^Notifications/ });
   await bell.click();

@@ -103,7 +103,7 @@ All store locations are env-overridable (`AGENT_SESSIONS_CODEX_SESSIONS_DIR`, `_
 
 ## MISSION CONTROL — where the controls live
 
-The `/pulse` route is **MISSION CONTROL**: a rail of missions, the selected mission's thread,
+The `/mission` route (formerly `/pulse`, which still redirects) is **MISSION CONTROL**: a rail of missions, the selected mission's thread,
 and the live sessions that belong to no mission yet. It carries no configuration of its own.
 Everything that *tunes* the orchestrator lives in Settings, and the route shows only evidence
 and the actions that operate on what is on screen (#929).

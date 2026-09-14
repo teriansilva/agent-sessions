@@ -185,7 +185,7 @@ async function openConsole(page: Page, supervisor: unknown | undefined) {
     // case, so that test isolates "no supervisor" rather than also having no list.
     objectives: OBJECTIVES,
   });
-  await page.goto("/pulse");
+  await page.goto("/mission");
 }
 
 /** Reach the OBJECTIVES pane on either project.

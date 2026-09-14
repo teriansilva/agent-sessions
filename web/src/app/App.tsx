@@ -69,7 +69,7 @@ import {
 const Overview = lazyWithReload(() => import("../routes/Overview"), "overview");
 // Pulse — the AI-curated recent-work overview (#441 Phase 5). Lazy like Overview so its
 // page code stays out of the main bundle until opened.
-const Pulse = lazyWithReload(() => import("../routes/Pulse"), "pulse");
+const MissionControl = lazyWithReload(() => import("../routes/Pulse"), "pulse");
 // TEMPLATES — the instruction-template gallery + editor (#905). Lazy like the others.
 const Templates = lazyWithReload(
   () => import("../routes/Templates"),
@@ -229,7 +229,10 @@ function Layout() {
    *  now carries the contract itself (see `useModalDrawer` below), which is what makes the phone
    *  safe to include — and the operator's report was precisely about the phone: two hamburgers on
    *  one screen, one opening sessions and one opening missions. */
-  const missionRoute = location.pathname.startsWith("/pulse");
+  // `/pulse` is the pre-#948 path, still live as a redirect; counting it here keeps the sidebar
+  // from flashing the session list for the one render before the redirect lands.
+  const missionRoute =
+    location.pathname === "/mission" || location.pathname === "/pulse";
   const railInSidebar = missionRoute;
   /** Published to the console through context. A ref callback, not an effect: it fires on
    *  commit with the element (and with `null` on unmount), which is exactly the lifetime the
@@ -379,7 +382,7 @@ function Layout() {
               Sessions
             </Link>
             <Link
-              to="/pulse"
+              to="/mission"
               aria-current={missionRoute ? "page" : undefined}
               onClick={closeMobileDrawer}
             >
@@ -640,7 +643,8 @@ function Layout() {
                   <Route path="/settings" element={<Settings />} />
                   <Route path="/settings/:tab" element={<Settings />} />
                   <Route path="/overview" element={<Overview />} />
-                  <Route path="/pulse" element={<Pulse />} />
+                  <Route path="/mission" element={<MissionControl />} />
+                  <Route path="/pulse" element={<LegacyMissionRedirect />} />
                   <Route path="/templates" element={<Templates />} />
                   <Route path="/templates/new" element={<TemplateEditor />} />
                   <Route path="/templates/:id" element={<TemplateEditor />} />
@@ -704,6 +708,14 @@ function Layout() {
       )}
     </SectionStateContext.Provider>
   );
+}
+
+/** `/pulse` was the mission route until #948. Bookmarks, notifications already sitting in the OS
+ *  tray and push payloads the service worker cached still carry it, so it stays as a permanent
+ *  replace-redirect. It keeps the query and hash, which is how `?m=<mission id>` survives the hop. */
+function LegacyMissionRedirect() {
+  const { search, hash } = useLocation();
+  return <Navigate to={{ pathname: "/mission", search, hash }} replace />;
 }
 
 export default function App() {

@@ -136,7 +136,7 @@ test.describe("stops are reachable at every width (#929)", () => {
       // and at 1399 they saw both. This asserts the width does not decide it.
       await page.setViewportSize({ width, height: 900 });
       await stub(page);
-      await page.goto("/pulse");
+      await page.goto("/mission");
       await page.getByTestId("pane").waitFor();
 
       await page.getByTestId("stop-details").click();
@@ -160,7 +160,7 @@ test.describe("stops are reachable at every width (#929)", () => {
     // nothing to replace the tabs with and nothing to key off: they are simply always there.
     await page.setViewportSize({ width: 1600, height: 900 });
     await stub(page, { missions: [missionRow()] });
-    await page.goto("/pulse");
+    await page.goto("/mission");
     // Selected EXPLICITLY. With untracked sessions present the console auto-selects UNTRACKED,
     // so asserting on the default view would have tested the other branch entirely.
     await page
@@ -179,7 +179,7 @@ test("a fresh install leads with the composer, not with disabled ADOPTs (#929)",
 }) => {
   await page.setViewportSize({ width: 1600, height: 900 });
   await stub(page);
-  await page.goto("/pulse");
+  await page.goto("/mission");
 
   const firstRun = page.getByTestId("first-run");
   await expect(firstRun).toContainText(/start your first mission/i);
@@ -209,7 +209,7 @@ test("mobile keeps the stops and the same content (#929)", async ({
 }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "phone layout");
   await stub(page);
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await page.getByTestId("stop-details").click();
   await expect(page.getByTestId("no-mission-details")).toContainText(
     /choose one from the list/i,
@@ -225,7 +225,7 @@ test("a store failure does NOT get the first-run treatment (#929)", async ({
   // answer out of an absence, which is the mistake the mission work has already paid for twice.
   await page.setViewportSize({ width: 1600, height: 900 });
   await stub(page, { storeError: "the mission store could not be read" });
-  await page.goto("/pulse");
+  await page.goto("/mission");
 
   await expect(page.getByTestId("console-store-error")).toBeVisible();
   await expect(page.getByTestId("first-run")).toHaveCount(0);
@@ -251,7 +251,7 @@ test.describe("#930 review 1 — the console under a slow store", () => {
       },
     });
 
-    await page.goto("/pulse");
+    await page.goto("/mission");
     const box = page.getByRole("textbox").first();
     await box.waitFor();
     await box.fill("what happened to the parser work");
@@ -276,7 +276,7 @@ test.describe("#930 review 1 — the console under a slow store", () => {
       // nothing read it, so both buttons were inert on the emptiest page in the product.
       await page.setViewportSize({ width, height: 900 });
       await stub(page, { cards: [] });
-      await page.goto("/pulse");
+      await page.goto("/mission");
       await page.getByTestId("pane").waitFor();
 
       await page.getByTestId("stop-details").click();
@@ -311,7 +311,7 @@ test.describe("#930 review 1 — the console under a slow store", () => {
       },
     });
 
-    await page.goto("/pulse");
+    await page.goto("/mission");
     await expect(page.getByTestId("first-run")).toBeVisible();
 
     // Into the archived scope, which answers; then back, with Active parked.
@@ -342,7 +342,7 @@ test.describe("#930 review 2 — the stop strip's own lifecycle", () => {
       // they had typed by looking at something.
       await page.setViewportSize({ width: 1280, height: 900 });
       await stub(page);
-      await page.goto("/pulse");
+      await page.goto("/mission");
       const box = page.getByRole("textbox").first();
       await box.waitFor();
 
@@ -396,7 +396,7 @@ test.describe("#930 review 2 — the stop strip's own lifecycle", () => {
       });
     });
 
-    await page.goto("/pulse");
+    await page.goto("/mission");
     const box = page.getByTestId("composer-input");
     await box.waitFor();
     await box.fill("a question mid-flight");
@@ -443,7 +443,7 @@ test.describe("#930 review 2 — the stop strip's own lifecycle", () => {
       },
     });
 
-    await page.goto("/pulse");
+    await page.goto("/mission");
     await page.getByTestId("pane").waitFor();
     await page.getByTestId("stop-details").click();
     await expect(page.getByTestId("no-mission-details")).toBeVisible();

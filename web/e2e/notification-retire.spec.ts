@@ -160,7 +160,7 @@ test("resolving the last action empties the bell — badge and panel — in the 
   const state = { open: true };
   await mockApp(page, state);
   await mockMissions(page);
-    await page.goto("/pulse");
+    await page.goto("/mission");
 
   const bell = page.getByRole("button", { name: /^Notifications/ });
   await expect(bell).toHaveAttribute("aria-label", "Notifications, 1 unread");
@@ -189,8 +189,8 @@ test("another tab does not jump; it converges on its next fetch", async ({
   await other.clock.install();
 
   await mockMissions(page);
-    await page.goto("/pulse");
-  await other.goto("/pulse");
+    await page.goto("/mission");
+  await other.goto("/mission");
 
   const otherBell = other.getByRole("button", { name: /^Notifications/ });
   await expect(otherBell).toHaveAttribute("aria-label", "Notifications, 1 unread");

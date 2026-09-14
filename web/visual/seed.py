@@ -231,12 +231,12 @@ def seed_opencode(home: Path) -> None:
 
 
 # Keep in sync with pulse.CACHE_VERSION (a mismatch makes load_cache treat this as a miss and
-# /pulse renders the empty state — the populated `pulse` capture would silently go blank).
+# /mission renders the empty state — the populated `pulse` capture would silently go blank).
 _PULSE_CACHE_VERSION = 1
 
 
 def seed_pulse(home: Path) -> None:
-    """Write a representative cached Pulse overview (#441 Phase 5) so the `/pulse` capture renders
+    """Write a representative cached Pulse overview (#441 Phase 5) so the `/mission` capture renders
     POPULATED: a depth-medium banner + cards across every state bucket (needs-you ⚠ / in-flight /
     recently-active / idle). The page serves this cache verbatim (GET never scans), so the
     screenshot is deterministic without driving a live scan."""
@@ -335,7 +335,7 @@ def seed_pulse(home: Path) -> None:
 
     # One operator-pending ledger action, on the SAME session as the needs-you card (#781).
     #
-    # Without this the `/pulse` capture only ever rendered cards with no `pending_action`, which
+    # Without this the `/mission` capture only ever rendered cards with no `pending_action`, which
     # is the branch #781 leaves untouched — so the snapshots could not show the change at all.
     # It has to be a real ledger row rather than a `pending_action` baked into the cache above:
     # `_attach_pending` pops any cached overlay unconditionally and re-reads the ledger, exactly

@@ -1,6 +1,6 @@
 /** Shared mocks for the console's own reads (#878).
  *
- * `/pulse` is now MISSION CONTROL, so every spec that visits it touches `/api/missions` and, once
+ * `/mission` is now MISSION CONTROL, so every spec that visits it touches `/api/missions` and, once
  * a mission is selected, the three per-mission reads. The specs that predate the console mostly
  * do not care about missions at all — they assert the bell, `ActionRow`, the filter chips or the
  * page's overflow — so they get an EMPTY mission list here and keep their own assertions
@@ -81,7 +81,7 @@ export async function mockMissions(
  *
  *  Producer-faithful on purpose. The previous fixture gave every list mission a detail-only
  *  `sessions` array, which is what hid a P0: the console iterated it, and a real list row has
- *  never had one, so `/pulse` threw on any non-empty production list while every browser test
+ *  never had one, so `/mission` threw on any non-empty production list while every browser test
  *  stayed green. A fixture that is kinder than the producer tests nothing. */
 export function missionRow(over: Record<string, unknown> = {}) {
   return {

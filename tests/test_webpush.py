@@ -110,6 +110,42 @@ def test_no_session_content_can_reach_a_push_body():
     assert set(json.loads(plain)) == {"title", "body", "url"}
 
 
+@pytest.mark.parametrize(
+    ("session_id", "engine", "expected_url"),
+    [
+        # No session: the push opens mission control, which moved from `/pulse` to `/mission`
+        # in #948. `/pulse` still redirects, but a fresh payload should not rely on that.
+        ("", "", "https://x/mission"),
+        (
+            "claude:aaaaaaaa-0000-4000-8000-000000000001",
+            "claude",
+            "https://x/s/claude/aaaaaaaa-0000-4000-8000-000000000001",
+        ),
+    ],
+)
+def test_the_push_link_points_at_the_session_or_mission_control(session_id, engine, expected_url):
+    priv, pub_raw = _client_keypair()
+    auth = os.urandom(16)
+    notifications.subscribe(
+        {
+            "endpoint": "https://fcm.googleapis.com/fcm/send/ep/abc",
+            "keys": {"p256dh": webpush._b64e(pub_raw), "auth": webpush._b64e(auth)},
+        }
+    )
+    note = notifications.add(
+        title="T", project="P", session_id=session_id, engine=engine, reason="r", action_id="a1"
+    )
+    captured: list[bytes] = []
+    webpush._TRANSPORT = httpx.MockTransport(
+        lambda req: (captured.append(req.content), httpx.Response(201))[1]
+    )
+    try:
+        notifications.fanout(note, base_url="https://x")
+    finally:
+        webpush._TRANSPORT = None
+    assert json.loads(_decrypt(captured[0], priv, pub_raw, auth))["url"] == expected_url
+
+
 def test_encrypted_body_round_trips_to_a_real_receiver():
     """Decrypt with an independent implementation — an encrypt-only assertion would pass on a
     body no browser could read."""

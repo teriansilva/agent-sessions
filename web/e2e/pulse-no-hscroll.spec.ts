@@ -5,7 +5,7 @@ import { mockMissions } from "./mission-console";
 // #494: the Pulse view must NOT scroll horizontally on a phone. Root cause: `.pulse` set
 // overflow-y:auto, which promotes overflow-x to auto, so a long unbroken token in an AI
 // summary / intervention reason / banner forced the panel wider than the viewport. This proves
-// (red→green) that nothing on /pulse is horizontally scrollable at narrow widths.
+// (red→green) that nothing on /mission is horizontally scrollable at narrow widths.
 
 const CONFIG = {
   csrf: "x",
@@ -134,7 +134,7 @@ for (const width of [360, 390]) {
     await page.route("**/api/pulse", (r) => r.fulfill({ json: OVERVIEW }));
 
     await mockMissions(page);
-    await page.goto("/pulse");
+    await page.goto("/mission");
     await expect(page.getByText(/Awaiting choice/i)).toBeVisible();
 
     const result = await page.evaluate(() => {

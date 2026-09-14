@@ -3,7 +3,7 @@
 Mission control answers one question: **what needs me right now** — and then lets you do something
 about it without opening a terminal.
 
-It is the `/pulse` route, and it used to be a dashboard: a grid of session cards, a "state of your
+It is the `/mission` route (`/pulse` redirects there), and it used to be a dashboard: a grid of session cards, a "state of your
 work" banner, and a separate Ask box. That told you what mattered and then handed you off to a
 terminal to act. The console replaces all three with a shape you already know — a rail of missions
 on the left, one thread in the middle, and the mission's own detail beside it.

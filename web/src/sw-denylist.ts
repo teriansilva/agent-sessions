@@ -13,7 +13,7 @@
  *
  *  What belongs on this list: anything the FastAPI app serves itself — Jinja pages, JSON APIs,
  *  websockets, and the standalone Home Free connect shell. What does NOT: SPA routes like
- *  `/pulse` or `/s/:engine/:id`, which need the fallback to survive a direct load or a reload.
+ *  `/mission` (and its legacy `/pulse` redirect) or `/s/:engine/:id`, which need the fallback to survive a direct load or a reload.
  */
 export const NAVIGATE_FALLBACK_DENYLIST: RegExp[] = [
   /^\/api/,
@@ -55,6 +55,8 @@ export const SERVER_RENDERED_PATHS: string[] = [
  *  load or a reload of a real page, which is the opposite failure and just as bad. */
 export const SPA_PATHS: string[] = [
   "/",
+  "/mission",
+  // The pre-#948 mission path. It is a client-side redirect, so it needs the SPA shell too.
   "/pulse",
   "/overview",
   "/settings",

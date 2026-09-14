@@ -84,7 +84,7 @@ test("section buttons share the brand row and Send typography at every width (#9
   page,
 }) => {
   await setupSections(page);
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await expect(page.getByTestId("console-title")).toHaveText("Mission layout");
   for (const width of [320, 360, 375, 412, 640, 641, 800, 801, 1100, 1440]) {
     await page.setViewportSize({ width, height: 740 });
@@ -144,7 +144,7 @@ test("ordinary buttons and section links glitch without losing hit areas (#946)"
 }) => {
   await setupSections(page);
   await page.emulateMedia({ reducedMotion: "no-preference" });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await expect(page.getByTestId("console-title")).toHaveText("Mission layout");
   await page.getByTestId("composer-input").fill("Keep this draft");
   const controls = [
@@ -225,7 +225,7 @@ test("ambient and press feedback reach ordinary controls and respect reduced mot
   });
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await setupSections(page);
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await expect(page.getByTestId("console-title")).toHaveText("Mission layout");
   const toggle = page.locator(".hud-topbar > .navToggle");
   await page.clock.fastForward(7001);
@@ -278,7 +278,7 @@ test("compact header keeps drawer and notification anchors reachable (#946)", as
   await setupSections(page);
   for (const width of [320, 800, 801]) {
     await page.setViewportSize({ width, height: 740 });
-    await page.goto("/pulse");
+    await page.goto("/mission");
     await expect(page.getByTestId("console-title")).toHaveText(
       "Mission layout",
     );
@@ -328,7 +328,7 @@ test("sections restore mission search in both navigation directions", async ({
   isMobile,
 }) => {
   await setupSections(page);
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await expect(
     page.getByRole("link", { name: "Sessions", exact: true }),
   ).toBeVisible();
@@ -396,7 +396,7 @@ test("Context comes first and details collapse inside a fixed workspace", async 
   page,
 }) => {
   await setupSections(page);
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await expect(page.getByTestId("console-title")).toHaveText("Mission layout");
   const tab = page.getByRole("tab", { name: "Details", exact: true });
   if (await tab.isVisible()) await tab.click();
@@ -433,7 +433,7 @@ for (const width of [1600, 1400, 1280, 801, 800, 412, 375]) {
     test.skip(info.project.name !== "desktop", "Explicit viewport matrix");
     await page.setViewportSize({ width, height: 950 });
     await setupSections(page);
-    await page.goto("/pulse");
+    await page.goto("/mission");
     await expect(page.getByTestId("console-title")).toHaveText(
       "Mission layout",
     );
@@ -501,7 +501,7 @@ test("a late search cannot replace the filtered result or the open mission", asy
       },
     });
   });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await expect(page.getByTestId("console-title")).toHaveText("Mission layout");
   await openMissionRail(page);
   const search = page.getByRole("searchbox", { name: "Search missions" });
@@ -558,7 +558,7 @@ for (const initial of ["draft", "planned"]) {
       launches++;
       return r.fulfill({ status: 500, json: { detail: "Unexpected launch" } });
     });
-    await page.goto("/pulse");
+    await page.goto("/mission");
     await expect(page.getByTestId("mission-begin")).toBeEnabled();
     await expect(page.getByTestId("mission-replan")).toBeVisible();
     await page.getByTestId("mission-begin").click();
@@ -615,7 +615,7 @@ test("Begin confirms one saved launch and stays disabled until its result is rea
       json: { state, session_key: "claude:worker", reason: "" },
     });
   });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await page.getByTestId("mission-begin").click();
   await expect(page.getByTestId("mission-begin")).toHaveText("Confirm begin");
   expect(launches).toBe(0);
@@ -665,7 +665,7 @@ test("mission project/state filters compose with search and keep distinct projec
     const url = new URL(request.url());
     if (url.pathname === "/api/missions") queries.push(url.searchParams);
   });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openMissionRail(page);
   const project = page.getByRole("combobox", {
     name: "Filter missions by project",
@@ -777,7 +777,7 @@ test("maximum mission titles keep the composer reachable on short screens", asyn
     state = phase;
     for (const width of [375, 412, 800, 1280]) {
       await page.setViewportSize({ width, height: 540 });
-      await page.goto("/pulse");
+      await page.goto("/mission");
       await expect(page.getByTestId("console-title")).toHaveText(title.trim());
       await page
         .getByTestId("composer-input")
@@ -819,7 +819,7 @@ test("maximum mission titles keep the composer reachable on short screens", asyn
     }),
   );
   await page.setViewportSize({ width: 375, height: 540 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await expect(page.getByTestId("console-title")).toHaveText(title);
   await page.getByTestId("composer-input").fill("Still reachable");
   await expectReachable(page, "composer-input");
@@ -858,7 +858,7 @@ test("an empty mission search keeps untracked sessions out of first-run guidance
       },
     }),
   );
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openMissionRail(page);
   await page
     .getByRole("button", { name: /Sessions without a mission/ })
@@ -913,7 +913,7 @@ test("a restored later-page mission is not declared outside its matching filters
       },
     });
   });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openMissionRail(page);
   await page
     .getByRole("searchbox", { name: "Search missions" })

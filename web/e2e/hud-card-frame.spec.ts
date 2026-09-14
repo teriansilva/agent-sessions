@@ -85,7 +85,7 @@ test.describe("HUD card frame — brackets only, no left rail (#476)", () => {
     );
 
     await mockMissions(page);
-    await page.goto("/pulse");
+    await page.goto("/mission");
 
     const li = page.locator("li", { hasText: "Pulse needs-you card" });
     await expect(li).toBeVisible();

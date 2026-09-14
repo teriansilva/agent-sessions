@@ -152,7 +152,7 @@ test("choosing an option posts the INDEX, and the label never travels", async ({
     });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openMission(page);
   await expect(page.getByTestId("mission-question")).toBeVisible();
 
@@ -184,7 +184,7 @@ test("a free-text answer posts TEXT and no index", async ({ page }) => {
     });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openMission(page);
   await page.getByTestId("mission-question-text").fill("use the Tuesday one");
   await page.getByTestId("mission-question-send").click();
@@ -207,7 +207,7 @@ test("a REFUSED answer shows the server's own words", async ({ page }) => {
     }),
   );
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openMission(page);
   await page.getByTestId("mission-question-option").first().click();
   // The reason reaches the operator rather than being flattened to a generic failure (#834).
@@ -240,7 +240,7 @@ test("a 200 whose EFFECT was refused says so, rather than looking like it landed
     }),
   );
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openMission(page);
   await page.getByTestId("mission-question-option").first().click();
   await expect(page.getByTestId("mission-console")).toContainText(
@@ -250,7 +250,7 @@ test("a 200 whose EFFECT was refused says so, rather than looking like it landed
 
 test("no question, no card", async ({ page }) => {
   await stub(page, { question: null });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openMission(page);
   await expect(page.getByTestId("mission-console")).toBeVisible();
   await expect(page.getByTestId("mission-question")).toHaveCount(0);
@@ -263,7 +263,7 @@ test("every control clears 44px and a long option does not overflow its card", a
   // label is the case that breaks: truncating it means the operator chooses something they
   // cannot read.
   await stub(page);
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openMission(page);
   const card = page.getByTestId("mission-question");
   await expect(card).toBeVisible();
@@ -356,7 +356,7 @@ test("a SUPERSEDED question replaces the card, and the draft does not cross over
     });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openMission(page);
   await expect(page.getByTestId("mission-question")).toContainText(
     "Two pull requests",
@@ -408,7 +408,7 @@ test("an ANSWERED question leaves the answer on the thread and no card", async (
     });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openMission(page);
   await page.getByTestId("mission-question-option").first().click();
 
@@ -439,7 +439,7 @@ test("the card is operable from the KEYBOARD, with a visible ring", async ({
     });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openMission(page);
   await expect(page.getByTestId("mission-question")).toBeVisible();
 
@@ -500,7 +500,7 @@ test("a LABEL cannot hide the consequence, and a settling option asks twice", as
     });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openMission(page);
   const deceptive = page.getByTestId("mission-question-option").nth(1);
   await expect(deceptive).toContainText("Keep working");
@@ -547,7 +547,7 @@ test("a NON-settling option acts on the first tap", async ({ page }) => {
     });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openMission(page);
   await page.getByTestId("mission-question-option").first().click();
   await expect.poll(() => bodies.length).toBe(1);

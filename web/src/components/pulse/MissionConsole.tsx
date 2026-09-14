@@ -29,7 +29,7 @@ import type {
   PulseCard,
 } from "../../types/api";
 
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 
 import { HudFrame } from "../hud/HudFrame";
 import { ActionRow } from "./ActionRow";
@@ -94,6 +94,10 @@ function dedupe(rows: MissionListRow[], have: MissionListRow[] = []) {
   const seen = new Set(have.map((m) => m.id));
   return rows.filter((m) => (seen.has(m.id) ? false : (seen.add(m.id), true)));
 }
+
+/** The server's mission id shape (`missions.MISSION_ID_RE`). A deep link that does not match it
+ *  is never used to select, so it can never become a request. */
+const MISSION_ID_RE = /^msn_[0-9a-f]{32}$/;
 
 /** Below 1400px the workspace selects Conversation or Details. The wide layout
  * displays both; an empty workspace keeps Details available with an explanation. */
@@ -819,6 +823,36 @@ export function MissionConsole({
     null,
   );
   const [stop, setStop] = useSectionState<Stop>("missions.view", "THREAD");
+
+  /** `?m=<mission id>` — the one deep link into a specific mission (#948). The session header,
+   *  the row menu and the bell link here.
+   *
+   *  It is SHAPE-CHECKED against the server's id format (`missions.MISSION_ID_RE`) before it can
+   *  select anything, so a malformed value costs no request. The selection is applied during
+   *  render, the documented way to adjust state to a changed input, and remembered per link
+   *  value so it lands once. The URL then settles back on `/mission`, which keeps a single owner
+   *  for selection — this console — rather than a query string that can disagree with it. */
+  const [searchParams, setSearchParams] = useSearchParams();
+  const deepLink = searchParams.get("m");
+  const [consumedLink, setConsumedLink] = useState<string | null>(null);
+  if (deepLink !== consumedLink) {
+    setConsumedLink(deepLink);
+    if (deepLink !== null && MISSION_ID_RE.test(deepLink)) {
+      setSelected(deepLink);
+      setStop("THREAD");
+    }
+  }
+  useEffect(() => {
+    if (deepLink === null) return;
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("m");
+        return next;
+      },
+      { replace: true },
+    );
+  }, [deepLink, setSearchParams]);
 
   /** The shell's sidebar slot (#935).
    *

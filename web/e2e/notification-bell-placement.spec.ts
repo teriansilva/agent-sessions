@@ -53,7 +53,7 @@ test.beforeEach(async ({ page }) => {
             project: "agent-sessions",
             engine: "claude",
             // The row's link is derived from session_id + engine (targetPath), NOT from any
-            // url field — a fixture carrying a `url` silently falls back to /pulse.
+            // url field — a fixture carrying a `url` silently falls back to /mission.
             session_id: "claude:abc",
             action_id: "a1",
             ts: Date.now() / 1000 - 60,

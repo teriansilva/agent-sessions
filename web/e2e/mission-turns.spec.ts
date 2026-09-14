@@ -155,7 +155,7 @@ test("a turn goes to the MISSION route and its answer comes back from the timeli
     });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openMission(page);
   await page.getByTestId("composer-input").fill("is it there?");
   await page.getByTestId("composer-send").click();
@@ -217,7 +217,7 @@ test("a RELOAD during a turn finds it STILL RUNNING, from the store", async ({
     });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openMission(page);
   await page.getByTestId("composer-input").fill("run the tests");
   await page.getByTestId("composer-send").click();
@@ -277,7 +277,7 @@ test("a RELOAD finds an AMBIGUOUS turn, and CHECK AGAIN reuses its id", async ({
     return r.fulfill({ json: { turn_id: "t9", state: "indeterminate" } });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openMission(page);
   await expect(page.getByTestId("turn-indeterminate")).toBeVisible();
   await expect(page.getByTestId("mission-console")).toContainText(
@@ -309,7 +309,7 @@ test("DISMISS acknowledges the ambiguous turn on the SERVER", async ({
     return r.fulfill({ json: { turn_id: "t9", acked: true } });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openMission(page);
   await page.getByTestId("turn-dismiss").click();
   await expect.poll(() => acks.length).toBe(1);
@@ -338,7 +338,7 @@ test("the ANSWER's matched sessions are reachable from the timeline", async ({
     }),
     evt(1, "operator_msg", "which session fixed the reconnect?"),
   ]);
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await openMission(page);
   await expect(page.getByTestId("ask-match")).toContainText(
     "The ws reconnect fix",
@@ -376,7 +376,7 @@ test("UNTRACKED keeps its transient Ask and says why", async ({ page }) => {
   await page.route("**/api/pulse/ask", (r) =>
     r.fulfill({ json: { answer: "nothing tracked", matches: [] } }),
   );
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await expect(page.getByTestId("mission-console")).toBeVisible();
   // Through the SHELL's control (#940). The console's own `☰` retired with `MissionDrawer`, so
   // `isVisible()` on it was always false and the phone's drawer never opened — leaving every

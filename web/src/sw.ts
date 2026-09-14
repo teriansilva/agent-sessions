@@ -72,15 +72,15 @@ self.addEventListener("push", (event: PushEvent) => {
       badge: "/icon-192.png",
       // Coalesce per session: a second escalation for the same session replaces the first
       // rather than stacking, so a chatty agent can't bury the notification shade.
-      tag: data.url || "pulse",
-      data: { url: data.url || "/pulse" },
+      tag: data.url || "mission",
+      data: { url: data.url || "/mission" },
     }),
   );
 });
 
 self.addEventListener("notificationclick", (event: NotificationEvent) => {
   event.notification.close();
-  const target = (event.notification.data?.url as string) || "/pulse";
+  const target = (event.notification.data?.url as string) || "/mission";
   event.waitUntil(
     (async () => {
       const all = await self.clients.matchAll({

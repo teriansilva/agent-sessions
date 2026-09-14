@@ -124,7 +124,7 @@ test("Conversation and Details open the four ordered disclosures", async ({
     mission: { ...HELD, events: [], events_next_seq: null },
   });
   await page.setViewportSize({ width: 412, height: 900 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
 
   const tabs = stops(page);
   await expect(tabs).toHaveCount(2);
@@ -182,7 +182,7 @@ for (const [width, railIsColumn] of [
       mission: { ...HELD, events: [], events_next_seq: null },
     });
     await page.setViewportSize({ width, height: 900 });
-    await page.goto("/pulse");
+    await page.goto("/mission");
     await expect(page.getByTestId("mission-console")).toBeVisible();
 
     // The rail is either laid out beside the pane, or it is behind the drawer trigger.
@@ -416,7 +416,7 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
     }),
   );
   await page.setViewportSize({ width: 412, height: 900 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await expect(page.getByTestId("mission-console")).toBeVisible();
 
   // Walk all three stops AND the drawer, so the inventory covers every control the operator can
@@ -638,7 +638,7 @@ test("a focused control shows a visible focus ring", async ({ page }) => {
   await stub(page);
   await mockMissions(page, { missions: missionList([HELD_ROW]) });
   await page.setViewportSize({ width: 412, height: 900 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await page.waitForLoadState("networkidle");
 
   const tab = page.getByTestId("stop-details");
@@ -661,7 +661,7 @@ test("no missions and no sessions is an invitation, not a blank", async ({
 }) => {
   await stub(page, { cards: [] });
   await mockMissions(page);
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await expect(page.getByTestId("console-empty")).toContainText(
     /nothing tracked yet/i,
   );
@@ -674,7 +674,7 @@ test("a store that will not answer says so, and never claims you have no mission
   await mockMissions(page, {
     missions: missionList([], "the store is locked"),
   });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   // In the PANE, not only the rail: on a phone the rail is a drawer, so a rail-only notice is
   // invisible exactly when the console is degraded.
   await expect(page.getByTestId("console-store-error")).toBeVisible();
@@ -697,7 +697,7 @@ test("with no AI endpoint the composer is disabled and the notice names it", asy
     missions: missionList([HELD_ROW]),
     mission: { ...HELD, events: [], events_next_seq: null },
   });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await expect(page.getByTestId("no-ai-notice")).toContainText(
     /and the composer/i,
   );
@@ -734,7 +734,7 @@ test("a stale probe shows its LAST OBSERVED state, and marks nothing met on data
     },
   });
   await page.setViewportSize({ width: 1400, height: 900 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   // THROUGH THE TAB, at 1400 as at 412 (#942). This used to need no click: a 340px detail column
   // rendered the objectives unprompted at this width, which is exactly the second layout the
   // rework deleted. One route to the pane now, and it is the same one on a phone.
@@ -773,7 +773,7 @@ for (const theme of ["dark", "light"] as const) {
       mission: { ...HELD, events: [], events_next_seq: null },
     });
     await page.setViewportSize({ width: 1400, height: 900 });
-    await page.goto("/pulse");
+    await page.goto("/mission");
     await page.waitForLoadState("networkidle");
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
     await expect(page.getByTestId("mission-console")).toBeVisible();
@@ -861,7 +861,7 @@ test("a session held by a mission the rail has NOT loaded is not offered for ado
   });
   await mockMissions(page, { missions: pagedMissions({ active }) });
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
 
   await expect(page.getByTestId("rail-mission").first()).toBeVisible();
   // The rail is showing a page, not the set…
@@ -904,7 +904,7 @@ test("ADOPT sends the mutation and the session leaves UNTRACKED", async ({
     });
   });
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
 
   // The console opens on a MISSION; ADOPT lives with the session, so the untracked view is
   // where it is offered.
@@ -951,7 +951,7 @@ test("a refresh after an adopt keeps every page the operator opened, past the se
     }),
   );
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
 
   const more = page.getByTestId("rail-load-more");
   await expect(more).toContainText("100 of 250");
@@ -1018,7 +1018,7 @@ test("archived missions are reachable, and refuse adoption while shown", async (
     }),
   });
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
 
   await expect(page.getByTestId("rail-mission")).toHaveCount(1);
   await expect(page.getByTestId("rail-mission")).toContainText(
@@ -1093,7 +1093,7 @@ test("the timeline pages by CURSOR, and older events append rather than replace"
     r.fulfill({ json: { objectives: [] } }),
   );
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
 
   // THROUGH THE TAB (#942). This used to say "no tab click: 1440 is the widest layout mode, where
   // all three panes are on screen at once" — that mode is gone, along with the 340px track that
@@ -1148,7 +1148,7 @@ test("a page still in flight cannot land in the scope the operator switched to",
     },
   });
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto("/pulse");
+  await page.goto("/mission");
 
   await expect(page.getByTestId("rail-load-more")).toContainText("100 of 150");
   // Issue the second page — and do NOT await it; it is held open on purpose.

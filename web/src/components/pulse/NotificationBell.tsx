@@ -12,9 +12,9 @@ import styles from "./NotificationBell.module.css";
 
 const POLL_MS = 60_000;
 
-/** Deep link for a notification: the session it concerns, or Pulse when it has none. */
+/** Deep link for a notification: the session it concerns, or mission control when it has none. */
 function targetPath(n: PulseNotification): string {
-  if (!n.session_id) return "/pulse";
+  if (!n.session_id) return "/mission";
   const uuid = n.session_id.slice(n.session_id.indexOf(":") + 1);
   return `/s/${encodeURIComponent(n.engine)}/${encodeURIComponent(uuid)}`;
 }

@@ -45,7 +45,7 @@ test("ButtonGlitch renders nothing", () => {
 test.each([
   "<button>Action</button>",
   '<a class="shine" href="/">New session</a>',
-  '<nav class="section-nav"><a href="/pulse">Missions</a></nav>',
+  '<nav class="section-nav"><a href="/mission">Missions</a></nav>',
   '<a class="gear" href="/settings">Settings</a>',
   '<div role="button" tabindex="0">Action</div>',
   '<input type="submit" value="Save">',

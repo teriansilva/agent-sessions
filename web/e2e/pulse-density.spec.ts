@@ -205,7 +205,7 @@ test("the session cards are ONE list, ordered needs-you first", async ({
   await mock(page);
   await page.setViewportSize({ width: 1900, height: 1200 });
   await mockMissions(page);
-    await page.goto("/pulse");
+    await page.goto("/mission");
   await expect(page.getByText("Resume PR #731 investigation")).toBeVisible();
 
   // No per-band sections: the four headings used to break the grid and leave a partial row.
@@ -243,7 +243,7 @@ test("the LED carries the band for a screen reader, since the heading no longer 
   await mock(page);
   await page.setViewportSize({ width: 1900, height: 1200 });
   await mockMissions(page);
-    await page.goto("/pulse");
+    await page.goto("/mission");
   await expect(page.getByText("Resume PR #731 investigation")).toBeVisible();
   // Colour alone was acceptable under a "Needs you" heading. It is not, on its own.
   await expect(
@@ -259,7 +259,7 @@ test("on a phone everything stays exactly one column", async ({ page }) => {
   // about a desktop browser narrowed to a phone-sized window.
   await page.setViewportSize({ width: 390, height: 844 });
   await mockMissions(page);
-    await page.goto("/pulse");
+    await page.goto("/mission");
   await expect(page.getByText("Resume PR #731 investigation")).toBeVisible();
   // One column, and the console is now one column at EVERY width — so the assertion that used
   // to distinguish phone from desktop is instead the stronger one it always stood for: nothing

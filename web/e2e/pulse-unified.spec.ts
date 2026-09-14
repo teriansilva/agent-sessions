@@ -160,7 +160,7 @@ test("a session appears ONCE, with its decision controls on the card", async ({
   page,
 }) => {
   await mockMissions(page);
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await expect(
     page.getByRole("link", { name: "Missions", exact: true }),
   ).toHaveAttribute("aria-current", "page");
@@ -183,7 +183,7 @@ test("a session appears ONCE, with its decision controls on the card", async ({
 
 test("a card with a live action sorts above one without", async ({ page }) => {
   await mockMissions(page);
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await expect(page.getByRole("button", { name: /^approve$/i })).toBeVisible();
   const titles = await page.locator("li").allInnerTexts();
   const withAction = titles.findIndex((t) =>
@@ -198,7 +198,7 @@ test("project and agent filters narrow the whole list and compose", async ({
   page,
 }) => {
   await mockMissions(page);
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await expect(page.getByText("Relay cap")).toBeVisible();
 
   // Counts come from the unfiltered set, so a chip states what selecting it would yield.
@@ -218,7 +218,7 @@ test("project and agent filters narrow the whole list and compose", async ({
 test("the manual pass lives in Settings and reports what the pass actually said (#929)", async ({
   page,
 }) => {
-  // #754's defect was a panel on /pulse claiming "N actions need you" while no card carried
+  // #754's defect was a panel on /mission claiming "N actions need you" while no card carried
   // one. #929 removes that panel, so the claim cannot desync — but "Run now" was the operator's
   // only way to force a pass, and the degraded badge still points at it, so it moved to
   // Settings rather than going away. This asserts the control exists there and surfaces the
@@ -267,7 +267,7 @@ test("the manual pass lives in Settings and reports what the pass actually said 
   expect(scanned).toBe(true);
 
   // And the route no longer carries a second copy of the control (#929).
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await expect(page.getByRole("button", { name: /run now/i })).toHaveCount(0);
 });
 
@@ -323,7 +323,7 @@ test("resolving from a card still re-reads the orchestrator's own state", async 
   });
 
   await mockMissions(page);
-  await page.goto("/pulse");
+  await page.goto("/mission");
   const approve = page.getByRole("button", { name: /^approve$/i });
   await expect(approve).toBeVisible();
   const before = orchFetches;
@@ -375,7 +375,7 @@ test("a settled action loses its controls even when the background refresh fails
   });
 
   await mockMissions(page);
-  await page.goto("/pulse");
+  await page.goto("/mission");
   const approve = page.getByRole("button", { name: /^approve$/i });
   await expect(approve).toBeVisible();
   await approve.click();
@@ -450,7 +450,7 @@ test("a card that existed only for its action goes away with it", async ({
   });
 
   await mockMissions(page);
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await expect(page.getByText("Phantom candidate")).toBeVisible();
 
   await page.getByRole("button", { name: /^approve$/i }).click();

@@ -165,7 +165,7 @@ test.beforeEach(async ({ page }) => {
 
 test("project and agent filters narrow the whole list", async ({ page }) => {
   await mockMissions(page);
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await expect(page.getByText("Relay cap")).toBeVisible();
 
   // The orchestrator queue is deliberately empty here: it is a separate list on this branch and
@@ -191,7 +191,7 @@ test("two projects with the same name remain separate filter options", async ({
   // Keyed by display name, `/work/a/app` and `/work/b/app` collapsed into one `app 2` chip and
   // selecting it showed both. Keyed by id they are separate, and the parent disambiguates them.
   await mockMissions(page);
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await expect(untrackedFilterOption(page, /^app · a\s+·\s*1$/i)).toHaveCount(
     1,
   );
@@ -207,7 +207,7 @@ test("two projects with the same name remain separate filter options", async ({
 
 test("project and agent compose to their intersection", async ({ page }) => {
   await mockMissions(page);
-  await page.goto("/pulse");
+  await page.goto("/mission");
 
   // infra holds two sessions, one per engine.
   await chooseUntrackedFilter(page, /^infra\s+·\s*2$/i);
@@ -233,7 +233,7 @@ test("a combination that matches nothing says so and offers one-action recovery"
   page,
 }) => {
   await mockMissions(page);
-  await page.goto("/pulse");
+  await page.goto("/mission");
   // battlelab is codex-only, so this intersection is empty — the list area used to just go blank.
   await chooseUntrackedFilter(page, /^battlelab\s+·\s*1$/i);
   await chooseUntrackedFilter(page, /^claude\s+·\s*2$/i);
@@ -300,7 +300,7 @@ test("a scan that invalidates the selection does not leave a blank page", async 
   });
 
   await mockMissions(page);
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await chooseUntrackedFilter(page, /^battlelab\s+·\s*1$/i);
   await expect(page.getByText("Relay cap")).toBeVisible();
 
@@ -356,7 +356,7 @@ test("unadopted scratch dirs collapse into one Default chip, and nothing scrolls
     r.fulfill({ json: overview(UNADOPTED) }),
   );
   await mockMissions(page);
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await expect(page.getByText("Real work")).toBeVisible();
 
   // 1. One Default chip carrying the SUMMED count — not one chip per scratch directory.

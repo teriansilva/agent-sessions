@@ -190,7 +190,7 @@ test("an escalation names its real cause, never the threshold it never consulted
   page,
 }) => {
   await mockMissions(page);
-    await page.goto("/pulse");
+    await page.goto("/mission");
   await expect(page.getByText(RATIONALE)).toBeVisible();
 
   const conf = page.getByText(/^conf 0\.90/);
@@ -208,7 +208,7 @@ test("the one control an escalation offers says what it does", async ({
   page,
 }) => {
   await mockMissions(page);
-    await page.goto("/pulse");
+    await page.goto("/mission");
   await expect(page.getByText(RATIONALE)).toBeVisible();
 
   // There is nothing to deliver, so there is no Approve — that part was already right.
@@ -227,7 +227,7 @@ test("the dismiss control keeps its geometry with the label added", async ({
   page,
 }, testInfo) => {
   await mockMissions(page);
-    await page.goto("/pulse");
+    await page.goto("/mission");
   await expect(page.getByText(RATIONALE)).toBeVisible();
 
   const dismiss = page.getByRole("button", {
@@ -260,7 +260,7 @@ test("a settled action says what became of it, not which state it reached", asyn
   page,
 }) => {
   await mockMissions(page);
-  await page.goto("/pulse");
+  await page.goto("/mission");
   // Scoped to the pane: since #878 a session appears in BOTH the rail row and the view, which is
   // correct and makes an unscoped `getByText` ambiguous under strict mode. The assertion is
   // unchanged — only the region it is read from is now named.

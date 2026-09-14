@@ -267,7 +267,7 @@ test("NEW MISSION posts the instruction and the project ENTITY id, and never a c
     });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await expect(page.getByTestId("mission-console")).toBeVisible();
 
   await page.getByTestId("composer-mode-new").click();
@@ -324,7 +324,7 @@ test("a REFUSED transition paints the server's state, not the one that was asked
     });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await expect(page.getByTestId("mission-state")).toHaveText("running");
 
   // MARK DONE confirms — closing releases every session the mission holds, so the
@@ -346,7 +346,7 @@ test("BEGIN is refused without a session, and says what unblocks it", async ({
     missions: missionList([missionRow({ state: "planned", session_keys: [] })]),
     mission: { ...planned, events: [], events_next_seq: null },
   });
-  await page.goto("/pulse");
+  await page.goto("/mission");
 
   const begin = page.getByTestId("mission-begin");
   await expect(begin).toBeVisible();
@@ -387,7 +387,7 @@ test("an objective edit posts ONE batch of ops", async ({ page }) => {
     return r.fulfill({ json: { objectives: [] } });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await goToObjectives(page);
   await expect(page.getByTestId("objective").first()).toBeVisible();
 
@@ -460,7 +460,7 @@ test("STAND DOWN posts the episode the board was RENDERED at", async ({
     return r.fulfill({ json: { episode: 4, stood_down: true } });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await goToObjectives(page);
   const btn = page.getByTestId("objective-stand-down").first();
   await expect(btn).toBeVisible();
@@ -488,7 +488,7 @@ test("archiving a live mission asks first and says it stops the agents", async (
     return r.fulfill({ json: { mission: HELD } });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await overflow(page);
   await page.getByTestId("mission-archive").click();
 
@@ -549,7 +549,7 @@ test("a refusal for the mission you LEFT is discarded, not shown over the one yo
     });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await selectMission(page, "Alpha");
   await expect(page.getByTestId("mission-state")).toHaveText("running");
   // MARK DONE confirms — closing releases every session the mission holds, so the
@@ -599,7 +599,7 @@ test("creating from the ARCHIVED rail never issues an archived list request afte
     r.fulfill({ json: { ...MISSION, events: [], events_next_seq: null } }),
   );
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await expect(page.getByTestId("mission-console")).toBeVisible();
 
   await toggleScope(page); // → Archived
@@ -664,7 +664,7 @@ test("archiving the mission you SELECTED does not leave it on screen", async ({
     return r.fulfill({ json: { mission: { ...MISSION, id: "msn_go" } } });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await selectMission(page, "Going");
   await expectMissionSelected(page, "Going");
 
@@ -761,7 +761,7 @@ test("a refused APPROVAL for the mission you left is discarded too", async ({
     });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await selectMission(page, "Alpha");
   const approve = page.getByRole("button", { name: /approve/i }).first();
   await expect(approve).toBeVisible();
@@ -842,7 +842,7 @@ test("RELEASE puts the session back in UNTRACKED, not just posts a detach", asyn
     return r.fulfill({ json: { ...HELD, sessions: [] } });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   // CONTEXT owns the roster since #942 — it used to be the third heading inside OBJECTIVES.
   await goToContext(page);
   const release = page.getByTestId("session-detach").first();
@@ -907,7 +907,7 @@ test("CLOSING a mission also puts its sessions back in UNTRACKED", async ({
     });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   // MARK DONE confirms — closing releases every session the mission holds, so the
   // first tap only asks (#896 review 6, finding 2).
   await page.getByTestId("mission-done").click();
@@ -982,7 +982,7 @@ test("a CREATE that lands after CANCEL refreshes the rail but does not steal the
     });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   // NEW MISSION LIVES IN THE UNTRACKED VIEW. The mission body's composer is the DURABLE one
   // (#890): its turns are that mission's own rows, and creating a different mission is not one
   // of them. So the create starts here, and the operator then moves to a mission — which is the
@@ -1079,7 +1079,7 @@ for (const state of ["done", "failed", "abandoned"] as const) {
         git_error: null,
       },
     });
-    await page.goto("/pulse");
+    await page.goto("/mission");
     await goToObjectives(page);
     await expect(page.getByTestId("objective").first()).toBeVisible();
 
@@ -1166,7 +1166,7 @@ test("a LOAD MORE that lands first does not make the refresh that followed it lo
     return r.fulfill({ json: { mission: { ...MISSION, id: "msn_gone" } } });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await selectMission(page, "Vanishing");
   await expectMissionSelected(page, "Vanishing");
 
@@ -1247,7 +1247,7 @@ test("a refresh that lands first is not undone by the LOAD MORE it overtook", as
     return r.fulfill({ json: { mission: { ...MISSION, id: "msn_gone2" } } });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await selectMission(page, "Vanishing");
   await overflow(page);
   await page.getByTestId("mission-archive").click();
@@ -1310,7 +1310,7 @@ test("a FAILED archive leaves you on the mission whose error you were just hande
     }),
   );
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await selectMission(page, "Going");
   // ASSERTED ON THE TITLE, never on the console: the rail is INSIDE the console and it contains
   // the word "Going" as a row, so a console-level match passes whether the operator was moved or
@@ -1401,7 +1401,7 @@ test("a decision started in UNTRACKED does not paint its refusal over a mission"
     });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await selectUntracked(page);
   await page
     .getByRole("button", { name: /^approve$/i })
@@ -1489,7 +1489,7 @@ test("a late CLOSE for a mission you left still refreshes UNTRACKED", async ({
     });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await selectMission(page, "Alpha");
   // MARK DONE now confirms (finding 2), so it takes two taps.
   await page.getByTestId("mission-done").click();
@@ -1555,7 +1555,7 @@ test("UNARCHIVE offers RECORD ONLY beside RESTART AGENTS, and each sends its own
     return r.fulfill({ json: { mission: { ...MISSION, id: "msn_arch" } } });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await ready(page);
   await openMissionRail(page);
   await page.locator('[data-testid="rail-scope"]:visible').first().click();
@@ -1634,7 +1634,7 @@ test("a SUPERSEDED list failure does not paint a store outage over newer rows", 
     });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await expect(page.getByTestId("mission-console")).toBeVisible();
   await expect.poll(() => calls).toBe(1);
 
@@ -1712,7 +1712,7 @@ test("a late ADOPT failure is not filed against the mission you moved to", async
     });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
 
   // Start the adoption from UNTRACKED…
   await selectUntracked(page);
@@ -1772,7 +1772,7 @@ test("a stale PAGINATION cleanup cannot unlock a newer request", async ({
     return r.fulfill({ json: { ...missionList(page2), total: 51 } });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await ready(page);
   await openMissionRail(page);
 
@@ -1827,7 +1827,7 @@ test("a CURRENT list failure says the store could not be read", async ({
     return r.fulfill({ status: 500, json: { detail: "boom" } });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await ready(page);
   // On a phone the rail is a DRAWER, so the notice is only on screen once it is opened. Asserting
   // on `:visible` without opening it fails for the layout rather than for the fence.
@@ -1890,7 +1890,7 @@ test("UNARCHIVE lands you in the scope the mission moved INTO, not the one it le
     return r.fulfill({ json: { mission: { ...MISSION, id: "msn_arch" } } });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await ready(page);
   await openMissionRail(page);
   await page.locator('[data-testid="rail-scope"]:visible').first().click();
@@ -1961,7 +1961,7 @@ test("a refusal from the visit you LEFT stays gone after you come back to that m
     });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await selectMission(page, "Alpha");
   await expect(page.getByTestId("mission-state")).toHaveText("running");
   await page.getByTestId("mission-done").click();
@@ -2021,7 +2021,7 @@ test("a REFUSED adopt reconciles the overview it just proved stale", async ({
     }),
   );
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await selectUntracked(page);
   await closeRail(page);
   await expect.poll(() => overviewReads).toBeGreaterThan(0);
@@ -2191,7 +2191,7 @@ test("THE #889 JOURNEY: create → objectives arrive → edit → adopt → BEGI
     return r.fulfill({ json: { mission: detail() } });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await ready(page);
 
   // ── 1. CREATE ────────────────────────────────────────────────────────────────────────────
@@ -2342,7 +2342,7 @@ test("a settled-action refusal from a PREVIOUS untracked visit stays gone", asyn
     });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await selectUntracked(page);
   await closeRail(page);
   await page
@@ -2404,7 +2404,7 @@ test("an ARCHIVED mission leaves the Active rail even when the refresh that foll
     return r.fulfill({ json: { mission: { ...MISSION, id: "msn_a" } } });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await selectMission(page, "Alpha");
   await expect(page.getByTestId("mission-state")).toContainText("done");
 
@@ -2466,7 +2466,7 @@ test("a LATE archive still takes its row out of the Active rail after you have m
     return r.fulfill({ json: { mission: { ...MISSION, id: "msn_a" } } });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await selectMission(page, "Alpha");
   await expect(page.getByTestId("mission-state")).toContainText("done");
   await overflow(page);
@@ -2543,7 +2543,7 @@ test("LOAD MORE dedupes, and still advances past what it consumed", async ({
     });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await ready(page);
   await openMissionRail(page);
   await expect.poll(() => railRows(page).count()).toBe(100);
@@ -2631,7 +2631,7 @@ test("a REMOVAL between pages leaves no duplicate, and the rail says so anyway",
     });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await ready(page);
   await openMissionRail(page);
   await expect.poll(() => railRows(page).count()).toBe(100);
@@ -2726,7 +2726,7 @@ test("a rail refresh reads ONE snapshot, so a deletion between pages cannot hide
     return r.fulfill({ json: { mission: { ...MISSION, id: "msn_0" } } });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await ready(page);
   await openMissionRail(page);
   await expect.poll(() => railRows(page).count()).toBe(100);
@@ -2812,7 +2812,7 @@ test("a LATE archive does not delete the row from the ARCHIVED rail it just ente
     return r.fulfill({ json: { mission: { ...MISSION, id: "msn_a" } } });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await selectMission(page, "Alpha");
   await expect(page.getByTestId("mission-state")).toContainText("done");
   await overflow(page);
@@ -2895,7 +2895,7 @@ test("a LATE archive cannot decrement a total a newer list has already reconcile
     return r.fulfill({ json: { mission: { ...MISSION, id: "msn_0" } } });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   // The FIRST row is M0, which is the one the mock archives. Selected by position rather than by
   // text: a rail row carries its state and its time too, so an anchored title match finds nothing.
   await ready(page);
@@ -2954,7 +2954,7 @@ async function untrackedWith(page: Page, rows: unknown[], adopts: string[]) {
     adopts.push(new URL(r.request().url()).pathname);
     return r.fulfill({ json: { ...MISSION, sessions: [] } });
   });
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await selectUntracked(page);
   await closeRail(page);
   return page.locator('[data-testid="rail-adopt"]:visible').first();
@@ -3069,7 +3069,7 @@ test("waiving an objective refreshes the RAIL, not just the pane", async ({
     return n;
   };
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await ready(page);
   // THE RAIL SAYS "NEEDS YOU" BEFORE THE MUTATION — the state the test is about.
   await expect.poll(railNeedsYou, { timeout: 10_000 }).toBe(1);
@@ -3165,7 +3165,7 @@ test("PLANNING a mission refreshes the RAIL, not just the pane", async ({
     return label ?? "";
   };
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await ready(page);
   await expect.poll(railState, { timeout: 10_000 }).toContain("draft");
 
@@ -3259,7 +3259,7 @@ test("a late DISPATCH failure cannot paint over the mission you moved to", async
     });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await selectMission(page, "Alpha");
   await expect(page.getByTestId("mission-plan-card")).toBeVisible();
 
@@ -3343,7 +3343,7 @@ test("a late QUESTION refusal cannot paint over the mission you moved to", async
     });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await selectMission(page, "Alpha");
   await expect(page.getByTestId("mission-question")).toBeVisible();
   await page.getByTestId("mission-question-option").first().click();
@@ -3416,7 +3416,7 @@ test("a LATE mutation does not collapse the pages you opened while it was in fli
     });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await ready(page);
   await expect.poll(() => railRowCount(page), { timeout: 10_000 }).toBe(100);
 
@@ -3540,7 +3540,7 @@ test("an OLDER refresh cannot narrow the window you just opened", async ({
     return r.fulfill({ json: { objectives: [] } });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await ready(page);
   await expect.poll(() => railRowCount(page), { timeout: 10_000 }).toBe(100);
   await goToObjectives(page);
@@ -3641,7 +3641,7 @@ test("an OLDER refresh cannot erase the page you opened while it was in flight",
     });
   });
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await ready(page);
   await expect.poll(() => railRowCount(page), { timeout: 10_000 }).toBe(100);
 
@@ -3727,7 +3727,7 @@ test("an OLDER refresh cannot resurrect a row after a NEWER one failed", async (
     r.fulfill({ json: { ...MISSION, id: "msn_a", archived_at: 1 } }),
   );
 
-  await page.goto("/pulse");
+  await page.goto("/mission");
   await selectMission(page, "Alpha");
   phase = "hold";
   await overflow(page);
