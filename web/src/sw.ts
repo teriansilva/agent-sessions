@@ -20,6 +20,7 @@ import { clientsClaim } from "workbox-core";
 import { NavigationRoute, registerRoute } from "workbox-routing";
 import { createHandlerBoundToURL, precacheAndRoute } from "workbox-precaching";
 import { NAVIGATE_FALLBACK_DENYLIST } from "./sw-denylist";
+import { MISSION_PATH } from "./lib/missionLink";
 
 declare const self: ServiceWorkerGlobalScope & {
   __WB_MANIFEST: Array<{ url: string; revision: string | null }>;
@@ -73,14 +74,14 @@ self.addEventListener("push", (event: PushEvent) => {
       // Coalesce per session: a second escalation for the same session replaces the first
       // rather than stacking, so a chatty agent can't bury the notification shade.
       tag: data.url || "mission",
-      data: { url: data.url || "/mission" },
+      data: { url: data.url || MISSION_PATH },
     }),
   );
 });
 
 self.addEventListener("notificationclick", (event: NotificationEvent) => {
   event.notification.close();
-  const target = (event.notification.data?.url as string) || "/mission";
+  const target = (event.notification.data?.url as string) || MISSION_PATH;
   event.waitUntil(
     (async () => {
       const all = await self.clients.matchAll({

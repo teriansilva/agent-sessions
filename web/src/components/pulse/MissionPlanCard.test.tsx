@@ -406,8 +406,11 @@ test("the SECOND tap cannot approve a checklist the FIRST tap never saw", async 
   );
 
   await userEvent.click(screen.getByTestId("mission-begin"));
-  expect(screen.getByTestId("mission-begin")).toHaveTextContent(
-    "Confirm begin",
+  // The arm lands after an ASYNC digest (`sha256Hex`), so the click can resolve first.
+  await waitFor(() =>
+    expect(screen.getByTestId("mission-begin")).toHaveTextContent(
+      "Confirm begin",
+    ),
   );
 
   // THE CHECKLIST CHANGES UNDER THE ARMED BUTTON — a poll, or another tab retitling it. The plan

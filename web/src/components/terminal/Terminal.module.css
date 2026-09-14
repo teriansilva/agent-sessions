@@ -497,3 +497,39 @@
     display: none;
   }
 }
+
+/* The mission holding this session (#948 P5) — the sidebar row's .missionTag metrics, so one session
+ * reads the same in the list and in the pane header. It yields early as the head narrows: the
+ * header's own Open-mission action still names the mission. */
+.headMission {
+  flex: 0 1 auto;
+  min-width: 40px;
+  max-width: 160px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  border: 1px solid var(--accent-soft);
+  padding: 0 4px;
+  line-height: 15px;
+  overflow: hidden;
+}
+:global(:root[data-theme="light"]) .headMission {
+  color: var(--brand);
+}
+.headMissionText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@container panelhead (max-width: 520px) {
+  .headMission {
+    display: none;
+  }
+}

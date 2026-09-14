@@ -15,6 +15,7 @@ import {
   Star,
   Tag,
   X,
+  Crosshair,
 } from "lucide-react";
 import {
   type CSSProperties,
@@ -28,7 +29,7 @@ import {
 import { Link, NavLink, useMatch, useNavigate } from "react-router-dom";
 import { useConfig } from "../../app/config";
 import { MAP_PATH, useMapWindows } from "../../app/workspaceWindows";
-import { useSessionsStore } from "../../app/sessionsStore";
+import { isNewSessionPlaceholder, useSessionsStore } from "../../app/sessionsStore";
 import { useSessionsList } from "../../hooks/useSessionsList";
 import { ApiError } from "../../lib/api";
 import {
@@ -44,9 +45,11 @@ import type { ProjectRef, Session } from "../../types/api";
 import { HandoffModal } from "../terminal/HandoffModal";
 import { SessionRecapModal } from "../terminal/SessionRecapModal";
 import { FiltersBar } from "./Filters";
+import { AdoptToMissionModal } from "../sessions/AdoptToMissionModal";
 import { MoveToProjectModal } from "./MoveToProjectModal";
 import { RowMenu, type RowMenuEntry } from "./RowMenu";
 import styles from "./SessionList.module.css";
+import { missionLink } from "../../lib/missionLink";
 
 /** Activity since the last successful review makes the summary stale (#356): the AI's
  *  one-liner describes an older state, so the row exposes the review's age instead of
@@ -179,6 +182,11 @@ function Row({
   // "Move to project" picker (#424 Phase 5b) — the keyboard path for drag-to-reassign.
   const [moving, setMoving] = useState(false);
   const [moveReturnFocus, setMoveReturnFocus] = useState<HTMLElement | null>(
+    null,
+  );
+  // "Adopt to mission" (#948 P5) — the same picker the pane header opens.
+  const [adopting, setAdopting] = useState(false);
+  const [adoptReturnFocus, setAdoptReturnFocus] = useState<HTMLElement | null>(
     null,
   );
   // Session brief (Recap) + Hand off, mirrored from the terminal header into the ⋯ menu so
@@ -428,6 +436,35 @@ function Row({
   }
   pushGroup(primary);
 
+  // Mission membership (#948 P5) — one of the two places adoption lives. `mission` ABSENT means
+  // the server could not read the store, so neither item is offered: "Adopt" would advertise a
+  // mutation nobody checked, and "Open" would name a mission nobody read. Archived rows and an
+  // unreconciled `new-<uuid>` placeholder (which `canonical_key` refuses) are not adoptable either.
+  if (s.mission !== undefined && !s.archived && !isNewSessionPlaceholder(s.id)) {
+    const held = s.mission;
+    pushGroup([
+      held
+        ? {
+            key: "open-mission",
+            label: "Open mission",
+            ariaLabel: `Open mission ${held.title}`,
+            icon: <Crosshair size={15} />,
+            onSelect: () => navigate(missionLink(held.id)),
+          }
+        : {
+            key: "adopt-mission",
+            label: "Adopt to mission…",
+            ariaLabel: "Adopt session to a mission",
+            icon: <Crosshair size={15} />,
+            disabled: busy,
+            onSelect: () => {
+              setAdoptReturnFocus(document.activeElement as HTMLElement | null);
+              setAdopting(true);
+            },
+          },
+    ]);
+  }
+
   // Handoff provenance backlinks (#597 Phase 2): route to a peer session. Peer ids are
   // display strings — a peer may be archived/deleted, so this just navigates and lets that
   // route render its own empty state.
@@ -577,6 +614,14 @@ function Row({
 
   return (
     <li ref={rowRef} className={styles.rowWrap}>
+      {adopting && (
+        <AdoptToMissionModal
+          session={s}
+          sessionKey={s.id}
+          onClose={() => setAdopting(false)}
+          returnFocusTo={adoptReturnFocus}
+        />
+      )}
       {moving && (
         <MoveToProjectModal
           session={s}
@@ -690,6 +735,18 @@ function Row({
               </span>
             )}
             <span className={styles.engineTag}>{engineBadge(s.engine)}</span>
+            {/* Held by a mission (#948 P5): the mark and the mission's own title, truncated —
+                membership, not a status, so the handoff badge's accent vocabulary. */}
+            {s.mission ? (
+              <span
+                className={styles.missionTag}
+                title={`Mission: ${s.mission.title} (${s.mission.state})`}
+                data-testid="row-mission-tag"
+              >
+                <Crosshair size={9} aria-hidden="true" />
+                <span className={styles.missionTagText}>{s.mission.title}</span>
+              </span>
+            ) : null}
             {/* Handoff provenance (#597): where this session came from (accent) or where
                 it was handed to (muted). Non-interactive by construction — the row IS a
                 NavLink, and an anchor may not contain interactive content, so the
@@ -778,6 +835,7 @@ export function SessionList({ onNavigate }: SessionListProps = {}) {
     setReviewExcluded,
     setOrchestratorExcluded,
     setProject,
+    missionFilterUnavailable,
   } = useSessionsList();
   const rowRefs = useRef(new Map<string, HTMLLIElement>());
   const previousRowTops = useRef(new Map<string, number>());
@@ -954,12 +1012,13 @@ export function SessionList({ onNavigate }: SessionListProps = {}) {
         facets={facets}
         onChange={update}
         onClear={clear}
+        missionFilterUnavailable={missionFilterUnavailable}
       />
       {error ? (
         <div className={styles.empty}>{error}</div>
       ) : sessions.length === 0 && !loading ? (
         <div className={styles.empty}>
-          {filters.q || filters.project || filters.engine
+          {filters.q || filters.project || filters.engine || filters.mission
             ? "No sessions match — clear filters."
             : filters.archived
               ? "No archived sessions."

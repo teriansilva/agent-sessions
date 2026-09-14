@@ -9,12 +9,13 @@ import { ACTION_RESOLVED_EVENT } from "../../lib/actionEvents";
 import { engineBadge, relTime } from "../../lib/format";
 import type { PulseNotification } from "../../types/api";
 import styles from "./NotificationBell.module.css";
+import { MISSION_PATH } from "../../lib/missionLink";
 
 const POLL_MS = 60_000;
 
 /** Deep link for a notification: the session it concerns, or mission control when it has none. */
 function targetPath(n: PulseNotification): string {
-  if (!n.session_id) return "/mission";
+  if (!n.session_id) return MISSION_PATH;
   const uuid = n.session_id.slice(n.session_id.indexOf(":") + 1);
   return `/s/${encodeURIComponent(n.engine)}/${encodeURIComponent(uuid)}`;
 }

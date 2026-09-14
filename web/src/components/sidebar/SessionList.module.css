@@ -426,3 +426,34 @@
     min-height: 44px;
   }
 }
+
+/* A row held by a mission (#948 P5): the mission mark and the mission's own title, truncated. Same
+ * bordered mono pill as .engineTag / .handoffBadge, in the brand accent — membership is not a
+ * status, so the status colours stay load-bearing (docs/design.md §3). */
+.missionTag {
+  flex: 0 1 auto;
+  min-width: 40px;
+  max-width: 140px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  border: 1px solid var(--accent-soft);
+  padding: 0 4px;
+  line-height: 15px;
+  overflow: hidden;
+}
+:global(:root[data-theme="light"]) .missionTag {
+  color: var(--brand);
+}
+.missionTagText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

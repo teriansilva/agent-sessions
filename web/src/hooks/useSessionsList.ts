@@ -2,7 +2,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSectionState } from "../app/sectionState";
 import { useConfig } from "../app/config";
 import { api, ApiError } from "../lib/api";
-import type { ProjectRef, Session, SessionsQuery } from "../types/api";
+import {
+  SESSION_MISSION_CHANGED_EVENT,
+  type SessionMissionChange,
+} from "../lib/missionEvents";
+import type {
+  ProjectRef,
+  Session,
+  SessionMissionRef,
+  SessionsQuery,
+} from "../types/api";
 
 const PAGE = 20;
 /** Background refresh cadence — keeps the sidebar live without hammering the server (#159). */
@@ -18,14 +27,26 @@ export interface Filters {
   q: string;
   project: string;
   engine: string;
+  /** A mission id, `none` for sessions no mission holds, or "" for all (#948). Optional because a
+   *  section state saved before it existed does not carry it. */
+  mission?: string;
   archived: boolean;
 }
 
-const EMPTY: Filters = { q: "", project: "", engine: "", archived: false };
+const EMPTY: Filters = {
+  q: "",
+  project: "",
+  engine: "",
+  mission: "",
+  archived: false,
+};
 
 interface Facets {
   projects: ProjectRef[];
   engines: string[];
+  /** Absent when the server could not read the mission store (#948). */
+  missions?: (SessionMissionRef & { count: number })[];
+  no_mission?: number;
 }
 
 /** The sidebar's data layer: filtered + paginated session list with server facets.
@@ -39,6 +60,8 @@ export function useSessionsList() {
   const [nextOffset, setNextOffset] = useState<number | null>(0);
   const [total, setTotal] = useState(0);
   const [facets, setFacets] = useState<Facets>({ projects: [], engines: [] });
+  /** The server could not apply the mission filter (#948): say so, rather than "no sessions". */
+  const [missionFilterUnavailable, setMissionFilterUnavailable] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Monotonic request id: a slower earlier fetch (e.g. an older search query) must
@@ -62,6 +85,10 @@ export function useSessionsList() {
   // the bootstrap path AND a `loadMore` mid-poll. A counter (not a boolean) handles the
   // case where two visible requests overlap (e.g. fast filter typing).
   const visibleInFlight = useRef(0);
+  // A membership change moved rows into or out of the filtered set, so `nextOffset` indexes a list
+  // the server no longer has. Set by the change; cleared only by a SUCCESSFUL replacement read from
+  // offset 0. Until then Load more must not append by offset (#953 review 4797).
+  const reconcile = useRef(false);
 
   // Debounce ONLY the search text (#561): `filters.q` updates on every keystroke (so the input
   // stays responsive), but `debouncedQ` — the value folded into the fetch — trails it by
@@ -82,10 +109,11 @@ export function useSessionsList() {
       q: debouncedQ,
       project: filters.project || undefined,
       engine: filters.engine || undefined,
+      mission: filters.mission || undefined,
       archived: filters.archived,
       limit: PAGE,
     }),
-    [debouncedQ, filters.project, filters.engine, filters.archived],
+    [debouncedQ, filters.project, filters.engine, filters.mission, filters.archived],
   );
 
   // Live row count — read inside refresh() without re-creating it on every list mutation,
@@ -99,7 +127,7 @@ export function useSessionsList() {
     async (
       offset: number,
       replace: boolean,
-      opts: { silent?: boolean; limit?: number } = {},
+      opts: { silent?: boolean; limit?: number; keepOnError?: boolean } = {},
     ) => {
       const gen = ++reqId.current;
       // Silent (background) refreshes don't show a loading state or surface errors — the
@@ -116,6 +144,7 @@ export function useSessionsList() {
           limit: opts.limit ?? PAGE,
         });
         if (gen !== reqId.current) return; // superseded by a newer request → drop
+        if (replace && offset === 0) reconcile.current = false;
         setSessions((prev) => {
           const merged = replace ? page.sessions : [...prev, ...page.sessions];
           const seen = new Set<string>(); // dedupe by id (defensive)
@@ -126,9 +155,12 @@ export function useSessionsList() {
         setNextOffset(page.next_offset);
         setTotal(page.total);
         setFacets(page.facets);
+        setMissionFilterUnavailable(Boolean(page.mission_filter_unavailable));
       } catch (e) {
         if (gen !== reqId.current) return;
-        if (opts.silent) return; // background failure → keep existing rows, no flicker
+        // Background failure → keep existing rows, no flicker. `keepOnError` is a VISIBLE read
+        // (it gates Load more) whose failure must not replace the rows with an error either.
+        if (opts.silent || opts.keepOnError) return;
         setError(
           e instanceof ApiError && e.status === 401
             ? "Please sign in."
@@ -214,6 +246,13 @@ export function useSessionsList() {
 
   const loadMore = useCallback(() => {
     if (loading || nextOffset == null) return;
+    // The replacement read after a membership change failed, so the cursor is still the old list's.
+    // Load more IS that replacement, over the loaded rows plus one more page, never an append. It
+    // fails like any Load more, visibly, and the next press retries it.
+    if (reconcile.current) {
+      void fetchPage(0, true, { limit: sessionsCount.current + PAGE });
+      return;
+    }
     void fetchPage(nextOffset, false);
   }, [loading, nextOffset, fetchPage]);
 
@@ -352,9 +391,38 @@ export function useSessionsList() {
     );
   }, []);
 
+  // A session's mission changed from anywhere in this tab — the row menu or the pane header (#948).
+  // Applied to the list's OWN rows, which the shared store mirrors, so every consumer flips at once.
+  const fetchRef = useRef(fetchPage);
+  useEffect(() => {
+    fetchRef.current = fetchPage;
+  }, [fetchPage]);
+  useEffect(() => {
+    const onChange = (e: Event) => {
+      const d = (e as CustomEvent<SessionMissionChange>).detail;
+      if (!d) return;
+      setSessions((prev) =>
+        prev.map((s) => (s.id === d.key ? { ...s, mission: d.mission } : s)),
+      );
+      // …and then ask the server (#953 review). A patch cannot move the row out of a `mission`
+      // filter, correct the total or facets, or tell the next Load more that the filtered set just
+      // shrank — so that page would start one row late and skip a session. One replacement read
+      // over every loaded row supersedes any read that began before the adoption (reqId), and it
+      // is visible, so Load more waits for it; if it fails the rows stay and the poll converges.
+      reconcile.current = true;
+      void fetchRef.current(0, true, {
+        limit: Math.max(PAGE, sessionsCount.current),
+        keepOnError: true,
+      });
+    };
+    window.addEventListener(SESSION_MISSION_CHANGED_EVENT, onChange);
+    return () => window.removeEventListener(SESSION_MISSION_CHANGED_EVENT, onChange);
+  }, []);
+
   return {
     sessions,
     total,
+    missionFilterUnavailable,
     facets,
     filters,
     loading,

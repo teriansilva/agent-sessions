@@ -11,6 +11,7 @@ import {
   RotateCw,
   ScrollText,
   SquareDashedBottom,
+  Crosshair,
 } from "lucide-react";
 import {
   type CSSProperties,
@@ -21,6 +22,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useNavigate } from "react-router-dom";
 import { api } from "../../lib/api";
 import {
   engineBadge,
@@ -47,6 +49,8 @@ import {
 } from "../../lib/termSelect";
 import { useConfig } from "../../app/config";
 import { useSessionRow } from "../../app/useSessionRow";
+import { isNewSessionPlaceholder, useSessionsStore } from "../../app/sessionsStore";
+import { AdoptToMissionModal } from "../sessions/AdoptToMissionModal";
 import {
   TermSocket,
   type TermGateHolder,
@@ -71,6 +75,7 @@ import { HandoffModal } from "./HandoffModal";
 import { HeadActions, type HeadAction } from "./HeadActions";
 import { SessionRecapModal } from "./SessionRecapModal";
 import styles from "./Terminal.module.css";
+import { missionLink } from "../../lib/missionLink";
 
 // #554: how long the auto copy-on-select "Copied" toast stays up (matches the CSS fade).
 const COPIED_TOAST_MS = 1200;
@@ -228,6 +233,22 @@ export function Terminal({
   // Live column count for the quick-zoom readout (#859). Fed by xterm's own resize event, so
   // it tracks a rotation or a sidebar toggle, not just a stepper tap.
   const [cols, setCols] = useState(0);
+  // "Adopt to mission" / "Open mission" (#948 P5) — the header half of session-side adoption.
+  const [adoptOpen, setAdoptOpen] = useState(false);
+  const [adoptTrigger, setAdoptTrigger] = useState<HTMLElement | null>(null);
+  // The header the dialog was opened from. Adoption replaces the Adopt chip with Open mission, and
+  // a longer label can fold it into "…", so focus is resolved against the header, not one node.
+  const adoptHeadRef = useRef<HTMLElement | null>(null);
+  const resolveAdoptReturn = useCallback(() => {
+    const head = adoptHeadRef.current;
+    return (
+      head?.querySelector<HTMLElement>('[data-head-action="mission"]') ??
+      head?.querySelector<HTMLElement>('button[aria-haspopup="menu"]') ??
+      null
+    );
+  }, []);
+  const navigate = useNavigate();
+  const { remember } = useSessionsStore();
   // The row for THIS session (#232, re-sourced in #867) — project, title, update time, review
   // fields. It comes from the sidebar's loaded page when that has it and from a per-session
   // lookup when it doesn't, so a deep-linked / archived / list-hidden session names itself
@@ -1769,6 +1790,43 @@ export function Terminal({
           },
         ]
       : []),
+    // Adopt to mission / Open mission (#948 P5). POSITION: after Hand off, before To map — the head
+    // folds from the END (#783), so Hand off stays on the bar. Offered only when the row KNOWS the
+    // membership (`mission` absent = the store could not be read), never on an archived session and
+    // never on an unreconciled `new-<uuid>` placeholder, which the server's canonical_key refuses.
+    // It acts on `actionKey` — the id the URL settled on — never the frozen transport identity.
+    ...(row && row.mission !== undefined && !row.archived && !isNewSessionPlaceholder(actionKey)
+      ? [
+          row.mission
+            ? {
+                id: "mission",
+                label:
+                  row.mission.title.length > 28
+                    ? `${row.mission.title.slice(0, 27)}…`
+                    : row.mission.title,
+                aria: `Open mission ${row.mission.title}`,
+                title: `Open mission: ${row.mission.title} (${row.mission.state})`,
+                icon: <Crosshair size={13} aria-hidden="true" />,
+                active: true,
+                run: () => navigate(missionLink(row.mission!.id)),
+              }
+            : {
+                // The SAME id as Open mission: HeadActions keys its buttons by id, so a successful
+                // adoption relabels this button instead of unmounting the dialog's opener (#953).
+                id: "mission",
+                label: "Adopt to mission",
+                aria: "Adopt this session into a mission",
+                title: "Adopt to mission: add this session to an open mission",
+                icon: <Crosshair size={13} aria-hidden="true" />,
+                run: (trigger?: HTMLElement | null) => {
+                  const opener = trigger ?? (document.activeElement as HTMLElement | null);
+                  adoptHeadRef.current = opener?.closest<HTMLElement>("[data-fit-width]") ?? null;
+                  setAdoptTrigger(opener);
+                  setAdoptOpen(true);
+                },
+              },
+        ]
+      : []),
     // "To map" (#936) — the inverse of a window's ⤢, and the only way back into window mode
     // once a session has been opened full screen. Passed only by `SessionView`, so it never
     // appears inside a window.
@@ -1843,6 +1901,16 @@ export function Terminal({
           <span className={styles.headEng} title={engineName(engine)}>
             {engineBadge(engine)}
           </span>
+          {row?.mission ? (
+            <span
+              className={styles.headMission}
+              title={`Mission: ${row.mission.title} (${row.mission.state})`}
+              data-testid="head-mission-tag"
+            >
+              <Crosshair size={9} aria-hidden="true" />
+              <span className={styles.headMissionText}>{row.mission.title}</span>
+            </span>
+          ) : null}
           {row && (
             <span className={styles.headMeta}>
               {projectLabel && (
@@ -1879,6 +1947,18 @@ export function Terminal({
           actions={headActions}
         />
       </div>
+      {adoptOpen && row && (
+        <AdoptToMissionModal
+          session={row}
+          sessionKey={actionKey}
+          onClose={() => setAdoptOpen(false)}
+          // A session the sidebar's page does not hold lives in the lookup cache instead; the list
+          // listener cannot reach that copy, so it is updated here.
+          onAdopted={(mission) => remember(actionKey, { ...row, mission })}
+          returnFocusTo={adoptTrigger}
+          resolveReturnFocus={resolveAdoptReturn}
+        />
+      )}
       {recapOpen && (
         <SessionRecapModal
           sessionId={actionKey}

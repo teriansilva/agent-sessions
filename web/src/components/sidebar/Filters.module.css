@@ -90,3 +90,10 @@
     min-height: 44px;
   }
 }
+
+/* The mission filter could not be applied (#948). */
+.note {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--text-muted);
+}

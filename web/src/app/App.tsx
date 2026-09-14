@@ -63,6 +63,7 @@ import {
   WIDTH_KEY,
   WIDTH_STEP,
 } from "./sidebarWidth";
+import { LEGACY_MISSION_PATH, MISSION_PATH } from "../lib/missionLink";
 
 // Lazy so @xyflow/react stays out of the main bundle until the overview is opened (#139).
 // Wrapped in lazyWithReload so a stale chunk after a deploy self-heals (#160).
@@ -232,7 +233,8 @@ function Layout() {
   // `/pulse` is the pre-#948 path, still live as a redirect; counting it here keeps the sidebar
   // from flashing the session list for the one render before the redirect lands.
   const missionRoute =
-    location.pathname === "/mission" || location.pathname === "/pulse";
+    location.pathname === MISSION_PATH ||
+    location.pathname === LEGACY_MISSION_PATH;
   const railInSidebar = missionRoute;
   /** Published to the console through context. A ref callback, not an effect: it fires on
    *  commit with the element (and with `null` on unmount), which is exactly the lifetime the
@@ -384,7 +386,7 @@ function Layout() {
               Sessions
             </Link>
             <Link
-              to="/mission"
+              to={MISSION_PATH}
               aria-current={missionRoute ? "page" : undefined}
               onClick={closeMobileDrawer}
             >
@@ -660,8 +662,8 @@ function Layout() {
                   <Route path="/settings" element={<Settings />} />
                   <Route path="/settings/:tab" element={<Settings />} />
                   <Route path="/overview" element={<Overview />} />
-                  <Route path="/mission" element={<MissionControl />} />
-                  <Route path="/pulse" element={<LegacyMissionRedirect />} />
+                  <Route path={MISSION_PATH} element={<MissionControl />} />
+                  <Route path={LEGACY_MISSION_PATH} element={<LegacyMissionRedirect />} />
                   <Route path="/templates" element={<Templates />} />
                   <Route path="/templates/new" element={<TemplateEditor />} />
                   <Route path="/templates/:id" element={<TemplateEditor />} />
@@ -732,7 +734,7 @@ function Layout() {
  *  replace-redirect. It keeps the query and hash, which is how `?m=<mission id>` survives the hop. */
 function LegacyMissionRedirect() {
   const { search, hash } = useLocation();
-  return <Navigate to={{ pathname: "/mission", search, hash }} replace />;
+  return <Navigate to={{ pathname: MISSION_PATH, search, hash }} replace />;
 }
 
 export default function App() {

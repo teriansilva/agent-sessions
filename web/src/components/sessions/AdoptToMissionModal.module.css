@@ -1,0 +1,121 @@
+/* The adopt dialog (#948 P5). Built on MoveToProjectModal.module.css — backdrop, dialog, list and
+   option chrome come from there — and only widens it, adds search, and the refusal/error lines.
+   Flat fills, hairline borders, zero radius; controls clear the §8 44px touch floor. */
+
+.dialog {
+  width: min(560px, 100%);
+}
+
+.heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.searchWrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+  padding: 0 9px;
+  min-height: 44px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-2, var(--bg)) 55%, transparent);
+  color: var(--text-muted);
+}
+.searchWrap:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 32%, transparent);
+}
+
+.search {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+}
+
+.list {
+  max-height: 320px;
+}
+
+.option {
+  min-height: 44px;
+  border-left-width: 2px;
+}
+.option[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--row-hover);
+}
+.option:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.meta,
+.why {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+.why {
+  color: var(--text-3);
+  text-transform: none;
+}
+
+.more {
+  justify-content: center;
+  color: var(--text-muted);
+}
+
+.error {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--status-down) 60%, transparent);
+  font-size: 13px;
+  color: var(--text);
+}
+
+.actions {
+  margin-top: 4px;
+}
+
+.button {
+  min-height: 44px;
+  padding: 0 18px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.primary {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.primary:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
