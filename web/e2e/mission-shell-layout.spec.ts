@@ -286,9 +286,9 @@ test.describe("the phone gets the same one rail, through the shell (#940)", () =
     await expect(page.locator("main.terminal-pane[inert]")).toHaveCount(1);
     await expect(page.locator("aside.sidebar[inert]")).toHaveCount(0);
 
-    // Focus moved IN — and to the drawer's own close control, because the hamburger that opened
-    // it is inside the now-inert header and cannot be reached.
-    await expect(page.getByTestId("drawer-close")).toBeFocused();
+    // Focus moved IN — onto the panel itself, because the hamburger that opened it is inside the
+    // now-inert header and cannot be reached.
+    await expect(page.locator("aside.sidebar")).toBeFocused();
 
     // Selecting closes it and returns focus to the trigger. Selection changes local state and
     // never the URL, so this only works because the shell hands the console a close callback.
@@ -314,19 +314,65 @@ test.describe("the phone gets the same one rail, through the shell (#940)", () =
     await expect(trigger).toBeFocused();
   });
 
-  test("the drawer's own close button closes it", async ({
-    page,
-  }, testInfo) => {
-    test.skip(testInfo.project.name !== "mobile", "phone shell");
-    await stub(page, [missionRow({ id: "m1", title: "a mission" })]);
-    await page.goto("/mission");
-    await page.getByTestId("mission-console").waitFor();
-    const trigger = page.getByRole("button", { name: /Open mission list/i });
-    await trigger.click();
-    await page.getByTestId("drawer-close").click();
-    await expect(page.getByRole("dialog")).toHaveCount(0);
-    await expect(trigger).toBeFocused();
-  });
+  /** NO VISIBLE ✕, BUT AN ACCESSIBLE WAY OUT FROM INSIDE (#962). The ✕ #940 put in the head row
+   *  floated mid-row on a phone and the operator asked for it gone. What has to survive is a dismiss
+   *  INSIDE the modal: the opener is in the inert header and the scrim sits outside the dialog with
+   *  tabIndex -1, so a touch screen-reader user restricted to the dialog would otherwise have none.
+   *  Asserted with an EMPTY list, where choosing an item is not an exit, on both routes: nothing is
+   *  visible, the in-dialog Close is announced, a keyboard sees it when it lands on it, activation
+   *  closes and returns focus to the opener — and the scrim tap still works for pointers. */
+  for (const [route, open] of [
+    ["/mission", /Open mission list/i],
+    ["/", /Open session list/i],
+  ] as const) {
+    test(`the ${route} drawer shows no ✕ yet keeps an accessible Close inside the dialog`, async ({
+      page,
+    }, testInfo) => {
+      test.skip(testInfo.project.name !== "mobile", "phone shell");
+      await stub(page, []);
+      await page.goto(route);
+      const trigger = page.getByRole("button", { name: open });
+      const dialog = page.getByRole("dialog");
+      const dismiss = dialog.getByRole("button", { name: /^close$/i });
+      await expect(trigger).toBeVisible();
+
+      // Hidden from the eye, present to assistive tech: one named control, a 1px sr-only clip.
+      await trigger.click();
+      await expect(dialog).toHaveCount(1);
+      await expect(dialog.getByText("✕")).toHaveCount(0);
+      await expect(dismiss).toHaveCount(1);
+      const hidden = (await dismiss.boundingBox())!;
+      expect(hidden.width * hidden.height).toBeLessThanOrEqual(1);
+
+      // Activated the way assistive tech activates a button — a click event on the element, not a
+      // coordinate tap — it closes and hands focus back to the opener.
+      await dismiss.dispatchEvent("click");
+      await expect(dialog).toHaveCount(0);
+      await expect(trigger).toBeFocused();
+
+      // A keyboard landing on it can see it, and Enter closes.
+      await trigger.click();
+      await expect(dialog).toHaveCount(1);
+      await page.keyboard.press("Tab");
+      await expect(dismiss).toBeFocused();
+      const shown = (await dismiss.boundingBox())!;
+      expect(shown.height).toBeGreaterThanOrEqual(44);
+      expect(shown.width).toBeGreaterThanOrEqual(44);
+      await page.keyboard.press("Enter");
+      await expect(dialog).toHaveCount(0);
+      await expect(trigger).toBeFocused();
+
+      // The scrim covers the viewport under the panel; tap the strip the panel leaves uncovered.
+      await trigger.click();
+      await expect(dialog).toHaveCount(1);
+      const vw = page.viewportSize()!.width;
+      await page
+        .getByRole("button", { name: /^Close (mission|session) list$/ })
+        .click({ position: { x: vw - 12, y: 400 } });
+      await expect(dialog).toHaveCount(0);
+      await expect(trigger).toBeFocused();
+    });
+  }
 
   /** THE CONTROL. A docked column is not a dialog, and saying it is would tell a screen reader
    *  the rest of the page does not exist. Desktop must gain none of this. */
@@ -437,7 +483,7 @@ test.describe("the phone gets the same one rail, through the shell (#940)", () =
     // sidebar permanently unreachable on a phone", which passes the loop above and breaks the app.
     await page.getByRole("button", { name: /Open mission list/i }).click();
     await expect(page.getByRole("dialog")).toHaveCount(1);
-    await expect(page.getByTestId("drawer-close")).toBeFocused();
+    await expect(page.locator("aside.sidebar")).toBeFocused();
     await page.keyboard.press("Tab");
     const inside = await page.evaluate(
       () => !!document.activeElement?.closest("aside.sidebar"),
@@ -517,7 +563,7 @@ test.describe("the phone gets the same one rail, through the shell (#940)", () =
       await expect(page.locator("header.hud-topbar[inert]")).toHaveCount(1);
       await expect(page.locator("main.terminal-pane[inert]")).toHaveCount(1);
       await expect(page.locator("aside.sidebar[inert]")).toHaveCount(0);
-      await expect(page.getByTestId("drawer-close")).toBeFocused();
+      await expect(page.locator("aside.sidebar")).toBeFocused();
 
       // The route's own content is behind the isolation, so Tab cannot reach it.
       for (let i = 0; i < 6; i++) {

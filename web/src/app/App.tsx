@@ -269,7 +269,6 @@ function Layout() {
   const mainRef = useRef<HTMLElement | null>(null);
   const backdropRef = useRef<HTMLButtonElement | null>(null);
   const navToggleRef = useRef<HTMLButtonElement | null>(null);
-  const drawerCloseRef = useRef<HTMLButtonElement | null>(null);
   const drawerIsModal = isMobile && navOpen;
   /** A PARKED DRAWER IS NOT A REACHABLE ONE (#940 review 2).
    *
@@ -290,7 +289,10 @@ function Layout() {
   useModalDrawer({
     active: drawerIsModal,
     panelRef: asideRef,
-    initialFocusRef: drawerCloseRef,
+    // The panel itself, not a control inside it: the drawer shows no close button, so focus lands
+    // on the dialog and a screen reader announces its name. Escape, the scrim and the visually
+    // hidden in-dialog Close close it.
+    initialFocusRef: asideRef,
     triggerRef: navToggleRef,
     onClose: closeMobileDrawer,
     insideRefs: insideRegions,
@@ -448,6 +450,7 @@ function Layout() {
           // desktop case was considered rather than forgotten.
           inert={drawerIsParked}
           role={drawerIsModal ? "dialog" : undefined}
+          tabIndex={drawerIsModal ? -1 : undefined}
           aria-modal={drawerIsModal ? true : undefined}
           aria-label={
             drawerIsModal
@@ -461,39 +464,31 @@ function Layout() {
           <span className="hud-cnr tr" />
           <span className="hud-cnr bl" />
           <span className="hud-cnr br" />
+          {/* NO VISIBLE ✕, BUT A WAY OUT FROM INSIDE (#962). The operator asked for the ✕ gone, and
+              touch users close the drawer on the scrim. That is not enough for a screen-reader user
+              on a phone: the opener sits in the inert header, and the scrim is outside the dialog
+              with tabIndex -1, so navigation restricted to the modal would have no dismiss at all.
+              So the close control stays, visually hidden — announced as "Close, button" inside the
+              labelled dialog, revealed only when a keyboard focuses it (see App.css). */}
+          {drawerIsModal ? (
+            <button
+              type="button"
+              className="sr-only sidebar-drawer-dismiss"
+              onClick={closeMobileDrawer}
+              data-testid="drawer-dismiss"
+            >
+              Close
+            </button>
+          ) : null}
           {/* Header row (#548): the decorative "Sessions / SEC // 01" label gave way to the
             sort-order toggle — same chrome, functional content. The heading stays for the
             <aside> landmark's accessible name, visually hidden. */}
           <header
-            className={`sidebar-head${railInSidebar ? " isMissionSection" : ""}${
-              drawerIsModal ? " hasDrawerClose" : ""
-            }`}
+            className={`sidebar-head${railInSidebar ? " isMissionSection" : ""}`}
           >
             <h2 className="hud-h sr-only">
               {railInSidebar ? "Missions" : "Sessions"}
             </h2>
-            {/* THE DRAWER CARRIES ITS OWN CLOSE (#940). The hamburger that opened it lives in the
-                header, which goes `inert` while the drawer is modal — so it is not merely
-                redundant to rely on it, it is unreachable. This is also where focus lands on
-                open, which is why it comes first in the panel.
-
-                Named just "Close": the dialog itself carries the name ("Missions" / "Sessions"),
-                so this announces as "Close, button" inside a labelled dialog. Repeating the list
-                name here collided with the scrim's own "Close session list" — two controls under
-                one accessible name, which broke an existing shell test and would have been just
-                as ambiguous for an operator driving by voice. */}
-            {drawerIsModal ? (
-              <button
-                type="button"
-                className="sidebar-drawer-close"
-                ref={drawerCloseRef}
-                onClick={closeMobileDrawer}
-                aria-label="Close"
-                data-testid="drawer-close"
-              >
-                ✕
-              </button>
-            ) : null}
             {/* THE WHOLE CONTROL STANDS DOWN, NOT JUST ITS LABEL (#935, #937 review 1,
                 finding 3). Hiding only the "Order" tag left Recent / Created rendered above the
                 mission rail — and they were not merely inert: clicking Created wrote

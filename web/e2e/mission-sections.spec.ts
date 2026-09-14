@@ -304,7 +304,8 @@ test("compact header keeps drawer and notification anchors reachable (#946)", as
       const box = (await drawer.boundingBox())!;
       expect(box.y).toBe(52);
       expect(box.y + box.height).toBe(740);
-      await page.getByTestId("drawer-close").click();
+      await page.keyboard.press("Escape");
+      await expect(drawer).not.toHaveAttribute("role", "dialog");
     }
     const bell = page.getByRole("button", {
       name: "Notifications",

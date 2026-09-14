@@ -172,8 +172,7 @@
 
 /* The mission route's head row (#948 P2): "MISSIONS" plus the rail's counts, portalled into
  * `.missionHeadSlot`, in the same 38px row the sessions ORDER control uses. It used to collapse to
- * 0px once that control stood down (#937), which is exactly the misalignment #948 removes; with the
- * drawer's close button present the row simply holds three children. */
+ * 0px once that control stood down (#937), which is exactly the misalignment #948 removes. */
 .missionHeadSlot {
   margin-left: auto;
 }
@@ -738,29 +737,33 @@ body.hud-static-grid {
   }
 }
 
-/* The mobile drawer's own close control (#940).
- *
- * It exists because the hamburger that opened the drawer is inside the header, and the header is
- * `inert` while the drawer is modal — so the control that would otherwise close it cannot be
- * reached at all. It is also the focus target on open.
- *
- * Rendered only in drawer mode, so it needs no media query of its own; the JSX gates it. */
-.sidebar-drawer-close {
-  background: none;
-  border: 1px solid var(--line);
-  color: var(--text-2);
-  font-size: 1rem;
-  line-height: 1;
-  /* The coarse-pointer floor, as everywhere else in the shell. */
-  min-width: 44px;
-  min-height: 44px;
-  cursor: pointer;
-  margin-left: auto;
+/* The mobile drawer takes focus itself on open (#940) — the panel, not a control inside it, so a
+ * screen reader announces the dialog's name. It shows no close button: the scrim, Escape and a
+ * visually hidden in-dialog Close dismiss it. The panel is not a control, so it draws no focus ring
+ * around the whole drawer. */
+.sidebar[role="dialog"]:focus {
+  outline: none;
 }
-.sidebar-drawer-close:hover,
-.sidebar-drawer-close:focus-visible {
+/* The hidden Close (#962) stays `.sr-only` for touch and screen-reader users; a keyboard that tabs
+ * onto it must SEE what it is on, so it surfaces as a 44px control over the panel's top-right corner.
+ * Class + pseudo-class outranks `.sr-only`, which is what lifts the 1px clip. */
+.sidebar-drawer-dismiss:focus-visible {
+  top: 0;
+  right: 0;
+  z-index: 2;
+  width: auto;
+  height: 44px;
+  margin: 0;
+  padding: 0 14px;
+  overflow: visible;
+  clip: auto;
+  background: var(--panel);
   color: var(--text-1);
-  border-color: var(--accent);
+  border: 1px solid var(--accent);
+  outline: none;
+  font: 600 11px var(--font-mono, ui-monospace, monospace);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
 }
 
 /* The work sections share the wordmark row at every width (#944 / #946).
