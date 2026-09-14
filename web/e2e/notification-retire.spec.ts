@@ -38,9 +38,7 @@ const ORCH_CONFIG = {
   proposal_ttl_minutes: 30,
   notify: "escalations",
   stale_hours: 24,
-  prompt: "",
   nudge_template: "carry on",
-  default_prompt: "",
   default_nudge_template: "carry on",
 };
 
@@ -111,7 +109,6 @@ async function mockApp(page: import("@playwright/test").Page, state: { open: boo
         scan_depth: "fast",
         input_fingerprint: null,
         synthesis_skipped: false,
-        banner: null,
         cards: state.open
           ? [
               {

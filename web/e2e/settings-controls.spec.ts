@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { settingsPath } from "../src/routes/settingsTabs";
 
 // #683: native checkbox / radio controls in Settings were rendering at the browser default
 // (unbranded, uncapped) so they looked oversized and drifted out of line with their labels on
@@ -69,14 +70,14 @@ async function expectBrandedAndCapped(
 test("Updates auto-update checkbox is brand-accented and size-capped (#683)", async ({
   page,
 }) => {
-  await page.goto("/settings/system");
+  await page.goto(settingsPath("updates"));
   await expectBrandedAndCapped(page, "checkbox", /automatic updates/i);
 });
 
 test("Session-overview mode radios are brand-accented and size-capped (#683)", async ({
   page,
 }) => {
-  await page.goto("/settings/projects");
+  await page.goto(settingsPath("projects"));
   await expectBrandedAndCapped(page, "radio", /show all/i);
   await expectBrandedAndCapped(page, "radio", /only included/i);
 });

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { settingsPath } from "../src/routes/settingsTabs";
 
 import { mockMissions } from "./mission-console";
 
@@ -23,10 +24,8 @@ const ORCH_CONFIG = {
   max_actions_per_pass: 4,
   proposal_ttl_minutes: 30,
   nudge_template: "Please continue.",
-  prompt: "system prompt",
   notify: "escalations",
   configured: true,
-  default_prompt: "system prompt",
   default_nudge_template: "Please continue.",
 };
 
@@ -112,7 +111,6 @@ test.beforeEach(async ({ page }) => {
         scan_depth: "fast",
         input_fingerprint: null,
         synthesis_skipped: false,
-        banner: null,
         cards: [],
       },
     }),
@@ -153,7 +151,6 @@ function mockOrchestrator(
         scan_depth: "fast",
         input_fingerprint: null,
         synthesis_skipped: false,
-        banner: null,
         cards: live.map((a) => ({
           id: a.session_id,
           engine: a.engine,
@@ -268,7 +265,7 @@ test("the autonomy copy names the ceiling, not just the tier — in Settings (#9
   // #929 moved every autonomy control off the route and into Settings, so this is asserted
   // where the operator now sets it. The property under test is unchanged and is the reason the
   // copy exists: "YOLO" alone reads as "does everything", so it has to say what it can send.
-  await page.goto("/settings/ai-review");
+  await page.goto(settingsPath("ai-mission-control"));
   const ceiling = page.getByText(/only ever sends/i);
   await expect(ceiling).toBeVisible();
   await expect(ceiling).toContainText("continue");

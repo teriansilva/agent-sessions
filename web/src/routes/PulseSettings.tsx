@@ -13,10 +13,10 @@ const FALLBACK: PulseConfig = {
   configured: false,
 };
 
+// `medium` is gone (#956): all it added was a banner that nothing rendered.
 const DEPTH_LABELS: Record<PulseDepth, string> = {
-  fast: "Fast — curation only (0 LLM calls)",
-  medium: "Medium — + a one-line state-of-work banner",
-  slow: "Slow — + a per-session synthesis pass",
+  fast: "Fast — curation only, no AI calls",
+  slow: "Slow — adds a one-line state per session",
 };
 
 /** Pulse settings (#441 Phase 6). Mirrors AutoSortSettings: opt-in background scan + the
@@ -174,15 +174,14 @@ export function PulseSettings() {
 
   return (
     <section className={styles.section} aria-labelledby="pulse-h">
-      <h2 id="pulse-h">Mission control overview</h2>
+      <h2 id="pulse-h">Session scan</h2>
       <p className={styles.hint}>
-        These settings shape the curated read that sits beside your missions on{" "}
-        <strong>mission control</strong> (the chip in the top bar): what needs
-        you, what is in flight and what has gone idle. It scans on demand or on
-        a background loop; results are cached so the page loads instantly.{" "}
-        <strong>Fast</strong> depth is local and free; <strong>Medium</strong>/
-        <strong>Slow</strong> add AI synthesis using the review endpoint above.
-        Changes save automatically.
+        Keeps the <strong>Sessions without a mission</strong> list on mission
+        control current. A scan curates your recent sessions, on demand or on a
+        background loop, and caches the result so the page loads instantly.{" "}
+        <strong>Fast</strong> depth is local and free; <strong>Slow</strong> adds
+        a one-line state per session using the AI endpoint. Changes save
+        automatically.
       </p>
       {error && <p className={styles.err}>{error}</p>}
       {saved && (
@@ -199,6 +198,11 @@ export function PulseSettings() {
         />
         <span>Scan automatically in the background</span>
       </label>
+      {!block.auto_enabled && (
+        <p className={styles.hint}>
+          With this off, the list only changes when you press Scan now.
+        </p>
+      )}
 
       <div className={styles.aiField}>
         <label className={styles.aiFieldLabel} htmlFor="pulse-interval">
@@ -262,8 +266,8 @@ export function PulseSettings() {
         </select>
         {!block.configured && block.scan_depth !== "fast" && (
           <p className={styles.hint}>
-            The AI review endpoint above isn’t configured — Medium/Slow scans
-            degrade to Fast curation until it’s set.
+            The AI endpoint isn’t configured — Slow scans degrade to Fast
+            curation until it’s set.
           </p>
         )}
       </div>

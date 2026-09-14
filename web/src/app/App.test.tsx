@@ -88,16 +88,17 @@ test("the command topbar carries the Settings entrypoint (#211 redux)", async ()
   await waitFor(() => expect(link).toBeInTheDocument());
 });
 
-// #357: the Settings links keep pointing at the canonical bare /settings entry; the route
-// shell replace-redirects to the first tab, so every Settings navigation lands on a tab URL.
-test("clicking the topbar Settings link lands on the first settings tab (#357)", async () => {
+// #357/#956: the Settings links keep pointing at the canonical bare /settings entry; on desktop
+// the route shell replace-redirects to the first section, so every Settings navigation lands on
+// a section URL.
+test("clicking the topbar Settings link lands on the first settings section (#357)", async () => {
   const { container } = render(<App />);
   await screen.findAllByRole("link", { name: "Settings" });
   const topbar = container.querySelector(".hud-topbar") as HTMLElement;
   await userEvent.click(within(topbar).getByRole("link", { name: "Settings" }));
   expect(
-    await screen.findByRole("tab", { name: "Appearance" }),
-  ).toHaveAttribute("aria-selected", "true");
+    await screen.findByRole("link", { name: "Appearance" }),
+  ).toHaveAttribute("aria-current", "page");
   expect(window.location.pathname).toBe("/settings/appearance");
 });
 

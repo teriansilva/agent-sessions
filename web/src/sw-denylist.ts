@@ -60,6 +60,8 @@ export const SPA_PATHS: string[] = [
   "/pulse",
   "/overview",
   "/settings",
+  "/settings/ai-endpoint",
+  // The pre-#956 AI tab. A client-side redirect now, so it needs the SPA shell too.
   "/settings/ai-review",
   "/s/claude/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 ];

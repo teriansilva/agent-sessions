@@ -33,7 +33,6 @@ EXPECTED_SITES = {
     ("orchestrator.py", "orchestrator_pass"),
     ("orchestrator_chat.py", "chat_route"),
     ("orchestrator_chat.py", "chat_instruct"),
-    ("pulse.py", "pulse_banner"),
     ("pulse.py", "pulse_session_line"),
     ("pulse_chat.py", "ask_catalog"),
     ("pulse_chat.py", "ask_verify"),

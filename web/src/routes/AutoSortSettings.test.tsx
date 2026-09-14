@@ -1,7 +1,8 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
-import { ConfigCtx } from "../app/config";
+import { ConfigCtx, ConfigRefreshCtx } from "../app/config";
 import { api } from "../lib/api";
 import type { AppConfig, AutoSortConfig } from "../types/api";
 import { AutoSortSettings } from "./AutoSortSettings";
@@ -21,14 +22,15 @@ function block(over: Partial<AutoSortConfig> = {}): AutoSortConfig {
     interval_minutes: 30,
     confidence_min: 0.7,
     max_per_pass: 8,
-    prompt: "SORT PROMPT",
     configured: true,
-    default_prompt: "DEFAULT SORT PROMPT",
     ...over,
   };
 }
 
-function renderPanel(b: AutoSortConfig | undefined = block()) {
+function renderPanel(
+  b: AutoSortConfig | undefined = block(),
+  refresh: () => void = () => {},
+) {
   const config = {
     csrf: "t",
     new_session_engines: [],
@@ -36,9 +38,13 @@ function renderPanel(b: AutoSortConfig | undefined = block()) {
     auto_sort: b,
   };
   return render(
-    <ConfigCtx.Provider value={config as AppConfig}>
-      <AutoSortSettings />
-    </ConfigCtx.Provider>,
+    <MemoryRouter>
+      <ConfigRefreshCtx.Provider value={refresh}>
+        <ConfigCtx.Provider value={config as AppConfig}>
+          <AutoSortSettings />
+        </ConfigCtx.Provider>
+      </ConfigRefreshCtx.Provider>
+    </MemoryRouter>,
   );
 }
 
@@ -117,7 +123,19 @@ test("the classifier prompt is edited in the Prompts catalog, not here (#824)", 
   expect(screen.queryByLabelText(/auto-sort prompt/i)).toBeNull();
   expect(
     screen.getByRole("link", { name: /prompts → project classifier/i }),
-  ).toHaveAttribute("href", "#prompt-auto_sort");
+  ).toHaveAttribute("href", "/settings/ai-prompts#prompt-auto_sort");
+});
+
+test("a successful save refreshes the shared config, so a remount shows it (#667/#956)", async () => {
+  // With one page per section, leaving Auto-sort and coming back remounts the panel on the shared
+  // config context. Without a refetch that context still holds the pre-save block, and the panel
+  // shows the old value as if the save had been lost. This panel never refreshed before #956.
+  const refresh = vi.fn();
+  renderPanel(block({ enabled: false }), refresh);
+  await userEvent.click(
+    screen.getByRole("checkbox", { name: /enable auto-sort/i }),
+  );
+  await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
 });
 
 test("'Auto-sort now' is disabled until enabled AND the endpoint is configured (#424)", () => {

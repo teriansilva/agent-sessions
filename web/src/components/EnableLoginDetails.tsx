@@ -35,7 +35,7 @@ export function EnableLoginDetails() {
       </pre>
       <p className={styles.blurb}>
         The password is active immediately after the restart — there's no forced
-        first-login change. Add two-factor later from this Security tab once
+        first-login change. Add two-factor later from Settings → Security once
         login is on.
       </p>
     </details>

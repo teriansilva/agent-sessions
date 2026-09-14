@@ -194,9 +194,10 @@ def test_pulse_defaults_and_validation(prefs_at_tmp):
     assert prefs.validate_pulse_patch({"window_days": 99}) is not None  # above ceiling
     assert prefs.validate_pulse_patch({"scan_depth": "turbo"}) is not None  # unknown depth
     assert prefs.validate_pulse_patch({"bogus": 1}) is not None  # unknown key
-    prefs.set_pulse({"auto_enabled": True, "scan_depth": "medium"})
+    assert prefs.validate_pulse_patch({"scan_depth": "medium"}) is not None  # removed (#956)
+    prefs.set_pulse({"auto_enabled": True, "scan_depth": "slow"})
     got = prefs.get_pulse()
-    assert got["auto_enabled"] is True and got["scan_depth"] == "medium"
+    assert got["auto_enabled"] is True and got["scan_depth"] == "slow"
     assert got["window_days"] == 3  # untouched keys preserved
 
 

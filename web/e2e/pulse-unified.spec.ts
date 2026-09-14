@@ -4,6 +4,7 @@ import {
   untrackedFilterOption,
 } from "./mission-console";
 import { expect, test } from "@playwright/test";
+import { settingsPath } from "../src/routes/settingsTabs";
 
 import { mockMissions } from "./mission-console";
 
@@ -25,10 +26,8 @@ const ORCH_CONFIG = {
   max_actions_per_pass: 4,
   proposal_ttl_minutes: 30,
   nudge_template: "Please continue.",
-  prompt: "p",
   notify: "escalations",
   configured: true,
-  default_prompt: "p",
   default_nudge_template: "Please continue.",
 };
 
@@ -134,7 +133,6 @@ test.beforeEach(async ({ page }) => {
         scan_depth: "slow",
         input_fingerprint: null,
         synthesis_skipped: false,
-        banner: null,
         cards: [
           card({ pending_action: ACTION }),
           card({
@@ -234,7 +232,6 @@ test("the manual pass lives in Settings and reports what the pass actually said 
         scan_depth: "slow",
         input_fingerprint: null,
         synthesis_skipped: false,
-        banner: null,
         // Before the pass the session has no action; after it, the card carries one.
         cards: [
           scanned ? card({ pending_action: ACTION }) : card({ state: "idle" }),
@@ -255,7 +252,7 @@ test("the manual pass lives in Settings and reports what the pass actually said 
   });
 
   await mockMissions(page);
-  await page.goto("/settings/ai-review");
+  await page.goto(settingsPath("ai-mission-control"));
   const run = page.getByRole("button", { name: /run now/i });
   await expect(run).toBeVisible();
   await run.click();
@@ -290,7 +287,6 @@ test("resolving from a card still re-reads the orchestrator's own state", async 
         scan_depth: "slow",
         input_fingerprint: null,
         synthesis_skipped: false,
-        banner: null,
         cards: [settled ? card({}) : card({ pending_action: ACTION })],
       },
     }),
@@ -356,7 +352,6 @@ test("a settled action loses its controls even when the background refresh fails
         scan_depth: "slow",
         input_fingerprint: null,
         synthesis_skipped: false,
-        banner: null,
         cards: [
           // Exactly what `_attach_pending` emits: re-banded to `needs_you`, with the band it
           // had before the overlay preserved so the client can put it back.
@@ -421,7 +416,6 @@ test("a card that existed only for its action goes away with it", async ({
         scan_depth: "slow",
         input_fingerprint: null,
         synthesis_skipped: false,
-        banner: null,
         cards: [
           card({ state: "idle" }),
           {

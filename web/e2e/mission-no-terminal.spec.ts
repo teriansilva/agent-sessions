@@ -36,10 +36,9 @@ const OVERVIEW = {
   cache_version: 1,
   generated_at: T - 60,
   window_days: 3,
-  scan_depth: "medium",
+  scan_depth: "fast",
   input_fingerprint: "fp",
   synthesis_skipped: false,
-  banner: null,
   cards: [],
 };
 

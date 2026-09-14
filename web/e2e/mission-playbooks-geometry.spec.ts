@@ -8,6 +8,7 @@
  * `min-height` that a media query supplies.
  */
 import { expect, test } from "@playwright/test";
+import { settingsPath } from "../src/routes/settingsTabs";
 
 const CONFIG = {
   csrf: "x",
@@ -100,8 +101,9 @@ test("every playbook control clears 44px on a phone and stays inside the viewpor
     testInfo.project.name !== "mobile",
     "the 44px floor is a coarse-pointer contract",
   );
-  // The panel lives on the AI tab, beside the supervisor whose objectives it authors.
-  await page.goto("/settings/ai-review");
+  // The panel has its own page under AI (#956), next to the Mission control page whose
+  // supervisor acts on the objectives it authors.
+  await page.goto(settingsPath("ai-playbooks"));
   const panel = page.getByTestId("mission-playbooks");
   await expect(panel).toBeVisible();
 
@@ -162,7 +164,7 @@ test("a REFUSED save shows the server's exact words and keeps the draft", async 
   // the key and the reason — so paraphrasing it into "something went wrong" throws away the one
   // useful thing about it. And a refused save must not eat the draft: the whole point is that
   // they now go and correct it (#900 review 3, finding 5).
-  await page.goto("/settings/ai-review");
+  await page.goto(settingsPath("ai-playbooks"));
   const panel = page.getByTestId("mission-playbooks");
   await expect(panel).toBeVisible();
 

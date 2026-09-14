@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { settingsPath } from "../src/routes/settingsTabs";
 
 // #692: the setup wizard's "Set up your AI" step must (1) persist the endpoint + model and
 // (2) surface it in Settings → AI WITHOUT a page reload — the bug was Onboarding.saveAi()
@@ -35,12 +36,10 @@ async function mockApp(page: Page) {
           base_url: ai.base_url,
           model: ai.model,
           interval_minutes: 5,
-          prompt: "",
           max_input_chars: 24000,
           request_timeout: null,
           api_key_set: ai.api_key_set,
           configured: ai.configured,
-          default_prompt: "",
         },
       },
     }),
@@ -108,9 +107,9 @@ test("wizard AI setup persists and Settings reflects it live — no reload (#692
   page,
 }) => {
   await mockApp(page);
-  // Mount the Settings → AI panel UNDER the wizard overlay: dismissing the wizard reveals it
+  // Mount Settings → AI → Endpoint & model UNDER the wizard overlay: dismissing the wizard reveals it
   // with no navigation and no reload — a pure shared-ConfigCtx proof.
-  await page.goto("/settings/ai-review", { waitUntil: "domcontentloaded" });
+  await page.goto(settingsPath("ai-endpoint"), { waitUntil: "domcontentloaded" });
 
   const dialog = page.getByRole("dialog", { name: /set up battlelab/i });
   await expect(dialog).toBeVisible();

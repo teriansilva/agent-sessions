@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { settingsPath } from "../src/routes/settingsTabs";
 
 // #538: real-browser proof for the in-app auto-update controls in Settings → System.
 // The Automatic-updates toggle and the release-channel radiogroup persist via
@@ -58,7 +59,7 @@ async function setup(page: Page): Promise<unknown[]> {
       json: { auto_update: false, channel: "stable", last_auto: null },
     });
   });
-  await page.goto("/settings/system");
+  await page.goto(settingsPath("updates"));
   return posts;
 }
 
@@ -89,7 +90,7 @@ test.describe("in-app auto-update settings (#538)", () => {
     expect(posts).toEqual([{ auto_update: true }, { channel: "main" }]);
   });
 
-  test("System tab has no horizontal scroll with the grown Updates card", async ({
+  test("the Updates page has no horizontal scroll with the grown Updates card", async ({
     page,
   }, testInfo) => {
     test.skip(

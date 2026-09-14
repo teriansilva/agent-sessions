@@ -8,7 +8,7 @@
   ``{"depth": …, "window_days": …}`` (the page's depth control). The single ``409`` case is
   "a mission control scan is already running" (single-flight, #441 Phase 1) — its body carries
   the live AI-activity snapshot so the UI shows the running scan, not an error. An **unconfigured AI
-  gateway never 409s here**: depth ≥ medium degrades to ``fast`` curation and returns **200**
+  gateway never 409s here**: a ``slow`` scan degrades to ``fast`` curation and returns **200**
   with ``synthesis_skipped: true`` (the page always works).
 * ``POST /api/pulse/ask`` (#522) — one natural-language question over past sessions
   (``pulse_chat.ask``). Its own single-flight kind ``pulse-chat`` (an ask never blocks a

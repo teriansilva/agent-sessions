@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { settingsPath } from "../src/routes/settingsTabs";
 
 // Real-browser check of the project-entity surfaces: the Settings → Projects manager (list /
 // create-with-default-folder / archive report) and the new-session Project→Folder flow (#448:
@@ -94,7 +95,7 @@ test.describe("Settings → Projects manager (#361/#448)", () => {
     await page.route(/\/api\/projects(\?.*)?$/, (r) =>
       r.fulfill({ json: { projects: [SAMPLEPROJECT] } }),
     );
-    await page.goto("/settings/projects");
+    await page.goto(settingsPath("projects"));
     await expect(
       page.getByRole("heading", { name: "Projects", exact: true }),
     ).toBeVisible();
@@ -120,7 +121,7 @@ test.describe("Settings → Projects manager (#361/#448)", () => {
     await page.route(/\/api\/projects(\?.*)?$/, (r) =>
       r.fulfill({ json: { projects: [SAMPLEPROJECT] } }),
     );
-    await page.goto("/settings/projects");
+    await page.goto(settingsPath("projects"));
 
     const star = page.getByRole("button", {
       name: "Make SampleProject the default project",
@@ -149,7 +150,7 @@ test.describe("Settings → Projects manager (#361/#448)", () => {
     await page.route(/\/api\/projects(\?.*)?$/, (r) =>
       r.fulfill({ json: { projects: [SAMPLEPROJECT] } }),
     );
-    await page.goto("/settings/projects");
+    await page.goto(settingsPath("projects"));
     await expect(
       page.getByRole("heading", { name: "Projects", exact: true }),
     ).toBeVisible();
@@ -194,7 +195,7 @@ test.describe("Settings → Projects manager (#361/#448)", () => {
         await r.fulfill({ json: { projects } });
       }
     });
-    await page.goto("/settings/projects");
+    await page.goto(settingsPath("projects"));
     await page.getByLabel("New project name").fill("Fresh");
     // A default folder is required → Create stays disabled until one is picked.
     await expect(
@@ -233,7 +234,7 @@ test.describe("Settings → Projects manager (#361/#448)", () => {
         },
       }),
     );
-    await page.goto("/settings/projects");
+    await page.goto(settingsPath("projects"));
     await page.getByRole("button", { name: "Archive project SampleProject" }).click();
     await expect(
       page.getByText("Archive: 1 archived · 1 already archived · 0 failed"),

@@ -230,7 +230,8 @@ def test_auto_sort_defaults_and_validation(prefs_at_tmp):
     assert prefs.validate_auto_sort_patch({"max_per_pass": 8}) is None
     assert prefs.validate_auto_sort_patch({"max_per_pass": 0}) is not None
     assert prefs.validate_auto_sort_patch({"max_per_pass": 51}) is not None
-    assert prefs.validate_auto_sort_patch({"prompt": "x" * 8001}) is not None
+    # Written through PATCH /api/prompts/auto_sort only (#956), whatever the length.
+    assert "/api/prompts/auto_sort" in (prefs.validate_auto_sort_patch({"prompt": "x"}) or "")
     prefs.set_auto_sort(
         {"enabled": True, "interval_minutes": 20, "confidence_min": 0.55, "max_per_pass": 3}
     )
@@ -251,7 +252,8 @@ def test_auto_sort_empty_prompt_coerces_to_default(prefs_at_tmp):
 def test_public_auto_sort_reports_endpoint_readiness(configured):
     pub = prefs.public_auto_sort()
     assert pub["configured"] is True  # mirrors the configured ai_review endpoint
-    assert pub["default_prompt"] == prefs.DEFAULT_AUTO_SORT_PROMPT  # backs reset-to-default
+    # The prompt and its default live in the /api/prompts catalog (#956).
+    assert "prompt" not in pub and "default_prompt" not in pub
     assert pub["confidence_min"] == 0.7
     assert pub["max_per_pass"] == 8
     assert "api_key" not in pub

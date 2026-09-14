@@ -62,7 +62,7 @@ describe("OrchestratorHealth", () => {
     expect(badge).toHaveTextContent("connection refused");
     expect(screen.getByRole("link", { name: /settings/i })).toHaveAttribute(
       "href",
-      "/settings/ai-review",
+      "/settings/ai-endpoint",
     );
   });
 

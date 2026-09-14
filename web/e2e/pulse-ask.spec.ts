@@ -33,7 +33,6 @@ const EMPTY_OVERVIEW = {
   scan_depth: "fast",
   input_fingerprint: "fp",
   synthesis_skipped: false,
-  banner: null,
   cards: [],
 };
 

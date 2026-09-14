@@ -1,8 +1,9 @@
 import { expect, test } from "@playwright/test";
+import { promptPath, settingsPath } from "../src/routes/settingsTabs";
 
 // Real-browser checks for the AI session review surface (#356 PR 1, manual slice):
-// the Settings → AI Review panel (write-only key, model dropdown via the server proxy,
-// link into the prompt catalog) and the sidebar row (summary line + amber intervention badge). Network is
+// Settings → AI → Endpoint & model (write-only key, model dropdown via the server proxy) and
+// Session review (link into the prompt catalog) and the sidebar row (summary line + amber intervention badge). Network is
 // fully mocked — the suite never talks to a backend or a real AI endpoint.
 
 const AI_REVIEW = {
@@ -10,11 +11,9 @@ const AI_REVIEW = {
   base_url: "https://ai.example.io/v1",
   model: "minimax-m2.7",
   interval_minutes: 5,
-  prompt: "custom prompt",
   max_input_chars: 24000,
   api_key_set: true,
   configured: true,
-  default_prompt: "default prompt from server",
 };
 
 const AUTO_SORT = {
@@ -22,9 +21,7 @@ const AUTO_SORT = {
   interval_minutes: 30,
   confidence_min: 0.7,
   max_per_pass: 8,
-  prompt: "default sort prompt",
   configured: true,
-  default_prompt: "default sort prompt",
 };
 
 const NOW = Math.floor(Date.now() / 1000);
@@ -103,7 +100,7 @@ test("settings: AI Review panel — write-only key, proxied model dropdown, prom
     await r.fulfill({ json: { ai_review: AI_REVIEW } });
   });
 
-  await page.goto("/settings/ai-review");
+  await page.goto(settingsPath("ai-endpoint"));
   await expect(
     page.getByRole("heading", { name: "AI endpoint" }),
   ).toBeVisible();
@@ -125,19 +122,20 @@ test("settings: AI Review panel — write-only key, proxied model dropdown, prom
     .poll(() => prefsBody)
     .toEqual({ ai_review: { model: "qwen3-vl" } });
 
-  // The prompt itself is no longer edited here (#824) — this panel owns the endpoint, the
-  // Prompts catalog owns every prompt. What stays is the link into the right row.
+  // The prompt itself is not edited here (#824) — the Prompts catalog owns every prompt. Session
+  // review is its own page (#956); what stays there is the link into the right row.
+  await page.goto(settingsPath("ai-session-review"));
   const review = page.getByRole("region", { name: "Session review" });
   await expect(review.getByRole("textbox", { name: "Review prompt" })).toHaveCount(0);
   await expect(
     review.getByRole("link", { name: /Prompts → Tail review/i }),
-  ).toHaveAttribute("href", "#prompt-tail_review");
+  ).toHaveAttribute("href", promptPath("tail_review"));
 });
 
 test("settings: a plain visit with a stored config stays quiet — no phantom dirty/validating state (#543)", async ({
   page,
 }) => {
-  await page.goto("/settings/ai-review");
+  await page.goto(settingsPath("ai-endpoint"));
   // Mount probe done: the dropdown is populated through the proxy.
   await expect(page.getByRole("combobox", { name: "Model" })).toHaveValue(
     "minimax-m2.7",
@@ -167,7 +165,7 @@ test("settings: a rejected Save & validate says WHY — the dirty warning never 
   await page.route("**/api/prefs", (r) =>
     r.fulfill({ status: 422, json: { detail: "ai_review.base_url must be an http(s) URL" } }),
   );
-  await page.goto("/settings/ai-review");
+  await page.goto(settingsPath("ai-endpoint"));
   await expect(page.getByRole("combobox", { name: "Model" })).toHaveValue(
     "minimax-m2.7",
   );
@@ -206,7 +204,7 @@ test("settings: a rejected /models probe shows the GATEWAY's message, not a bare
   await page.route("**/api/prefs", (r) =>
     r.fulfill({ json: { ai_review: AI_REVIEW } }),
   );
-  await page.goto("/settings/ai-review");
+  await page.goto(settingsPath("ai-endpoint"));
   await expect(page.getByRole("combobox", { name: "Model" })).toHaveValue(
     "minimax-m2.7",
   );
@@ -236,7 +234,7 @@ test("settings: a stored key has no fillable field until Replace key (#834)", as
     prefsBody = r.request().postDataJSON();
     await r.fulfill({ json: { ai_review: AI_REVIEW } });
   });
-  await page.goto("/settings/ai-review");
+  await page.goto(settingsPath("ai-endpoint"));
   await expect(page.getByRole("combobox", { name: "Model" })).toHaveValue(
     "minimax-m2.7",
   );
@@ -278,7 +276,7 @@ test("settings: the model control, when locked, LOOKS locked and says why (#834)
   await page.route("**/api/prefs", (r) =>
     r.fulfill({ status: 422, json: { detail: "nope" } }),
   );
-  await page.goto("/settings/ai-review");
+  await page.goto(settingsPath("ai-endpoint"));
   const model = page.getByRole("combobox", { name: "Model" });
   await expect(model).toBeEnabled();
 
@@ -301,7 +299,7 @@ test("settings: the endpoint's save row groups with the fields it commits (#834)
   await page.route("**/api/prefs", (r) =>
     r.fulfill({ json: { ai_review: AI_REVIEW } }),
   );
-  await page.goto("/settings/ai-review");
+  await page.goto(settingsPath("ai-endpoint"));
   const save = page.getByRole("button", { name: "Save & validate" });
   await expect(save).toBeVisible();
   const hint = page.getByText(/Write-only: the stored key is never shown/);
@@ -349,7 +347,7 @@ test("settings: Remove key clears the stored secret and refetches /api/config", 
     await r.fulfill({ json: { ai_review: cleared } });
   });
 
-  await page.goto("/settings/ai-review");
+  await page.goto(settingsPath("ai-endpoint"));
   await expect(page.getByText("set", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Remove key" }).click();
   await expect.poll(() => prefsBody).toEqual({ ai_review: { api_key: null } });
@@ -375,21 +373,18 @@ test("sidebar: summary line + amber intervention badge with the reason as toolti
   await expect(badge).toHaveAttribute("title", "waiting on permission prompt");
 });
 
-test("mobile: AI Review settings panel renders at phone width", async ({
+test("mobile: the Endpoint & model page renders at phone width", async ({
   page,
 }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "phone-width layout check");
   await page.route("**/api/prefs", (r) =>
     r.fulfill({ json: { ai_review: AI_REVIEW } }),
   );
-  await page.goto("/settings/ai-review");
+  await page.goto(settingsPath("ai-endpoint"));
   await expect(
     page.getByRole("heading", { name: "AI endpoint" }),
   ).toBeVisible();
   await expect(page.getByRole("combobox", { name: "Model" })).toBeVisible();
-  await expect(
-    page.getByRole("link", { name: /Prompts → Tail review/i }),
-  ).toBeVisible();
 
   // The key row carries a field plus two actions (#834) — at phone width it must wrap
   // rather than squeeze the key readout to "*****…", and its buttons must clear the 44px

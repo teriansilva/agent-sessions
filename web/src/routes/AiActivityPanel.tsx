@@ -5,12 +5,22 @@ import styles from "./Settings.module.css";
 
 // The AI task kinds the platform registers (#441). Listed in a fixed order so the panel is
 // stable; an unknown kind that turns up running is appended so nothing is hidden.
+//
+// Every kind the server tracks with `aitasks.track` / `aitasks.single_flight` belongs here. The
+// list used to stop at the first three, so the orchestrator and every mission task showed only
+// while running, under their raw id, and their last run was never shown at all (#956).
 const KINDS: { kind: string; label: string }[] = [
   // The KIND is the server-owned task id and stays `pulse-scan`; only the label an
   // operator reads is renamed (#935).
   { kind: "pulse-scan", label: "Mission control scan" },
   { kind: "ai-review", label: "AI review" },
   { kind: "auto-sort", label: "Auto-sort" },
+  { kind: "orchestrator", label: "Orchestrator pass" },
+  { kind: "mission-supervisor", label: "Mission supervisor" },
+  { kind: "mission-objectives", label: "Objective checks" },
+  { kind: "mission-question", label: "Mission questions" },
+  // `pulse-chat` is the single-flight kind shared by mission chat turns and Ask.
+  { kind: "pulse-chat", label: "Mission chat" },
 ];
 
 const POLL_MS = 3000;
@@ -30,8 +40,9 @@ function ago(at: number): string {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
-/** Shared AI-activity panel (#441 Phase 6): what AI work is running right now (Pulse scans,
- *  AI-review / auto-sort sweeps + their on-demand runs) plus the last run per kind. Polls
+/** Shared AI-activity panel (#441 Phase 6): what AI work is running right now (mission-control
+ *  scans, AI-review / auto-sort sweeps, orchestrator passes and mission tasks, plus their
+ *  on-demand runs) and the last run per kind. Polls
  *  /api/ai/activity while mounted — the first home for the platform's growing set of AI
  *  features, and how the "two scans never overlap" guarantee becomes observable. */
 export function AiActivityPanel() {

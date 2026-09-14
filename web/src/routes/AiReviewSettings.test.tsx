@@ -1,5 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
 import { ConfigCtx, ConfigRefreshCtx } from "../app/config";
 import { api, ApiError } from "../lib/api";
@@ -20,20 +21,16 @@ vi.mock("../lib/api", async () => {
   };
 });
 
-const DEFAULT_PROMPT = "default review prompt";
-
 function aiBlock(over: Partial<AiReviewConfig> = {}): AiReviewConfig {
   return {
     enabled: false,
     base_url: "https://ai.example.io/v1",
     model: "minimax-m2.7",
     interval_minutes: 5,
-    prompt: "custom prompt",
     max_input_chars: 24000,
     request_timeout: null,
     api_key_set: true,
     configured: true,
-    default_prompt: DEFAULT_PROMPT,
     ...over,
   };
 }
@@ -65,12 +62,17 @@ function renderPanel(
     terminal_backend: "ws",
     ai_review: block,
   };
+  // Both views, as the two Settings pages mount them (#956). A router, because the prompt link
+  // is an in-app link to the Prompts page.
   return render(
-    <ConfigRefreshCtx.Provider value={refresh}>
-      <ConfigCtx.Provider value={config as AppConfig}>
-        <AiReviewSettings />
-      </ConfigCtx.Provider>
-    </ConfigRefreshCtx.Provider>,
+    <MemoryRouter>
+      <ConfigRefreshCtx.Provider value={refresh}>
+        <ConfigCtx.Provider value={config as AppConfig}>
+          <AiReviewSettings view="endpoint" />
+          <AiReviewSettings view="review" />
+        </ConfigCtx.Provider>
+      </ConfigRefreshCtx.Provider>
+    </MemoryRouter>,
   );
 }
 
@@ -458,7 +460,7 @@ test("the review prompt is edited in the Prompts catalog, not here (#824)", asyn
   // One editor per value: this panel owns the ENDPOINT, the catalog owns the prompts.
   expect(screen.queryByRole("textbox", { name: "Review prompt" })).toBeNull();
   const link = screen.getByRole("link", { name: /prompts → tail review/i });
-  expect(link).toHaveAttribute("href", "#prompt-tail_review");
+  expect(link).toHaveAttribute("href", "/settings/ai-prompts#prompt-tail_review");
 });
 
 test("excluded sessions list re-includes a session", async () => {
@@ -523,7 +525,10 @@ test("completing the endpoint config refetches the shared /api/config context", 
   await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
 });
 
-test("a save that doesn't flip `configured` leaves the config context alone", async () => {
+test("every successful save refreshes the config context, not only a `configured` flip (#956)", async () => {
+  // One page per section makes a remount on navigation routine. A save that left the shared
+  // context stale would show the pre-save value on the next visit — the #667 failure mode — so
+  // the refresh no longer waits for `configured` to change.
   const user = userEvent.setup();
   const refresh = vi.fn();
   renderPanel(aiBlock(), refresh); // already configured; the echo stays configured
@@ -531,7 +536,7 @@ test("a save that doesn't flip `configured` leaves the config context alone", as
     screen.getByRole("checkbox", { name: /enable periodic reviews/i }),
   );
   await waitFor(() => expect(api.setPrefs).toHaveBeenCalled());
-  expect(refresh).not.toHaveBeenCalled();
+  await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
 });
 
 test("review timeout renders the saved value; empty shows the 120s default hint", async () => {
@@ -595,4 +600,58 @@ test("the enable toggle persists immediately", async () => {
   await waitFor(() =>
     expect(api.setPrefs).toHaveBeenCalledWith({ ai_review: { enabled: true } }),
   );
+});
+
+/** Only the Session review page, as Settings mounts it (#956). */
+function renderReview(block: AiReviewConfig = aiBlock()) {
+  const config = {
+    csrf: "t",
+    new_session_engines: [],
+    terminal_backend: "ws",
+    ai_review: block,
+  };
+  return render(
+    <MemoryRouter>
+      <ConfigRefreshCtx.Provider value={() => {}}>
+        <ConfigCtx.Provider value={config as AppConfig}>
+          <AiReviewSettings view="review" />
+        </ConfigCtx.Provider>
+      </ConfigRefreshCtx.Provider>
+    </MemoryRouter>,
+  );
+}
+
+test("Session review page: a rejected interval says why, and the rejected value stays visible for correction (#957)", async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.setPrefs).mockRejectedValue(
+    new ApiError(422, "ai_review.interval_minutes must be an integer between 1 and 1440"),
+  );
+  renderReview();
+  const interval = screen.getByLabelText("Review every");
+  await user.clear(interval);
+  await user.type(interval, "999999");
+  await user.tab();
+  expect(
+    await screen.findByRole("alert"),
+  ).toHaveTextContent("ai_review.interval_minutes must be an integer between 1 and 1440");
+  expect(interval).toHaveValue(999999);
+});
+
+test("Session review page: a rejected enable toggle says why and the checkbox keeps the saved state (#957)", async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.setPrefs).mockRejectedValue(new Error("network down"));
+  renderReview(aiBlock({ enabled: false }));
+  const toggle = screen.getByRole("checkbox", { name: /enable periodic reviews/i });
+  await user.click(toggle);
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Couldn’t save — please try again.",
+  );
+  expect(toggle).not.toBeChecked();
+});
+
+test("Session review page: a successful save says Saved. on this page", async () => {
+  const user = userEvent.setup();
+  renderReview(aiBlock({ enabled: false }));
+  await user.click(screen.getByRole("checkbox", { name: /enable periodic reviews/i }));
+  expect(await screen.findByText("Saved.")).toBeInTheDocument();
 });

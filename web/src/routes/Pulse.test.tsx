@@ -101,10 +101,9 @@ function overview(over: Partial<PulseOverview> = {}): PulseOverview {
     cache_version: 1,
     generated_at: Math.floor(Date.now() / 1000) - 60,
     window_days: 3,
-    scan_depth: "medium",
+    scan_depth: "fast",
     input_fingerprint: "fp",
     synthesis_skipped: false,
-    banner: null,
     cards: [],
     ...over,
   };

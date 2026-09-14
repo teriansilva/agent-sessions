@@ -3,13 +3,17 @@
 Reads the recent sessions (a rolling window, default 3 days), curates them into a ranked,
 grouped overview the user can jump straight back into, and caches the result so the page
 loads instantly. The ``fast`` depth does **no** LLM work — it ranks/flags purely from the
-per-session AI-review summaries already on the sidecar (#356). The ``medium`` / ``slow``
-depths (#441 Phase 4) layer synthesis on top, reusing the AI-review gateway
-(``review.complete_json``): ``medium`` makes **one** call for the top "state of your work"
-banner; ``slow`` adds a **bounded, serialized** per-session "state + next step" pass before
-the banner. Model output is treated strictly as DATA — length-capped here and rendered as
-plain text in the UI (never markup). An **unconfigured endpoint never errors a scan**: any
-depth ≥ medium degrades to ``fast`` curation with ``banner=None`` and ``synthesis_skipped=True``.
+per-session AI-review summaries already on the sidecar (#356). The ``slow`` depth (#441 Phase 4)
+layers synthesis on top, reusing the AI-review gateway (``review.complete_json``): a **bounded,
+serialized** per-session "state + next step" pass. Model output is treated strictly as DATA —
+length-capped here and rendered as plain text in the UI (never markup). An **unconfigured
+endpoint never errors a scan**: ``slow`` degrades to ``fast`` curation with
+``synthesis_skipped=True``.
+
+There used to be a ``medium`` depth and a ``banner`` field: one extra call producing a "state of
+your work" paragraph. MISSION CONTROL never rendered it, so it was a model call whose output was
+thrown away, and both were removed (#956). The cards (and the ``slow`` line on each) are what the
+Sessions-without-a-mission list shows.
 
 Curation rides the exact same per-session resolution the sidebar uses (``engines.scan_all``
 → metadata sidecar via the alias layer → ``projects.resolve``), so a Pulse card and its
@@ -20,7 +24,7 @@ Cache (``pulse-cache.json``, next to ``prefs.json``):
 * Written atomically via ``atomicjson.atomic_write_json`` (temp + fsync + ``os.replace`` +
   parent-dir fsync, ``0600``) — a single-flight scan is the only writer, so no flock is needed.
 * ``cache_version`` guards the artifact shape: a mismatch is a cache **miss** (the stale
-  artifact is ignored, never mis-rendered against newer card/banner code).
+  artifact is ignored, never mis-rendered against newer card code).
 * ``input_fingerprint`` (sha256 over the in-window session set) is what a future background
   loop (#441 Phase 3) compares to skip a no-op scan; a manual "Scan now" always runs (at
   ``fast`` it is free anyway).
@@ -41,13 +45,17 @@ from . import atomicjson, engines, metadata, projects, prompts, review
 # `load_cache` treats any other version as a miss so an old shape never renders wrong.
 # v2 (#481): the one-line `banner` became a short chronological recap paragraph — bump so a
 # cached v1 one-liner is treated as a miss instead of rendering in the new paragraph slot.
+# #956 dropped `banner` WITHOUT a bump, deliberately: no reader ever used it, and a bump would
+# blank the Sessions-without-a-mission list on upgrade until the next scan. A v2 cache that still
+# carries a stale `banner` key is simply ignored field-wise.
 CACHE_VERSION = 2
 
 WINDOW_DAYS_DEFAULT = 3
 WINDOW_DAYS_MIN = 1
 WINDOW_DAYS_MAX = 30
 
-SCAN_DEPTHS: tuple[str, ...] = ("fast", "medium", "slow")
+# `medium` (banner only) was removed in #956; `coerce_depth` maps it — like any unknown — to fast.
+SCAN_DEPTHS: tuple[str, ...] = ("fast", "slow")
 DEFAULT_DEPTH = "fast"
 
 # Within the window, a session touched more recently than this is "recently_active"; older
@@ -57,18 +65,12 @@ RECENT_ACTIVE_S = 24 * 3600
 # Sort priority per state (lower = nearer the top); within a state, newest activity first.
 _STATE_ORDER = {"needs_you": 0, "in_flight": 1, "recently_active": 2, "idle": 3}
 
-# --- synthesis (depth >= medium, #441 Phase 4) ---------------------------------------
+# --- synthesis (depth slow, #441 Phase 4) ---------------------------------------------
 # Bounded, serialized endpoint use mirroring autosort: a per-scan cap on the `slow`
 # per-session pass, spacing between consecutive calls, and server-owned length caps so the
 # model output is treated strictly as DATA (rendered as plain text in the UI).
 SLOW_SESSION_CAP = 12
 SYNTH_CALL_SPACING_S = 1.0
-# How many curated cards are fed to the banner call (bounds the prompt size); the cap is
-# generous enough to cover a typical window without an unbounded payload.
-BANNER_DIGEST_CAP = 40
-# The banner is a short chronological RECAP paragraph (#481, was a one-liner), so the cap is
-# roomier — still bounded so the prompt/render stay sane.
-BANNER_MAX = 700
 SESSION_LINE_MAX = 160
 
 
@@ -213,23 +215,6 @@ async def fingerprint_for(*, window_days: int, depth: str, now: float | None = N
     return _fingerprint(cards, window_days, depth)
 
 
-def _banner_digest(cards: list[dict], *, window_days: int, now: float) -> dict:
-    """The curated card digest fed to the banner synthesis call: just the fields the model
-    needs to summarize the state of work (no cwd / ids / internal fields)."""
-    return {
-        "window_days": window_days,
-        "sessions": [
-            {
-                "state": c["state"],
-                "title": c["title"],
-                "summary": c["synthesis"] or c["ai_summary"] or "",
-                "age_hours": round((now - c["last_activity"]) / 3600, 1),
-            }
-            for c in cards[:BANNER_DIGEST_CAP]
-        ],
-    }
-
-
 async def _synthesize_sessions(cards: list[dict], *, now: float) -> None:
     """Depth ``slow``: a bounded, serialized per-session pass adding a one-line "state + next
     step" ``synthesis`` to each in-window card (capped at ``SLOW_SESSION_CAP``; overflow keeps
@@ -262,32 +247,11 @@ async def _synthesize_sessions(cards: list[dict], *, now: float) -> None:
         card["synthesis"] = _one_line(obj.get("line"), SESSION_LINE_MAX)
 
 
-async def _synthesize_banner(cards: list[dict], *, window_days: int, now: float) -> str | None:
-    """Depths ``medium`` / ``slow``: ONE call producing the top "state of your work" banner from
-    the curated digest. Returns the bounded banner text, or ``None`` when the model gives nothing
-    usable. ``NotConfiguredError`` propagates (caller degrades to ``fast``); a transient
-    ``ReviewError`` returns ``None`` (no banner this scan, retried next time)."""
-    digest = _banner_digest(cards, window_days=window_days, now=now)
-    try:
-        obj = await review.complete_json(
-            [
-                {"role": "system", "content": prompts.effective("pulse_banner")},
-                {"role": "user", "content": json.dumps(digest)},
-            ]
-        )
-    except review.NotConfiguredError:
-        raise
-    except review.ReviewError:
-        return None
-    return _one_line(obj.get("banner"), BANNER_MAX)
-
-
 def _artifact(
     cards: list[dict],
     *,
     window_days: int,
     depth: str,
-    banner: str | None,
     synthesis_skipped: bool,
     now: float,
 ) -> dict:
@@ -300,7 +264,6 @@ def _artifact(
         "scan_depth": depth,
         "input_fingerprint": fingerprint,
         "synthesis_skipped": synthesis_skipped,
-        "banner": banner,
         "cards": public_cards,
     }
 
@@ -315,7 +278,6 @@ def empty_overview(window_days: int = WINDOW_DAYS_DEFAULT, depth: str = DEFAULT_
         "scan_depth": coerce_depth(depth),
         "input_fingerprint": None,
         "synthesis_skipped": False,
-        "banner": None,
         "cards": [],
     }
 
@@ -352,11 +314,10 @@ async def run_scan(
 ) -> dict:
     """Run one Pulse scan and write the cache, returning the fresh artifact.
 
-    ``fast`` is curation only — no endpoint call. ``medium`` adds ONE banner call; ``slow``
-    adds a bounded per-session pass before the banner (#441 Phase 4). An unconfigured AI
-    gateway never errors the scan: depth ≥ medium degrades to ``fast`` curation with
-    ``banner=None`` and ``synthesis_skipped=True`` (this is the single source of truth for the
-    unconfigured contract — the manual route returns 200 degraded, never 409). The caller owns
+    ``fast`` is curation only — no endpoint call. ``slow`` adds a bounded per-session pass
+    (#441 Phase 4). An unconfigured AI gateway never errors the scan: ``slow`` degrades to
+    ``fast`` curation with ``synthesis_skipped=True`` (this is the single source of truth for
+    the unconfigured contract — the manual route returns 200 degraded, never 409). The caller owns
     the single-flight guard (so two scans never overlap) and supplies ``working_keys``.
     """
     window_days = coerce_window_days(window_days)
@@ -365,18 +326,14 @@ async def run_scan(
     cards = await asyncio.to_thread(
         build_cards, window_days=window_days, now=now, working_keys=working_keys
     )
-    banner: str | None = None
     synthesis_skipped = False
-    if depth in ("medium", "slow"):
+    if depth == "slow":
         try:
-            if depth == "slow":
-                await _synthesize_sessions(cards, now=now)
-            banner = await _synthesize_banner(cards, window_days=window_days, now=now)
+            await _synthesize_sessions(cards, now=now)
         except review.NotConfiguredError:
             # Unconfigured endpoint → degrade to fast curation, flagged so the UI can say so.
             # Drop any per-session synthesis (none can have landed: config is checked on the
             # first call) for a cleanly "fast"-shaped artifact.
-            banner = None
             synthesis_skipped = True
             for c in cards:
                 c["synthesis"] = None
@@ -384,7 +341,6 @@ async def run_scan(
         cards,
         window_days=window_days,
         depth=depth,
-        banner=banner,
         synthesis_skipped=synthesis_skipped,
         now=now,
     )

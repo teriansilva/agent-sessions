@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
+import { settingsPath } from "../src/routes/settingsTabs";
 // The REAL validator, imported rather than re-implemented — a second copy of the grammar in the
 // test would only ever prove the two copies agree with each other.
 import {
@@ -109,7 +110,7 @@ function chromeFace(page: Page): Promise<string> {
 
 /** Pick a face through the shipped Settings UI: the Custom card, then the stack field. */
 async function chooseCustomFace(page: Page, stack: string) {
-  await page.goto("/settings/appearance");
+  await page.goto(settingsPath("appearance"));
   await page.getByRole("radio", { name: /^Custom/ }).click();
   const field = page.getByLabel("Custom font stack");
   await field.fill(stack);
@@ -255,7 +256,7 @@ test("the device's choice beats the server's seed (#866)", async ({ page }) => {
 test("a face this device does not have is offered as unavailable, not silently substituted (#866)", async ({
   page,
 }) => {
-  await page.goto("/settings/appearance");
+  await page.goto(settingsPath("appearance"));
   // System is whatever the device ships — always selectable.
   await expect(page.getByRole("radio", { name: /^System/ })).toBeEnabled();
   // SF Mono is an Apple face: absent on the Linux runners this suite runs on. Without the
@@ -267,7 +268,7 @@ test("a face this device does not have is offered as unavailable, not silently s
 test("cards and the stack field are keyboard-operable, and meet the 44px floor (#866)", async ({
   page,
 }) => {
-  await page.goto("/settings/appearance");
+  await page.goto(settingsPath("appearance"));
   const system = page.getByRole("radio", { name: /^System/ });
   const box = await system.boundingBox();
   expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
@@ -292,7 +293,7 @@ test("a maximum-length custom stack does not widen the panel on a phone (#866)",
   page,
 }) => {
   await page.setViewportSize({ width: 412, height: 900 });
-  await page.goto("/settings/appearance");
+  await page.goto(settingsPath("appearance"));
   await page.getByRole("radio", { name: /^Custom/ }).click();
   const field = page.getByLabel("Custom font stack");
   // Exactly the cap (120), all legal characters — the longest thing the server will accept.
@@ -310,7 +311,7 @@ test("a maximum-length custom stack does not widen the panel on a phone (#866)",
 test("choosing a preset closes the custom field, so one value has one view (#866)", async ({
   page,
 }) => {
-  await page.goto("/settings/appearance");
+  await page.goto(settingsPath("appearance"));
   await page.getByRole("radio", { name: /^Custom/ }).click();
   await expect(page.getByLabel("Custom font stack")).toBeVisible();
 
@@ -327,7 +328,7 @@ test("an unusable stack is refused with a reason, and the live face is untouched
   page,
 }) => {
   await chooseCustomFace(page, "sans-serif");
-  await page.goto("/settings/appearance");
+  await page.goto(settingsPath("appearance"));
   const field = page.getByLabel("Custom font stack");
   await field.fill('"Fira Code'); // all-legal characters, unbalanced quote, renders as nothing
   await field.press("Enter");
@@ -349,7 +350,7 @@ test("every stack the validator ACCEPTS is one the browser actually applies (#86
   //
   // Asserted against the browser's real parser rather than a second regex, because a second
   // regex would only prove our two regexes agree with each other.
-  await page.goto("/settings/appearance");
+  await page.goto(settingsPath("appearance"));
   const rejected = await page.evaluate((stacks: string[]) => {
     const el = document.createElement("div");
     return stacks.filter((v) => {
@@ -368,7 +369,7 @@ test("the stacks the validator REFUSES on grammar, the browser refuses too (#868
   // the grammar is pinned to CSS rather than to our own opinion. (Our validator is stricter in
   // a few places on purpose, e.g. an unbalanced quote, which Chromium auto-closes; those rows
   // deliberately are NOT in this list.)
-  await page.goto("/settings/appearance");
+  await page.goto(settingsPath("appearance"));
   const accepted = await page.evaluate((stacks: string[]) => {
     const el = document.createElement("div");
     return stacks.filter((v) => {
@@ -385,7 +386,7 @@ test("a digit-leading stack is refused, and the live face does not change (#868)
 }) => {
   // End to end, through the shipped control: the exact value from the review.
   await chooseCustomFace(page, "sans-serif");
-  await page.goto("/settings/appearance");
+  await page.goto(settingsPath("appearance"));
   const field = page.getByLabel("Custom font stack");
   await field.fill("123, monospace");
   await field.press("Enter");
@@ -419,7 +420,7 @@ test("a custom face seeded LATE by /api/config is shown as selected and editable
     });
   });
 
-  await page.goto("/settings/appearance");
+  await page.goto(settingsPath("appearance"));
   const custom = page.getByRole("radio", { name: /^Custom/ });
   await expect(custom).toHaveAttribute("aria-checked", "true");
   await expect(page.getByLabel("Custom font stack")).toHaveValue("sans-serif");
@@ -439,7 +440,7 @@ test("a LATE seed does not delete what the operator is typing (#868)", async ({
   // green.
   const seed = await seedLate(page, "sans-serif");
 
-  await page.goto("/settings/appearance");
+  await page.goto(settingsPath("appearance"));
   await page.getByRole("radio", { name: /^Custom/ }).click();
   const field = page.getByLabel("Custom font stack");
   await field.click();
@@ -487,7 +488,7 @@ test("FUZZ: nothing the validator accepts is refused by the browser's own parser
   const cases = [...candidates].filter((c) => c.length <= TERM_FONT_FAMILY_MAX_LEN).sort();
   expect(cases.length).toBeGreaterThan(500); // a corpus that shrank is not a corpus
 
-  await page.goto("/settings/appearance");
+  await page.goto(settingsPath("appearance"));
   const browserAccepts: boolean[] = await page.evaluate((cs: string[]) => {
     const el = document.createElement("div");
     return cs.map((v) => {
@@ -521,7 +522,7 @@ test("a late PRESET seed does not unmount the Custom editor mid-edit (#868)", as
   // operator was typing in it.
   const seed = await seedLate(page, FIRA_PRESET);
 
-  await page.goto("/settings/appearance");
+  await page.goto(settingsPath("appearance"));
   await page.getByRole("radio", { name: /^Custom/ }).click();
   const field = page.getByLabel("Custom font stack");
   await field.click();
@@ -546,7 +547,7 @@ test("cancelling a dirty draft after a late preset seed re-syncs the picker (#86
   // the terminal runs Fira Code while the picker still claims Custom with an empty editor.
   const seed = await seedLate(page, FIRA_PRESET);
 
-  await page.goto("/settings/appearance");
+  await page.goto(settingsPath("appearance"));
   await page.getByRole("radio", { name: /^Custom/ }).click();
   const field = page.getByLabel("Custom font stack");
   await field.click();

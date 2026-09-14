@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { settingsPath } from "../src/routes/settingsTabs";
 
 // #506: real-browser proof for the session-list sort-order toggle in Settings → Appearance.
 // The radio click + persisted POST is exercised here; the actual list re-sort is server-side
@@ -40,7 +41,7 @@ async function setup(page: Page): Promise<unknown[]> {
     posts.push(r.request().postDataJSON());
     return r.fulfill({ json: { session_list_order: "created_at" } });
   });
-  await page.goto("/settings/appearance");
+  await page.goto(settingsPath("session-defaults"));
   return posts;
 }
 

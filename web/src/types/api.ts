@@ -147,7 +147,6 @@ export interface AiReviewConfig {
   base_url: string;
   model: string;
   interval_minutes: number;
-  prompt: string;
   max_input_chars: number;
   /** Per-request review timeout in seconds (10–600); null = unset → server falls back
    *  to the AGENT_SESSIONS_AI_REVIEW_TIMEOUT env var, then 120s (#391 follow-up). */
@@ -156,8 +155,6 @@ export interface AiReviewConfig {
   api_key_set: boolean;
   /** Base URL + key present — the /models proxy + Review now are usable. */
   configured: boolean;
-  /** Server's default prompt, for the reset-to-default control. */
-  default_prompt: string;
 }
 
 /** One row of the prompt catalog (#824) — `GET /api/prompts`.
@@ -192,13 +189,9 @@ export interface AutoSortConfig {
   /** Max sessions classified per run — the on-demand button AND the background loop
    *  (1–50, default 8) (#459). */
   max_per_pass: number;
-  /** The classifier system prompt (editable; empty resets to `default_prompt`) (#459). */
-  prompt: string;
   /** The reused ai_review endpoint is usable (base URL + key present). Mirrors
    *  `ai_review.configured` — auto-sort can't run without it. */
   configured: boolean;
-  /** Server's default classifier prompt, for the reset-to-default control (#459). */
-  default_prompt: string;
 }
 
 /** Report from POST /api/projects/auto-sort (#424 Phase 6): one bounded on-demand pass. */
@@ -224,18 +217,19 @@ export interface PulseConfig {
   interval_minutes: number;
   window_days: number;
   scan_depth: PulseDepth;
-  /** The reused ai_review endpoint is usable (base URL + key). Depth ≥ medium synthesis
-   *  degrades to fast when this is false; fast scans never need it. */
+  /** The reused ai_review endpoint is usable (base URL + key). Slow synthesis degrades to
+   *  fast when this is false; fast scans never need it. */
   configured: boolean;
 }
 
-export type PulseDepth = "fast" | "medium" | "slow";
+/** `medium` was removed in #956 (it only added a banner nothing rendered). */
+export type PulseDepth = "fast" | "slow";
 
 /** A session state bucket on the Pulse overview, ranked needs-you → in-flight → recent → idle. */
 export type PulseState = "needs_you" | "in_flight" | "recently_active" | "idle";
 
 /** One curated card on the Pulse overview (#441). All AI-derived text (`ai_summary`,
- *  `synthesis`, and the overview `banner`) is DATA — render it as plain text, never markup. */
+ *  `synthesis`) is DATA — render it as plain text, never markup. */
 export interface PulseCard {
   /** Engine-qualified session key ("engine:uuid") — also the jump target. */
   id: string;
@@ -290,10 +284,9 @@ export interface PulseOverview {
   window_days: number;
   scan_depth: PulseDepth;
   input_fingerprint: string | null;
-  /** True when a depth ≥ medium scan ran against an unconfigured endpoint and degraded to
-   *  fast curation (banner null, no per-session synthesis). */
+  /** True when a slow scan ran against an unconfigured endpoint and degraded to fast curation
+   *  (no per-session synthesis). */
   synthesis_skipped: boolean;
-  banner: string | null;
   cards: PulseCard[];
 }
 
@@ -415,10 +408,8 @@ export interface OrchestratorConfig {
    *  so it stops notifying about it. The session stays visible everywhere else. */
   stale_hours: number;
   nudge_template: string;
-  prompt: string;
   notify: "none" | "escalations" | "all";
   configured: boolean;
-  default_prompt: string;
   default_nudge_template: string;
 }
 

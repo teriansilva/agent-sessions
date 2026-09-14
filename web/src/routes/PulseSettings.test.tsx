@@ -99,14 +99,22 @@ test("Enter commits a number field the same way blur does", async () => {
 
 test("changing the depth select persists pulse.scan_depth (#441 P6)", async () => {
   renderPanel(block({ scan_depth: "fast" }));
-  await userEvent.selectOptions(screen.getByLabelText(/scan depth/i), "medium");
+  await userEvent.selectOptions(screen.getByLabelText(/scan depth/i), "slow");
   expect(api.setPrefs).toHaveBeenCalledWith({
-    pulse: { scan_depth: "medium" },
+    pulse: { scan_depth: "slow" },
   });
 });
 
+test("the depth offers Fast and Slow only — Medium is gone (#956)", () => {
+  renderPanel(block());
+  const options = Array.from(
+    (screen.getByLabelText(/scan depth/i) as HTMLSelectElement).options,
+  ).map((o) => o.value);
+  expect(options).toEqual(["fast", "slow"]);
+});
+
 test("a non-fast depth with an unconfigured endpoint warns it degrades (#441 P6)", () => {
-  renderPanel(block({ scan_depth: "medium", configured: false }));
+  renderPanel(block({ scan_depth: "slow", configured: false }));
   expect(screen.getByText(/degrade to fast curation/i)).toBeInTheDocument();
 });
 
@@ -118,7 +126,6 @@ test("Scan now reports the curated count + a degraded scan (#441 P6)", async () 
     scan_depth: "fast",
     input_fingerprint: "fp",
     synthesis_skipped: true,
-    banner: null,
     cards: [
       {
         id: "claude:a",

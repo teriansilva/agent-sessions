@@ -54,7 +54,7 @@ def _patch(c, cfg, csrf, pid, body):
 
 
 def test_registry_covers_every_system_prompt():
-    assert len(prompts.REGISTRY) == 15
+    assert len(prompts.REGISTRY) == 14  # #956 removed pulse_banner
     assert len(prompts.IDS) == len(set(prompts.IDS))
     # PINNED BY NAME, not by count — adding a guarded prompt should have to say so here.
     # `mission_objectives` earns it without emitting a verb: an objective list is what the
@@ -91,7 +91,6 @@ EXPECTED_DEFAULT_SHA = {
     "session_recap": "7438fbcf5328734f",
     "handoff_brief": "6229dae66d00c62f",
     "auto_sort": "e7dcb9cc74f397aa",
-    "pulse_banner": "babd3f034bb21c40",
     "pulse_session_line": "2c5ed998d9df3d00",
     "ask_catalog": "1af18a4d8485da23",
     "ask_verify": "4daddf0195a16d69",
@@ -142,9 +141,9 @@ def test_editable_falls_back_to_default_and_survives_a_blank(tmp_home):
 
 
 def test_unguarded_effective_is_the_editable_text(tmp_home):
-    prompts.set_value("pulse_banner", "Two sentences, no markdown.")
-    assert prompts.effective("pulse_banner") == "Two sentences, no markdown."
-    assert prompts.guard_suffix("pulse_banner") is None
+    prompts.set_value("pulse_session_line", "One line, no markdown.")
+    assert prompts.effective("pulse_session_line") == "One line, no markdown."
+    assert prompts.guard_suffix("pulse_session_line") is None
 
 
 # ---- the guard invariant -------------------------------------------------------------

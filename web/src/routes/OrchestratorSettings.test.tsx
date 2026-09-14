@@ -8,6 +8,7 @@
  */
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
 import { ConfigCtx, ConfigRefreshCtx } from "../app/config";
 import { api } from "../lib/api";
@@ -36,10 +37,8 @@ function block(over: Partial<OrchestratorConfig> = {}): OrchestratorConfig {
     proposal_ttl_minutes: 30,
     stale_hours: 24,
     nudge_template: "Please continue.",
-    prompt: "p",
     notify: "escalations",
     configured: true,
-    default_prompt: "p",
     default_nudge_template: "Please continue.",
     ...over,
   };
@@ -53,11 +52,13 @@ function renderPanel(b = block(), refresh: () => void = () => {}) {
     orchestrator: b,
   } as unknown as AppConfig;
   return render(
-    <ConfigRefreshCtx.Provider value={refresh}>
-      <ConfigCtx.Provider value={config}>
-        <OrchestratorSettings />
-      </ConfigCtx.Provider>
-    </ConfigRefreshCtx.Provider>,
+    <MemoryRouter>
+      <ConfigRefreshCtx.Provider value={refresh}>
+        <ConfigCtx.Provider value={config}>
+          <OrchestratorSettings />
+        </ConfigCtx.Provider>
+      </ConfigRefreshCtx.Provider>
+    </MemoryRouter>,
   );
 }
 

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { settingsPath } from "../src/routes/settingsTabs";
 
 // #859: the terminal font size IS the agent's column count. At the shipped 13 px a phone gives
 // it ~50 columns, where a column-laid-out TUI (opencode) collapses — its label column squeezed
@@ -243,7 +244,7 @@ test("the size survives a reload, per device (#859)", async ({ page }) => {
 test("Settings' stepper meets the 44px touch floor and disables at the clamps (#859)", async ({
   page,
 }) => {
-  await page.goto("/settings/appearance");
+  await page.goto(settingsPath("appearance"));
   const smaller = page.getByRole("button", { name: /smaller terminal text/i });
   const bigger = page.getByRole("button", { name: /bigger terminal text/i });
   await expect(smaller).toBeVisible();
@@ -276,7 +277,7 @@ test("Settings' stepper meets the 44px touch floor and disables at the clamps (#
 test("the stepper is reachable and operable by keyboard (#859)", async ({
   page,
 }) => {
-  await page.goto("/settings/appearance");
+  await page.goto(settingsPath("appearance"));
   const smaller = page.getByRole("button", { name: /smaller terminal text/i });
   await smaller.focus();
   await expect(smaller).toBeFocused();

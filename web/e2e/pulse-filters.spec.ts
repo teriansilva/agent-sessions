@@ -26,10 +26,8 @@ const ORCH_CONFIG = {
   max_actions_per_pass: 4,
   proposal_ttl_minutes: 30,
   nudge_template: "Please continue.",
-  prompt: "p",
   notify: "escalations",
   configured: true,
-  default_prompt: "p",
   default_nudge_template: "Please continue.",
 };
 
@@ -95,7 +93,6 @@ function overview(cards: unknown[]) {
     scan_depth: "slow",
     input_fingerprint: null,
     synthesis_skipped: false,
-    banner: null,
     cards,
   };
 }

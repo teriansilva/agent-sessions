@@ -1,8 +1,9 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
+import { settingsPath } from "../src/routes/settingsTabs";
 
 // Real-browser check that a saved Pulse setting survives remounting the panel. ConfigCtx is
 // fetched once at app load; before the fix, PulseSettings never refreshed it after a save, so
-// leaving the AI tab and coming back re-seeded the panel from the stale context and the saved
+// leaving the page and coming back re-seeded the panel from the stale context and the saved
 // value appeared lost ("where do I save?"). The mock is stateful — /api/prefs updates the pulse
 // block that later /api/config fetches return — exactly like the real server.
 
@@ -11,11 +12,9 @@ const AI_REVIEW = {
   base_url: "https://ai.example.io/v1",
   model: "minimax-m2.7",
   interval_minutes: 5,
-  prompt: "custom prompt",
   max_input_chars: 24000,
   api_key_set: true,
   configured: true,
-  default_prompt: "default prompt from server",
 };
 
 const AUTO_SORT = {
@@ -23,9 +22,7 @@ const AUTO_SORT = {
   interval_minutes: 30,
   confidence_min: 0.7,
   max_per_pass: 8,
-  prompt: "default sort prompt",
   configured: true,
-  default_prompt: "default sort prompt",
 };
 
 test.beforeEach(async ({ page }) => {
@@ -87,10 +84,32 @@ test.beforeEach(async ({ page }) => {
   );
 });
 
-test("a saved Pulse setting flashes Saved. and survives leaving + reopening the tab", async ({
+/** In-app section switch — never `page.goto`, which would reload and re-fetch the config and so
+ *  prove nothing about remounting. Desktop has the sidebar; a phone goes back to the index first.
+ *
+ *  Waits on RENDERED state, not the URL: the router updates the URL before it re-renders, so a
+ *  URL assertion can pass while the old page is still on screen, and the next switch then acts on
+ *  a page that is about to unmount. */
+async function openSection(page: Page, label: string) {
+  const nav = page.getByRole("navigation", { name: "Settings", exact: true });
+  const phone = page.viewportSize()!.width <= 800;
+  if (phone) {
+    await page.getByRole("link", { name: "Back to settings" }).click();
+    await expect(nav).toBeVisible();
+    await nav.getByRole("link", { name: label, exact: true }).click();
+    await expect(nav).toBeHidden();
+    await expect(page.getByRole("link", { name: "Back to settings" })).toBeVisible();
+  } else {
+    const link = nav.getByRole("link", { name: label, exact: true });
+    await link.click();
+    await expect(link).toHaveAttribute("aria-current", "page");
+  }
+}
+
+test("a saved scan setting flashes Saved. and survives leaving + reopening the page", async ({
   page,
 }) => {
-  await page.goto("/settings/ai-review");
+  await page.goto(settingsPath("ai-mission-control"));
   const depth = page.getByLabel("Scan depth");
   await expect(depth).toHaveValue("fast");
 
@@ -98,8 +117,8 @@ test("a saved Pulse setting flashes Saved. and survives leaving + reopening the 
   // Immediate feedback — the section says so instead of leaving the user hunting for a Save button.
   await expect(page.getByText("Saved.")).toBeVisible();
 
-  // Leaving the tab unmounts the panel; coming back re-seeds it from the config context.
-  await page.getByRole("tab", { name: "Appearance" }).click();
-  await page.getByRole("tab", { name: "AI", exact: true }).click();
+  // Leaving the page unmounts the panel; coming back re-seeds it from the config context.
+  await openSection(page, "Appearance");
+  await openSection(page, "Mission control");
   await expect(page.getByLabel("Scan depth")).toHaveValue("slow");
 });

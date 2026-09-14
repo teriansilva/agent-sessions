@@ -229,8 +229,8 @@ def test_the_gateway_accepts_every_registered_prompt(monkeypatch):
 def test_a_stale_prompt_string_is_refused_after_the_operator_edits_it(monkeypatch):
     """A caller that captured `effective()` earlier and reused it after an edit is exactly the
     stale-policy shape this guard exists to catch."""
-    captured = prompts.effective("pulse_banner")
-    prompts.set_value("pulse_banner", "Two sentences, chronological.")
+    captured = prompts.effective("pulse_session_line")
+    prompts.set_value("pulse_session_line", "One line, current state first.")
     calls: list = []
     monkeypatch.setattr(review, "_TRANSPORT", _scripted([{"ok": True}], calls))
     with pytest.raises(review.ReviewError, match="did not come from the registry"):

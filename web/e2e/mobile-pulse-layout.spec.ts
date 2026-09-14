@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { settingsPath } from "../src/routes/settingsTabs";
 
 import { mockMissions } from "./mission-console";
 
@@ -21,10 +22,8 @@ const ORCH_CONFIG = {
   max_actions_per_pass: 4,
   proposal_ttl_minutes: 30,
   nudge_template: "Please continue.",
-  prompt: "system prompt",
   notify: "escalations",
   configured: true,
-  default_prompt: "system prompt",
   default_nudge_template: "Please continue.",
 };
 
@@ -111,7 +110,6 @@ test.beforeEach(async ({ page }) => {
         scan_depth: "slow",
         input_fingerprint: null,
         synthesis_skipped: false,
-        banner: null,
         cards: [],
       },
     }),
@@ -393,7 +391,7 @@ test("'Run now' is still a 44px target where it now lives, and does not overflow
   // gone. What must NOT be lost with it is the reason the fix mattered: on a phone this is a
   // tap target, and it has to be reachable without sideways scrolling.
   await mockMissions(page);
-  await page.goto("/settings/ai-review");
+  await page.goto(settingsPath("ai-mission-control"));
   const run = page.getByRole("button", { name: /run now/i });
   await expect(run).toBeVisible();
 

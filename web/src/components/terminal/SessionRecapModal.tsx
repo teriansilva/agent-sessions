@@ -165,7 +165,7 @@ export function SessionRecapModal({
       // 409 = unconfigured; anything else = the review failed and the last good result stays.
       setError(
         e instanceof ApiError && e.status === 409
-          ? "AI review isn't configured — set it up in Settings → AI Review."
+          ? "AI review isn't configured — set it up in Settings → AI → Endpoint & model."
           : "Review failed — showing the last result.",
       );
     } finally {

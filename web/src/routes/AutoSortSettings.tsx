@@ -1,18 +1,18 @@
 import { Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
-import { useConfig } from "../app/config";
+import { Link, useLocation } from "react-router-dom";
+import { useConfig, useConfigRefresh } from "../app/config";
 import { api, ApiError } from "../lib/api";
 import type { AutoSortConfig, AutoSortReport } from "../types/api";
 import styles from "./Settings.module.css";
+import { promptPath } from "./settingsTabs";
 
 const FALLBACK: AutoSortConfig = {
   enabled: false,
   interval_minutes: 30,
   confidence_min: 0.7,
   max_per_pass: 8,
-  prompt: "",
   configured: false,
-  default_prompt: "",
 };
 
 // Mirror the server bounds (prefs.AUTO_SORT_*) so an out-of-range entry reverts client-side.
@@ -29,6 +29,11 @@ const PER_PASS_HI = 50;
  *  session; only assigns when the classifier clears the floor. */
 export function AutoSortSettings() {
   const cfgBlock = useConfig()?.auto_sort;
+  // Refetched after every save (#956): with one page per section, a remount on navigation is
+  // routine, and a remount on a stale context shows pre-save values — the #667 failure mode.
+  const refreshConfig = useConfigRefresh();
+  // Rides on the in-app prompt link so the #155 "Back to sessions" target survives the hop.
+  const location = useLocation();
   const [block, setBlock] = useState<AutoSortConfig>(cfgBlock ?? FALLBACK);
   // Reflect the config load (it can land after mount) exactly once per change.
   const [synced, setSynced] = useState(cfgBlock);
@@ -84,7 +89,10 @@ export function AutoSortSettings() {
       const r = (await api.setPrefs({ auto_sort: partial })) as {
         auto_sort?: AutoSortConfig;
       };
-      if (r.auto_sort) setBlock(r.auto_sort);
+      if (r.auto_sort) {
+        setBlock(r.auto_sort);
+        refreshConfig();
+      }
     } catch (e) {
       setError(
         e instanceof ApiError && e.status === 422
@@ -165,7 +173,7 @@ export function AutoSortSettings() {
       <p className={styles.hint}>
         When enabled, sessions that aren’t assigned to any project are
         classified against your existing projects and assigned automatically —
-        reusing the AI endpoint above. It runs in the background and only
+        using the AI endpoint from Endpoint &amp; model. It runs in the background and only
         assigns when it clears the confidence floor; ambiguous sessions are left
         alone, and a session you’ve assigned yourself is never changed.
       </p>
@@ -260,11 +268,15 @@ export function AutoSortSettings() {
 
       <div className={styles.aiField}>
         <p className={styles.hint}>
-          The classifier instruction now lives in{" "}
-          <a className={styles.nameLink} href="#prompt-auto_sort">
+          The classifier instruction lives in{" "}
+          <Link
+            className={styles.nameLink}
+            to={promptPath("auto_sort")}
+            state={location.state}
+          >
             Prompts → Project classifier
-          </a>{" "}
-          below, alongside every other prompt this app sends. Make it less
+          </Link>
+          , alongside every other prompt this app sends. Make it less
           conservative there if too many sessions come back as “no confident
           match”.
         </p>

@@ -45,10 +45,8 @@ function config(over: Partial<OrchestratorConfig> = {}): OrchestratorConfig {
     max_actions_per_pass: 4,
     proposal_ttl_minutes: 30,
     nudge_template: "carry on",
-    prompt: "p",
     notify: "escalations",
     configured: true,
-    default_prompt: "p",
     default_nudge_template: "carry on",
     ...over,
   };

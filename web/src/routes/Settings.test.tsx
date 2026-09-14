@@ -17,7 +17,7 @@ import type { ThemeId } from "../theme/themes";
 import { ThemeCtx } from "../theme/themeStore";
 import { AccentCtx } from "../theme/accentStore";
 import { Settings } from "./Settings";
-import { SETTINGS_TABS } from "./settingsTabs";
+import { SETTINGS_SECTIONS } from "./settingsTabs";
 
 vi.mock("../lib/api", async () => {
   const actual =
@@ -63,14 +63,22 @@ vi.mock("../lib/api", async () => {
       // #441: the AI Review tab now also mounts the AI-activity panel + Pulse section.
       aiActivity: vi.fn().mockResolvedValue({ running: [], last: {} }),
       pulseScan: vi.fn(),
+      // #956: the Prompts page renders the catalog (a deep link lands there).
+      prompts: vi.fn().mockResolvedValue({ prompts: [] }),
     },
   };
 });
 
-/** Surfaces the live router location so tests can assert the /settings/:tab URL contract. */
+/** Surfaces the live router location (path + hash) so tests can assert the /settings/:section
+ *  URL contract, including where a `#prompt-<id>` deep link lands. */
 function LocationProbe() {
   const location = useLocation();
-  return <div data-testid="location">{location.pathname}</div>;
+  return (
+    <div data-testid="location">
+      {location.pathname}
+      {location.hash}
+    </div>
+  );
 }
 
 /** Mounts Settings under the real route shapes (#357): bare /settings and /settings/:tab —
@@ -79,6 +87,7 @@ function renderSettings(
   theme: ThemeId = "dark",
   accent = "#ffb000",
   initialPath = "/settings",
+  authMode: "single-user" | "none" = "single-user",
 ) {
   const setTheme = vi.fn();
   const setAccent = vi.fn();
@@ -93,7 +102,7 @@ function renderSettings(
             csrf: "t",
             new_session_engines: [],
             terminal_backend: "ws",
-            auth_mode: "single-user",
+            auth_mode: authMode,
             two_factor_enabled: false,
           } as AppConfig
         }
@@ -235,21 +244,21 @@ beforeEach(() => {
   vi.mocked(api.fsMkdir).mockResolvedValue({ path: "/home/u/new" });
 });
 
-// ---- Tab shell: routing + deep links (#357 Phase 1) ----
+// ---- Settings navigation: sections, routing + deep links (#956) ----
 
-test("bare /settings redirects to the first tab (canonical /settings/:tab)", async () => {
+test("bare /settings redirects to the first section on desktop (canonical /settings/:section)", async () => {
   renderSettings("dark", "#ffb000", "/settings");
   expect(screen.getByTestId("location")).toHaveTextContent(
     "/settings/appearance",
   );
-  expect(screen.getByRole("tab", { name: "Appearance" })).toHaveAttribute(
-    "aria-selected",
-    "true",
+  expect(screen.getByRole("link", { name: "Appearance" })).toHaveAttribute(
+    "aria-current",
+    "page",
   );
   await flushFetches();
 });
 
-test("an unknown tab falls back to the first tab (no 404)", async () => {
+test("an unknown section falls back to the first section (no 404)", async () => {
   renderSettings("dark", "#ffb000", "/settings/launch-codes");
   expect(screen.getByTestId("location")).toHaveTextContent(
     "/settings/appearance",
@@ -260,136 +269,169 @@ test("an unknown tab falls back to the first tab (no 404)", async () => {
   await flushFetches();
 });
 
-test("the tablist exposes all tabs with roving tabindex", async () => {
+test("the sidebar lists every section, grouped, in registry order — one current page", async () => {
   renderSettings("dark", "#ffb000", "/settings/projects");
-  const tablist = screen.getByRole("tablist", { name: "Settings sections" });
-  const tabs = screen.getAllByRole("tab");
-  expect(tablist).toBeInTheDocument();
-  expect(tabs.map((t) => t.textContent)).toEqual([
-    "Appearance",
-    "Projects",
-    "AI",
-    "Security",
-    "System",
-    "Maintenance",
-    "About",
-  ]);
-  // Roving tabindex: only the active tab is in the tab order.
-  for (const t of tabs) {
-    expect(t).toHaveAttribute(
-      "tabindex",
-      t.textContent === "Projects" ? "0" : "-1",
-    );
+  const nav = screen.getByRole("navigation", { name: "Settings" });
+  const links = within(nav).getAllByRole("link");
+  expect(links.map((l) => l.textContent)).toEqual(
+    SETTINGS_SECTIONS.map((s) => s.label),
+  );
+  for (const group of ["General", "AI", "System", "About"]) {
+    expect(within(nav).getByRole("list", { name: group })).toBeInTheDocument();
   }
+  expect(
+    links
+      .filter((l) => l.getAttribute("aria-current") === "page")
+      .map((l) => l.textContent),
+  ).toEqual(["Projects"]);
   await flushFetches();
 });
 
-test("clicking a tab navigates to its canonical URL and swaps the panel", async () => {
+test("clicking a section navigates to its URL and swaps the page", async () => {
   renderSettings();
-  await userEvent.click(screen.getByRole("tab", { name: "Maintenance" }));
+  await userEvent.click(screen.getByRole("link", { name: "Maintenance" }));
   expect(screen.getByTestId("location")).toHaveTextContent(
     "/settings/maintenance",
   );
-  expect(screen.getByRole("tab", { name: "Maintenance" })).toHaveAttribute(
-    "aria-selected",
-    "true",
+  expect(screen.getByRole("link", { name: "Maintenance" })).toHaveAttribute(
+    "aria-current",
+    "page",
   );
   expect(
-    await screen.findByRole("heading", { name: "Maintenance" }),
+    await screen.findByRole("heading", { name: "Archive old sessions" }),
   ).toBeInTheDocument();
-  // The previous panel's content is gone.
+  // The previous page's content is gone.
   expect(
     screen.queryByRole("heading", { name: "Appearance" }),
   ).not.toBeInTheDocument();
 });
 
-test("arrow keys move + select tabs with wrap-around; Home/End jump (#357)", async () => {
-  renderSettings("dark", "#ffb000", "/settings/appearance");
-  screen.getByRole("tab", { name: "Appearance" }).focus();
-
-  await userEvent.keyboard("{ArrowRight}");
-  expect(screen.getByRole("tab", { name: "Projects" })).toHaveFocus();
-  expect(screen.getByTestId("location")).toHaveTextContent(
-    "/settings/projects",
-  );
-
-  await userEvent.keyboard("{ArrowLeft}");
-  expect(screen.getByRole("tab", { name: "Appearance" })).toHaveFocus();
-  expect(screen.getByTestId("location")).toHaveTextContent(
-    "/settings/appearance",
-  );
-
-  // Wrap-around: ArrowLeft from the first tab lands on the last.
-  await userEvent.keyboard("{ArrowLeft}");
-  expect(screen.getByRole("tab", { name: "About" })).toHaveFocus();
-  expect(screen.getByTestId("location")).toHaveTextContent("/settings/about");
-
-  await userEvent.keyboard("{Home}");
-  expect(screen.getByRole("tab", { name: "Appearance" })).toHaveFocus();
-  expect(screen.getByTestId("location")).toHaveTextContent(
-    "/settings/appearance",
-  );
-
-  await userEvent.keyboard("{End}");
-  expect(screen.getByRole("tab", { name: "About" })).toHaveFocus();
-  expect(screen.getByTestId("location")).toHaveTextContent("/settings/about");
-  await flushFetches();
-});
-
-test("the active panel is a labelled tabpanel wired to its tab", async () => {
-  renderSettings("dark", "#ffb000", "/settings/security");
-  const panel = screen.getByRole("tabpanel");
-  expect(panel).toHaveAttribute("id", "settings-panel-security");
-  expect(panel).toHaveAttribute("aria-labelledby", "settings-tab-security");
-  expect(screen.getByRole("tab", { name: "Security" })).toHaveAttribute(
-    "aria-controls",
-    "settings-panel-security",
+test.each([
+  ["/settings/ai-review", "/settings/ai-endpoint"],
+  [
+    "/settings/ai-review#prompt-chat_instruct",
+    "/settings/ai-prompts#prompt-chat_instruct",
+  ],
+])("the pre-#956 AI tab link %s lands on %s", async (from, to) => {
+  renderSettings("dark", "#ffb000", from);
+  await waitFor(() =>
+    expect(screen.getByTestId("location")).toHaveTextContent(to),
   );
   await flushFetches();
 });
 
-// Every existing settings control still has a home: each tab renders its sections (#357
-// zero-behavioural-change guarantee — components moved, not changed).
+test("the page names its group and section in a crumb, not a second heading", async () => {
+  renderSettings("dark", "#ffb000", "/settings/ai-mission-control");
+  expect(screen.getByText(/Settings \/\/ AI \/\//)).toHaveTextContent(
+    "Mission control",
+  );
+  await flushFetches();
+});
+
+// Every existing settings control still has a home (#357 zero-behavioural-change guarantee, kept
+// through the #956 split): each section renders its cards.
 test.each([
   ["appearance", ["Appearance"]],
+  ["session-defaults", ["Session defaults"]],
   ["projects", ["Projects", "Session overview"]],
-  ["ai-review", ["AI endpoint", "Session review", "Auto-sort projects"]],
+  ["ai-endpoint", ["AI endpoint"]],
+  ["ai-session-review", ["Session review"]],
+  ["ai-auto-sort", ["Auto-sort projects"]],
+  ["ai-mission-control", ["Orchestrator", "Session scan", "Forge connection"]],
+  ["ai-playbooks", ["Mission playbooks"]],
+  ["ai-prompts", ["Prompts"]],
+  ["ai-activity", ["AI activity"]],
+  ["agents", ["Connected agents"]],
   ["security", ["Two-factor authentication", "Account"]],
-  ["system", ["Connected agents", "System", "Updates"]],
-  ["maintenance", ["Maintenance", "Scrollback cache"]],
+  ["updates", ["Updates"]],
+  ["system", ["Host"]],
+  ["maintenance", ["Archive old sessions", "Scrollback cache"]],
   ["about", ["Support", "About"]],
-])("tab %s renders its sections: %s", async (tab, headings) => {
-  renderSettings("dark", "#ffb000", `/settings/${tab}`);
+])("section %s renders its cards: %s", async (section, headings) => {
+  renderSettings("dark", "#ffb000", `/settings/${section}`);
   for (const h of headings) {
     expect(await screen.findByRole("heading", { name: h })).toBeInTheDocument();
   }
   await flushFetches();
 });
 
-test("the AI tab renders the restructured panel (endpoint key, review prompt, auto-sort)", async () => {
-  renderSettings("dark", "#ffb000", "/settings/ai-review");
+test("the registry and the pages agree: every section id renders something", () => {
+  // A registry entry with no body in Settings.tsx would be a nav link to a blank page.
+  expect(SETTINGS_SECTIONS).toHaveLength(16);
+});
+
+test("the Endpoint & model page renders the endpoint fields", async () => {
+  renderSettings("dark", "#ffb000", "/settings/ai-endpoint");
   expect(
     await screen.findByRole("heading", { name: "AI endpoint" }),
   ).toBeInTheDocument();
   expect(screen.getByLabelText(/API key/i)).toBeInTheDocument();
+  // Session review is its own page now.
+  expect(
+    screen.queryByRole("heading", { name: "Session review" }),
+  ).not.toBeInTheDocument();
   await flushFetches();
 });
 
-test("mobile smoke (390px): all tabs stay reachable in the scrollable bar (#289/#357)", async () => {
-  // jsdom does no layout — this is a shell-invariant smoke: at a phone-width viewport the
-  // full data-driven tab set still renders inside the single scrollable tablist (CSS makes
-  // it overflow-x: auto), and the System dl rows render without dropping values.
-  window.innerWidth = 390;
-  window.dispatchEvent(new Event("resize"));
-  renderSettings("dark", "#ffb000", "/settings/system");
-  const tablist = screen.getByRole("tablist", { name: "Settings sections" });
-  expect(tablist).toBeInTheDocument();
-  expect(screen.getAllByRole("tab")).toHaveLength(SETTINGS_TABS.length);
-  // The long-value System rows (the #289 overflow culprits) are all present.
-  await waitFor(() =>
-    expect(screen.getByText("Linux 6.8.0")).toBeInTheDocument(),
-  );
-  expect(screen.getByText("Linux-6.8.0-x86_64 · x86_64")).toBeInTheDocument();
+/** A phone viewport for `useIsMobile` (jsdom has no matchMedia of its own). */
+function asPhone(): () => void {
+  const original = window.matchMedia;
+  window.matchMedia = vi.fn().mockReturnValue({
+    matches: true,
+    media: "(max-width: 800px)",
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  }) as unknown as typeof window.matchMedia;
+  return () => {
+    window.matchMedia = original;
+  };
+}
+
+test("phone: bare /settings is the grouped index, and a section opens full-width with a back link (#956)", async () => {
+  const restore = asPhone();
+  try {
+    renderSettings("dark", "#ffb000", "/settings");
+    expect(screen.getByTestId("location")).toHaveTextContent(/^\/settings$/);
+    const nav = screen.getByRole("navigation", { name: "Settings" });
+    expect(within(nav).getAllByRole("link").map((l) => l.textContent)).toEqual(
+      SETTINGS_SECTIONS.map((s) => s.label),
+    );
+    expect(
+      screen.getByRole("link", { name: "Back to sessions" }),
+    ).toBeInTheDocument();
+
+    await userEvent.click(within(nav).getByRole("link", { name: "Updates" }));
+    expect(screen.getByTestId("location")).toHaveTextContent(
+      "/settings/updates",
+    );
+    expect(
+      await screen.findByRole("heading", { name: "Updates" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Back to settings" }),
+    ).toHaveAttribute("href", "/settings");
+    // No sidebar on a phone: the index is the navigation.
+    expect(
+      screen.queryByRole("navigation", { name: "Settings" }),
+    ).not.toBeInTheDocument();
+  } finally {
+    restore();
+  }
+});
+
+test("phone: an unknown section lands on the index, not the first section", async () => {
+  const restore = asPhone();
+  try {
+    renderSettings("dark", "#ffb000", "/settings/launch-codes");
+    await waitFor(() =>
+      expect(screen.getByTestId("location")).toHaveTextContent(/^\/settings$/),
+    );
+    expect(
+      screen.getByRole("navigation", { name: "Settings" }),
+    ).toBeInTheDocument();
+  } finally {
+    restore();
+  }
 });
 
 // ---- Appearance tab ----
@@ -467,7 +509,7 @@ test("an invalid custom hex is rejected (no setAccent) and the field resets", as
 // ---- System tab ----
 
 test("renders the Connected agents section with each engine + new-session badge", async () => {
-  renderSettings("dark", "#ffb000", "/settings/system");
+  renderSettings("dark", "#ffb000", "/settings/agents");
   expect(
     screen.getByRole("heading", { name: "Connected agents" }),
   ).toBeInTheDocument();
@@ -481,7 +523,7 @@ test("renders the Connected agents section with each engine + new-session badge"
 });
 
 test("shows what an agent has spent on the row that already names it (#839)", async () => {
-  renderSettings("dark", "#ffb000", "/settings/system");
+  renderSettings("dark", "#ffb000", "/settings/agents");
   await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
   // The window nearest its limit, not the first one the agent listed.
   expect(screen.getByText(/week \(all models\)/)).toBeInTheDocument();
@@ -495,7 +537,7 @@ test("shows what an agent has spent on the row that already names it (#839)", as
 });
 
 test("an agent that reports nothing shows no percentage, not a zero (#839)", async () => {
-  renderSettings("dark", "#ffb000", "/settings/system");
+  renderSettings("dark", "#ffb000", "/settings/agents");
   await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
   // codex reports nothing and has no limit set: an em dash, never "0%" — which would read
   // as "this agent has used nothing".
@@ -507,7 +549,7 @@ test("an agent that reports nothing shows no percentage, not a zero (#839)", asy
 });
 
 test("a plan agent is offered no limit box to set (#839)", async () => {
-  renderSettings("dark", "#ffb000", "/settings/system");
+  renderSettings("dark", "#ffb000", "/settings/agents");
   await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
   // claude reports a real quota against a real plan; a "limit" input there would invite the
   // operator to configure a number the agent already knows better.
@@ -529,7 +571,7 @@ test("saving a limit sends only that agent's field (#839)", async () => {
     },
     agents: [],
   });
-  renderSettings("dark", "#ffb000", "/settings/system");
+  renderSettings("dark", "#ffb000", "/settings/agents");
   await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
   const input = screen.getByRole("spinbutton", { name: /codex token limit/i });
   fireEvent.change(input, { target: { value: "5000" } });
@@ -553,7 +595,7 @@ test("saves are serialized, so the last response is the newest state (#839)", as
   vi.mocked(api.setAgentBudgets).mockImplementation(
     () => new Promise<AgentUsageResponse>((res) => deferred.push(res)),
   );
-  renderSettings("dark", "#ffb000", "/settings/system");
+  renderSettings("dark", "#ffb000", "/settings/agents");
   await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
 
   const snapshot = (notifyValue: boolean): AgentUsageResponse => ({
@@ -592,7 +634,7 @@ test("two quick notify toggles send off then on, not off twice (#839)", async ()
   vi.mocked(api.setAgentBudgets).mockImplementation(
     () => new Promise<AgentUsageResponse>((res) => deferred.push(res)),
   );
-  renderSettings("dark", "#ffb000", "/settings/system");
+  renderSettings("dark", "#ffb000", "/settings/agents");
   await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
 
   const box = screen.getByRole("checkbox", {
@@ -635,7 +677,7 @@ test.each([
     vi.mocked(api.setAgentBudgets).mockImplementation(
       () => new Promise<AgentUsageResponse>((res) => deferred.push(res)),
     );
-    renderSettings("dark", "#ffb000", "/settings/system");
+    renderSettings("dark", "#ffb000", "/settings/agents");
     await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
 
     const input = screen.getByRole("spinbutton", {
@@ -670,7 +712,7 @@ test("a change-away-then-back on a per-agent limit still reaches the server (#83
   vi.mocked(api.setAgentBudgets).mockImplementation(
     () => new Promise<AgentUsageResponse>((res) => deferred.push(res)),
   );
-  renderSettings("dark", "#ffb000", "/settings/system");
+  renderSettings("dark", "#ffb000", "/settings/agents");
   await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
 
   const limit = screen.getByRole("spinbutton", {
@@ -706,7 +748,7 @@ test("a rejected save can be retried with the same value (#839)", async () => {
   vi.mocked(api.setAgentBudgets).mockRejectedValueOnce(
     new Error("boom, try again"),
   );
-  renderSettings("dark", "#ffb000", "/settings/system");
+  renderSettings("dark", "#ffb000", "/settings/agents");
   await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
 
   const input = screen.getByRole("spinbutton", {
@@ -746,7 +788,7 @@ test("a failed older save does not erase a newer queued intent (#839)", async ()
         deferred.push({ resolve, reject }),
       ),
   );
-  renderSettings("dark", "#ffb000", "/settings/system");
+  renderSettings("dark", "#ffb000", "/settings/agents");
   await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
 
   const input = screen.getByRole("spinbutton", {
@@ -823,7 +865,7 @@ test.each([
           deferred.push({ resolve, reject }),
         ),
     );
-    renderSettings("dark", "#ffb000", "/settings/system");
+    renderSettings("dark", "#ffb000", "/settings/agents");
     await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
 
     const input = screen.getByRole("spinbutton", {
@@ -894,7 +936,7 @@ test.each([
           deferred.push({ resolve, reject }),
         ),
     );
-    renderSettings("dark", "#ffb000", "/settings/system");
+    renderSettings("dark", "#ffb000", "/settings/agents");
     await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
 
     const input = screen.getByRole("spinbutton", {
@@ -935,7 +977,7 @@ test("an older queued save does not clear a newer edit to the same field (#839)"
   vi.mocked(api.setAgentBudgets).mockImplementation(
     () => new Promise<AgentUsageResponse>((res) => deferred.push(res)),
   );
-  renderSettings("dark", "#ffb000", "/settings/system");
+  renderSettings("dark", "#ffb000", "/settings/agents");
   await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
 
   const limit = screen.getByRole("spinbutton", {
@@ -972,7 +1014,7 @@ test("a save the server REJECTS stops masking the stored value (#839)", async ()
       "agent_budgets.engines.codex.limit_tokens must be a whole number",
     ),
   );
-  renderSettings("dark", "#ffb000", "/settings/system");
+  renderSettings("dark", "#ffb000", "/settings/agents");
   await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
 
   const limit = screen.getByRole("spinbutton", {
@@ -994,7 +1036,7 @@ test("a numeric field is reconciled by the server, not left as typed (#839)", as
   vi.mocked(api.setAgentBudgets).mockRejectedValue(
     new Error("agent_budgets rejected"),
   );
-  renderSettings("dark", "#ffb000", "/settings/system");
+  renderSettings("dark", "#ffb000", "/settings/agents");
   await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
 
   const input = screen.getByRole("spinbutton", {
@@ -1013,7 +1055,7 @@ test("a rejected budget save says why, in the server's words (#839)", async () =
       "agent_budgets.threshold_pct must be an integer between 1 and 100",
     ),
   );
-  renderSettings("dark", "#ffb000", "/settings/system");
+  renderSettings("dark", "#ffb000", "/settings/agents");
   await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
   const input = screen.getByRole("spinbutton", { name: /alert threshold/i });
   fireEvent.change(input, { target: { value: "55" } });
@@ -1024,9 +1066,9 @@ test("a rejected budget save says why, in the server's words (#839)", async () =
   );
 });
 
-test("renders the System section with humanized fields", async () => {
+test("renders the Host section with humanized fields", async () => {
   renderSettings("dark", "#ffb000", "/settings/system");
-  expect(screen.getByRole("heading", { name: "System" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Host" })).toBeInTheDocument();
   await waitFor(() =>
     expect(screen.getByText("Linux 6.8.0")).toBeInTheDocument(),
   );
@@ -1044,7 +1086,7 @@ test("Updates: check finds an update, then apply calls the API", async () => {
     update_available: true,
   });
   vi.mocked(api.updateApply).mockResolvedValue({ status: "updating" });
-  renderSettings("dark", "#ffb000", "/settings/system");
+  renderSettings("dark", "#ffb000", "/settings/updates");
   await userEvent.click(
     screen.getByRole("button", { name: /check for updates/i }),
   );
@@ -1070,7 +1112,7 @@ test("Updates: the apply action exists even when no update is available (#931)",
     update_available: false,
   });
   vi.mocked(api.updateApply).mockResolvedValue({ status: "updating" });
-  renderSettings("dark", "#ffb000", "/settings/system");
+  renderSettings("dark", "#ffb000", "/settings/updates");
   await userEvent.click(
     screen.getByRole("button", { name: /check for updates/i }),
   );
@@ -1097,7 +1139,7 @@ test("Updates: an undetermined verdict never reads as up to date (#931)", async 
     update_available: false,
     undetermined: true,
   });
-  renderSettings("dark", "#ffb000", "/settings/system");
+  renderSettings("dark", "#ffb000", "/settings/updates");
   await userEvent.click(
     screen.getByRole("button", { name: /check for updates/i }),
   );
@@ -1123,7 +1165,7 @@ test("Updates: the apply action is disabled while a reinstall is running (#931)"
       release = res;
     }),
   );
-  renderSettings("dark", "#ffb000", "/settings/system");
+  renderSettings("dark", "#ffb000", "/settings/updates");
   await userEvent.click(
     screen.getByRole("button", { name: /check for updates/i }),
   );
@@ -1137,7 +1179,7 @@ test("Updates: the apply action is disabled while a reinstall is running (#931)"
 // ---- Updates: in-app auto-update settings (#538) ----
 
 test("Updates: automatic-updates toggle loads from settings and persists", async () => {
-  renderSettings("dark", "#ffb000", "/settings/system");
+  renderSettings("dark", "#ffb000", "/settings/updates");
   const toggle = await screen.findByRole("checkbox", {
     name: /automatic updates/i,
   });
@@ -1158,7 +1200,7 @@ test("Updates: last automatic check renders as recent runtime status", async () 
     channel: "stable",
     last_auto: { ts: 1720000000, result: "up-to-date" },
   });
-  renderSettings("dark", "#ffb000", "/settings/system");
+  renderSettings("dark", "#ffb000", "/settings/updates");
   expect(
     await screen.findByText(/last automatic check: .*up-to-date/i),
   ).toBeInTheDocument();
@@ -1178,7 +1220,7 @@ test("Updates: switching channel drops a stale in-flight check result", async ()
       resolveCheck = res;
     }),
   );
-  renderSettings("dark", "#ffb000", "/settings/system");
+  renderSettings("dark", "#ffb000", "/settings/updates");
   const main = await screen.findByRole("radio", { name: /main/i });
   await waitFor(() => expect(main).toBeEnabled());
   await userEvent.click(
@@ -1196,7 +1238,7 @@ test("Updates: switching channel drops a stale in-flight check result", async ()
 });
 
 test("Updates: release-channel radiogroup persists the channel", async () => {
-  renderSettings("dark", "#ffb000", "/settings/system");
+  renderSettings("dark", "#ffb000", "/settings/updates");
   const main = await screen.findByRole("radio", { name: /main/i });
   const stable = screen.getByRole("radio", { name: /stable/i });
   await waitFor(() => expect(main).toBeEnabled());
@@ -1241,14 +1283,10 @@ test("2FA: enable flow shows QR + manual key + recovery codes, then confirms", a
 });
 
 test("2FA: hidden entirely when auth_mode is none", async () => {
-  vi.mocked(api.config).mockResolvedValue({
-    csrf: "t",
-    new_session_engines: [],
-    terminal_backend: "ws",
-    auth_mode: "none",
-    two_factor_enabled: false,
-  });
-  renderSettings("dark", "#ffb000", "/settings/security");
+  // Decided once, by SecurityPanel from the shared config (#682). The card's own second
+  // auth_mode check was dead code and went in #956, so the test drives the shared config.
+  renderSettings("dark", "#ffb000", "/settings/security", "none");
+  expect(screen.getByRole("heading", { name: /^login$/i })).toBeInTheDocument();
   await flushFetches();
   await waitFor(() =>
     expect(
@@ -1265,14 +1303,7 @@ test("Account: Sign out calls the logout API (#141)", async () => {
 });
 
 test("Account: Sign out hidden when auth_mode is none (#141)", async () => {
-  vi.mocked(api.config).mockResolvedValue({
-    csrf: "t",
-    new_session_engines: [],
-    terminal_backend: "ws",
-    auth_mode: "none",
-    two_factor_enabled: false,
-  });
-  renderSettings("dark", "#ffb000", "/settings/security");
+  renderSettings("dark", "#ffb000", "/settings/security", "none");
   await flushFetches();
   await waitFor(() =>
     expect(screen.queryByRole("button", { name: /sign out/i })).toBeNull(),
@@ -1746,8 +1777,8 @@ test("the #155 returnTo survives the bare-/settings redirect and tab switches", 
   expect(
     screen.getByRole("link", { name: "Back to sessions" }),
   ).toHaveAttribute("href", "/s/claude/x");
-  // Switch tabs — the state rides along, so the back link keeps working.
-  await userEvent.click(screen.getByRole("tab", { name: "About" }));
+  // Switch sections — the state rides along, so the back link keeps working.
+  await userEvent.click(screen.getByRole("link", { name: "About" }));
   expect(
     screen.getByRole("link", { name: "Back to sessions" }),
   ).toHaveAttribute("href", "/s/claude/x");
@@ -1870,7 +1901,7 @@ test("Scrollback cache: clear archived passes the archived scope (#206)", async 
 // ---- session list order (#506) ----
 
 test("the session-list order radios default to Recent activity (#506)", async () => {
-  renderSettings("dark", "#ffb000", "/settings/appearance");
+  renderSettings("dark", "#ffb000", "/settings/session-defaults");
   expect(
     await screen.findByRole("radio", { name: /Recent activity/ }),
   ).toHaveAttribute("aria-checked", "true");
@@ -1882,7 +1913,7 @@ test("the session-list order radios default to Recent activity (#506)", async ()
 });
 
 test("picking Creation date persists session_list_order via setPrefs (#506)", async () => {
-  renderSettings("dark", "#ffb000", "/settings/appearance");
+  renderSettings("dark", "#ffb000", "/settings/session-defaults");
   await userEvent.click(
     await screen.findByRole("radio", { name: /Creation date/ }),
   );
@@ -1899,7 +1930,7 @@ test("picking Creation date persists session_list_order via setPrefs (#506)", as
 
 test("a failed session_list_order save rolls back the selection (#506)", async () => {
   vi.mocked(api.setPrefs).mockRejectedValueOnce(new Error("nope"));
-  renderSettings("dark", "#ffb000", "/settings/appearance");
+  renderSettings("dark", "#ffb000", "/settings/session-defaults");
   await userEvent.click(
     await screen.findByRole("radio", { name: /Creation date/ }),
   );
@@ -1916,7 +1947,7 @@ test("a failed session_list_order save rolls back the selection (#506)", async (
 test("a session_list_order save refreshes the shared config (#548)", async () => {
   const refresh = vi.fn();
   render(
-    <MemoryRouter initialEntries={["/settings/appearance"]}>
+    <MemoryRouter initialEntries={["/settings/session-defaults"]}>
       <ThemeCtx.Provider value={{ theme: "dark", setTheme: vi.fn() }}>
         <AccentCtx.Provider value={{ accent: "#ffb000", setAccent: vi.fn() }}>
           <ConfigRefreshCtx.Provider value={refresh}>
@@ -1941,7 +1972,7 @@ test("a failed session_list_order save does NOT refresh the config (#548)", asyn
   const refresh = vi.fn();
   vi.mocked(api.setPrefs).mockRejectedValueOnce(new Error("nope"));
   render(
-    <MemoryRouter initialEntries={["/settings/appearance"]}>
+    <MemoryRouter initialEntries={["/settings/session-defaults"]}>
       <ThemeCtx.Provider value={{ theme: "dark", setTheme: vi.fn() }}>
         <AccentCtx.Provider value={{ accent: "#ffb000", setAccent: vi.fn() }}>
           <ConfigRefreshCtx.Provider value={refresh}>

@@ -824,14 +824,24 @@ def get_ai_review(path: Path | None = None) -> dict:
 
 def public_ai_review(path: Path | None = None) -> dict:
     """The client-safe view of the block: the key is replaced by `api_key_set`, plus
-    `configured` (endpoint usable for proxy calls) and the default prompt for the
-    reset-to-default control. This is what /api/config and POST /api/prefs echo."""
+    `configured` (endpoint usable for proxy calls). The review prompt and its default are read
+    from the registry catalog (`GET /api/prompts`), not from here (#956). This is what
+    /api/config and POST /api/prefs echo."""
     full = get_ai_review(path)
-    pub = {k: v for k, v in full.items() if k != "api_key"}
+    # Neither the key nor the prompt: the prompt is edited (and read) through the registry
+    # catalog, `GET/PATCH /api/prompts` (#824), and a second copy here was read by nothing (#956).
+    pub = {k: v for k, v in full.items() if k not in ("api_key", "prompt")}
     pub["api_key_set"] = bool(full["api_key"])
     pub["configured"] = bool(str(full["base_url"]).strip() and full["api_key"])
-    pub["default_prompt"] = DEFAULT_AI_REVIEW_PROMPT
     return pub
+
+
+# The three prompts that predate the registry still STORE in their feature blocks, but they are
+# written only through `PATCH /api/prompts/{id}` (#824), which resolves the binding and applies the
+# guard normalization. `/api/prefs` accepting them too was a second, unguarded door (#956).
+_PROMPT_WRITE_REFUSED = (
+    "{block}.prompt is not writable through /api/prefs — use PATCH /api/prompts/{pid}"
+)
 
 
 def validate_ai_review_patch(patch: object) -> str | None:
@@ -858,10 +868,8 @@ def validate_ai_review_patch(patch: object) -> str | None:
         isinstance(patch["model"], str) and len(patch["model"]) <= AI_REVIEW_MODEL_MAX
     ):
         return "ai_review.model must be a string of bounded length"
-    if "prompt" in patch and not (
-        isinstance(patch["prompt"], str) and len(patch["prompt"]) <= AI_REVIEW_PROMPT_MAX
-    ):
-        return "ai_review.prompt must be a string of bounded length"
+    if "prompt" in patch:
+        return _PROMPT_WRITE_REFUSED.format(block="ai_review", pid="tail_review")
     for k, lo, hi in (
         ("interval_minutes", AI_REVIEW_INTERVAL_MIN, AI_REVIEW_INTERVAL_MAX),
         ("max_input_chars", AI_REVIEW_INPUT_CHARS_MIN, AI_REVIEW_INPUT_CHARS_MAX),
@@ -1005,10 +1013,11 @@ def get_auto_sort(path: Path | None = None) -> dict:
 def public_auto_sort(path: Path | None = None) -> dict:
     """Client-safe view (#424 Phase 6). `auto_sort` holds no secret of its own; `configured`
     mirrors the reused ai_review endpoint readiness so the UI can explain a can't-run state.
-    `default_prompt` backs the reset-to-default control (#459)."""
+    The classifier prompt and its default are read from the registry catalog, not from here
+    (#956)."""
     out = dict(get_auto_sort(path))
+    out.pop("prompt", None)  # edited through /api/prompts (#824); no copy here (#956)
     out["configured"] = bool(public_ai_review(path)["configured"])
-    out["default_prompt"] = DEFAULT_AUTO_SORT_PROMPT
     return out
 
 
@@ -1056,10 +1065,8 @@ def validate_auto_sort_patch(patch: object) -> str | None:
                 f"auto_sort.max_per_pass must be an integer between "
                 f"{AUTO_SORT_MAX_PER_PASS_MIN} and {AUTO_SORT_MAX_PER_PASS_MAX}"
             )
-    if "prompt" in patch and not (
-        isinstance(patch["prompt"], str) and len(patch["prompt"]) <= AUTO_SORT_PROMPT_MAX
-    ):
-        return "auto_sort.prompt must be a string of bounded length"
+    if "prompt" in patch:
+        return _PROMPT_WRITE_REFUSED.format(block="auto_sort", pid="auto_sort")
     return None
 
 
@@ -1089,7 +1096,9 @@ PULSE_INTERVAL_MIN = 5
 PULSE_INTERVAL_MAX = 24 * 60
 PULSE_WINDOW_MIN = 1
 PULSE_WINDOW_MAX = 30
-PULSE_DEPTHS: tuple[str, ...] = ("fast", "medium", "slow")
+# `medium` was removed (#956): all it added was a banner nothing rendered. A stored `medium` reads
+# as `fast` (same visible output) via the membership check in `get_pulse`; a WRITE of it is a 422.
+PULSE_DEPTHS: tuple[str, ...] = ("fast", "slow")
 PULSE_DEFAULT_DEPTH = "fast"
 
 _PULSE_DEFAULTS: dict[str, object] = {
@@ -1122,8 +1131,8 @@ def get_pulse(path: Path | None = None) -> dict:
 
 def public_pulse(path: Path | None = None) -> dict:
     """Client-safe view (#441 Phase 3). `pulse` holds no secret of its own; `configured`
-    mirrors the reused ai_review endpoint readiness so the UI can explain when depth ≥ medium
-    synthesis would degrade to fast."""
+    mirrors the reused ai_review endpoint readiness so the UI can explain when `slow` synthesis
+    would degrade to fast."""
     out = dict(get_pulse(path))
     out["configured"] = bool(public_ai_review(path)["configured"])
     return out
@@ -1320,8 +1329,8 @@ def public_orchestrator(path: Path | None = None) -> dict:
     ai_review endpoint readiness. `auto_verbs_ceiling` is surfaced so the UI can *show* that
     choose/answer/dispatch always need a tap rather than implying the tier alone decides."""
     out = dict(get_orchestrator(path))
+    out.pop("prompt", None)  # edited through /api/prompts (#824); no copy here (#956)
     out["configured"] = bool(public_ai_review(path)["configured"])
-    out["default_prompt"] = DEFAULT_ORCH_PROMPT
     out["default_nudge_template"] = DEFAULT_ORCH_NUDGE
     out["auto_verbs_ceiling"] = sorted(AUTO_VERBS_V1)
     return out
@@ -1375,9 +1384,12 @@ def validate_orchestrator_patch(patch: object) -> str | None:
             v = patch[k]
             if not isinstance(v, int) or isinstance(v, bool) or not (lo <= v <= hi):
                 return f"orchestrator.{k} must be an integer between {lo} and {hi}"
-    for k, cap in (("prompt", ORCH_PROMPT_MAX), ("nudge_template", ORCH_NUDGE_MAX)):
-        if k in patch and not (isinstance(patch[k], str) and len(patch[k]) <= cap):
-            return f"orchestrator.{k} must be a string of at most {cap} chars"
+    if "prompt" in patch:
+        return _PROMPT_WRITE_REFUSED.format(block="orchestrator", pid="orchestrator_pass")
+    if "nudge_template" in patch and not (
+        isinstance(patch["nudge_template"], str) and len(patch["nudge_template"]) <= ORCH_NUDGE_MAX
+    ):
+        return f"orchestrator.nudge_template must be a string of at most {ORCH_NUDGE_MAX} chars"
     return None
 
 

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { settingsPath } from "../src/routes/settingsTabs";
 
 // #682: the Security tab is config-driven. In Home Free (auth_mode=none) it must show the
 // login-off explainer + the enable-login recipe instead of rendering blank (both the 2FA and
@@ -42,7 +43,7 @@ test("Home Free (none): Security tab shows the login-off explainer + enable-logi
   page,
 }) => {
   baseRoutes(page, "none");
-  await page.goto("/settings/security");
+  await page.goto(settingsPath("security"));
   await expect(page.getByRole("heading", { name: /^login$/i })).toBeVisible();
   await expect(page.getByText(/login is off/i)).toBeVisible();
   // The 2FA / Sign-out cards must NOT be here in none-mode.
@@ -59,7 +60,7 @@ test("single-user: Security tab shows the normal cards, not the login-off card",
   page,
 }) => {
   baseRoutes(page, "single-user");
-  await page.goto("/settings/security");
+  await page.goto(settingsPath("security"));
   // The 2FA card's heading is always present in single-user mode…
   await expect(
     page.getByRole("heading", { name: /two-factor authentication/i }),

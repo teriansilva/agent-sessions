@@ -1,9 +1,11 @@
 import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Link, useLocation } from "react-router-dom";
 import { useConfig, useConfigRefresh } from "../app/config";
 import { api, ApiError } from "../lib/api";
 import type { AiReviewConfig, Session } from "../types/api";
 import styles from "./Settings.module.css";
+import { promptPath } from "./settingsTabs";
 
 /** What the user sees in the API-key field while a key is stored. Round-tripping it back
  *  to the server means "unchanged" (the masked-sentinel contract, #356) — but we never
@@ -15,12 +17,10 @@ const FALLBACK: AiReviewConfig = {
   base_url: "",
   model: "",
   interval_minutes: 5,
-  prompt: "",
   max_input_chars: 24000,
   request_timeout: null,
   api_key_set: false,
   configured: false,
-  default_prompt: "",
 };
 
 type ModelsState =
@@ -53,8 +53,10 @@ type EndpointState =
  *  validates by probing the /models proxy: success shows a confirmed state + populates
  *  the dropdown, failure shows the gateway's error verbatim (#382). The model choice
  *  auto-saves on change; interval/timeout/prompt keep their commit-on-blur behavior. */
-export function AiReviewSettings() {
+export function AiReviewSettings({ view }: { view: "endpoint" | "review" }) {
   const cfgBlock = useConfig()?.ai_review;
+  // Rides on the in-app prompt link so the #155 "Back to sessions" target survives the hop.
+  const location = useLocation();
   const [block, setBlock] = useState<AiReviewConfig>(cfgBlock ?? FALLBACK);
   // Reflect the config load (it can land after mount) exactly once per change.
   const [synced, setSynced] = useState(cfgBlock);
@@ -112,12 +114,11 @@ export function AiReviewSettings() {
   const [error, setError] = useState<string | null>(null);
   const [savedNote, setSavedNote] = useState(false);
 
-  // The sidebar's Review now/exclude gating reads the shared /api/config context, which
-  // is fetched once on mount (Hermes #367). When a save flips `configured` (endpoint+key
-  // completed, or the key removed), refetch that context so the manual review controls
-  // appear/disappear without a reload.
+  // The shared /api/config context is fetched once on mount (Hermes #367). Refetch it after
+  // EVERY successful save, not only when `configured` flips: with one page per section a
+  // remount on navigation is routine, and a panel that remounts on a stale context shows
+  // pre-save values as if the save had been lost — the #667 failure mode (#956).
   const refreshConfig = useConfigRefresh();
-  const ctxConfigured = cfgBlock?.configured ?? false;
 
   /** Persist a partial ai_review block; the echo is the server's public view. */
   const save = useCallback(
@@ -129,7 +130,7 @@ export function AiReviewSettings() {
         };
         if (r.ai_review) {
           setBlock(r.ai_review);
-          if (r.ai_review.configured !== ctxConfigured) refreshConfig();
+          refreshConfig();
         }
         setSavedNote(true);
         setTimeout(() => setSavedNote(false), 1500);
@@ -145,7 +146,7 @@ export function AiReviewSettings() {
         return false;
       }
     },
-    [ctxConfigured, refreshConfig],
+    [refreshConfig],
   );
 
   // --- model listing through the server-side proxy (key never in the browser) ---
@@ -195,14 +196,15 @@ export function AiReviewSettings() {
   // double-fetching when `configured` flips on a save echo.
   const probedOnce = useRef(false);
   useEffect(() => {
-    if (!block.configured || probedOnce.current) return;
+    if (view !== "endpoint" || !block.configured || probedOnce.current) return;
     probedOnce.current = true;
     void probe({ quiet: true });
-  }, [block.configured, probe]);
+  }, [view, block.configured, probe]);
 
   // --- excluded sessions (#356): row-menu opt-outs surface here for re-inclusion ---
   const [excluded, setExcluded] = useState<Session[] | null>(null);
   useEffect(() => {
+    if (view !== "review") return;
     let alive = true;
     api
       .sessions({ limit: 200 })
@@ -214,7 +216,7 @@ export function AiReviewSettings() {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [view]);
   const include = async (id: string) => {
     try {
       await api.reviewExclude(id, false);
@@ -281,7 +283,7 @@ export function AiReviewSettings() {
     probedOnce.current = true; // this save owns the probe — don't double-fetch
     if (next) {
       setBlock(next);
-      if (next.configured !== ctxConfigured) refreshConfig();
+      refreshConfig();
     }
     if (!next?.configured) {
       setEndpoint({ kind: "incomplete" });
@@ -408,12 +410,14 @@ export function AiReviewSettings() {
     <>
       {/* Section 1 — the shared OpenAI-compatible connection (#459: lifted out of the review
           feature so auto-sort's reuse of it reads clearly). */}
+      {view === "endpoint" && (
       <section className={styles.section} aria-labelledby="ai-endpoint-h">
         <h2 id="ai-endpoint-h">AI endpoint</h2>
         <p className={styles.hint}>
-          One OpenAI-compatible endpoint powers both session review and
-          auto-sort. The API key is stored server-side and never sent to the
-          browser.
+          One OpenAI-compatible endpoint powers every AI feature: session
+          review and recaps, handoff briefs, auto-sort, the mission-control
+          scan, the orchestrator and mission turns. The API key is stored
+          server-side and never sent to the browser.
         </p>
         {error && <p className={styles.err}>{error}</p>}
 
@@ -596,23 +600,32 @@ export function AiReviewSettings() {
             <span>seconds</span>
           </div>
           <p className={styles.hint}>
-            Hard timeout per request (10–600), shared by review and auto-sort.
-            Slow local models often need 60–180s. Leave empty to use the server
-            default.
+            Hard timeout per AI request (10–600), for every feature that uses
+            this endpoint. Slow local models often need 60–180s. Leave empty to
+            use the server default.
           </p>
         </div>
         {savedNote && <p className={styles.hint}>Saved.</p>}
       </section>
+      )}
 
       {/* Section 2 — the session-review feature (no endpoint config; #459). The prompt and
           excluded list fold in here as labelled fields rather than separate sections. */}
+      {view === "review" && (
       <section className={styles.section} aria-labelledby="ai-review-h">
         <h2 id="ai-review-h">Session review</h2>
         <p className={styles.hint}>
           Periodically reviews sessions with new activity and produces a
           one-line summary, a title, and an intervention flag per session —
-          using the endpoint above.
+          using the AI endpoint from Endpoint &amp; model.
         </p>
+        {/* Each view renders its OWN save feedback (Hermes on #957): the two views are separate
+            pages since #956, and a rejected interval or toggle must not fail silently here. */}
+        {error && (
+          <p className={styles.err} role="alert">
+            {error}
+          </p>
+        )}
 
         <label className={styles.aiToggle}>
           <input
@@ -623,8 +636,8 @@ export function AiReviewSettings() {
           <span>Enable periodic reviews</span>
         </label>
         <p className={styles.hint}>
-          The background loop ships in the next phase — manual “Review now”
-          works as soon as the endpoint above is configured.
+          Reviews run in the background at the interval below. “Review now” on a
+          session works whenever the endpoint is configured, even with this off.
         </p>
 
         <div className={styles.aiField}>
@@ -651,11 +664,15 @@ export function AiReviewSettings() {
 
         <div className={styles.aiField}>
         <p className={styles.hint}>
-          The review prompt now lives in{" "}
-          <a className={styles.nameLink} href="#prompt-tail_review">
+          The review prompt lives in{" "}
+          <Link
+            className={styles.nameLink}
+            to={promptPath("tail_review")}
+            state={location.state}
+          >
             Prompts → Tail review
-          </a>{" "}
-          below, alongside every other prompt this app sends.
+          </Link>
+          , alongside every other prompt this app sends.
         </p>
         </div>
 
@@ -691,7 +708,9 @@ export function AiReviewSettings() {
             </ul>
           )}
         </div>
+        {savedNote && <p className={styles.hint}>Saved.</p>}
       </section>
+      )}
     </>
   );
 }

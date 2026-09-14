@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { settingsPath } from "../src/routes/settingsTabs";
 
 // Real-browser check of the Settings → Session overview hide checklist (#152 + #174 inverse
 // semantics): un-ticking a project persists it as hidden via /api/prefs. The checkbox is
@@ -58,7 +59,7 @@ test("desktop: un-ticking a project in Settings persists it as hidden (#152 / #1
   });
 
   // Deep-link straight into the Projects tab (#357 canonical /settings/:tab form).
-  await page.goto("/settings/projects");
+  await page.goto(settingsPath("projects"));
   const alpha = page.getByRole("checkbox", { name: /alpha/i });
   await expect(alpha).toBeVisible();
   // New (#174) inverse semantics: nothing hidden → row is shown → checkbox is checked.

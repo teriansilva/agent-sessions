@@ -1,9 +1,11 @@
 import { PushDevices } from "../components/pulse/PushDevices";
 import { useEffect, useRef, useState } from "react";
+import { Link, useLocation } from "react-router-dom";
 import { useConfig, useConfigRefresh } from "../app/config";
 import { api, ApiError } from "../lib/api";
 import type { OrchestratorConfig, OrchestratorTier } from "../types/api";
 import styles from "./Settings.module.css";
+import { promptPath } from "./settingsTabs";
 
 const FALLBACK: OrchestratorConfig = {
   enabled: false,
@@ -16,10 +18,8 @@ const FALLBACK: OrchestratorConfig = {
   proposal_ttl_minutes: 30,
   stale_hours: 24,
   nudge_template: "",
-  prompt: "",
   notify: "escalations",
   configured: false,
-  default_prompt: "",
   default_nudge_template: "",
 };
 
@@ -46,6 +46,8 @@ const TIER_LABELS: Record<OrchestratorTier, string> = {
 export function OrchestratorSettings() {
   const cfgBlock = useConfig()?.orchestrator;
   const refreshConfig = useConfigRefresh();
+  // Rides on the in-app prompt link so the #155 "Back to sessions" target survives the hop.
+  const location = useLocation();
   const [block, setBlock] = useState<OrchestratorConfig>(cfgBlock ?? FALLBACK);
   const [synced, setSynced] = useState(cfgBlock);
   if (cfgBlock !== synced) {
@@ -191,11 +193,12 @@ export function OrchestratorSettings() {
 
   return (
     <section className={styles.section} aria-labelledby="orch-h">
-      <h2 id="orch-h">Mission control orchestrator</h2>
+      <h2 id="orch-h">Orchestrator</h2>
       <p className={styles.hint}>
         Lets mission control <strong>act</strong> on what it sees: nudging a session that
-        stopped mid-task, or raising one that needs your decision. It reuses the
-        AI review endpoint above. Every session is managed by default — use{" "}
+        stopped mid-task, or raising one that needs your decision. It uses the
+        AI endpoint from Endpoint &amp; model. Every session is managed by
+        default — use{" "}
         <strong>Stop mission control managing this</strong> in a session&rsquo;s row
         menu
         to withdraw one. Changes save automatically.
@@ -219,8 +222,13 @@ export function OrchestratorSettings() {
           checked={block.enabled}
           onChange={(e) => void save({ enabled: e.currentTarget.checked })}
         />
-        <span>Let mission control watch my sessions on a schedule</span>
+        <span>Mission control may act on my sessions</span>
       </label>
+      <p className={styles.hint}>
+        Off stops the scheduled pass, the mission supervisor, delivering nudges,
+        and starting or dispatching missions. “Run now” still runs a pass, but
+        everything it proposes waits for your approval.
+      </p>
 
       <div className={styles.aiField} data-testid="orchestrator-run">
         <div className={styles.aiActions}>
@@ -376,10 +384,14 @@ export function OrchestratorSettings() {
       <div className={styles.aiField}>
         <p className={styles.hint}>
           What the orchestrator is asked on each pass lives in{" "}
-          <a className={styles.nameLink} href="#prompt-orchestrator_pass">
+          <Link
+            className={styles.nameLink}
+            to={promptPath("orchestrator_pass")}
+            state={location.state}
+          >
             Prompts → Scheduled pass
-          </a>{" "}
-          below (and the chat’s router and instruct prompts alongside it). The
+          </Link>{" "}
+          (with the chat’s router and instruct prompts beside it). The
           rule that session output is untrusted is appended by the server and is
           not editable there.
         </p>

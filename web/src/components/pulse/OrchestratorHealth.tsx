@@ -22,6 +22,7 @@ import { api } from "../../lib/api";
 import { relTime } from "../../lib/format";
 import type { AiTaskLast } from "../../types/api";
 import styles from "./Orchestrator.module.css";
+import { settingsPath } from "../../routes/settingsTabs";
 
 export function OrchestratorHealth({
   refreshKey = 0,
@@ -63,7 +64,10 @@ export function OrchestratorHealth({
           ? ` — last successful pass ${lastOkAgo}`
           : " — no pass has succeeded yet"}
         .{health?.error ? ` ${health.error}` : ""}{" "}
-        <Link to="/settings/ai-review">Check Settings → AI Review</Link>.
+        <Link to={settingsPath("ai-endpoint")}>
+          Check Settings → AI → Endpoint &amp; model
+        </Link>
+        .
       </span>
     </p>
   );

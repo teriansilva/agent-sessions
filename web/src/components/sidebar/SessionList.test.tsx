@@ -528,11 +528,9 @@ const AI_CONFIG = {
     base_url: "https://ai.example/v1",
     model: "m",
     interval_minutes: 5,
-    prompt: "p",
     max_input_chars: 24000,
     api_key_set: true,
     configured: true,
-    default_prompt: "p",
   },
 } as unknown as AppConfig;
 

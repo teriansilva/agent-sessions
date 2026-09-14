@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { promptPath, settingsPath } from "../src/routes/settingsTabs";
 
 // Real-browser checks for Settings → AI → Prompts (#824): the catalog panel that replaced the
 // three inline prompt editors. Runs on desktop AND mobile (a jsdom test cannot tell you the
@@ -94,7 +95,7 @@ test("prompts: every prompt is listed, and editing one PATCHes it by id", async 
     await r.fulfill({ json: entry({ value: "three terse lines", is_default: false }) });
   });
 
-  await page.goto("/settings/ai-review");
+  await page.goto(settingsPath("ai-prompts"));
   await expect(page.getByRole("heading", { name: "Prompts" })).toBeVisible();
   await expect(page.getByText("Session recap")).toBeVisible();
   await expect(page.getByText("Chat instruct")).toBeVisible();
@@ -117,7 +118,7 @@ test("prompts: every prompt is listed, and editing one PATCHes it by id", async 
 test("prompts: the guarded clause is visible but not editable", async ({ page }) => {
   await page.route("**/api/prompts", (r) => r.fulfill({ json: CATALOG }));
 
-  await page.goto("/settings/ai-review#prompt-chat_instruct");
+  await page.goto(promptPath("chat_instruct"));
   // The deep link opened this row on arrival.
   const box = page.getByRole("textbox", { name: "Chat instruct prompt" });
   await expect(box).toBeVisible();
@@ -139,7 +140,7 @@ test("prompts: a catalog that fails to load offers a retry, not an empty panel",
     return r.fulfill({ json: CATALOG });
   });
 
-  await page.goto("/settings/ai-review");
+  await page.goto(settingsPath("ai-prompts"));
   await expect(page.getByText(/could not load prompts/i)).toBeVisible();
   await page.getByRole("button", { name: /retry/i }).click();
   await expect(page.getByText("Session recap")).toBeVisible();
@@ -149,7 +150,7 @@ test("prompts: rows stay usable at phone width", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "phone-width layout check");
   await page.route("**/api/prompts", (r) => r.fulfill({ json: CATALOG }));
 
-  await page.goto("/settings/ai-review");
+  await page.goto(settingsPath("ai-prompts"));
   const row = page.getByRole("button", { name: /Session recap/ });
   await expect(row).toBeVisible();
   // 44px touch target (docs/design.md §8) and no horizontal overflow at phone width.

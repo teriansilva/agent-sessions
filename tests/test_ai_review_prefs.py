@@ -104,7 +104,8 @@ def test_validate_rejects_bad_blocks():
         ({"base_url": "https://" + "x" * 2000}, "http"),
         ({"api_key": 42}, "api_key"),
         ({"model": "m" * 999}, "model"),
-        ({"prompt": "p" * 90000}, "prompt"),
+        # Prompts are written through PATCH /api/prompts/{id} only (#956), whatever the length.
+        ({"prompt": "p"}, "/api/prompts/tail_review"),
         ({"interval_minutes": 0}, "interval_minutes"),
         ({"interval_minutes": True}, "interval_minutes"),
         ({"max_input_chars": 10}, "max_input_chars"),
@@ -186,7 +187,9 @@ def test_api_prefs_validates_and_masks(auth_cfg, tmp_home, monkeypatch):
     assert conf.status_code == 200
     assert SECRET not in conf.text
     assert conf.json()["ai_review"]["api_key_set"] is True
-    assert conf.json()["ai_review"]["default_prompt"] == prefs.DEFAULT_AI_REVIEW_PROMPT
+    # The prompt lives in the /api/prompts catalog; no copy rides here any more (#956).
+    assert "prompt" not in conf.json()["ai_review"]
+    assert "default_prompt" not in conf.json()["ai_review"]
 
     # Masked-sentinel round trip over HTTP: posting the mask back preserves the key.
     r = _post_prefs(c, auth_cfg, csrf, {"api_key": prefs.AI_REVIEW_KEY_MASK, "model": "m3"})

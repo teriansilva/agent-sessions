@@ -2,6 +2,7 @@ import encodeQR from "@paulmillr/qr";
 import {
   Archive,
   ArrowLeft,
+  ChevronRight,
   Code2,
   Coffee,
   Copy,
@@ -14,7 +15,6 @@ import {
 } from "lucide-react";
 import {
   type CSSProperties,
-  type KeyboardEvent,
   useEffect,
   useMemo,
   useRef,
@@ -26,7 +26,6 @@ import {
   Link,
   Navigate,
   useLocation,
-  useNavigate,
   useParams,
 } from "react-router-dom";
 import { useConfig, useConfigRefresh } from "../app/config";
@@ -81,11 +80,19 @@ import type {
   UpdateInfo,
   UpdateSettings,
 } from "../types/api";
+import { useIsMobile } from "../lib/useIsMobile";
 import {
-  DEFAULT_SETTINGS_TAB,
-  isSettingsTab,
-  SETTINGS_TABS,
-  type SettingsTabId,
+  DEFAULT_SETTINGS_SECTION,
+  isSettingsSection,
+  legacySettingsTarget,
+  SETTINGS_GROUPS,
+  SETTINGS_PATH,
+  SETTINGS_SECTIONS,
+  settingsGroup,
+  settingsPath,
+  settingsSection,
+  type SettingsGroupId,
+  type SettingsSectionId,
 } from "./settingsTabs";
 import styles from "./Settings.module.css";
 
@@ -104,64 +111,111 @@ const CONTACT_USER = "contact";
 const CONTACT_DOMAIN = "superstatus.io";
 const contactAddr = () => `${CONTACT_USER}@${CONTACT_DOMAIN}`;
 
-/** Keyboard-accessible tablist (WAI-ARIA tabs pattern): roving tabindex, ArrowLeft/Right
- *  with wrap-around, Home/End, selection follows focus. Switching tabs navigates to the
- *  canonical `/settings/:tab` URL; the router state (the #155 returnTo) rides along so the
- *  back button keeps working across tab switches. */
-function SettingsTablist({ active }: { active: SettingsTabId }) {
-  const navigate = useNavigate();
+/** One group's sections, in registry order. A group holding a single section of the same name
+ *  (About) renders without a group label — "ABOUT / About" would say the same word twice. */
+function groupSections(group: SettingsGroupId) {
+  const items = SETTINGS_SECTIONS.filter((s) => s.group === group);
+  const label = settingsGroup(group).label;
+  const showLabel = !(items.length === 1 && items[0].label === label);
+  return { items, label, showLabel };
+}
+
+/** The desktop settings sidebar (#956): grouped links, one per section, rendered from the
+ *  registry. Links, not an ARIA tablist — each section is its own URL, so this is navigation
+ *  between pages and the browser's own Tab order and history apply. The router state (the #155
+ *  `returnTo`) rides along, so the back link survives every section switch. */
+function SettingsNav({ active }: { active: SettingsSectionId }) {
   const location = useLocation();
-  const refs = useRef<(HTMLButtonElement | null)[]>([]);
-
-  const select = (index: number, opts?: { replace?: boolean }) => {
-    const tab = SETTINGS_TABS[index];
-    refs.current[index]?.focus();
-    if (tab.id !== active) {
-      navigate(`/settings/${tab.id}`, {
-        replace: opts?.replace,
-        state: location.state,
-      });
-    }
-  };
-
-  const onKeyDown = (e: KeyboardEvent, index: number) => {
-    const last = SETTINGS_TABS.length - 1;
-    let next: number | null = null;
-    if (e.key === "ArrowRight") next = index === last ? 0 : index + 1;
-    else if (e.key === "ArrowLeft") next = index === 0 ? last : index - 1;
-    else if (e.key === "Home") next = 0;
-    else if (e.key === "End") next = last;
-    if (next === null) return;
-    e.preventDefault();
-    // Keyboard roving replaces the history entry so arrowing across the bar doesn't
-    // stack one entry per keypress.
-    select(next, { replace: true });
-  };
-
   return (
-    <nav className={styles.tabs} role="tablist" aria-label="Settings sections">
-      {SETTINGS_TABS.map((t, i) => (
-        <button
-          key={t.id}
-          ref={(el) => {
-            refs.current[i] = el;
-          }}
-          type="button"
-          role="tab"
-          id={`settings-tab-${t.id}`}
-          aria-selected={t.id === active}
-          aria-controls={`settings-panel-${t.id}`}
-          tabIndex={t.id === active ? 0 : -1}
-          className={
-            t.id === active ? `${styles.tab} ${styles.active}` : styles.tab
-          }
-          onClick={() => select(i)}
-          onKeyDown={(e) => onKeyDown(e, i)}
-        >
-          {t.label}
-        </button>
-      ))}
+    <nav className={styles.nav} aria-label="Settings">
+      {SETTINGS_GROUPS.map((g) => {
+        const { items, label, showLabel } = groupSections(g.id);
+        return (
+          <div key={g.id} className={styles.navGroup}>
+            {showLabel && (
+              <p className={styles.navGroupLabel} id={`settings-nav-${g.id}`}>
+                {label}
+              </p>
+            )}
+            <ul
+              className={styles.navList}
+              {...(showLabel
+                ? { "aria-labelledby": `settings-nav-${g.id}` }
+                : { "aria-label": label })}
+            >
+              {items.map((s) => (
+                <li key={s.id}>
+                  <Link
+                    to={settingsPath(s.id)}
+                    state={location.state}
+                    className={styles.navLink}
+                    aria-current={s.id === active ? "page" : undefined}
+                  >
+                    {s.label}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </div>
+        );
+      })}
     </nav>
+  );
+}
+
+/** The phone settings index (#956): a phone has no room for a sidebar, so bare `/settings` is
+ *  the grouped list and each section opens full-width with a back link to it. */
+function SettingsIndex({ returnTo }: { returnTo: string }) {
+  const location = useLocation();
+  return (
+    <div className={styles.wrap}>
+      <header className={styles.head}>
+        <Link
+          to={returnTo}
+          className={styles.back}
+          aria-label="Back to sessions"
+        >
+          <ArrowLeft size={18} />
+        </Link>
+        <h1>Settings</h1>
+      </header>
+      <nav className={styles.index} aria-label="Settings">
+        {SETTINGS_GROUPS.map((g) => {
+          const { items, label, showLabel } = groupSections(g.id);
+          return (
+            <div key={g.id} className={styles.indexGroup}>
+              {showLabel && (
+                <p
+                  className={styles.indexGroupLabel}
+                  id={`settings-index-${g.id}`}
+                >
+                  {label}
+                </p>
+              )}
+              <ul
+                className={styles.indexList}
+                {...(showLabel
+                  ? { "aria-labelledby": `settings-index-${g.id}` }
+                  : { "aria-label": label })}
+              >
+                {items.map((s) => (
+                  <li key={s.id}>
+                    <Link
+                      to={settingsPath(s.id)}
+                      state={location.state}
+                      className={styles.indexLink}
+                    >
+                      <span>{s.label}</span>
+                      <ChevronRight size={16} aria-hidden="true" />
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          );
+        })}
+      </nav>
+    </div>
   );
 }
 
@@ -680,14 +734,13 @@ function SystemCard() {
               ? humanDuration(sys.uptime_seconds)
               : null,
         },
-        { label: "App version", value: sys.version ?? null },
         { label: "Python", value: sys.python ?? null },
       ]
     : [];
 
   return (
     <section className={styles.section} aria-labelledby="system-h">
-      <h2 id="system-h">System</h2>
+      <h2 id="system-h">Host</h2>
       {sys === null ? (
         <p className={styles.hint}>…</p>
       ) : (
@@ -823,7 +876,8 @@ function UpdatesCard() {
       </label>
       <p className={styles.hint}>
         Checks daily and installs new releases with the same rollback-guarded
-        installer as “Update now”. No reinstall or terminal needed — the setting
+        installer as the button below (“Update now”, or “Reinstall latest” when
+        you’re already current). No reinstall or terminal needed — the setting
         applies immediately.
       </p>
       {settings?.auto_update && (
@@ -1002,7 +1056,6 @@ function proofPayload(value: string): { code?: string; password?: string } {
  *  disable, and regenerate recovery codes. Hidden when there is no login (auth_mode=none).
  *  The TOTP secret/recovery codes are shown once and never re-fetched. */
 function TwoFactorCard() {
-  const [authMode, setAuthMode] = useState<string | null>(null);
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [enroll, setEnroll] = useState<TwoFactorEnrollment | null>(null);
   const [confirmed, setConfirmed] = useState(false);
@@ -1019,9 +1072,7 @@ function TwoFactorCard() {
     api
       .config()
       .then((c) => {
-        if (!alive) return;
-        setAuthMode(c.auth_mode ?? "single-user");
-        setEnabled(!!c.two_factor_enabled);
+        if (alive) setEnabled(!!c.two_factor_enabled);
       })
       .catch(() => {
         /* unauthenticated/offline — leave it blank */
@@ -1115,8 +1166,6 @@ function TwoFactorCard() {
       setBusy(false);
     }
   };
-
-  if (authMode === "none") return null; // no login → 2FA is N/A
 
   return (
     <section className={styles.section} aria-labelledby="twofa-h">
@@ -1318,24 +1367,10 @@ function TwoFactorCard() {
 
 /** Account (#141): a Sign out button. Hidden when there's no login (auth_mode=none), like
  *  the 2FA card. Sign out clears the session server-side, then navigates to /login. */
+/** Sign out. Only ever mounted by `SecurityPanel` for a login-on install, which is what makes a
+ *  second `auth_mode` check here dead code (#956). */
 function AccountCard() {
-  const [authMode, setAuthMode] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    let alive = true;
-    api
-      .config()
-      .then((c) => alive && setAuthMode(c.auth_mode ?? "single-user"))
-      .catch(() => {
-        /* unauthenticated/offline — leave it blank */
-      });
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  if (authMode === "none") return null; // no login → nothing to sign out of
 
   return (
     <section className={styles.section} aria-labelledby="account-h">
@@ -1471,7 +1506,7 @@ function FolderDiscoveryCard() {
         Scope folder discovery to your project root(s). When a root is set this
         is a hard scope — folders outside it are hidden from the sidebar,
         filter, and pickers too. With no roots, discovery is unscoped (every
-        session&rsquo;s folder plus ~/claude subdirs), as before. Add exclusions
+        session&rsquo;s folder plus ~/claude subdirs). Add exclusions
         for scratch folders that slip through.
       </p>
 
@@ -1858,7 +1893,7 @@ function OverviewCard() {
       <p className={styles.hint}>
         {curated
           ? "Folders are grouped under their owning project. Only ticked folders are offered as launch locations; an unticked, unassigned folder also drops out of the sidebar, filter, and overview map. New directories stay hidden until you tick them (starting a session in one adds it automatically)."
-          : "Folders are grouped under their owning project. Unticking a folder stops it being offered as a launch location; if no project has adopted it, its sessions also disappear from the sidebar, filter, and overview map. Filtering still uses the full path under the hood."}
+          : "Folders are grouped under their owning project. Unticking a folder stops it being offered as a launch location; if no project has adopted it, its sessions also disappear from the sidebar, filter, and overview map."}
       </p>
       <p className={styles.hint}>
         A project&rsquo;s sessions stay in the sidebar and filter even with its
@@ -1868,9 +1903,9 @@ function OverviewCard() {
         project (above) instead.
       </p>
       {projects === null ? (
-        <p className={styles.hint}>Loading projects…</p>
+        <p className={styles.hint}>Loading folders…</p>
       ) : total === 0 ? (
-        <p className={styles.hint}>No projects discovered yet.</p>
+        <p className={styles.hint}>No folders discovered yet.</p>
       ) : (
         // Reuse ProjectRow's inverse-checkbox: `hidden` = NOT visible under the current mode; a
         // toggle routes through `setProjectVisible`, which writes the allowlist (included) or the
@@ -1934,7 +1969,7 @@ function CleanupCard() {
 
   return (
     <section className={styles.section} aria-labelledby="cleanup-h">
-      <h2 id="cleanup-h">Maintenance</h2>
+      <h2 id="cleanup-h">Archive old sessions</h2>
       <p className={styles.hint}>
         Archive sessions you haven’t touched in a while. Archived sessions are
         hidden from the list but can be unarchived — nothing is deleted.
@@ -2263,10 +2298,11 @@ export function Settings() {
       ? r
       : "/";
   })();
-  // Canonical tab from the URL (#357): /settings/:tab. Bare /settings and unknown tabs
-  // both land on the first tab via a replace-redirect (state rides along so the #155
-  // back link survives the hop).
+  // Canonical section from the URL (#956): /settings/:section. On desktop, bare /settings and
+  // unknown sections replace-redirect to the first section; on a phone bare /settings IS the
+  // index. State rides along every hop so the #155 back link survives.
   const { tab } = useParams<{ tab: string }>();
+  const isMobile = useIsMobile();
 
   useEffect(() => {
     let alive = true;
@@ -2281,38 +2317,68 @@ export function Settings() {
     };
   }, []);
 
-  if (!isSettingsTab(tab)) {
+  const legacy = legacySettingsTarget(tab, location.hash);
+  if (legacy) {
+    return <Navigate to={legacy} replace state={location.state} />;
+  }
+  if (tab === undefined && isMobile) {
+    return <SettingsIndex returnTo={returnTo} />;
+  }
+  if (!isSettingsSection(tab)) {
     return (
       <Navigate
-        to={`/settings/${DEFAULT_SETTINGS_TAB}`}
+        to={
+          isMobile && tab !== undefined
+            ? SETTINGS_PATH
+            : settingsPath(DEFAULT_SETTINGS_SECTION)
+        }
         replace
         state={location.state}
       />
     );
   }
+  const section = tab;
+  const meta = settingsSection(section);
+  const crumb =
+    meta.group === "about"
+      ? "Settings"
+      : `Settings // ${settingsGroup(meta.group).label}`;
 
   return (
-    <div className={styles.wrap}>
-      <header className={styles.head}>
-        <Link
-          to={returnTo}
-          className={styles.back}
-          aria-label="Back to sessions"
-        >
-          <ArrowLeft size={18} />
-        </Link>
-        <h1>Settings</h1>
-      </header>
+    <div className={isMobile ? styles.wrap : styles.split}>
+      {isMobile ? (
+        <header className={styles.head}>
+          <Link
+            to={SETTINGS_PATH}
+            state={location.state}
+            className={styles.back}
+            aria-label="Back to settings"
+          >
+            <ArrowLeft size={18} />
+          </Link>
+          <h1>Settings</h1>
+        </header>
+      ) : (
+        <aside className={styles.sidebar}>
+          <header className={styles.head}>
+            <Link
+              to={returnTo}
+              className={styles.back}
+              aria-label="Back to sessions"
+            >
+              <ArrowLeft size={18} />
+            </Link>
+            <h1>Settings</h1>
+          </header>
+          <SettingsNav active={section} />
+        </aside>
+      )}
 
-      <SettingsTablist active={tab} />
-
-      <div
-        role="tabpanel"
-        id={`settings-panel-${tab}`}
-        aria-labelledby={`settings-tab-${tab}`}
-        className={styles.panel}
-      >
-        {tab === "appearance" && (
+      <div className={isMobile ? styles.panel : styles.page}>
+        <p className={styles.crumb}>
+          {crumb} // <b>{meta.label}</b>
+        </p>
+        {section === "appearance" && (
           <>
             <section className={styles.section} aria-labelledby="appearance-h">
               <h2 id="appearance-h">Appearance</h2>
@@ -2596,6 +2662,21 @@ export function Settings() {
                 </p>
               </div>
 
+            </section>
+          </>
+        )}
+
+        {section === "session-defaults" && (
+          <>
+            <section
+              className={styles.section}
+              aria-labelledby="session-defaults-h"
+            >
+              <h2 id="session-defaults-h">Session defaults</h2>
+              <p className={styles.hint}>
+                How a session opens and how the sidebar lists them.
+              </p>
+
               <h3 className={styles.subhead} id="compose-h">
                 Compose box
               </h3>
@@ -2689,7 +2770,7 @@ export function Settings() {
           </>
         )}
 
-        {tab === "projects" && (
+        {section === "projects" && (
           <>
             {/* Entities first (#361 Phase 3): what sessions BELONG to. The folder
                 visibility/rename cards below stay about where sessions LAUNCH. */}
@@ -2700,45 +2781,38 @@ export function Settings() {
           </>
         )}
 
-        {tab === "ai-review" && (
+        {/* The AI pages (#956). These eight panels used to stack in ONE column under a single
+            "AI" tab; each now has the page its job warrants. */}
+        {section === "ai-endpoint" && <AiReviewSettings view="endpoint" />}
+        {section === "ai-session-review" && <AiReviewSettings view="review" />}
+        {section === "ai-auto-sort" && <AutoSortSettings />}
+        {section === "ai-mission-control" && (
           <>
-            <AiActivityPanel />
-            <AiReviewSettings />
-            {/* Where mission objectives are checked (#891). Beside the AI endpoint because it is
-                the other outbound connection the operator configures, and because a mission's
-                follow-through needs both to be useful. */}
-            <ForgeSettings />
-            <AutoSortSettings />
-            <PulseSettings />
             <OrchestratorSettings />
-            {/* The checklists MISSION CONTROL starts a mission with (#892). Here rather than on
-                its own tab because a playbook's objectives are what the supervisor above acts
-                on — they are the same subject, one tap apart. */}
-            <MissionPlaybooks />
-            {/* Every system prompt, in one catalog (#824) — including the three that used to
-                have an inline editor in the panels above. */}
-            <PromptsSettings />
+            <PulseSettings />
+            {/* Where mission objectives are checked (#891) — the other outbound connection a
+                mission's follow-through needs. */}
+            <ForgeSettings />
           </>
         )}
+        {/* The checklists MISSION CONTROL starts a mission with (#892). */}
+        {section === "ai-playbooks" && <MissionPlaybooks />}
+        {/* Every system prompt, in one catalog (#824). */}
+        {section === "ai-prompts" && <PromptsSettings />}
+        {section === "ai-activity" && <AiActivityPanel />}
 
-        {tab === "security" && <SecurityPanel />}
-
-        {tab === "system" && (
-          <>
-            <ConnectedAgents />
-            <SystemCard />
-            <UpdatesCard />
-          </>
-        )}
-
-        {tab === "maintenance" && (
+        {section === "agents" && <ConnectedAgents />}
+        {section === "security" && <SecurityPanel />}
+        {section === "updates" && <UpdatesCard />}
+        {section === "system" && <SystemCard />}
+        {section === "maintenance" && (
           <>
             <CleanupCard />
             <ScrollbackCacheCard />
           </>
         )}
 
-        {tab === "about" && (
+        {section === "about" && (
           <>
             <section className={styles.section} aria-labelledby="support-h">
               <h2 id="support-h">Support</h2>
