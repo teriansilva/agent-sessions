@@ -29,9 +29,14 @@ import type {
   MissionProbeSchema,
 } from "../types/api";
 
+import { DirectionField } from "../components/pulse/DirectionField";
 import styles from "./Settings.module.css";
 
 const EMPTY: Block = { default_id: "", playbooks: [], revision: 0 };
+
+/** Under a template's Direction field (#983 P2, D1). */
+const DIRECTION_HINT =
+  "Written by you. Mission control decides when to send it; the AI cannot change a word. Facts come from this objective's own check, never from what the session printed. Leave it empty to send your default nudge.";
 
 /** Mirrors `prefs._PLAYBOOK_ID_RE`. Used only to explain a refusal BEFORE the round trip; the
  *  server checks it again and its answer is the one that counts. */
@@ -497,6 +502,26 @@ export function MissionPlaybooks() {
                   >
                     DROP
                   </button>
+                  {/* THE DIRECTION (#983 P2). Saved with the block like every other field, and
+                      validated by the same save: an unknown placeholder refuses the whole write,
+                      and the preview says so first, in the same words. An emptied field is an
+                      absent direction, not an empty string. */}
+                  <DirectionField
+                    value={o.direction ?? ""}
+                    onChange={(text) =>
+                      editObjective(i, j, (ob) => {
+                        const next = { ...ob };
+                        if (text) next.direction = text;
+                        else delete next.direction;
+                        return next;
+                      })
+                    }
+                    probe={o.probe}
+                    placeholders={schema?.placeholders}
+                    label="typed into the session when mission control nudges about this objective"
+                    hint={DIRECTION_HINT}
+                    testId="objective-direction"
+                  />
                 </div>
               );
             })}

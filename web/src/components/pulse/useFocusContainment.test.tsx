@@ -77,6 +77,34 @@ test("an ordinary position in the cycle is left to the browser", () => {
   expect(document.activeElement).toBe(screen.getByTestId("first"));
 });
 
+/** A panel whose every control is disabled, as a dialog's is while its save is pending (#997). */
+function PendingPanel() {
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  useFocusContainment({ active: true, panelRef });
+  return (
+    <div>
+      <button data-testid="before">before</button>
+      <div ref={panelRef} tabIndex={-1} data-testid="panel">
+        <button disabled>Saving…</button>
+      </div>
+      <button data-testid="after">after</button>
+    </div>
+  );
+}
+
+test("with EVERY control disabled, Tab and Shift+Tab are held on the panel, not handed to the page (#997)", () => {
+  // Disabling the control that had focus drops focus out of the panel; this is where it lands.
+  render(<PendingPanel />);
+  screen.getByTestId("before").focus();
+
+  // Before the fix the hook returned early with nothing to cycle, did not intercept, and the browser
+  // moved focus to whatever came next in the page — a background control, with the dialog still open.
+  expect(press(false)).toBe(true);
+  expect(document.activeElement).toBe(screen.getByTestId("panel"));
+  expect(press(true)).toBe(true);
+  expect(document.activeElement).toBe(screen.getByTestId("panel"));
+});
+
 test("the ends still wrap, which is what containment meant before any of this", () => {
   render(<Panel />);
   screen.getByTestId("last").focus();

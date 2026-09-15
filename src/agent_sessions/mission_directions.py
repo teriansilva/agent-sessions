@@ -142,6 +142,96 @@ PLACEHOLDERS: dict[str, Placeholder] = {
 }
 
 
+#: What each placeholder's chip says in the editor (#983 P2). Display only: it is never an input to
+#: validation or rendering. A test pins its keys to :data:`PLACEHOLDERS`.
+PLACEHOLDER_HINTS: dict[str, str] = {
+    "pr": "PR number",
+    "pr_state": "open / closed / merged",
+    "checks": "check state",
+    "review": "review state",
+    "repo": "repository",
+    "branch": "branch",
+}
+
+#: The values the editor's preview is filled with (#983 P2). Examples, labelled as examples on
+#: screen, and never a fact about any mission. A test pins that each passes its own placeholder's
+#: shape check, so the preview can never show a value the renderer would refuse.
+EXAMPLE_FACTS: dict[str, object] = {
+    "pr": 412,
+    "pr_state": "open",
+    "checks": "failure",
+    "review": "APPROVED",
+    "repo": "acme/upload-service",
+    "branch": "fix/upload-retry",
+}
+_EXAMPLE_HEAD = "4b7e0d9c"
+_EXAMPLE_TARGET = "example"
+
+
+def placeholder_table() -> list[dict]:
+    """THE table as the editor reads it: name, chip hint, and which probes can fill it (#983 P2).
+
+    Shipped on `GET /api/config` beside the probe argument schema, so the web never keeps a copy.
+    `tests/fixtures/direction_placeholders.json` is pinned to this output and drives the web tests.
+    """
+    return [
+        {"name": p.name, "hint": PLACEHOLDER_HINTS[p.name], "probes": sorted(p.probes)}
+        for p in PLACEHOLDERS.values()
+    ]
+
+
+def preview(direction: object, probe: object, *, now: float | None = None) -> dict:
+    """What `direction` would type for a `probe` objective, filled with :data:`EXAMPLE_FACTS`.
+
+    READ-ONLY and store-free: it validates exactly as a save does (raising `DirectionError` with the
+    save's own words) and then runs the one :func:`render` over a synthesized objective whose
+    observation carries the example values. No mission, no prefs and no ledger are read, so the
+    preview can never disclose a real fact and cannot drift from what delivery renders.
+
+    Returns ``{"text": str | None, "facts": [{name, value}]}``; ``text`` is ``None`` when there is
+    no direction (a nudge would type the operator's default nudge). Raises
+    :class:`NotRenderable` only for a direction that passes validation and still cannot be typed.
+    """
+    kind = probe if isinstance(probe, str) else ""
+    body = validate(direction, kind)
+    if body is None:
+        return {"text": None, "facts": []}
+    ts = _now() if now is None else now
+    args: dict = {}
+    if kind in REPO_ARG_PROBES:
+        args["repo"] = EXAMPLE_FACTS["repo"]
+    if kind in BRANCH_ARG_PROBES:
+        args["branch"] = EXAMPLE_FACTS["branch"]
+    observed: dict = {
+        "at": ts,
+        "target": _EXAMPLE_TARGET,
+        "args_sha": probe_args_digest(args or None),
+        "number": EXAMPLE_FACTS["pr"],
+        "head_sha": _EXAMPLE_HEAD,
+        "pr_state": EXAMPLE_FACTS["pr_state"],
+    }
+    if kind == "forge_checks":
+        observed["state"] = EXAMPLE_FACTS["checks"]
+    elif kind == "forge_review":
+        observed["state"] = EXAMPLE_FACTS["review"]
+    obj = {
+        "mission_id": "",
+        "key": "example",
+        "probe": kind,
+        "probe_args": args or None,
+        "observed": observed,
+        "probe_target": _EXAMPLE_TARGET,
+        "direction": body,
+        "direction_source": "template",
+        "episode": 1,
+    }
+    rendered = render(obj, {}, now=ts)
+    return {
+        "text": rendered["text"],
+        "facts": [{"name": f["name"], "value": f["value"]} for f in rendered["facts"]],
+    }
+
+
 def placeholders_in(text: str) -> list[str]:
     """The placeholder names in `text`, first occurrence order, each once."""
     seen: list[str] = []

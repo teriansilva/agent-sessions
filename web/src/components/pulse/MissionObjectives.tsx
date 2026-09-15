@@ -43,6 +43,7 @@ import {
   MoreHorizontal,
   Pencil,
   Plus,
+  Signpost,
   Trash2,
 } from "lucide-react";
 import {
@@ -84,6 +85,9 @@ import {
 // The classifier itself, from the module that owns it — the row stamps the board it is on so a
 // test can classify a row without reading its prose.
 import { boardFor } from "./supervisorBoard";
+import d from "./direction.module.css";
+import { ObjectiveDirectionDialog } from "./ObjectiveDirectionDialog";
+import { type DirectionOp, hasDirection } from "./objectiveDirection";
 
 /** One `PATCH /objectives` op. The shapes the route accepts; `state` is not among them. */
 export type ObjectiveOp =
@@ -91,7 +95,9 @@ export type ObjectiveOp =
   | { op: "drop"; key: string }
   | { op: "retitle"; key: string; title: string }
   | { op: "waive"; key: string }
-  | { op: "reorder"; keys: string[] };
+  | { op: "reorder"; keys: string[] }
+  /** #983: write, re-copy or remove this mission's direction for one objective. */
+  | DirectionOp;
 
 function when(ts: number | null | undefined): string {
   if (!ts) return "";
@@ -314,6 +320,28 @@ function ObjectiveRow({
   ) : (
     <span className={styles.objSr}>{stateText}</span>
   );
+  // A row that carries a direction says so on its meta line (#983 P2): a nudge for it types that
+  // direction rather than the default nudge.
+  const directed = hasDirection(o);
+  const meta = directed ? (
+    <>
+      {lead}
+      <span
+        className={d.objDirection}
+        data-testid="objective-direction-mark"
+        title={
+          o.direction_source === "operator"
+            ? "A direction written for this mission"
+            : "A direction copied from the playbook"
+        }
+      >
+        <Signpost size={11} aria-hidden="true" />
+        direction
+      </span>
+    </>
+  ) : (
+    lead
+  );
   return (
     <li
       ref={setRow}
@@ -357,11 +385,11 @@ function ObjectiveRow({
           <SupervisorCell
             o={sup}
             budget={budget}
-            lead={lead}
+            lead={meta}
             hideWhy={shared !== null && sup.why_not === shared}
           />
-        ) : stateIsDrawn(o) ? (
-          <span className={styles.supCell}>{lead}</span>
+        ) : stateIsDrawn(o) || directed ? (
+          <span className={styles.supCell}>{meta}</span>
         ) : (
           lead
         )}
@@ -424,6 +452,8 @@ export function MissionObjectives({
   budget = 3,
   onStandDown,
   busy = false,
+  onDirection,
+  playbookId = null,
 }: {
   objectives: MissionObjective[];
   /** The console renders these once in the Follow-through disclosure. */
@@ -448,8 +478,15 @@ export function MissionObjectives({
   onStandDown?: (key: string, episode: number) => void;
   /** A mission-level mutation is in flight; the row actions disable with it. */
   busy?: boolean;
+  /** Send one direction op (#983 P2). Resolves to null when the server accepted it, or to its
+   *  refusal in its own words, which the dialog shows. Absent ⇒ the ops go through `onOps`. */
+  onDirection?: (op: DirectionOp) => Promise<string | null>;
+  /** The mission's playbook, which Reset copies from. Null ⇒ no Reset is offered. */
+  playbookId?: string | null;
 }) {
   const [busyKey, setBusyKey] = useState<string | null>(null);
+  /** Which objective's direction is being edited, by key. */
+  const [directing, setDirecting] = useState<string | null>(null);
   const [adding, setAdding] = useState("");
   /** Which row is being retitled, and its draft. One at a time: a list where several rows are
    *  simultaneously mid-rename is a list whose order is hard to reason about while it moves. */
@@ -572,6 +609,16 @@ export function MissionObjectives({
     [objectives, supervisor],
   );
 
+  /** One direction op, answered with the server's refusal in its own words (or null). */
+  const applyDirection = useCallback(
+    async (op: DirectionOp): Promise<string | null> => {
+      if (onDirection) return onDirection(op);
+      if (!onOps) return "This mission can no longer be edited.";
+      return (await onOps([op])) ? null : "That direction was not saved.";
+    },
+    [onDirection, onOps],
+  );
+
   if (listed.length + extra.length === 0 && !onOps) {
     return (
       <>
@@ -607,6 +654,15 @@ export function MissionObjectives({
           setRenaming(o.key);
           setRename(o.title ?? "");
         },
+      });
+      first.push({
+        key: "direction",
+        label: "Edit direction",
+        ariaLabel: `Edit direction for "${title}"`,
+        icon: <Signpost size={15} />,
+        disabled: locked,
+        data: { "data-testid": "objective-edit-direction" },
+        onSelect: () => setDirecting(o.key),
       });
       first.push({
         key: "waive",
@@ -824,6 +880,22 @@ export function MissionObjectives({
           </button>
         </form>
       ) : null}
+      {/* Only on a mission that can still be edited, and only while the objective still exists: a
+          re-read that drops it closes the dialog rather than editing a row that is gone. */}
+      {onOps && directing
+        ? (() => {
+            const target = objectives.find((o) => o.key === directing);
+            return target ? (
+              <ObjectiveDirectionDialog
+                key={target.key}
+                objective={target}
+                canReset={!!playbookId}
+                onApply={applyDirection}
+                onClose={() => setDirecting(null)}
+              />
+            ) : null;
+          })()
+        : null}
     </>
   );
 }

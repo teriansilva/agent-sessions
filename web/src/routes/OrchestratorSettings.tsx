@@ -189,8 +189,6 @@ export function OrchestratorSettings() {
     }
   };
 
-  const ceiling = block.auto_verbs_ceiling.join(", ");
-
   return (
     <section className={styles.section} aria-labelledby="orch-h">
       <h2 id="orch-h">Orchestrator</h2>
@@ -270,12 +268,14 @@ export function OrchestratorSettings() {
           ))}
         </select>
         {/* The tier alone doesn't tell the whole story, and implying it does would be the
-            dangerous reading. Say plainly which verbs YOLO can actually deliver. */}
-        <p className={styles.hint}>
-          Even on <strong>YOLO</strong>, mission control only ever sends{" "}
-          <strong>{ceiling}</strong> on its own — the fixed nudge you write
-          below, which the AI cannot alter. Picking an option, answering a
-          question, or starting a new session always waits for your approval.
+            dangerous reading. Say plainly what YOLO can type on its own (#983): only operator
+            text, the objective's direction or the default nudge, never words the AI wrote. */}
+        <p className={styles.hint} data-testid="orchestrator-yolo-copy">
+          Even on <strong>YOLO</strong>, mission control only ever types text{" "}
+          <strong>you wrote</strong>: an objective&rsquo;s direction, filled with
+          facts it checked itself, or your default nudge below. The AI decides
+          when, never what. Picking an option, answering a question or starting a
+          new session always waits for your approval.
         </p>
       </div>
 
@@ -401,7 +401,7 @@ export function OrchestratorSettings() {
 
       <div className={styles.aiField}>
         <label className={styles.aiFieldLabel} htmlFor="orch-nudge">
-          Nudge text
+          Default nudge · sent when an objective has no direction
         </label>
         <textarea
           id="orch-nudge"

@@ -195,6 +195,52 @@ def supervisor_render(action: dict, cfg: dict, *, resolve_target: bool = True) -
     return fresh
 
 
+#: What the decision row says when the verdict itself could not be reached. Fails closed: a row
+#: that cannot say the text is still true offers no Send.
+RENDER_STATUS_UNCHECKED = "whether this nudge's text is still true could not be checked"
+
+
+def render_status(action: dict, cfg: dict) -> dict | None:
+    """Would delivery still type this supervisor nudge's text? ``{sendable, reason}`` (#983 P2).
+
+    ``None`` for anything that is not a supervisor ``continue`` carrying a persisted ``render``.
+
+    A READ-ONLY PROJECTION for the decision row, and it is not a second opinion: it calls
+    :func:`supervisor_render`, the very function :func:`render` calls before :func:`deliver`
+    claims anything, and reports that function's verdict in its own words. Projection and delivery
+    therefore cannot disagree about whether the text or its provenance moved — there is one
+    comparison and both ask it. What this does NOT do is anything delivery does after that point:
+    no claim, no fence, no settlement and no ledger write, so a proposal the row shows as not
+    sendable is still settled only by an operator's Dismiss or by delivery's own refusal.
+
+    The rest of delivery's gates (orchestration switched off, a moved screen, a viewer at the
+    keyboard) are not text facts and are not projected here; they keep refusing at approve time.
+
+    **NO GIT, ON PURPOSE.** This runs for every pending supervisor nudge on every `/api/pulse` and
+    `/api/pulse/orchestrator` read, and every open client polls those. So it asks the in-fence form,
+    ``resolve_target=False``: the text, the render identity (objective, facts, probe binding and
+    arguments, the mission's `cwd` and `merge_sha`) and the forge-settings revision, all read from
+    the store. It never touches the checkout. Resolving the target would read its `.git` (remote
+    and refs) on every poll, and run `git status` for an objective with no configured branch. A
+    blocking probe per poll is how typing went sluggish app-wide before. What that form cannot see
+    is the agent-controlled half of the target: a
+    checkout HEAD, branch or remote the agent moved with its own `git`. The projection is advisory,
+    and Approve still runs the full check (:func:`render` → :func:`supervisor_render` with target
+    resolution) before anything is claimed, so such a nudge reads as sendable here and settles
+    `stale`, with its reason, when tapped. Blocking (store reads only); producers still call it off
+    the event loop.
+    """
+    if not (_is_supervisor_nudge(action) and isinstance(action.get("render"), dict)):
+        return None
+    try:
+        supervisor_render(action, cfg, resolve_target=False)
+    except RenderStale as e:
+        return {"sendable": False, "reason": str(e)}
+    except Exception:  # noqa: BLE001 — an unanswerable question is not a yes
+        return {"sendable": False, "reason": RENDER_STATUS_UNCHECKED}
+    return {"sendable": True, "reason": ""}
+
+
 def render(action: dict, cfg: dict) -> bytes:
     """The bytes for one action. Raises :class:`NotDeliverable` for anything else.
 

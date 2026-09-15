@@ -67,6 +67,7 @@ from .. import (
     headless_dispatch,
     metadata,
     mission_archive,
+    mission_directions,
     mission_dispatch,
     mission_fence,
     mission_objectives,
@@ -2040,6 +2041,39 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         except missions.MissionError as e:
             return _fail(e)
         return JSONResponse({"objectives": rows})
+
+    @app.post(DIRECTION_PREVIEW_PATH)
+    async def direction_preview_route(
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """What a direction would type, filled with EXAMPLE facts (#983 P2). Read-only.
+
+        The editor's preview, from the one renderer rather than a copy of it in the client:
+        ``mission_directions.preview`` validates exactly as a save does (so an unknown placeholder
+        is the same 422, in the same words, before the operator saves) and renders over a
+        synthesized objective carrying example values. It reads no mission, no prefs and no ledger
+        and writes nothing, so it can neither disclose a real fact nor change any state. POST only
+        because the direction is operator text that does not belong in a URL or an access log;
+        it takes ``csrf_guard`` like every other POST here.
+        """
+        try:
+            body = await _body(request)
+        except missions.MissionError as e:
+            return _fail(e)
+        probe = body.get("probe")
+        # Only a probe kind the store knows; anything else is "no probe", never echoed back.
+        kind = probe if isinstance(probe, str) and probe in missions.PROBE_KINDS else ""
+        try:
+            out = mission_directions.preview(body.get("direction"), kind)
+        except (mission_directions.DirectionError, mission_directions.NotRenderable) as e:
+            return JSONResponse({"detail": str(e)}, status_code=422)
+        return JSONResponse(out)
+
+
+#: The preview route (#983 P2). A module constant so the route and its tests name one string.
+DIRECTION_PREVIEW_PATH = "/api/mission-directions/preview"
 
 
 async def _fenced_write(mission_id: str, fn):

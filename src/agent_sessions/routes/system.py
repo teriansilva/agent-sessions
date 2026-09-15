@@ -18,6 +18,7 @@ from .. import (
     discover,
     engines,
     handoff,
+    mission_directions,
     missions,
     perfstats,
     prefs,
@@ -498,6 +499,10 @@ def register(
                     # review, finding 6). The names say WHICH arguments exist; these say what a
                     # well-formed value looks like. Validation is still entirely server-side.
                     "types": missions.PROBE_ARG_TYPES,
+                    # …and WHICH CHECKED FACTS a direction may name, per probe (#983 P2): the one
+                    # placeholder table the renderer and the save validation use, so the editor's
+                    # fact chips can never offer a placeholder the server would refuse.
+                    "placeholders": mission_directions.placeholder_table(),
                 },
             }
         )

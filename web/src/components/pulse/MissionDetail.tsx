@@ -10,6 +10,7 @@ import type {
 
 import { MissionContextPanel } from "./MissionContext";
 import { MissionObjectives, type ObjectiveOp } from "./MissionObjectives";
+import type { DirectionOp } from "./objectiveDirection";
 import { MissionTimeline } from "./MissionTimeline";
 
 export function ObjectivesPane({
@@ -21,6 +22,8 @@ export function ObjectivesPane({
   onOps,
   onStandDown,
   busy,
+  onDirection,
+  playbookId,
 }: {
   objectives: MissionObjective[];
   showNotices?: boolean;
@@ -36,6 +39,9 @@ export function ObjectivesPane({
   onOps?: (ops: ObjectiveOp[]) => Promise<boolean>;
   onStandDown?: (key: string, episode: number) => void;
   busy?: boolean;
+  /** #983 P2: one direction op, answered with the server's refusal in its own words. */
+  onDirection?: (op: DirectionOp) => Promise<string | null>;
+  playbookId?: string | null;
 }) {
   return (
     <MissionObjectives
@@ -47,6 +53,8 @@ export function ObjectivesPane({
       supervisor={supervisor}
       onStandDown={onStandDown}
       busy={busy}
+      onDirection={onDirection}
+      playbookId={playbookId}
     />
   );
 }

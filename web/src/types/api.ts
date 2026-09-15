@@ -391,6 +391,60 @@ export interface OrchestratorAction {
   /** True once this action has been raised in the bell. The rail needs it to tell a decision the
    *  operator has already seen from one that has never surfaced anywhere. */
   announced?: boolean;
+  /** Who minted it. `supervisor` is a mission's follow-through (#885). */
+  source?: string;
+  mission_id?: string;
+  objective_key?: string;
+  objective_episode?: number;
+  /** The objective's current title, stamped by the server on a supervisor nudge (#983 P2). Display
+   *  only: a title is never an input to what is typed. */
+  objective_title?: string;
+  /** A supervisor nudge's EXACT text and the facts it rests on, persisted at proposal (#983). */
+  render?: SupervisorRender;
+  /** Whether delivery would still type `render.text` (#983 P2): the delivery path's own comparison,
+   *  asked early. `sendable: false` comes with `can_approve: false`. */
+  render_status?: RenderStatus;
+  /** What a delivered supervisor nudge typed (#983). */
+  delivered_text?: string;
+}
+
+/** One checked fact a direction was filled with (#983). `observed_at` is null for a fact that came
+ *  from the objective's own probe settings rather than an observation. */
+export interface DirectionFact {
+  name: string;
+  value: string | number;
+  target?: Record<string, unknown> | null;
+  observed_at?: number | null;
+}
+
+/** `mission_directions.render`'s output as a proposal persisted it (#983). */
+export interface SupervisorRender {
+  text: string;
+  source: "direction" | "default_nudge" | (string & {});
+  facts: DirectionFact[];
+  digest?: string;
+  provenance?: Record<string, unknown>;
+}
+
+export interface RenderStatus {
+  sendable: boolean;
+  /** The server's own words for what changed. Empty when sendable. */
+  reason: string;
+}
+
+/** One row of the server's placeholder table (`mission_directions.placeholder_table`, #983 P2). */
+export interface DirectionPlaceholder {
+  name: string;
+  hint: string;
+  /** The probe kinds whose objective can fill this placeholder. */
+  probes: string[];
+}
+
+/** `POST /api/mission-directions/preview`: the direction filled with EXAMPLE facts. `text` is null
+ *  when there is no direction, so a nudge would type the default nudge. */
+export interface DirectionPreview {
+  text: string | null;
+  facts: { name: string; value: string | number }[];
 }
 
 export interface OrchestratorConfig {
@@ -727,6 +781,9 @@ export interface MissionPlaybookObjective {
   probe: string;
   probe_args: Record<string, unknown> | null;
   gate: boolean;
+  /** Operator text typed when mission control nudges about this objective, with placeholders from
+   *  the server's table (#983). Absent when the template has none. */
+  direction?: string | null;
 }
 
 export interface MissionPlaybook {
@@ -755,6 +812,8 @@ export interface MissionProbeSchema {
    *  `"int"` means send a number, which is the only way `http_status.expect_status` can be
    *  authored at all (#900 review, finding 6). Absent on an older server — treat as `"text"`. */
   types?: Record<string, Record<string, string>>;
+  /** Which checked facts a direction may name, per probe (#983 P2). Absent on an older server. */
+  placeholders?: DirectionPlaceholder[];
 }
 
 /** TOTP enrollment payload (#116): shown once. The secret + recovery codes are never
@@ -1260,6 +1319,10 @@ export interface MissionObjective {
    *  server could not fetch. */
   observed: Record<string, unknown> | null;
   source: string;
+  /** This mission's direction for the objective (#983): copied from the playbook (`template`) or
+   *  written for this mission (`operator`). Null when a nudge would type the default nudge. */
+  direction?: string | null;
+  direction_source?: "template" | "operator" | null;
 }
 
 /** A row from `GET /api/missions` — the LIST shape.

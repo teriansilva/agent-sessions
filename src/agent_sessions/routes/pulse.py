@@ -68,6 +68,53 @@ def _retire_decided(action_id: str) -> int:
     return notifications.retire_for_actions([action_id], escalations_only=False)
 
 
+def _orchestrator_cfg() -> dict:
+    """The orchestrator block for a projection, or `{}` when it cannot be read (never raises)."""
+    try:
+        return prefs.get_orchestrator()
+    except Exception:  # noqa: BLE001 — a projection must not take the read down
+        return {}
+
+
+def _operator_projection(a: dict, cfg: dict, titles: dict[str, dict]) -> dict:
+    """ONE pending action as every decision surface receives it. Never raises.
+
+    `project_for_operator` decides the controls from the state. For a supervisor nudge that carries
+    the exact text it will type (#983), two read-only facts ride beside it:
+
+    * ``render_status`` — `actuator.render_status`, which asks the delivery path's own comparison
+      whether that text and its provenance still hold. When it says no, ``can_approve`` is withdrawn
+      here, so no surface offers a Send that `deliver` would answer with a stale 409;
+    * ``objective_title`` — the objective's current title, so the row can name what it is about.
+      Display only: a title is never an input to what is typed.
+
+    `titles` caches one objectives read per mission for the length of one producer call.
+    """
+    out = {**a, **orchestrator_ledger.project_for_operator(a.get("state"))}
+    # STORE-ONLY, NEVER THE CHECKOUT'S GIT: this runs per pending nudge on every poll of both
+    # producers, so `render_status` uses delivery's check without target resolution (no `.git`
+    # reads, no `git status`). A checkout HEAD the agent moved with its own git is not visible here;
+    # Approve runs the full check and refuses it as stale.
+    status = actuator.render_status(a, cfg)
+    if status is None:
+        return out
+    out["render_status"] = status
+    if not status["sendable"]:
+        out["can_approve"] = False
+    mid = str(a.get("mission_id") or "")
+    key = str(a.get("objective_key") or "")
+    if mid and key:
+        if mid not in titles:
+            try:
+                titles[mid] = {str(o.get("key")): o.get("title") for o in missions.objectives(mid)}
+            except Exception:  # noqa: BLE001 — no title is an honest answer; the key still shows
+                titles[mid] = {}
+        title = titles[mid].get(key)
+        if isinstance(title, str) and title.strip():
+            out["objective_title"] = title
+    return out
+
+
 def _attach_pending(overview: dict) -> dict:
     """Give each card the live orchestrator action on its session, if any.
 
@@ -100,6 +147,8 @@ def _attach_pending(overview: dict) -> dict:
                 announced.add(aid)
 
     live: dict[str, dict] = {}
+    cfg = _orchestrator_cfg()
+    titles: dict[str, dict] = {}
     with contextlib.suppress(Exception):
         # Retire overdue proposals FIRST. `live_actions` filters on persisted state and never
         # looks at `expires_at`, and the expiry sweep lived only in the sibling orchestrator
@@ -128,8 +177,7 @@ def _attach_pending(overview: dict) -> dict:
             # inside the very function that introduced it.
             if sid and sid not in live:
                 live[sid] = {
-                    **a,
-                    **orchestrator_ledger.project_for_operator(a.get("state")),
+                    **_operator_projection(a, cfg, titles),
                     "announced": str(a.get("id") or "") in announced,
                 }
     # Settled history, one row per session (`feed_by_session`, #775). The Activity block used to
@@ -440,8 +488,12 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # real `continue` verb offered Dismiss and no Approve, and an `approved` row offered an
         # Approve the server treats as a no-op (#959 review 4805, finding 1). The fields are derived
         # booleans on an authenticated read — which controls to offer, never what the action is.
+        # …and a supervisor nudge's `render_status` / `objective_title` (#983 P2), through the same
+        # helper `_attach_pending` uses, so the pane's strip and the mission console agree.
+        cfg = _orchestrator_cfg()
+        titles: dict[str, dict] = {}
         pending = [
-            {**r, **orchestrator_ledger.project_for_operator(r.get("state"))}
+            _operator_projection(r, cfg, titles)
             for r in live
             if r.get("state") in orchestrator_ledger.OPERATOR_PENDING_STATES
         ]

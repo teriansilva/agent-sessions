@@ -6,6 +6,8 @@ import { announceActionResolved } from "../../lib/actionEvents";
 import { engineBadge, relTime } from "../../lib/format";
 import type { EvidenceKind, OrchestratorAction } from "../../types/api";
 import styles from "./Orchestrator.module.css";
+import { SupervisorNudge } from "./SupervisorNudge";
+import { nudgeView } from "./supervisorNudge";
 import {
   DELIVERING_FALLBACK,
   escalationSuffix,
@@ -291,6 +293,55 @@ export function ActionRow({
       )}
     </div>
   );
+  // Embedded, the card owns the footer (#781). This one repeated the session link the card already
+  // had and put a second clock (the action's age) beside the card's own — two footers for one
+  // session. The action's `state` is not dropped: the card folds it into its single footer, which
+  // already existed, so the merge costs no vertical space.
+  const footer = !embedded && (
+    <div className={styles.actFoot}>
+      {/* The feed no longer groups by project (#754), so the row has to say which one it is.
+          Suppressed when embedded: a session card already names its project in its own footer,
+          and repeating it there is noise. */}
+      {action.project && <span className={styles.proj}>{action.project}</span>}
+      <span className={styles.state}>{action.state}</span>
+      {/* The feed is one row per session (#774). Say what was folded in, so a collapsed row is
+          visibly a summary rather than looking like the only thing that happened. */}
+      {(action.repeats ?? 1) > 1 && (
+        <span
+          className={styles.repeats}
+          title={`${action.repeats} actions on this session`}
+        >
+          ×{action.repeats}
+        </span>
+      )}
+      <span className={styles.age}>{relTime(action.ts)}</span>
+      <Link className={styles.jump} to={sessionPath(action)}>
+        Open session
+      </Link>
+    </div>
+  );
+
+  // A SUPERVISOR NUDGE shows the exact text it will type (#983 P2). Same requests, frame and footer;
+  // the body is the nudge's, because the decision being asked for is about that text rather than
+  // about the model's sentence. Whether it can still be sent is the server's `render_status`.
+  const nudge = nudgeView(action, { approvable, rejectable });
+  if (nudge) {
+    return (
+      <Root
+        className={`${styles.act} ${nudge.sendable ? toneOf(action) : styles.toneIdle} ${embedded ? styles.actEmbedded : ""}`}
+      >
+        <SupervisorNudge
+          view={nudge}
+          busy={busy}
+          onSend={() => void act("approve")}
+          onDismiss={() => void act("reject")}
+        />
+        {note && <p className={styles.stale}>{note}</p>}
+        {footer}
+      </Root>
+    );
+  }
+
   // `none` renders no disclosure at all, so there would be no head row to ride.
   const inlineControls = embedded && action.evidence !== "none";
 
@@ -336,35 +387,7 @@ export function ActionRow({
       />
       {note && <p className={styles.stale}>{note}</p>}
       {!inlineControls && controls}
-      {/* Embedded, the card owns the footer (#781). This one repeated the session link the card
-          already had and put a second clock (the action's age) beside the card's own — two
-          footers for one session. The action's `state` is not dropped: the card folds it into
-          its single footer, which already existed, so the merge costs no vertical space. */}
-      {!embedded && (
-        <div className={styles.actFoot}>
-          {/* The feed no longer groups by project (#754), so the row has to say which one it is.
-            Suppressed when embedded: a session card already names its project in its own
-            footer, and repeating it there is noise. */}
-          {action.project && (
-            <span className={styles.proj}>{action.project}</span>
-          )}
-          <span className={styles.state}>{action.state}</span>
-          {/* The feed is one row per session (#774). Say what was folded in, so a collapsed row
-            is visibly a summary rather than looking like the only thing that happened. */}
-          {(action.repeats ?? 1) > 1 && (
-            <span
-              className={styles.repeats}
-              title={`${action.repeats} actions on this session`}
-            >
-              ×{action.repeats}
-            </span>
-          )}
-          <span className={styles.age}>{relTime(action.ts)}</span>
-          <Link className={styles.jump} to={sessionPath(action)}>
-            Open session
-          </Link>
-        </div>
-      )}
+      {footer}
     </Root>
   );
 }

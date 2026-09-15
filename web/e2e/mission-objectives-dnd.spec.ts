@@ -492,6 +492,7 @@ test("⋯ holds every row action: a popover on desktop, a bottom sheet titled 'O
   const items = menu.getByRole("menuitem");
   await expect(items).toHaveText([
     "Rename",
+    "Edit direction",
     "Mark not required",
     /^Stand down\s*No session to nudge$/,
     "Move up",
@@ -500,6 +501,7 @@ test("⋯ holds every row action: a popover on desktop, a bottom sheet titled 'O
   ]);
   for (const id of [
     "objective-rename",
+    "objective-edit-direction",
     "objective-waive",
     "objective-stand-down",
     "objective-up",

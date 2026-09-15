@@ -1,0 +1,56 @@
+[
+  {
+    "name": "pr",
+    "hint": "PR number",
+    "probes": [
+      "forge_checks",
+      "forge_merged",
+      "forge_pr",
+      "forge_review"
+    ]
+  },
+  {
+    "name": "pr_state",
+    "hint": "open / closed / merged",
+    "probes": [
+      "forge_pr"
+    ]
+  },
+  {
+    "name": "checks",
+    "hint": "check state",
+    "probes": [
+      "forge_checks"
+    ]
+  },
+  {
+    "name": "review",
+    "hint": "review state",
+    "probes": [
+      "forge_review"
+    ]
+  },
+  {
+    "name": "repo",
+    "hint": "repository",
+    "probes": [
+      "forge_checks",
+      "forge_merged",
+      "forge_pr",
+      "forge_review",
+      "forge_run"
+    ]
+  },
+  {
+    "name": "branch",
+    "hint": "branch",
+    "probes": [
+      "forge_checks",
+      "forge_merged",
+      "forge_pr",
+      "forge_review",
+      "forge_run",
+      "git_local"
+    ]
+  }
+]

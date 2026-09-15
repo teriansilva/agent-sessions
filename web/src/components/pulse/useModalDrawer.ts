@@ -339,7 +339,18 @@ export function useFocusContainment({
           'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
         ),
       );
-      if (focusable.length === 0) return;
+      // NOTHING ENABLED TO CYCLE (#997 review 4880). A dialog disables every control while its save
+      // is pending, and returning here handed the press to the browser, which moved focus to the
+      // page behind the still-open dialog. So the press is held: focus stays on the panel, or is put
+      // there when it had already dropped out (a disabled control loses focus). The panel must be
+      // focusable for that (`tabIndex={-1}`); a panel that is not keeps the press from moving focus
+      // anywhere at all, which is still containment.
+      if (focusable.length === 0) {
+        e.preventDefault();
+        const current = document.activeElement;
+        if (!(current instanceof Node && host.contains(current))) host.focus();
+        return;
+      }
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
       const activeEl = document.activeElement;

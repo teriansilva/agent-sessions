@@ -233,7 +233,7 @@ test("evidence is pulled from the server on expand, not shipped with the proposa
   expect(evidenceCalls).toBe(1);
 });
 
-test("the autonomy copy names the ceiling, not just the tier — in Settings (#929)", async ({
+test("the autonomy copy says what YOLO can type, not just the tier — in Settings (#929, #983)", async ({
   page,
 }) => {
   await mockOrchestrator(page, []);
@@ -241,10 +241,13 @@ test("the autonomy copy names the ceiling, not just the tier — in Settings (#9
   // #929 moved every autonomy control off the route and into Settings, so this is asserted
   // where the operator now sets it. The property under test is unchanged and is the reason the
   // copy exists: "YOLO" alone reads as "does everything", so it has to say what it can send.
+  // #983 changed WHICH operator text that is (an objective's direction, or the default nudge),
+  // so the copy now names authorship rather than the `continue` verb.
   await page.goto(settingsPath("ai-mission-control"));
-  const ceiling = page.getByText(/only ever sends/i);
+  const ceiling = page.getByText(/only ever types text/i);
   await expect(ceiling).toBeVisible();
-  await expect(ceiling).toContainText("continue");
+  await expect(ceiling).toContainText("you wrote");
+  await expect(ceiling).toContainText("The AI decides when, never what.");
   await expect(ceiling).toContainText(/always waits for your approval/i);
 
   // And it is genuinely gone from the route — a second copy drifting out of sync with the

@@ -41,6 +41,7 @@ import { MissionThreadEvents } from "./MissionThreadEvent";
 import { latestFailedStartSeq } from "./missionThread";
 import { useStartAgain } from "./useStartAgain";
 import { type ObjectiveOp } from "./MissionObjectives";
+import type { DirectionOp } from "./objectiveDirection";
 import { MissionRail } from "./MissionRail";
 import { ContextPane, ObjectivesPane, TimelinePane } from "./MissionDetail";
 import { useMissionDetail } from "./useMissionDetail";
@@ -357,6 +358,31 @@ function MissionBody({
       ),
     [mutate, missionId],
   );
+  /** One direction op (#983 P2). Same busy flag and re-read as every edit, but the refusal goes back
+   *  to the Edit direction dialog in the server's own words instead of the console's note, so the
+   *  operator reads it beside the text they wrote and keeps that text. */
+  const onDirection = useCallback(
+    async (op: DirectionOp): Promise<string | null> => {
+      let refusal: string | null = null;
+      const ran = await mutate(async () => {
+        try {
+          if (op.op === "set_direction")
+            await api.setObjectiveDirection(missionId, op.key, op.direction);
+          else if (op.op === "reset_direction")
+            await api.resetObjectiveDirection(missionId, op.key);
+          else await api.clearObjectiveDirection(missionId, op.key);
+        } catch (err) {
+          refusal =
+            err instanceof ApiError && err.message
+              ? err.message
+              : "That direction was not saved.";
+        }
+      }, "That direction");
+      if (!ran) return "Another change is still being saved. Try again in a moment.";
+      return refusal;
+    },
+    [mutate, missionId],
+  );
   /** Release a session from the mission. The overview is refreshed too, not just the mission: a
    *  released session becomes UNTRACKED, and that list is derived from the cards. */
   const onDetach = useCallback(
@@ -381,6 +407,8 @@ function MissionBody({
       onOps={editable ? onOps : undefined}
       onStandDown={editable ? onStandDown : undefined}
       busy={mutating}
+      onDirection={editable ? onDirection : undefined}
+      playbookId={d.mission?.playbook_id ?? null}
     />
   );
   /** CONTEXT IS ITS OWN TAB (#942). It used to be the third heading inside OBJECTIVES; the props

@@ -153,7 +153,7 @@ and the actions that operate on what is on screen (#929).
 
 | Control | Where it is | Notes |
 |---|---|---|
-| Autonomy tier, confidence threshold, interval, nudge text | **Settings → AI → Mission control** (Orchestrator) | The tier's copy also names the verb ceiling, so "YOLO" never implies more than it grants. |
+| Autonomy tier, confidence threshold, interval, default nudge | **Settings → AI → Mission control** (Orchestrator) | The tier's copy says what YOLO can type on its own: only text you wrote, so "YOLO" never implies more than it grants. |
 | **Run now** — one orchestrator pass immediately | **Settings → AI → Mission control** (Orchestrator) | Also the retry after a failed pass. |
 | Scan depth, look-back window, **Scan now** | **Settings → AI → Mission control** (Session scan) | A scan refreshes the Sessions-without-a-mission list; it is not an orchestrator pass. |
 | Forge connection for objective probes | **Settings → AI → Mission control** (Forge connection) | Without one, forge objectives read as *unknown*, never as failed. |

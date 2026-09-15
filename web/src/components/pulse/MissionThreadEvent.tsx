@@ -19,9 +19,11 @@ import {
   ArrowRight,
   ChevronRight,
   CircleAlert,
+  CirclePause,
   FileText,
   Pencil,
   RotateCw,
+  Send,
   Terminal,
 } from "lucide-react";
 import { useId, useState } from "react";
@@ -44,6 +46,7 @@ import {
   type ThreadRow,
 } from "./missionThread";
 import t from "./missionThread.module.css";
+import d from "./direction.module.css";
 import type { StartAgain } from "./useStartAgain";
 
 function Time({ at }: { at: number }) {
@@ -260,12 +263,109 @@ function PlanRow({
   );
 }
 
+/** A supervisor nudge that was typed (#983 P2, D4): one compact row naming the objective and whose
+ *  words it was, with Show text revealing the delivered snapshot verbatim. */
+function NudgedRow({
+  event,
+  row,
+  objective,
+}: {
+  event: MissionEvent;
+  row: Extract<ThreadRow, { type: "nudged" }>;
+  objective: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const textId = useId();
+  const whose =
+    row.source === "direction"
+      ? "your direction"
+      : row.source === "default_nudge"
+        ? "your default nudge"
+        : null;
+  return (
+    <div
+      className={t.box}
+      role="group"
+      aria-label={`Nudged: ${objective}`}
+      data-testid="thread-nudged"
+      data-source={row.source ?? ""}
+    >
+      <div className={t.line}>
+        <Send size={14} className={t.icon} aria-hidden="true" />
+        <span className={t.lineText}>
+          Nudged
+          <span className={t.sep}>·</span>
+          <b className={d.threadStrong}>{objective}</b>
+          {whose ? (
+            <>
+              <span className={t.sep}>·</span>
+              {whose}
+            </>
+          ) : null}
+        </span>
+        <Time at={event.at} />
+        <button
+          type="button"
+          className={t.disclosure}
+          aria-expanded={open}
+          aria-controls={open ? textId : undefined}
+          onClick={() => setOpen((o) => !o)}
+          data-testid="thread-nudged-toggle"
+        >
+          {open ? "Hide text" : "Show text"}
+          <ChevronRight
+            size={13}
+            aria-hidden="true"
+            className={open ? t.chevronOpen : t.chevron}
+          />
+        </button>
+      </div>
+      {open ? (
+        <pre id={textId} className={d.threadTyped} data-testid="thread-nudged-text">
+          {row.text}
+        </pre>
+      ) : null}
+    </div>
+  );
+}
+
+/** A supervisor nudge that was not typed (#983 P2, D4): one quiet row with the server's reason. */
+function HeldRow({
+  event,
+  row,
+  objective,
+}: {
+  event: MissionEvent;
+  row: Extract<ThreadRow, { type: "held" }>;
+  objective: string;
+}) {
+  return (
+    <div
+      className={`${t.quiet} ${t.line}`}
+      role="group"
+      aria-label={`Held: ${objective}`}
+      data-testid="thread-held"
+    >
+      <CirclePause size={14} className={t.icon} aria-hidden="true" />
+      <span className={`${t.lineText} ${t.note}`}>
+        Held
+        <span className={t.sep}>·</span>
+        <b className={d.threadStrong}>{objective}</b>
+        <span className={t.sep}>·</span>
+        <span data-testid="thread-held-reason">{row.reason}</span>
+      </span>
+      <Time at={event.at} />
+    </div>
+  );
+}
+
 /** One timeline event in the thread. */
 export function MissionThreadEvent({
   event,
   actions = null,
   projectName = (id) => id,
   objectiveCount = null,
+  objectiveTitle = (key) => key ?? "an objective",
 }: {
   event: MissionEvent;
   /** Set only on the newest failed start of a mission that is still failed. */
@@ -273,6 +373,8 @@ export function MissionThreadEvent({
   projectName?: (id: string) => string;
   /** Set only on the newest plan: an older plan's checklist is not the one on screen. */
   objectiveCount?: number | null;
+  /** The title of the objective a supervisor nudge was about, from the checklist on screen. */
+  objectiveTitle?: (key: string | null) => string;
 }) {
   const row = threadRow(event);
   let body;
@@ -362,6 +464,14 @@ export function MissionThreadEvent({
         </div>
       );
       break;
+    case "nudged":
+      body = (
+        <NudgedRow event={event} row={row} objective={objectiveTitle(row.objectiveKey)} />
+      );
+      break;
+    case "held":
+      body = <HeldRow event={event} row={row} objective={objectiveTitle(row.objectiveKey)} />;
+      break;
     default:
       body = (
         <div className={styles.event}>
@@ -400,6 +510,10 @@ export function MissionThreadEvents({
   const actionable = mission?.state === "failed" && mission.archived_at == null;
   const count =
     objectives && mission?.objectives_state !== "pending" ? objectives.length : null;
+  // A nudge row names its objective by the title on screen, falling back to the key the server
+  // recorded; an objective since removed still reads as something rather than as nothing.
+  const objectiveTitle = (key: string | null) =>
+    (key ? objectives?.find((o) => o.key === key)?.title : null) || key || "an objective";
   const projectName = (id: string) =>
     projectNames[id] ??
     mission?.plan?.project_options?.find((p) => p.id === id)?.name ??
@@ -413,6 +527,7 @@ export function MissionThreadEvents({
           actions={actionable && e.seq === latestFailure ? startAgain : null}
           projectName={projectName}
           objectiveCount={e.seq === latestPlan ? count : null}
+          objectiveTitle={objectiveTitle}
         />
       ))}
     </>

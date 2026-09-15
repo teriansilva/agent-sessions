@@ -1536,3 +1536,397 @@ def test_v27_upgrades_a_v26_store_with_NULL_directions_and_the_fresh_column_orde
     finally:
         con.close()
     missions.reset_schema_cache_for_test()
+
+
+# ---- P2: the editor's table and preview, and the decision row's projection (#983 P2) ------------
+
+
+def _fixture_table():
+    from pathlib import Path
+
+    return json.loads(
+        (Path(__file__).parent / "fixtures" / "direction_placeholders.json").read_text()
+    )
+
+
+def _login_client(auth_cfg):
+    from fastapi.testclient import TestClient
+
+    from agent_sessions.main import create_app
+
+    c = TestClient(create_app(auth_cfg), base_url="https://testserver")
+    c.post(
+        "/login",
+        data={"username": "marcus", "password": "hunter2"},
+        follow_redirects=False,
+        headers={"Origin": auth_cfg.origin},
+    )
+    hdr = {"X-CSRF-Token": c.get("/api/config").json()["csrf"], "Origin": auth_cfg.origin}
+    return c, hdr
+
+
+def test_the_placeholder_fixture_the_web_tests_read_is_the_servers_own_table():
+    """The web's fact chips and unit tests read this fixture, so it must BE the server's table."""
+    md = _md()
+    assert _fixture_table() == md.placeholder_table(), (
+        "tests/fixtures/direction_placeholders.json drifted from mission_directions.PLACEHOLDERS: "
+        "regenerate it from placeholder_table()"
+    )
+    assert set(md.PLACEHOLDER_HINTS) == set(md.PLACEHOLDERS)
+    assert set(md.EXAMPLE_FACTS) == set(md.PLACEHOLDERS)
+    for name, ph in md.PLACEHOLDERS.items():
+        assert ph.valid(md.EXAMPLE_FACTS[name]), f"the example for {{{name}}} fails its own shape"
+
+
+def test_config_ships_the_placeholder_table_beside_the_probe_schema(
+    auth_cfg, tmp_home, tmp_path, monkeypatch
+):
+    _route_env(monkeypatch, tmp_path)
+    c, _ = _login_client(auth_cfg)
+    assert c.get("/api/config").json()["mission_probes"]["placeholders"] == _fixture_table()
+    missions.reset_schema_cache_for_test()
+
+
+def test_the_preview_is_the_one_renderer_over_example_facts_and_reads_no_store(
+    tmp_path, monkeypatch
+):
+    md = _md()
+    stores = {
+        "AGENT_SESSIONS_MISSIONS_DB": tmp_path / "m.db",
+        "AGENT_SESSIONS_ORCHESTRATOR_LEDGER": tmp_path / "led.jsonl",
+        "AGENT_SESSIONS_PREFS": tmp_path / "prefs.json",
+    }
+    for var, p in stores.items():
+        monkeypatch.setenv(var, str(p))
+    missions.reset_schema_cache_for_test()
+    seen: list[dict] = []
+    real = md.render
+
+    def spy(obj, cfg, **kw):
+        seen.append(obj)
+        return real(obj, cfg, **kw)
+
+    monkeypatch.setattr(md, "render", spy)
+    out = md.preview(DIRECTION, "forge_checks")
+    assert out["text"] == FILLED
+    assert [f["name"] for f in out["facts"]] == ["pr", "checks", "branch"]
+    assert len(seen) == 1 and seen[0]["direction"] == DIRECTION, "the preview did not use render"
+    assert md.preview("   ", "forge_checks") == {"text": None, "facts": []}
+    for var, p in stores.items():
+        assert not p.exists(), f"the preview touched {var}"
+    missions.reset_schema_cache_for_test()
+
+
+def test_the_preview_refuses_exactly_what_a_save_refuses_in_the_same_words(env):
+    md = _md()
+    for bad in (
+        "PR #{pr} {title}",
+        "{detail}",
+        "PR {review}",
+        "go" + chr(27) + "[201~",
+        "x" * 1001,
+    ):
+        with pytest.raises(md.DirectionError) as previewed:
+            md.preview(bad, "forge_checks")
+        with pytest.raises(prefs.PlaybookError) as saved:
+            prefs.set_mission_playbooks(_playbook(bad))
+        assert str(previewed.value) in str(saved.value), bad
+    assert md.preview(DIRECTION, "forge_checks")["text"] == FILLED
+
+
+def test_the_preview_route_is_logged_in_csrf_guarded_and_answers_the_saves_422(
+    auth_cfg, tmp_home, tmp_path, monkeypatch
+):
+    from fastapi.testclient import TestClient
+
+    from agent_sessions.main import create_app
+    from agent_sessions.routes.missions import DIRECTION_PREVIEW_PATH
+
+    md = _md()
+    _route_env(monkeypatch, tmp_path)
+    body = {"direction": DIRECTION, "probe": "forge_checks"}
+    anon = TestClient(create_app(auth_cfg), base_url="https://testserver")
+    assert anon.post(DIRECTION_PREVIEW_PATH, json=body).status_code == 401
+    c, hdr = _login_client(auth_cfg)
+    no_csrf = c.post(DIRECTION_PREVIEW_PATH, json=body, headers={"Origin": auth_cfg.origin})
+    assert no_csrf.status_code == 403, no_csrf.text
+
+    ok = c.post(DIRECTION_PREVIEW_PATH, json=body, headers=hdr)
+    assert ok.status_code == 200, ok.text
+    assert ok.json() == md.preview(DIRECTION, "forge_checks")
+
+    bad = c.post(
+        DIRECTION_PREVIEW_PATH,
+        json={"direction": "PR #{pr} {nope}", "probe": "forge_checks"},
+        headers=hdr,
+    )
+    assert bad.status_code == 422
+    with pytest.raises(md.DirectionError) as refused:
+        md.validate("PR #{pr} {nope}", "forge_checks")
+    assert bad.json()["detail"] == str(refused.value)
+
+    # A probe the store does not know is no probe: nothing can be filled, and it is never echoed.
+    odd = c.post(
+        DIRECTION_PREVIEW_PATH, json={"direction": "PR #{pr}", "probe": "<b>x</b>"}, headers=hdr
+    )
+    assert odd.status_code == 422 and "<b>x</b>" not in odd.text
+    missions.reset_schema_cache_for_test()
+
+
+def test_render_status_is_the_delivery_paths_own_verdict_word_for_word(monkeypatch):
+    """Not a second comparison: `render_status` reports what `supervisor_render` says, and
+    `actuator.render` — what delivery calls before any claim — asks that very function, so the
+    decision row and delivery cannot disagree about whether the text still holds."""
+    rec = {"verb": "continue", "source": "supervisor", "render": {"text": "x"}}
+    calls: list = []
+
+    def stale(action, cfg, **kw):
+        calls.append((action, cfg, kw))
+        raise actuator.RenderStale("SENTINEL: the head moved")
+
+    monkeypatch.setattr(actuator, "supervisor_render", stale)
+    assert actuator.render_status(rec, {"k": 1}) == {
+        "sendable": False,
+        "reason": "SENTINEL: the head moved",
+    }
+    # …in its no-git form (#983 P2 review): the projection runs on every poll of both producers.
+    assert calls == [
+        (rec, {"k": 1}, {"resolve_target": False})
+    ], "render_status must ask delivery's own check, in its no-git form"
+    with pytest.raises(actuator.RenderStale, match="SENTINEL: the head moved"):
+        actuator.render(rec, {"k": 1})
+
+    monkeypatch.setattr(actuator, "supervisor_render", lambda a, c, **k: {"text": "x"})
+    assert actuator.render_status(rec, {}) == {"sendable": True, "reason": ""}
+
+    def boom(a, c, **k):
+        raise RuntimeError("store down")
+
+    monkeypatch.setattr(actuator, "supervisor_render", boom)
+    assert actuator.render_status(rec, {}) == {
+        "sendable": False,
+        "reason": actuator.RENDER_STATUS_UNCHECKED,
+    }
+    for other in (
+        {**rec, "source": "orchestrator"},
+        {**rec, "verb": "answer"},
+        {"verb": "continue", "source": "supervisor"},
+    ):
+        assert actuator.render_status(other, {}) is None, other
+
+
+@pytest.mark.anyio
+async def test_a_proposal_is_sendable_until_its_text_moves_then_says_what_delivery_says(
+    env, monkeypatch
+):
+    mid = _mission()
+    _checks(mid)
+    with _live(monkeypatch):
+        res = await _propose(mid)
+        assert ledger.get(res["id"])["state"] == "proposed"
+        assert actuator.render_status(ledger.get(res["id"]), prefs.get_orchestrator()) == {
+            "sendable": True,
+            "reason": "",
+        }
+        missions.patch_objectives(
+            mid, [{"op": "set_direction", "key": "checks", "direction": "PR #{pr}: something else"}]
+        )
+        status = actuator.render_status(ledger.get(res["id"]), prefs.get_orchestrator())
+        assert status["sendable"] is False and status["reason"], status
+        assert ledger.get(res["id"])["state"] == "proposed", "the projection settled the action"
+        settled = await actuator.deliver(res["id"], operator_approval=True)
+    assert settled["state"] == "stale", settled
+    assert settled["detail"] == status["reason"], "the row and delivery disagree about why"
+
+
+@pytest.mark.parametrize("route", ["/api/pulse", "/api/pulse/orchestrator"])
+def test_both_decision_producers_project_render_status_and_withdraw_approve(
+    env, auth_cfg, tmp_home, monkeypatch, route
+):
+    import asyncio
+
+    from agent_sessions import pulse
+
+    mid = _mission()
+    _add(
+        mid,
+        "checks",
+        "forge_checks",
+        direction=DIRECTION,
+        args={"branch": BRANCH},
+        title="Checks are green on the PR",
+    )
+    _observe(mid, "checks", state="failure")
+    monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
+    c, _ = _login_client(auth_cfg)
+
+    with _live(monkeypatch):
+        res = asyncio.run(_propose(mid))
+
+        def row():
+            body = c.get(route).json()
+            if route == "/api/pulse":
+                return next(x for x in body["cards"] if x["id"] == SESSION)["pending_action"]
+            return next(a for a in body["pending"] if a["id"] == res["id"])
+
+        fresh = row()
+        assert fresh["render_status"] == {"sendable": True, "reason": ""}, fresh
+        assert fresh["can_approve"] is True
+        assert fresh["objective_title"] == "Checks are green on the PR"
+        assert fresh["render"]["text"] == FILLED
+        missions.patch_objectives(
+            mid, [{"op": "set_direction", "key": "checks", "direction": "PR #{pr}: something else"}]
+        )
+        moved = row()
+    assert moved["render_status"]["sendable"] is False and moved["render_status"]["reason"]
+    assert moved["can_approve"] is False and moved["can_reject"] is True
+    assert ledger.get(res["id"])["state"] == "proposed", "reading the projection settled it"
+
+
+def _git_checkout(tmp_path):
+    """A real checkout on BRANCH with one commit, and a literal-argv `git` runner for it."""
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args):
+        subprocess.run(  # noqa: S603 — a literal argv
+            [
+                "git",
+                "-C",
+                str(repo),
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                *args,
+            ],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+
+    git("init", "-q", "-b", BRANCH)
+    git("commit", "-q", "--allow-empty", "-m", "one")
+    return repo, git
+
+
+def test_the_decision_projection_spawns_no_git_for_any_number_of_pending_nudges(
+    env, tmp_home, monkeypatch, tmp_path
+):
+    """Both producers call `_operator_projection` for every pending nudge on every poll, so it must
+    not resolve a probe target or touch the checkout's git: no `.git` reads, no git subprocess.
+
+    Recorded rather than raised, because target resolution swallows its own read errors. The same
+    detectors then see delivery's full check on this real checkout, so an empty record is not blind.
+    """
+    import subprocess
+
+    from agent_sessions.routes import pulse as pulse_routes
+
+    md = _md()
+    repo, _ = _git_checkout(tmp_path)
+    mid = _mission(cwd=str(repo))
+    _probed(mid, monkeypatch)
+    keys = ["checks", "checks_b", "checks_c"]
+    for key in keys[1:]:
+        _add(
+            mid,
+            key,
+            "forge_checks",
+            direction=DIRECTION,
+            args={"repo": "octo/app", "branch": BRANCH},
+        )
+    mission_probes.run_for_mission(mid)
+    cfg = prefs.get_orchestrator()
+    actions = []
+    for key in keys:
+        snap = _snap(mid, key)
+        actions.append(
+            {
+                "id": f"act-{key}",
+                "state": "proposed",
+                "verb": "continue",
+                "source": "supervisor",
+                "session_id": SESSION,
+                "mission_id": mid,
+                "objective_key": key,
+                "objective_episode": snap["episode"],
+                "render": md.render(snap, cfg),
+            }
+        )
+
+    from agent_sessions import gitpanel
+
+    seen: dict[str, list] = {"resolve_target": [], "git_reads": [], "git_runs": [], "spawns": []}
+
+    def recording(name, real):
+        def wrapper(*args, **kwargs):
+            seen[name].append(args)
+            return real(*args, **kwargs)
+
+        return wrapper
+
+    def spawn(*args, **kwargs):
+        seen["spawns"].append(args[0] if args else kwargs.get("args"))
+        raise OSError("a subprocess was spawned while building the decision projection")
+
+    monkeypatch.setattr(
+        mission_probes, "resolve_target", recording("resolve_target", mission_probes.resolve_target)
+    )
+    monkeypatch.setattr(gitpanel, "discover_repo", recording("git_reads", gitpanel.discover_repo))
+    monkeypatch.setattr(gitpanel, "_run_git", recording("git_runs", gitpanel._run_git))
+    monkeypatch.setattr(subprocess, "Popen", spawn)
+
+    titles: dict = {}
+    for _poll in range(3):
+        for a in actions:
+            out = pulse_routes._operator_projection(a, cfg, titles)
+            assert out["render_status"] == {"sendable": True, "reason": ""}, out
+            assert out["can_approve"] is True, out
+    assert seen == {
+        "resolve_target": [],
+        "git_reads": [],
+        "git_runs": [],
+        "spawns": [],
+    }, f"building the decision projection touched git: {seen}"
+
+    # The detectors are live: delivery's FULL check on this same checkout resolves the target and
+    # reads its `.git`, and both are recorded.
+    with contextlib.suppress(actuator.RenderStale):
+        actuator.supervisor_render(actions[0], cfg)
+    assert seen[
+        "resolve_target"
+    ], "the target detector saw nothing; the empty record proves nothing"
+    assert seen["git_reads"], "the .git-read detector saw nothing; the empty record proves nothing"
+
+
+@pytest.mark.anyio
+async def test_the_projection_cannot_see_an_agent_moved_HEAD_but_approve_still_refuses_it(
+    env, tmp_home, monkeypatch, tmp_path
+):
+    """THE DOCUMENTED TRADE-OFF. The no-git projection cannot see a checkout HEAD the agent moved
+    with its own git, so the row still reads sendable; the operator's tap runs the full check, which
+    refuses it as stale with its reason, and nothing is typed."""
+    repo, git = _git_checkout(tmp_path)
+    mid = _mission(cwd=str(repo))
+    _probed(mid, monkeypatch)
+    mission = {"cwd": str(repo), "merge_sha": None}
+    with _live(monkeypatch) as slave:
+        prefs.set_orchestrator({"autonomy": "suggest"})
+        res = await _propose(mid)
+        assert ledger.get(res["id"])["state"] == "proposed"
+        git("commit", "-q", "--allow-empty", "-m", "two")
+        snap = _snap(mid)
+        assert mission_probes.resolve_target(mission, snap).digest != snap["probe_target"]
+
+        status = actuator.render_status(ledger.get(res["id"]), prefs.get_orchestrator())
+        assert status == {"sendable": True, "reason": ""}, status
+
+        rec = await actuator.deliver(res["id"], operator_approval=True)
+        typed = _typed(slave)
+    assert rec["state"] == "stale" and "target moved" in str(rec.get("detail")), rec
+    assert typed == b""

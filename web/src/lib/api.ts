@@ -1,5 +1,6 @@
 // Typed client for the FastAPI `/api/*` surface. Same-origin; cookie session auth.
 // Mutations (later) attach the CSRF token + are origin-checked server-side.
+import { DIRECTION_PREVIEW_PATH } from "./apiPaths";
 import { uploadStoredName } from "./templateMessage";
 import type {
   AgentBudgets,
@@ -7,6 +8,7 @@ import type {
   AiActivity,
   AppConfig,
   AutoSortReport,
+  DirectionPreview,
   DraftAttachment,
   EnginesResponse,
   Evidence,
@@ -1038,6 +1040,31 @@ export const api = {
       `/api/missions/${encodeURIComponent(id)}/objectives`,
       { ops },
     ),
+
+  /** The three DIRECTION ops (#983), one objective each, on the same guarded objectives route. Only
+   *  the operator writes a direction; an unknown placeholder is a 422 in the server's words. */
+  setObjectiveDirection: (id: string, key: string, direction: string) =>
+    patchJson<{ objectives: MissionObjective[] }>(
+      `/api/missions/${encodeURIComponent(id)}/objectives`,
+      { ops: [{ op: "set_direction", key, direction }] },
+    ),
+  /** Copy the playbook's CURRENT direction for this objective again. A copy, never a link. */
+  resetObjectiveDirection: (id: string, key: string) =>
+    patchJson<{ objectives: MissionObjective[] }>(
+      `/api/missions/${encodeURIComponent(id)}/objectives`,
+      { ops: [{ op: "reset_direction", key }] },
+    ),
+  /** No direction: a nudge for this objective types the default nudge. */
+  clearObjectiveDirection: (id: string, key: string) =>
+    patchJson<{ objectives: MissionObjective[] }>(
+      `/api/missions/${encodeURIComponent(id)}/objectives`,
+      { ops: [{ op: "clear_direction", key }] },
+    ),
+
+  /** What a direction would type for a `probe` objective, filled with EXAMPLE facts by the server's
+   *  one renderer (#983 P2). Read-only; refuses an unknown placeholder with the save's 422 words. */
+  previewDirection: (direction: string, probe: string) =>
+    mutateJson<DirectionPreview>("POST", DIRECTION_PREVIEW_PATH, { direction, probe }),
 
   /** Type the operator's OWN words into one of a mission's sessions (#894).
    *

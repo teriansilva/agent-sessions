@@ -147,6 +147,17 @@ mission, such as `PR #{pr} checks are {checks} on {branch}. Open the failing che
   the time it is approved or sent automatically, including an edit to the global nudge, it is not
   sent. A re-probe that finds the same facts changes nothing, so a proposal waits for you as long
   as its facts hold and are fresh. A nudge without a direction never goes stale on a re-probe.
+- **Where you write one.** In **Settings → AI → Playbooks**, each objective has a **Direction**
+  field. Tap a fact chip to insert a placeholder that objective's check can fill. The preview shows
+  the text filled with example facts, and an unknown placeholder is refused there in the same words a
+  save uses. For a single mission, use an objective's ⋯ → **Edit direction**. You can keep the copy,
+  reset it to the playbook's current direction, write your own, or have none. Objectives with a
+  direction carry a small *direction* mark.
+- **What you approve is what is typed.** On Suggest, the decision shows **Will type**: the exact
+  text, the facts it was filled with and when they were checked. The AI's *Why now* is kept
+  separate. If the text is no longer true, the decision says **not sendable** and offers only
+  Dismiss. The thread records a **Nudged** row for each nudge that was sent, with **Show text** for
+  exactly what was typed, and a **Held** row for a nudge that was not.
 
 When every gate is met the supervisor proposes completion and **closes nothing** — it quotes the
 list back and the call is yours. It says which objectives were *observed* to hold and which you

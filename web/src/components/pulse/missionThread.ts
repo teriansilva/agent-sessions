@@ -40,6 +40,16 @@ export type ThreadRow =
   | { type: "plan"; projectId: string | null; engine: string | null; brief: string }
   | { type: "plan_edit"; changed: string[] }
   | { type: "planning"; outcome: string; label: string; note: string | null }
+  /** A supervisor nudge that was typed (#983): whose words it was, and the delivered snapshot. */
+  | {
+      type: "nudged";
+      objectiveKey: string | null;
+      source: "direction" | "default_nudge" | null;
+      /** Verbatim, exactly as the server recorded what was typed. */
+      text: string;
+    }
+  /** A supervisor nudge that was not typed, with the server's reason (#983). */
+  | { type: "held"; objectiveKey: string | null; reason: string }
   | { type: "system"; label: string; text: string | null };
 
 function str(meta: Record<string, unknown> | null, key: string): string | null {
@@ -177,6 +187,38 @@ export function threadRow(e: MissionEvent): ThreadRow {
       outcome,
       label: PLANNING_LABELS[outcome] ?? "Planning",
       note: note.trim() ? note : null,
+    };
+  }
+
+  // A SUPERVISOR NUDGE (#983). `stage` names which record this is: `delivered` carries the text that
+  // was typed, verbatim; `held` carries why nothing was. An event written before stages existed has
+  // no stage, and it was always a held one.
+  if (e.kind === "action" && str(meta, "source") === "supervisor") {
+    const objectiveKey = str(meta, "objective_key");
+    if (str(meta, "stage") === "delivered") {
+      const src = str(meta, "text_source");
+      return {
+        type: "nudged",
+        objectiveKey,
+        source: src === "direction" || src === "default_nudge" ? src : null,
+        text: typeof e.text === "string" ? e.text : "",
+      };
+    }
+    const reason = (text(e) ?? "")
+      .replace(/^\s*A nudge was prepared but not delivered:\s*/i, "")
+      .trim();
+    return { type: "held", objectiveKey, reason: reason || "it was not sent" };
+  }
+
+  // …and a direction that could not be filled, which the supervisor held and escalated (#983). Its
+  // text leads with the objective's title, which the row already names, so the reason is what follows.
+  if (e.kind === "escalation" && meta?.held === "direction") {
+    const t = text(e) ?? "";
+    const at = t.indexOf("its direction could not be filled");
+    return {
+      type: "held",
+      objectiveKey: str(meta, "objective_key"),
+      reason: (at >= 0 ? t.slice(at) : t).trim() || "its direction could not be filled",
     };
   }
 
