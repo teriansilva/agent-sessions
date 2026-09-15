@@ -1433,6 +1433,14 @@ export interface Mission {
    *  planned. It survives a reload because it is a row, not component state — the operator reads
    *  it, edits it, and decides. */
   plan?: MissionPlan | null;
+  /** May this failed mission be started again (#966)? Computed by `get_mission` from the same
+   *  predicate the state write re-checks in its transaction. The failure EVENT carries a
+   *  `retry_eligible` too; that one is a settle-time snapshot and never decides a control. */
+  retry_eligible?: boolean;
+  /** What the failed launch typed: `not_attempted`, `zero_write`, `partial`, `delivered`, `unknown`. */
+  seed_outcome?: string | null;
+  /** Why Start again is refused, set only while the mission is failed and not eligible. */
+  retry_reason?: string | null;
 }
 
 /** An unresolved turn: still running, or terminal-and-ambiguous. `done` never appears here —

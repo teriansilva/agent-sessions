@@ -1,0 +1,249 @@
+/* THE MISSION THREAD'S SYSTEM ROWS (#967 P4). Conversation keeps `mission.module.css`'s boxed
+ * `.event`; everything the SERVER records is drawn here, as graphics rather than a label over text.
+ *
+ * Status colour is load-bearing (§3): the failure edge is `--status-down`, the chips reuse the header's
+ * status dots, and the accent appears only on the Start again call to action. No radius, no gradient,
+ * tokens only (src/theme/cssGuard.test.ts). */
+
+.time {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.chip {
+  flex: none;
+}
+
+.arrow {
+  flex: none;
+  color: var(--text-3);
+}
+
+/* --- a state change: a centred row between two hairlines ------------------------------------- */
+
+.state {
+  min-width: 0;
+  margin: 4px 0 12px;
+}
+.stateLine {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.stateLine::before,
+.stateLine::after {
+  content: "";
+  flex: 1 1 0;
+  min-width: 8px;
+  height: 1px;
+  background: var(--line);
+}
+.stateNote {
+  margin: 4px 0 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+/* --- plan, plan edited, planning: one compact row ---------------------------------------------- */
+
+.box {
+  min-width: 0;
+  margin-bottom: 10px;
+  border: 1px solid var(--line);
+  background: var(--glass);
+}
+.quiet {
+  min-width: 0;
+  margin-bottom: 10px;
+  border: 1px solid var(--line);
+  background: transparent;
+}
+.line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  min-height: 40px;
+  padding: 2px 4px 2px 12px;
+  font-size: 13px;
+  color: var(--text-1);
+}
+.line > .time {
+  margin-left: auto;
+}
+.icon {
+  flex: none;
+  color: var(--text-3);
+}
+.lineText {
+  flex: 1 1 12rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.sep {
+  margin: 0 6px;
+  color: var(--text-3);
+}
+.mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.tag {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.note {
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.disclosure {
+  flex: none;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text-2);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.disclosure:hover,
+.disclosure:focus-visible {
+  color: var(--text-1);
+}
+.disclosure:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.chevron {
+  color: var(--text-3);
+}
+.chevronOpen {
+  color: var(--text-3);
+  transform: rotate(90deg);
+}
+.brief {
+  margin: 0;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* --- an error the server recorded (a question that could not be asked): one quiet row ---------- */
+
+.errorIcon {
+  flex: none;
+  color: var(--danger-text);
+}
+.errorText {
+  flex: 1 1 12rem;
+  min-width: 0;
+  color: var(--danger-text);
+  overflow-wrap: anywhere;
+}
+
+/* --- a start that failed ---------------------------------------------------------------------- */
+
+.failure {
+  min-width: 0;
+  margin-bottom: 10px;
+  padding: 12px 14px 14px;
+  border-left: 3px solid var(--status-down);
+  background: var(--bg-2);
+}
+.failHead {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.failHead > .time {
+  margin-left: auto;
+}
+.failMessage {
+  margin: 10px 0 0;
+  font-size: 14px;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.failDetail {
+  margin: 4px 0 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+.failActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+.failAction {
+  text-decoration: none;
+}
+.why {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-3);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.why:hover,
+.why:focus-visible {
+  color: var(--text-2);
+}
+.why:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.reason {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.error {
+  margin: 10px 0 0;
+  font-size: 12.5px;
+  color: var(--danger-text);
+  overflow-wrap: anywhere;
+}
+
+/* Phones: the actions stack, full width, each at the §8 floor. */
+@media (max-width: 800px) {
+  .failActions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .why {
+    align-self: flex-start;
+  }
+}

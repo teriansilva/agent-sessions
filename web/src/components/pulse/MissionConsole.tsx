@@ -23,14 +23,12 @@ import { useMissionRailSlot } from "./railSlot";
 import { ApiError, api } from "../../lib/api";
 import type {
   Mission,
-  MissionEvent,
   MissionListRow,
   OrchestratorAction,
-  PulseAskMatch,
   PulseCard,
 } from "../../types/api";
 
-import { Link, useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 
 import { ActionRow } from "./ActionRow";
 import { Composer, type AskTurn } from "./Composer";
@@ -39,19 +37,14 @@ import { MissionQuestionCard } from "./MissionQuestionCard";
 import { MissionPlanCard } from "./MissionPlanCard";
 import { MissionHeaderActions } from "./MissionHeaderActions";
 import { useMissionStart } from "./useMissionStart";
+import { MissionThreadEvents } from "./MissionThreadEvent";
+import { latestFailedStartSeq } from "./missionThread";
+import { useStartAgain } from "./useStartAgain";
 import { type ObjectiveOp } from "./MissionObjectives";
 import { MissionRail } from "./MissionRail";
 import { ContextPane, ObjectivesPane, TimelinePane } from "./MissionDetail";
 import { useMissionDetail } from "./useMissionDetail";
 import styles from "./mission.module.css";
-
-/** `engine:uuid` → `/s/:engine/:uuid`, both halves encoded. */
-function sessionRoute(key: string): string {
-  const i = key.indexOf(":");
-  const engine = i < 0 ? key : key.slice(0, i);
-  const uuid = i < 0 ? "" : key.slice(i + 1);
-  return `/s/${encodeURIComponent(engine)}/${encodeURIComponent(uuid)}`;
-}
 
 /** One page of the rail. The server caps `limit` itself; this is the client's step size. */
 const PAGE = 100;
@@ -94,58 +87,6 @@ const MISSION_ID_RE = /^msn_[0-9a-f]{32}$/;
 const LANDING_VIEW = "__landing__";
 
 
-/** One timeline row.
- *
- *  Most kinds are a label and a line of text. The two the composer produces are not: an operator
- *  message and the answer to it are a CONVERSATION, and `find` / `history` answer by naming
- *  sessions — an answer that names a session the operator cannot reach is half an answer, which
- *  is why the Ask box rendered the matches and why the durable turn carries them onto the event
- *  (#890). Model-derived text renders as TEXT; there is no `dangerouslySetInnerHTML` anywhere in
- *  these components. */
-function ThreadEvent({ event }: { event: MissionEvent }) {
-  const meta = (event.meta ?? {}) as { matches?: PulseAskMatch[] };
-  const matches = Array.isArray(meta.matches) ? meta.matches : [];
-  const label =
-    event.kind === "operator_msg"
-      ? "You"
-      : event.kind === "assistant_msg"
-        ? "Answer"
-        : event.kind === "plan_edit"
-          ? "plan edited"
-          : event.kind;
-  // A `plan_edit` carries NO text by design (#967): it records which fields changed, never the brief.
-  // Until #967 P4 draws it as a compact row, the generic row names those fields, read as strings
-  // only. The meta object itself is never rendered.
-  const changed =
-    event.kind === "plan_edit" &&
-    Array.isArray((event.meta as { changed?: unknown } | null)?.changed)
-      ? ((event.meta as { changed: unknown[] }).changed.filter(
-          (f): f is string => typeof f === "string",
-        ) as string[])
-      : [];
-  const text =
-    event.text ?? (changed.length ? `Changed: ${changed.join(", ")}` : "");
-  return (
-    <div className={styles.event} data-testid="thread-event">
-      <div className={styles.eventHead}>{label}</div>
-      <div className={styles.eventText}>{text}</div>
-      {matches.map((m) => (
-        <div key={m.id} className={styles.matchRow} data-testid="ask-match">
-          <div className={styles.eventText}>{m.title}</div>
-          {m.why ? <div className={styles.objReason}>{m.why}</div> : null}
-          <Link
-            className={styles.openSession}
-            to={sessionRoute(m.id)}
-            aria-label={`Jump into ${m.title}`}
-          >
-            Jump in
-          </Link>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 /** Everything that belongs to ONE mission. Keyed by the parent — see the module note. */
 function MissionBody({
   missionId,
@@ -160,8 +101,11 @@ function MissionBody({
   isCurrent,
   onMissionChanged,
   lifecycleSlot,
+  projectNames,
 }: {
   missionId: string;
+  /** Project id → display name, for the thread's plan rows. */
+  projectNames: Record<string, string>;
   /** Below 1400px the details sit behind ONE disclosure (#948) — whether it is open. At 1400px and
    *  above they are always beside the thread and this changes nothing. */
   detailsOpen: boolean;
@@ -539,10 +483,18 @@ function MissionBody({
     onObjectives: showObjectives,
   });
 
+  /** START AGAIN (#966), one model for the header and the thread's failure block. A refusal is shown in
+   *  the block; it goes to the console note only when no failure block is on screen to hold it. */
+  const startAgain = useStartAgain(d.mission ?? null, {
+    onChanged: onLifecycleChanged,
+    onNote: latestFailedStartSeq(d.events) === null ? noteIfCurrent : undefined,
+  });
+
   const header = d.mission ? (
     <MissionHeaderActions
       mission={d.mission}
       start={start}
+      startAgain={startAgain}
       onChanged={onLifecycleChanged}
       onNote={noteIfCurrent}
     />
@@ -703,7 +655,13 @@ function MissionBody({
             {d.events.length === 0 && decisions.length === 0 ? (
               <div className={styles.empty}>Nothing has happened yet.</div>
             ) : (
-              d.events.map((e) => <ThreadEvent key={e.seq} event={e} />)
+              <MissionThreadEvents
+                events={d.events}
+                mission={d.mission ?? null}
+                startAgain={startAgain}
+                objectives={d.objectivesFailed ? null : d.objectives}
+                projectNames={projectNames}
+              />
             )}
           </div>
         </div>
@@ -1781,6 +1739,7 @@ export function MissionConsole({
               isCurrent={isCurrent}
               lifecycleSlot={lifecycleSlotEl}
               onMissionChanged={onMissionChanged}
+              projectNames={projectNames}
             />
           ) : (
             <MissionLanding

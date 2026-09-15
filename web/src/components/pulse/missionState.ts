@@ -10,9 +10,13 @@ export function missionStateLabel(state: string): string {
   return state === "dispatching" ? "starting" : state;
 }
 
-/** The state dot's class. SEMANTIC tokens only — the brand accent never means a state (§3). */
+/** The state dot's class. SEMANTIC tokens only — the brand accent never means a state (§3).
+ *
+ *  Starting is NOT running (#967): green is the claim that work is underway, and a launch that is
+ *  still in flight has not earned it. It is a neutral `--text-2` dot, as board A2 draws it. */
 export function missionDotClass(state: string): string {
-  if (state === "running" || state === "dispatching") return styles.dotRunning;
+  if (state === "running") return styles.dotRunning;
+  if (state === "dispatching") return styles.dotStarting;
   if (state === "failed") return styles.dotFailed;
   if (state === "done" || state === "abandoned") return styles.dotDone;
   return styles.dot;

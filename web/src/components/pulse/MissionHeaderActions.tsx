@@ -68,6 +68,7 @@ import {
   START_REASON_ID,
   type MissionStart,
 } from "./useMissionStart";
+import type { StartAgain } from "./useStartAgain";
 
 /** Reaching a TERMINAL state releases every session the mission holds, server-side
  *  (`missions.set_state`). So those transitions are membership changes as much as detach is, and
@@ -85,6 +86,7 @@ const RELEASES_SESSIONS: ReadonlySet<string> = new Set([
 export function MissionHeaderActions({
   mission,
   start,
+  startAgain,
   onChanged,
   onNote,
 }: {
@@ -92,6 +94,9 @@ export function MissionHeaderActions({
   /** The body's start model: Begin and Plan again. Optional only so the lifecycle half can be
    *  mounted on its own in a unit test; the console always passes it. */
   start?: MissionStart;
+  /** Start again (#966): the SAME model the thread's failure block uses. When the mission's detail
+   *  says the failed launch may be retried, it takes the primary slot. */
+  startAgain?: StartAgain;
   /** A transition (or archive) landed, or a 409 told us the mission is not what we thought.
    *  Either way the console re-reads — the caller decides how.
    *
@@ -289,6 +294,20 @@ export function MissionHeaderActions({
         data-testid="mission-done"
       >
         {confirming === "done" ? "Confirm mark done" : "Mark done"}
+      </button>
+    );
+  } else if (state === "failed" && startAgain?.eligible) {
+    // START AGAIN (#966) for a launch that typed nothing: the detail's verdict, the same call as the
+    // thread's failure block, and the same disabled state while it is in flight.
+    primary = (
+      <button
+        type="button"
+        className={action.primary}
+        disabled={busy || startAgain.disabled}
+        onClick={() => void startAgain.run()}
+        data-testid="mission-start-again"
+      >
+        Start again
       </button>
     );
   } else if (state === "done" || state === "failed") {

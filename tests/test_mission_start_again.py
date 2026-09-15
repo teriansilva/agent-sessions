@@ -930,3 +930,98 @@ def test_an_evidence_write_that_FAILS_still_settles_on_unknown(store, monkeypatc
     assert row["seed_outcome"] == "unknown"
     assert row["retry_eligible"] is False
     _refused(mid)
+
+
+# ---- the failure's session link: display identity, never ownership (#967 P4, PR #986) -------
+
+
+def _spy_settlements(monkeypatch) -> list:
+    """Every `session_key` a settlement was handed. That parameter ADOPTS, so a display link must
+    never travel through it."""
+    handed: list = []
+    real = missions.settle_dispatch
+
+    def spy(*a, **kw):
+        handed.append(kw.get("session_key"))
+        return real(*a, **kw)
+
+    monkeypatch.setattr(missions, "settle_dispatch", spy)
+    return handed
+
+
+@pytest.mark.parametrize("seed", ["not_attempted", "delivered"])
+def test_a_FAILED_launch_names_the_session_it_started_for_DISPLAY_only(store, monkeypatch, seed):
+    """The production path: the launcher stamps the key through `on_key`, comes up, and fails, so
+    the settlement goes through `_orphaned_after_launch` with no `session_key`. The failure event
+    still names the launched session, taken from the dispatch record, and nothing is adopted."""
+    handed = _spy_settlements(monkeypatch)
+    mid, _ = _failed(monkeypatch, seed, briefed=(seed == "delivered"))
+
+    e = _failure_event(mid)
+    assert e["meta"]["launch_session_key"] == KEY
+    # DISPLAY IDENTITY, NOT OWNERSHIP.
+    assert "session_key" not in e["meta"], "the adoption-shaped key appeared on the failure"
+    assert e["session_key"] is None
+    assert missions.active_session_keys(mid) == []
+    assert missions.get_mission(mid)["sessions"] == [], "the failed launch was adopted"
+    assert handed, "the failure never settled through settle_dispatch"
+    assert all(k is None for k in handed), f"a settlement was handed a session to adopt: {handed}"
+    # The separate `session` event is unchanged and still keyed.
+    assert any(
+        x["kind"] == "session" and x["session_key"] == KEY
+        for x in missions.get_mission(mid)["events"]
+    )
+    assert BRIEF not in json.dumps(e)
+
+
+def test_the_SYNC_settlement_shape_used_by_cancel_and_recovery_keeps_the_link(store, monkeypatch):
+    """The cancelled branch of `_orphaned_after_launch` and dispatch recovery settle through the
+    same store call, on the same dispatch row, with `keep_record=True`."""
+    mid, plan = _planned()
+    missions.claim_plan(mid, plan["plan_id"])
+    missions.note_dispatch_session(mid, KEY, expect_plan=plan["plan_id"])
+    missions.settle_dispatch(
+        mid, to="failed", detail="cancelled", keep_record=True, expect_plan=plan["plan_id"]
+    )
+    e = _failure_event(mid)
+    assert e["meta"]["launch_session_key"] == KEY
+    assert missions.active_session_keys(mid) == []
+
+
+@pytest.mark.parametrize("stamped", ["claude:../../etc", "opencode:new-" + UUID, "not a key"])
+def test_a_stamped_value_that_is_not_a_plain_key_builds_NO_link(store, stamped):
+    mid, plan = _planned()
+    missions.claim_plan(mid, plan["plan_id"])
+    missions.note_dispatch_session(mid, stamped, expect_plan=plan["plan_id"])
+    missions.settle_dispatch(
+        mid, to="failed", detail="x", keep_record=True, expect_plan=plan["plan_id"]
+    )
+    assert "launch_session_key" not in _failure_event(mid)["meta"]
+
+
+def test_a_launch_that_failed_BEFORE_minting_a_key_names_NO_session(store, monkeypatch):
+    async def boom(**kw):
+        raise OSError("the launcher failed before minting an id")
+
+    mid, plan = _planned()
+    claimed = missions.claim_plan(mid, plan["plan_id"])
+    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", boom)
+    out = asyncio.run(mission_dispatch.run(mid, claimed, registry=object()))
+
+    assert out["state"] == "failed" and out["session_key"] is None
+    assert "launch_session_key" not in _failure_event(mid)["meta"]
+    assert missions.active_session_keys(mid) == []
+
+
+def test_a_launch_REFUSED_before_anything_ran_records_no_session_link(store, monkeypatch):
+    async def refuse(**kw):
+        raise headless_dispatch.DispatchError("that engine is not eligible for an unattended start")
+
+    mid, plan = _planned()
+    claimed = missions.claim_plan(mid, plan["plan_id"])
+    monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", refuse)
+    out = asyncio.run(mission_dispatch.run(mid, claimed, registry=object()))
+
+    assert out["state"] == "planned"
+    for e in missions.get_mission(mid)["events"]:
+        assert "launch_session_key" not in (e.get("meta") or {}), e

@@ -7930,6 +7930,22 @@ def settle_dispatch(
                     con.execute(
                         "DELETE FROM mission_dispatch_evidence WHERE mission_id=?", (mission_id,)
                     )
+                # WHICH SESSION THE LAUNCH STARTED, for the thread's Open session link (#967 P4, PR
+                # #986 review). A launch that came up and failed settles through
+                # `_orphaned_after_launch`, which passes no `session_key`, so nothing on this event
+                # named the session; the key is on the dispatch row `note_dispatch_session` stamped
+                # before the spawn, the same row the evidence above is copied from. DISPLAY ONLY: it
+                # is never the `session_key` parameter, so it adopts nothing and changes no
+                # ownership. Absent when no key was stamped (the launcher failed before minting one)
+                # and for anything that is not a plain `engine:native` key, a launch placeholder
+                # included, so the browser is never handed a link it would have to distrust.
+                launched = str(ev["session_key"] or "") if ev is not None else ""
+                launch_link = (
+                    {"launch_session_key": launched}
+                    if re.fullmatch(r"[a-z0-9_-]{1,32}:[A-Za-z0-9._-]{1,128}", launched)
+                    and ":new-" not in launched
+                    else {}
+                )
                 # A SNAPSHOT for the thread. The state write re-checks everything, including
                 # conditions that settle after this commit (a retained record being discharged).
                 failure_meta = {
@@ -7937,6 +7953,7 @@ def settle_dispatch(
                     "teardown_confirmed": confirmed,
                     "retry_eligible": seed in RETRYABLE_SEED_OUTCOMES and confirmed,
                     "message": _failure_message(seed, confirmed),
+                    **launch_link,
                 }
             else:
                 con.execute(

@@ -1,0 +1,199 @@
+/** What one mission timeline event IS, as the thread draws it (#967 P4, #966 P2).
+ *
+ *  Pure, so every kind is pinned by a unit test without a DOM: `MissionThreadEvent` only draws the
+ *  model this returns. The rule it replaces printed the raw `kind` above `event.text`, and a `state`
+ *  event carries its from and to in `meta` with no text at all, so a state change read as the word
+ *  "state" over an empty row.
+ *
+ *  Nothing here reads a field as markup, and nothing prints `meta` wholesale: every value that reaches
+ *  the screen is a named string the server writes for that kind. An unknown kind falls back to a
+ *  generic row with its name humanised and its own text, never its meta. */
+import type { Mission, MissionEvent } from "../../types/api";
+
+import { isPersistableKey } from "../overview/windowStore";
+
+/** `engine:uuid` → `/s/:engine/:uuid`, both halves encoded. */
+export function sessionRoute(key: string): string {
+  const i = key.indexOf(":");
+  const engine = i < 0 ? key : key.slice(0, i);
+  const uuid = i < 0 ? "" : key.slice(i + 1);
+  return `/s/${encodeURIComponent(engine)}/${encodeURIComponent(uuid)}`;
+}
+
+export type ThreadRow =
+  /** Conversation: the operator's words and the answer to them. */
+  | { type: "message"; who: "You" | "Answer" }
+  /** A lifecycle move, drawn as two chips. `note` is the why or the detail, when there is one. */
+  | { type: "state"; from: string; to: string; note: string | null }
+  /** A start that failed: a `state` event from `dispatching` to `failed`, the ONLY way a start fails. */
+  | {
+      type: "failure";
+      from: string;
+      to: string;
+      message: string;
+      detail: string | null;
+      sessionKey: string | null;
+    }
+  /** An `error` event. Its one server writer is `mission_questions._notice`: a question that could not
+   *  be asked or delivered. It is not a start failure, so it never gets chips or Start again. */
+  | { type: "error"; text: string }
+  | { type: "plan"; projectId: string | null; engine: string | null; brief: string }
+  | { type: "plan_edit"; changed: string[] }
+  | { type: "planning"; outcome: string; label: string; note: string | null }
+  | { type: "system"; label: string; text: string | null };
+
+function str(meta: Record<string, unknown> | null, key: string): string | null {
+  const v = meta?.[key];
+  return typeof v === "string" && v.trim() ? v : null;
+}
+
+function text(e: MissionEvent): string | null {
+  return typeof e.text === "string" && e.text.trim() ? e.text : null;
+}
+
+/** `dispatching -> failed: detail` is how the settlement spells its text. The chips already say the
+ *  first half, so only what follows it is worth a line. */
+function withoutTransition(t: string | null): string | null {
+  if (!t) return null;
+  const rest = t.replace(/^\s*[a-z_]+\s*->\s*[a-z_]+\s*(?::\s*)?/i, "");
+  return rest.trim() ? rest : null;
+}
+
+/** Where a failed start's Open session link points (#967 P4, PR #986 review).
+ *
+ *  `meta.launch_session_key` first: the server copies it from the dispatch record the launch stamped,
+ *  because the production failure path writes no `session_key` on the event. It is a display
+ *  identity, not ownership. Then the keys an older event could carry. Never guessed from a
+ *  neighbouring `session` event. Each candidate must pass the same `engine:native` shape check the
+ *  overview uses before it may become a link, so a malformed or placeholder value builds none. */
+function launchTarget(
+  e: MissionEvent,
+  meta: Record<string, unknown> | null,
+): string | null {
+  for (const key of [str(meta, "launch_session_key"), e.session_key, str(meta, "session_key")]) {
+    if (key && isPersistableKey(key)) return key;
+  }
+  return null;
+}
+
+/** Is this event a start that failed? Only these can carry the Start again actions. An `error` event
+ *  is not one: see the `error` row. */
+export function isFailedStart(e: MissionEvent): boolean {
+  return (
+    e.kind === "state" &&
+    str(e.meta, "from") === "dispatching" &&
+    str(e.meta, "to") === "failed"
+  );
+}
+
+/** The newest failed start among the events on screen, by `seq` rather than by position, so the rule
+ *  does not depend on the order the page arrived in. */
+export function latestFailedStartSeq(events: MissionEvent[]): number | null {
+  let seq: number | null = null;
+  for (const e of events) if (isFailedStart(e) && (seq === null || e.seq > seq)) seq = e.seq;
+  return seq;
+}
+
+const PLAN_FIELDS: Record<string, string> = {
+  project_id: "project",
+  engine: "engine",
+  brief: "brief",
+};
+
+const PLANNING_LABELS: Record<string, string> = {
+  skipped: "No plan proposed",
+  failed: "Couldn't plan",
+  discarded: "Planning result discarded",
+  recovered: "Plan recovered",
+  project_conflict: "Project kept",
+};
+
+function humanise(kind: string): string {
+  const words = kind.replace(/_/g, " ").trim();
+  return words ? words[0].toUpperCase() + words.slice(1) : "Event";
+}
+
+export function threadRow(e: MissionEvent): ThreadRow {
+  const meta = e.meta && typeof e.meta === "object" ? e.meta : null;
+  if (e.kind === "operator_msg") return { type: "message", who: "You" };
+  if (e.kind === "assistant_msg") return { type: "message", who: "Answer" };
+
+  if (e.kind === "error") {
+    return { type: "error", text: text(e) ?? "An error was recorded." };
+  }
+
+  if (isFailedStart(e)) {
+    const detail = str(meta, "detail");
+    const note = withoutTransition(text(e));
+    const message = str(meta, "message") ?? note ?? "The start failed.";
+    return {
+      type: "failure",
+      from: "dispatching",
+      to: "failed",
+      message,
+      detail: detail && detail !== message ? detail : null,
+      sessionKey: launchTarget(e, meta),
+    };
+  }
+
+  if (e.kind === "state") {
+    const from = str(meta, "from");
+    const to = str(meta, "to");
+    if (from && to) {
+      return {
+        type: "state",
+        from,
+        to,
+        note: str(meta, "why") ?? str(meta, "detail") ?? withoutTransition(text(e)),
+      };
+    }
+  }
+
+  if (e.kind === "plan") {
+    return {
+      type: "plan",
+      projectId: str(meta, "project_id"),
+      engine: str(meta, "engine"),
+      brief: text(e) ?? "",
+    };
+  }
+
+  if (e.kind === "plan_edit") {
+    const changed = Array.isArray(meta?.changed) ? meta.changed : [];
+    return {
+      type: "plan_edit",
+      changed: changed
+        .filter((f): f is string => typeof f === "string" && f.trim() !== "")
+        .map((f) => PLAN_FIELDS[f] ?? f.replace(/_/g, " ")),
+    };
+  }
+
+  if (e.kind === "planning") {
+    const outcome = str(meta, "outcome") ?? "";
+    // The planner leads its text with the same words as the label; the reason is what follows.
+    const note = text(e)?.replace(/^\s*(no plan proposed|could not plan)\s*(?::\s*)?/i, "") ?? "";
+    return {
+      type: "planning",
+      outcome,
+      label: PLANNING_LABELS[outcome] ?? "Planning",
+      note: note.trim() ? note : null,
+    };
+  }
+
+  return { type: "system", label: humanise(e.kind), text: text(e) };
+}
+
+/** May this mission be started again? The DETAIL's answer, never an event's.
+ *
+ *  `get_mission` computes `retry_eligible` from the same predicate the state write re-checks inside
+ *  its transaction. The failure event carries a `retry_eligible` too, and it is a snapshot from the
+ *  moment the launch settled: a retained teardown record discharged later, or a mission that went on
+ *  to run, changes the answer without touching the event. */
+export function canStartAgain(mission: Mission | null): boolean {
+  return (
+    mission !== null &&
+    mission.state === "failed" &&
+    mission.archived_at == null &&
+    mission.retry_eligible === true
+  );
+}

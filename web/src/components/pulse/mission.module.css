@@ -55,6 +55,11 @@
 .dotRunning {
   background: var(--status-up);
 }
+/* STARTING is not running (#967): a neutral solid dot, as board A2 draws it. Green stays the claim that
+ * work is underway (§3). */
+.dotStarting {
+  background: var(--text-2);
+}
 .dotNeedsYou {
   background: var(--status-degraded);
 }

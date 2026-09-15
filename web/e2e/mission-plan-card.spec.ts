@@ -478,8 +478,8 @@ test("a FAILED plan shows the reason from plan_detail and Plan manually; Plan ag
     plan_options: { project_options: PROJECTS, engine_options: ENGINES },
     objectives: OBJECTIVES,
     objectives_state: "done",
-    // The two timeline kinds P2 added. P4 draws them compactly; until then they must render as text,
-    // never crash the thread and never print their meta.
+    // The two timeline kinds P2 added. P4 draws them as compact rows (`thread-plan-edit`,
+    // `thread-planning`); they must never crash the thread and never print their meta.
     events: [
       {
         seq: 2,
@@ -516,8 +516,15 @@ test("a FAILED plan shows the reason from plan_detail and Plan manually; Plan ag
   await expect(page.getByTestId("mission-begin")).toBeDisabled();
 
   const events = page.getByTestId("thread-event");
-  await expect(events.filter({ hasText: "plan edited" })).toContainText("Changed: engine, brief");
-  await expect(events.filter({ hasText: "could not plan:" })).toHaveCount(1);
+  const planEdit = page.getByTestId("thread-plan-edit");
+  await expect(planEdit).toHaveCount(1);
+  await expect(planEdit).toContainText("Plan edited");
+  await expect(planEdit).toContainText("engine, brief");
+  const planning = page.getByTestId("thread-planning");
+  await expect(planning).toHaveCount(1);
+  await expect(planning).toHaveAttribute("data-outcome", "failed");
+  await expect(planning).toContainText("Couldn't plan");
+  await expect(planning).toContainText(detail);
   const threadText = (await events.allTextContents()).join("\n");
   expect(threadText).not.toContain("pln_secret_marker");
   expect(threadText).not.toContain("{");
