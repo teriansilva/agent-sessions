@@ -152,6 +152,30 @@ class CodexProvider:
         # session) yields no row rather than a bogus empty-cwd session.
         return (cwd, first_user or fallback) if cwd else None
 
+    def _row_from_path(self, path: Path) -> Session | None:
+        """One row from one rollout file, or ``None`` if it is not a listable session. Shared by
+        ``scan`` and ``lookup`` (#991) so both apply the same filters (subagents, no cwd)."""
+        m = _CODEX_ROLLOUT_RE.search(path.name)
+        if not m:
+            return None
+        meta = self._meta(path)
+        if meta is None:
+            return None
+        try:
+            st = path.stat()
+        except OSError:
+            return None
+        cwd, first_user = meta
+        return Session(
+            engine=self.engine_id,
+            uuid=m.group(1),
+            cwd=cwd,
+            last_mtime=st.st_mtime,
+            first_user_message=first_user,
+            archived=False,
+            created_at=derive_created_at(path, st),
+        )
+
     def scan(self) -> list[Session]:
         root = base._codex_sessions_dir()
         out: list[Session] = []
@@ -160,29 +184,39 @@ class CodexProvider:
         except OSError:
             return out
         for path in files:
-            m = _CODEX_ROLLOUT_RE.search(path.name)
-            if not m:
-                continue
-            meta = self._meta(path)
-            if meta is None:
-                continue
-            try:
-                st = path.stat()
-            except OSError:
-                continue
-            cwd, first_user = meta
-            out.append(
-                Session(
-                    engine=self.engine_id,
-                    uuid=m.group(1),
-                    cwd=cwd,
-                    last_mtime=st.st_mtime,
-                    first_user_message=first_user,
-                    archived=False,
-                    created_at=derive_created_at(path, st),
-                )
-            )
+            row = self._row_from_path(path)
+            if row is not None:
+                out.append(row)
         return out
+
+    def lookup(self, native_id: str) -> Session | None:
+        """This one session, read fresh (#991), or ``None``.
+
+        The rollout's file name carries the uuid, so this is a name match — the dated
+        ``YYYY/MM/DD`` layout first, then, if none of those is a usable session, a name-only walk
+        for a copy stored anywhere else, which ``scan``'s ``rglob`` would also have found. A dated
+        match that is not listable (no cwd, a subagent) must not hide a valid copy elsewhere
+        (#991 review). Only files whose name matches are read."""
+        if not self.id_pattern.match(native_id or ""):
+            return None
+        root = base._codex_sessions_dir()
+        pattern = f"rollout-*-{native_id}.jsonl"
+        tried: set[Path] = set()
+        try:
+            for candidates in (
+                lambda: sorted(root.glob(f"*/*/*/{pattern}")),
+                lambda: sorted(root.rglob(pattern)),
+            ):
+                for path in candidates():
+                    if path in tried:
+                        continue
+                    tried.add(path)
+                    row = self._row_from_path(path)
+                    if row is not None and row.uuid == native_id:
+                        return row
+        except OSError:
+            return None
+        return None
 
     def launch_argv(self, native_id, *, cwd, bypass):
         # codex resumes by uuid; cwd is set by the launcher. No documented per-launch

@@ -86,6 +86,37 @@ class ShellProvider:
         with contextlib.suppress(OSError):
             path.unlink()
 
+    def _row_from_path(self, path: Path) -> Session | None:
+        """One row from one record file, or ``None`` — fail-soft per record: a bad file drops its
+        row, never the whole list. Shared by ``scan`` and ``lookup`` (#991)."""
+        try:
+            rec = json.loads(path.read_text(encoding="utf-8"))
+            st = path.stat()
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(rec, dict):
+            return None
+        sid, cwd = rec.get("id"), rec.get("cwd")
+        if not (isinstance(sid, str) and self.id_pattern.match(sid)):
+            return None
+        if not (isinstance(cwd, str) and cwd):
+            return None
+        created = rec.get("created_at")
+        usable = isinstance(created, int | float) and not isinstance(created, bool) and created > 0
+        created_at = float(created) if usable else fs_created_at(st)
+        return Session(
+            engine=self.engine_id,
+            uuid=sid,
+            cwd=cwd,
+            last_mtime=st.st_mtime,
+            # No transcript, so no first message; the title comes from the AI review's
+            # ai_title (from the screen) or a manual rename via the sidecar.
+            first_user_message="",
+            # Sidecar override in the row builder decides the effective archive state.
+            archived=False,
+            created_at=created_at,
+        )
+
     def scan(self) -> list[Session]:
         root = base._shell_dir()
         out: list[Session] = []
@@ -94,38 +125,19 @@ class ShellProvider:
         except OSError:
             return out
         for path in files:
-            try:
-                rec = json.loads(path.read_text(encoding="utf-8"))
-                st = path.stat()
-            except (OSError, json.JSONDecodeError):
-                continue  # fail-soft per record: a bad file skips its row, never the whole list
-            if not isinstance(rec, dict):
-                continue
-            sid, cwd = rec.get("id"), rec.get("cwd")
-            if not (isinstance(sid, str) and self.id_pattern.match(sid)):
-                continue
-            if not (isinstance(cwd, str) and cwd):
-                continue
-            created = rec.get("created_at")
-            usable = (
-                isinstance(created, int | float) and not isinstance(created, bool) and created > 0
-            )
-            created_at = float(created) if usable else fs_created_at(st)
-            out.append(
-                Session(
-                    engine=self.engine_id,
-                    uuid=sid,
-                    cwd=cwd,
-                    last_mtime=st.st_mtime,
-                    # No transcript, so no first message; the title comes from the AI review's
-                    # ai_title (from the screen) or a manual rename via the sidecar.
-                    first_user_message="",
-                    # Sidecar override in the row builder decides the effective archive state.
-                    archived=False,
-                    created_at=created_at,
-                )
-            )
+            row = self._row_from_path(path)
+            if row is not None:
+                out.append(row)
         return out
+
+    def lookup(self, native_id: str) -> Session | None:
+        """This one shell session's record, read fresh (#991), or ``None``. ``on_new_session``
+        names each record after its id, so this is one file read."""
+        path = self._record_path(native_id or "")
+        if path is None:
+            return None
+        row = self._row_from_path(path)
+        return row if row is not None and row.uuid == native_id else None
 
     # --- launch ----------------------------------------------------------------------------
 

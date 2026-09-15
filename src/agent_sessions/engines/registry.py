@@ -8,8 +8,11 @@ native shape before any dispatch. See the package ``__init__`` docstring for the
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from ..scanner import Session
@@ -21,6 +24,8 @@ from .gemini import GeminiProvider
 from .kimi import KimiProvider
 from .opencode import OpenCodeProvider
 from .shell import ShellProvider
+
+log = logging.getLogger("agent_sessions.engines")
 
 # Order is scan/display order; a provider only surfaces when present. Shell is last — the agent
 # engines lead, and the always-present plain terminal (#636) trails them.
@@ -112,9 +117,7 @@ def scan_all() -> list[Session]:
 #
 # Keyed on ``str(Path.home())`` (re-resolved per call) because the Claude scanner walks
 # ``Path.home()/.claude/projects`` — tests monkeypatch ``$HOME`` to a ``mktemp -d`` home, so a
-# global singleton would leak one test's sessions into another. A single lock makes the miss
-# single-flight: two concurrent requests within the TTL yield at most one real walk (the second
-# blocks on the lock, then reads the just-populated entry).
+# global singleton would leak one test's sessions into another.
 #
 # TTL (#652 L1): at 1.5 s the snapshot was warm for only ~1.5 s of each 15 s poll window, so a
 # deliberate search keystroke-settle or a project switch between polls almost always landed on a
@@ -124,8 +127,101 @@ def scan_all() -> list[Session]:
 # guards is a session created OUTSIDE the app (a CLI launch / a running agent writing a fresh
 # JSONL) — already bounded by the 15 s poll, which re-walks on cache expiry (10 s < 15 s).
 _SCAN_CACHE_TTL_S = 10.0
-_scan_cache_lock = threading.Lock()
-_scan_cache: dict[str, tuple[float, list[Session]]] = {}
+
+
+# ONE walk coordinator per home (#991). The sidebar's snapshot (``scan_all_cached``) and the fresh
+# fallback the terminal route authorizes against (``scan_all_since``) are two ways of asking for the
+# same full walk, so they share one coordinator: a walk is a numbered GENERATION with a start time,
+# at most one runs per home at any moment, and every caller either reuses a generation it can trust
+# or joins/starts the single next one. Two walks never run at once — which is the whole GIL-convoy
+# bug of #991, where eight concurrent walks took twice as long as eight serial ones.
+#
+# The coordinator's lock is held only to pick a generation, never across a walk, so invalidation
+# and new callers never wait on the disk. Invalidation does not drop data under anyone's feet: it
+# marks every generation numbered below ``valid_from_seq`` as untrustworthy for LATER callers.
+
+
+@dataclass(eq=False)
+class _Generation:
+    seq: int
+    started: float
+    done: bool = False
+    finished: float = 0.0
+    result: list[Session] | None = None
+    error: BaseException | None = None
+
+
+class _Coordinator:
+    def __init__(self) -> None:
+        self.cond = threading.Condition()
+        self.running: _Generation | None = None
+        self.latest: _Generation | None = None
+        self.next_seq = 0
+        self.valid_from_seq = 0
+
+
+_coordinators: dict[str, _Coordinator] = {}
+_coordinators_lock = threading.Lock()
+
+
+def _coordinator() -> _Coordinator:
+    key = str(Path.home())
+    with _coordinators_lock:
+        coord = _coordinators.get(key)
+        if coord is None:
+            coord = _coordinators[key] = _Coordinator()
+        return coord
+
+
+def _outcome(gen: _Generation) -> list[Session]:
+    if gen.error is not None:
+        raise gen.error
+    return gen.result if gen.result is not None else []
+
+
+def _obtain(
+    coord: _Coordinator,
+    *,
+    completed_ok: Callable[[_Generation], bool],
+    running_ok: Callable[[_Generation], bool],
+) -> list[Session]:
+    """Reuse a completed generation ``completed_ok`` accepts, join a running one ``running_ok``
+    accepts, or — when the running walk is one this caller cannot trust — wait for it to end and
+    decide again, which makes every such caller share the single NEXT walk. A walk that raises
+    hands its exception to every caller waiting on it; nobody is left waiting."""
+    with coord.cond:
+        while True:
+            latest = coord.latest
+            if latest is not None and completed_ok(latest):
+                return _outcome(latest)
+            running = coord.running
+            if running is None:
+                gen = _Generation(seq=coord.next_seq, started=time.monotonic())
+                coord.next_seq += 1
+                coord.running = gen
+                break
+            if running_ok(running):
+                while not running.done:
+                    coord.cond.wait()
+                return _outcome(running)
+            while coord.running is running:
+                coord.cond.wait()
+
+    # Walk OUTSIDE the lock. Resolved through the package namespace so a
+    # ``monkeypatch.setattr(engines, "scan_all", …)`` (the established test seam) is honoured.
+    from .. import engines as _pkg
+
+    try:
+        result, error = _pkg.scan_all(), None
+    except BaseException as exc:  # noqa: BLE001 — handed to every waiter, then re-raised below
+        result, error = None, exc
+    with coord.cond:
+        gen.result, gen.error = result, error
+        gen.finished, gen.done = time.monotonic(), True
+        coord.running = None
+        coord.latest = gen
+        coord.cond.notify_all()
+    return _outcome(gen)
 
 
 def set_scan_cache_ttl(seconds: float) -> None:
@@ -137,31 +233,91 @@ def set_scan_cache_ttl(seconds: float) -> None:
 
 
 def invalidate_scan_cache() -> None:
-    """Drop every cached scan snapshot. Called after any write that changes what the scanner sees
-    (archive/unarchive — Claude moves the JSONL; a new-session launch writes a fresh JSONL) so the
-    next list request re-walks instead of serving the just-mutated tree stale."""
-    with _scan_cache_lock:
-        _scan_cache.clear()
+    """Make every existing walk untrustworthy. Called after any write that changes what the scanner
+    sees (archive/unarchive — Claude moves the JSONL; a new-session launch writes a fresh JSONL) so
+    the next list request re-walks instead of serving the just-mutated tree stale.
+
+    Never waits on a walk in flight (the coordinator lock is not held across walks); a walk that
+    started before this call finishes normally for the callers already waiting on it, but no later
+    caller reuses it."""
+    with _coordinators_lock:
+        coords = list(_coordinators.values())
+    for coord in coords:
+        with coord.cond:
+            coord.valid_from_seq = coord.next_seq
+            coord.latest = None
+            coord.cond.notify_all()
 
 
 def scan_all_cached() -> list[Session]:
-    """``scan_all()`` behind the short TTL + single-flight cache (#561), keyed on the effective
-    home. Read path for the sidebar list; falls straight through when the TTL is 0.
+    """``scan_all()`` behind the short TTL snapshot (#561), keyed on the effective home. Read path
+    for the sidebar list; falls straight through when the TTL is 0.
 
-    Resolves ``scan_all`` through the package namespace so a ``monkeypatch.setattr(engines,
-    "scan_all", …)`` (the established test seam) is honoured here too."""
+    Served through the walk coordinator (#991): a warm generation is reused, a burst of misses joins
+    the one walk in flight, and the walk never overlaps a ``scan_all_since`` walk."""
     from .. import engines as _pkg
 
-    if _SCAN_CACHE_TTL_S <= 0:
+    ttl = _SCAN_CACHE_TTL_S
+    if ttl <= 0:
         return _pkg.scan_all()
-    key = str(Path.home())
-    with _scan_cache_lock:
-        hit = _scan_cache.get(key)
-        if hit is not None and (time.monotonic() - hit[0]) < _SCAN_CACHE_TTL_S:
-            return hit[1]
-        sessions = _pkg.scan_all()
-        _scan_cache[key] = (time.monotonic(), sessions)
-        return sessions
+    coord = _coordinator()
+
+    def warm(gen: _Generation) -> bool:
+        return (
+            gen.error is None
+            and gen.seq >= coord.valid_from_seq
+            and time.monotonic() - gen.finished < ttl
+        )
+
+    def current(gen: _Generation) -> bool:
+        return gen.seq >= coord.valid_from_seq
+
+    return _obtain(coord, completed_ok=warm, running_ok=current)
+
+
+def scan_all_since(arrival: float) -> list[Session]:
+    """A full walk that STARTED at or after ``arrival`` (a ``time.monotonic()`` reading the caller
+    took when its request arrived), through the same coordinator as the sidebar snapshot (#991).
+
+    This is the freshness guarantee the terminal route authorizes against for a provider that
+    cannot read one session directly: the answer reflects the store as it was no earlier than the
+    connect itself — never a snapshot from before it, never a walk from before the last
+    invalidation. Callers that arrived before a walk started share it; callers that arrived while
+    an older walk ran share the one walk after it."""
+    coord = _coordinator()
+
+    def fresh(gen: _Generation) -> bool:
+        return gen.started >= arrival and gen.seq >= coord.valid_from_seq
+
+    return _obtain(coord, completed_ok=fresh, running_ok=fresh)
+
+
+def resolve_session(engine_id: str, native: str, *, arrival: float | None = None) -> Session | None:
+    """The session ``engine_id:native`` as it is NOW, or ``None`` (#991). Blocking — call it off the
+    event loop.
+
+    A provider with a single-key ``lookup`` reads just that session (fresh on every call, no walk);
+    any other provider is answered by a walk that started at or after ``arrival`` (default: now).
+    The TTL snapshot never answers this, because the terminal route authorizes an ATTACH/RESUME
+    against the row. A failed read is ``None`` — the route's existing unknown-row rules then apply
+    (fail closed wherever a boundary is configured)."""
+    if arrival is None:
+        arrival = time.monotonic()
+    prov = _BY_ID.get(engine_id)
+    if prov is None:
+        return None
+    try:
+        lookup = getattr(prov, "lookup", None)
+        if lookup is not None:
+            row = lookup(native)
+            if row is not None and row.engine == engine_id and row.uuid == native:
+                return row
+            return None
+        rows = scan_all_since(arrival)
+    except Exception:  # noqa: BLE001 — resolution is fail-soft; the caller fails closed
+        log.warning("resolving %s:%s failed", engine_id, native, exc_info=True)
+        return None
+    return next((s for s in rows if s.engine == engine_id and s.uuid == native), None)
 
 
 def session_key(s: Session) -> str:

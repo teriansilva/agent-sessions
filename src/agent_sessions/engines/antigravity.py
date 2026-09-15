@@ -167,6 +167,34 @@ class AntigravityProvider:
     def is_present(self) -> bool:
         return base._antigravity_dir().is_dir() or shutil.which("agy") is not None
 
+    def _row(self, root: Path, db: Path, cache_cwd: dict[str, str]) -> Session | None:
+        """One row from one conversation db, or ``None`` if it is not listable. Shared by ``scan``
+        and ``lookup`` (#991)."""
+        native_id = db.stem
+        if not self.id_pattern.match(native_id):
+            return None
+        try:
+            st = db.stat()
+        except OSError:
+            return None
+        # cwd is the launch dir + open-path allowlist key. No usable cwd -> skip the row
+        # (fail-soft, like gemini's unmapped-project skip), never a bogus empty-cwd entry.
+        cwd = cache_cwd.get(native_id) or _db_cwd(db)
+        if not cwd:
+            return None
+        return Session(
+            engine=self.engine_id,
+            uuid=native_id,
+            cwd=cwd,
+            last_mtime=st.st_mtime,
+            first_user_message=_first_user_message(root, native_id),
+            archived=False,
+            # Creation time from the transcript's first record, else the conversation
+            # db's fs time (#506). agy step records rarely carry a timestamp, so this
+            # usually resolves to the fs fallback.
+            created_at=derive_created_at(_transcript_path(root, native_id), st),
+        )
+
     def scan(self) -> list[Session]:
         root = base._antigravity_dir()
         out: list[Session] = []
@@ -176,33 +204,18 @@ class AntigravityProvider:
             return out
         cache_cwd = _cwd_by_id(root)
         for db in dbs:
-            native_id = db.stem
-            if not self.id_pattern.match(native_id):
-                continue
-            try:
-                st = db.stat()
-            except OSError:
-                continue
-            # cwd is the launch dir + open-path allowlist key. No usable cwd -> skip the row
-            # (fail-soft, like gemini's unmapped-project skip), never a bogus empty-cwd entry.
-            cwd = cache_cwd.get(native_id) or _db_cwd(db)
-            if not cwd:
-                continue
-            out.append(
-                Session(
-                    engine=self.engine_id,
-                    uuid=native_id,
-                    cwd=cwd,
-                    last_mtime=st.st_mtime,
-                    first_user_message=_first_user_message(root, native_id),
-                    archived=False,
-                    # Creation time from the transcript's first record, else the conversation
-                    # db's fs time (#506). agy step records rarely carry a timestamp, so this
-                    # usually resolves to the fs fallback.
-                    created_at=derive_created_at(_transcript_path(root, native_id), st),
-                )
-            )
+            row = self._row(root, db, cache_cwd)
+            if row is not None:
+                out.append(row)
         return out
+
+    def lookup(self, native_id: str) -> Session | None:
+        """This one conversation, read fresh (#991), or ``None``: its own ``<uuid>.db`` plus the
+        small cwd cache, never the other conversations."""
+        if not self.id_pattern.match(native_id or ""):
+            return None
+        root = base._antigravity_dir()
+        return self._row(root, root / "conversations" / f"{native_id}.db", _cwd_by_id(root))
 
     def launch_argv(self, native_id, *, cwd, bypass):
         # agy resumes a conversation by its global UUID (verified: `agy --conversation <uuid>`).

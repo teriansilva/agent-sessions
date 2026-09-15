@@ -104,39 +104,56 @@ class OpenCodeProvider:
         # launchable binary or a readable DB as enough for the provider to participate.
         return discover.resolve(self.engine_id) is not None or self._db_readable()
 
+    def _row(self, record) -> Session | None:
+        """One row from one ``OPENCODE_SCHEMA`` record, or ``None`` if it is not listable. Shared by
+        ``scan`` and ``lookup`` (#991)."""
+        sid, _parent, directory, title, time_created, time_updated, time_archived = record
+        if not isinstance(sid, str) or not self.id_pattern.match(sid):
+            return None
+        # Drop ephemeral CI-runner sessions (#452): their cwd is a throwaway
+        # ``act`` workdir that's already deleted, so they can never be resumed
+        # and only clutter the list / resume allowlist / picker.
+        if is_ephemeral_cwd(directory or ""):
+            return None
+        return Session(
+            engine=self.engine_id,
+            uuid=sid,
+            cwd=directory or "",
+            # opencode stores epoch *milliseconds*; Claude uses seconds.
+            last_mtime=(time_updated or 0) / 1000.0,
+            first_user_message=title or "",  # opencode maintains a real title
+            archived=time_archived is not None,
+            # Real creation time from the DB (#506), ms → s; fall back to the update
+            # time if a row somehow lacks time_created.
+            created_at=(time_created or time_updated or 0) / 1000.0,
+        )
+
     def scan(self) -> list[Session]:
-        out: list[Session] = []
-        for (
-            sid,
-            _parent,
-            directory,
-            title,
-            time_created,
-            time_updated,
-            time_archived,
-        ) in self._query():
-            if not isinstance(sid, str) or not self.id_pattern.match(sid):
-                continue
-            # Drop ephemeral CI-runner sessions (#452): their cwd is a throwaway
-            # ``act`` workdir that's already deleted, so they can never be resumed
-            # and only clutter the list / resume allowlist / picker.
-            if is_ephemeral_cwd(directory or ""):
-                continue
-            out.append(
-                Session(
-                    engine=self.engine_id,
-                    uuid=sid,
-                    cwd=directory or "",
-                    # opencode stores epoch *milliseconds*; Claude uses seconds.
-                    last_mtime=(time_updated or 0) / 1000.0,
-                    first_user_message=title or "",  # opencode maintains a real title
-                    archived=time_archived is not None,
-                    # Real creation time from the DB (#506), ms → s; fall back to the update
-                    # time if a row somehow lacks time_created.
-                    created_at=(time_created or time_updated or 0) / 1000.0,
-                )
-            )
-        return out
+        rows = (self._row(record) for record in self._query())
+        return [row for row in rows if row is not None]
+
+    def lookup(self, native_id: str) -> Session | None:
+        """This one top-level session, read fresh (#991), or ``None``: one indexed row by id, with
+        the same read-only connection and the same fail-soft as ``scan``."""
+        if not self.id_pattern.match(native_id or ""):
+            return None
+        db = base._opencode_db()
+        if not os.path.exists(db):
+            return None
+        cols = ", ".join(OPENCODE_SCHEMA)
+        try:
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.5)
+            try:
+                con.execute("PRAGMA busy_timeout=500")
+                record = con.execute(
+                    f"SELECT {cols} FROM session WHERE id = ? AND parent_id IS NULL",  # noqa: S608 fixed cols
+                    (native_id,),
+                ).fetchone()
+            finally:
+                con.close()
+        except sqlite3.Error:
+            return None
+        return self._row(record) if record is not None else None
 
     def launch_argv(self, native_id, *, cwd, bypass):
         # opencode resumes a session by id within its project dir. `bypass` is

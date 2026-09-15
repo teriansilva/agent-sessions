@@ -224,22 +224,34 @@ class KimiProvider:
         dirs.update(_walk_session_dirs())
         out: list[Session] = []
         for sid, session_dir in dirs.items():
-            meta = _meta(session_dir)
-            if meta is None:
-                continue
-            work, title, updated, created = meta
-            out.append(
-                Session(
-                    engine=self.engine_id,
-                    uuid=sid,
-                    cwd=work,
-                    last_mtime=updated,
-                    first_user_message=title,
-                    archived=False,
-                    created_at=created,
-                )
-            )
+            row = self._row(sid, session_dir)
+            if row is not None:
+                out.append(row)
         return out
+
+    def _row(self, sid: str, session_dir: Path) -> Session | None:
+        """One row from one session dir's ``state.json``, or ``None`` when it has no usable
+        ``workDir``. Shared by ``scan`` and ``lookup`` (#991)."""
+        meta = _meta(session_dir)
+        if meta is None:
+            return None
+        work, title, updated, created = meta
+        return Session(
+            engine=self.engine_id,
+            uuid=sid,
+            cwd=work,
+            last_mtime=updated,
+            first_user_message=title,
+            archived=False,
+            created_at=created,
+        )
+
+    def lookup(self, native_id: str) -> Session | None:
+        """This one session, read fresh (#991), or ``None`` — resolved through
+        :func:`session_dir_for`, the provider's one exact-session seam (walk wins over a stale
+        index path, as in ``scan``), then that dir's ``state.json`` only."""
+        session_dir = session_dir_for(native_id or "")
+        return self._row(native_id, session_dir) if session_dir is not None else None
 
     # --- launch -----------------------------------------------------------------------------
 

@@ -388,16 +388,22 @@ def register(
                 # dtach -A attaches (ignoring the cmd), so a fresh session survives a
                 # browser reload before it has written its on-disk history. cwd is only
                 # for the (unused-on-attach) spawn; a scanned cwd if known, else home.
-                # OFF the event loop (#867 review round 8). `scan_all()` walks every present
-                # provider's store — ~1400 sessions on the author's install — and this runs on
-                # EVERY warm reconnect, between the async dispatch and `webterm.run()`. On the
-                # loop it stalls every other terminal stream and the health/API coroutines: the
-                # same #678 shape the single-row lookup route already avoids. The scan is also
-                # now load-bearing for authorization below, so it cannot simply be dropped.
-                _all = await asyncio.to_thread(engines.scan_all)
-                scanned = next(
-                    (s for s in _all if s.engine == prov.engine_id and s.uuid == native),
-                    None,
+                # OFF the event loop (#867 review round 8), and ONE session rather than a walk of
+                # every store (#991). This runs on EVERY warm reconnect, between the async dispatch
+                # and `webterm.run()`; a map opening eight windows used to start eight concurrent
+                # full walks that finished together 30–60 s later. `resolve_session` reads only
+                # this session's binding — a single-key lookup where the engine has one, else a walk
+                # that STARTED after this connect arrived — so the row authorized below is never the
+                # sidebar's TTL snapshot. It is load-bearing for authorization, so it cannot simply
+                # be dropped.
+                scanned = await asyncio.to_thread(
+                    # The CONNECT's arrival (same monotonic clock as the coordinator), not the
+                    # moment a worker thread picks this up — or connects accepted before a walk
+                    # would each demand a newer one (#991 review).
+                    engines.resolve_session,
+                    prov.engine_id,
+                    native,
+                    arrival=accept_at,
                 )
                 cwd = scanned.cwd if scanned else str(Path.home())
                 # The hard boundary applies to ATTACH too (#867 review round 6). It used to live
@@ -444,22 +450,33 @@ def register(
                 # (#457). fsbrowse.is_browsable_dir is the security boundary: its realpath
                 # containment rejects any path whose target escapes $HOME.
                 new_cwd = ws.query_params.get("cwd") or ""
+
                 # Hard root scope (#465/#467): when project roots are configured a new session may
                 # launch ONLY in an in-scope cwd — the same scope the list/picker/facets enforce —
                 # so a direct ws request can't start outside it. pickable_projects is already
                 # root/exclusion-scoped; the home-browsable branch gets the explicit in_scope guard.
                 # Empty roots ⇒ unscoped (today's behaviour).
-                roots = project_dirs.effective_roots()
-                exclusions = prefs.get_folder_exclusions()
-                in_picker = new_cwd in set(
-                    scanner.pickable_projects(
-                        sessions=engines.scan_all(), roots=roots, exclusions=exclusions
+                #
+                # The whole validation runs OFF the event loop as one unit (#991): the picker
+                # needs every session's cwd, which is a disk walk (or a wait on the walk in
+                # flight), and on the loop it froze every terminal stream for that long. The
+                # picker is a list of offered cwds, not a session binding, so the TTL snapshot
+                # is acceptable here.
+                def _new_cwd_allowed() -> bool:
+                    roots = project_dirs.effective_roots()
+                    exclusions = prefs.get_folder_exclusions()
+                    in_picker = new_cwd in set(
+                        scanner.pickable_projects(
+                            sessions=engines.scan_all_cached(), roots=roots, exclusions=exclusions
+                        )
                     )
-                )
-                browsable_ok = fsbrowse.is_browsable_dir(new_cwd) and (
-                    not roots or project_dirs.in_scope(new_cwd, roots=roots, exclusions=exclusions)
-                )
-                if not (in_picker or browsable_ok):
+                    browsable_ok = fsbrowse.is_browsable_dir(new_cwd) and (
+                        not roots
+                        or project_dirs.in_scope(new_cwd, roots=roots, exclusions=exclusions)
+                    )
+                    return in_picker or browsable_ok
+
+                if not await asyncio.to_thread(_new_cwd_allowed):
                     return await reject(4404)
                 # Honor the modal's permission-bypass choice (default on); only "0" is off.
                 bypass = ws.query_params.get("bypass") != "0"
@@ -479,7 +496,10 @@ def register(
                     # launch (the client always mints a placeholder for these engines).
                     if not engines.is_new_session_placeholder(f"{prov.engine_id}:{native}"):
                         return await reject(4404)
-                    new_snapshot = prov.snapshot_session_ids(new_cwd)
+                    # Off the event loop (#991): for codex this is a recursive rollout walk that
+                    # reads every matching file's head. Still taken BEFORE the launch argv is built,
+                    # and a `None` (failed baseline read) still disables reconciliation below.
+                    new_snapshot = await asyncio.to_thread(prov.snapshot_session_ids, new_cwd)
                 try:
                     launch = prov.new_launch_argv(native, cwd=new_cwd, bypass=bypass)
                 except NotImplementedError:
@@ -509,23 +529,32 @@ def register(
                     # failed new session leaves no phantom row. No-op for engines without the hook.
                     on_new = getattr(prov, "on_new_session", None)
                     if on_new is not None:
-                        with contextlib.suppress(Exception):
-                            on_new(native, cwd=cwd)
+
+                        def _record_new_session() -> None:
+                            with contextlib.suppress(Exception):
+                                on_new(native, cwd=cwd)
+
+                        # A file write — off the event loop like the rest of this path (#991).
+                        await asyncio.to_thread(_record_new_session)
                     # The key is final, so wake the AI-review loop to summarize it promptly (#413).
                     # Mint-its-own-id engines are kicked from the reconcile coroutine instead.
                     ai_review_loop.request_review_soon()
                     # A new session just appeared (claude JSONL / shell record) → bust the
                     # sidebar's scan snapshot so it shows on the next list without the TTL lag
-                    # (#561).
-                    engines.invalidate_scan_cache()
+                    # (#561). Off the loop (#991): it takes the walk coordinator's lock.
+                    await asyncio.to_thread(engines.invalidate_scan_cache)
             else:
                 # Resume an EXISTING scanned session.
-                # Same boundary, same reason (#867 review round 8): the resume path's scan is
-                # the identical full walk and was equally on the loop.
-                sessions_all = await asyncio.to_thread(engines.scan_all)
-                match = next(
-                    (s for s in sessions_all if s.engine == prov.engine_id and s.uuid == native),
-                    None,
+                # Same boundary, same reason (#867 review round 8): resolved exactly like ATTACH —
+                # off the loop, one session, a binding read at or after this connect arrived (#991).
+                match = await asyncio.to_thread(
+                    # The CONNECT's arrival (same monotonic clock as the coordinator), not the
+                    # moment a worker thread picks this up — or connects accepted before a walk
+                    # would each demand a newer one (#991 review).
+                    engines.resolve_session,
+                    prov.engine_id,
+                    native,
+                    arrival=accept_at,
                 )
                 # Hard root scope (#465/#467): a session whose cwd is outside the configured roots
                 # (or under an exclusion) is hidden from the list/picker AND not resumable here —
@@ -540,10 +569,10 @@ def register(
                 # either way.
                 roots = project_dirs.effective_roots()
                 exclusions = prefs.get_folder_exclusions()
-                if (
-                    match is None
-                    or match.cwd not in scanner.scanned_cwds(sessions_all)
-                    or not project_dirs.in_scope(match.cwd, roots=roots, exclusions=exclusions)
+                # (The old `match.cwd in scanned_cwds(all_sessions)` clause was implied by `match`
+                # coming from that same list; a resolved row carries its own cwd, so it is gone.)
+                if match is None or not project_dirs.in_scope(
+                    match.cwd, roots=roots, exclusions=exclusions
                 ):
                     return await reject(4404)
                 # Background-agent guard (#631): this id is resumable on disk, but action is
@@ -698,7 +727,7 @@ def register(
                 demote_task = asyncio.create_task(_watch_demote())
             # #652 measurement probe: accept→attach prep latency (all the blocking
             # connect-path work before the bridge starts pumping — the open_action probe
-            # ladder and the uncached scan_all walk). This is what T3/T-P4/L1 move.
+            # ladder and the session resolution, #991). This is what T3/T-P4/L1 move.
             perfstats.record("attach_prep_ms", (time.monotonic() - accept_at) * 1000.0)
             try:
                 await webterm.run(

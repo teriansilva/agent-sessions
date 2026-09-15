@@ -37,6 +37,12 @@ class ClaudeProvider:
         # if a future scanner ever yields more than one engine.
         return [s for s in scanner.scan() if s.engine == self.engine_id]
 
+    def lookup(self, native_id: str) -> Session | None:
+        """This one session, read fresh (#991) — exactly the row ``scan`` would return for it,
+        through the scanner's own per-file builder, or ``None``."""
+        row = scanner.lookup(native_id)
+        return row if row is not None and row.engine == self.engine_id else None
+
     def archive_state(self, native_id: str) -> str:
         """`archived` · `not-archived` · `unreadable` (#896 review 24, finding 1).
 

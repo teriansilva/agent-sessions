@@ -300,34 +300,44 @@ def _read_session_meta(jsonl_path: Path) -> tuple[str | None, str, bool]:
     return cwd, first_msg, False
 
 
+def session_from_jsonl(jsonl: Path, *, archived: bool) -> Session | None:
+    """One Claude session row from one transcript file, or ``None`` when the file is not a session
+    (a non-UUID name, an unreadable file, a headless ``claude -p`` one-shot).
+
+    The single per-file builder behind both :func:`scan` and :func:`lookup` (#991), so a single-key
+    read can never disagree with the walk about what a row contains or which files are sessions.
+    """
+    uuid = jsonl.stem
+    if not _UUID_RE.match(uuid):
+        return None
+    try:
+        st = jsonl.stat()
+    except OSError:
+        return None
+    real_cwd, first_msg, headless = _read_session_meta(jsonl)
+    if headless:
+        return None
+    return Session(
+        engine="claude",
+        uuid=uuid,
+        cwd=real_cwd or _decode_cwd(jsonl.parent.name),
+        last_mtime=derive_last_activity(jsonl, st),
+        first_user_message=first_msg,
+        archived=archived,
+        created_at=derive_created_at(jsonl, st),
+    )
+
+
 def _walk(root: Path, archived: bool) -> Iterable[Session]:
     if not root.is_dir():
         return
     for project_dir in root.iterdir():
         if not project_dir.is_dir():
             continue
-        decoded = _decode_cwd(project_dir.name)
         for jsonl in project_dir.glob("*.jsonl"):
-            uuid = jsonl.stem
-            if not _UUID_RE.match(uuid):
-                continue
-            try:
-                st = jsonl.stat()
-            except OSError:
-                continue
-            real_cwd, first_msg, headless = _read_session_meta(jsonl)
-            if headless:
-                continue
-            cwd = real_cwd or decoded
-            yield Session(
-                engine="claude",
-                uuid=uuid,
-                cwd=cwd,
-                last_mtime=derive_last_activity(jsonl, st),
-                first_user_message=first_msg,
-                archived=archived,
-                created_at=derive_created_at(jsonl, st),
-            )
+            row = session_from_jsonl(jsonl, archived=archived)
+            if row is not None:
+                yield row
 
 
 def scan(home: Path | None = None) -> list[Session]:
@@ -344,6 +354,39 @@ def scan(home: Path | None = None) -> list[Session]:
     archived_uuids = {s.uuid for s in archive}
     live = [s for s in live if s.uuid not in archived_uuids]
     return live + archive
+
+
+def _lookup_in(root: Path, uuid: str, *, archived: bool) -> Session | None:
+    """The first row :func:`_walk` would yield for ``uuid`` under ``root`` — same project-dir order,
+    same builder — without reading any other session's transcript."""
+    if not root.is_dir():
+        return None
+    for project_dir in root.iterdir():
+        if not project_dir.is_dir():
+            continue
+        jsonl = project_dir / f"{uuid}.jsonl"
+        if not jsonl.exists():
+            continue
+        row = session_from_jsonl(jsonl, archived=archived)
+        if row is not None:
+            return row
+    return None
+
+
+def lookup(uuid: str, home: Path | None = None) -> Session | None:
+    """The row :func:`scan` would return for exactly ``uuid``, read fresh (#991), or ``None``.
+
+    Lists the project directories and reads one transcript instead of every transcript. The archive
+    tree is consulted first because the scan lets the archived copy win (#194); a live copy is only
+    the answer when the archive holds no real session for this id.
+    """
+    if not _UUID_RE.match(uuid or ""):
+        return None
+    home = home or Path.home()
+    archived = _lookup_in(home / ".claude" / "projects-archive", uuid, archived=True)
+    if archived is not None:
+        return archived
+    return _lookup_in(home / ".claude" / "projects", uuid, archived=False)
 
 
 def scanned_cwds(sessions: Iterable[Session]) -> set[str]:

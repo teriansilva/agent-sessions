@@ -896,12 +896,13 @@ def test_ws_codex_placeholder_rejected_on_resume(fake_jsonl, auth_cfg):
 
 
 def test_ws_codex_alias_attach_uses_physical_runtime_and_logical_transcript(
-    fake_jsonl, auth_cfg, monkeypatch
+    fake_jsonl, auth_cfg, monkeypatch, tmp_path
 ):
     # Codex new sessions launch under a placeholder dtach key, then reconcile to the real rollout
     # uuid. Attaching by the real URL must still attach to the placeholder runtime, while transcript
-    # replay reads the real/logical key where Codex history is stored.
-    from agent_sessions import engines, metadata, scanner, sessions
+    # replay reads the real/logical key where Codex history is stored — and the session's cwd is
+    # resolved by the LOGICAL id, from the real rollout, without walking the store (#991).
+    from agent_sessions import engines, metadata, sessions
     from agent_sessions.routes import terminal
 
     placeholder = "codex:new-141532f2-58f7-4ba3-9d35-dd1f21e60a5b"
@@ -911,20 +912,18 @@ def test_ws_codex_alias_attach_uses_physical_runtime_and_logical_transcript(
     metadata.set_alias(placeholder, real)
 
     monkeypatch.setattr(terminal.owner, "takeover_enabled", lambda: False)
-    monkeypatch.setattr(
-        engines,
-        "scan_all",
-        lambda: [
-            scanner.Session(
-                engine="codex",
-                uuid=real_native,
-                cwd="/tmp/project",
-                last_mtime=1.0,
-                first_user_message="",
-                archived=False,
-            )
-        ],
+    rollouts = tmp_path / "cdx" / "2026" / "07" / "01"
+    rollouts.mkdir(parents=True)
+    (rollouts / f"rollout-2026-07-01T10-00-00-{real_native}.jsonl").write_text(
+        json.dumps({"type": "session_meta", "payload": {"id": real_native, "cwd": "/tmp/project"}})
+        + "\n"
     )
+    monkeypatch.setenv("AGENT_SESSIONS_CODEX_SESSIONS_DIR", str(tmp_path / "cdx"))
+
+    def no_walk():
+        raise AssertionError("an ATTACH walked every store to resolve one session")
+
+    monkeypatch.setattr(engines, "scan_all", no_walk)
     actions = []
 
     def fake_open_action(engine, native):
@@ -1912,13 +1911,15 @@ def test_ws_attach_refuses_an_unknown_row_once_a_boundary_is_configured(
     assert _close_code(c, f"/ws/term/{unknown}", headers) == 4404
 
 
-def test_ws_attach_scan_runs_off_the_event_loop(fake_jsonl, auth_cfg, monkeypatch):
-    """The warm-reconnect scan must not run on the event loop (#867 review round 8).
+def test_ws_attach_resolution_runs_off_the_event_loop(fake_jsonl, auth_cfg, monkeypatch):
+    """The warm-reconnect session resolution must not run on the event loop (#867 review round 8,
+    #991).
 
-    `scan_all()` walks every present provider's store — ~1400 sessions on the author's install —
-    and this path runs on EVERY warm reconnect, between the async dispatch and `webterm.run()`.
-    On the loop it stalls every other terminal stream and the health/API coroutines: the same
-    #678 shape the single-row lookup route already avoids.
+    Resolving the session reads the engine's store, and this path runs on EVERY warm reconnect,
+    between the async dispatch and `webterm.run()`. On the loop it stalls every other terminal
+    stream and the health/API coroutines: the same #678 shape the single-row lookup route already
+    avoids. Since #991 the route resolves one session (`engines.resolve_session`) instead of
+    walking every store, so that is the call that must land off the loop.
 
     The comparison is against the thread the COROUTINE runs on, captured from inside the
     handler's own async dispatch — not against the main thread. `TestClient` runs its loop in a
@@ -1935,14 +1936,14 @@ def test_ws_attach_scan_runs_off_the_event_loop(fake_jsonl, auth_cfg, monkeypatc
     monkeypatch.setattr(engines.base, "CLAUDE_BIN", "claude")
 
     loop_thread: list[threading.Thread] = []
-    scan_thread: list[threading.Thread] = []
-    real = engines.scan_all
+    resolve_thread: list[threading.Thread] = []
+    real = engines.resolve_session
 
-    def watched():
-        scan_thread.append(threading.current_thread())
-        return real()
+    def watched(*args, **kwargs):
+        resolve_thread.append(threading.current_thread())
+        return real(*args, **kwargs)
 
-    monkeypatch.setattr(engines, "scan_all", watched)
+    monkeypatch.setattr(engines, "resolve_session", watched)
 
     async def _attach(_engine, _native):
         # Runs ON the event loop, inside the same handler — this is the thread to beat.
@@ -1955,7 +1956,280 @@ def test_ws_attach_scan_runs_off_the_event_loop(fake_jsonl, auth_cfg, monkeypatc
     _close_code(c, f"/ws/term/{_GOOD}", headers)
 
     assert loop_thread, "the attach dispatch never ran"
-    assert scan_thread, "the attach path never reached the scan"
+    assert resolve_thread, "the attach path never resolved the session"
     assert (
-        scan_thread[0] is not loop_thread[0]
-    ), "scan_all ran on the event loop's own thread during ATTACH"
+        resolve_thread[0] is not loop_thread[0]
+    ), "session resolution ran on the event loop's own thread during ATTACH"
+
+
+# ---- #991: resolve one session per connect, never walk every store on the loop -----------------
+
+
+def _stop_at_the_bridge(monkeypatch):
+    """Everything up to the PTY bridge runs for real; the bridge itself refuses (→ 4500), so a
+    test observes the connect path without a real dtach or engine binary."""
+    from agent_sessions import ptybridge
+
+    def refuse(**_kwargs):
+        raise ptybridge.PtyBridgeError("test: stop before spawning")
+
+    monkeypatch.setattr(ptybridge, "launch_argv", refuse)
+    monkeypatch.setattr(ptybridge, "attach_argv", refuse)
+
+
+def _dispatch_as(monkeypatch, action: str, *, beats: list[float] | None = None, before=None):
+    """Force the single-writer dispatch to ``action`` and, optionally, start an event-loop heartbeat
+    from inside the handler (the loop the route actually runs on) plus a ``before`` hook."""
+    from agent_sessions.routes import terminal as terminal_route
+
+    tasks: list[asyncio.Task] = []
+
+    async def _dispatch(_engine, _native):
+        if beats is not None:
+
+            async def heartbeat():
+                while True:
+                    t0 = time.monotonic()
+                    await asyncio.sleep(0.01)
+                    beats.append(time.monotonic() - t0)
+
+            tasks.append(asyncio.get_running_loop().create_task(heartbeat()))
+        if before is not None:
+            await before()
+        return getattr(terminal_route.sessions, action), None
+
+    monkeypatch.setattr(terminal_route, "_open_action_offloop", _dispatch)
+    return tasks
+
+
+def test_ws_attach_and_resume_make_no_full_walk(fake_jsonl, auth_cfg, monkeypatch):
+    """#991: every connect used to run its own uncached `scan_all()`; eight map windows meant eight
+    concurrent walks that finished together 30–60 s later. A claude ATTACH and RESUME now read the
+    one session they need, so a connect performs no full walk at all — and still reaches the bridge
+    with a boundary configured, i.e. the row was genuinely resolved and authorized."""
+    from agent_sessions import engines, prefs, project_dirs
+    from agent_sessions.routes import terminal as terminal_route
+
+    monkeypatch.setattr(project_dirs, "effective_roots", lambda: [])
+    monkeypatch.setattr(prefs, "get_folder_exclusions", lambda path=None: ["/nowhere/excluded"])
+    monkeypatch.setattr(engines.base, "CLAUDE_BIN", "claude")
+    monkeypatch.setattr(terminal_route.transcript_owner, "transcript_is_owned", lambda _n: False)
+    _stop_at_the_bridge(monkeypatch)
+
+    real = engines.scan_all
+    walks = {"n": 0}
+
+    def counting():
+        walks["n"] += 1
+        return real()
+
+    monkeypatch.setattr(engines, "scan_all", counting)
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    for action in ("ATTACH", "LAUNCH"):
+        _dispatch_as(monkeypatch, action)
+        walks["n"] = 0
+        assert _close_code(c, f"/ws/term/{_GOOD}", headers) == 4500, action
+        assert walks["n"] == 0, f"{action} ran {walks['n']} full walk(s)"
+
+
+def test_ws_refuses_a_session_whose_cwd_became_excluded_despite_a_warm_snapshot(
+    fake_jsonl, tmp_home, auth_cfg, monkeypatch
+):
+    """#991 freshness contract: authorization reads the session's CURRENT binding, never the
+    sidebar's TTL snapshot. The snapshot still says the session lives in an allowed cwd; its
+    transcript now records an excluded one — both ATTACH (a live master) and RESUME refuse."""
+    from agent_sessions import engines, prefs, project_dirs
+    from agent_sessions.routes import terminal as terminal_route
+
+    exclusions: list[str] = []
+    monkeypatch.setattr(project_dirs, "effective_roots", lambda: [])
+    monkeypatch.setattr(prefs, "get_folder_exclusions", lambda path=None: list(exclusions))
+    monkeypatch.setattr(engines.base, "CLAUDE_BIN", "claude")
+    monkeypatch.setattr(terminal_route.transcript_owner, "transcript_is_owned", lambda _n: False)
+    _stop_at_the_bridge(monkeypatch)
+    engines.set_scan_cache_ttl(30.0)
+
+    native = _GOOD.split(":", 1)[1]
+    warm = {s.uuid: s.cwd for s in engines.scan_all_cached()}
+    assert warm[native] == "/home/user/claude/repo/a"
+
+    jsonl = tmp_home / ".claude" / "projects" / "-home-user-claude-repo-a" / f"{native}.jsonl"
+    jsonl.write_text('{"type":"user","cwd":"/secret/work","message":{"content":"moved"}}\n')
+    exclusions.append("/secret")
+    stale = {s.uuid: s.cwd for s in engines.scan_all_cached()}
+    assert stale[native] == "/home/user/claude/repo/a", "fixture: the snapshot should still be warm"
+
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    for action in ("ATTACH", "LAUNCH"):
+        _dispatch_as(monkeypatch, action)
+        assert _close_code(c, f"/ws/term/{_GOOD}", headers) == 4404, action
+
+
+def test_ws_new_session_does_not_stall_the_loop_behind_a_cold_walk(
+    fake_jsonl, tmp_home, auth_cfg, monkeypatch
+):
+    """#991 (i): a `new=1` connect validates its cwd against the picker while a cold walk is in
+    flight. Joining that walk and invalidating the snapshot afterwards must both happen off the
+    event loop — before #991 the picker walked every store ON the loop and invalidation waited on
+    the snapshot lock the walk held."""
+    import threading
+
+    from agent_sessions import engines, prefs, project_dirs
+
+    monkeypatch.setattr(project_dirs, "effective_roots", lambda: [])
+    monkeypatch.setattr(prefs, "get_folder_exclusions", lambda path=None: [])
+    engines.set_scan_cache_ttl(30.0)
+    entered = threading.Event()
+
+    def slow_walk():
+        entered.set()
+        time.sleep(0.5)
+        return []
+
+    monkeypatch.setattr(engines, "scan_all", slow_walk)
+    cwd = tmp_home / "claude" / "fresh-proj"
+    cwd.mkdir(parents=True)
+
+    async def start_cold_walk():
+        threading.Thread(target=engines.scan_all_cached, daemon=True).start()
+        await asyncio.to_thread(entered.wait, 5)
+
+    beats: list[float] = []
+    _dispatch_as(monkeypatch, "LAUNCH", beats=beats, before=start_cold_walk)
+    _stop_at_the_bridge(monkeypatch)
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    url = f"/ws/term/claude:12345678-1234-4234-8234-123456789abc?new=1&cwd={cwd}"
+    assert _close_code(c, url, headers) == 4500
+    assert beats, "the heartbeat never ran"
+    assert (
+        max(beats) < 0.25
+    ), f"the event loop stalled for {max(beats):.3f}s on the new-session path"
+    assert len(beats) > 5, "the heartbeat never ran across the connect"
+
+
+def test_ws_new_session_snapshot_runs_off_the_loop_before_launch(
+    fake_jsonl, tmp_home, auth_cfg, monkeypatch
+):
+    """#991 (ii): the mint-its-own-id pre-launch snapshot (`snapshot_session_ids`, a recursive
+    rollout walk for codex) runs off the event loop, still BEFORE the launch argv is built, and a
+    `None` baseline still skips reconciliation exactly as before."""
+    from agent_sessions import engines, main, prefs, project_dirs
+
+    monkeypatch.setattr(project_dirs, "effective_roots", lambda: [])
+    monkeypatch.setattr(prefs, "get_folder_exclusions", lambda path=None: [])
+    monkeypatch.setenv("AGENT_SESSIONS_CODEX_SESSIONS_DIR", str(tmp_home / "cdx"))
+    cwd = tmp_home / "claude" / "codex-proj"
+    cwd.mkdir(parents=True)
+    real_new_argv = engines.CodexProvider.new_launch_argv
+
+    for baseline in (set(), None):
+        order: list[str] = []
+        reconciles: list[tuple] = []
+
+        def slow_snapshot(self, _cwd, baseline=baseline, order=order):
+            order.append("snapshot")
+            time.sleep(0.5)
+            return baseline
+
+        def recording_new_argv(self, native_id, *, cwd, bypass, order=order):
+            order.append("new_launch_argv")
+            return real_new_argv(self, native_id, cwd=cwd, bypass=bypass)
+
+        def fake_reconcile(*args, reconciles=reconciles):
+            reconciles.append(args)
+
+            async def _noop():
+                return None
+
+            return _noop()
+
+        monkeypatch.setattr(engines.CodexProvider, "snapshot_session_ids", slow_snapshot)
+        monkeypatch.setattr(engines.CodexProvider, "new_launch_argv", recording_new_argv)
+        monkeypatch.setattr(main, "_reconcile_new_session", fake_reconcile)
+        beats: list[float] = []
+        _dispatch_as(monkeypatch, "LAUNCH", beats=beats)
+        _stop_at_the_bridge(monkeypatch)
+        c = _client(auth_cfg)
+        headers = _login_headers(c, auth_cfg)
+        assert _close_code(c, f"/ws/term/{_CDX_PLACEHOLDER}?new=1&cwd={cwd}", headers) == 4500
+        assert order == ["snapshot", "new_launch_argv"], (baseline, order)
+        assert beats, "the heartbeat never ran"
+        assert max(beats) < 0.25, f"loop stalled {max(beats):.3f}s during snapshot ({baseline!r})"
+        assert len(beats) > 5, "the heartbeat never ran across the connect"
+        assert len(reconciles) == (0 if baseline is None else 1), (baseline, reconciles)
+
+
+def test_ws_gemini_connects_accepted_before_a_walk_share_that_walk(
+    fake_jsonl, auth_cfg, monkeypatch
+):
+    """#991 review: the freshness clock the resolver uses is the CONNECT's arrival (its accept
+    time), not the moment an executor thread happens to pick the resolution up. Two gemini connects
+    are both accepted before any walk starts; the first walks, and the second — dispatched only once
+    that walk has finished — must reuse it. Stamping arrival inside the worker made it 2 walks."""
+    import threading
+
+    from agent_sessions import engines, prefs, project_dirs, scanner
+    from agent_sessions.routes import terminal as terminal_route
+
+    monkeypatch.setattr(project_dirs, "effective_roots", lambda: [])
+    monkeypatch.setattr(prefs, "get_folder_exclusions", lambda path=None: [])
+    _stop_at_the_bridge(monkeypatch)
+    gem = "0a0a0a0a-0b0b-4c0c-8d0d-0e0e0e0e0e0e"
+
+    walks = {"n": 0}
+    walk_done = threading.Event()
+    second_in_dispatch = threading.Event()
+
+    def walk():
+        walks["n"] += 1
+        time.sleep(0.05)
+        walk_done.set()
+        return [
+            scanner.Session(
+                engine="gemini",
+                uuid=gem,
+                cwd="/home/user/gem",
+                last_mtime=1.0,
+                first_user_message="",
+                archived=False,
+            )
+        ]
+
+    monkeypatch.setattr(engines, "scan_all", walk)
+
+    order_lock = threading.Lock()
+    seen: list[int] = []
+
+    async def _dispatch(_engine, _native):
+        with order_lock:
+            idx = len(seen)
+            seen.append(idx)
+        if idx == 0:
+            # Hold the first connect until the second has been accepted (it is dispatching now),
+            # so BOTH accept times precede the one walk the first connect is about to start.
+            await asyncio.to_thread(second_in_dispatch.wait, 10)
+        else:
+            second_in_dispatch.set()
+            await asyncio.to_thread(walk_done.wait, 10)
+        return terminal_route.sessions.ATTACH, None
+
+    monkeypatch.setattr(terminal_route, "_open_action_offloop", _dispatch)
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    codes: list[int | None] = []
+
+    def connect():
+        codes.append(_close_code(c, f"/ws/term/gemini:{gem}", headers))
+
+    threads = [threading.Thread(target=connect) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(30)
+
+    assert second_in_dispatch.is_set() and walk_done.is_set(), "the connects never interleaved"
+    assert codes == [4500, 4500], codes
+    assert walks["n"] == 1, f"{walks['n']} walks for two connects accepted before the first walk"
