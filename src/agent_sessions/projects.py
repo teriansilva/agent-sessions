@@ -27,6 +27,7 @@ import logging
 import os
 import secrets
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -248,6 +249,35 @@ def _read_locked(fh) -> dict:
         data["projects"] = {}
     data["version"] = 1
     return data
+
+
+@contextmanager
+def locked_index(path: Path | None = None):
+    """Hold the store's OWN write lock and yield its entities, read under that lock (#967).
+
+    The fence for "check a project, then commit something that depends on it". `create`,
+    `update` (rename, folders, archive) and `delete` all take this same exclusive `flock`, so none
+    of them can land while it is held. A caller that resolves a project from the yielded index
+    and commits before leaving the block commits against the project exactly as it read it. No
+    second lock was invented for this: the store's mutex already is the thing every project
+    mutation waits on, and it is shared across instances because it is a file lock.
+
+    **Lock order: this flock is OUTERMOST.** Nothing in this module takes another app lock while
+    holding it (`ensure_alias_migration` releases it before touching the metadata sidecar). A
+    caller holding it may take the missions store's `_write_lock` and its SQLite write lock
+    inside, and no code path takes those first and this second — mission code reads projects
+    through the lockless `load()`. Hold it only around a short synchronous write, off the event
+    loop: never across a model call or an await, and never call `create` / `update` / `delete`
+    inside it (the flock is per open file, so that would wait on itself).
+    """
+    path = path or _default_path()
+    with _exclusive(path) as fh:
+        data = _read_locked(fh)
+        yield {
+            pid: _from_raw(pid, raw)
+            for pid, raw in data["projects"].items()
+            if isinstance(pid, str) and isinstance(raw, dict)
+        }
 
 
 def _new_id(existing: dict) -> str:

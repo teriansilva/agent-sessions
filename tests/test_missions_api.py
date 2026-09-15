@@ -150,12 +150,20 @@ def test_get_returns_the_roster_objectives_and_a_bounded_timeline(api):
     m = _create(c, hdr)
     row = c.get(f"/api/missions/{m['id']}").json()
     assert row["sessions"] == [] and row["objectives"] == []
-    # Two events, not one: creating a mission now runs the objective producer (#883), and this
-    # test env has no AI endpoint, so it records WHY the checklist is empty rather than leaving
-    # an empty list indistinguishable from a broken feature. Once, at creation — a fixed fact
-    # about an install repeated on every poll would be noise rather than information.
-    assert [e["kind"] for e in row["events"]] == ["objective", "operator_msg"]
-    assert "no AI endpoint is configured" in (row["events"][0].get("text") or "")
+    # Three events, not one: creating a mission runs the objective producer (#883) AND the
+    # planner (#967), and this test env has no AI endpoint, so each records WHY it produced
+    # nothing rather than leaving an empty list indistinguishable from a broken feature. Once,
+    # at creation — a fixed fact about an install repeated on every poll would be noise.
+    #
+    # The two producers run CONCURRENTLY, so their relative order is not a contract; the
+    # operator's message is the oldest event either way.
+    kinds = [e["kind"] for e in row["events"]]
+    assert kinds[-1] == "operator_msg"
+    assert sorted(kinds[:-1]) == ["objective", "planning"], kinds
+    by_kind = {e["kind"]: e for e in row["events"]}
+    assert "no AI endpoint is configured" in (by_kind["objective"].get("text") or "")
+    assert "no AI endpoint is configured" in (by_kind["planning"].get("text") or "")
+    assert (row["plan_state"], row["state"]) == ("skipped", "draft")
     assert row["needs_you"] is False
 
 

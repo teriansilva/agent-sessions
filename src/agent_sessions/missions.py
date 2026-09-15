@@ -65,7 +65,7 @@ log = logging.getLogger(__name__)
 MISSION_ID_RE = re.compile(r"^msn_[0-9a-f]{32}$")
 
 #: Bumped whenever the schema changes; ``PRAGMA user_version`` carries it in the file.
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 25
 
 #: How many live SUB-AGENTS one mission may hold, beyond the session it is already running.
 #:
@@ -193,6 +193,13 @@ EVENT_KINDS: frozenset[str] = frozenset(
         "operator_msg",
         "assistant_msg",
         "plan",
+        # An operator's edit of a stored plan (#967): the plan id and WHICH fields changed, never
+        # the brief. A second full `plan` block per edit made the thread repeat the whole brief.
+        "plan_edit",
+        # A planning attempt that did not produce a plan, or whose result was not used: skipped
+        # (no endpoint), failed (with the reason), discarded by the generation fence, or a model
+        # reply that named a different project than the operator chose (#967).
+        "planning",
         "dispatched",
         "recap",
         "action",
@@ -227,6 +234,8 @@ EVENT_KINDS_PRESERVED: frozenset[str] = frozenset(
         "objective",
         "completion",
         "plan",
+        "plan_edit",
+        "planning",
         "dispatched",
         "question",
         "answer",
@@ -609,6 +618,24 @@ CREATE TABLE IF NOT EXISTS missions (
   -- and WRITE-ONCE: a merge commit does not change, so a second value would mean the row is
   -- about a different merge and the objective is about a different question.
   merge_sha     TEXT,
+  -- THE PLANNING INTENT (#967), durable for the same reason `objectives_state` is: a background
+  -- planner lives only in the process that started it. `pending | ready | failed | skipped`,
+  -- stamped `pending` in the transaction that creates the mission.
+  --
+  -- `plan_generation` names the ATTEMPT. Every intent (create, Plan again, an operator's save)
+  -- takes a new one, and every settlement is a compare-and-set on it, so a late planner can never
+  -- write over a newer attempt or over the operator. `mission_plans.generation` records which
+  -- attempt produced the stored plan, which is what lets recovery tell "the result landed" from
+  -- "the previous plan is still here".
+  --
+  -- Appended after `merge_sha`, because `ALTER TABLE ... ADD COLUMN` appends and a fresh install
+  -- and an upgraded one should agree on the column order.
+  plan_state      TEXT,
+  plan_generation INTEGER NOT NULL DEFAULT 0,
+  plan_at         REAL,
+  -- Why the latest attempt is `failed` or `skipped`, for the plan card. The timeline is a capped
+  -- feed, so the reason lives on the row as well as in an event.
+  plan_detail     TEXT,
   -- A draft may exist before its project is resolved (that is the whole point of asking), but
   -- nothing may LAUNCH without a server-resolved cwd. Enforced here, not in a comment.
   CHECK (state IN ('draft','planned','abandoned') OR cwd IS NOT NULL)
@@ -903,7 +930,9 @@ CREATE TABLE IF NOT EXISTS mission_plans (
   engine        TEXT,
   engine_reason TEXT,
   brief         TEXT NOT NULL,
-  created_at    REAL NOT NULL
+  created_at    REAL NOT NULL,
+  -- The planning attempt that produced this row (#967) — see `missions.plan_generation`.
+  generation    INTEGER NOT NULL DEFAULT 0
 );
 -- THE DISPATCH IN FLIGHT (#904 review 2). `dispatching` is a promise the process makes and a
 -- process can die; the plan row is consumed by the claim, so without this there is nothing left
@@ -1097,6 +1126,8 @@ def _migrate(con) -> int:
             _migrate_22_to_23(con)
         if version < 24:
             _migrate_23_to_24(con)
+        if version < 25:
+            _migrate_24_to_25(con)
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return SCHEMA_VERSION
 
@@ -1352,6 +1383,49 @@ def _migrate_23_to_24(con) -> None:
         "UPDATE mission_spawns SET state='live' "
         "WHERE ended_at IS NULL AND session_key IS NOT NULL"
     )
+
+
+def _migrate_24_to_25(con) -> None:
+    """v25 makes planning a durable, generation-fenced intent (#967).
+
+    Added the way v9 added `objectives_state`, with one deliberate difference: this one BACKFILLS.
+    A NULL `objectives_state` means "never retried"; here every existing mission gets an honest
+    terminal answer instead — `ready` if it has a plan row, `skipped` if it does not — so the plan
+    card has a state to render and no mission that predates the planner starts planning by itself
+    on the first boot after the upgrade.
+
+    Skipped where a table is not there to alter, for the reason `_has_table` gives everywhere else
+    in this ladder.
+    """
+    if _has_table(con, "missions"):
+        have = {r["name"] for r in con.execute("PRAGMA table_info(missions)").fetchall()}
+        if "plan_state" not in have:
+            con.execute("ALTER TABLE missions ADD COLUMN plan_state TEXT")
+        if "plan_generation" not in have:
+            con.execute(
+                "ALTER TABLE missions ADD COLUMN plan_generation INTEGER NOT NULL DEFAULT 0"
+            )
+        if "plan_at" not in have:
+            con.execute("ALTER TABLE missions ADD COLUMN plan_at REAL")
+        if "plan_detail" not in have:
+            con.execute("ALTER TABLE missions ADD COLUMN plan_detail TEXT")
+    has_plans = _has_table(con, "mission_plans")
+    if has_plans:
+        have = {r["name"] for r in con.execute("PRAGMA table_info(mission_plans)").fetchall()}
+        if "generation" not in have:
+            con.execute(
+                "ALTER TABLE mission_plans ADD COLUMN generation INTEGER NOT NULL DEFAULT 0"
+            )
+    if _has_table(con, "missions"):
+        if has_plans:
+            con.execute(
+                "UPDATE missions SET plan_state = CASE WHEN EXISTS ("
+                "  SELECT 1 FROM mission_plans p WHERE p.mission_id = missions.id"
+                ") THEN 'ready' ELSE 'skipped' END "
+                "WHERE plan_state IS NULL"
+            )
+        else:
+            con.execute("UPDATE missions SET plan_state='skipped' WHERE plan_state IS NULL")
 
 
 def _migrate_22_to_23(con) -> None:
@@ -2369,8 +2443,11 @@ def create_mission(
             con.execute(
                 "INSERT INTO missions (id, title, instruction, brief, project_id, cwd, engine,"
                 " engine_source, state, playbook_id, created_at, updated_at,"
-                " objectives_state, objectives_at) "
-                "VALUES (?,?,?,?,?,?,?,?,'draft',?,?,?,'pending',?)",
+                " objectives_state, objectives_at, plan_state, plan_generation, plan_at) "
+                # BOTH INTENTS IN THE CREATE TRANSACTION (#883, #967). A crash between this commit
+                # and the background producers can then never lose either: `recover_pending`
+                # finds a `pending` row. Generation 1 is the planning attempt the create starts.
+                "VALUES (?,?,?,?,?,?,?,?,'draft',?,?,?,'pending',?,'pending',1,?)",
                 (
                     mission_id,
                     _cap(title, TITLE_MAX) or text[:TITLE_MAX],
@@ -2381,6 +2458,7 @@ def create_mission(
                     _cap_or_none(engine, 40),
                     _cap_or_none(engine_source, 20),
                     _cap_or_none(playbook_id, 200),
+                    ts,
                     ts,
                     ts,
                     ts,
@@ -3751,6 +3829,41 @@ def missions_awaiting_objectives(
         args.append(max(1, min(int(limit), 500)))
         rows = con.execute(sql, args).fetchall()
         return [(float(r["objectives_at"]), r["id"]) for r in rows]
+    finally:
+        con.close()
+
+
+def missions_awaiting_plan(
+    *,
+    older_than: float = 0.0,
+    limit: int = 50,
+    after: tuple[float, str] | None = None,
+    now: float | None = None,
+    path: Path | None = None,
+) -> list[tuple[float, str]]:
+    """Missions whose planning attempt never settled — the plan recovery worklist (#967).
+
+    The same cursor contract as :func:`missions_awaiting_objectives`, for the same reasons: pairs
+    of `(plan_at, id)` so the caller pages forward, visits each row at most once per pass and
+    skips nothing. A backfilled mission is `ready` or `skipped`, never `pending`, so an upgrade
+    queues nothing.
+    """
+    ts = time.time() if now is None else now
+    con = _ready(path)
+    try:
+        sql = (
+            "SELECT plan_at, id FROM missions "
+            "WHERE plan_state='pending' AND COALESCE(plan_at, 0) <= ? "
+            "AND state NOT IN ('done','failed','abandoned') "
+        )
+        args: list[object] = [ts - max(0.0, older_than)]
+        if after is not None:
+            sql += "AND (COALESCE(plan_at, 0), id) > (?, ?) "
+            args += [after[0], after[1]]
+        sql += "ORDER BY COALESCE(plan_at, 0) ASC, id ASC LIMIT ?"
+        args.append(max(1, min(int(limit), 500)))
+        rows = con.execute(sql, args).fetchall()
+        return [(float(r["plan_at"] or 0.0), r["id"]) for r in rows]
     finally:
         con.close()
 
@@ -5888,10 +6001,35 @@ def put_plan(
     engine_reason: str = "",
     brief: str,
     expect_plan_id: str | None = None,
+    generation: int | None = None,
+    first_plan: bool = False,
+    planner_note: str | None = None,
     now: float | None = None,
     path: Path | None = None,
 ) -> dict:
     """Store THE proposal for this mission, superseding any previous one. Returns the stored row.
+
+    **The plan and its `ready` settlement are ONE write** (#967). The row, `plan_state='ready'`,
+    the draft→planned transition and the timeline event commit together, so there is no moment
+    where a plan exists while `plan_state` still says `pending`, and no crash can separate them.
+
+    **`generation` says who is writing.**
+
+    * An `int` is a PLANNER RUN for that attempt. It commits only while `plan_state` is still
+      `pending` AND `plan_generation` still equals it — a compare-and-set under the same lock as
+      the write. A run whose attempt was superseded (a newer Plan again, an operator's save)
+      writes nothing, records a `planning` event saying so, and raises :class:`PlanSuperseded`.
+    * `None` is an OPERATOR's save (an edit, or a first plan). It is authoritative: it takes a new
+      generation, which is exactly what fences out any planner still running for the old one.
+
+    **An edit records less** (#967). With `expect_plan_id` the timeline gets one `plan_edit` event
+    naming the new plan id and the fields that changed — never the brief. A plan written without
+    one (a planner result, a first plan) is still a full `plan` event.
+
+    `first_plan=True` is the manual first plan: it requires, inside the transaction, that no plan
+    exists and that planning is `skipped` or `failed`. `planner_note` is a `planning` event written
+    in the same transaction (e.g. a model reply that named a different project than the chosen
+    one, which was ignored).
 
     **A re-plan supersedes rather than stacks.** Two live plans for one mission is a state the
     operator cannot act on coherently, and the newer one is the one on their screen. The primary
@@ -5925,6 +6063,212 @@ def put_plan(
     if not text:
         raise MissionError("a plan needs a brief", status=422)
     plan_id = f"pln_{uuid.uuid4().hex}"
+    reason = _cap(engine_reason, PLAN_REASON_MAX)
+    stale: str | None = None
+    out: dict = {}
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            _fence_busy(con, mission_id)
+            row = con.execute(
+                "SELECT state, plan_state, plan_generation FROM missions WHERE id=?",
+                (mission_id,),
+            ).fetchone()
+            if row is None:
+                raise MissionError(f"unknown mission {mission_id}", status=404)
+            state = str(row["state"] or "")
+            if state not in PLANNABLE_STATES:
+                raise MissionError(f"a mission that is {state} cannot be planned", status=409)
+            have_state = str(row["plan_state"] or "")
+            have_gen = int(row["plan_generation"] or 0)
+            # THE GENERATION FENCE, compared under the lock that writes. A planner run is
+            # admitted only while its own attempt is still the pending one.
+            if generation is not None and (have_state != "pending" or have_gen != int(generation)):
+                stale = (
+                    f"a plan result was discarded: planning attempt {generation} is no longer "
+                    f"current (attempt {have_gen} is {have_state or 'unset'})"
+                )
+                _append_event(
+                    con,
+                    mission_id,
+                    "planning",
+                    at=ts,
+                    text=stale,
+                    meta={
+                        "outcome": "discarded",
+                        "discarded": "ready",
+                        "generation": int(generation),
+                        "current_generation": have_gen,
+                        "plan_state": have_state or None,
+                    },
+                )
+                con.execute("COMMIT")
+            else:
+                new_gen = int(generation) if generation is not None else have_gen + 1
+                prior = con.execute(
+                    "SELECT plan_id, project_id, engine, brief FROM mission_plans "
+                    "WHERE mission_id=?",
+                    (mission_id,),
+                ).fetchone()
+                if first_plan and (prior is not None or have_state not in ("skipped", "failed")):
+                    raise MissionError(
+                        "a first plan can only be written for a mission that has no plan and "
+                        "could not be planned",
+                        status=409,
+                    )
+                # THE PROPOSAL BEING REPLACED, compared under the same lock that replaces it.
+                # Read in the route and compared here would be two moments and no fence at all.
+                if expect_plan_id is not None:
+                    have = str(prior["plan_id"]) if prior else None
+                    if have != expect_plan_id:
+                        raise MissionError(
+                            "the plan changed while you were editing it; read it again",
+                            status=409,
+                        )
+                con.execute(
+                    "INSERT INTO mission_plans "
+                    "(mission_id, plan_id, project_id, cwd, engine, engine_reason, brief, "
+                    " created_at, generation) "
+                    "VALUES (?,?,?,?,?,?,?,?,?) "
+                    "ON CONFLICT(mission_id) DO UPDATE SET "
+                    "plan_id=excluded.plan_id, project_id=excluded.project_id, cwd=excluded.cwd, "
+                    "engine=excluded.engine, engine_reason=excluded.engine_reason, "
+                    "brief=excluded.brief, created_at=excluded.created_at, "
+                    "generation=excluded.generation",
+                    (mission_id, plan_id, project_id, cwd, engine, reason, text, ts, new_gen),
+                )
+                # …AND `ready`, IN THE SAME TRANSACTION. Settling in a second write is the window
+                # the issue rules out: a crash between the two would leave a plan beside
+                # `pending`, and recovery would have to guess which attempt produced it.
+                con.execute(
+                    "UPDATE missions SET plan_state='ready', plan_generation=?, plan_at=?, "
+                    "plan_detail=NULL, updated_at=? WHERE id=?",
+                    (new_gen, ts, ts, mission_id),
+                )
+                # …AND THE MISSION BECOMES `planned`, here, not in a second call the client is
+                # trusted to make. `draft -> planned` is exactly "a proposal now exists", which is
+                # what this statement just made true.
+                if state == "draft":
+                    _to_planned_in_tx(con, mission_id, ts, plan_id)
+                if planner_note:
+                    _append_event(
+                        con,
+                        mission_id,
+                        "planning",
+                        at=ts,
+                        text=planner_note,
+                        meta={
+                            "outcome": "project_conflict",
+                            "generation": new_gen,
+                            "plan_id": plan_id,
+                            "project_id": project_id,
+                        },
+                    )
+                if expect_plan_id is not None and prior is not None:
+                    changed = [
+                        field
+                        for field, new in (
+                            ("project_id", project_id),
+                            ("engine", engine),
+                            ("brief", text),
+                        )
+                        if prior[field] != new
+                    ]
+                    _append_event(
+                        con,
+                        mission_id,
+                        "plan_edit",
+                        at=ts,
+                        meta={"plan_id": plan_id, "changed": changed},
+                    )
+                else:
+                    _append_event(
+                        con,
+                        mission_id,
+                        "plan",
+                        at=ts,
+                        text=text,
+                        meta={
+                            "plan_id": plan_id,
+                            "project_id": project_id,
+                            "engine": engine,
+                            "engine_reason": reason,
+                            "generation": new_gen,
+                        },
+                    )
+                con.execute("COMMIT")
+                out = {
+                    "plan_id": plan_id,
+                    "mission_id": mission_id,
+                    "project_id": project_id,
+                    "cwd": cwd,
+                    "engine": engine,
+                    "engine_reason": reason,
+                    "brief": text,
+                    "created_at": ts,
+                    "generation": new_gen,
+                    "plan_state": "ready",
+                    # What the mission IS now, so the card renders the state this call
+                    # established rather than the one the client last read.
+                    "mission_state": "planned" if state == "draft" else state,
+                }
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+    if stale is not None:
+        raise PlanSuperseded(stale)
+    return out
+
+
+class PlanSuperseded(MissionError):
+    """A planner run's result arrived after its attempt stopped being current (#967).
+
+    Nothing was written except the `planning` event that says so. A 409 at the route: the operator
+    (or a newer Plan again) owns the mission's plan now.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, status=409)
+
+
+#: The four planning states (#967). `pending` is the only non-terminal one.
+PLAN_STATES: frozenset[str] = frozenset({"pending", "ready", "failed", "skipped"})
+#: Bound on the stored reason for `failed` / `skipped`. It is shown on the plan card.
+PLAN_DETAIL_MAX = 500
+
+
+def _to_planned_in_tx(con, mission_id: str, ts: float, plan_id: str) -> None:
+    """`draft -> planned` with its `state` event, inside the caller's transaction."""
+    con.execute(
+        "UPDATE missions SET state='planned', updated_at=? WHERE id=? AND state='draft'",
+        (ts, mission_id),
+    )
+    _append_event(
+        con,
+        mission_id,
+        "state",
+        at=ts,
+        text="draft -> planned",
+        meta={"from": "draft", "to": "planned", "plan_id": plan_id},
+    )
+
+
+def begin_planning(mission_id: str, *, now: float | None = None, path: Path | None = None) -> int:
+    """Record a NEW planning attempt (Plan again) and return its generation (#967).
+
+    `plan_state='pending'` and `plan_generation + 1`, in one transaction. Taking a new generation
+    is what retires any result still on its way for an older attempt: its settlement will no
+    longer match. Refused for a mission that has left the planning states.
+
+    The caller holds the per-mission single-flight BEFORE calling this, so a second concurrent
+    request is refused without bumping — a refused request must not discard the running one.
+    """
+    validate_id(mission_id)
+    ts = time.time() if now is None else now
     with _write_lock:
         con = _ready(path)
         try:
@@ -5932,90 +6276,204 @@ def put_plan(
             _fence_busy(con, mission_id)
             row = con.execute("SELECT state FROM missions WHERE id=?", (mission_id,)).fetchone()
             if row is None:
-                raise MissionError(f"unknown mission {mission_id}", status=404)
+                raise MissionNotFound(mission_id)
             state = str(row["state"] or "")
             if state not in PLANNABLE_STATES:
                 raise MissionError(f"a mission that is {state} cannot be planned", status=409)
-            # THE PROPOSAL BEING REPLACED, compared under the same lock that replaces it. Read in
-            # the route and compared here would be two moments and no fence at all.
-            if expect_plan_id is not None:
-                cur_plan = con.execute(
-                    "SELECT plan_id FROM mission_plans WHERE mission_id=?", (mission_id,)
-                ).fetchone()
-                have = str(cur_plan["plan_id"]) if cur_plan else None
-                if have != expect_plan_id:
-                    raise MissionError(
-                        "the plan changed while you were editing it; read it again",
-                        status=409,
-                    )
             con.execute(
-                "INSERT INTO mission_plans "
-                "(mission_id, plan_id, project_id, cwd, engine, engine_reason, brief, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?) "
-                "ON CONFLICT(mission_id) DO UPDATE SET "
-                "plan_id=excluded.plan_id, project_id=excluded.project_id, cwd=excluded.cwd, "
-                "engine=excluded.engine, engine_reason=excluded.engine_reason, "
-                "brief=excluded.brief, created_at=excluded.created_at",
-                (
-                    mission_id,
-                    plan_id,
-                    project_id,
-                    cwd,
-                    engine,
-                    _cap(engine_reason, PLAN_REASON_MAX),
-                    text,
-                    ts,
-                ),
+                "UPDATE missions SET plan_state='pending', plan_generation=plan_generation+1, "
+                "plan_at=?, plan_detail=NULL, updated_at=? WHERE id=?",
+                (ts, ts, mission_id),
             )
-            # …AND THE MISSION BECOMES `planned`, here, not in a second call the client is
-            # trusted to make. `draft -> planned` is exactly "a proposal now exists", which is
-            # what this statement just made true.
-            if state == "draft":
-                con.execute(
-                    "UPDATE missions SET state='planned', updated_at=? "
-                    "WHERE id=? AND state='draft'",
-                    (ts, mission_id),
-                )
-                _append_event(
-                    con,
-                    mission_id,
-                    "state",
-                    at=ts,
-                    text="draft -> planned",
-                    meta={"from": "draft", "to": "planned", "plan_id": plan_id},
-                )
-            _append_event(
-                con,
-                mission_id,
-                "plan",
-                at=ts,
-                text=text,
-                meta={
-                    "plan_id": plan_id,
-                    "project_id": project_id,
-                    "engine": engine,
-                    "engine_reason": _cap(engine_reason, PLAN_REASON_MAX),
-                },
-            )
+            gen = con.execute(
+                "SELECT plan_generation FROM missions WHERE id=?", (mission_id,)
+            ).fetchone()[0]
             con.execute("COMMIT")
+            return int(gen)
         except BaseException:
             with contextlib.suppress(sqlite3.Error):
                 con.execute("ROLLBACK")
             raise
         finally:
             con.close()
+
+
+def settle_plan(
+    mission_id: str,
+    generation: int,
+    state: str,
+    *,
+    detail: str = "",
+    now: float | None = None,
+    path: Path | None = None,
+) -> bool:
+    """Close ONE planning attempt as `failed` or `skipped`. Returns whether it was this call's.
+
+    **Fenced exactly like a successful plan** (#967): the update commits only while `plan_state`
+    is `pending` AND `plan_generation` equals the attempt's. A stale attempt's failure must not
+    overwrite a newer attempt's `pending`, nor an operator's `ready` — so on a mismatch nothing
+    changes and a `planning` event records that the outcome was discarded.
+
+    Not behind `_fence_busy`: this closes an intent rather than mutating the mission, and an
+    attempt that failed BECAUSE the mission was archived must still be able to say so.
+    """
+    validate_id(mission_id)
+    if state not in ("failed", "skipped"):
+        raise MissionError(f"unknown plan settlement {state!r}", status=422)
+    ts = time.time() if now is None else now
+    why = _cap(detail, PLAN_DETAIL_MAX)
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            cur = con.execute(
+                "UPDATE missions SET plan_state=?, plan_at=?, plan_detail=?, updated_at=? "
+                "WHERE id=? AND plan_state='pending' AND plan_generation=?",
+                (state, ts, why or None, ts, mission_id, int(generation)),
+            )
+            settled = bool(cur.rowcount)
+            row = con.execute(
+                "SELECT plan_state, plan_generation FROM missions WHERE id=?", (mission_id,)
+            ).fetchone()
+            if row is not None:
+                if settled:
+                    lead = "no plan proposed" if state == "skipped" else "could not plan"
+                    _append_event(
+                        con,
+                        mission_id,
+                        "planning",
+                        at=ts,
+                        text=f"{lead}: {why}" if why else lead,
+                        meta={"outcome": state, "generation": int(generation)},
+                    )
+                else:
+                    _append_event(
+                        con,
+                        mission_id,
+                        "planning",
+                        at=ts,
+                        text=(
+                            f"a planning outcome ({state}) was discarded: attempt {generation} "
+                            f"is no longer current"
+                        ),
+                        meta={
+                            "outcome": "discarded",
+                            "discarded": state,
+                            "detail": why or None,
+                            "generation": int(generation),
+                            "current_generation": int(row["plan_generation"] or 0),
+                            "plan_state": row["plan_state"],
+                        },
+                    )
+            con.execute("COMMIT")
+            return settled
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+
+
+def settle_plan_from_stored(
+    mission_id: str, generation: int, *, now: float | None = None, path: Path | None = None
+) -> bool:
+    """Recovery's no-model-call exit: settle `ready` ONLY if the stored plan IS this attempt's.
+
+    "A plan row exists" is not the question (#967 review). A Plan again is `pending` while the
+    PREVIOUS plan is still stored, because a proposal is replaced only when the model returns — so
+    settling on existence would report plan A as the result of attempt B. The stored row's
+    `generation` must equal the pending one, compared in the transaction that settles.
+
+    `put_plan` writes the plan and `ready` together, so this state should be unreachable; the
+    check is here so recovery stays correct if that ever stops being true.
+    """
+    validate_id(mission_id)
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            _fence_busy(con, mission_id)
+            row = con.execute(
+                "SELECT state, plan_state, plan_generation FROM missions WHERE id=?",
+                (mission_id,),
+            ).fetchone()
+            plan = con.execute(
+                "SELECT plan_id, generation FROM mission_plans WHERE mission_id=?", (mission_id,)
+            ).fetchone()
+            if (
+                row is None
+                or plan is None
+                or row["plan_state"] != "pending"
+                or int(row["plan_generation"] or 0) != int(generation)
+                or int(plan["generation"] or 0) != int(generation)
+            ):
+                con.execute("COMMIT")
+                return False
+            con.execute(
+                "UPDATE missions SET plan_state='ready', plan_at=?, plan_detail=NULL, "
+                "updated_at=? WHERE id=? AND plan_state='pending' AND plan_generation=?",
+                (ts, ts, mission_id, int(generation)),
+            )
+            if str(row["state"] or "") == "draft":
+                _to_planned_in_tx(con, mission_id, ts, str(plan["plan_id"]))
+            _append_event(
+                con,
+                mission_id,
+                "planning",
+                at=ts,
+                text=(
+                    f"the plan for attempt {generation} was already stored; settled without "
+                    "another model call"
+                ),
+                meta={
+                    "outcome": "recovered",
+                    "generation": int(generation),
+                    "plan_id": str(plan["plan_id"]),
+                },
+            )
+            con.execute("COMMIT")
+            return True
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+
+
+def plan_intent(mission_id: str, *, path: Path | None = None) -> dict | None:
+    """The planning intent and the stored plan's generation, from ONE snapshot (#967)."""
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        con.execute("BEGIN DEFERRED")
+        row = con.execute(
+            "SELECT state, plan_state, plan_generation, plan_detail, archived_at, archiving_at "
+            "FROM missions WHERE id=?",
+            (mission_id,),
+        ).fetchone()
+        plan = con.execute(
+            "SELECT plan_id, generation FROM mission_plans WHERE mission_id=?", (mission_id,)
+        ).fetchone()
+        con.execute("COMMIT")
+    except BaseException:
+        with contextlib.suppress(sqlite3.Error):
+            con.execute("ROLLBACK")
+        raise
+    finally:
+        con.close()
+    if row is None:
+        return None
     return {
-        "plan_id": plan_id,
-        "mission_id": mission_id,
-        "project_id": project_id,
-        "cwd": cwd,
-        "engine": engine,
-        "engine_reason": _cap(engine_reason, PLAN_REASON_MAX),
-        "brief": text,
-        "created_at": ts,
-        # What the mission IS now, so the card renders the state this call established rather
-        # than the one the client last read.
-        "mission_state": "planned" if state == "draft" else state,
+        "state": str(row["state"] or ""),
+        "plan_state": row["plan_state"],
+        "plan_generation": int(row["plan_generation"] or 0),
+        "plan_detail": row["plan_detail"],
+        "archived": row["archived_at"] is not None or row["archiving_at"] is not None,
+        "stored_plan_id": str(plan["plan_id"]) if plan else None,
+        "stored_generation": int(plan["generation"] or 0) if plan else None,
     }
 
 
@@ -6025,7 +6483,7 @@ def get_plan(mission_id: str, *, path: Path | None = None) -> dict | None:
     con = _ready(path)
     try:
         row = con.execute(
-            "SELECT plan_id, project_id, cwd, engine, engine_reason, brief, created_at "
+            "SELECT plan_id, project_id, cwd, engine, engine_reason, brief, created_at, generation "
             "FROM mission_plans WHERE mission_id=?",
             (mission_id,),
         ).fetchone()
@@ -6040,6 +6498,7 @@ def get_plan(mission_id: str, *, path: Path | None = None) -> dict | None:
             "engine_reason": str(row["engine_reason"] or ""),
             "brief": str(row["brief"] or ""),
             "created_at": float(row["created_at"] or 0),
+            "generation": int(row["generation"] or 0),
         }
     finally:
         con.close()
@@ -6454,6 +6913,20 @@ def claim_plan(
             if str(row["plan_id"]) != plan_id:
                 raise MissionError(
                     "the plan was replaced while you were looking at it; read it again",
+                    status=409,
+                )
+            # NOT WHILE A NEWER PLAN IS BEING PREPARED (#967). A Plan again leaves the previous
+            # plan stored until the model returns, so without this the operator could launch plan
+            # A after asking for a new one. It would also break recovery: a refused launch puts
+            # the plan back under the CURRENT generation, which is the pending one, and recovery
+            # would then report A as that attempt's result. An operator's edit settles `ready`
+            # under a new generation, so "edit the plan" really does unblock this.
+            pstate = con.execute(
+                "SELECT plan_state FROM missions WHERE id=?", (mission_id,)
+            ).fetchone()
+            if pstate is not None and pstate["plan_state"] == "pending":
+                raise MissionError(
+                    "a plan is still being prepared for this mission; wait for it or edit the plan",
                     status=409,
                 )
             # WHAT DONE MEANS, COMPARED IN THIS TRANSACTION (#904 review 4, finding 2). The
@@ -7053,13 +7526,18 @@ def settle_dispatch(
                 ).fetchone()
                 if d is not None:
                     con.execute(
+                        # Restored under the mission's CURRENT planning generation (#967): it is
+                        # the plan the operator approved, and recovery must read it as the result
+                        # of the attempt that is on record rather than as a stale one.
                         "INSERT INTO mission_plans "
                         "(mission_id, plan_id, project_id, cwd, engine, engine_reason, brief, "
-                        " created_at) VALUES (?,?,?,?,?,?,?,?) "
+                        " created_at, generation) VALUES (?,?,?,?,?,?,?,?,"
+                        " (SELECT plan_generation FROM missions WHERE id=?)) "
                         "ON CONFLICT(mission_id) DO UPDATE SET plan_id=excluded.plan_id, "
                         "project_id=excluded.project_id, cwd=excluded.cwd, "
                         "engine=excluded.engine, engine_reason=excluded.engine_reason, "
-                        "brief=excluded.brief, created_at=excluded.created_at",
+                        "brief=excluded.brief, created_at=excluded.created_at, "
+                        "generation=excluded.generation",
                         (
                             mission_id,
                             str(d["plan_id"]),
@@ -7069,6 +7547,7 @@ def settle_dispatch(
                             str(d["engine_reason"] or ""),
                             str(d["brief"] or ""),
                             ts,
+                            mission_id,
                         ),
                     )
             adopted = False

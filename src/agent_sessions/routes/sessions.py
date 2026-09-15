@@ -707,11 +707,16 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         if not isinstance(folders, list):
             raise HTTPException(status_code=422, detail="folders must be a list")
         try:
-            p = projects.create(
-                payload.get("name"),
-                color=payload.get("color"),
-                folders=folders,
-                default_folder=payload.get("default_folder"),  # #448: auto-adopted launch default
+            # OFF THE LOOP (#974): `create` blocks on the project store's flock, which a mission
+            # plan write may hold through a SQLite COMMIT. Waiting for it here would stall every
+            # WebSocket on the loop (#678's shape).
+            p = await asyncio.to_thread(
+                lambda: projects.create(
+                    payload.get("name"),
+                    color=payload.get("color"),
+                    folders=folders,
+                    default_folder=payload.get("default_folder"),  # #448: auto-adopted default
+                )
             )
         except projects.ProjectError as e:
             raise HTTPException(status_code=e.status, detail=str(e)) from None
@@ -753,12 +758,15 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         if unknown:
             raise HTTPException(status_code=422, detail=f"unknown fields: {sorted(unknown)}")
         try:
-            p = projects.update(
-                pid,
-                name=payload.get("name"),
-                color=payload.get("color"),
-                folders=payload.get("folders"),
-                default_folder=payload.get("default_folder"),  # #448
+            # OFF THE LOOP (#974): the project store's flock may be held by a plan write.
+            p = await asyncio.to_thread(
+                lambda: projects.update(
+                    pid,
+                    name=payload.get("name"),
+                    color=payload.get("color"),
+                    folders=payload.get("folders"),
+                    default_folder=payload.get("default_folder"),  # #448
+                )
             )
         except projects.ProjectError as e:
             raise HTTPException(status_code=e.status, detail=str(e)) from None
@@ -780,7 +788,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         if pid not in index:
             raise HTTPException(status_code=404, detail="unknown project")
         try:
-            projects.update(pid, archived=archive_members)
+            # OFF THE LOOP (#974): the project store's flock may be held by a plan write.
+            await asyncio.to_thread(lambda: projects.update(pid, archived=archive_members))
         except projects.ProjectError as e:  # store vanished between load and write
             raise HTTPException(status_code=e.status, detail=str(e)) from None
 
@@ -885,7 +894,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # revert to folder grouping on the next resolve (a dangling project_id is
         # ignored, never an error). Session files are never touched.
         try:
-            projects.delete(pid)
+            # OFF THE LOOP (#974): the project store's flock may be held by a plan write.
+            await asyncio.to_thread(lambda: projects.delete(pid))
         except projects.ProjectError as e:
             raise HTTPException(status_code=e.status, detail=str(e)) from None
         return JSONResponse({"deleted": True, "id": pid})

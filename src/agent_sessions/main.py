@@ -35,6 +35,7 @@ from . import (
     mission_archive,
     mission_dispatch_recover,
     mission_objectives,
+    mission_plan,
     mission_supervisor_loop,
     missions,
     orchestrator_loop,
@@ -314,6 +315,10 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             # that discharges it, exactly as it is for a half-finished archive above.
             with contextlib.suppress(Exception):
                 await mission_objectives.recover_pending()
+            # …and so is planning (#967): a new mission plans itself in a background task, and a
+            # restart between the create and the plan must not leave it `pending` for ever.
+            with contextlib.suppress(Exception):
+                await mission_plan.recover_pending()
             # Discharge any scrub a busy reader left owed at the last shutdown. Sensitive text
             # sits on disk until this runs, so boot is the backstop for an obligation the
             # process that created it could not collect.
