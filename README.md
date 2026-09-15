@@ -20,11 +20,15 @@ whole fleet from a laptop or your phone.
   project, with per-row badges + filtering.
 - **Persistent terminals.** Each session runs under its own `dtach` PTY — close the tab, reboot, or
   upgrade the app and reattach to the exact conversation, with clean console-style scroll-up.
-- **Files + git, per session.** A read-only file browser rooted at each session's own working
-  directory, plus a `GIT` tab: branch name, ahead/behind, the working tree's changed paths
-  grouped conflicts/staged/changes/untracked (capped at `GIT_MAX_ENTRIES`, and flagged as
-  truncated past it), and a unified diff one click away. Review what changed without leaving
-  the app — no stage, no commit, no discard.
+- **Files + git, per session.** A file browser rooted at each session's own working directory —
+  upload files or whole folders into it, and edit text files in place — plus a `GIT` tab: branch
+  name, ahead/behind, the working tree's changed paths grouped conflicts/staged/changes/untracked
+  (capped at `GIT_MAX_ENTRIES`, and flagged as truncated past it), and a unified diff one click
+  away. It can also fetch, fast-forward pull, switch branches, stage, discard, commit and push —
+  each one refusing rather than forcing when the tree has moved under you.
+- **Templates.** A library of instructions you send more than once: the text, its reference images,
+  and `{{field}}` slots you fill in at send time. Send one from any session's composer, or insert
+  it into a mission brief.
 - **Mission control.** A chat-first console over your work: a rail of *missions*, a thread per
   mission, and an objective list that says what "done" means before the work starts. It adopts
   sessions you started yourself, checks the objectives it can check, and follows through — nudging
@@ -36,8 +40,9 @@ whole fleet from a laptop or your phone.
   sessions file themselves into the right project.
 - **Every prompt is yours.** Every system prompt — the recap, the handoff brief, the console, the
   orchestrator — are editable in Settings, with the JSON shape each one must return and a
-  one-tap reset. The two that can act on a session keep a server-appended clause that says
-  session output is untrusted; that part isn't editable, by design.
+  one-tap reset. The six that shape autonomous action — the orchestrator pass, chat instruct and
+  the four mission prompts — keep a server-appended clause that says session output is
+  untrusted; that part isn't editable, by design.
 - **Home Free.** Your box dials *out* to a blind relay — open the Connect page in any browser and
   drive the full app from your phone. End-to-end encrypted (X25519 → AES-256-GCM); the relay sees
   only ciphertext. No VPN, no port-forwarding.
@@ -114,7 +119,7 @@ agent-sessions 0.3.1 installed.
 … reset-password            # generate a random one and print it once
 ```
 
-**Optional two-factor auth (TOTP).** Off by default. Enable it from **Settings → Two-factor authentication**: scan the QR (or enter the key) into an authenticator app (Google Authenticator, Authy, 1Password, Aegis…), confirm a code, and save the one-time recovery codes shown once. After that, login asks for a 6-digit code after your password. The TOTP secret + recovery-code hashes live in a `0600` file next to the env (`<env-dir>/2fa.json`, override `AGENT_SESSIONS_2FA_FILE`) — never in `prefs.json` or the metadata sidecar. **Locked out** (lost device *and* recovery codes)? Clear 2FA from the host:
+**Optional two-factor auth (TOTP).** Off by default. Enable it from **Settings → System → Security**: scan the QR (or enter the key) into an authenticator app (Google Authenticator, Authy, 1Password, Aegis…), confirm a code, and save the one-time recovery codes shown once. After that, login asks for a 6-digit code after your password. The TOTP secret + recovery-code hashes live in a `0600` file next to the env (`<env-dir>/2fa.json`, override `AGENT_SESSIONS_2FA_FILE`) — never in `prefs.json` or the metadata sidecar. **Locked out** (lost device *and* recovery codes)? Clear 2FA from the host:
 
 ```sh
 ~/.local/share/agent-sessions/current/venv/bin/agent-sessions clear-2fa    # removes the 2FA secrets file → 2FA off

@@ -20,9 +20,9 @@ features:
     link: /guide/sessions
   - title: Mission control
     details: Give a mission an instruction and a project; it works out what done means, follows through, and asks when it is unsure.
-    link: /guide/pulse
+    link: /guide/missions
   - title: Files & git
-    details: A read-only file browser and a git view docked in the session that owns them.
+    details: A file browser you can upload into and edit in, and a git view that can stage, commit and push — docked in the session that owns them.
     link: /guide/files-and-git
   - title: AI review
     details: Point any OpenAI-compatible endpoint — including a local model — at your running sessions.
@@ -56,11 +56,10 @@ mirrored or released. The footer on every page names the exact commit it was bui
 ahead of the last publish that is — or says `unknown` rather than guessing, when the provenance
 cannot be established.
 
-::: info Automatic rebuild-on-merge is not wired up yet
-The build is reproducible today — `scripts/build-docs-site` runs the whole pipeline, gates
-included, from any checkout. What does not exist yet is the deployment that runs it on every merge
-to `main`; until that lands, this site is published when someone runs it. The footer stamp is the
-thing to trust in the meantime: it names the commit you are actually reading.
+::: info Rebuilt on every push to `main`
+The build is reproducible — `scripts/build-docs-site` runs the whole pipeline, gates included, from
+any checkout — and the deployment runs that same script on every push to `main`. The footer stamp
+is still the thing to trust: it names the commit you are actually reading.
 :::
 
 The `/guide/` pages are the exception worth knowing about: they are new prose, so they can go

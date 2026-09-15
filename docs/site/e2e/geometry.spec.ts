@@ -5,7 +5,7 @@ import { test, expect, type Page } from "@playwright/test";
 // mobile TOC 39px, the card links 15px, and the prose was mono. A rule nothing measures is a rule
 // that drifts back.
 
-const PAGES = ["/", "/security/", "/guide/pulse", "/reference/"];
+const PAGES = ["/", "/security/", "/guide/missions", "/reference/"];
 const THEMES = ["dark", "light"] as const;
 
 // VitePress reads its appearance from localStorage before hydrating; setting it in an init script

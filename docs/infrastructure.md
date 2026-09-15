@@ -122,7 +122,7 @@ path**, but the box is not egress-free. For firewall / privacy planning:
 | Install / update | the source repo (`AGENT_SESSIONS_REPO`) | `git clone` / `ls-remote` for releases |
 | Install only, when needed | `github.com` (python-build-standalone), `nodejs.org` | vendored toolchains, only if the host lacks Python ≥ 3.11 / Node ≥ 20 |
 | Runtime — update checks | the source repo | `git ls-remote` on a manual update check, or daily while auto-update is enabled |
-| Runtime — optional AI features | the operator-configured OpenAI-compatible endpoint | AI session review / auto-sort / Pulse — only if you configure them |
+| Runtime — optional AI features | the operator-configured OpenAI-compatible endpoint | AI session review / auto-sort / mission control — only if you configure them |
 | Runtime — the agent CLIs themselves | each agent's own model provider (Anthropic, OpenAI, Google, …) | the coding agents BattleLab launches talk to their providers exactly as they would from a plain terminal |
 
 ## Mode 2 — stream via BattleLab (Home Free)
