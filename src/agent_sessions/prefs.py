@@ -1960,10 +1960,17 @@ def set_forge(patch: dict, path: Path | None = None) -> dict:
     # still settle a row — the exact thing the revision exists to prevent — so the operator is
     # told the save half-completed rather than left believing a fence is in force that is not.
     from . import missions as _m
+    from . import session_input
 
-    _m.bump_forge_revision()
-    out = _mutate("forge", merge, path)
-    _m.bump_forge_revision()
+    # FENCED against byte one (#983 review). A pending supervisor nudge's facts must have been
+    # fetched under the CURRENT forge revision, and delivery re-reads that revision inside the PTY
+    # write fence. A save committing between that re-read and the byte would put old-authority
+    # facts on screen, so the save takes the same fence. Lock order, as every fenced mutation:
+    # session_input._lock → authfence → missions._write_lock (the bumps) / prefs flock (`_mutate`).
+    with session_input.fact_transaction():
+        _m.bump_forge_revision()
+        out = _mutate("forge", merge, path)
+        _m.bump_forge_revision()
     return out
 
 
@@ -2120,7 +2127,7 @@ def _check_objective(obj: object, *, strict: bool) -> dict | None:
             raise PlaybookError(f"objective {key!r}: gate must be true or false")
         return {"key": key, "title": title, "probe": "none", "probe_args": None, "gate": False}
     gate = raw_gate
-    unknown = set(obj) - {"key", "title", "probe", "probe_args", "gate"}
+    unknown = set(obj) - {"key", "title", "probe", "probe_args", "gate", "direction"}
     if unknown:
         if strict:
             raise PlaybookError(f"objective {key!r} does not take {', '.join(sorted(unknown))}")
@@ -2149,7 +2156,22 @@ def _check_objective(obj: object, *, strict: bool) -> dict | None:
         if strict:
             raise PlaybookError(f"probe {probe} may not be a gate")
         gate = False
-    return {"key": key, "title": title, "probe": probe, "probe_args": args or None, "gate": gate}
+    out = {"key": key, "title": title, "probe": probe, "probe_args": args or None, "gate": gate}
+    # THE OPERATOR'S DIRECTION (#983). Optional, and absent from the row unless set, so a playbook
+    # without directions normalizes exactly as it did before. Validated against THIS template's
+    # probe: a placeholder the probe can never fill is refused at save, where the operator can
+    # still fix it. A read degrades to no direction, never to a direction that half-fills.
+    from . import mission_directions
+
+    try:
+        direction = mission_directions.validate(obj.get("direction"), probe)
+    except mission_directions.DirectionError as e:
+        if strict:
+            raise PlaybookError(f"objective {key!r} has an invalid direction — {e}") from None
+        direction = None
+    if direction is not None:
+        out["direction"] = direction
+    return out
 
 
 #: "the key is not in the document at all", which is a DIFFERENT fact from a stored `null`.

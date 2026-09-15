@@ -130,6 +130,11 @@ def _rows_from_reply(obj: dict, templates: list[dict]) -> tuple[list[dict], int]
             "gate": item.get("gate") is True and t["probe"] != "none",
             "source": "playbook",
         }
+        # THE OPERATOR'S DIRECTION, copied from the template (#983) — never from the reply, whose
+        # allowlist above has no field for one, so a selection that tries to author a direction
+        # refuses its whole row like any other extra field.
+        if t.get("direction"):
+            row["direction"] = t["direction"]
         rows.append(row)
         if len(rows) >= MAX_SELECTED:
             break

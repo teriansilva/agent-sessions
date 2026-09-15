@@ -1001,6 +1001,9 @@ def compact(path: Path | None = None, history_max: int = HISTORY_MAX) -> int:
     with _locked(p):
         rows = list(_latest_by_id_locked(p).values())
         doomed = _doomed(rows, history_max)
+        # Before anything is projected or deleted: a delivered supervisor nudge whose thread record
+        # is missing keeps its only copy of the typed text HERE (#983 review 4871).
+        doomed = _preserve_deliveries(doomed)
         if not _project(doomed):
             log.warning(
                 "ledger: compaction declined — could not durably project %d settled action(s) "
@@ -1059,6 +1062,50 @@ def _doomed(rows: list[dict], history_max: int) -> list[dict]:
         ]
     done.sort(key=lambda r: float(r.get("ts") or 0), reverse=True)
     return done[max(0, history_max) :]
+
+
+def _preserve_deliveries(doomed: list[dict]) -> list[dict]:
+    """Make sure a doomed DELIVERED supervisor nudge's thread record exists, or keep the row.
+
+    A delivery settles this ledger first and writes the mission thread's delivered record after it,
+    best-effort; `actuator.reconcile_delivered_nudges` repairs a lost write from the row's
+    `delivered_text` on the next sweep. Compaction can come first, and the settlement projection
+    below keeps the state and outcome but not the text — so deleting the row would lose what was
+    typed for good (#983 review 4871).
+
+    So the SAME record-level reconciliation runs here, inside the compaction lock and over the
+    same snapshot, before the projection and the rewrite. Lock order is the one `_project` already
+    takes: this ledger's lock, then the missions store.
+
+    **Fails closed, narrowly.** A row whose record could not be written is removed from `doomed`,
+    i.e. pinned for this pass: it stays in the ledger and the next sweep or compaction retries. If
+    the reconciliation cannot run at all, every doomed delivered nudge with text is pinned. Nothing
+    else is retained longer.
+    """
+    candidates = [
+        r
+        for r in doomed
+        if r.get("state") == "delivered"
+        and r.get("verb") == "continue"
+        and str(r.get("source") or "") == "supervisor"
+        and isinstance(r.get("delivered_text"), str)
+    ]
+    if not candidates:
+        return doomed
+    try:
+        from . import missions
+
+        keep = set(missions.reconcile_delivered_records(candidates)["unrecorded"])
+    except Exception as e:  # noqa: BLE001 — unknown is not "recorded"
+        log.warning("ledger: could not reconcile delivered nudges before compaction (%s)", e)
+        keep = {str(r.get("id") or "") for r in candidates}
+    if not keep:
+        return doomed
+    log.warning(
+        "ledger: keeping %d delivered nudge(s) whose thread record could not be written",
+        len(keep),
+    )
+    return [r for r in doomed if str(r.get("id") or "") not in keep]
 
 
 def _project(doomed: list[dict]) -> bool:

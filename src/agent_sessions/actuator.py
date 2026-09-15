@@ -132,6 +132,69 @@ class NotDeliverable(Exception):
     """The action cannot be delivered at all (unknown, wrong state, unsupported verb)."""
 
 
+class RenderStale(NotDeliverable):
+    """A supervisor nudge whose text or provenance is no longer what was proposed (#983).
+
+    Its own class because the outcome differs: the action was fine when proposed and the world
+    moved, so it settles ``stale`` like a moved screen, not ``failed``.
+    """
+
+
+def default_nudge_text(cfg: dict) -> str:
+    """The operator's global nudge, as `continue` types it. ONE expression for every caller.
+
+    `mission_directions.render` uses it for an objective with no direction, so the fallback a
+    supervisor proposal binds is byte-identical to what an ordinary `continue` sends.
+    """
+    return str(cfg.get("nudge_template") or prefs.DEFAULT_ORCH_NUDGE)[:NUDGE_MAX]
+
+
+def _is_supervisor_nudge(action: dict) -> bool:
+    return action.get("verb") == "continue" and str(action.get("source") or "") == "supervisor"
+
+
+def supervisor_render(action: dict, cfg: dict, *, resolve_target: bool = True) -> dict:
+    """Render a supervisor `continue` AGAIN and require it to be the one that was proposed (#983).
+
+    The proposal persisted ``render = {text, source, facts, provenance, digest}``. This reads the
+    objective as it is now, renders through the same function, and raises :class:`RenderStale`
+    unless both the text and the provenance are unchanged — the default-nudge fallback included,
+    so an edit to the global template stales a proposal exactly as a direction edit does.
+    Blocking (one missions-store read).
+    """
+    from . import mission_directions, missions
+
+    mission_id = str(action.get("mission_id") or "")
+    objective_key = str(action.get("objective_key") or "")
+    if not (mission_id and objective_key):
+        raise RenderStale("this supervisor nudge names no objective")
+    try:
+        snapshot = missions.objective_snapshot(mission_id, objective_key)
+    except Exception:  # noqa: BLE001 — unverifiable text is not verified text
+        raise RenderStale(
+            "the objective could not be re-read, so the text is unverifiable"
+        ) from None
+    try:
+        fresh = mission_directions.render(snapshot, cfg)
+    except mission_directions.NotRenderable as e:
+        raise RenderStale(f"this nudge can no longer be filled: {e}") from None
+    ok, why = mission_directions.matches(action.get("render"), fresh)
+    if not ok:
+        raise RenderStale(why)
+    # …and the facts must come from the authority configured NOW, not merely the one the row was
+    # bound to (#983 review): a forge-settings save or a moved checkout stales them at once rather
+    # than at the next re-probe. `resolve_target=False` is the in-fence form (no `git`).
+    try:
+        ok, why = mission_directions.current_authority(
+            snapshot, fresh, resolve_target=resolve_target
+        )
+    except Exception:  # noqa: BLE001 — unverifiable authority is not authority
+        ok, why = False, "the authority behind this nudge's facts could not be re-read"
+    if not ok:
+        raise RenderStale(why)
+    return fresh
+
+
 def render(action: dict, cfg: dict) -> bytes:
     """The bytes for one action. Raises :class:`NotDeliverable` for anything else.
 
@@ -140,7 +203,12 @@ def render(action: dict, cfg: dict) -> bytes:
     """
     verb = action.get("verb")
     if verb == "continue":
-        text = str(cfg.get("nudge_template") or prefs.DEFAULT_ORCH_NUDGE)[:NUDGE_MAX]
+        if _is_supervisor_nudge(action):
+            # Operator text plus the objective's own checked facts, re-rendered and compared with
+            # what was proposed. The model's `why` is not an input to any of it.
+            text = supervisor_render(action, cfg)["text"]
+        else:
+            text = default_nudge_text(cfg)
         return session_input.bracketed_paste(text)
     if verb == "choose":
         opt = action.get("option")
@@ -401,6 +469,39 @@ def _compose_fingerprint(base: Callable[[], object], extra) -> Callable[[], obje
     return _fp
 
 
+def _render_authority(rec: dict):
+    """`(check, fingerprint)` for a supervisor `continue`, or `(None, None)` (#983).
+
+    DERIVED FROM THE RECORD, like `_supervisor_authority`, so the approve route and the automatic
+    path both get it without asking. `check` is the guard's verdict; `fingerprint` is what the
+    fence re-reads immediately before byte one. The fingerprint is the persisted digest while the
+    re-render still matches the proposal, and a fresh unequal sentinel otherwise — so a mismatch at
+    either end of the fence can never compare equal, even if the state later changes back.
+    """
+    if not _is_supervisor_nudge(rec):
+        return None, None
+
+    def _check() -> tuple[bool, str]:
+        try:
+            supervisor_render(rec, prefs.get_orchestrator())
+        except NotDeliverable as e:
+            return False, str(e)
+        return True, ""
+
+    def _state() -> object:
+        try:
+            # Read INSIDE the fence, so no `git`: the forge revision is compared here, and the
+            # resolved checkout target in `_check` above (see `current_authority`). Probe writes and
+            # forge saves take the same fence (`session_input.fact_transaction`), so none of what
+            # this reads can commit between it and byte one.
+            supervisor_render(rec, prefs.get_orchestrator(), resolve_target=False)
+        except NotDeliverable:
+            return object()
+        return str((rec.get("render") or {}).get("digest") or "")
+
+    return _check, _state
+
+
 def _authority_fingerprint(session_id: str) -> Callable[[], object]:
     """The policy snapshot PLUS the shared mission state for this session (#871).
 
@@ -563,7 +664,10 @@ async def deliver(
         return _settle_waiting(action_id, "stale", detail="autonomy is set to off") or rec
 
     try:
-        payload = render(rec, cfg)
+        # Off the loop: a supervisor nudge re-reads its objective from the missions store.
+        payload = await asyncio.to_thread(render, rec, cfg)
+    except RenderStale as e:
+        return _settle_waiting(action_id, "stale", detail=str(e)) or rec
     except NotDeliverable as e:
         return _settle_waiting(action_id, "failed", detail=str(e)) or rec
 
@@ -578,6 +682,7 @@ async def deliver(
 
     sup_check, sup_state = _supervisor_authority(rec)
     mem_check, mem_state = _mission_membership_authority(rec)
+    txt_check, txt_state = _render_authority(rec)
 
     def _final_guard() -> tuple[bool, str]:
         """Evaluated UNDER the write lock, immediately before the first byte.
@@ -617,6 +722,14 @@ async def deliver(
         # the re-adopt can both land in the window it opens.
         if mem_check is not None:
             ok, why = mem_check()
+            if not ok:
+                return False, why
+        # …and a supervisor nudge's TEXT, rendered again from the objective as it is now (#983). An
+        # edited direction, an edited global nudge, a moved head or a new observation since the
+        # proposal all refuse here. The same comparison rides the in-fence fingerprint below, so a
+        # change after this line is caught before byte one too.
+        if txt_check is not None:
+            ok, why = txt_check()
             if not ok:
                 return False, why
         # THE MISSION FENCE, and it belongs HERE — in the guard every delivery passes through —
@@ -666,13 +779,18 @@ async def deliver(
         # change after it still reaches byte one (#888 review, finding 1).
         policy_fingerprint=_compose_fingerprint(
             _compose_fingerprint(
-                _authority_fingerprint(str(rec.get("session_id") or "")),
-                extra_fingerprint if extra_fingerprint is not None else sup_state,
+                _compose_fingerprint(
+                    _authority_fingerprint(str(rec.get("session_id") or "")),
+                    extra_fingerprint if extra_fingerprint is not None else sup_state,
+                ),
+                # Membership rides in the fingerprint as well as in the guard, for the reason every
+                # other term does: the guard's verdict is only as fresh as the moment it ran, and
+                # the re-adopt can land between it and byte one.
+                mem_state,
             ),
-            # Membership rides in the fingerprint as well as in the guard, for the reason every
-            # other term does: the guard's verdict is only as fresh as the moment it ran, and the
-            # re-adopt can land between it and byte one.
-            mem_state,
+            # …and so does a supervisor nudge's render digest (#983): a direction, template, head
+            # or observation change after `_final_guard` evaluated is refused before byte one.
+            txt_state,
         ),
     )
     state = {
@@ -683,18 +801,73 @@ async def deliver(
         "not_live": "failed",
         "failed": "failed",
     }.get(outcome.state, "failed")
+    # THE DELIVERED SNAPSHOT (#983). A supervisor nudge types only a text equal to its persisted
+    # `render`, so that record already is what was typed; the settlement names it explicitly, and
+    # nothing later rewrites either. Later direction or template edits change neither.
+    snapshot = rec.get("render") if (state == "delivered" and _is_supervisor_nudge(rec)) else None
+    delivered: dict = {}
+    if isinstance(snapshot, dict):
+        delivered = {
+            "delivered_text": snapshot.get("text"),
+            "delivered_digest": snapshot.get("digest"),
+        }
     # CAS strictly from `claimed`: we hold the claim, so any other state means something
     # else settled this action while we were writing and its verdict must stand.
-    return (
-        ledger.compare_and_set(
-            action_id,
-            frozenset({"claimed"}),
-            state,
-            detail=outcome.detail,
-            outcome=outcome.state,
-        )
-        or rec
+    settled = ledger.compare_and_set(
+        action_id,
+        frozenset({"claimed"}),
+        state,
+        detail=outcome.detail,
+        outcome=outcome.state,
+        **delivered,
     )
+    if isinstance(snapshot, dict) and settled is not None:
+        # The thread's record of what was typed. Best-effort HERE because the settled ledger row
+        # above is the durable record and a store hiccup must not undo a delivery — but not lost:
+        # `reconcile_delivered_nudges` writes any missing one from that ledger row, on every
+        # supervisor sweep and at boot (#983 review).
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(_record_delivered_nudge, rec, snapshot)
+    return settled or rec
+
+
+def _record_delivered_nudge(rec: dict, snapshot: dict, *, at: float | None = None) -> bool:
+    """Put a delivered supervisor nudge on its mission's thread, with the text that was typed.
+
+    Stage `delivered`, so a `held` event already written for the same action (a Suggest proposal
+    records one) cannot suppress it, nor it the held one.
+    """
+    from . import missions
+
+    return missions.ensure_delivered_nudge_event(
+        rec,
+        text=str(snapshot.get("text") or ""),
+        source=snapshot.get("source"),
+        digest=snapshot.get("digest"),
+        at=at,
+    )
+
+
+def reconcile_delivered_nudges() -> int:
+    """Write the missing thread record of every DELIVERED supervisor nudge. Returns how many.
+
+    The delivery settles the ledger first and writes the thread event after it, best-effort, so a
+    store failure between the two left the operator's thread without the text that was typed —
+    for ever (#983 review). This repairs that from the one durable record of what was typed: the
+    ledger row's `delivered_text`, written by the settling compare-and-set.
+
+    **It never types and never renders.** Its only input is the settled ledger row, so there is no
+    path from here to a PTY or to the objective's current state. Idempotent: the event write is
+    deduplicated on `(mission, action, stage='delivered')` inside its own transaction, so running
+    it twice — or on two instances at once — writes one record. Blocking; call off the loop.
+    """
+    from . import missions
+
+    status, latest = ledger.latest_by_id_checked()
+    if status != "ok":
+        return 0
+    # The same record-level reconciliation compaction runs over the rows it is about to delete.
+    return int(missions.reconcile_delivered_records(latest.values())["written"])
 
 
 async def deliver_auto(

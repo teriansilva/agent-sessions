@@ -63,6 +63,9 @@ def _enabled() -> bool:
 
 async def sweep(registry=None) -> dict:
     """One sweep over the eligible missions. Returns a small report for the caller/tests."""
+    # BEFORE the enabled gate: a delivery made while the orchestrator was on still owes its thread
+    # record after it is switched off, and this only ever writes that record (#983 review).
+    await _reconcile_delivered()
     if not _enabled():
         return {"skipped": "disabled"}
 
@@ -134,11 +137,31 @@ async def sweep(registry=None) -> dict:
     return out
 
 
+async def _reconcile_delivered() -> None:
+    """Restore any delivered supervisor nudge's missing thread record (#983 review). Never raises.
+
+    Runs where this loop already recovers state: once at boot, then at the top of every sweep —
+    the supervisor is the producer of these deliveries, and the sweep interval bounds how long a
+    thread can be missing one. It reads the ledger and writes events only; it never types.
+    """
+    from . import actuator
+
+    try:
+        n = await missions.run_admitted(actuator.reconcile_delivered_nudges)
+    except Exception:  # noqa: BLE001 — a store hiccup is retried by the next sweep
+        log.debug("mission supervisor: delivered-nudge reconciliation failed", exc_info=True)
+        return
+    if n:
+        log.info("mission supervisor: restored %d delivered nudge record(s) to the thread", n)
+
+
 async def run(registry=None) -> None:
     """The loop. Cancelled at shutdown like every other background task."""
     if os.getenv("AGENT_SESSIONS_MISSION_SUPERVISOR", "1") == "0":
         log.info("mission supervisor loop: disabled by env")
         return
+    # BOOT: a record whose write failed just before a restart is restored now, not a sweep later.
+    await _reconcile_delivered()
     failures = 0
     while True:
         await asyncio.sleep(INTERVAL_S * min(2**failures, 8))

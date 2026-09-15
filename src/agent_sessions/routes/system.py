@@ -619,7 +619,17 @@ def register(
             err = prefs.validate_forge_patch(payload["forge"])
             if err is not None:
                 raise HTTPException(status_code=422, detail=err)
-            prefs.set_forge(payload["forge"])
+            # OFF THE LOOP, exactly like the orchestrator branch below (#983 review 4871). A forge
+            # save moves the revision a pending supervisor nudge's facts were fetched under, so
+            # `set_forge` commits inside the byte-one fence — a registry lock plus a `flock` poll
+            # with a budget in seconds. Waiting on it on the event loop stalls every request.
+            try:
+                await asyncio.to_thread(prefs.set_forge, payload["forge"])
+            except session_input.AuthorityFenceBusy:
+                raise HTTPException(
+                    status_code=503,
+                    detail="the authorization fence is busy; retry",
+                ) from None
             out["forge"] = prefs.public_forge()
         if "auto_sort" in payload:
             # AI auto-sort opt-in (#424 Phase 6): enable + interval, server-validated

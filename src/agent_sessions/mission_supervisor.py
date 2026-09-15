@@ -35,7 +35,7 @@ import logging
 import time
 import uuid
 
-from . import mission_probes, mission_questions, missions
+from . import mission_directions, mission_probes, mission_questions, missions
 from . import orchestrator_ledger as ledger
 
 log = logging.getLogger(__name__)
@@ -658,6 +658,30 @@ async def nudge(
 
     episode, _ = missions.objective_episode(mission_id, objective_key, path=path)
     cfg = prefs.get_orchestrator()
+
+    # WHAT WILL BE TYPED, decided here and bound to the action (#983). The operator's direction
+    # for this objective filled with its own checked facts, or the global nudge when it has none —
+    # never the model's `why`, which is only the action's title. Delivery renders again and types
+    # only an identical text over identical provenance.
+    #
+    # An UNFILLABLE direction is not sent and is not swapped for the default nudge: the pass holds
+    # it and escalates, the way it does a spent budget. Rendered before the reservation, so a
+    # direction that cannot be filled costs the episode nothing.
+    try:
+        snapshot = await missions.run_admitted(
+            lambda: missions.objective_snapshot(mission_id, objective_key, path=path)
+        )
+        rendered = mission_directions.render(snapshot, cfg)
+    except mission_directions.NotRenderable as e:
+        return {
+            "sent": False,
+            "unfillable": True,
+            "episode": episode,
+            "why": f"its direction could not be filled: {e}",
+        }
+    if rendered["provenance"]["episode"] != episode:
+        return {"sent": False, "why": "the objective started a new episode while this was prepared"}
+
     action_id = uuid.uuid4().hex
     now = time.time()
     rec = {
@@ -678,6 +702,9 @@ async def nudge(
         "ts": now,
         "expires_at": now + int(cfg.get("proposal_ttl_minutes") or 30) * 60,
         "tier": cfg.get("autonomy"),
+        # THE FULL RENDER, not a hash of it: the exact text shown for approval and the provenance
+        # it rests on. `actuator.supervisor_render` compares both at delivery (#983).
+        "render": rendered,
     }
     rec["precondition"] = await missions.run_admitted(
         lambda: orchestrator.precondition_for(engines.physical_key(session_key))
@@ -790,6 +817,7 @@ async def escalate(
     session_key: str,
     objective_key: str,
     reason: str,
+    meta: dict | None = None,
     path=None,
 ) -> bool:
     """Record the terminal escalation for this objective episode. True iff THIS pass won it.
@@ -811,6 +839,7 @@ async def escalate(
                 objective_key=objective_key,
                 episode=missions.objective_episode(mission_id, objective_key, path=path)[0],
                 reason=reason,
+                meta=meta,
                 path=path,
             )
         )
@@ -1196,6 +1225,23 @@ async def _pass_one_session(
             path=path,
         )
         out["nudged"] = res
+        # AN UNFILLABLE DIRECTION IS HELD AND ESCALATED (#983), the same terminal-for-this-episode
+        # record a spent budget gets. Nothing was typed and nothing was charged; sending the global
+        # nudge instead would silently replace what the operator wrote.
+        if res.get("unfillable"):
+            key = proposal["objective_key"]
+            title = next((o.get("title") for o in a["objectives"] if o["key"] == key), None)
+            reason = f"{title or key}: {res.get('why') or 'its direction could not be filled'}"
+            if await escalate(
+                mission_id,
+                session_key=session_key,
+                objective_key=key,
+                reason=reason,
+                meta={"held": "direction"},
+                path=path,
+            ):
+                out["escalated"] = {"objective_key": key, "reason": reason}
+                _announce(row, session_key, reason)
 
     if not may_actuate:
         return out

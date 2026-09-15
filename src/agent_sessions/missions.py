@@ -65,7 +65,7 @@ log = logging.getLogger(__name__)
 MISSION_ID_RE = re.compile(r"^msn_[0-9a-f]{32}$")
 
 #: Bumped whenever the schema changes; ``PRAGMA user_version`` carries it in the file.
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 
 #: How many live SUB-AGENTS one mission may hold, beyond the session it is already running.
 #:
@@ -90,7 +90,11 @@ BRIEF_MAX = 8000
 EVENT_TEXT_MAX = 4000
 EVENT_META_MAX = 4000
 OBJECTIVE_TITLE_MAX = 200
-OBSERVED_MAX = 500
+#: Room for a probe's facts AND a could-not-look record carrying the last good one forward. At 500
+#: a long `unknown` detail (stored twice, as `detail` and `reason`) beside the carried `last` was
+#: refused, so the row kept its previous FRESH observation instead of turning stale — and a
+#: direction would have been filled from it (#983).
+OBSERVED_MAX = 2000
 OBJECTIVE_KEY_MAX = 64
 PROBE_ARGS_MAX = 2000
 #: Bound on one `GET /api/missions/{id}` timeline page.
@@ -716,6 +720,14 @@ CREATE TABLE IF NOT EXISTS mission_objectives (
   -- Minted on insert and never rewritten. LAST in the column list, because `ALTER TABLE …
   -- ADD COLUMN` appends and a fresh install must agree with an upgraded one on the stored DDL.
   incarnation TEXT,
+  -- THE OPERATOR'S DIRECTION (#983): the text a supervisor nudge for this objective types, with
+  -- placeholders filled only from this row's own observation and probe arguments. COPIED from the
+  -- playbook template when the objective is created (`template`) or written for this mission
+  -- (`operator`), and never live-linked, so a later playbook edit changes no running mission. A
+  -- model-created objective has none. NULL for every row that predates v27. Appended after
+  -- `incarnation`, for the same column-order reason.
+  direction        TEXT,
+  direction_source TEXT,
   PRIMARY KEY (mission_id, key)
 );
 
@@ -1168,6 +1180,8 @@ def _migrate(con) -> int:
             _migrate_24_to_25(con)
         if version < 26:
             _migrate_25_to_26(con)
+        if version < 27:
+            _migrate_26_to_27(con)
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return SCHEMA_VERSION
 
@@ -1486,6 +1500,23 @@ def _migrate_25_to_26(con) -> None:
             )
     if _has_table(con, "missions"):
         con.execute(MISSION_DISPATCH_EVIDENCE_DDL)
+
+
+def _migrate_26_to_27(con) -> None:
+    """v27 gives an objective the operator's DIRECTION and where it came from (#983).
+
+    Both columns are appended, so an upgraded store gets the column order a fresh one does. Every
+    existing row keeps NULL — no direction — which renders the global nudge exactly as before; no
+    mission gains a direction it was not given. Idempotent by inspection, and skipped where the
+    table is not there to alter.
+    """
+    if not _has_table(con, "mission_objectives"):
+        return
+    have = {r["name"] for r in con.execute("PRAGMA table_info(mission_objectives)").fetchall()}
+    if "direction" not in have:
+        con.execute("ALTER TABLE mission_objectives ADD COLUMN direction TEXT")
+    if "direction_source" not in have:
+        con.execute("ALTER TABLE mission_objectives ADD COLUMN direction_source TEXT")
 
 
 def _migrate_22_to_23(con) -> None:
@@ -4315,6 +4346,13 @@ def observe_objective(
     # field added inside it never reaches the row (which is exactly what happened first).
     if expect_target is not None:
         obs["target"] = expect_target
+    # …and WHICH ARGUMENTS it answered for (#983). The settling transaction below refuses an
+    # answer whose arguments no longer match the row, and this stamp is what lets a direction prove
+    # the fact it fills belongs to the arguments the objective has now.
+    if expect_args is not _UNSET:
+        from . import mission_directions
+
+        obs["args_sha"] = mission_directions.probe_args_digest(expect_args)
     if isinstance(extra, dict):
         for k, v in list(extra.items())[:10]:
             if v is None:
@@ -4517,6 +4555,56 @@ def objective_incarnation(mission_id: str, objective_key: str, *, path: Path | N
         return str((row["incarnation"] if row else "") or "")
     finally:
         con.close()
+
+
+def objective_snapshot(
+    mission_id: str, objective_key: str, *, path: Path | None = None
+) -> dict | None:
+    """Everything a direction is rendered from, in ONE read, or `None` if the slot is empty (#983).
+
+    Unlike the public row this keeps the probe binding (`probe_target`, `probe_gen`, `probe_rev`)
+    and adds the objective's current `episode`, because those are the provenance a proposal pins
+    and delivery compares. One transaction, so the observation, the binding and the episode all
+    describe the same instant — a torn read here could pair a new observation with an old target.
+    Internal: never returned by a route.
+    """
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        con.execute("BEGIN")
+        row = con.execute(
+            "SELECT key, probe, probe_args, observed, state, source, incarnation, probe_target, "
+            "probe_gen, probe_rev, direction, direction_source "
+            "FROM mission_objectives WHERE mission_id=? AND key=?",
+            (mission_id, objective_key),
+        ).fetchone()
+        ep = con.execute(
+            "SELECT episode FROM mission_objective_episode WHERE mission_id=? AND objective_key=?",
+            (mission_id, objective_key),
+        ).fetchone()
+        # The mission half of the probe target (#983 review): `mission_probes.resolve_target`
+        # reads only the checkout folder and the merge SHA, so delivery can resolve the CURRENT
+        # target from the same snapshot the facts came from.
+        mrow = con.execute(
+            "SELECT cwd, merge_sha FROM missions WHERE id=?", (mission_id,)
+        ).fetchone()
+        con.execute("COMMIT")
+    except BaseException:
+        with contextlib.suppress(sqlite3.Error):
+            con.execute("ROLLBACK")
+        raise
+    finally:
+        con.close()
+    if row is None or mrow is None:
+        return None
+    d = dict(row)
+    d["mission_id"] = mission_id
+    d["mission_cwd"] = mrow["cwd"]
+    d["mission_merge_sha"] = mrow["merge_sha"]
+    d["probe_args"] = _loads(d.get("probe_args"))
+    d["observed"] = _loads(d.get("observed"))
+    d["episode"] = 1 if ep is None else int(ep["episode"])
+    return d
 
 
 def open_question(
@@ -5282,10 +5370,14 @@ def escalate_once(
     objective_key: str,
     episode: int,
     reason: str,
+    meta: dict | None = None,
     now: float | None = None,
     path: Path | None = None,
 ) -> bool:
     """Record the terminal escalation for this episode. True iff THIS caller won.
+
+    `meta` adds fields to the timeline event (e.g. `held: "direction"`, #983). It cannot replace
+    the objective key or the episode, which are written after it.
 
     The uniqueness constraint is the arbiter, not a preceding check: two overlapping passes both
     reading "not escalated yet" and both writing is exactly what a check-then-insert allows.
@@ -5324,7 +5416,7 @@ def escalate_once(
                 at=ts,
                 session_key=session_key,
                 text=_cap(reason, 500),
-                meta={"objective_key": objective_key, "episode": episode},
+                meta={**(meta or {}), "objective_key": objective_key, "episode": episode},
             )
             con.execute("COMMIT")
             return True
@@ -5584,15 +5676,62 @@ def ensure_held_event(
     failure therefore delays the record rather than losing it, and a retry cannot produce a second
     one (#888 review, finding 5).
     """
+    return ensure_action_event(
+        mission_id,
+        action_id=action_id,
+        session_key=session_key,
+        text=text,
+        meta=meta,
+        stage="held",
+        now=now,
+        path=path,
+    )
+
+
+#: The two records a supervisor action can leave on the thread (#983 review). They are DIFFERENT
+#: events with different identities: a Suggest proposal is held when it is minted and delivered
+#: when the operator approves it, and the thread must show both. An event written before stages
+#: existed carries no `stage` and is a held one — the only kind there was.
+ACTION_EVENT_STAGES: frozenset[str] = frozenset({"held", "delivered"})
+
+
+def ensure_action_event(
+    mission_id: str,
+    *,
+    action_id: str,
+    session_key: str,
+    text: str,
+    meta: dict,
+    stage: str = "held",
+    now: float | None = None,
+    path: Path | None = None,
+) -> bool:
+    """The thread's one `action` event for `(action_id, stage)`, written at most once.
+
+    True if it exists afterwards, False if the mission does not. Shared by the "held" record above
+    and by a DELIVERED supervisor nudge (#983), whose `text` is the snapshot that was typed:
+    written once, never updated, so a later direction or template edit cannot change what the
+    thread says was sent.
+
+    **The stage is part of the identity.** Deduplicating on the action id alone let the held event
+    a Suggest proposal writes at mint time suppress the delivered event its approval writes later,
+    so the thread said "not delivered" beside text that had been typed (#983 review).
+    """
     validate_id(mission_id)
+    if stage not in ACTION_EVENT_STAGES:
+        raise MissionError(f"unknown action event stage {stage!r}", status=500)
     ts = time.time() if now is None else now
     with _write_lock:
         con = _ready(path)
         try:
             con.execute("BEGIN IMMEDIATE")
+            if con.execute("SELECT 1 FROM missions WHERE id=?", (mission_id,)).fetchone() is None:
+                con.execute("ROLLBACK")
+                return False
             existing = con.execute(
-                "SELECT 1 FROM mission_events WHERE mission_id=? AND action_id=? AND kind='action'",
-                (mission_id, action_id),
+                "SELECT 1 FROM mission_events WHERE mission_id=? AND action_id=? AND kind='action'"
+                " AND COALESCE(json_extract(meta, '$.stage'), 'held')=?",
+                (mission_id, action_id, stage),
             ).fetchone()
             if existing is None:
                 _append_event(
@@ -5603,7 +5742,7 @@ def ensure_held_event(
                     session_key=session_key,
                     text=text,
                     action_id=action_id,
-                    meta=meta,
+                    meta={**meta, "stage": stage},
                 )
             con.execute("COMMIT")
             return True
@@ -5613,6 +5752,128 @@ def ensure_held_event(
             raise
         finally:
             con.close()
+
+
+def delivered_event_action_ids(action_ids: list[str], *, path: Path | None = None) -> set[str]:
+    """Which of `action_ids` already have a DELIVERED `action` event, in one bulk read (#983).
+
+    What `actuator.reconcile_delivered_nudges` asks before it writes, so a sweep over a ledger
+    whose deliveries are all recorded costs a read and takes no write lock.
+    """
+    ids = [a for a in dict.fromkeys(action_ids) if a]
+    if not ids:
+        return set()
+    con = _ready(path)
+    try:
+        out: set[str] = set()
+        for i in range(0, len(ids), 500):
+            chunk = ids[i : i + 500]
+            marks = ",".join("?" * len(chunk))
+            rows = con.execute(
+                "SELECT DISTINCT action_id FROM mission_events WHERE kind='action' "  # noqa: S608
+                f"AND action_id IN ({marks}) AND json_extract(meta, '$.stage')='delivered'",
+                chunk,
+            ).fetchall()
+            out.update(str(r["action_id"]) for r in rows)
+        return out
+    finally:
+        con.close()
+
+
+def is_delivered_supervisor_nudge(rec: object) -> bool:
+    """A ledger row that is a DELIVERED supervisor `continue` carrying the text it typed (#983)."""
+    return (
+        isinstance(rec, dict)
+        and rec.get("state") == "delivered"
+        and rec.get("verb") == "continue"
+        and str(rec.get("source") or "") == "supervisor"
+        and isinstance(rec.get("delivered_text"), str)
+        and isinstance(rec.get("id"), str)
+        and bool(rec.get("mission_id"))
+    )
+
+
+def ensure_delivered_nudge_event(
+    rec: dict,
+    *,
+    text: str,
+    source: object,
+    digest: object,
+    at: float | None = None,
+    path: Path | None = None,
+) -> bool:
+    """The thread's DELIVERED record for supervisor action `rec`, written at most once (#983).
+
+    ONE writer for both callers — the delivery itself (`actuator._record_delivered_nudge`) and the
+    recovery from the ledger (`reconcile_delivered_records`) — so the two cannot write different
+    shapes. True if it exists afterwards; False when the mission does not exist.
+    """
+    return ensure_action_event(
+        str(rec.get("mission_id") or ""),
+        action_id=str(rec.get("id") or ""),
+        session_key=str(rec.get("session_id") or ""),
+        text=str(text or ""),
+        meta={
+            "source": "supervisor",
+            "objective_key": str(rec.get("objective_key") or ""),
+            "episode": rec.get("objective_episode"),
+            "delivered": True,
+            "text_source": source,
+            "digest": digest,
+        },
+        stage="delivered",
+        now=at,
+        path=path,
+    )
+
+
+def reconcile_delivered_records(records, *, path: Path | None = None) -> dict:
+    """Write the missing DELIVERED thread record for each delivered supervisor row in `records`.
+
+    Returns ``{"written": int, "unrecorded": set[str]}``. `unrecorded` names the rows whose record
+    could NOT be made to exist — the ones whose ledger row is still the only copy of what was
+    typed. A row for a mission that no longer exists (or never had a valid id) has nothing left to
+    preserve and is not unrecorded.
+
+    **Never types, never renders.** Its only inputs are the rows it is given: `delivered_text`,
+    the render's `source` and `delivered_digest`, stamped at the settlement's own time. Idempotent,
+    because the write deduplicates on `(mission, action, stage='delivered')` in its transaction.
+    Raises only when the bulk read itself fails, which a caller must treat as "all unrecorded".
+
+    Callers: `actuator.reconcile_delivered_nudges` (the supervisor sweep, over the whole ledger)
+    and `orchestrator_ledger.compact` (over the rows it is about to delete).
+    """
+    wanted = [r for r in records if is_delivered_supervisor_nudge(r)]
+    out: dict = {"written": 0, "unrecorded": set()}
+    if not wanted:
+        return out
+    have = delivered_event_action_ids([r["id"] for r in wanted], path=path)
+    for r in wanted:
+        if r["id"] in have:
+            continue
+        ts = r.get("ts")
+        try:
+            if ensure_delivered_nudge_event(
+                r,
+                text=r["delivered_text"],
+                source=(r.get("render") or {}).get("source")
+                if isinstance(r.get("render"), dict)
+                else None,
+                digest=r.get("delivered_digest"),
+                at=float(ts) if isinstance(ts, int | float) and not isinstance(ts, bool) else None,
+                path=path,
+            ):
+                out["written"] += 1
+        except MissionError as e:
+            if e.status == 404:
+                # A malformed id (`validate_id` raises a 404 MissionError) or a deleted mission:
+                # there is no thread to preserve anything on, so pinning the row would only widen
+                # retention for ever.
+                continue
+            out["unrecorded"].add(r["id"])
+        except Exception:  # noqa: BLE001 — the row stays the only copy; the caller keeps it
+            out["unrecorded"].add(r["id"])
+    return out
 
 
 #: The key holding the FORGE CONFIGURATION REVISION — a counter this store owns and `prefs`
@@ -8224,7 +8485,18 @@ def patch_objectives(
     if not isinstance(ops, list) or not ops:
         raise MissionError("ops (a non-empty list) is required", status=422)
     ts = time.time() if now is None else now
-    with _write_lock:
+    # RESET copies the playbook's CURRENT direction (#983), so the templates are resolved once, up
+    # front, and pinned for the write the way instantiation pins them: `_playbook_policy_held`
+    # holds the prefs lock and refuses if the playbook moved in between. Only when a reset is asked
+    # for — nothing else here reads a playbook, and a global lock for it would be for nothing.
+    resets = any(isinstance(op, dict) and op.get("op") == "reset_direction" for op in ops)
+    templates: dict[str, dict] = {}
+    binding: str | None = None
+    if resets:
+        status, tlist, binding = templates_and_binding(mission_id, path=path)
+        if status == "ok":
+            templates = {str(t.get("key")): t for t in tlist}
+    with _write_lock, _playbook_policy_held(mission_id, binding, path=path):
         con = _ready(path)
         try:
             con.execute("BEGIN IMMEDIATE")
@@ -8258,8 +8530,15 @@ def patch_objectives(
                     _op_waive(con, mission_id, op, ts)
                 elif kind == "reorder":
                     _op_reorder(con, mission_id, op)
+                elif kind == "set_direction":
+                    _op_set_direction(con, mission_id, op, source)
+                elif kind == "reset_direction":
+                    _op_reset_direction(con, mission_id, op, source, templates)
+                elif kind == "clear_direction":
+                    _op_clear_direction(con, mission_id, op)
                 else:
                     raise MissionError(f"unknown objective op {kind!r}", status=422)
+                # The op and key only — never the direction's text, which the row already holds.
                 applied.append({"op": kind, "key": op.get("key")})
             _finish_objective_write(
                 con,
@@ -8280,15 +8559,99 @@ def patch_objectives(
     return objectives(mission_id, path=path)
 
 
+def _validate_direction(direction: object, probe: str) -> str | None:
+    """`mission_directions.validate`, as a 422 on this path (#983)."""
+    from . import mission_directions
+
+    try:
+        return mission_directions.validate(direction, probe)
+    except mission_directions.DirectionError as e:
+        raise MissionError(str(e), status=422) from None
+
+
+def _direction_target(con, mission_id: str, op: dict, source: str) -> tuple[str, str]:
+    """`(key, probe)` of the objective a direction op names. Only the operator writes directions."""
+    if source != "operator":
+        # A direction is typed into a session. The route passes `operator`; any other caller
+        # reaching this is minting an authority it does not have.
+        raise MissionError("only the operator may write an objective's direction", status=403)
+    key = _cap(op.get("key"), OBJECTIVE_KEY_MAX)
+    row = con.execute(
+        "SELECT probe FROM mission_objectives WHERE mission_id=? AND key=?", (mission_id, key)
+    ).fetchone()
+    if row is None:
+        raise MissionError(f"unknown objective {key}", status=404)
+    return key, str(row["probe"] or "")
+
+
+def _op_set_direction(con, mission_id: str, op: dict, source: str) -> None:
+    """The operator writes this mission's own direction for one objective."""
+    key, probe = _direction_target(con, mission_id, op, source)
+    direction = _validate_direction(op.get("direction"), probe)
+    if direction is None:
+        raise MissionError("a direction needs text; use clear_direction to remove one", status=422)
+    con.execute(
+        "UPDATE mission_objectives SET direction=?, direction_source='operator' "
+        "WHERE mission_id=? AND key=?",
+        (direction, mission_id, key),
+    )
+
+
+def _op_reset_direction(
+    con, mission_id: str, op: dict, source: str, templates: dict[str, dict]
+) -> None:
+    """COPY the playbook's CURRENT direction for this objective — again, and still not a link.
+
+    The template is the one with the same key in the mission's playbook, resolved before the
+    transaction and pinned by `_playbook_policy_held`. A template that no longer exists, or that now
+    checks something different from this objective, has nothing to reset to and is refused rather
+    than guessed at.
+    """
+    key, probe = _direction_target(con, mission_id, op, source)
+    t = templates.get(key)
+    if t is None:
+        raise MissionError(
+            f"the mission's playbook has no objective {key} to reset the direction from",
+            status=409,
+        )
+    if str(t.get("probe") or "none") != probe:
+        raise MissionError(
+            f"the playbook's objective {key} now checks something different; nothing was reset",
+            status=409,
+        )
+    direction = _validate_direction(t.get("direction"), probe)
+    con.execute(
+        "UPDATE mission_objectives SET direction=?, direction_source=? "
+        "WHERE mission_id=? AND key=?",
+        (direction, None if direction is None else "template", mission_id, key),
+    )
+
+
+def _op_clear_direction(con, mission_id: str, op: dict) -> None:
+    """No direction: a supervisor nudge for this objective types the global nudge again."""
+    key = _cap(op.get("key"), OBJECTIVE_KEY_MAX)
+    cur = con.execute(
+        "UPDATE mission_objectives SET direction=NULL, direction_source=NULL "
+        "WHERE mission_id=? AND key=?",
+        (mission_id, key),
+    )
+    if not cur.rowcount:
+        raise MissionError(f"unknown objective {key}", status=404)
+
+
 #: What an operator edit may name. Everything else is refused rather than silently dropped —
 #: `state` / `met_at` / `observed` in particular, so "an edit never marks an objective met" is an
 #: answer the caller GETS rather than a field that quietly did nothing.
 _OP_FIELDS: dict[str, frozenset[str]] = {
-    "add": frozenset({"op", "key", "title", "gate", "probe", "probe_args"}),
+    "add": frozenset({"op", "key", "title", "gate", "probe", "probe_args", "direction"}),
     "drop": frozenset({"op", "key"}),
     "retitle": frozenset({"op", "key", "title"}),
     "waive": frozenset({"op", "key"}),
     "reorder": frozenset({"op", "keys"}),
+    # #983. Write this mission's own direction, copy the playbook's current one, or remove it.
+    "set_direction": frozenset({"op", "key", "direction"}),
+    "reset_direction": frozenset({"op", "key"}),
+    "clear_direction": frozenset({"op", "key"}),
 }
 #: Named separately so the refusal can say *why* rather than "unknown field".
 _SETTLED_BY_OBSERVATION = frozenset({"state", "met_at", "observed"})
@@ -8339,7 +8702,12 @@ def _op_add(con, mission_id: str, op: dict, source: str, ts: float) -> bool:
         op.get("probe", "none") not in (None, "none") or op.get("probe_args")
     ):
         raise MissionError("a model-proposed objective may not carry a probe", status=422)
+    # …and the same for a DIRECTION (#983): it is typed into a session, so it is operator text —
+    # from a playbook template or the operator's own edit — and a model row carrying one is refused.
+    if source == "model" and op.get("direction") is not None:
+        raise MissionError("a model-proposed objective may not carry a direction", status=422)
     probe, args = _validate_probe(op.get("probe", "none"), op.get("probe_args"), gate)
+    direction = _validate_direction(op.get("direction"), probe)
     nxt = con.execute(
         "SELECT COALESCE(MAX(ord), -1) + 1 FROM mission_objectives WHERE mission_id=?",
         (mission_id,),
@@ -8347,8 +8715,9 @@ def _op_add(con, mission_id: str, op: dict, source: str, ts: float) -> bool:
     try:
         con.execute(
             "INSERT INTO mission_objectives "
-            "(mission_id, key, ord, title, probe, probe_args, gate, state, source, incarnation) "
-            "VALUES (?,?,?,?,?,?,?, 'pending', ?, ?)",
+            "(mission_id, key, ord, title, probe, probe_args, gate, state, source, incarnation, "
+            "direction, direction_source) "
+            "VALUES (?,?,?,?,?,?,?, 'pending', ?, ?, ?, ?)",
             (
                 mission_id,
                 key,
@@ -8361,6 +8730,8 @@ def _op_add(con, mission_id: str, op: dict, source: str, ts: float) -> bool:
                 # A FRESH ONE, every time. Re-adding a dropped key is a new objective wearing an
                 # old name, and this is what says so to anything holding a reference.
                 uuid.uuid4().hex,
+                direction,
+                None if direction is None else ("template" if source == "playbook" else "operator"),
             ),
         )
     except sqlite3.IntegrityError:

@@ -408,6 +408,30 @@ def sessions_transaction(keys):
                 _bump_epoch_locked(k)
 
 
+@contextlib.contextmanager
+def fact_transaction():
+    """Hold the write fence across a change to what a pending delivery is ABOUT (#983).
+
+    A supervisor nudge's text is rendered from its objective's probe facts, and delivery re-renders
+    those facts inside the fence immediately before byte one (the render digest rides the policy
+    fingerprint). That re-read only means something if nothing can commit a changed fact between it
+    and the byte: the probe runner's binding and observation writes, and a forge-settings save that
+    moves the revision a fact was fetched under, take THIS so they either land before the re-read
+    (and the delivery refuses) or wait until byte one has been written (and the facts were current
+    when it was).
+
+    **No epoch is bumped**, deliberately. Unlike a withdrawal, a changed fact does not invalidate
+    unrelated deliveries, and the fingerprint re-read already refuses the ones it does invalidate —
+    bumping the global policy epoch here would cancel every in-flight write on each probe run.
+
+    Lock order is the one every fenced mutation takes, stated once in `authfence`:
+    ``session_input._lock → authfence → the store write (missions `_write_lock` / prefs flock)``.
+    Callers must run it off the event loop and must not hold it across network I/O.
+    """
+    with _lock, _authority_fence():
+        yield
+
+
 def bump_epoch(key: str) -> None:
     """Invalidate any in-flight authorization for ``key``.
 

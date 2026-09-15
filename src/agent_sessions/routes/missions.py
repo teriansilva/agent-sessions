@@ -2016,13 +2016,16 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         _user: str = Depends(logged_in),
         _csrf: None = Depends(csrf_guard),
     ) -> JSONResponse:
-        """Operator edits only — ``add`` / ``drop`` / ``retitle`` / ``waive`` / ``reorder``.
+        """Operator edits only — ``add`` / ``drop`` / ``retitle`` / ``waive`` / ``reorder``, and
+        the direction ops ``set_direction`` / ``reset_direction`` / ``clear_direction`` (#983).
 
         ``state`` / ``met_at`` / ``observed`` are not writable here at all, so an edit can never
         retroactively mark an objective met. ``probe`` and ``probe_args`` ARE accepted on this
         path because it is the operator's — the model path (Phase 3) selects a playbook template
         index and never authors a probe target, which is what keeps an SSRF-with-a-cadence out of
-        the design. Validation lives in the store so both paths inherit the same gate.
+        the design. The same holds for a DIRECTION: it is typed into a session, so only this
+        authenticated, CSRF-guarded route writes one, and an unknown placeholder is a 422 here.
+        Validation lives in the store so both paths inherit the same gate.
         """
         try:
             body = await _body(request)

@@ -126,6 +126,28 @@ makes progress gets a fresh allowance rather than being throttled by a run it ha
 behind. **STAND DOWN** silences one objective; it does not settle it, and the objective stays
 visibly unmet.
 
+### Directions
+
+A nudge types your text, never the model's. By default that is the global nudge from Settings. An
+objective can carry a **direction** instead: text you write on the playbook template, or for one
+mission, such as `PR #{pr} checks are {checks} on {branch}. Open the failing check and fix it.`
+
+- **Placeholders are a closed list.** `{pr}`, `{pr_state}`, `{checks}` and `{review}` come from
+  that objective's own latest probe observation; `{repo}` and `{branch}` come from its probe
+  arguments. An unknown placeholder, or one the objective's probe cannot fill, is refused when you
+  save. Probe detail text, titles, the checkout's own branch and session content are never used.
+- **Copied, not linked.** A mission copies the template's direction when its objectives are
+  created. Editing the playbook later changes no running mission; you can reset one to the
+  playbook's current direction, write your own, or clear it.
+- **Never half-filled.** If a fact is missing, stale, or was observed for a different target or
+  head, the nudge is held and the mission asks for you. It is not sent with blanks, and it does not
+  fall back to the global nudge.
+- **What was shown is what is sent.** A proposal records the exact text and what it is about: the
+  objective, the probe target, and each fact's value, PR and head. If any of those has changed by
+  the time it is approved or sent automatically, including an edit to the global nudge, it is not
+  sent. A re-probe that finds the same facts changes nothing, so a proposal waits for you as long
+  as its facts hold and are fresh. A nudge without a direction never goes stale on a re-probe.
+
 When every gate is met the supervisor proposes completion and **closes nothing** — it quotes the
 list back and the call is yours. It says which objectives were *observed* to hold and which you
 waived, because those are different claims.
