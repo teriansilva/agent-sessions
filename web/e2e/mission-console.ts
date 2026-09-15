@@ -225,6 +225,60 @@ export async function openMissionConversation(page: Page) {
   }
 }
 
+/** Open objective row `index`'s ⋯ menu and return the menu (#967 P3).
+ *
+ *  Rename, Mark not required, Stand down, Move up, Move down and Remove moved off the row into
+ *  this menu and kept their testids, so a spec that pressed one of them now opens the menu first —
+ *  which is also what the operator does. `scope` narrows the rows (a pane) where a page has more
+ *  than one list. The menu is portalled to <body>, so it is looked up on the page. */
+export async function openObjectiveMenu(
+  page: Page,
+  index = 0,
+  scope: Page | import("@playwright/test").Locator = page,
+) {
+  const trigger = scope.getByTestId("objective-menu").nth(index);
+  // ON A SETTLED PAGE. The desktop popover closes on any scroll, as the session menus do, because a
+  // scroll can slide the trigger out from under it. Opening a section scrolls the details column,
+  // and a scroll still running when ⋯ is pressed shuts the menu before the next click lands.
+  await trigger.scrollIntoViewIfNeeded();
+  await scrollIdle(page);
+  await trigger.click();
+  const menu = page.getByRole("menu");
+  await menu.waitFor({ state: "visible" });
+  return menu;
+}
+
+/** Resolve once no element has scrolled for `quietMs`. */
+async function scrollIdle(page: Page, quietMs = 300) {
+  await page.evaluate(
+    (quiet) =>
+      new Promise<void>((resolve) => {
+        const done = () => {
+          window.removeEventListener("scroll", again, true);
+          resolve();
+        };
+        let timer = setTimeout(done, quiet);
+        const again = () => {
+          clearTimeout(timer);
+          timer = setTimeout(done, quiet);
+        };
+        window.addEventListener("scroll", again, true);
+      }),
+    quietMs,
+  );
+}
+
+/** Press one objective action through its row's ⋯ menu. */
+export async function objectiveAction(
+  page: Page,
+  testId: string,
+  index = 0,
+  scope: Page | import("@playwright/test").Locator = page,
+) {
+  const menu = await openObjectiveMenu(page, index, scope);
+  await menu.getByTestId(testId).click();
+}
+
 /** Flip the rail between its Active and Archived scopes (#948 P2).
  *
  *  The scope used to be one toggle button (`rail-scope`, "Show archived" / "Show active"); it is

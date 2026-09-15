@@ -8,17 +8,25 @@
  * **An edit is never a claim that an objective holds (#889).** `PATCH /objectives` refuses
  * `state` / `met_at` / `observed` at the route, so the only settlement an operator can write is
  * `waived` — a decision that the objective was not *required*, which is a different claim from
- * having observed it hold. The control is labelled for that meaning ("NOT REQUIRED"), never
+ * having observed it hold. The control is labelled for that meaning ("Mark not required"), never
  * "met", and the supervisor's completion proposal repeats the distinction when it quotes the
  * list back.
  *
  * **THE SUPERVISOR'S READING LIVES ON THE ROW (#942).** FOLLOW-THROUGH used to be a second panel
  * printing a second list of these same objectives — `assess()` iterates the mission's own
  * objective rows, so they were always the same rows — which meant "why has nothing happened to
- * objective 3" was a cross-reference between two lists. The badge, the budget, the server's
- * refusal sentence and STAND DOWN now render on the objective they describe. What is about the
- * MISSION rather than an objective appears in the Follow-through disclosure in the console;
- * standalone callers can retain the notices above the list. See `MissionSupervisorBoard.tsx`.
+ * objective 3" was a cross-reference between two lists. The badge, the budget and the server's
+ * refusal sentence render on the objective they describe. What is about the MISSION rather than an
+ * objective appears in the Follow-through disclosure in the console; standalone callers can
+ * retain the notices above the list. See `MissionSupervisorBoard.tsx`.
+ *
+ * **ONE ROW, ONE MENU, ORDER BY DRAGGING (#967 P3).** A row is a drag handle, the state dot, the
+ * title and ⋯, with one meta line under the title. Every action on the row — Rename, Mark not
+ * required, Stand down, Move up, Move down, Remove — is in ⋯, so a row is never a strip of
+ * wrapping buttons. Reordering is a drag from the handle (pointer, touch or keyboard, through
+ * `ui/SortableList`), and Move up / Move down stay in the menu so it never depends on dragging.
+ * Every one of those sends ONE `reorder` op with the full key list, which is what the route
+ * requires. The new order shows at once and is dropped again if the server refuses it.
  *
  * **An empty list is not the same as no objectives.** `POST /api/missions` returns before the
  * producer has run, so a mission legitimately has nothing here for a moment. `objectives_state`
@@ -26,7 +34,24 @@
  * pending, the named reason on `failed` / `skipped`. Rendering an unanswered question as an
  * answer is the same family of lie as the stale probe above.
  */
-import { useCallback, useState } from "react";
+import {
+  ArrowDown,
+  ArrowUp,
+  CircleMinus,
+  CirclePause,
+  GripVertical,
+  MoreHorizontal,
+  Pencil,
+  Plus,
+  Trash2,
+} from "lucide-react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 import type {
   MissionObjective,
@@ -35,10 +60,27 @@ import type {
 } from "../../types/api";
 
 import {
+  RowMenu,
+  type RowMenuEntry,
+  type RowMenuItem,
+} from "../sidebar/RowMenu";
+import action from "../ui/actionButton.module.css";
+import {
+  SortableItem,
+  SortableList,
+  type SortableRow,
+} from "../ui/SortableList";
+import {
   MissionSupervisorNotices,
   SupervisorCell,
 } from "./MissionSupervisorBoard";
 import styles from "./mission.module.css";
+import {
+  clampOverflows,
+  inOrder,
+  moveKey,
+  sharedReason,
+} from "./objectiveOrder";
 // The classifier itself, from the module that owns it — the row stamps the board it is on so a
 // test can classify a row without reading its prose.
 import { boardFor } from "./supervisorBoard";
@@ -65,6 +107,13 @@ function dotFor(o: MissionObjective): string {
   if (o.state === "failed") return styles.dotFailed;
   if (o.state === "waived") return styles.dotDone;
   return styles.dot;
+}
+
+/** The states whose dot carries a colour or a shape of its own. Those print their state word on
+ *  the meta line, because a status colour is never the only signal (design §8). An open or pending
+ *  objective's dot is the neutral one, and its word is for screen readers only. */
+function stateIsDrawn(o: MissionObjective): boolean {
+  return o.state === "met" || o.state === "waived" || o.state === "failed";
 }
 
 /** What the probe last actually saw, if it is not current. `observed` is a free-form record from
@@ -139,6 +188,232 @@ function EmptyObjectives({
   );
 }
 
+/** THE TITLE: TWO LINES, AND THE REST ON REQUEST (#967 P3, Hermes on #985).
+ *
+ *  The row clamps its title to two lines so a list of long requirements stays scannable. A clamp
+ *  with no way past it hides the end of a requirement, often the clause that matters ("…only after
+ *  the report is signed off"), and on a phone, or on a finished mission with no ⋯ and no editor,
+ *  nothing else can show it; a native `title` tooltip needs a hover a finger does not have.
+ *
+ *  So a title that is ACTUALLY clipped becomes its own disclosure: a focusable button that opens
+ *  and closes the full text, on every row, read-only or not. "Actually clipped" is measured, never
+ *  guessed from a character count: the observer compares the rendered text's `scrollHeight` with its
+ *  clamped `clientHeight` whenever the text box changes size (a narrower column, a longer title), so
+ *  a title that fits keeps plain text and gains no control.
+ *
+ *  It never takes part in a drag. The drag listeners and `touch-action: none` live on the handle
+ *  alone (`ui/SortableList`), so a tap here toggles the text and a swipe that starts here scrolls. */
+function ObjectiveTitle({
+  text,
+  label,
+}: {
+  text: string | null;
+  /** The full title, for the hover tooltip. */
+  label: string;
+}) {
+  const textRef = useRef<HTMLSpanElement>(null);
+  const [clipped, setClipped] = useState(false);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    const el = textRef.current;
+    // Not while it is open: the full text never overflows, and re-measuring then would take away
+    // the control that closes it again.
+    if (!el || open || typeof ResizeObserver === "undefined") return;
+    // An observer calls back once as it starts observing, and again whenever the box changes size.
+    const ro = new ResizeObserver(() =>
+      setClipped(clampOverflows(el.scrollHeight, el.clientHeight)),
+    );
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [open, text]);
+
+  const toggle = () => setOpen((v) => !v);
+  const control = clipped
+    ? {
+        role: "button",
+        tabIndex: 0,
+        "aria-expanded": open,
+        "data-testid": "objective-title-toggle",
+        onClick: toggle,
+        onKeyDown: (e: React.KeyboardEvent) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            toggle();
+          }
+        },
+      }
+    : {};
+  return (
+    <span
+      className={
+        clipped ? `${styles.objTitleBox} ${styles.objTitleToggle}` : styles.objTitleBox
+      }
+      {...control}
+    >
+      <span
+        ref={textRef}
+        className={
+          open ? `${styles.objTitle} ${styles.objTitleOpen}` : styles.objTitle
+        }
+        title={label}
+        data-testid="objective-title"
+      >
+        {text}
+      </span>
+      {/* The affordance, so a clipped title reads as something to open. Hidden from the accessible
+          name: the button is named by the title, and `aria-expanded` says which way it is. */}
+      {clipped ? (
+        <span className={styles.objTitleMore} aria-hidden="true">
+          {open ? "less" : "more"}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+/** How a row takes part in the order: dragged by its handle, holding the handle's column open
+ *  (a row built from the assessment alone, inside a list that can be reordered), or neither. */
+type RowHandle = "drag" | "space" | "none";
+
+interface ObjectiveRowProps {
+  o: MissionObjective;
+  sup: SupervisorObjective | undefined;
+  budget: number;
+  menu: RowMenuEntry[];
+  /** The refusal sentence already said once above the list, if any. */
+  shared: string | null;
+  /** The inline rename form, while this row is being renamed. */
+  editor: ReactNode;
+}
+
+function ObjectiveRow({
+  o,
+  sup,
+  budget,
+  menu,
+  shared,
+  editor,
+  handle,
+  // The drag wiring arrives as separate props, not one object: a node setter passed to `ref` makes
+  // whatever holds it a ref to the React compiler, and reading the handle's props off that same
+  // object during render is then a ref read.
+  setRow,
+  rowStyle,
+  setHandle,
+  handleProps,
+  isDragging = false,
+}: ObjectiveRowProps & { handle: RowHandle } & Partial<SortableRow>) {
+  const st = staleness(o);
+  const title = o.title ?? o.key;
+  const stateText = `${o.state}${o.met_at ? ` ${when(o.met_at)}` : ""}`;
+  // The state is announced in text too — the dot alone is not readable by a screen reader, and
+  // status colour is load-bearing here.
+  const lead = stateIsDrawn(o) ? (
+    <span className={styles.objState}>{stateText}</span>
+  ) : (
+    <span className={styles.objSr}>{stateText}</span>
+  );
+  return (
+    <li
+      ref={setRow}
+      style={rowStyle}
+      className={
+        isDragging
+          ? `${styles.objRow} ${styles.objRowDragging}`
+          : styles.objRow
+      }
+      data-testid="objective"
+      data-key={o.key}
+      // The board the supervisor put this objective on. Stamped on the row rather than only on the
+      // badge so a test can classify a row without reading its prose — which is what the
+      // follow-through specs already assert against.
+      {...(sup ? { "data-board": boardFor(sup) } : {})}
+    >
+      {handle === "drag" ? (
+        <button
+          type="button"
+          ref={setHandle}
+          className={styles.objHandle}
+          data-testid="objective-handle"
+          {...handleProps}
+          aria-label={`Reorder "${title}"`}
+        >
+          <GripVertical size={16} aria-hidden="true" />
+        </button>
+      ) : handle === "space" ? (
+        <span className={styles.objHandleSpace} aria-hidden="true" />
+      ) : null}
+      <span
+        className={`${styles.dot} ${dotFor(o)} ${styles.objDot}`}
+        aria-hidden="true"
+      />
+      <span className={styles.objBody}>
+        <ObjectiveTitle text={o.title} label={title} />
+        {/* THE META LINE: the state word where the dot draws one, then the supervisor's reading of
+            this objective (#942) — badge, GATE, the counter, and its sentence unless the section
+            already said it once. */}
+        {sup ? (
+          <SupervisorCell
+            o={sup}
+            budget={budget}
+            lead={lead}
+            hideWhy={shared !== null && sup.why_not === shared}
+          />
+        ) : stateIsDrawn(o) ? (
+          <span className={styles.supCell}>{lead}</span>
+        ) : (
+          lead
+        )}
+        {st ? (
+          <>
+            <span className={styles.objStale} data-testid="objective-stale">
+              last seen {st.seen || "earlier"} · stale
+            </span>
+            {st.reason ? (
+              <span className={styles.objReason}>{st.reason}</span>
+            ) : null}
+          </>
+        ) : null}
+        {editor}
+      </span>
+      {menu.length > 0 ? (
+        <RowMenu
+          items={menu}
+          title={title}
+          sheetTitle="Objective actions"
+          triggerLabel={`Actions for "${title}"`}
+          triggerClassName={styles.objMenuBtn}
+          triggerTestId="objective-menu"
+          triggerIcon={<MoreHorizontal size={18} aria-hidden="true" />}
+        />
+      ) : null}
+    </li>
+  );
+}
+
+/** A list row that can be dragged. Only these rows take part in the sort: a row outside the
+ *  sortable context — read-only, or built from the assessment alone — is drawn without it. */
+function SortableObjectiveRow({
+  locked,
+  ...props
+}: ObjectiveRowProps & { locked: boolean }) {
+  return (
+    <SortableItem id={props.o.key} disabled={locked}>
+      {(row) => <ObjectiveRow {...props} handle="drag" {...row} />}
+    </SortableItem>
+  );
+}
+
+/** An order the operator chose and the server has not settled. `base` is the list it was made on;
+ *  once the server has ACCEPTED the order it is shown only until that list is re-read, so the
+ *  re-read — not this guess — is what the operator ends up looking at. */
+interface PendingOrder {
+  keys: string[];
+  base: MissionObjective[];
+  accepted: boolean;
+}
+
 export function MissionObjectives({
   objectives,
   objectivesState,
@@ -171,7 +446,7 @@ export function MissionObjectives({
   /** Silence one objective for the episode its row was RENDERED at. Absent ⇒ read-only, which is
    *  what an archived or closed mission gets. */
   onStandDown?: (key: string, episode: number) => void;
-  /** A mission-level mutation is in flight; the supervisor's own control disables with it. */
+  /** A mission-level mutation is in flight; the row actions disable with it. */
   busy?: boolean;
 }) {
   const [busyKey, setBusyKey] = useState<string | null>(null);
@@ -180,21 +455,17 @@ export function MissionObjectives({
    *  simultaneously mid-rename is a list whose order is hard to reason about while it moves. */
   const [renaming, setRenaming] = useState<string | null>(null);
   const [rename, setRename] = useState("");
+  const [pending, setPending] = useState<PendingOrder | null>(null);
+  /** The last reorder was refused. Said beside the list, because the rows snapping back is
+   *  otherwise indistinguishable from a drop that did not register. */
+  const [reorderRefused, setReorderRefused] = useState(false);
 
-  /** The full key list with the row at `i` moved by `delta`. The route replaces the whole order,
-   *  so the move is computed here and sent once rather than as a sequence the store would have to
-   *  reconcile. */
-  const moved = useCallback(
-    (i: number, delta: number): string[] => {
-      const keys = objectives.map((o) => o.key);
-      const j = i + delta;
-      if (j < 0 || j >= keys.length) return keys;
-      const out = [...keys];
-      [out[i], out[j]] = [out[j], out[i]];
-      return out;
-    },
-    [objectives],
-  );
+  const showPending =
+    pending && (!pending.accepted || pending.base === objectives)
+      ? pending.keys
+      : null;
+  const listed = inOrder(objectives, showPending);
+  const keys = listed.map((o) => o.key);
 
   /** The supervisor's reading, by objective key.
    *
@@ -217,33 +488,29 @@ export function MissionObjectives({
    *  union is what undoes it.
    *
    *  An assessment carries everything a row needs to exist — key, title, gate, state — so a
-   *  reading with no matching objective renders as a row in its own right. It is marked
-   *  `fromAssessmentOnly` and offered no EDIT controls: reorder is meaningless without the list
-   *  that defines the order, and a rename or a drop aimed at a list we could not read is a write
-   *  on an unknown. STAND DOWN is offered, because it is the one action that acts on the
-   *  ASSESSMENT rather than on the list. */
-  const extra = (supervisor?.objectives ?? []).filter(
-    (o) => !objectives.some((x) => x.key === o.key),
-  );
-  const rows: { o: MissionObjective; fromAssessmentOnly: boolean }[] = [
-    ...objectives.map((o) => ({ o, fromAssessmentOnly: false })),
-    ...extra.map((s) => ({
-      o: {
-        mission_id: "",
-        key: s.key,
-        ord: 0,
-        title: s.title ?? s.key,
-        probe: "",
-        probe_args: null,
-        gate: s.gate,
-        state: s.state,
-        met_at: null,
-        observed: null,
-        source: "supervisor",
-      } as MissionObjective,
-      fromAssessmentOnly: true,
-    })),
-  ];
+   *  reading with no matching objective renders as a row in its own right, after the list. It is
+   *  offered no EDIT actions and cannot be dragged: reorder is meaningless without the list that
+   *  defines the order, and a rename or a drop aimed at a list we could not read is a write on an
+   *  unknown. Stand down is offered, because it is the one action that acts on the ASSESSMENT
+   *  rather than on the list. */
+  const extra: MissionObjective[] = (supervisor?.objectives ?? [])
+    .filter((o) => !objectives.some((x) => x.key === o.key))
+    .map(
+      (s) =>
+        ({
+          mission_id: "",
+          key: s.key,
+          ord: 0,
+          title: s.title ?? s.key,
+          probe: "",
+          probe_args: null,
+          gate: s.gate,
+          state: s.state,
+          met_at: null,
+          observed: null,
+          source: "supervisor",
+        }) as MissionObjective,
+    );
 
   const run = useCallback(
     async (key: string, ops: ObjectiveOp[]): Promise<boolean> => {
@@ -256,6 +523,26 @@ export function MissionObjectives({
       }
     },
     [onOps, busyKey],
+  );
+
+  const locked = busy || busyKey !== null;
+
+  /** Post a new order: shown at once, sent as ONE `reorder` op with every key, and dropped again if
+   *  the server refuses it. A refusal is usually the list changing underneath (409) or an order
+   *  that no longer names the stored keys (422); the console re-reads the list either way, so the
+   *  rows settle on the server's order rather than the one the operator dragged. */
+  const reorder = useCallback(
+    async (next: string[]) => {
+      if (!onOps || locked) return;
+      setReorderRefused(false);
+      setPending({ keys: next, base: objectives, accepted: false });
+      const ok = await run("reorder", [{ op: "reorder", keys: next }]);
+      setPending((p) =>
+        p && p.keys === next ? (ok ? { ...p, accepted: true } : null) : p,
+      );
+      if (!ok) setReorderRefused(true);
+    },
+    [onOps, locked, objectives, run],
   );
 
   const add = useCallback(
@@ -274,7 +561,18 @@ export function MissionObjectives({
     [adding, onOps, busyKey, run],
   );
 
-  if (rows.length === 0 && !onOps) {
+  /** How the drag announcements name a row: its title, quoted. */
+  const nameOf = useCallback(
+    (key: string) => {
+      const title =
+        objectives.find((o) => o.key === key)?.title ??
+        supervisor?.objectives?.find((o) => o.key === key)?.title;
+      return `"${title ?? key}"`;
+    },
+    [objectives, supervisor],
+  );
+
+  if (listed.length + extra.length === 0 && !onOps) {
     return (
       <>
         {showNotices ? (
@@ -288,6 +586,179 @@ export function MissionObjectives({
     );
   }
 
+  const shared = sharedReason(supervisor);
+  const noSession = supervisor?.no_session === true;
+
+  /** The row's ⋯ menu. Empty ⇒ no ⋯ at all, which is what a read-only row gets. */
+  const menuFor = (o: MissionObjective, index: number | null): RowMenuEntry[] => {
+    const title = o.title ?? o.key;
+    const sup = reading.get(o.key);
+    const editable = !!onOps && index !== null;
+    const first: RowMenuItem[] = [];
+    if (editable) {
+      first.push({
+        key: "rename",
+        label: "Rename",
+        ariaLabel: `Rename "${title}"`,
+        icon: <Pencil size={15} />,
+        disabled: locked,
+        data: { "data-testid": "objective-rename" },
+        onSelect: () => {
+          setRenaming(o.key);
+          setRename(o.title ?? "");
+        },
+      });
+      first.push({
+        key: "waive",
+        // Spelled out because "waive" reads as jargon and the distinction it carries is the whole
+        // point: this says the objective was not required, NOT that it was observed to hold.
+        label: "Mark not required",
+        ariaLabel: `Mark "${title}" not required`,
+        icon: <CircleMinus size={15} />,
+        // Waiving something already observed to hold would replace a verified fact with a weaker
+        // claim.
+        disabled: locked || o.state === "met" || o.state === "waived",
+        data: { "data-testid": "objective-waive" },
+        onSelect: () => void run(o.key, [{ op: "waive", key: o.key }]),
+      });
+    }
+    // "Stop telling me about this one" (#889). Hidden once the objective is already stood down —
+    // HELD is the state this produces, so offering it again would suggest a second thing to do that
+    // does not exist — and on a settled objective, where silencing it has no effect. DISABLED, with
+    // its reason, while the mission holds no session: there is nothing to nudge, so nothing to
+    // stand down from. It sends the episode the row was RENDERED at; a stale tap is a 409, never a
+    // silenced report nobody has seen.
+    if (onStandDown && sup && !sup.stood_down && !sup.met) {
+      first.push({
+        key: "stand-down",
+        label: "Stand down",
+        ariaLabel: noSession
+          ? `Stop following up on "${title}" (no session to nudge)`
+          : `Stop following up on "${title}"`,
+        hint: noSession ? "No session to nudge" : undefined,
+        icon: <CirclePause size={15} />,
+        disabled: locked || noSession,
+        data: {
+          "data-testid": "objective-stand-down",
+          "data-episode": sup.episode,
+        },
+        onSelect: () => onStandDown(o.key, sup.episode),
+      });
+    }
+    if (!editable || index === null) return first;
+    return [
+      ...first,
+      "separator",
+      // Ends are disabled rather than wrapping: a control that silently moves a row to the far end
+      // is worse than one that says it cannot move.
+      {
+        key: "up",
+        label: "Move up",
+        ariaLabel: `Move "${title}" up`,
+        icon: <ArrowUp size={15} />,
+        disabled: locked || index === 0,
+        data: { "data-testid": "objective-up" },
+        onSelect: () => void reorder(moveKey(keys, index, index - 1)),
+      },
+      {
+        key: "down",
+        label: "Move down",
+        ariaLabel: `Move "${title}" down`,
+        icon: <ArrowDown size={15} />,
+        disabled: locked || index === keys.length - 1,
+        data: { "data-testid": "objective-down" },
+        onSelect: () => void reorder(moveKey(keys, index, index + 1)),
+      },
+      "separator",
+      {
+        key: "drop",
+        label: "Remove",
+        ariaLabel: `Remove "${title}"`,
+        icon: <Trash2 size={15} />,
+        danger: true,
+        disabled: locked,
+        data: { "data-testid": "objective-drop" },
+        onSelect: () => void run(o.key, [{ op: "drop", key: o.key }]),
+      },
+    ];
+  };
+
+  const editorFor = (o: MissionObjective): ReactNode =>
+    onOps && renaming === o.key ? (
+      <form
+        className={styles.objAddRow}
+        onSubmit={(e) => {
+          e.preventDefault();
+          const title = rename.trim();
+          if (!title) return;
+          void run(o.key, [{ op: "retitle", key: o.key, title }]).then(
+            (ok) => ok && setRenaming(null),
+          );
+        }}
+        aria-label={`Rename "${o.title ?? o.key}"`}
+      >
+        <input
+          className={styles.objAddInput}
+          value={rename}
+          onChange={(e) => setRename(e.target.value)}
+          aria-label="New title"
+          data-testid="objective-rename-input"
+          // Opened from the menu, which returns focus to ⋯ as it closes; the field is where the
+          // operator is about to type.
+          autoFocus
+        />
+        <button
+          type="submit"
+          className={action.ghost}
+          disabled={busyKey !== null || !rename.trim()}
+          data-testid="objective-rename-save"
+        >
+          Save
+        </button>
+        <button
+          type="button"
+          className={action.ghost}
+          onClick={() => setRenaming(null)}
+          data-testid="objective-rename-cancel"
+        >
+          Cancel
+        </button>
+      </form>
+    ) : null;
+
+  const rowProps = (o: MissionObjective, index: number | null) => ({
+    o,
+    sup: reading.get(o.key),
+    budget,
+    menu: menuFor(o, index),
+    shared,
+    editor: editorFor(o),
+  });
+
+  const sortable = !!onOps && listed.length > 0;
+  const list = (
+    <ul
+      className={styles.objList}
+      aria-label="Objectives"
+      data-testid="objectives"
+    >
+      {listed.map((o, i) =>
+        sortable ? (
+          <SortableObjectiveRow key={o.key} {...rowProps(o, i)} locked={locked} />
+        ) : (
+          <ObjectiveRow key={o.key} {...rowProps(o, null)} handle="none" />
+        ),
+      )}
+      {extra.map((o) => (
+        <ObjectiveRow
+          key={o.key}
+          {...rowProps(o, null)}
+          handle={sortable ? "space" : "none"}
+        />
+      ))}
+    </ul>
+  );
+
   return (
     <>
       {/* THE MISSION-LEVEL HALF, above the rows — see the module note. It renders on the empty
@@ -295,190 +766,38 @@ export function MissionObjectives({
       {showNotices ? (
         <MissionSupervisorNotices supervisor={supervisor} />
       ) : null}
-      {rows.length === 0 ? (
+      {/* SAID ONCE (#967 P3). With no session every row carried the same sentence; the section
+          says it here and a row keeps only a reason that differs. Still the server's words. */}
+      {shared && listed.length + extra.length > 0 ? (
+        <div className={styles.objNotice} data-testid="objectives-shared-reason">
+          {shared}
+        </div>
+      ) : null}
+      {reorderRefused ? (
+        <div
+          className={styles.objRefused}
+          role="alert"
+          data-testid="objectives-reorder-refused"
+        >
+          That reorder did not apply. The list changed, so it shows the saved
+          order again.
+        </div>
+      ) : null}
+      {listed.length + extra.length === 0 ? (
         <EmptyObjectives
           objectivesState={objectivesState}
           failed={objectivesFailed}
         />
-      ) : (
-        <ul
-          style={{ listStyle: "none", margin: 0, padding: 0 }}
-          aria-label="Objectives"
-          data-testid="objectives"
+      ) : sortable ? (
+        <SortableList
+          ids={keys}
+          label={nameOf}
+          onMove={(from, to) => void reorder(moveKey(keys, from, to))}
         >
-          {rows.map(({ o, fromAssessmentOnly }, i) => {
-            const st = staleness(o);
-            const settled = o.state === "met" || o.state === "waived";
-            const sup = reading.get(o.key);
-            return (
-              <li
-                key={o.key}
-                className={styles.objRow}
-                data-testid="objective"
-                data-key={o.key}
-                // The board the supervisor put this objective on. Stamped on the row rather than
-                // only on the badge so a test can classify a row without reading its prose —
-                // which is what the follow-through specs already assert against.
-                {...(sup ? { "data-board": boardFor(sup) } : {})}
-              >
-                <span
-                  className={`${styles.dot} ${dotFor(o)}`}
-                  aria-hidden="true"
-                />
-                <span style={{ minWidth: 0 }}>
-                  <span className={styles.objTitle}>{o.title}</span>
-                  {/* The state is announced in text too — the dot alone is not readable
-                      by a screen reader, and status colour is load-bearing here. */}
-                  <span className={styles.objWhen}>
-                    {o.state}
-                    {o.met_at ? ` ${when(o.met_at)}` : ""}
-                  </span>
-                  {st ? (
-                    <>
-                      <span
-                        className={styles.objStale}
-                        data-testid="objective-stale"
-                      >
-                        last seen {st.seen || "earlier"} · stale
-                      </span>
-                      {st.reason ? (
-                        <span className={styles.objReason}>{st.reason}</span>
-                      ) : null}
-                    </>
-                  ) : null}
-                  {onOps && !fromAssessmentOnly && renaming === o.key ? (
-                    <form
-                      className={styles.objAddRow}
-                      onSubmit={(e) => {
-                        e.preventDefault();
-                        const title = rename.trim();
-                        if (!title) return;
-                        void run(o.key, [
-                          { op: "retitle", key: o.key, title },
-                        ]).then((ok) => ok && setRenaming(null));
-                      }}
-                      aria-label={`Rename "${o.title ?? o.key}"`}
-                    >
-                      <input
-                        className={styles.objAddInput}
-                        value={rename}
-                        onChange={(e) => setRename(e.target.value)}
-                        aria-label="New title"
-                        data-testid="objective-rename-input"
-                      />
-                      <button
-                        type="submit"
-                        className={styles.objEditBtn}
-                        disabled={busyKey !== null || !rename.trim()}
-                        data-testid="objective-rename-save"
-                      >
-                        RENAME
-                      </button>
-                      <button
-                        type="button"
-                        className={styles.objEditBtn}
-                        onClick={() => setRenaming(null)}
-                        data-testid="objective-rename-cancel"
-                      >
-                        CANCEL
-                      </button>
-                    </form>
-                  ) : null}
-                  {/* THE SUPERVISOR'S READING OF THIS OBJECTIVE (#942) — the old FOLLOW-THROUGH
-                      row, on the objective it was always about. */}
-                  {sup ? (
-                    <SupervisorCell
-                      o={sup}
-                      budget={budget}
-                      onStandDown={onStandDown}
-                      busy={busy || busyKey !== null}
-                    />
-                  ) : null}
-                </span>
-                {/* THE THIRD COLUMN (#942). These act ON the row, so they sit at the end of it
-                    rather than between the title and the supervisor's reading of it — which is
-                    where folding follow-through in had left them, five boxed 44px controls on a
-                    line of their own. */}
-                {/* …and only for rows that came from the LIST (#942 review 1). A row rendered
-                    from the assessment alone has no place in an order we could not read, and a
-                    rename or a drop aimed at it would be a write against an unknown. */}
-                {onOps && !fromAssessmentOnly ? (
-                  <span className={styles.objEdit}>
-                    {/* REORDER. The route takes the whole key list, in the order it should end
-                        up — so a move is computed here and posted as one `reorder` op, never as
-                        a pair of swaps that could half-apply. Ends are disabled rather than
-                        wrapping: a control that silently moves a row to the far end is worse
-                        than one that says it cannot move. */}
-                    <button
-                      type="button"
-                      className={styles.objEditBtn}
-                      disabled={busyKey !== null || i === 0}
-                      onClick={() =>
-                        void run(o.key, [{ op: "reorder", keys: moved(i, -1) }])
-                      }
-                      data-testid="objective-up"
-                      aria-label={`Move "${o.title ?? o.key}" up`}
-                    >
-                      ↑
-                    </button>
-                    <button
-                      type="button"
-                      className={styles.objEditBtn}
-                      disabled={busyKey !== null || i === objectives.length - 1}
-                      onClick={() =>
-                        void run(o.key, [{ op: "reorder", keys: moved(i, 1) }])
-                      }
-                      data-testid="objective-down"
-                      aria-label={`Move "${o.title ?? o.key}" down`}
-                    >
-                      ↓
-                    </button>
-                    <button
-                      type="button"
-                      className={styles.objEditBtn}
-                      disabled={busyKey !== null}
-                      onClick={() => {
-                        setRenaming(o.key);
-                        setRename(o.title ?? "");
-                      }}
-                      data-testid="objective-rename"
-                      aria-label={`Rename "${o.title ?? o.key}"`}
-                    >
-                      RENAME
-                    </button>
-                    <button
-                      type="button"
-                      className={styles.objEditBtn}
-                      disabled={busyKey !== null || settled}
-                      onClick={() =>
-                        void run(o.key, [{ op: "waive", key: o.key }])
-                      }
-                      data-testid="objective-waive"
-                      // Spelled out because "waive" reads as jargon and the distinction it
-                      // carries is the whole point: this says the objective was not required,
-                      // NOT that it was observed to hold.
-                      aria-label={`Mark "${o.title ?? o.key}" not required`}
-                    >
-                      NOT REQUIRED
-                    </button>
-                    <button
-                      type="button"
-                      className={styles.objEditBtn}
-                      disabled={busyKey !== null}
-                      onClick={() =>
-                        void run(o.key, [{ op: "drop", key: o.key }])
-                      }
-                      data-testid="objective-drop"
-                      aria-label={`Remove "${o.title ?? o.key}"`}
-                    >
-                      REMOVE
-                    </button>
-                  </span>
-                ) : null}
-              </li>
-            );
-          })}
-        </ul>
+          {list}
+        </SortableList>
+      ) : (
+        list
       )}
       {onOps ? (
         <form
@@ -496,11 +815,12 @@ export function MissionObjectives({
           />
           <button
             type="submit"
-            className={styles.objEditBtn}
+            className={action.ghost}
             disabled={busyKey !== null || !adding.trim()}
             data-testid="objective-add"
           >
-            ADD
+            <Plus size={15} aria-hidden="true" />
+            Add
           </button>
         </form>
       ) : null}

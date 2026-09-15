@@ -2,6 +2,7 @@ import {
   openMissionConversation,
   openMissionDetails,
   openMissionRail,
+  openObjectiveMenu,
 } from "./mission-console";
 /** #942 — the console reads as one thing.
  *
@@ -560,7 +561,9 @@ test("STAND DOWN moved to the row and kept its episode fence (#942)", async ({
   await openMissionDetails(page, "followThrough");
 
   const row = page.getByTestId("objectives").getByTestId("objective").first();
-  const btn = row.getByTestId("objective-stand-down");
+  // In the row's ⋯ menu since #967 P3; the fence below is unchanged.
+  const menu = await openObjectiveMenu(page, 0, row);
+  const btn = menu.getByTestId("objective-stand-down");
   // The EPISODE THE ROW WAS RENDERED AT rides on the element, so a stale tap is a 409 rather than
   // silencing a report nobody has seen. Folding the control onto the objective row changed where
   // it sits and nothing about that fence.
@@ -851,7 +854,10 @@ test("a FAILED objectives read keeps the supervisor's reading and its STAND DOWN
   const rows = page.getByTestId("objective");
   await expect(rows).toHaveCount(2);
   await expect(page.getByTestId("supervisor-cell")).toHaveCount(2);
-  await expect(page.getByTestId("objective-stand-down").first()).toBeVisible();
+  // Stand down is in the row's ⋯ menu since #967 P3. The menu stays open for the counts below, so
+  // they are asserted against an open menu rather than passing because it is closed.
+  const menu = await openObjectiveMenu(page, 0);
+  await expect(menu.getByTestId("objective-stand-down")).toBeVisible();
   await expect(page.getByText(SPENT_SENTENCE)).toBeVisible();
   await expect(page.getByTestId("supervisor-unmet-gates")).toBeVisible();
 

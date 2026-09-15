@@ -40,6 +40,8 @@
  *     tap must not silence a report nobody has seen. Folding the control onto the objective row
  *     changes where it sits and nothing else about that fence.
  */
+import type { ReactNode } from "react";
+
 import type { MissionSupervisor, SupervisorObjective } from "../../types/api";
 
 import styles from "./mission.module.css";
@@ -55,22 +57,24 @@ const CLASS: Record<Board, string> = {
   ready: styles.supReady,
 };
 
-/** The supervisor's reading of ONE objective, rendered on that objective's own row.
+/** The supervisor's reading of ONE objective: the meta line under that objective's title.
  *
- *  Everything here was a cell of the old board's grid; nothing is added and nothing is dropped.
- *  The badge, the `spent/budget` counter with its episode suffix, the server's verbatim sentence
- *  and STAND DOWN — in that order, which is the order they were in. */
+ *  Everything here was a cell of the old board's grid. The badge, GATE, the `spent/budget` counter
+ *  with its episode suffix, and the server's verbatim sentence — in that order, which is the order
+ *  they were in. STAND DOWN moved into the row's ⋯ menu (#967 P3), with the rest of the row's
+ *  actions; it still sends the episode the row was rendered at (`MissionObjectives`). */
 export function SupervisorCell({
   o,
   budget = 3,
-  onStandDown,
-  busy = false,
+  lead,
+  hideWhy = false,
 }: {
   o: SupervisorObjective;
   budget?: number;
-  /** Silence this objective for the episode it is RENDERED at. Absent ⇒ read-only. */
-  onStandDown?: (key: string, episode: number) => void;
-  busy?: boolean;
+  /** Rendered first on the line — the objective's own state word. */
+  lead?: ReactNode;
+  /** The sentence is already said once above the list (#967 P3, `sharedReason`). */
+  hideWhy?: boolean;
 }) {
   const board = boardFor(o);
   return (
@@ -97,28 +101,13 @@ export function SupervisorCell({
           <span className={styles.supEpisode}> · ep {o.episode}</span>
         ) : null}
       </span>
-      {/* "Stop telling me about this one" (#889) — BEFORE the sentence, not after it.
-          `why_not` takes a line of its own (it is unbounded server prose), so a control placed
-          after it lands on a THIRD line and the row grows by 44px for the objectives that have
-          something to explain — exactly the ones the operator is most likely to act on.
-          Hidden once the objective is already stood down — HELD is the state this produces, so
-          offering it again would suggest a second thing to do that does not exist. Also hidden on
-          a settled objective: silencing something already met is a control with no effect. */}
-      {onStandDown && !o.stood_down && !o.met ? (
-        <button
-          type="button"
-          className={styles.objEditBtn}
-          disabled={busy}
-          onClick={() => onStandDown(o.key, o.episode)}
-          data-testid="objective-stand-down"
-          data-episode={o.episode}
-          aria-label={`Stop following up on "${o.title || o.key}"`}
-        >
-          STAND DOWN
-        </button>
+      {/* The objective's own state word, after the counter: the badge stays the line's first mark. */}
+      {lead}
+      {/* The server's sentence, verbatim. Absent when the supervisor is free to act, and when the
+          section already says it once above the list (#967 P3). */}
+      {o.why_not && !hideWhy ? (
+        <span className={styles.supWhy}>{o.why_not}</span>
       ) : null}
-      {/* The server's sentence, verbatim. Absent when the supervisor is free to act. */}
-      {o.why_not ? <span className={styles.supWhy}>{o.why_not}</span> : null}
     </span>
   );
 }

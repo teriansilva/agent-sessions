@@ -21,6 +21,13 @@ export interface RowMenuItem {
   icon: ReactNode;
   disabled?: boolean;
   onSelect: () => void;
+  /** A second, smaller line under the label — e.g. why a disabled item is disabled (#967). */
+  hint?: string;
+  /** Destructive: drawn in `--danger-text` (#967). */
+  danger?: boolean;
+  /** `data-*` attributes for the item's button, e.g. a `data-testid` a surface already pins, or
+   *  a value the item acts on that a browser test reads back (#967). */
+  data?: Record<`data-${string}`, string | number>;
 }
 
 /** Items list may include "separator" markers between logical groups. */
@@ -34,11 +41,17 @@ export type RowMenuEntry = RowMenuItem | "separator";
  *    pointer, flipped left and/or up to stay on screen. */
 export type MenuAnchor = { element: HTMLElement } | { point: { x: number; y: number } };
 
+/** The mobile bottom sheet's heading when the caller does not name one. Every menu before #967 was
+ *  a session's, so this was hard-coded; a caller acting on something else passes `sheetTitle`. */
+const DEFAULT_SHEET_TITLE = "Session actions";
+
 interface MenuPopoverProps {
   items: RowMenuEntry[];
   anchor: MenuAnchor;
   /** Session title — shown in the mobile bottom-sheet header. */
   title?: string;
+  /** The bottom sheet's heading above `title` (#967). Defaults to "Session actions". */
+  sheetTitle?: string;
   label?: string;
   /** `refocus` is true when the menu closed through the keyboard or an item (the menu-button
    *  pattern returns focus); false for an outside press, scroll or resize. */
@@ -60,6 +73,7 @@ export function MenuPopover({
   items,
   anchor,
   title,
+  sheetTitle = DEFAULT_SHEET_TITLE,
   label = "Session actions",
   onClose,
   ownerRef,
@@ -223,7 +237,7 @@ export function MenuPopover({
         >
           {title && (
             <div className={styles.sheetHead} aria-hidden="true">
-              <div className={styles.sheetTitle}>Session actions</div>
+              <div className={styles.sheetTitle}>{sheetTitle}</div>
               <div className={styles.sheetSession}>{title}</div>
             </div>
           )}
@@ -244,19 +258,32 @@ export function MenuPopover({
             return (
               <button
                 key={entry.key}
+                {...entry.data}
                 ref={(el) => {
                   itemRefs.current[idx] = el;
                 }}
                 type="button"
                 role="menuitem"
                 tabIndex={-1}
-                className={styles.item}
+                className={
+                  entry.danger
+                    ? `${styles.item} ${styles.itemDanger}`
+                    : styles.item
+                }
                 aria-label={entry.ariaLabel}
                 aria-disabled={entry.disabled || undefined}
                 onClick={() => select(entry)}
               >
                 <span className={styles.itemIcon}>{entry.icon}</span>
-                {entry.label}
+                {/* Wrapped only when there is a hint, so every existing item keeps its DOM. */}
+                {entry.hint ? (
+                  <span className={styles.itemText}>
+                    {entry.label}
+                    <span className={styles.itemHint}>{entry.hint}</span>
+                  </span>
+                ) : (
+                  entry.label
+                )}
               </button>
             );
           })}
@@ -279,9 +306,15 @@ interface RowMenuProps {
   items: RowMenuEntry[];
   /** Session title — shown in the mobile bottom-sheet header. */
   title?: string;
+  /** The bottom sheet's heading above `title` (#967). Defaults to "Session actions". */
+  sheetTitle?: string;
   /** Replaces the ⋯ glyph while a background action runs (e.g. spinning Sparkles). */
   triggerIcon?: ReactNode;
   triggerLabel?: string;
+  /** Replaces the trigger's own class — for a surface whose ⋯ holds a different hit target, such
+   *  as the 44×44 objective row trigger (#967). */
+  triggerClassName?: string;
+  triggerTestId?: string;
   /** Lets the row keep its hover-revealed action cluster visible while open. */
   onOpenChange?: (open: boolean) => void;
 }
@@ -292,8 +325,11 @@ interface RowMenuProps {
 export function RowMenu({
   items,
   title,
+  sheetTitle,
   triggerIcon,
   triggerLabel = "Session actions",
+  triggerClassName,
+  triggerTestId,
   onOpenChange,
 }: RowMenuProps) {
   // The open state IS the anchor: the trigger element the press landed on. Held in state rather
@@ -323,11 +359,12 @@ export function RowMenu({
       <button
         ref={triggerRef}
         type="button"
-        className={styles.trigger}
+        className={triggerClassName ?? styles.trigger}
         aria-label={triggerLabel}
         title={triggerLabel}
         aria-haspopup="menu"
         aria-expanded={open}
+        data-testid={triggerTestId}
         onClick={(e) => setOpenNotify(open ? null : e.currentTarget)}
       >
         {triggerIcon ?? <MoreHorizontal size={16} />}
@@ -336,6 +373,7 @@ export function RowMenu({
         <MenuPopover
           items={items}
           title={title}
+          sheetTitle={sheetTitle}
           label={triggerLabel}
           anchor={{ element: anchorEl }}
           onClose={close}

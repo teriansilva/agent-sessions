@@ -1,5 +1,7 @@
 import { openMissionConversation,
   flipMissionScope,
+  objectiveAction,
+  openObjectiveMenu,
 } from "./mission-console";
 import { openMissionDetails } from "./mission-console";
 /** The operator's controls, in a real browser (#889).
@@ -423,7 +425,7 @@ test("an objective edit posts ONE batch of ops", async ({ page }) => {
   await goToObjectives(page);
   await expect(page.getByTestId("objective").first()).toBeVisible();
 
-  await page.getByTestId("objective-waive").first().click();
+  await objectiveAction(page, "objective-waive");
   await expect.poll(() => patches.length).toBe(1);
   // The route applies ops in ONE transaction; a request per op would let a multi-op edit
   // half-apply. And `state` is not among the keys — an edit is never a claim it holds.
@@ -495,7 +497,9 @@ test("STAND DOWN posts the episode the board was RENDERED at", async ({
   await page.goto("/mission");
   await selectOnlyMission(page);
   await goToObjectives(page);
-  const btn = page.getByTestId("objective-stand-down").first();
+  // In the row's ⋯ menu since #967 P3; the episode fence is unchanged.
+  const menu = await openObjectiveMenu(page);
+  const btn = menu.getByTestId("objective-stand-down");
   await expect(btn).toBeVisible();
   await btn.click();
 
@@ -1111,6 +1115,10 @@ for (const state of ["done", "failed", "abandoned"] as const) {
 
     // The routes would still take these writes; withdrawing the control is the point. Reopening
     // from the lifecycle bar is the honest way to edit a closed mission — it says so on screen.
+    // The row's ⋯ menu and its drag handle are withdrawn too (#967 P3). Without these the counts
+    // below would pass merely because the menu is closed.
+    await expect(page.getByTestId("objective-menu")).toHaveCount(0);
+    await expect(page.getByTestId("objective-handle")).toHaveCount(0);
     await expect(page.getByTestId("objective-waive")).toHaveCount(0);
     await expect(page.getByTestId("objective-drop")).toHaveCount(0);
     await expect(page.getByTestId("objective-add")).toHaveCount(0);
@@ -2047,7 +2055,7 @@ test("THE #889 JOURNEY: create → objectives arrive → edit → adopt → BEGI
   await expect(pane.getByTestId("objectives")).toContainText("Open the PR");
 
   // ── 3. EDIT ──────────────────────────────────────────────────────────────────────────────
-  await pane.getByTestId("objective-rename").nth(1).click();
+  await objectiveAction(page, "objective-rename", 1, pane);
   await pane.getByTestId("objective-rename-input").fill("Open the PR upstream");
   await pane.getByTestId("objective-rename-save").click();
   await expect.poll(() => patches.length).toBe(1);
@@ -2766,7 +2774,7 @@ test("waiving an objective refreshes the RAIL, not just the pane", async ({
   await expect(page.getByTestId("objective").first()).toBeVisible();
   const before = lists.length;
 
-  await page.getByTestId("objective-waive").first().click();
+  await objectiveAction(page, "objective-waive");
 
   // THE RAIL BECOMES CURRENT, not merely re-read (#896 review 24, finding 3). Counting requests
   // passes against a generation fence that receives the fresh row and drops it — which leaves the
@@ -3234,7 +3242,7 @@ test("an OLDER refresh cannot narrow the window you just opened", async ({
 
   // A MUTATION, whose rail refresh is held open across the click that must outlive it.
   holdNext = true;
-  await page.getByTestId("objective-waive").first().click();
+  await objectiveAction(page, "objective-waive");
   await expect
     .poll(() => asked.filter((a) => a.offset === 0).length, { timeout: 10_000 })
     .toBe(2);
@@ -3260,7 +3268,7 @@ test("an OLDER refresh cannot narrow the window you just opened", async ({
   // …AND THE WINDOW IT LEFT BEHIND. The next refresh must still ask for what the operator opened.
   asked.length = 0;
   await goToObjectives(page);
-  await page.getByTestId("objective-waive").nth(1).click();
+  await objectiveAction(page, "objective-waive", 1);
   await expect
     .poll(() => asked.map((a) => a.limit), { timeout: 10_000 })
     .toContain(200);

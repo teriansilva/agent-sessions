@@ -2,6 +2,8 @@ import {
   flipMissionScope,
   openMissionConversation,
   openMissionDetails,
+  objectiveAction,
+  openObjectiveMenu,
 } from "./mission-console";
 /** MISSION CONTROL's own browser gates (#878).
  *
@@ -451,10 +453,17 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
     },
     async () => void (await openMissionDetails(page, "objectives")),
     async () => {
-      // The objective row's own edit controls, plus the rename field it swaps in.
+      // The objective row's ⋯ menu (#967 P3). Rename, Mark not required, Stand down, Move up,
+      // Move down and Remove moved into it, so it is opened and measured as a surface of its own.
       await openMissionDetails(page, "objectives");
-      const rename = page.getByTestId("objective-rename").first();
-      if (await rename.isVisible().catch(() => false)) await rename.click();
+      await openObjectiveMenu(page, 0);
+    },
+    async () => {
+      // …and the rename field Rename swaps in, with the sheet closed through its own Cancel.
+      await page.getByRole("menu").getByRole("button", { name: "Cancel" }).click();
+      await expect(page.getByRole("menu")).toHaveCount(0);
+      await objectiveAction(page, "objective-rename", 0);
+      await expect(page.getByTestId("objective-rename-input")).toBeVisible();
     },
     async () => void (await openMissionDetails(page, "timeline")),
     async () => {
@@ -563,6 +572,9 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
       const roots = [
         document.querySelector('[data-testid="mission-console"]'),
         railOnScreen ? railNav : null,
+        // An objective row's ⋯ menu, while it is open (#967 P3). It is portalled to <body>, so it
+        // is outside the console's subtree, and its items are this surface's controls.
+        document.querySelector('[role="menu"][aria-label^="Actions for"]'),
       ].filter(Boolean) as HTMLElement[];
       const bad: string[] = [];
       const names: string[] = [];

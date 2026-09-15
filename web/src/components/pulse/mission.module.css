@@ -223,43 +223,8 @@
 
 /* --- objectives ---------------------------------------------------------------- */
 
-/* THREE COLUMNS, NOT A STACK (#942): state dot | what the objective is | what you can do to it.
- *
- * Folding follow-through onto the row put the supervisor's reading under the title and left the
- * edit controls between them — five boxed 44px buttons on a line of their own, so one objective
- * was ~190px tall and a three-objective mission filled the screen with loose chrome. The actions
- * belong at the end of the row they act on; the reading belongs under the title it describes. */
-.objRow {
-  display: grid;
-  /* MOBILE FIRST, and the reason is a measurement: at 412px a third `auto` track sized itself to
-   * the five controls (~300px) and starved `minmax(0, 1fr)` down to about one character per line,
-   * so "CI is green on the head SHA" rendered as a vertical column of letters. An `auto` track
-   * wins that argument every time, so on a phone the actions go BELOW the title instead — same
-   * three regions, stacked rather than side by side. */
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: start;
-  gap: 10px;
-  padding: 0.55rem 0;
-  border-bottom: 1px solid var(--line);
-  /* The 44px coarse-pointer floor, inherited from the follow-through row this absorbed (#942).
-   * The row is not a tap target itself; it is the rhythm the controls that land in it — STAND
-   * DOWN, RENAME, NOT REQUIRED, REMOVE — sit inside. */
-  min-height: 44px;
-}
-.objRow:last-child {
-  border-bottom: 0;
-}
-.objTitle {
-  overflow-wrap: anywhere;
-  font-size: 0.82rem;
-  overflow-wrap: anywhere;
-}
-.objWhen {
-  overflow-wrap: anywhere;
-  display: block;
-  font-size: 0.68rem;
-  color: var(--text-3);
-}
+/* The objective row (#942, re-laid out by #967 P3) is defined in the P3 block at the end of this
+ * sheet: handle | dot | title with one meta line | ⋯. */
 /* A probe that could not run reports its LAST OBSERVED state, visibly stale, naming the reason.
  * Nothing is ever marked met or failed on data the server could not fetch.
  *
@@ -945,32 +910,9 @@
   line-height: 1.5;
 }
 
-/* The row's third column. `justify-content: flex-end` keeps it against the right edge at any
- * width; it still wraps rather than overflowing on a phone, where the grid collapses the middle
- * column instead of pushing this off-screen. */
-.objEdit {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-  /* Column 2 of the NEXT row on a phone — stated explicitly, because auto-placement would
-   * otherwise drop it into column 1, under the state dot. */
-  grid-column: 2;
-  justify-content: flex-start;
-}
-
-/* Wide enough for the third track to earn its place: the controls sit at the end of the row they
- * act on, and the title keeps the width it needs. 900px is where five 44px controls plus a
- * readable title stop competing, measured rather than guessed. */
-@media (min-width: 900px) {
-  .objRow {
-    grid-template-columns: auto minmax(0, 1fr) auto;
-  }
-  .objEdit {
-    grid-column: 3;
-    grid-row: 1;
-    justify-content: flex-end;
-  }
-}
+/* The objective row's old button column (`.objEdit`) is gone: its actions are in the row's ⋯ menu
+ * (#967 P3, see the P3 block at the end of this sheet). `.objEditBtn` stays for the roster and
+ * spawn controls that still use it. */
 .objEditBtn {
   min-height: 44px;
   padding: 6px 10px;
@@ -1637,14 +1579,6 @@
 .disclosureContent[hidden] {
   display: none;
 }
-.disclosureContent .objRow {
-  grid-template-columns: auto minmax(0, 1fr);
-}
-.disclosureContent .objEdit {
-  grid-column: 2;
-  grid-row: auto;
-  justify-content: flex-start;
-}
 .hideThread {
   display: none;
 }
@@ -2084,6 +2018,180 @@
 .missionTitle {
   font-size: 16px;
   font-weight: 600;
+}
+
+/* --- #967 P3: objective rows — handle, dot, title, ⋯; drag to reorder ---------------------------
+ *
+ * One row: a 44×44 drag handle, the state dot, the title with one meta line under it, and a 44×44
+ * ⋯. Every action on the row is in ⋯ (the shared RowMenu), so a row never grows a strip of wrapping
+ * buttons; the old third column and its `.disclosureContent` override went with it. Flex rather than
+ * a grid: a read-only row has no handle and no ⋯, and the title takes what is left either way.
+ *
+ * The handle and ⋯ top-align with the FIRST title line: the body is padded so that line's centre sits
+ * at the 22px centre of a 44px control, and the dot is placed on the same centre. */
+.objList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.objRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-height: 44px;
+  border-bottom: 1px solid var(--line);
+}
+.objRow:last-child {
+  border-bottom: 0;
+}
+/* The row being dragged: lifted onto the raised ground with a 1px accent edge (affordance, not
+ * status), above the rows it slides past. The others move aside to show where it will land. */
+.objRowDragging {
+  position: relative;
+  z-index: 2;
+  background: var(--bg-2);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+.objHandle,
+.objMenuBtn {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+}
+/* THE ONLY PLACE A DRAG STARTS, and the only element that turns off the browser's own touch panning.
+ * Everything else on the row keeps `touch-action: auto`, so a swipe that starts on the title scrolls
+ * the column instead of picking the row up. */
+.objHandle {
+  touch-action: none;
+  cursor: grab;
+}
+.objRowDragging .objHandle {
+  cursor: grabbing;
+  color: var(--accent);
+}
+.objHandle:hover,
+.objMenuBtn:hover,
+.objMenuBtn[aria-expanded="true"] {
+  color: var(--text-1);
+  background: var(--row-hover);
+}
+.objHandle:focus-visible,
+.objMenuBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+/* A row built from the assessment alone, in a list that can be reordered: it cannot be dragged, and
+ * holds the handle's column so its dot and title line up with the rows above. */
+.objHandleSpace {
+  flex: none;
+  width: 44px;
+}
+.objDot {
+  margin-top: 18px;
+}
+.objBody {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 13px 0 10px;
+}
+.objRow .objTitle {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+/* The state word, where the dot draws a state (met, waived, failed): never colour alone (§8). */
+.objState {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+}
+/* The neutral dot's state word, for screen readers only. */
+.objSr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+/* The supervisor's mission-level refusal, said once for the section (`sharedReason`). The server's
+ * sentence starts in lower case because it is written to follow a title; here it opens a notice. */
+.objNotice {
+  margin: 0 0 4px;
+  padding: 0.6rem 0.75rem;
+  font-size: 13px;
+  color: var(--text-2);
+  border-left: 3px solid var(--text-3);
+  background: var(--glass);
+}
+.objNotice::first-letter {
+  text-transform: uppercase;
+}
+/* A refused reorder: a write that failed, so the failure edge and the text-safe red. */
+.objRefused {
+  margin: 0 0 4px;
+  padding: 0.5rem 0.75rem;
+  font-size: 13px;
+  color: var(--danger-text);
+  border-left: 3px solid var(--status-down);
+  background: var(--glass);
+}
+/* The title's own disclosure (#967 P3, Hermes on #985). Only a title that is actually clipped at two
+ * lines is a control; the rest stay plain text. It keeps `touch-action` as it is: a swipe that starts
+ * on a title still scrolls, and only the handle starts a drag. */
+.objTitleBox {
+  display: block;
+}
+.objTitleToggle {
+  cursor: pointer;
+}
+.objTitleToggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* Open: the whole requirement, however many lines it takes. Same specificity as the clamp, later. */
+.objRow .objTitleOpen {
+  display: block;
+  -webkit-line-clamp: unset;
+  overflow: visible;
+}
+.objTitleMore {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.objTitleToggle:hover .objTitleMore,
+.objTitleToggle:focus-visible .objTitleMore {
+  color: var(--text-1);
+}
+/* A finger's target (§8): the title and its "more" line together reach the floor. */
+@media (max-width: 800px) {
+  .objTitleToggle {
+    min-height: 44px;
+  }
 }
 
 /* =================================================================================================

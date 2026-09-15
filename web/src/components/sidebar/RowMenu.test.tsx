@@ -269,6 +269,76 @@ describe("MenuPopover — element anchor", () => {
   });
 });
 
+describe("per-menu sheet title, danger, hint and data attributes (#967)", () => {
+  test("the bottom-sheet heading stays 'Session actions' unless the caller names another", async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(<RowMenu items={entries({})} title="My session" />);
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    expect(screen.getByText("Session actions", { selector: "div" })).toBeInTheDocument();
+    unmount();
+
+    render(
+      <RowMenu
+        items={entries({})}
+        title="A PR is open"
+        sheetTitle="Objective actions"
+        triggerLabel='Actions for "A PR is open"'
+        triggerTestId="objective-menu"
+      />,
+    );
+    await user.click(screen.getByTestId("objective-menu"));
+    expect(screen.getByText("Objective actions")).toBeInTheDocument();
+    expect(screen.queryByText("Session actions")).not.toBeInTheDocument();
+    expect(screen.getByRole("menu", { name: 'Actions for "A PR is open"' })).toBeInTheDocument();
+  });
+
+  test("a trigger class replaces the default one rather than stacking on it", () => {
+    render(<RowMenu items={entries({})} triggerClassName="big" />);
+    const trigger = screen.getByRole("button", { name: "Session actions" });
+    expect(trigger.className).toBe("big");
+  });
+
+  test("an item carries its data attributes, its danger class and its hint", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    render(
+      <RowMenu
+        items={[
+          {
+            key: "stand",
+            label: "Stand down",
+            hint: "No session to nudge",
+            disabled: true,
+            icon: <Pencil size={15} />,
+            data: { "data-testid": "objective-stand-down", "data-episode": 4 },
+            onSelect,
+          },
+          {
+            key: "drop",
+            label: "Remove",
+            danger: true,
+            icon: <Archive size={15} />,
+            data: { "data-testid": "objective-drop" },
+            onSelect,
+          },
+        ]}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    const stand = screen.getByTestId("objective-stand-down");
+    expect(stand).toHaveAttribute("role", "menuitem");
+    expect(stand).toHaveAttribute("data-episode", "4");
+    expect(stand).toHaveAttribute("aria-disabled", "true");
+    expect(stand).toHaveTextContent("No session to nudge");
+    await user.click(stand);
+    expect(onSelect).not.toHaveBeenCalled();
+    const drop = screen.getByTestId("objective-drop");
+    expect(drop.className).toMatch(/itemDanger/);
+    // Only an item with a hint wraps its label, so the session menus keep their DOM.
+    expect(drop.querySelector("span + span")).toBeNull();
+  });
+});
+
 test("onOpenChange mirrors open/close so the row can pin its action cluster visible", async () => {
   const user = userEvent.setup();
   const onOpenChange = vi.fn();

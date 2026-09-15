@@ -122,6 +122,31 @@
   margin: 4px 0;
 }
 
+/* A destructive item (#967): the label and its icon in the text-safe failure red, on hover and
+ * focus too, so the one item that removes something never reads like its neighbours. */
+.item.itemDanger,
+.item.itemDanger:hover:not([aria-disabled]),
+.item.itemDanger:focus,
+.item.itemDanger .itemIcon,
+.item.itemDanger:hover:not([aria-disabled]) .itemIcon,
+.item.itemDanger:focus .itemIcon {
+  color: var(--danger-text);
+}
+
+/* An item with a second line — why it is disabled, for one (#967). Only such an item wraps its
+ * label, so every other menu keeps its single-line DOM. */
+.itemText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.itemHint {
+  font-size: 10.5px;
+  color: var(--text-3, var(--text-muted));
+  white-space: normal;
+}
+
 /* Sheet chrome — hidden on desktop, shown by the mobile query below. */
 .sheetHead {
   display: none;

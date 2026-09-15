@@ -298,6 +298,8 @@ test("STAND DOWN sends the episode the row was RENDERED at, never 'whatever is c
       onStandDown={onStandDown}
     />,
   );
+  // In the row's ⋯ menu since #967 P3; the fence below is unchanged.
+  await userEvent.click(screen.getByTestId("objective-menu"));
   const btn = screen.getByTestId("objective-stand-down");
   // Carried on the element too, so the browser gate can read it without reaching into React.
   expect(btn).toHaveAttribute("data-episode", "4");
