@@ -2,15 +2,18 @@ import encodeQR from "@paulmillr/qr";
 import {
   ArrowLeft,
   ArrowRight,
+  BookOpen,
   Check,
+  ExternalLink,
   FolderPlus,
   ShieldCheck,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useConfig } from "../app/config";
 import { api } from "../lib/api";
+import { DOCS_HOME_URL } from "../lib/links";
 import { EnableLoginDetails } from "../components/EnableLoginDetails";
 import { mintNewSessionId } from "../lib/newSession";
 import type { EngineInfo, Folder, TwoFactorEnrollment } from "../types/api";
@@ -88,7 +91,7 @@ const SLIDES: { img: string; title: string; body: string }[] = [
   {
     img: publicAsset("onboarding/settings.svg"),
     title: "Tune it in Settings",
-    body: "Your AI endpoint, auto-sort, themes, security and more — all in Settings. Re-open this tour, see what's new, or re-run the full setup, any time from Help.",
+    body: "Your AI endpoint, auto-sort, themes, security and more — all in Settings. The ? in the top bar brings back this tour (and a full setup re-run), the documentation and what's new, any time.",
   },
 ];
 
@@ -399,10 +402,30 @@ export function Onboarding({
               reachable from any browser via the Connect page — end-to-end
               encrypted, sessions up to 4 hours.
             </p>
+            <p className={styles.copy}>
+              Every feature is documented, along with the security model and the
+              CLI and API reference, at{" "}
+              <a href={DOCS_HOME_URL} target="_blank" rel="noopener noreferrer">
+                {new URL(DOCS_HOME_URL).host}
+              </a>
+              .
+            </p>
             <Foot>
               <button type="button" className={styles.ghost} onClick={finish}>
                 Skip setup
               </button>
+              {/* A new tab, so the wizard and its progress stay exactly where they are (#987). */}
+              <a
+                className={styles.ghost}
+                style={{ textDecoration: "none" }}
+                href={DOCS_HOME_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="Docs (opens in a new tab)"
+              >
+                <BookOpen size={14} aria-hidden="true" /> Docs{" "}
+                <ExternalLink size={12} aria-hidden="true" />
+              </a>
               <span className={styles.grow} />
               <button
                 type="button"
@@ -763,6 +786,14 @@ export function Onboarding({
               />
               <span>Skip permission prompts</span>
             </label>
+            <p className={styles.copy}>
+              Want to read first? The{" "}
+              <a href={DOCS_HOME_URL} target="_blank" rel="noopener noreferrer">
+                docs
+              </a>{" "}
+              cover every feature — and the ? in the top bar brings back the tour,
+              the docs and What's new at any time.
+            </p>
             <Foot>
               <button type="button" className={styles.ghost} onClick={finish}>
                 Finish without launching
@@ -808,6 +839,18 @@ function Overlay({
     window.addEventListener("keydown", on);
     return () => window.removeEventListener("keydown", on);
   }, [onClose]);
+  // Focus moves INTO the overlay (#987). A frame late on purpose: opened from the Help menu in the
+  // phone drawer, the menu and the drawer close in the same commit and each restores its trigger a
+  // frame later — a synchronous focus here would be undone by those restores. This frame is queued
+  // after theirs, so it runs after them; and it leaves focus alone if it already arrived inside.
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const id = requestAnimationFrame(() => {
+      const card = cardRef.current;
+      if (card && !card.contains(document.activeElement)) card.focus();
+    });
+    return () => cancelAnimationFrame(id);
+  }, []);
   return (
     <div
       className={styles.scrim}
@@ -815,7 +858,11 @@ function Overlay({
       aria-modal="true"
       aria-label={title}
     >
-      <div className={`${styles.card} ${wide ? styles.wide : ""}`}>
+      <div
+        ref={cardRef}
+        tabIndex={-1}
+        className={`${styles.card} ${wide ? styles.wide : ""}`}
+      >
         <Brackets hero />
         <header className={styles.bar}>
           <span className={styles.brand}>

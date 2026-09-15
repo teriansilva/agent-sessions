@@ -1,8 +1,8 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
+import { DOCS_HOME_URL } from "../lib/links";
 import { newestRelease } from "./due";
-import { DOCS_HOME_URL } from "./releases";
 import { WhatsNewDialog } from "./WhatsNewDialog";
 
 const release = newestRelease()!;

@@ -2,7 +2,6 @@ import {
   BookMarked,
   Crosshair,
   TerminalSquare,
-  HelpCircle,
   Menu,
   Network,
   PanelLeftClose,
@@ -27,12 +26,13 @@ import {
   useNavigate,
 } from "react-router-dom";
 import { NotificationBell } from "../components/pulse/NotificationBell";
+import { HelpMenu } from "../components/shell/HelpMenu";
 import { SessionList } from "../components/sidebar/SessionList";
 import { MissionRailSlotProvider } from "../components/pulse/railSlot";
 import { useModalDrawer } from "../components/pulse/useModalDrawer";
 import { NewSessionLanding } from "../routes/NewSessionLanding";
 import { Onboarding } from "../routes/Onboarding";
-import { whatsNewBundleVersion } from "../whatsnew/due";
+import { whatsNewBundleVersion, whatsNewLabel } from "../whatsnew/due";
 import { useWhatsNew } from "../whatsnew/useWhatsNew";
 import { WhatsNewCtx } from "../whatsnew/WhatsNewContext";
 import { WhatsNewDialog } from "../whatsnew/WhatsNewDialog";
@@ -347,6 +347,8 @@ function Layout() {
     updateReady: version.updateReady,
     persist: persistWhatsNew,
   });
+  // The Help menu's What's new item (#987): absent when no release notes are bundled.
+  const helpWhatsNew = whatsNewLabel();
   const cfgOrder = config?.session_list_order ?? "recent_activity";
   const [orderPending, setOrderPending] = useState<string | null>(null);
   if (orderPending && orderPending === cfgOrder) setOrderPending(null);
@@ -430,14 +432,11 @@ function Layout() {
             <MissionTimer />
           </span>
           <span className="hud-topbar-actions">
-            <button
-              type="button"
-              className="gear"
-              aria-label="Help — replay the tour"
-              onClick={() => setTourOpen(true)}
-            >
-              <HelpCircle size={18} />
-            </button>
+            <HelpMenu
+              onTour={() => setTourOpen(true)}
+              onWhatsNew={whatsNew.open}
+              whatsNewLabel={helpWhatsNew}
+            />
             <NotificationBell />
             <Link
               to="/overview"
@@ -572,17 +571,20 @@ function Layout() {
           </header>
           {/* On small screens the topbar actions collapse into here (behind the hamburger). */}
           <div className="sidebar-actions">
-            <button
-              type="button"
-              className="gear"
-              aria-label="Help — replay the tour"
-              onClick={() => {
-                setTourOpen(true);
+            {/* Choosing the tour or What's new closes the drawer first; the overlay that opens then
+                takes focus a frame later, after the drawer has restored its trigger (#987). */}
+            <HelpMenu
+              align="start"
+              onTour={() => {
                 closeMobileDrawer();
+                setTourOpen(true);
               }}
-            >
-              <HelpCircle size={18} />
-            </button>
+              onWhatsNew={() => {
+                closeMobileDrawer();
+                whatsNew.open();
+              }}
+              whatsNewLabel={helpWhatsNew}
+            />
             <Link
               to="/overview"
               className="gear"

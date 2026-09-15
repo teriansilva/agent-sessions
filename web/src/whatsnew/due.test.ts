@@ -11,7 +11,8 @@ import {
   whatsNewLabel,
   type DueInput,
 } from "./due";
-import { DOCS_HOME_URL, RELEASES, TEMPLATES_ROUTE, type WhatsNewRelease } from "./releases";
+import { DOCS_HOME_URL } from "../lib/links";
+import { RELEASES, TEMPLATES_ROUTE, type WhatsNewRelease } from "./releases";
 import { atLeast, compareVersions, parseVersion } from "./version";
 
 const R020: WhatsNewRelease = {

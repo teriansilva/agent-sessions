@@ -60,10 +60,17 @@ test.describe("Mobile drawer nav — one icon-only row (#494)", () => {
     // The container is a single row tall — a stacked column of 4 would be ~200px.
     expect((await actions.boundingBox())!.height).toBeLessThan(64);
 
-    // Icon-only: an aria-label is the affordance, no visible text label remains.
+    // Icon-only: an aria-label is the affordance, no visible text label remains. An item is either
+    // the control itself or — for Help, which opens a menu since #987 — the anchor wrapper around
+    // its trigger; the label belongs on the control, never on the wrapper (naming a generic element
+    // is not allowed).
     for (let i = 0; i < 4; i++) {
-      expect((await items.nth(i).innerText()).trim()).toBe("");
-      expect(await items.nth(i).getAttribute("aria-label")).toBeTruthy();
+      const item = items.nth(i);
+      expect((await item.innerText()).trim()).toBe("");
+      const isControl = await item.evaluate((el) => el.matches("a, button"));
+      const control = isControl ? item : item.locator(":scope > a, :scope > button");
+      await expect(control).toHaveCount(1);
+      expect(await control.getAttribute("aria-label")).toBeTruthy();
     }
   });
 });

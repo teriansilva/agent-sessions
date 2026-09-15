@@ -1,3 +1,4 @@
+import { DOCS_HOME_URL } from "../lib/links";
 import { MISSION_PATH } from "../lib/missionLink";
 
 /** What's new (#971) — one entry per release, newest wins. The next release adds an entry here and
@@ -36,8 +37,6 @@ export interface WhatsNewRelease {
   slides: WhatsNewSlide[];
 }
 
-/** A page that exists before and after any launch; the release notes are linked from its top. */
-export const DOCS_HOME_URL = "https://docs.battlelab.superstatus.io/";
 export const TEMPLATES_ROUTE = "/templates";
 
 export const RELEASES: readonly WhatsNewRelease[] = [

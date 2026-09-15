@@ -27,6 +27,28 @@
 .card.wide {
   max-width: 900px;
 }
+/* The card takes focus on open so keyboard and screen-reader users land inside it (#987); the
+ * frame is the card's own border, so a focus outline around it would only draw a second one. */
+.card:focus {
+  outline: none;
+}
+/* Links inside the wizard's copy (#987) — the docs pointers on Welcome and Launch. The text colour
+ * with a brand underline, as Settings → About's links draw it, not the browser's default blue; the
+ * underline stays on at rest because these sit inside running text. */
+.copy a {
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-color: var(--brand);
+  text-underline-offset: 3px;
+}
+.copy a:hover {
+  color: var(--brand-soft);
+}
+.copy a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 
 /* Title bar — wordmark + step tag + close. */
 .bar {
