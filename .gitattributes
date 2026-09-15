@@ -2,6 +2,8 @@
 # contain CR and trailing-whitespace bytes, so mark them binary: Git then skips
 # text normalization and `git diff --check` whitespace warnings for them.
 tests/fixtures/term/*.bin binary
+# Real claude startup captures (#966): same reason, and the tests index them by byte offset.
+tests/fixtures/claude_startup_*.bin binary
 
 # --- Public-mirror filter — issue #322 (pre-publish security gate) -----------------------
 # Paths marked `export-ignore` are stripped by `git archive`, so they are EXCLUDED from the

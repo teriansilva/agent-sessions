@@ -96,6 +96,24 @@ _LAST_COLS: dict[str, int] = {}
 # mirror (#273) can size its emulator to the agent's full geometry (height matters: Ink's cursor-up
 # repaints must overwrite within the same screen height or they duplicate). Best-effort, in-memory.
 _LAST_ROWS: dict[str, int] = {}
+# The geometry a server-owned headless reader attaches at when no viewer has reported one.
+DEFAULT_READER_ROWS = 24
+DEFAULT_READER_COLS = 80
+
+
+def reader_size(key: str) -> tuple[int, int]:
+    """``(rows, cols)`` a headless reader sizes its pty to: the last geometry reported for ``key``,
+    else 80×24, and never 0×0 (#297).
+
+    ONE answer with two readers: `session_stream.SessionStream.start` attaches at it, and
+    `headless_seed`'s claude rule (#966) judges the screen at it. A screen rendered at a size the
+    agent is not drawing to counts the wrong rows, so the two must not be able to disagree.
+    """
+    rows = _LAST_ROWS.get(key) or DEFAULT_READER_ROWS
+    cols = _LAST_COLS.get(key) or DEFAULT_READER_COLS
+    return max(1, int(rows)), max(1, int(cols))
+
+
 # Per-key wall-clock of the last byte we observed flowing from the agent (#156). Powers the
 # "agent working" indicator (#156). Stamped from the byte-ingest path; the #183
 # SessionStream keeps it fresh even with no browser attached. Best-effort and bounded by
@@ -199,6 +217,18 @@ _MODES: dict[str, set[int]] = {}
 # `painted == False` forever on the next attach even though the TUI is fully up. This flag
 # preserves the first-paint evidence across attachments so the pending seed can be delivered.
 _READY: set[str] = set()
+# WHICH rule stamped each `_READY` key (#966), mirrored from the `.ready` sidecar's content. A bare
+# flag could not tell a stamp that measured a screen from one that only counted bytes, so headless
+# claude — whose ready screen is smaller than the byte rule's threshold — could only trust every
+# stamp or none. The sources are documented on `note_first_paint`.
+_READY_SOURCE: dict[str, str] = {}
+FIRST_PAINT_SOURCES = frozenset({"bytes", "attach", "screen:claude"})
+#: What a sidecar written before #966 (content ``"1"``) — or any content this version does not
+#: recognise — hydrates as. Read, never written.
+FIRST_PAINT_LEGACY = "legacy"
+#: The sources that observed a PAINTED SCREEN rather than a byte count. A stamp from one of these
+#: upgrades a weak one, and is never overwritten by one.
+MEASURED_FIRST_PAINT_SOURCES = frozenset({"attach", "screen:claude"})
 # Per-key trailing partial private-mode sequence carried across chunk boundaries, so a
 # DECSET/DECRST split between two reads is still recognized. The scan must be incremental
 # (not derived from the retained ring like `_in_alt_screen`'s whole-ring rfind): the
@@ -307,17 +337,56 @@ def _ready_path(key: str) -> Path:
     return _SCROLLBACK_DIR / (key.replace(":", "__") + ".ready")
 
 
-def note_first_paint(key: str) -> None:
+def _read_ready_source(key: str) -> str | None:
+    """The `.ready` sidecar's stamp source: None when there is no sidecar, `FIRST_PAINT_LEGACY` for
+    pre-#966 or unrecognised content — an old stamp still reads as a stamp, just not a measured one.
+    """
+    try:
+        raw = _ready_path(key).read_text()
+    except UnicodeDecodeError:
+        return FIRST_PAINT_LEGACY
+    except OSError:
+        return None
+    raw = raw.strip()
+    return raw if raw in FIRST_PAINT_SOURCES else FIRST_PAINT_LEGACY
+
+
+def note_first_paint(key: str, source: str = "bytes") -> None:
     """Record — durably — that ``key``'s TUI has painted a full screen at least once
-    (#597 / PR #703 review round 4). Idempotent + best-effort; persisted so a later attach
-    inherits the readiness evidence that the live ``out_bytes`` counter can't carry across
-    a reconnect."""
-    if key in _READY:
-        return
-    _READY.add(key)
+    (#597 / PR #703 review round 4). Best-effort; persisted so a later attach inherits the
+    readiness evidence that the live ``out_bytes`` counter can't carry across a reconnect.
+
+    ``source`` is what the stamp is evidence OF (#966), and is what the sidecar holds:
+
+    * ``"bytes"`` — `headless_seed`'s byte rule: the ring grew past a threshold. Says nothing
+      about the screen.
+    * ``"attach"`` — the browser attach path, which counted that run's own live bytes at the
+      browser's real size.
+    * ``"screen:claude"`` — `headless_seed`'s claude rule: alt screen active, rows drawn on it.
+
+    Idempotent, with one exception: a weak stamp (``"legacy"`` / ``"bytes"``) is UPGRADED, and
+    the sidecar rewritten, by a measured one (`MEASURED_FIRST_PAINT_SOURCES`). Evidence only gets
+    stronger. The sidecar is consulted before deciding, so a key this process has not hydrated
+    yet cannot have a measured stamp from an earlier process overwritten by a byte-rule one."""
+    if source not in FIRST_PAINT_SOURCES:
+        raise ValueError(f"unknown first-paint source: {source!r}")
+    on_disk = None if key in _READY else _read_ready_source(key)
+    with _RING_LOCK:  # the worker-thread hydrate in `_ensure_loaded` applies the same two maps
+        if on_disk is not None and key not in _READY:
+            _READY.add(key)
+            _READY_SOURCE[key] = on_disk
+        if key in _READY:
+            current = _READY_SOURCE.get(key, FIRST_PAINT_LEGACY)
+            if (
+                current in MEASURED_FIRST_PAINT_SOURCES
+                or source not in MEASURED_FIRST_PAINT_SOURCES
+            ):
+                return
+        _READY.add(key)
+        _READY_SOURCE[key] = source
     try:
         _SCROLLBACK_DIR.mkdir(parents=True, exist_ok=True)
-        _ready_path(key).write_text("1")
+        _ready_path(key).write_text(source)
     except OSError:
         pass  # best-effort, like the mirror + `.modes` sidecar
 
@@ -327,6 +396,18 @@ def first_paint_seen(key: str) -> bool:
     survives the viewer disconnect the injector's per-``run()`` byte counter cannot)."""
     _ensure_loaded(key)
     return key in _READY
+
+
+def first_paint_source(key: str) -> str | None:
+    """Which rule stamped ``key``'s first paint (#966): one of `FIRST_PAINT_SOURCES`, or
+    `FIRST_PAINT_LEGACY` for a stamp written before sources existed. None when never stamped.
+
+    `first_paint_seen` is still the answer for every caller that accepts any stamp; this is for
+    the one that must not — headless claude, where a byte-rule stamp proves nothing."""
+    _ensure_loaded(key)
+    if key not in _READY:
+        return None
+    return _READY_SOURCE.get(key, FIRST_PAINT_LEGACY)
 
 
 def attach_modes_payload(key: str) -> bytes:
@@ -472,8 +553,9 @@ def _ensure_loaded(key: str) -> None:
                 if tok.strip().isdigit() and int(tok) in _MODE_TRACK
             }
     # Restore the handoff first-paint-readiness flag (#597 / PR #703 r4) so a reconnect can
-    # deliver a still-pending seed to an already-painted, now-idle TUI.
-    ready_seen = key not in _READY and _ready_path(key).exists()
+    # deliver a still-pending seed to an already-painted, now-idle TUI — and, since #966, WHICH
+    # rule stamped it (a pre-#966 "1" hydrates as "legacy").
+    ready_source = None if key in _READY else _read_ready_source(key)
     try:
         # #652 T4: bounded tail read — the on-disk mirror can be ~2×`_MAX_BUF`, and
         # `read_bytes()[-_MAX_BUF:]` allocated the whole file (up to 16 MB) on the first
@@ -489,8 +571,9 @@ def _ensure_loaded(key: str) -> None:
             _LAST_COLS[key] = cols
         if modes is not None and key not in _MODES:
             _MODES[key] = modes
-        if ready_seen:
+        if ready_source is not None and key not in _READY:
             _READY.add(key)
+            _READY_SOURCE[key] = ready_source
         # Only seed the ring if nothing live already holds it (the loop's ring is authoritative).
         if data and key not in _BUFFERS:
             _BUFFERS[key] = bytearray(data)
@@ -593,8 +676,9 @@ def _drop_buffer(key: str) -> None:
     _MODE_CARRY.pop(key, None)
     # Handoff readiness (#597 / PR #703 r4) is in-memory only here; the `.ready` sidecar is
     # durable (removed solely by `clear_scrollback`), so a later touch re-hydrates it via
-    # `_ensure_loaded` — exactly like `_MODES`.
+    # `_ensure_loaded` — exactly like `_MODES`. Its source (#966) travels with it.
     _READY.discard(key)
+    _READY_SOURCE.pop(key, None)
     _SUBMITTED.discard(key)
     _SANITIZE_CARRY.pop(key, None)
     _LOADED_FROM_DISK.discard(key)

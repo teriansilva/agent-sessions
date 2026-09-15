@@ -26,10 +26,21 @@ and reports success, which is the worst available outcome: an unseeded session t
 The gate is therefore **armed AND painted AND quiet**, exactly as `webterm._inject_seed` computes
 it, with the same constants.
 
+**"Painted" is decided per engine (#966).** The byte rule (`FIRST_PAINT_BYTES`, 2048) was
+calibrated engine-agnostically: a cold codex first-run home (~1.4 KB, not ready) fails it and a warm
+one (~4 KB) passes. But claude's whole READY startup, through the production `dtach -n` + reader
+path, is 1435 B at 80×24 and 1690 B at 120×40 (claude 2.1.272) — the same size as codex's not-ready
+screen. No byte count separates those two, so the gate never opened for a headless claude and every
+headless mission start failed "first-paint never true". Claude therefore gets a rule about its
+SCREEN (`_painted_claude`, measured numbers at `CLAUDE_PAINT_MIN_ROWS`); every other engine keeps
+the byte rule unchanged. The browser-attach gate in `webterm` is not touched: it counts one run's
+live bytes at the browser's real size, where claude's screen does clear 2048 B.
+
 **Fail SAFE, loudly.** On timeout nothing is written and the seed stays pending — an unseeded
 session with a warning beats bytes pasted into the void. The caller then reports `failed` with a
 reason rather than `running`, which is condition 5's other half: a brief that did not land is not
-a dispatch that worked.
+a dispatch that worked. The reason says what the paint rule actually saw, so "never ready" can be
+told apart from "ready, but under a threshold that does not fit this engine".
 """
 
 from __future__ import annotations
@@ -37,8 +48,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Callable
+from typing import NamedTuple
 
-from . import scrollback, session_input, webterm
+from . import scrollback, session_input, vtscreen, webterm
 
 log = logging.getLogger(__name__)
 
@@ -51,28 +64,146 @@ FIRST_PAINT_BYTES = webterm._SEED_FIRST_PAINT_BYTES
 QUIET_S = webterm._SEED_QUIET_S
 SETTLE_S = webterm._SEED_SETTLE_S
 
+#: **Headless claude is painted when it is on the alternate screen with at least this many non-blank
+#: rows drawn there**, rendered at the headless reader's size (`scrollback.reader_size`).
+#:
+#: Measured, not chosen (`tests/fixtures/claude_startup.PROVENANCE.md`: claude 2.1.272, real
+#: `dtach -n` master + `dtach -a` reader, 80×24 and 120×40). The painted startup screen is **8–9**
+#: non-blank rows at both sizes, and **every state before the paint read is 0 rows** — including a
+#: real **61 B** window at 120×40 that is already bracketed-paste-armed and quiet for over a second,
+#: which a gate on armed + quiet alone would have typed into. One of the painted rows (a login
+#: warning) is account state, so the structural floor is 7; 4 sits well clear of both 0 and 7.
+#:
+#: **Fixed, not scaled by height**: claude's startup screen does not grow with the terminal — 9 then
+#: 8 rows at 24 rows AND at 40. A height-scaled N would demand more rows from a taller reader that
+#: draws exactly the same screen, and a tall enough one would never open.
+CLAUDE_PAINT_MIN_ROWS = 4
 
-def _painted(key: str) -> bool:
-    """Has the TUI actually drawn something?
+# The alternate-screen switches. 1049 is what claude sends; 1047 and 47 are older spellings of the
+# same switch that a terminal honours too, so leaving by one after entering by another is leaving.
+_ALT_ENTER = (b"\x1b[?1049h", b"\x1b[?1047h", b"\x1b[?47h")
+_ALT_LEAVE = (b"\x1b[?1049l", b"\x1b[?1047l", b"\x1b[?47l")
+# How much of the current alt-screen visit is replayed. The rule runs on the event loop every POLL_S
+# until it stamps, so the render is bounded: claude's whole startup is under 2 KB, and a full redraw
+# of a large screen is well inside this.
+_CLAUDE_SCREEN_BYTES = 64 * 1024
+
+
+def _ring_len(key: str) -> int:
+    # The ring's own length. Read through the module's registry rather than a byte counter because
+    # a headless reader keeps no per-run count: `session_stream` drains into the ring, and the ring
+    # is the thing that survives a reader restart.
+    return len(scrollback._BUFFERS.get(key) or b"")
+
+
+def _painted_by_bytes(key: str) -> bool:
+    """Every engine but claude: enough ring bytes — the rule as it was before #966, unchanged.
 
     Read from the DURABLE observation rather than from a byte counter, because a headless reader
-    has no per-run counter to keep: `session_stream` drains into the ring, and the ring is what
-    survives. `note_first_paint` is stamped by whoever saw it first — this path or an attach — so
-    a session that painted before the dispatcher looked is still correctly painted.
+    has no per-run counter to keep. `note_first_paint` is stamped by whoever saw it first — this
+    path or an attach — and ANY stamp counts here, so a session that painted before the dispatcher
+    looked is still correctly painted.
     """
     if scrollback.first_paint_seen(key):
         return True
     try:
-        # The ring's own length. Read through the module's registry rather than a byte counter
-        # because a headless reader keeps no per-run count: `session_stream` drains into the ring,
-        # and the ring is the thing that survives a reader restart.
-        n = len(scrollback._BUFFERS.get(key) or b"")
+        n = _ring_len(key)
     except Exception:  # noqa: BLE001 — an unreadable ring is "not painted yet", never "ready"
         return False
     if n >= FIRST_PAINT_BYTES:
-        scrollback.note_first_paint(key)
+        scrollback.note_first_paint(key, source="bytes")
         return True
     return False
+
+
+def _observed_by_bytes(key: str) -> str:
+    rows, cols = scrollback.reader_size(key)
+    try:
+        n = _ring_len(key)
+    except Exception:  # noqa: BLE001 — the reason must never be what fails
+        return f"the ring could not be read at {cols}×{rows}"
+    return f"{n} B of {FIRST_PAINT_BYTES} B at {cols}×{rows}"
+
+
+def _claude_screen(key: str) -> tuple[bool, int, int, int]:
+    """``(alt_screen_active, non_blank_rows, rows, cols)``, at the headless reader's size.
+
+    Rows are counted from the last alt-screen ENTER onward, because `vtscreen` does not model the
+    alternate screen (it skips every ``CSI ? … h/l``): text drawn on the primary screen before the
+    switch would otherwise survive into the frame and be counted as claude's paint. Entering the
+    alternate screen shows a blank one, which is exactly what replaying from that offset reproduces.
+    Alt-screen state is read from the bytes for the same reason — the renderer cannot say.
+    """
+    rows, cols = scrollback.reader_size(key)
+    with scrollback._RING_LOCK:
+        ring = scrollback._BUFFERS.get(key)
+        if not ring:
+            return False, 0, rows, cols
+        enter = max(ring.rfind(seq) for seq in _ALT_ENTER)
+        if enter <= max(ring.rfind(seq) for seq in _ALT_LEAVE):
+            return False, 0, rows, cols
+        start = max(enter, len(ring) - _CLAUDE_SCREEN_BYTES)
+        # A bounded cut can land inside a control string; its payload would then read as text.
+        cut_inside = start > enter and vtscreen.starts_inside_control_string(ring, start)
+        screen = bytes(ring[start:])
+    if cut_inside:
+        screen = vtscreen.drop_open_control_prefix(screen)
+    frame = vtscreen.render(screen, rows, cols)
+    return True, sum(1 for line in frame.split("\n") if line.strip()), rows, cols
+
+
+def _painted_claude(key: str) -> bool:
+    """Claude: on the alternate screen with `CLAUDE_PAINT_MIN_ROWS` rows drawn (see there).
+
+    **A durable stamp counts only if it measured a screen.** `"attach"` (the browser path counted
+    that run's own bytes at its real size) and `"screen:claude"` (this rule) do. `"bytes"` and a
+    pre-#966 `"legacy"` stamp do NOT: the byte rule is exactly what cannot tell a ready claude from
+    a not-ready one, so inheriting its verdict would reopen the bug through the side door. Such a
+    stamp is re-evaluated from the ring instead, and upgraded when the screen rule holds.
+    """
+    if scrollback.first_paint_source(key) in scrollback.MEASURED_FIRST_PAINT_SOURCES:
+        return True
+    try:
+        alt, drawn, _rows, _cols = _claude_screen(key)
+    except Exception:  # noqa: BLE001 — an unreadable screen is "not painted yet", never "ready"
+        return False
+    if alt and drawn >= CLAUDE_PAINT_MIN_ROWS:
+        scrollback.note_first_paint(key, source="screen:claude")
+        return True
+    return False
+
+
+def _observed_claude(key: str) -> str:
+    try:
+        alt, drawn, rows, cols = _claude_screen(key)
+    except Exception:  # noqa: BLE001 — the reason must never be what fails
+        rows, cols = scrollback.reader_size(key)
+        return f"the screen could not be read at {cols}×{rows}"
+    state = "alt screen active" if alt else "alt screen not active"
+    return f"{state}, {drawn} of {CLAUDE_PAINT_MIN_ROWS} rows at {cols}×{rows}"
+
+
+class _PaintRule(NamedTuple):
+    painted: Callable[[str], bool]
+    #: What the rule saw, for the failure reason — declared beside the predicate so an engine can
+    #: never gain a rule whose failure is described in another rule's terms.
+    observed: Callable[[str], str]
+
+
+_BY_BYTES = _PaintRule(_painted_by_bytes, _observed_by_bytes)
+
+#: Engines whose "painted" is NOT the byte rule, keyed on the session key's engine prefix
+#: (`claude:<uuid>`) — `_painted` is handed a key, not a provider. Anything absent: `_BY_BYTES`.
+_PAINTED: dict[str, _PaintRule] = {"claude": _PaintRule(_painted_claude, _observed_claude)}
+
+
+def _rule(key: str) -> _PaintRule:
+    return _PAINTED.get(key.split(":", 1)[0], _BY_BYTES)
+
+
+def _painted(key: str) -> bool:
+    """Has the TUI actually drawn something? Per engine — see `_PAINTED`."""
+    return _rule(key).painted(key)
 
 
 async def wait_ready(key: str, *, timeout: float | None = None) -> tuple[bool, str]:
@@ -80,7 +211,7 @@ async def wait_ready(key: str, *, timeout: float | None = None) -> tuple[bool, s
 
     ``why_not`` is returned rather than logged-and-dropped because it is what the dispatch reports
     as its failure reason, and "the brief was never delivered" is useless without which of the
-    three never came true.
+    three never came true — and, for first-paint, what the rule saw instead.
     """
     deadline = time.monotonic() + (READY_TIMEOUT_S if timeout is None else timeout)
     last_epoch = -1
@@ -106,7 +237,12 @@ async def wait_ready(key: str, *, timeout: float | None = None) -> tuple[bool, s
         for name, ok in (("bracketed-paste", armed), ("first-paint", painted), ("quiet", quiet))
         if not ok
     ]
-    return False, f"the session never became ready ({', '.join(missing)} never true)"
+    reason = f"{', '.join(missing)} never true"
+    if not painted:
+        # e.g. "1432 B of 2048 B at 80×24" or "alt screen active, 3 of 4 rows at 80×24": a gate
+        # that stays shut under a threshold that does not fit the engine must say so.
+        reason += f": {_rule(key).observed(key)}"
+    return False, f"the session never became ready ({reason})"
 
 
 async def deliver(key: str, seed_key: str, *, timeout: float | None = None) -> tuple[bool, str]:

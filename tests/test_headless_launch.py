@@ -218,14 +218,21 @@ async def test_THE_BRIEF_ACTUALLY_ARRIVES_with_no_browser_anywhere(sockdir, tmp_
     production ordering (launch, attach the reader, then wait) works at all; a target that painted
     instantly would be testing a race no real engine runs.
     """
+    import contextlib
+
     from agent_sessions import handoff, headless_seed, ptybridge, session_input, session_stream
 
     out_file = tmp_path / "got.txt"
     prog = (
         "import sys,time;"
         "time.sleep(2.0);"
-        # DECSET 2004 (bracketed paste) + enough output to clear the first-paint floor.
-        "sys.stdout.write('\\x1b[?2004h' + 'x' * 4096 + '\\n');"
+        # A CLAUDE-SHAPED PAINT (#966), then DECSET 2004 (bracketed paste). A claude key is judged
+        # painted on its SCREEN — the alternate screen active with at least
+        # `headless_seed.CLAUDE_PAINT_MIN_ROWS` rows drawn — not on a byte count, so a fake that
+        # only wrote bytes on the primary screen would never open the gate, which is what real
+        # claude's ready screen (1435 B at 80×24) needed.
+        "sys.stdout.write('\\x1b[?1049h\\x1b[H\\x1b[2J'"
+        " + ''.join('fake claude row %d\\r\\n' % i for i in range(8)) + '\\x1b[?2004h');"
         "sys.stdout.flush();"
         "d = sys.stdin.readline();"
         f"open({str(out_file)!r}, 'w').write(d)"
@@ -284,4 +291,22 @@ async def test_THE_BRIEF_ACTUALLY_ARRIVES_with_no_browser_anywhere(sockdir, tmp_
         assert "200~" in got and "201~" in got
     finally:
         session_input.reset()
+        # A FAILED DELIVERY MUST NOT HANG THE SUITE (#966). `dtach -n` daemonizes the master into
+        # its own session, so killing the launcher's group leaves the master, the target blocked
+        # on stdin and the registry's `dtach -a` reader all alive — on CI that kept pytest from
+        # ever exiting. Stop the reader (bounded), then kill the master's children and the master
+        # by exact pid: never a process group, never pid <= 1.
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(registry.stop_all(), timeout=10.0)
+        master = reaper._find_master_pid(engine, sid)
+        if master and master > 1:
+            for name in os.listdir("/proc"):
+                if not name.isdigit() or int(name) <= 1:
+                    continue
+                with contextlib.suppress(OSError, ValueError, IndexError):
+                    stat = pathlib.Path(f"/proc/{name}/stat").read_text()
+                    if int(stat.rsplit(")", 1)[1].split()[1]) == master:
+                        os.kill(int(name), signal.SIGKILL)
+            with contextlib.suppress(OSError):
+                os.kill(master, signal.SIGKILL)
         _reap(proc.pid)

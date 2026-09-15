@@ -73,6 +73,7 @@ def _isolate_scrollback(tmp_path, monkeypatch) -> None:
         webterm.scrollback._MODES,
         webterm.scrollback._MODE_CARRY,
         webterm.scrollback._READY,
+        webterm.scrollback._READY_SOURCE,
         webterm.scrollback._SANITIZE_CARRY,
     ):
         d.clear()

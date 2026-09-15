@@ -935,7 +935,10 @@ async def run(
                     last_n, last_change = n, now
                 armed = bool(buf_key) and scrollback.has_mode(buf_key, 2004)
                 if buf_key and n >= _SEED_FIRST_PAINT_BYTES:
-                    scrollback.note_first_paint(buf_key)  # durable across the next attach
+                    # Durable across the next attach. Tagged "attach" (#966): this run counted its
+                    # OWN live bytes at the browser's real size — evidence headless claude trusts,
+                    # where a headless byte-rule stamp is not.
+                    scrollback.note_first_paint(buf_key, source="attach")
                 painted = (n >= _SEED_FIRST_PAINT_BYTES) or (
                     bool(buf_key) and scrollback.first_paint_seen(buf_key)
                 )

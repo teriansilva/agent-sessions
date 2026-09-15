@@ -1817,6 +1817,14 @@ def test_pending_seed_is_delivered_on_the_next_attach_to_an_idle_tui(tmp_path, m
         asyncio.run(_attach1())
     assert webterm.scrollback.first_paint_seen(key) is True  # attach 1 recorded the paint
     assert handoff.has_pending_seed(key) is True  # …but didn't deliver (dropped pre-quiet)
+    # Browser attach, then headless handover (#966): the real attach path tags its stamp "attach"
+    # — measured at the browser's size — and the headless CLAUDE gate trusts that stamp, even
+    # though this ring (2004 + dots, no alternate screen) would never pass claude's screen rule.
+    from agent_sessions import headless_seed
+
+    assert key.startswith("claude:")
+    assert webterm.scrollback.first_paint_source(key) == "attach"
+    assert headless_seed._painted(key) is True
 
     # --- Attach 2: an idle, already-painted TUI — barely any live output ---
     idle = (

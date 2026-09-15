@@ -110,9 +110,9 @@ class SessionStream:
         # attaching client's size to the running program — so a headless reader at 0×0 collapses
         # the live agent to 0×0, which renders into nothing and poisons the byte ring with
         # degenerate-width frames (#297; a big contributor to the garble saga). Never attach at 0×0.
-        last_cols = webterm.scrollback._LAST_COLS.get(self.key) or 80
-        last_rows = webterm.scrollback._LAST_ROWS.get(self.key) or 24
-        webterm._set_winsize(slave, max(1, int(last_rows)), max(1, int(last_cols)))
+        # `reader_size` is also the size headless_seed's claude rule judges the screen at (#966).
+        last_rows, last_cols = webterm.scrollback.reader_size(self.key)
+        webterm._set_winsize(slave, last_rows, last_cols)
         try:
             self._proc = await asyncio.wait_for(
                 asyncio.create_subprocess_exec(
