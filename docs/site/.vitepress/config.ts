@@ -44,7 +44,7 @@ export default defineConfig({
     ["meta", { name: "theme-color", content: "#0d0e10" }],
     ["meta", { name: "robots", content: "index, follow" }],
   ],
-  sitemap: { hostname: "https://docs.battlelab.superstatus.io" },
+  sitemap: { hostname: "https://docs.battlelabos.com" },
 
   markdown: {
     config(md) {

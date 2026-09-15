@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://docs.battlelab.superstatus.io/sitemap.xml
+Sitemap: https://docs.battlelabos.com/sitemap.xml
