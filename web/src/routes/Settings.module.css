@@ -1865,7 +1865,8 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: var(--font-sans, inherit);
+  /* `inherit`, which is what this always rendered: `--font-sans` is not a token (#948). */
+  font-family: inherit;
   font-size: 11px;
   letter-spacing: 0;
   text-transform: none;

@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import { clickHeadAction, FILES_ACTION } from "./headActions";
 
 /** File editing (#950) — real-browser proof, desktop AND mobile.
  *
@@ -149,13 +150,9 @@ async function mockApp(
 async function openFile(page: Page, name: string) {
   await page.goto(`/s/claude/${SESSION.id.split(":")[1]}`);
   await expect(page.locator("#root")).toBeVisible();
-  await page.locator("[data-head-action]").first().waitFor();
-  const direct = page.locator("[data-head-action='files']");
-  if (await direct.count()) await direct.click();
-  else {
-    await page.getByRole("button", { name: "More session actions" }).click();
-    await page.getByRole("menuitem", { name: /Files/ }).click();
-  }
+  // Inline chip, the "More" overflow, or the phone's single Actions menu (#948 P6): the helper
+  // reaches FILES wherever the header put it.
+  await clickHeadAction(page, FILES_ACTION);
   await page.locator("[data-file-row]", { hasText: name }).first().click();
   const viewer = page.locator("[data-file-viewer]");
   await expect(viewer).toBeVisible();
@@ -167,6 +164,9 @@ async function openFile(page: Page, name: string) {
 async function typeAtEndOfFirstLine(page: Page, text: string) {
   const firstLine = page.locator("[data-file-viewer] .cm-line").first();
   await firstLine.click();
+  // Keys go to whatever holds focus: type only once the editor does. Whether the text is ACCEPTED
+  // is each test's own assertion — one of them types into a read-only editor on purpose.
+  await expect(page.locator("[data-file-viewer] .cm-editor")).toHaveClass(/cm-focused/);
   await page.keyboard.press("End");
   await page.keyboard.type(text);
 }
@@ -261,13 +261,9 @@ async function mockGitRow(page: Page) {
 async function openGitRow(page: Page, rel: string) {
   await page.goto(`/s/claude/${SESSION.id.split(":")[1]}`);
   await expect(page.locator("#root")).toBeVisible();
-  await page.locator("[data-head-action]").first().waitFor();
-  const direct = page.locator("[data-head-action='files']");
-  if (await direct.count()) await direct.click();
-  else {
-    await page.getByRole("button", { name: "More session actions" }).click();
-    await page.getByRole("menuitem", { name: /Files/ }).click();
-  }
+  // Inline chip, the "More" overflow, or the phone's single Actions menu (#948 P6): the helper
+  // reaches FILES wherever the header put it.
+  await clickHeadAction(page, FILES_ACTION);
   await page.getByRole("tab", { name: /Git/ }).click();
   await page.locator(`[data-git-row='${rel}']`).click();
   const viewer = page.locator("[data-file-viewer]");
@@ -492,9 +488,15 @@ test.describe("file editor — touch", () => {
     await page.touchscreen.tap(eb.x + eb.width / 2, eb.y + 2); // the top edge, not the centre
     await expect(viewer.locator("[data-edit-done]")).toBeVisible();
     await expect(viewer.locator(".cm-content")).not.toHaveAttribute("inputmode", "none");
+    // EDIT hands focus to the editor on the next frame; let that land before typing.
+    await expect(viewer.locator(".cm-editor")).toHaveClass(/cm-focused/);
 
     await typeAtEndOfFirstLine(page, "!");
+    // SAVE is disabled until there is an unsaved edit, and a tap on a disabled button tests nothing.
+    await expect(viewer.locator(".cm-line").first()).toContainText("!");
+    await expect(viewer.locator("[data-unsaved]")).toBeVisible();
     const saveBtn = viewer.locator("[data-save]");
+    await expect(saveBtn).toBeEnabled();
     const sb = (await saveBtn.boundingBox())!;
     expect(sb.height).toBeGreaterThanOrEqual(44);
     await page.touchscreen.tap(sb.x + sb.width - 2, sb.y + sb.height - 2); // bottom-right corner
