@@ -170,8 +170,9 @@ test("the re-read happens on SUCCESS too, not only on a refusal", async () => {
 });
 
 test("a planning state offers Begin as its one primary, and Plan again behind ⋯ (#967)", async () => {
-  // Begin and Re-plan used to be two buttons in the header, owned by the plan card. With one owner
-  // the row holds ONE action; Re-plan is still there, as "Plan again", under the same testid.
+  // Begin and the old plan button used to be two buttons in the header, owned by the plan card. With
+  // one owner the row holds ONE action; the plan button is still there, as "Plan again", under the
+  // same testid.
   render(<WithStart mission={mission({ state: "planned", sessions: [] })} />);
   const begin = screen.getByTestId("mission-begin");
   // No plan and no session: nothing to start yet, and the reason names the way forward.

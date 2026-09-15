@@ -18,6 +18,9 @@ const KINDS: { kind: string; label: string }[] = [
   { kind: "orchestrator", label: "Orchestrator pass" },
   { kind: "mission-supervisor", label: "Mission supervisor" },
   { kind: "mission-objectives", label: "Objective checks" },
+  // #967 P2: a new mission plans itself, and Plan again runs under the same kind. A plan skipped for
+  // want of an AI endpoint settles without raising, so it lists as a run, not a failure.
+  { kind: "mission-plan", label: "Mission planning" },
   { kind: "mission-question", label: "Mission questions" },
   // `pulse-chat` is the single-flight kind shared by mission chat turns and Ask.
   { kind: "pulse-chat", label: "Mission chat" },

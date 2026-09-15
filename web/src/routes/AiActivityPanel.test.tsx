@@ -58,3 +58,25 @@ test("shows a running scan + a last-run summary (#441 P6)", async () => {
   expect(screen.getByText(/running .* manual/i)).toBeInTheDocument();
   expect(screen.getByText(/ran .*ago/i)).toBeInTheDocument();
 });
+
+test("mission planning is listed by name, and a planning run that settled lists as a run (#967 P2b)", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  vi.mocked(api.aiActivity).mockResolvedValue({
+    running: [],
+    last: {
+      "mission-plan": {
+        finished_at: now - 60,
+        ok: true,
+        detail: "msn_1",
+        duration_s: 0.01,
+      },
+    },
+  });
+  render(<AiActivityPanel />);
+  await flush();
+  const row = screen.getByText("Mission planning").closest("li");
+  expect(row).not.toBeNull();
+  expect(row).toHaveTextContent(/ran .*ago/i);
+  // Not appended as an unanticipated raw kind.
+  expect(screen.queryByText("mission-plan")).toBeNull();
+});

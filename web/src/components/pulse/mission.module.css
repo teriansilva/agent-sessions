@@ -2085,3 +2085,94 @@
   font-size: 16px;
   font-weight: 600;
 }
+
+/* =================================================================================================
+ * #967 P2b: THE PLAN CARD'S STATES. Planning, ready (with Review plan) and could not plan (with Plan
+ * manually), as mockup B3 draws them. One block, appended, so a parallel append to this sheet merges.
+ * ================================================================================================= */
+
+/* The line the card leads with: the state on the left, its one action on the right. Wraps on a phone
+ * rather than squeezing the sentence; the action keeps its 44px floor either way. */
+.planHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  min-height: 44px;
+}
+.planHeadText {
+  flex: 1 1 16rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-1);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.planHead .linkButton {
+  flex: none;
+  white-space: nowrap;
+}
+.planDim {
+  color: var(--text-2);
+}
+.planMono {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+/* The working indicator: three square pips stepping in opacity. Square because only LEDs and dots
+ * round (§9); no gradient and no spinner; still under reduced motion (§8). Opacity only, never
+ * geometry. The words carry the state, and the pips are aria-hidden. */
+.planDots {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: 10px;
+  vertical-align: middle;
+}
+.planDots i {
+  width: 4px;
+  height: 4px;
+  background: var(--text-2);
+  animation: planPip 1.2s steps(1, end) infinite;
+}
+.planDots i:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.planDots i:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes planPip {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .planDots i {
+    animation: none;
+  }
+  .planDots i:nth-child(2) {
+    opacity: 0.6;
+  }
+  .planDots i:nth-child(3) {
+    opacity: 0.3;
+  }
+}
+/* The unfolded plan (Review plan) and Plan manually's form: the same column of fields. */
+.planOpen,
+.planManual {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* THE TOP OF THE MISSION BODY (#967 P2b review): the no-AI notice, the open question and the plan
+ * card, directly under the Details band. They used to share the thread's bottom-anchored box, so a
+ * one-line card rode `.paneAtBottom`'s auto margin down to the composer. `flex: none` holds this box at
+ * its content height; a short thread's free space goes to the auto margin of the box below it, and a
+ * long thread overflows the pane and scrolls with this group at its top. */
+.paneTop {
+  flex: none;
+  min-width: 0;
+}

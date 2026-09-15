@@ -1149,6 +1149,25 @@ export const api = {
       { plan_id: planId, ...body },
     ),
 
+  /** PLAN MANUALLY: the FIRST plan of a mission whose planning was `skipped` (no AI endpoint) or
+   *  `failed` (#967 P2b). The same authenticated, CSRF-guarded `PATCH /plan` as an edit, and
+   *  deliberately WITHOUT `plan_id`: there is no plan to name, and the server accepts this shape only
+   *  while no plan exists and planning is not running, so it cannot overwrite one. A project ID and
+   *  an engine ID, never a path. `mutateJson`, so a 422 carries the server's own `detail`. */
+  firstMissionPlan: (
+    id: string,
+    body: { project_id: string; engine: string; brief: string },
+  ) =>
+    mutateJson<MissionPlan>(
+      "PATCH",
+      `/api/missions/${encodeURIComponent(id)}/plan`,
+      {
+        project_id: body.project_id,
+        engine: body.engine,
+        brief: body.brief,
+      },
+    ),
+
   /** RUN the proposal. The highest-privilege call the client can make: it starts an agent with
    *  nobody watching it, so it names the plan it is dispatching and the server refuses any other
    *  (`claim_plan`'s compare-and-set). A stale id is a 409 that says to read the plan again. */

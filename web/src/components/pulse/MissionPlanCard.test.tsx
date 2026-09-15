@@ -30,6 +30,7 @@ vi.mock("../../lib/api", async () => {
       setMissionState: vi.fn(),
       planMission: vi.fn(),
       editMissionPlan: vi.fn(),
+      firstMissionPlan: vi.fn(),
       dispatchMission: vi.fn(),
       patchMissionObjectives: vi.fn(),
       archiveMission: vi.fn(),
@@ -97,13 +98,20 @@ function Harness({
   onChanged,
   onNote,
   onObjectives,
+  onPlan,
 }: {
   mission: Mission;
   onChanged: () => void;
   onNote: (msg: string) => void;
   onObjectives?: () => void;
+  onPlan?: () => void;
 }) {
-  const start = useMissionStart(m, { onChanged, onNote, onObjectives });
+  const start = useMissionStart(m, {
+    onChanged,
+    onNote,
+    onObjectives,
+    onPlan,
+  });
   return (
     <>
       <MissionHeaderActions
@@ -122,6 +130,12 @@ function mount(m: Mission, onChanged = vi.fn(), onNote = vi.fn()) {
   return { onChanged, onNote };
 }
 
+/** A COMPLETE plan starts folded to its one line (#967 P2b): the fields are behind Review plan. The
+ *  tests below that edit a complete plan open it first and keep their assertions. */
+async function openReview() {
+  await userEvent.click(screen.getByTestId("mission-plan-review"));
+}
+
 /** Plan again lives behind the header's ⋯ (#967). */
 async function openOverflow() {
   const t = screen.getByTestId("mission-overflow");
@@ -133,6 +147,9 @@ beforeEach(() => {
     .mockReset()
     .mockResolvedValue(plan() as never);
   vi.mocked(api.editMissionPlan)
+    .mockReset()
+    .mockResolvedValue(plan() as never);
+  vi.mocked(api.firstMissionPlan)
     .mockReset()
     .mockResolvedValue(plan() as never);
   vi.mocked(api.patchMissionObjectives)
@@ -199,6 +216,7 @@ test("DISPATCH confirms, and says what it starts and where", async () => {
 
 test("an EDIT names the plan it edited, and a project id rather than a path", async () => {
   mount(mission({ state: "planned", plan: plan() }));
+  await openReview();
   await userEvent.selectOptions(
     screen.getByTestId("mission-plan-project"),
     "p2",
@@ -221,6 +239,7 @@ test("a plan that MOVED underneath the card re-reads instead of retrying", async
     ),
   );
   const { onChanged } = mount(mission({ state: "planned", plan: plan() }));
+  await openReview();
   await userEvent.selectOptions(
     screen.getByTestId("mission-plan-engine"),
     "codex",
@@ -253,8 +272,9 @@ test("a dispatch that did not reach `running` reports the server's own reason", 
   );
 });
 
-test("a suggestion with no stated reason says so rather than looking chosen", () => {
+test("a suggestion with no stated reason says so rather than looking chosen", async () => {
   mount(mission({ state: "planned", plan: plan({ engine_reason: "" }) }));
+  await openReview();
   expect(screen.getByTestId("mission-plan-reason")).toHaveTextContent(
     "you chose this",
   );
@@ -281,6 +301,7 @@ test("a CLEARED brief disables DISPATCH rather than sending the old one", async 
   //
   // Red against a `ready` computed from the stored brief alone.
   mount(mission({ state: "planned", plan: plan() }));
+  await openReview();
   const box = screen.getByTestId("mission-plan-brief");
   expect(screen.getByTestId("mission-begin")).not.toBeDisabled();
 
@@ -299,6 +320,7 @@ test("an UNSAVED edit disables DISPATCH and says why", async () => {
   // The general form: DISPATCH runs what is STORED, so anything else on screen is a different
   // brief from the one that would be sent.
   mount(mission({ state: "planned", plan: plan() }));
+  await openReview();
   await userEvent.type(screen.getByTestId("mission-plan-brief"), " and more");
   expect(screen.getByTestId("mission-begin")).toBeDisabled();
   expect(screen.getByTestId("mission-plan-unsaved")).toHaveTextContent(
@@ -306,7 +328,7 @@ test("an UNSAVED edit disables DISPATCH and says why", async () => {
   );
 });
 
-test("the card says WHAT DONE MEANS, and says so when there is nothing", () => {
+test("the card says WHAT DONE MEANS, and says so when there is nothing", async () => {
   // #904 review 2, finding 8. On a phone the objectives are a separate stop, so without this an
   // operator could start an unattended agent having never seen — or noticed the absence of — the
   // checklist the supervisor will chase.
@@ -320,6 +342,7 @@ test("the card says WHAT DONE MEANS, and says so when there is nothing", () => {
       ] as never,
     }),
   );
+  await openReview();
   const list = screen.getByTestId("mission-plan-objectives");
   expect(list).toHaveTextContent("2 objectives define what done means");
 
@@ -617,5 +640,320 @@ test("a poll during Begin cannot count as its post-result refresh", async () => 
       onNote={vi.fn()}
     />,
   );
+  expect(screen.getByTestId("mission-begin")).toBeEnabled();
+});
+
+// ---- #967 P2b: the plan card's states ---------------------------------------------------------------
+
+const OPTIONS = {
+  project_options: [
+    { id: "p1", name: "the-app", cwd: "/repo/the-app" },
+    { id: "p2", name: "the-docs", cwd: "/repo/the-docs" },
+  ],
+  engine_options: [
+    { id: "claude", label: "claude" },
+    { id: "codex", label: "codex" },
+  ],
+};
+
+test("PLANNING: a quiet line, no fields, and Begin disabled with that line as its reason", async () => {
+  mount(
+    mission({
+      state: "draft",
+      plan: null,
+      plan_state: "pending",
+      plan_generation: 1,
+    }),
+  );
+  expect(screen.getByTestId("mission-plan-card")).toHaveAttribute(
+    "data-plan-state",
+    "planning",
+  );
+  expect(screen.getByTestId("mission-plan-lead")).toHaveTextContent(
+    "Planning… A plan is still being prepared.",
+  );
+  expect(screen.queryByTestId("mission-plan-fields")).toBeNull();
+  expect(screen.queryByTestId("mission-plan-manually")).toBeNull();
+  const begin = screen.getByTestId("mission-begin");
+  expect(begin).toBeDisabled();
+  expect(begin).toHaveAccessibleDescription(/A plan is still being prepared/);
+  // Planning is work in hand, not a state of its own: the chip says so on the neutral dot.
+  // No ellipsis in the chip: it read as CSS truncation, and was cut off on a phone (#967 P2b review).
+  expect(screen.getByTestId("mission-state")).toHaveTextContent(/^planning$/);
+  // An attempt is running, so Plan again is held rather than offered as a 409.
+  await openOverflow();
+  expect(screen.getByTestId("mission-replan")).toBeDisabled();
+  expect(screen.getByTestId("mission-replan")).toHaveTextContent("Planning…");
+});
+
+test("a Plan again in flight holds Begin over the PREVIOUS plan, which DISPATCH would refuse", () => {
+  // Red against a gate on "a plan exists": the old plan stays stored while attempt 2 runs, and the
+  // server answers DISPATCH with 409 until it settles.
+  mount(
+    mission({
+      state: "planned",
+      plan: plan(),
+      plan_state: "pending",
+      plan_generation: 2,
+    }),
+  );
+  expect(screen.getByTestId("mission-begin")).toBeDisabled();
+  expect(screen.getByTestId("mission-plan-card")).toHaveAttribute(
+    "data-plan-state",
+    "planning",
+  );
+  expect(screen.queryByTestId("mission-plan-project")).toBeNull();
+});
+
+test("READY: one line naming the agent, the project and the count; Review plan unfolds the fields", async () => {
+  mount(mission({ state: "planned", plan: plan(), plan_state: "ready" }));
+  expect(screen.getByTestId("mission-plan-card")).toHaveAttribute(
+    "data-plan-state",
+    "ready",
+  );
+  expect(screen.getByTestId("mission-plan-lead")).toHaveTextContent(
+    "Plan ready — claude in the-app · 1 objective",
+  );
+  expect(screen.queryByTestId("mission-plan-brief")).toBeNull();
+  expect(screen.getByTestId("mission-begin")).toBeEnabled();
+
+  const review = screen.getByTestId("mission-plan-review");
+  expect(review).toHaveAttribute("aria-expanded", "false");
+  await userEvent.click(review);
+  expect(review).toHaveAttribute("aria-expanded", "true");
+  expect(review).toHaveTextContent("Hide plan");
+  expect(screen.getByTestId("mission-plan-brief")).toHaveValue(
+    "open a PR that does the thing",
+  );
+  await userEvent.click(review);
+  expect(screen.queryByTestId("mission-plan-brief")).toBeNull();
+});
+
+test("a plan that ARRIVES by poll lands folded, not opened by the draft it replaced", () => {
+  // Red against a latch read in the render that syncs the plan: the brief draft still held the empty
+  // pre-plan text for that one pass, the new plan looked unsaved, and "incomplete stays open" fired.
+  const pending = mission({
+    state: "draft",
+    plan: null,
+    plan_state: "pending",
+    plan_generation: 1,
+  });
+  const { rerender } = render(
+    <Harness mission={pending} onChanged={vi.fn()} onNote={vi.fn()} />,
+  );
+  expect(screen.getByTestId("mission-plan-card")).toHaveAttribute(
+    "data-plan-state",
+    "planning",
+  );
+  rerender(
+    <Harness
+      mission={{ ...pending, state: "planned", plan: plan(), plan_state: "ready" }}
+      onChanged={vi.fn()}
+      onNote={vi.fn()}
+    />,
+  );
+  expect(screen.getByTestId("mission-plan-lead")).toHaveTextContent(
+    "Plan ready — claude in the-app",
+  );
+  expect(screen.queryByTestId("mission-plan-fields")).toBeNull();
+  expect(screen.getByTestId("mission-plan-review")).toHaveAttribute(
+    "aria-expanded",
+    "false",
+  );
+});
+
+test("Review plan in the header's ⋯ unfolds the plan too", async () => {
+  render(
+    <Harness
+      mission={mission({ state: "planned", plan: plan(), plan_state: "ready" })}
+      onChanged={vi.fn()}
+      onNote={vi.fn()}
+      onPlan={vi.fn()}
+    />,
+  );
+  expect(screen.queryByTestId("mission-plan-fields")).toBeNull();
+  await openOverflow();
+  await userEvent.click(screen.getByTestId("mission-review-plan"));
+  expect(screen.getByTestId("mission-plan-fields")).toBeInTheDocument();
+});
+
+test("a plan that is MISSING something starts unfolded, and stays open once it is complete", async () => {
+  const incomplete = mission({
+    state: "planned",
+    plan: plan({ engine: null, engine_reason: "" }),
+    plan_state: "ready",
+  });
+  const { rerender } = render(
+    <Harness mission={incomplete} onChanged={vi.fn()} onNote={vi.fn()} />,
+  );
+  expect(screen.getByTestId("mission-plan-engine")).toBeInTheDocument();
+  expect(screen.getByTestId("mission-plan-lead")).toHaveTextContent("The plan");
+  // The operator picks the agent; the read after the save carries a complete plan.
+  rerender(
+    <Harness
+      mission={{ ...incomplete, plan: plan({ plan_id: "pln_2" }) }}
+      onChanged={vi.fn()}
+      onNote={vi.fn()}
+    />,
+  );
+  expect(screen.getByTestId("mission-plan-lead")).toHaveTextContent(
+    "Plan ready",
+  );
+  expect(screen.getByTestId("mission-plan-engine")).toBeInTheDocument();
+});
+
+test("COULD NOT PLAN: the reason from plan_detail, Plan manually, and Plan again still in ⋯", async () => {
+  mount(
+    mission({
+      state: "draft",
+      plan: null,
+      plan_state: "failed",
+      plan_detail: "the model call failed: endpoint returned HTTP 500",
+      plan_options: OPTIONS,
+    }),
+  );
+  expect(screen.getByTestId("mission-plan-card")).toHaveAttribute(
+    "data-plan-state",
+    "unplanned",
+  );
+  expect(screen.getByTestId("mission-plan-lead")).toHaveTextContent(
+    "Couldn't plan: the model call failed: endpoint returned HTTP 500",
+  );
+  const begin = screen.getByTestId("mission-begin");
+  expect(begin).toBeDisabled();
+  expect(begin).toHaveAccessibleDescription(
+    /Couldn't plan: the model call failed/,
+  );
+  expect(screen.getByTestId("mission-plan-manually")).toBeEnabled();
+  await openOverflow();
+  expect(screen.getByTestId("mission-replan")).toBeEnabled();
+  expect(screen.getByTestId("mission-replan")).toHaveTextContent("Plan again");
+});
+
+test("SKIPPED says there is no AI endpoint; a mission from before planning on create says only 'No plan yet'", () => {
+  mount(
+    mission({
+      plan: null,
+      plan_state: "skipped",
+      plan_detail: "no AI endpoint is configured, so nothing can be planned",
+    }),
+  );
+  expect(screen.getByTestId("mission-plan-lead")).toHaveTextContent(
+    "Couldn't plan: no AI endpoint is configured",
+  );
+  expect(screen.getByTestId("mission-plan-manually")).toBeInTheDocument();
+
+  // A backfilled row (or one with no `plan_state` at all) was never planned automatically, so it is
+  // not told it failed to be.
+  cleanup();
+  mount(mission({ plan: null }));
+  expect(screen.getByTestId("mission-plan-lead")).toHaveTextContent(
+    /^No plan yet$/,
+  );
+  expect(screen.getByTestId("mission-plan-manually")).toBeInTheDocument();
+});
+
+test("PLAN MANUALLY saves the FIRST plan through its own call, shows a refusal inline, then Begin enables", async () => {
+  vi.mocked(api.firstMissionPlan)
+    .mockReset()
+    .mockRejectedValueOnce(new ApiError(422, "'codex' cannot be dispatched into"))
+    .mockResolvedValueOnce(plan() as never);
+  const unplanned = mission({
+    state: "draft",
+    plan: null,
+    plan_state: "skipped",
+    plan_detail: "no AI endpoint is configured, so nothing can be planned",
+    project_id: "p2",
+    instruction: "ship the fix",
+    plan_options: OPTIONS,
+  });
+  const onChanged = vi.fn();
+  const { rerender } = render(
+    <Harness mission={unplanned} onChanged={onChanged} onNote={vi.fn()} />,
+  );
+  expect(screen.queryByTestId("mission-plan-manual")).toBeNull();
+  await userEvent.click(screen.getByTestId("mission-plan-manually"));
+
+  // The mission's own project and instruction are the starting point; the agent is the operator's.
+  const project = screen.getByTestId("mission-manual-project");
+  const engine = screen.getByTestId("mission-manual-engine");
+  const save = screen.getByTestId("mission-manual-save");
+  expect(project).toHaveValue("p2");
+  expect(project).toHaveFocus();
+  expect(screen.getByTestId("mission-manual-brief")).toHaveValue("ship the fix");
+  expect(save).toBeDisabled();
+
+  await userEvent.selectOptions(engine, "codex");
+  await userEvent.click(save);
+  expect(api.firstMissionPlan).toHaveBeenCalledWith("msn_1", {
+    project_id: "p2",
+    engine: "codex",
+    brief: "ship the fix",
+  });
+  // Never the edit call: there is no plan to name.
+  expect(api.editMissionPlan).not.toHaveBeenCalled();
+  // THE SERVER'S SENTENCE, in the card, under the form that is still holding what was typed.
+  await waitFor(() =>
+    expect(screen.getByTestId("mission-plan-error")).toHaveTextContent(
+      "'codex' cannot be dispatched into",
+    ),
+  );
+  const form = screen.getByTestId("mission-plan-manual");
+  expect(
+    form.compareDocumentPosition(screen.getByTestId("mission-plan-error")) &
+      Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  expect(engine).toHaveValue("codex");
+  expect(onChanged).toHaveBeenCalled();
+
+  // The re-read lands and the save is pressed again, this time accepted.
+  rerender(
+    <Harness mission={{ ...unplanned }} onChanged={onChanged} onNote={vi.fn()} />,
+  );
+  await userEvent.click(screen.getByTestId("mission-manual-save"));
+  await waitFor(() => expect(api.firstMissionPlan).toHaveBeenCalledTimes(2));
+
+  // …and the read after it: planned, a plan, `ready`. The form folds into the ready line.
+  rerender(
+    <Harness
+      mission={{
+        ...unplanned,
+        state: "planned",
+        plan: plan({ project_id: "p2", cwd: "/repo/the-docs", engine: "codex" }),
+        plan_state: "ready",
+        plan_detail: null,
+        plan_options: null,
+      }}
+      onChanged={onChanged}
+      onNote={vi.fn()}
+    />,
+  );
+  expect(screen.queryByTestId("mission-plan-manual")).toBeNull();
+  expect(screen.getByTestId("mission-plan-lead")).toHaveTextContent(
+    "Plan ready — codex in the-docs",
+  );
+  expect(screen.getByTestId("mission-begin")).toBeEnabled();
+});
+
+test("a DRAFT with no session cannot launch, even carrying a plan: DISPATCH moves only planned missions", () => {
+  mount(mission({ state: "draft", plan: plan(), plan_state: "ready" }));
+  const begin = screen.getByTestId("mission-begin");
+  expect(begin).toBeDisabled();
+  expect(begin).toHaveAccessibleDescription(/not planned yet/);
+});
+
+test("a Plan again that FAILED keeps the previous plan, says which plan it is, and it can still Begin", () => {
+  mount(
+    mission({
+      state: "planned",
+      plan: plan(),
+      plan_state: "failed",
+      plan_detail: "the model call failed: timeout",
+    }),
+  );
+  expect(screen.getByTestId("mission-plan-kept")).toHaveTextContent(
+    "Plan again did not finish (the model call failed: timeout). This is the previous plan.",
+  );
+  expect(screen.queryByTestId("mission-plan-manually")).toBeNull();
   expect(screen.getByTestId("mission-begin")).toBeEnabled();
 });

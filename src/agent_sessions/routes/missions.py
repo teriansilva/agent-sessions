@@ -599,8 +599,19 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         with contextlib.suppress(Exception):
             plan = await missions.run_admitted(lambda: missions.get_plan(mission_id))
             if plan is not None:
-                plan["project_options"] = mission_plan.project_options()
+                plan["project_options"] = mission_plan.picker_project_options()
                 plan["engine_options"] = mission_plan.engine_options()
+            elif row.get("plan_state") in ("skipped", "failed"):
+                # PLAN MANUALLY NEEDS SOMETHING TO CHOOSE FROM (#967 P2b). The lists rode only on
+                # a stored plan, so the one mission that has to be planned by hand — no plan, and
+                # planning `skipped` or `failed` — had no project or agent to offer. Attached in
+                # exactly the states `PATCH /plan` accepts a first plan in, and built on the rules
+                # its validation uses, so an offered choice is one the save accepts. The OPERATOR'S
+                # list, uncapped: the model's 40-project cap hid a mission's own project (#984).
+                row["plan_options"] = {
+                    "project_options": mission_plan.picker_project_options(),
+                    "engine_options": mission_plan.engine_options(),
+                }
             row["plan"] = plan
         return JSONResponse(row)
 
@@ -839,7 +850,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             )
         except missions.MissionError as e:
             return _fail(e)
-        plan["project_options"] = mission_plan.project_options()
+        plan["project_options"] = mission_plan.picker_project_options()
         plan["engine_options"] = mission_plan.engine_options()
         return JSONResponse(plan)
 
@@ -912,7 +923,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # into is an invalid field of this request. An unreadable store stays a 503.
             e = bad_project
             return _fail(e if e.status >= 500 else missions.MissionError(str(e), status=422))
-        plan["project_options"] = mission_plan.project_options()
+        plan["project_options"] = mission_plan.picker_project_options()
         plan["engine_options"] = mission_plan.engine_options()
         return JSONResponse(plan)
 

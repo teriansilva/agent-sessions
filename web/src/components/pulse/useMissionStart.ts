@@ -1,5 +1,5 @@
-/** The start model: Begin, Plan again and the launch confirmation, shared by the header and the plan
- *  card (#944, #967).
+/** The start model: Begin, Plan again, Plan manually and the launch confirmation, shared by the header
+ *  and the plan card (#944, #967).
  *
  *  Begin tracks an attached session first; only a mission without one may launch. Launch confirmation
  *  binds the saved plan, cwd and objective digest. Every mutation invalidates that confirmation, and a
@@ -11,7 +11,19 @@
  *  portalled its buttons into the header beside `MissionLifecycle`'s: two owners for one row, which is
  *  what spread the header over two lines (#967). Lifting the state here lets one component own the row
  *  (`MissionHeaderActions`) while the card keeps the words, and neither holds a copy of the other's
- *  truth. */
+ *  truth.
+ *
+ *  **A new mission plans itself (#967 P2).** So "is there a plan" is no longer the only question; the
+ *  mission also says how planning STANDS (`plan_state`). This model turns the two into the card's three
+ *  states (`PlanPhase`) and into Begin's gate:
+ *
+ *  - `planning` while an attempt is running. Begin is disabled, because DISPATCH refuses while
+ *    `plan_state` is `pending`; a control that can only 409 is not offered as pressable.
+ *  - `ready` once a plan exists. Begin needs the mission to be `planned` and the plan and its
+ *    objectives to be complete, as before.
+ *  - `unplanned` when there is no plan and nothing is running (`failed` or `skipped`). Plan manually
+ *    saves a first plan through the same route an edit uses, without a `plan_id`.
+ */
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { ApiError, api } from "../../lib/api";
@@ -33,6 +45,35 @@ export const LAUNCH_WARNING_ID = "mission-launch-warning";
  *  components, and a ref inside it would make each of those reads a ref read. One mission body is
  *  mounted at a time, so the id is unique. */
 export const PLAN_CARD_ID = "mission-plan-card";
+
+/** Which of the plan card's states a mission is in (#967 P2b). */
+export type PlanPhase = "planning" | "ready" | "unplanned";
+
+type PlanState = "pending" | "ready" | "failed" | "skipped";
+
+/** The mission's planning state, read the way the server backfilled it.
+ *
+ *  The server always sends `plan_state` now. A row without one predates the column, and the v25
+ *  upgrade answered that question once: `ready` if a plan was stored, `skipped` otherwise. Reading an
+ *  absent field by the same rule keeps such a row, and a fixture written before the field existed,
+ *  meaning what the server would have made of it, instead of inventing a fourth state. */
+export function planStateOf(mission: Mission): PlanState {
+  return mission.plan_state ?? (mission.plan ? "ready" : "skipped");
+}
+
+/** What the card says about a mission with no plan and no attempt running. */
+export function unplannedLead(mission: Mission): string {
+  const state = planStateOf(mission);
+  const detail = mission.plan_detail?.trim();
+  if (state === "failed")
+    return `Couldn't plan: ${detail || "the planner did not produce a plan"}`;
+  // `skipped` is settled for one reason only, an unconfigured endpoint, and says so in its detail. A
+  // backfilled `skipped` has no detail: that mission was never planned automatically at all, so it
+  // is not told it failed to be.
+  if (state === "skipped" && detail)
+    return "Couldn't plan: no AI endpoint is configured";
+  return "No plan yet";
+}
 
 type Confirmation = {
   planId: string;
@@ -70,7 +111,11 @@ export function useMissionStart(
   const [planId, setPlanId] = useState(plan?.plan_id);
   const [error, setError] = useState<string | null>(null);
   const [awaitingRead, setAwaitingRead] = useState<Mission | null>(null);
-  if (planId !== plan?.plan_id) {
+  /** The plan changed identity in THIS render, and the brief draft below still holds the previous
+   *  plan's text until React re-renders with the sync applied. Anything derived from the draft is
+   *  stale for this one pass, and nothing may latch on it. */
+  const syncingPlan = planId !== plan?.plan_id;
+  if (syncingPlan) {
     setPlanId(plan?.plan_id);
     setBrief(plan?.brief ?? "");
     setConfirming(null);
@@ -102,30 +147,70 @@ export function useMissionStart(
     setError("The plan or checklist changed. Review it and begin again.");
   }
 
-  // "Plan again" names the ⋯ item, which is where Re-plan moved (#967).
+  /* HOW PLANNING STANDS (#967 P2b). */
+  const planState = mission ? planStateOf(mission) : null;
+  const planPending = planState === "pending";
+  const phase: PlanPhase = planPending
+    ? "planning"
+    : plan
+      ? "ready"
+      : "unplanned";
+  const lead = mission && phase === "unplanned" ? unplannedLead(mission) : "";
+  /** A Plan again that did not produce a plan leaves the previous one stored, and DISPATCH accepts it
+   *  (`test_DISPATCH_is_ADMITTED_again_once_the_attempt_SETTLES`). The card says which plan it is
+   *  showing rather than presenting an old proposal as the new one. */
+  const detail = mission?.plan_detail?.trim();
+  const keptNote =
+    plan && planState === "skipped"
+      ? "Plan again could not run: no AI endpoint is configured. This is the previous plan."
+      : plan && planState === "failed"
+        ? `Plan again did not finish${detail ? ` (${detail})` : ""}. This is the previous plan.`
+        : null;
+  /** Everything a launch needs is on the plan and saved. What decides whether the fields start
+   *  folded: a complete plan is one line with Review plan (mockup B3), an incomplete one is open. */
+  const planComplete = Boolean(
+    plan?.project_id && plan.engine && plan.brief?.trim() && draft && !unsaved,
+  );
+  /** The editable fields are shown. Folded by default for a complete plan, and OPEN for one that
+   *  needs something. Once open it stays open: finishing the last field must not fold the fields out
+   *  from under the operator who is typing in them. Set during render, like `planId` above. */
+  const [reviewing, setReviewing] = useState(false);
+  if (!syncingPlan && phase === "ready" && !planComplete && !reviewing)
+    setReviewing(true);
+
   const reason = hasSession
     ? !mission?.cwd
       ? "A resolved project folder is required before tracking this session."
       : "Begin tracks the attached session. No new agent will be started."
-    : !plan
-      ? "Use Plan again, under ⋯, to prepare a proposal before beginning."
-      : !plan.project_id
-        ? "Choose a project before beginning."
-        : !plan.engine
-          ? "Choose an agent before beginning."
-          : !draft
-            ? "Write and save the instructions before beginning."
-            : unsaved
-              ? "Save the instructions before beginning."
-              : mission?.objectives_state === "pending"
-                ? "Wait for the objectives before beginning."
-                : objectives.length === 0
-                  ? "Add at least one objective before beginning."
-                  : "Begin starts a new agent with the saved plan. Review the launch before confirming.";
+    : planPending
+      ? "A plan is still being prepared."
+      : !plan
+        ? lead
+        : !plan.project_id
+          ? "Choose a project before beginning."
+          : !plan.engine
+            ? "Choose an agent before beginning."
+            : !draft
+              ? "Write and save the instructions before beginning."
+              : unsaved
+                ? "Save the instructions before beginning."
+                : mission?.state !== "planned"
+                  ? "The mission is not planned yet."
+                  : mission?.objectives_state === "pending"
+                    ? "Wait for the objectives before beginning."
+                    : objectives.length === 0
+                      ? "Add at least one objective before beginning."
+                      : "Begin starts a new agent with the saved plan. Review the launch before confirming.";
+  // A LAUNCH needs a `planned` mission with nothing being planned: `claim_plan` moves only
+  // `planned -> dispatching`, and refuses while `plan_state` is `pending`. Tracking an attached
+  // session is a different transition (`draft -> planned -> running`), which is why a draft that
+  // holds a session may still Begin.
   const ready = hasSession
     ? Boolean(mission?.cwd)
     : Boolean(
-        plan?.project_id &&
+        !planPending &&
+          mission?.state === "planned" &&
+          plan?.project_id &&
           plan.engine &&
           plan.brief?.trim() &&
           !unsaved &&
@@ -148,6 +233,7 @@ export function useMissionStart(
       try {
         await fn();
       } catch (err) {
+        // The server's own `detail`: a 422 on a manual plan names the field it refused.
         const message =
           err instanceof ApiError && err.message
             ? err.message
@@ -167,10 +253,12 @@ export function useMissionStart(
   );
 
   const reviewPlan = () => {
+    setReviewing(true);
     onPlan?.();
     requestAnimationFrame(() => {
       const editor = document.getElementById(PLAN_CARD_ID);
-      editor?.scrollIntoView({ block: "nearest" });
+      // Optional-called, as the armed confirmation's is: not every DOM implements it.
+      editor?.scrollIntoView?.({ block: "nearest" });
       const target = !plan?.project_id
         ? "#plan-project"
         : !plan.engine
@@ -179,10 +267,16 @@ export function useMissionStart(
       editor?.querySelector<HTMLElement>(target)?.focus();
     });
   };
+  /** Fold a complete plan back to its one line. Not offered for an incomplete one. */
+  const hidePlan = () => setReviewing(false);
 
   const propose = () => {
-    if (!mission) return;
-    void run("plan", () => api.planMission(mission.id));
+    if (!mission || planPending) return;
+    void run("plan", async () => {
+      await api.planMission(mission.id);
+      // The operator asked for a new proposal to review, so it arrives open.
+      setReviewing(true);
+    });
   };
   const edit = (body: {
     project_id?: string | null;
@@ -191,6 +285,15 @@ export function useMissionStart(
   }) => {
     if (!mission || !plan || disabled) return;
     void run("edit", () => api.editMissionPlan(mission.id, plan.plan_id, body));
+  };
+  /** PLAN MANUALLY (#967 P2b): the first plan, with no `plan_id`, for a mission nothing is planning. */
+  const planManually = (body: {
+    project_id: string;
+    engine: string;
+    brief: string;
+  }) => {
+    if (!mission || plan || planPending || disabled) return;
+    void run("manual", () => api.firstMissionPlan(mission.id, body));
   };
   const changeBrief = (value: string) => {
     revision.current += 1;
@@ -281,15 +384,27 @@ export function useMissionStart(
     validConfirmation,
     beginLabel,
     beginDisabled: !active || disabled || !ready,
+    /** How planning stands, and the card state it maps to (#967 P2b). */
+    planState,
+    planPending,
+    phase,
+    /** The card's sentence for `unplanned`: "Couldn't plan: …" or "No plan yet". */
+    unplannedLead: lead,
+    keptNote,
+    planComplete,
+    /** The editable plan fields are on screen. */
+    fieldsOpen: phase === "ready" && reviewing,
     /** Links that bring the plan into view exist only where the body can show it. */
     canReviewPlan: Boolean(onPlan),
     onObjectives,
     begin,
     propose,
     edit,
+    planManually,
     changeBrief,
     cancelConfirm,
     reviewPlan,
+    hidePlan,
     refresh: () => onChanged(),
   };
 }

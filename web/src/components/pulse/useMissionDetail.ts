@@ -60,6 +60,16 @@ const OBJECTIVES_POLL_MAX = 40;
 const TURN_POLL_MS = 3_000;
 const TURN_POLL_MAX = 60;
 
+/** …and while a PLAN is being prepared (#967 P2b). A new mission plans itself in the background and
+ *  the planner answers in seconds, so on the 150s detail cadence alone the card said "Planning…" long
+ *  after the plan existed, and Begin stayed disabled over a plan nobody could see.
+ *
+ *  The same cadence and bound as the pending-objectives poll, which is what the issue asks for, and
+ *  bounded for the same reason: an attempt that never settles is a real state (a planner can die;
+ *  `recover_pending` re-drives it only at startup). Past the bound the detail cadence still runs. */
+const PLAN_POLL_MS = OBJECTIVES_POLL_MS;
+const PLAN_POLL_MAX = OBJECTIVES_POLL_MAX;
+
 export interface MissionDetailState {
   mission: Mission | null;
   events: MissionEvent[];
@@ -441,17 +451,38 @@ export function useMissionDetail(missionId: string): MissionDetailState {
     // relies on rather than a second mechanism beside it.
   }, [missionId, pending, nonce, installMission, objTicket, rowTicket]);
 
-  // THE OPEN-TURN CADENCE. Runs only while one is open, and stops the moment it settles — so a
-  // console with nothing in flight is exactly as quiet as it was before.
+  // THE FAST ROW CADENCE: an open TURN, or a PLAN being prepared (#890, #967 P2b). ONE poller for
+  // both, because both wait on the same thing — the mission row — and two intervals reading it would
+  // double the requests for the seconds a new mission spends with a turn and a plan in flight.
+  //
+  // Runs only while there is something to wait for, and stops the moment it settles, so a console with
+  // nothing in flight is exactly as quiet as it was before.
+  //
+  // A turn outranks a plan: it keeps the turn's own budget, and when it settles with the plan still
+  // pending the key changes and the plan's wait starts with a fresh one.
+  //
+  // WHILE THE OBJECTIVES ARE PENDING the plan does not start a wait of its own: the objectives poll
+  // already re-reads the row every tick, and the row carries `plan_state` and the plan. If that poll
+  // exhausts its bound first, the 150s detail cadence is the fallback, as it is for the objectives.
   const openTurnId = mission?.turn?.turn_id ?? null;
+  const planPending = mission?.plan_state === "pending";
+  const planGeneration = mission?.plan_generation ?? 0;
+  const rowWait = openTurnId
+    ? `turn:${openTurnId}`
+    : planPending && !pending
+      ? `plan:${planGeneration}`
+      : null;
   useEffect(() => {
-    if (!openTurnId) return;
+    if (!rowWait) return;
+    const forTurn = rowWait.startsWith("turn:");
+    const max = forTurn ? TURN_POLL_MAX : PLAN_POLL_MAX;
+    const every = forTurn ? TURN_POLL_MS : PLAN_POLL_MS;
     let live = true;
     let attempts = 0;
     const tick = () => {
       if (!live) return;
       attempts += 1;
-      if (attempts > TURN_POLL_MAX) {
+      if (attempts > max) {
         clearInterval(t);
         return;
       }
@@ -466,14 +497,15 @@ export function useMissionDetail(missionId: string): MissionDetailState {
         .then((m) => installMission(m, () => live, tk))
         .catch(() => undefined);
     };
-    const t = setInterval(tick, TURN_POLL_MS);
+    const t = setInterval(tick, every);
     return () => {
       live = false;
       clearInterval(t);
     };
-    // Keyed on the turn ID, so a NEW turn restarts the budget and a settled one tears the
-    // interval down. Keyed on the mission's identity would restart it on every poll response.
-  }, [missionId, openTurnId, installMission, rowTicket]);
+    // Keyed on WHAT is being waited for — the turn ID, or the planning attempt's generation — so a
+    // NEW turn or a new attempt restarts the budget and a settled one tears the interval down. Keyed
+    // on the mission's identity would restart it on every poll response.
+  }, [missionId, rowWait, installMission, rowTicket]);
 
   const loadOlder = useCallback(() => {
     if (cursor == null || loadingMore) return;

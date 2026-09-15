@@ -23,6 +23,8 @@ import { useMissionDetail } from "./useMissionDetail";
 
 /** The bound the hook enforces. Named here so the drive below cannot silently stop short of it. */
 const TURN_POLL_MAX = 60;
+/** The plan wait's bound (#967 P2b): the pending-objectives poll's. */
+const PLAN_POLL_MAX = 40;
 
 vi.mock("../../lib/api", async () => {
   const actual =
@@ -732,4 +734,95 @@ test("reload rejects an earlier row even before the effect cleanup runs", async 
     await Promise.resolve();
   });
   expect(result.current.mission?.title).toBe("Current");
+});
+
+// ---- #967 P2b: a plan being prepared -----------------------------------------------------------
+
+/** A draft whose planner is still running (or has settled), with its objectives already settled
+ *  unless a test says otherwise. */
+function planDetail(planState: string, objectivesState = "done") {
+  return {
+    ...detail(objectivesState),
+    state: "draft",
+    plan_state: planState,
+    plan_generation: 1,
+  };
+}
+
+test("a PENDING plan is re-read on the short cadence, and the poll stops once it settles (#967 P2b)", async () => {
+  let state = "pending";
+  vi.mocked(api.mission).mockImplementation(
+    async () => planDetail(state) as never,
+  );
+  const { result } = renderHook(() => useMissionDetail("msn_1"));
+  await waitFor(() =>
+    expect(result.current.mission?.plan_state).toBe("pending"),
+  );
+  const afterMount = vi.mocked(api.mission).mock.calls.length;
+
+  // Well inside the 150s detail cadence: on that alone nothing would have been re-read.
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(10_000);
+  });
+  expect(vi.mocked(api.mission).mock.calls.length).toBeGreaterThan(afterMount);
+
+  // The planner settles on the server. Nobody presses anything; the next tick installs it.
+  state = "ready";
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(10_000);
+  });
+  await waitFor(() => expect(result.current.mission?.plan_state).toBe("ready"));
+  const settled = vi.mocked(api.mission).mock.calls.length;
+
+  // …and the short cadence is gone.
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(30_000);
+  });
+  expect(vi.mocked(api.mission).mock.calls.length).toBe(settled);
+});
+
+test("the plan poll is BOUNDED, so an attempt that never settles cannot poll for ever", async () => {
+  vi.mocked(api.mission).mockImplementation(
+    async () => planDetail("pending") as never,
+  );
+  renderHook(() => useMissionDetail("msn_1"));
+  await waitFor(() => expect(api.mission).toHaveBeenCalled());
+
+  // One interval at a time, for the same reason as the open-turn bound above.
+  for (let i = 0; i < PLAN_POLL_MAX + 10; i += 1) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000);
+    });
+  }
+  const capped = vi.mocked(api.mission).mock.calls.length;
+  expect(capped).toBeLessThanOrEqual(PLAN_POLL_MAX + 2);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(3_000 * 20);
+  });
+  expect(vi.mocked(api.mission).mock.calls.length - capped).toBeLessThanOrEqual(
+    1,
+  );
+});
+
+test("while the OBJECTIVES are pending too, the plan rides their poll instead of adding a second", async () => {
+  // A new mission starts with both producers running. The objectives poll already re-reads the row
+  // on every tick, and the row carries `plan_state`; a second 3s poller would double the reads.
+  vi.mocked(api.mission).mockImplementation(
+    async () => planDetail("pending", "pending") as never,
+  );
+  renderHook(() => useMissionDetail("msn_1"));
+  await waitFor(() => expect(api.missionObjectives).toHaveBeenCalled());
+  const rows0 = vi.mocked(api.mission).mock.calls.length;
+  const lists0 = vi.mocked(api.missionObjectives).mock.calls.length;
+
+  for (let i = 0; i < 6; i += 1) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000);
+    });
+  }
+  const rows = vi.mocked(api.mission).mock.calls.length - rows0;
+  const lists = vi.mocked(api.missionObjectives).mock.calls.length - lists0;
+  expect(lists).toBeGreaterThanOrEqual(5);
+  // Each objectives tick reads the row once and the list once.
+  expect(rows).toBeLessThanOrEqual(lists + 1);
 });

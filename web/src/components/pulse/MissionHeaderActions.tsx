@@ -1,17 +1,19 @@
 /** The mission header's actions: ONE owner, ONE row (#889, #942, #967).
  *
  * **One owner.** The header used to have two. `MissionLifecycle` portalled the state, the close or
- * reopen primary and ⋯ into the header's slot, and `MissionPlanCard` portalled Begin, Re-plan and a
- * reason paragraph into the same slot, jumping ahead of them with `order: -1` inside a 460px box. Two
- * components deciding one row is how Begin, Re-plan, a tiny `draft` label, ⋯ and a sentence came to
- * be spread over two lines. This component draws the whole row from ONE model: the mission's state,
+ * reopen primary and ⋯ into the header's slot, and `MissionPlanCard` portalled Begin, the old plan
+ * button and a reason paragraph into the same slot, jumping ahead of them with `order: -1` inside a
+ * 460px box. Two components deciding one row is how Begin, that plan button, a tiny `draft` label, ⋯
+ * and a sentence came to be spread over two lines. This component draws the whole row from ONE model: the mission's state,
  * plus the start model the mission body shares with the plan card (`useMissionStart`).
  *
  * **One row.** Left to right:
  *
  * - a STATE CHIP: a 6px status dot and the rail's own label (`missionState.ts`), so a state reads the
  *   same in the list and here. Status tokens colour the dot, a failed label is `--danger-text`, and
- *   the accent never means a state (§3);
+ *   the accent never means a state (§3). While a plan is being prepared a draft or planned mission
+ *   reads "planning" on the neutral dot (mockup A2): planning is work in hand, not a status. No
+ *   ellipsis: in a chip it reads as truncation, and the plan card's pips already show the activity;
  * - AT MOST ONE PRIMARY, by state: Begin for draft and planned (disabled until the plan and the
  *   objectives are ready), Starting… while dispatching, Mark done as a ghost while running or in
  *   review, Reopen for done and failed, Unarchive for an archived mission;
@@ -200,6 +202,11 @@ export function MissionHeaderActions({
 
   /* THE STATE CHIP. The label is text and the dot is decoration, so colour is never the only signal. */
   const failed = state === "failed";
+  /** A plan is being prepared for a mission that has not started (#967 P2b). */
+  const planningNow =
+    !archived &&
+    (state === "draft" || state === "planned") &&
+    mission.plan_state === "pending";
   const chip = (
     <span
       className={`${styles.stateChip} ${failed ? styles.stateChipFailed : ""}`}
@@ -213,7 +220,9 @@ export function MissionHeaderActions({
       <span data-testid="mission-state">
         {archived
           ? `${missionStateLabel(state)} · archived`
-          : missionStateLabel(state)}
+          : planningNow
+            ? "planning"
+            : missionStateLabel(state)}
       </span>
     </span>
   );
@@ -333,18 +342,21 @@ export function MissionHeaderActions({
         ) : null
       }
     >
-      {/* PLAN AGAIN is what Re-plan was (#967): it prepares a proposal and starts nothing. */}
+      {/* PLAN AGAIN (#967): it prepares a new proposal and starts nothing. Held while an attempt is
+          already running, which the server would refuse with a 409 (#967 P2b). */}
       {planning ? (
         <button
           type="button"
           className={styles.menuItem}
-          disabled={planning.disabled}
+          disabled={planning.disabled || planning.planPending}
           onClick={planning.propose}
           role="menuitem"
           data-testid="mission-replan"
         >
           {icon(<RotateCw size={15} />)}
-          {planning.busy === "plan" ? "Planning…" : "Plan again"}
+          {planning.busy === "plan" || planning.planPending
+            ? "Planning…"
+            : "Plan again"}
         </button>
       ) : null}
       {planning?.plan && planning.canReviewPlan ? (

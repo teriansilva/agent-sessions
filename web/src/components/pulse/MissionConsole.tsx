@@ -110,11 +110,25 @@ function ThreadEvent({ event }: { event: MissionEvent }) {
       ? "You"
       : event.kind === "assistant_msg"
         ? "Answer"
-        : event.kind;
+        : event.kind === "plan_edit"
+          ? "plan edited"
+          : event.kind;
+  // A `plan_edit` carries NO text by design (#967): it records which fields changed, never the brief.
+  // Until #967 P4 draws it as a compact row, the generic row names those fields, read as strings
+  // only. The meta object itself is never rendered.
+  const changed =
+    event.kind === "plan_edit" &&
+    Array.isArray((event.meta as { changed?: unknown } | null)?.changed)
+      ? ((event.meta as { changed: unknown[] }).changed.filter(
+          (f): f is string => typeof f === "string",
+        ) as string[])
+      : [];
+  const text =
+    event.text ?? (changed.length ? `Changed: ${changed.join(", ")}` : "");
   return (
     <div className={styles.event} data-testid="thread-event">
       <div className={styles.eventHead}>{label}</div>
-      <div className={styles.eventText}>{event.text ?? ""}</div>
+      <div className={styles.eventText}>{text}</div>
       {matches.map((m) => (
         <div key={m.id} className={styles.matchRow} data-testid="ask-match">
           <div className={styles.eventText}>{m.title}</div>
@@ -600,14 +614,14 @@ function MissionBody({
         className={styles.threadCol}
       >
         <div className={styles.pane} data-testid="pane">
-          {/* THE SCROLLING CONTENT, in its own box so a SHORT thread sits at the BOTTOM (#942).
-            Pinning the composer fixed half the dead band and moved the other half: the events
-            stayed top-aligned, so a four-turn mission on a 950px screen put ~350px of void
-            between the last answer and the box you type into. Chats grow up from the composer.
-            `.paneInner` carries `margin-top: auto` — see the note beside `.pane`. */}
-          <div
-            className={`${styles.paneInner} ${styles.paneAtBottom}`}
-          >
+          {/* WHAT THE MISSION IS WAITING ON, at the TOP of the body (#967 P2b review). The no-AI
+            notice, the open question and the plan card are not thread entries; they describe the
+            mission the thread is about. They used to sit inside the bottom-anchored box below, so
+            the whole group rode its `margin-top: auto` down to the composer. P1's card was tall
+            enough to fill the pane and hide that; folded to one line, the card floated hundreds of
+            pixels under the Details band. Outside that box they stay at the top, and a short
+            thread's free space falls between them and the conversation instead. */}
+          <div className={styles.paneTop}>
             {/* ONE HEADER ROW (#942). The mission's controls live in the console's header now, beside
             the title and the state, instead of on a second row of their own inside the pane —
             two stacked headers before any content was one of the things that made the page read
@@ -617,74 +631,80 @@ function MissionBody({
             Rendered in place when no slot is offered, which is what keeps this component
             standalone in a unit test. */}
             {d.mission && !lifecycleSlot ? header : null}
-            {
-              <>
-                {!configured ? (
-                  <div className={styles.notice} data-testid="no-ai-notice">
-                    <div className={styles.noticeLead}>
-                      No AI endpoint configured.
-                    </div>
-                    <div>
-                      Off: suggestions, recaps, progress, completion proposals,
-                      and the composer. Still works: create, adopt, objectives,
-                      timeline, approvals.
-                    </div>
-                  </div>
-                ) : null}
-                {/* THE QUESTION FIRST, above the thread and above the composer — it is the thing
-                the mission is waiting on, and burying it under the history would make
-                `needs_you` point at something the operator has to scroll to find (#892). It
-                outranks the proposal for the same reason: a question is already open, while a
-                plan is something to start. */}
-                {d.mission?.question ? (
-                  /* KEYED ON THE QUESTION'S OWN SEQ, not on the slot (#900 review, finding 5). A
-                 question is superseded in place: the answer 409s, the reload lands question B in
-                 the same prop, and an unkeyed card keeps its state across the swap — so the free
-                 text the operator typed about A is sitting in the box, enabled, over B. The key
-                 makes the replacement a remount, which is the only thing that reliably clears
-                 state a child owns. */
-                  <MissionQuestionCard
-                    key={d.mission.question.seq}
-                    missionId={missionId}
-                    question={d.mission.question}
-                    onAnswered={d.reload}
-                    // THE SAME FENCE AS EVERY OTHER CONSUMER (#896 review 23, finding 4). An
-                    // answer settles asynchronously — a 409 for a superseded question, or
-                    // `applied_ok: false` — and the raw callback let mission A's refusal paint
-                    // over mission B after the operator had navigated. This is what makes the
-                    // claim above ("every consumer gets the one fence") true rather than nearly.
-                    onNote={noteIfCurrent}
-                  />
-                ) : null}
-                {/* THE PROPOSAL (#893 Phase 4). The only thing on this screen asking the operator
-                for a decision that starts an agent — and it renders nothing at all once the
-                mission has left the planning states. */}
-                {/* The card reads the body's start model (`start`, above), whose callbacks carry
-                    both halves of a change and the mount fence. */}
-                {d.mission ? (
-                  <MissionPlanCard mission={d.mission} start={start} />
-                ) : null}
-                {decisions.map((a) => (
-                  <ActionRow
-                    key={a.id}
-                    action={a}
-                    onResolved={onResolved}
-                    // FENCED, like every other note this body emits (finding 6 from #896's review).
-                    // `ActionRow` calls this from its own 409 path — a compare-and-execute that lost
-                    // carries the settled record — so an approval decided on mission A and refused
-                    // while the operator moved to B would otherwise show A's refusal over B. The
-                    // browser test that caught the lifecycle instance of this now covers this path
-                    // too; it is the same bug one consumer further along.
-                    onNote={noteIfCurrent}
-                  />
-                ))}
-                {d.events.length === 0 && decisions.length === 0 ? (
-                  <div className={styles.empty}>Nothing has happened yet.</div>
-                ) : (
-                  d.events.map((e) => <ThreadEvent key={e.seq} event={e} />)
-                )}
-              </>
-            }
+            {!configured ? (
+              <div className={styles.notice} data-testid="no-ai-notice">
+                <div className={styles.noticeLead}>
+                  No AI endpoint configured.
+                </div>
+                <div>
+                  Off: suggestions, recaps, progress, completion proposals,
+                  and the composer. Still works: create, adopt, objectives,
+                  timeline, approvals.
+                </div>
+              </div>
+            ) : null}
+            {/* THE QUESTION FIRST, above the thread and above the composer — it is the thing
+            the mission is waiting on, and burying it under the history would make
+            `needs_you` point at something the operator has to scroll to find (#892). It
+            outranks the proposal for the same reason: a question is already open, while a
+            plan is something to start. */}
+            {d.mission?.question ? (
+              /* KEYED ON THE QUESTION'S OWN SEQ, not on the slot (#900 review, finding 5). A
+             question is superseded in place: the answer 409s, the reload lands question B in
+             the same prop, and an unkeyed card keeps its state across the swap — so the free
+             text the operator typed about A is sitting in the box, enabled, over B. The key
+             makes the replacement a remount, which is the only thing that reliably clears
+             state a child owns. */
+              <MissionQuestionCard
+                key={d.mission.question.seq}
+                missionId={missionId}
+                question={d.mission.question}
+                onAnswered={d.reload}
+                // THE SAME FENCE AS EVERY OTHER CONSUMER (#896 review 23, finding 4). An
+                // answer settles asynchronously — a 409 for a superseded question, or
+                // `applied_ok: false` — and the raw callback let mission A's refusal paint
+                // over mission B after the operator had navigated. This is what makes the
+                // claim above ("every consumer gets the one fence") true rather than nearly.
+                onNote={noteIfCurrent}
+              />
+            ) : null}
+            {/* THE PROPOSAL (#893 Phase 4). The only thing on this screen asking the operator
+            for a decision that starts an agent — and it renders nothing at all once the
+            mission has left the planning states. */}
+            {/* The card reads the body's start model (`start`, above), whose callbacks carry
+                both halves of a change and the mount fence. */}
+            {d.mission ? (
+              <MissionPlanCard mission={d.mission} start={start} />
+            ) : null}
+          </div>
+          {/* THE THREAD, in its own box so a SHORT thread sits at the BOTTOM (#942). Pinning the
+            composer fixed half the dead band and moved the other half: the events stayed
+            top-aligned, so a four-turn mission on a 950px screen put ~350px of void between the
+            last answer and the box you type into. Chats grow up from the composer.
+            `.paneAtBottom` carries `margin-top: auto` — see the note beside `.pane`. Only the
+            conversation rides it: decisions, events and the empty state. */}
+          <div
+            className={`${styles.paneInner} ${styles.paneAtBottom}`}
+          >
+            {decisions.map((a) => (
+              <ActionRow
+                key={a.id}
+                action={a}
+                onResolved={onResolved}
+                // FENCED, like every other note this body emits (finding 6 from #896's review).
+                // `ActionRow` calls this from its own 409 path — a compare-and-execute that lost
+                // carries the settled record — so an approval decided on mission A and refused
+                // while the operator moved to B would otherwise show A's refusal over B. The
+                // browser test that caught the lifecycle instance of this now covers this path
+                // too; it is the same bug one consumer further along.
+                onNote={noteIfCurrent}
+              />
+            ))}
+            {d.events.length === 0 && decisions.length === 0 ? (
+              <div className={styles.empty}>Nothing has happened yet.</div>
+            ) : (
+              d.events.map((e) => <ThreadEvent key={e.seq} event={e} />)
+            )}
           </div>
         </div>
         {composerDock}

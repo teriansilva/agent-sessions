@@ -378,9 +378,14 @@ test("BEGIN is refused without a session, and says what unblocks it", async ({
   // The reason DESCRIBES the control, and it sits in the plan card beside the plan it is about
   // (#967). A disabled button with no explanation is a dead end.
   await expect(begin).toHaveAttribute("aria-describedby", "mission-start-reason");
+  // A mission from before planning ran on create has no plan and nothing planning it (#967 P2b): the
+  // reason says so, and the card offers Plan manually as the way on.
   await expect(page.locator("#mission-start-reason")).toContainText(
-    /Plan again, under ⋯, to prepare a proposal/i,
+    /No plan yet/i,
   );
+  await expect(
+    page.getByTestId("mission-plan-card").getByTestId("mission-plan-manually"),
+  ).toBeVisible();
 });
 
 test("an objective edit posts ONE batch of ops", async ({ page }) => {
@@ -2853,7 +2858,7 @@ test("PLANNING a mission refreshes the RAIL, not just the pane", async ({
   await expect.poll(railState, { timeout: 10_000 }).toContain("draft");
 
   await selectOnlyMission(page);
-  // Plan again lives behind the header's ⋯ (#967), under Re-plan's testid.
+  // Plan again lives behind the header's ⋯ (#967), under its original `mission-replan` testid.
   await overflow(page);
   await expect(page.getByTestId("mission-replan")).toBeVisible();
   await page.getByTestId("mission-replan").click();

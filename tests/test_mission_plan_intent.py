@@ -544,6 +544,59 @@ def test_NO_ENDPOINT_then_PLAN_MANUALLY_saves_the_first_plan(api, monkeypatch):
     assert again.status_code == 422, again.text
 
 
+def test_PLAN_MANUALLY_offers_and_saves_a_chosen_project_PAST_the_models_40_project_cap(
+    api, store, monkeypatch
+):
+    """The operator's picker is not the model's capped list (#967, the review on #984).
+
+    More eligible projects than `MAX_PROJECTS`, and the mission's own project sorting LAST. The
+    no-endpoint recovery path offered the first 40 only, so Plan manually could not select the
+    project the mission was created in, and a plan edit could not show it, although `PATCH /plan`
+    resolves that project by id. Red against the capped list, on both surfaces.
+    """
+    c, hdr, _proj = api
+    _not_configured(monkeypatch)
+    for i in range(mission_plan.MAX_PROJECTS + 1):
+        _project(store, f"acme-{i:02d}")
+    last = _project(store, "zzz-last-sorting")
+    # …and one the save would refuse: an archived project is not offered either.
+    archived = _project(store, "acme-archived")
+    projects.update(archived.id, archived=True)
+
+    # The MODEL'S list keeps its cap, and the project is past it: that is the case under test.
+    model_ids = {p["id"] for p in mission_plan.project_options()}
+    assert len(model_ids) == mission_plan.MAX_PROJECTS
+    assert last.id not in model_ids
+
+    m = c.post("/api/missions", json={"instruction": "ship it", "project_id": last.id}, headers=hdr)
+    assert m.status_code in (200, 201), m.text
+    mid = m.json()["id"]
+    detail = c.get(f"/api/missions/{mid}", headers=hdr).json()
+    assert (detail["plan_state"], detail["project_id"]) == ("skipped", last.id)
+    assert detail["plan"] is None
+    offered = [p["id"] for p in detail["plan_options"]["project_options"]]
+    assert last.id in offered, f"the mission's own project was not offered ({len(offered)} were)"
+    assert len(offered) > mission_plan.MAX_PROJECTS
+    assert archived.id not in offered, "an archived project was offered"
+
+    # …it saves as the first plan, through the same validation as before…
+    r = c.patch(
+        f"/api/missions/{mid}/plan",
+        json={"project_id": last.id, "engine": "claude", "brief": "by hand"},
+        headers=hdr,
+    )
+    assert r.status_code == 200, r.text
+    plan = r.json()
+    assert (plan["project_id"], plan["cwd"]) == (last.id, last.default_folder)
+
+    # …and the EDIT picker can show it: on the save's response and on the next read.
+    assert last.id in {p["id"] for p in plan["project_options"]}
+    detail = c.get(f"/api/missions/{mid}", headers=hdr).json()
+    assert (detail["state"], detail["plan_state"]) == ("planned", "ready")
+    assert detail["plan"]["project_id"] == last.id
+    assert last.id in {p["id"] for p in detail["plan"]["project_options"]}
+
+
 def test_a_first_plan_body_is_REFUSED_while_planning_is_PENDING(api):
     """Other states keep their previous answer: without a `plan_id` that is a 422."""
     c, hdr, proj = api
@@ -898,6 +951,123 @@ def test_RECOVERY_retries_a_TRANSIENT_worklist_read_and_reports_giving_up(store,
     assert calls["n"] == 3, calls
     assert "database is locked" in out.get("worklist_error", ""), out
     assert missions.get_mission(other)["plan_state"] == "pending"
+
+
+def _supersede_on_settle(monkeypatch):
+    """Make the FIRST `settle_plan` lose the generation fence for real: a newer attempt takes the
+    mission (another process's Plan again) just before the settlement commits, and the real
+    `settle_plan` then discards it with its own `discarded` event. Not a stub returning False."""
+    real = missions.settle_plan
+    fired = {"n": 0}
+
+    def settle(mission_id, generation, state, **kw):
+        if not fired["n"]:
+            fired["n"] += 1
+            con = sqlite3.connect(missions._db_path())
+            con.execute(
+                "UPDATE missions SET plan_generation = plan_generation + 1 WHERE id=?",
+                (mission_id,),
+            )
+            con.commit()
+            con.close()
+        return real(mission_id, generation, state, **kw)
+
+    monkeypatch.setattr(missions, "settle_plan", settle)
+    return fired
+
+
+def _unwritable_settle(monkeypatch):
+    def settle(*_a, **_kw):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(missions, "settle_plan", settle)
+
+
+@pytest.mark.parametrize(
+    ("case", "bucket", "plan_state"),
+    [
+        # The control: a skip that LANDED is this pass's outcome.
+        ("landed_skip", "recovered", "skipped"),
+        # Red against `_settle` dropping `settle_plan`'s bool: the no-endpoint branch reported
+        # `skipped`, so a settlement the fence DISCARDED was counted as recovered.
+        ("discarded_skip", "unchanged", "pending"),
+        # …and the failure path the same way: a discarded `failed` is not this pass's failure.
+        ("discarded_failure", "unchanged", "pending"),
+        # A settlement that could not be WRITTEN leaves the intent pending. Not recovered.
+        ("unwritable_skip", "failed", "pending"),
+    ],
+)
+def test_RECOVERY_reports_a_settlement_by_whether_it_LANDED(
+    store, monkeypatch, case, bucket, plan_state
+):
+    """`recovered` only when this pass's settlement actually landed (#974 review, #967 P2b)."""
+    mid = _mission()
+    _restart()
+    if case == "discarded_failure":
+        _configured(monkeypatch)
+        model = _model(monkeypatch, raises=RuntimeError("endpoint returned HTTP 500"))
+    else:
+        _not_configured(monkeypatch)
+        model = _model(monkeypatch, raises=AssertionError("no endpoint, no call"))
+    if case.startswith("discarded"):
+        fired = _supersede_on_settle(monkeypatch)
+    elif case == "unwritable_skip":
+        _unwritable_settle(monkeypatch)
+
+    out = asyncio.run(mission_plan.recover_pending())
+
+    buckets = {k: v for k, v in out.items() if isinstance(v, list) and v}
+    assert buckets == {bucket: [mid]}, out
+    row = missions.get_mission(mid)
+    assert row["plan_state"] == plan_state
+    assert missions.get_plan(mid) is None
+    if case == "discarded_failure":
+        assert model.calls == 1
+    if case.startswith("discarded"):
+        assert fired["n"] == 1
+        (ev,) = _events(mid, "planning")
+        assert ev["meta"]["outcome"] == "discarded", ev
+        assert row["plan_generation"] == 2
+
+
+# ---- plan manually: the options it chooses from -------------------------------------------------
+
+
+def test_the_DETAIL_of_an_UNPLANNED_mission_carries_the_options_PLAN_MANUALLY_chooses_from(
+    api, monkeypatch
+):
+    """With no plan the lists rode nowhere, so the card had nothing to offer (#967 P2b).
+
+    Red against the detail route before the change: `plan_options` is absent for a skipped
+    mission. Offered exactly where `PATCH /plan` accepts a first plan, and from the builders that
+    validate it — so every offered choice is one the save accepts.
+    """
+    c, hdr, proj = api
+    _not_configured(monkeypatch)
+    m = c.post("/api/missions", json={"instruction": "ship it"}, headers=hdr).json()
+    detail = c.get(f"/api/missions/{m['id']}", headers=hdr).json()
+    assert (detail["plan_state"], detail["plan"]) == ("skipped", None)
+    opts = detail["plan_options"]
+    assert [p["id"] for p in opts["project_options"]] == [proj.id]
+    assert [e["id"] for e in opts["engine_options"]] == [e["id"] for e in ENGINES]
+
+    # …the first plan saved from them is accepted, and the lists move onto the plan.
+    choice = {
+        "project_id": opts["project_options"][0]["id"],
+        "engine": opts["engine_options"][0]["id"],
+        "brief": "by hand",
+    }
+    r = c.patch(f"/api/missions/{m['id']}/plan", json=choice, headers=hdr)
+    assert r.status_code == 200, r.text
+    detail = c.get(f"/api/missions/{m['id']}", headers=hdr).json()
+    assert "plan_options" not in detail
+    assert detail["plan"]["project_options"] and detail["plan"]["engine_options"]
+
+    # A PENDING mission is not offered them: a first plan is refused there.
+    pending = _mission()
+    detail = c.get(f"/api/missions/{pending}", headers=hdr).json()
+    assert detail["plan_state"] == "pending"
+    assert "plan_options" not in detail
 
 
 # ---- the upgrade --------------------------------------------------------------------------

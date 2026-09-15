@@ -145,6 +145,36 @@ def resolve_chosen_project(
     return {"id": entity.id, "name": entity.name, "cwd": cwd}, ""
 
 
+def picker_project_options() -> list[dict]:
+    """Every project the OPERATOR may pick for a plan: Plan manually's first plan, and a plan edit.
+
+    Not :func:`project_options`. That list is what the MODEL is shown, and it is capped at
+    :data:`MAX_PROJECTS` because a menu nobody reads is a menu that gets a random index. The
+    operator is not choosing an index: they pick from their own projects, which the projects
+    routes already list in full, on an authenticated route. Offering the capped list here meant
+    a mission whose project sorts past the cap could not be planned by hand, or shown in an
+    edit, in the project it was created in, while `PATCH /plan` resolves that project by id and
+    would accept it (#967, the review on #984).
+
+    ONE RULE, ONE SNAPSHOT. A project is offered exactly when :func:`resolve_chosen_project`
+    resolves it against a single read of the store: it exists, is not archived, and has a folder
+    to work in, which are the rules `PATCH /plan` validates with. So the mission's own project,
+    whenever it can be planned into at all, is in this list by construction rather than by a
+    special case. Same order as the model's list.
+    """
+    try:
+        loaded = projects.load()
+    except Exception:  # noqa: BLE001 — an unreadable projects file is "no options", not a 500
+        log.debug("picker project options unavailable")
+        return []
+    out: list[dict] = []
+    for entity in sorted(loaded.values(), key=lambda e: (e.name.lower(), e.id)):
+        project, _why = resolve_chosen_project(entity.id, index=loaded)
+        if project is not None:
+            out.append(project)
+    return out
+
+
 def engine_options() -> list[dict]:
     """The engines that can actually be dispatched into, with the reason for every exclusion.
 
@@ -243,18 +273,45 @@ def proposal_from_reply(
     )
 
 
-async def _settle(mission_id: str, generation: int, state: str, detail: str, *, path=None) -> None:
+async def _settle(
+    mission_id: str, generation: int, state: str, detail: str, *, path=None
+) -> bool | None:
     """Close one attempt as `failed`/`skipped`, fenced by its generation. Never raises.
 
-    A settlement that cannot be written leaves the attempt `pending`, which is the state recovery
-    exists for — so swallowing here loses nothing.
+    Returns what `settle_plan` said: True when THIS settlement landed, False when the generation
+    fence discarded it (a newer attempt or the operator's save owns the mission now), and None when
+    it could not be written at all. A settlement that cannot be written leaves the attempt
+    `pending`, which is the state recovery exists for — so swallowing here loses nothing.
+
+    **The answer is returned, not dropped** (#974 review, carried into #967 P2b). Callers used to
+    report the state they ASKED for, so a discarded skip counted as recovered and a discarded
+    failure as failed. :func:`_outcome` turns the answer into the outcome that actually happened.
     """
     try:
-        await missions.run_admitted(
-            lambda: missions.settle_plan(mission_id, generation, state, detail=detail, path=path)
+        return bool(
+            await missions.run_admitted(
+                lambda: missions.settle_plan(
+                    mission_id, generation, state, detail=detail, path=path
+                )
+            )
         )
     except Exception:  # noqa: BLE001
         log.debug("mission %s: could not settle planning attempt %s", mission_id, generation)
+        return None
+
+
+def _outcome(landed: bool | None, state: str) -> str:
+    """The outcome of a settlement that asked for `state`, given what `_settle` returned.
+
+    `state` only when it landed. A discarded one is `superseded`: this attempt settled nothing,
+    and the mission belongs to whoever took the newer generation. One that could not be written is
+    `error`: the attempt is still `pending`, and recovery must not count it as done.
+    """
+    if landed is True:
+        return state
+    if landed is False:
+        return "superseded"
+    return "error"
 
 
 async def _attempt(mission_id: str, generation: int, *, path=None) -> dict:
@@ -271,12 +328,12 @@ async def _attempt(mission_id: str, generation: int, *, path=None) -> dict:
     state = str(row.get("state") or "")
     if state not in missions.PLANNABLE_STATES:
         why = f"a mission that is {state} cannot be planned"
-        await _settle(mission_id, generation, "failed", why, path=path)
-        raise PlanError(why, status=409)
+        landed = await _settle(mission_id, generation, "failed", why, path=path)
+        raise PlanError(why, status=409, outcome=_outcome(landed, "failed"))
     if row.get("archived_at") is not None or row.get("archiving_at") is not None:
         why = "the mission is archived"
-        await _settle(mission_id, generation, "failed", why, path=path)
-        raise PlanError(why, status=409)
+        landed = await _settle(mission_id, generation, "failed", why, path=path)
+        raise PlanError(why, status=409, outcome=_outcome(landed, "failed"))
 
     # THE OPERATOR'S PROJECT, resolved from the store before anything is asked. A project that is
     # already gone fails the attempt here rather than after a model call nobody can use.
@@ -285,8 +342,8 @@ async def _attempt(mission_id: str, generation: int, *, path=None) -> dict:
     if chosen_id:
         fixed, why = resolve_chosen_project(str(chosen_id))
         if fixed is None:
-            await _settle(mission_id, generation, "failed", why, path=path)
-            raise PlanError(why, status=409)
+            landed = await _settle(mission_id, generation, "failed", why, path=path)
+            raise PlanError(why, status=409, outcome=_outcome(landed, "failed"))
 
     # BUILT ONCE AND RESOLVED AGAINST THE SAME LISTS. Re-reading them after the model call would
     # resolve an index into a set the model never saw — the "an index is not an identity" family,
@@ -304,18 +361,21 @@ async def _attempt(mission_id: str, generation: int, *, path=None) -> dict:
             ]
         )
     except review.NotConfiguredError:
-        await _settle(mission_id, generation, "skipped", NOT_CONFIGURED, path=path)
-        raise PlanError(NOT_CONFIGURED, 409, outcome="skipped") from None
+        landed = await _settle(mission_id, generation, "skipped", NOT_CONFIGURED, path=path)
+        raise PlanError(NOT_CONFIGURED, 409, outcome=_outcome(landed, "skipped")) from None
     except Exception as e:  # noqa: BLE001
         log.debug("mission plan for %s failed: %s", mission_id, type(e).__name__)
-        await _settle(
+        landed = await _settle(
             mission_id,
             generation,
             "failed",
             f"the model call failed: {aitasks.clamp_error(e)}",
             path=path,
         )
-        raise PlanError(f"the plan could not be produced ({type(e).__name__})") from None
+        raise PlanError(
+            f"the plan could not be produced ({type(e).__name__})",
+            outcome=_outcome(landed, "failed"),
+        ) from None
 
     proposal, dropped = proposal_from_reply(obj, projects_, engines_)
     note: str | None = None
@@ -334,8 +394,8 @@ async def _attempt(mission_id: str, generation: int, *, path=None) -> dict:
     brief = proposal["brief"] or instruction
     if not brief:
         why = "the plan has no brief and the mission has no instruction"
-        await _settle(mission_id, generation, "failed", why, path=path)
-        raise PlanError(why, 422)
+        landed = await _settle(mission_id, generation, "failed", why, path=path)
+        raise PlanError(why, 422, outcome=_outcome(landed, "failed"))
 
     def _store(target: dict | None) -> dict:
         return missions.put_plan(
@@ -377,11 +437,11 @@ async def _attempt(mission_id: str, generation: int, *, path=None) -> dict:
         raise PlanError(str(e), 409, outcome="superseded") from None
     except missions.MissionError as e:
         why, status = str(e), e.status
-        await _settle(mission_id, generation, "failed", why, path=path)
-        raise PlanError(why, status) from None
+        landed = await _settle(mission_id, generation, "failed", why, path=path)
+        raise PlanError(why, status, outcome=_outcome(landed, "failed")) from None
     if stored is None:
-        await _settle(mission_id, generation, "failed", gone, path=path)
-        raise PlanError(gone, 409)
+        landed = await _settle(mission_id, generation, "failed", gone, path=path)
+        raise PlanError(gone, 409, outcome=_outcome(landed, "failed"))
 
     stored["dropped"] = dropped
     stored["project_options"] = projects_
@@ -397,14 +457,17 @@ async def _run_generation(mission_id: str, generation: int, *, path=None) -> dic
         raise
     except Exception as e:  # noqa: BLE001
         log.warning("mission %s: planning attempt %s failed: %s", mission_id, generation, e)
-        await _settle(
+        landed = await _settle(
             mission_id,
             generation,
             "failed",
             f"planning failed: {aitasks.clamp_error(e)}",
             path=path,
         )
-        raise PlanError(f"the plan could not be produced ({type(e).__name__})") from None
+        raise PlanError(
+            f"the plan could not be produced ({type(e).__name__})",
+            outcome=_outcome(landed, "failed"),
+        ) from None
 
 
 async def propose(mission_id: str, *, path=None) -> dict:
@@ -468,8 +531,8 @@ async def _resume(mission_id: str, *, path=None) -> dict:
     try:
         review._require_config()
     except review.NotConfiguredError:
-        await _settle(mission_id, generation, "skipped", NOT_CONFIGURED, path=path)
-        return {"plan_state": "skipped"}
+        landed = await _settle(mission_id, generation, "skipped", NOT_CONFIGURED, path=path)
+        return {"plan_state": _outcome(landed, "skipped")}
 
     plan = await _run_generation(mission_id, generation, path=path)
     return {"plan_state": "ready", "plan_id": plan["plan_id"]}
@@ -517,10 +580,13 @@ async def recover_pending(*, older_than: float = 0.0, limit: int = 20) -> dict:
     raises — it turns every failure into a returned outcome — so counting "returned" as
     "recovered" reported swallowed errors as successes. Each mission lands in exactly one bucket:
 
-    * `recovered` — this pass settled the attempt `ready` or `skipped`;
-    * `failed` — the attempt settled `failed`, or the call hit an unexpected error;
+    * `recovered` — this pass's own settlement LANDED as `ready` or `skipped`;
+    * `failed` — this pass's `failed` settlement landed, a settlement could not be written (the
+      attempt is still `pending`), or the call hit an unexpected error;
     * `already_running` — another attempt in this process holds the single-flight and owns it;
-    * `unchanged` — nothing for this pass to settle (settled elsewhere, superseded, gone).
+    * `unchanged` — nothing for this pass to settle: settled elsewhere, gone, or SUPERSEDED — the
+      generation fence discarded this pass's settlement because a newer attempt or the operator's
+      own save owns the mission. A discarded settlement is not an outcome of this pass (#967 P2b).
 
     **A worklist read is retried** :data:`WORKLIST_ATTEMPTS` times with a short backoff before the
     pass gives up, and giving up is reported as `worklist_error` rather than as an empty pass. One

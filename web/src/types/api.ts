@@ -1195,11 +1195,45 @@ export interface MissionTurn {
   actions?: OrchestratorAction[];
 }
 
+/** The timeline kinds the console knows by name. Open-ended (`string & {}`): the server adds kinds,
+ *  and an unknown one still renders as a generic row rather than failing to type-check.
+ *
+ *  `planning` and `plan_edit` are #967 P2's. A `planning` event closes or annotates one planning
+ *  attempt (`MissionPlanningMeta`); a `plan_edit` records WHICH fields an operator's edit changed and
+ *  never carries the brief (`MissionPlanEditMeta`, no `text`). */
+export type MissionEventKind =
+  | "operator_msg"
+  | "assistant_msg"
+  | "state"
+  | "plan"
+  | "plan_edit"
+  | "planning"
+  | (string & {});
+
+/** `meta` of a `planning` event (#967). `discarded` is a settlement the generation fence refused
+ *  because a newer attempt or the operator's own save owned the mission by then. */
+export interface MissionPlanningMeta {
+  outcome:
+    | "skipped"
+    | "failed"
+    | "discarded"
+    | "recovered"
+    | "project_conflict"
+    | (string & {});
+  generation?: number;
+}
+
+/** `meta` of a `plan_edit` event (#967): the plan it produced and the fields that changed. */
+export interface MissionPlanEditMeta {
+  plan_id: string;
+  changed: string[];
+}
+
 export interface MissionEvent {
   seq: number;
   mission_id: string;
   at: number;
-  kind: string;
+  kind: MissionEventKind;
   session_key: string | null;
   action_id: string | null;
   text: string | null;
@@ -1345,6 +1379,25 @@ export interface Mission {
    *  and "not worked out yet" are different things to approve a launch against. */
   objectives_state?: "pending" | "done" | "failed" | "skipped" | null;
   objectives_at?: number | null;
+  /** How PLANNING stands (#967 P2). A new mission plans itself, so this is `pending` from the create
+   *  transaction until the attempt settles: `ready` (a plan was written, in the same transaction),
+   *  `failed` (with `plan_detail`), or `skipped` (no AI endpoint). A mission from before the column
+   *  was backfilled `ready` if it had a plan and `skipped` otherwise, with no `plan_detail`.
+   *
+   *  `pending` is a server-side fence as well as a label: DISPATCH answers 409 while it holds. */
+  plan_state?: "pending" | "ready" | "failed" | "skipped" | null;
+  /** The planning ATTEMPT. Every intent (create, Plan again, a manual first plan) takes a new one. */
+  plan_generation?: number;
+  /** Why the last attempt settled `failed` or `skipped`. Null otherwise. */
+  plan_detail?: string | null;
+  plan_at?: number | null;
+  /** What PLAN MANUALLY may choose from (#967 P2b). Present only while the mission has no plan and
+   *  planning settled `skipped` or `failed` — exactly the states `PATCH /plan` accepts a first plan
+   *  in. Once a plan exists the lists ride on it (`MissionPlan.project_options`). */
+  plan_options?: {
+    project_options: { id: string; name: string; cwd: string }[];
+    engine_options: { id: string; label: string }[];
+  } | null;
   sessions: MissionSession[];
   objectives?: MissionObjective[];
   /** How many LIVE sub-agents this mission may hold (#894). A server constant, echoed so the

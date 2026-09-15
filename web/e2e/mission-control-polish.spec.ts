@@ -355,11 +355,12 @@ for (const name of Object.keys(STATES)) {
       const describedBy = await begin.getAttribute("aria-describedby");
       expect(describedBy).toBeTruthy();
       const reason = page.locator(`[id="${describedBy}"]`);
-      await expect(reason).toContainText(/plan again/i);
+      // #967 P2b: the reason is the plan card's own state line, not a pointer at ⋯.
+      await expect(reason).toContainText(/no plan yet/i);
       expect(await reason.evaluate((el) => !!el.closest('[data-testid="mission-plan-card"]'))).toBe(true);
     }
     if (name === "draft" || name === "planned") {
-      // Re-plan did not disappear: it is "Plan again", behind ⋯, with its testid.
+      // The plan button did not disappear: it is "Plan again", behind ⋯, with its testid.
       await page.getByTestId("mission-overflow").click();
       await expect(page.getByTestId("mission-replan")).toHaveText("Plan again");
       await expect(page.getByTestId("mission-replan")).toBeEnabled();
