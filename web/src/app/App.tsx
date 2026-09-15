@@ -24,6 +24,7 @@ import {
   RouterProvider,
   Routes,
   useLocation,
+  useNavigate,
 } from "react-router-dom";
 import { NotificationBell } from "../components/pulse/NotificationBell";
 import { SessionList } from "../components/sidebar/SessionList";
@@ -31,6 +32,10 @@ import { MissionRailSlotProvider } from "../components/pulse/railSlot";
 import { useModalDrawer } from "../components/pulse/useModalDrawer";
 import { NewSessionLanding } from "../routes/NewSessionLanding";
 import { Onboarding } from "../routes/Onboarding";
+import { whatsNewBundleVersion } from "../whatsnew/due";
+import { useWhatsNew } from "../whatsnew/useWhatsNew";
+import { WhatsNewCtx } from "../whatsnew/WhatsNewContext";
+import { WhatsNewDialog } from "../whatsnew/WhatsNewDialog";
 import { Settings } from "../routes/Settings";
 import { SessionView } from "../routes/SessionView";
 import { ButtonGlitch } from "../components/hud/ButtonGlitch";
@@ -321,6 +326,27 @@ function Layout() {
   // away once the refreshed config echoes the value back, and a failed save clears it so the
   // control snaps back to the server truth (no drift between the two surfaces).
   const refreshConfig = useConfigRefresh();
+
+  // What's new (#971): a once-per-operator slideshow for the newest release in releases.ts.
+  // `useWhatsNew` decides when it opens and keeps an open one open until the operator closes it.
+  const navigate = useNavigate();
+  const persistWhatsNew = useCallback(
+    (shown: string) => {
+      // Durable only when the server says so: a failed write leaves just this tab's flag.
+      api.dismissWhatsNew(shown).then(refreshConfig, () => {
+        /* not acknowledged — the next load decides again */
+      });
+    },
+    [refreshConfig],
+  );
+  const whatsNew = useWhatsNew({
+    config,
+    wizardOpen: showSetup || wizardReplay || tourOpen,
+    bundle: whatsNewBundleVersion(version.current),
+    server: version.server,
+    updateReady: version.updateReady,
+    persist: persistWhatsNew,
+  });
   const cfgOrder = config?.session_list_order ?? "recent_activity";
   const [orderPending, setOrderPending] = useState<string | null>(null);
   if (orderPending && orderPending === cfgOrder) setOrderPending(null);
@@ -346,6 +372,7 @@ function Layout() {
 
   return (
     <SectionStateContext.Provider value={sectionMemory}>
+      <WhatsNewCtx.Provider value={whatsNew.open}>
       <ButtonGlitch />
       <div
         className={cls}
@@ -712,6 +739,8 @@ function Layout() {
           onClose={() => {
             setSetupDismissed(true);
             setWizardReplay(false);
+            // Completing (or skipping) setup covers the current notes, saved or not (#971).
+            whatsNew.markSetupDone();
           }}
         />
       )}
@@ -723,8 +752,24 @@ function Layout() {
             setTourOpen(false);
             setWizardReplay(true);
           }}
+          onWhatsNew={() => {
+            setTourOpen(false);
+            whatsNew.open();
+          }}
         />
       )}
+      {whatsNew.release && (
+        <WhatsNewDialog
+          key={whatsNew.release.version}
+          release={whatsNew.release}
+          onDismiss={whatsNew.dismiss}
+          onNavigate={(to) => {
+            whatsNew.dismiss();
+            navigate(to);
+          }}
+        />
+      )}
+      </WhatsNewCtx.Provider>
     </SectionStateContext.Provider>
   );
 }

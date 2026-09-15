@@ -175,6 +175,8 @@ test("Skip setup persists onboarded and closes the wizard", async () => {
   const onClose = renderWizard();
   await userEvent.click(screen.getByRole("button", { name: /skip setup/i }));
   expect(api.completeOnboarding).toHaveBeenCalledTimes(1);
+  // Finishing setup covers the current release notes, so the dialog never follows the wizard (#971).
+  expect(api.completeOnboarding).toHaveBeenCalledWith("0.20.0");
   expect(onClose).toHaveBeenCalledTimes(1);
 });
 
@@ -316,15 +318,52 @@ test("tour mode shows the slideshow and Done closes it", async () => {
     </MemoryRouter>,
   );
   expect(screen.getByText(/six engines, one deck/i)).toBeInTheDocument();
-  // 8 slides (#675 refresh): advance to the last, then Done.
-  for (let k = 0; k < 5; k++) {
-    await userEvent.click(screen.getByRole("button", { name: /^next$/i }));
-  }
+  expect(screen.getByText("1 / 10")).toBeInTheDocument();
+  // 10 slides (#971 refresh): Mission control, then Files/git/editing and Templates, then the rest.
+  const next = () => userEvent.click(screen.getByRole("button", { name: /^next$/i }));
+  await next();
+  expect(screen.getByRole("heading", { name: "Mission control" })).toBeInTheDocument();
+  expect(screen.queryByText(/what's in flight/i)).not.toBeInTheDocument();
+  await next();
+  expect(screen.getByRole("heading", { name: "Files, git & editing" })).toBeInTheDocument();
+  await next();
+  expect(screen.getByRole("heading", { name: "Templates" })).toBeInTheDocument();
+  for (let k = 0; k < 4; k++) await next();
   expect(screen.getByText(/home free — from anywhere/i)).toBeInTheDocument();
-  await userEvent.click(screen.getByRole("button", { name: /^next$/i }));
-  await userEvent.click(screen.getByRole("button", { name: /^next$/i }));
+  await next();
+  await next();
+  expect(screen.getByText("10 / 10")).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: /^done$/i }));
   expect(onClose).toHaveBeenCalledTimes(1);
   // The standalone tour never persists onboarding.
   expect(api.completeOnboarding).not.toHaveBeenCalled();
+});
+
+test("the tour offers What's new when the shell can open it (#971)", async () => {
+  const onWhatsNew = vi.fn();
+  render(
+    <MemoryRouter>
+      <ConfigCtx.Provider value={cfg()}>
+        <Onboarding mode="tour" onClose={vi.fn()} onWhatsNew={onWhatsNew} />
+      </ConfigCtx.Provider>
+    </MemoryRouter>,
+  );
+  await userEvent.click(screen.getByRole("button", { name: "What's new in 0.20" }));
+  expect(onWhatsNew).toHaveBeenCalledTimes(1);
+});
+
+test("the tour answers the arrow keys (#971)", async () => {
+  render(
+    <MemoryRouter>
+      <ConfigCtx.Provider value={cfg()}>
+        <Onboarding mode="tour" onClose={vi.fn()} />
+      </ConfigCtx.Provider>
+    </MemoryRouter>,
+  );
+  await userEvent.keyboard("{ArrowRight}");
+  expect(screen.getByText("2 / 10")).toBeInTheDocument();
+  await userEvent.keyboard("{ArrowLeft}");
+  expect(screen.getByText("1 / 10")).toBeInTheDocument();
+  // Without the shell's callback there is nothing to open, so no button.
+  expect(screen.queryByRole("button", { name: /what's new/i })).not.toBeInTheDocument();
 });

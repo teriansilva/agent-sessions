@@ -16,6 +16,9 @@ import { mintNewSessionId } from "../lib/newSession";
 import type { EngineInfo, Folder, TwoFactorEnrollment } from "../types/api";
 import styles from "./Onboarding.module.css";
 import { AiEndpointSetup } from "./AiEndpointSetup";
+import { SlideCounter, SlideDots } from "../components/slideshow/Slideshow";
+import { useSlideshow } from "../components/slideshow/useSlideshow";
+import { newestRelease, whatsNewLabel } from "../whatsnew/due";
 
 /** Corner-bracket frame (the `.hud-cnr` primitive in App.css). Inlined here — the shared
  *  `HudFrame` component lands on the HUD-compliance branch (#466); App.tsx inlines them too. */
@@ -43,9 +46,19 @@ const SLIDES: { img: string; title: string; body: string }[] = [
     body: "Claude Code, Codex, opencode, Gemini, Antigravity & Kimi Code — each in its own persistent session in the sidebar, grouped by project, with per-engine badges. Search, filter, favorite, archive.",
   },
   {
-    img: publicAsset("onboarding/pulse.svg"),
+    img: publicAsset("whatsnew/0.20/missions.svg"),
     title: "Mission control",
-    body: "Give a mission an instruction and a project, and it works out what done means, follows the work through, and asks when it is unsure. The same page still shows what needs you (⚠), what's in flight and what's gone idle — each one click from jumping back in.",
+    body: "Say the outcome you want. Mission control proposes a plan — a project, an agent and the objectives that define done — starts the agent when you press Begin, settles each objective on evidence and asks when it is unsure.",
+  },
+  {
+    img: publicAsset("whatsnew/0.20/files.svg"),
+    title: "Files, git & editing",
+    body: "Every session has a Files panel: upload files or whole folders, edit a file right where you read it, and fetch, pull, stage, commit and push from its Git tab. A save never overwrites what the agent wrote meanwhile.",
+  },
+  {
+    img: publicAsset("whatsnew/0.20/templates.svg"),
+    title: "Templates",
+    body: "Keep reusable instructions with fill-in fields, tags and images. Pick one from any composer — or save a good prompt as a template — and send it to any session.",
   },
   {
     img: publicAsset("onboarding/aireview.svg"),
@@ -75,7 +88,7 @@ const SLIDES: { img: string; title: string; body: string }[] = [
   {
     img: publicAsset("onboarding/settings.svg"),
     title: "Tune it in Settings",
-    body: "Your AI endpoint, auto-sort, themes, security and more — all in Settings. Re-open this tour, or re-run the full setup, any time from Help.",
+    body: "Your AI endpoint, auto-sort, themes, security and more — all in Settings. Re-open this tour, see what's new, or re-run the full setup, any time from Help.",
   },
 ];
 
@@ -99,28 +112,32 @@ const STEP_LABEL: Record<Step, string> = {
   launch: "Launch",
 };
 
-/** Slideshow shared by the wizard's Tour step and the standalone replay (Help). */
+/** Slideshow shared by the wizard's Tour step and the standalone replay (Help). Position, ←/→ and
+ *  the dots come from the shared slideshow (#971), which What's new uses too. */
 function Slideshow({
   onDone,
   doneLabel,
   onRerun,
+  onWhatsNew,
 }: {
   onDone: () => void;
   doneLabel: string;
   onRerun?: () => void;
+  onWhatsNew?: () => void;
 }) {
-  const [i, setI] = useState(0);
-  const last = i >= SLIDES.length - 1;
-  const s = SLIDES[i];
+  const show = useSlideshow(SLIDES.length);
+  const s = SLIDES[show.index];
+  const whatsNew = onWhatsNew ? whatsNewLabel() : null;
   return (
     <div className={styles.tour}>
       <img className={styles.shot} src={s.img} alt="" />
-      <h3 className={styles.tourTitle}>{s.title}</h3>
-      <p className={styles.tourBody}>{s.body}</p>
-      <div className={styles.dots} aria-hidden="true">
-        {SLIDES.map((_, n) => (
-          <i key={n} className={n === i ? styles.dotOn : ""} />
-        ))}
+      <div aria-live="polite" aria-atomic="true">
+        <h3 className={styles.tourTitle}>{s.title}</h3>
+        <p className={styles.tourBody}>{s.body}</p>
+      </div>
+      <div className={styles.tourNav}>
+        <SlideDots state={show} />
+        <SlideCounter state={show} />
       </div>
       <div className={styles.foot}>
         <button type="button" className={styles.ghost} onClick={onDone}>
@@ -131,22 +148,23 @@ function Slideshow({
             Re-run full setup
           </button>
         )}
+        {onWhatsNew && whatsNew && (
+          <button type="button" className={styles.ghost} onClick={onWhatsNew}>
+            {whatsNew}
+          </button>
+        )}
         <span className={styles.grow} />
-        {i > 0 && (
-          <button
-            type="button"
-            className={styles.btn}
-            onClick={() => setI((n) => n - 1)}
-          >
+        {!show.first && (
+          <button type="button" className={styles.btn} onClick={show.back}>
             <ArrowLeft size={14} /> Back
           </button>
         )}
         <button
           type="button"
           className={`${styles.pri} shine`}
-          onClick={() => (last ? onDone() : setI((n) => n + 1))}
+          onClick={() => (show.last ? onDone() : show.next())}
         >
-          {last ? doneLabel : "Next"} <ArrowRight size={14} />
+          {show.last ? doneLabel : "Next"} <ArrowRight size={14} />
         </button>
       </div>
     </div>
@@ -160,10 +178,13 @@ export function Onboarding({
   mode = "wizard",
   onClose,
   onRerunSetup,
+  onWhatsNew,
 }: {
   mode?: "wizard" | "tour";
   onClose: () => void;
   onRerunSetup?: () => void;
+  /** Tour only (#971): open What's new from the tour's footer. */
+  onWhatsNew?: () => void;
 }) {
   const config = useConfig();
   const navigate = useNavigate();
@@ -244,7 +265,7 @@ export function Onboarding({
 
   const finish = useCallback(async () => {
     try {
-      await api.completeOnboarding();
+      await api.completeOnboarding(newestRelease()?.version);
     } catch {
       /* non-fatal — the gate also infers; a retry happens on the next config load */
     }
@@ -318,7 +339,7 @@ export function Onboarding({
     if (!engine || !effectiveCwd) return;
     setBusy(true);
     try {
-      await api.completeOnboarding();
+      await api.completeOnboarding(newestRelease()?.version);
     } catch {
       /* non-fatal */
     }
@@ -333,7 +354,12 @@ export function Onboarding({
   if (mode === "tour") {
     return (
       <Overlay onClose={onClose} title="Tour">
-        <Slideshow onDone={onClose} doneLabel="Done" onRerun={onRerunSetup} />
+        <Slideshow
+          onDone={onClose}
+          doneLabel="Done"
+          onRerun={onRerunSetup}
+          onWhatsNew={onWhatsNew}
+        />
       </Overlay>
     );
   }

@@ -155,6 +155,26 @@ def _preflight_prefs(payload: dict) -> None:
             raise bad("project_names must be an object of string→string")
     if "onboarded" in payload and not isinstance(payload["onboarded"], bool):
         raise bad("onboarded must be a boolean")
+    if "whats_new_seen" in payload:
+        if prefs.release_tuple(payload["whats_new_seen"]) is None:
+            raise bad("whats_new_seen must be a release version like 0.20.0")
+        _require_onboarded_for_whats_new(payload)
+
+
+def _require_onboarded_for_whats_new(payload: dict) -> None:
+    """Dismissed release notes must never be what marks setup done (#971).
+
+    `/api/config` INFERS onboarding from whether prefs.json holds anything at all, so the first key
+    written into an empty file ends the wizard. `whats_new_seen` is therefore only stored beside an
+    explicit `onboarded: true` — already stored, or set in this same request. The SPA only shows
+    the dialog once onboarding resolves true and always sends both keys, so for it this changes
+    nothing; it is the fence for every other caller."""
+    effective = payload["onboarded"] if "onboarded" in payload else prefs.get_onboarded()
+    if effective is not True:
+        raise HTTPException(
+            status_code=409,
+            detail="whats_new_seen needs onboarded=true — send it in the same request",
+        )
 
 
 def register(
@@ -360,6 +380,9 @@ def register(
                 "csrf": current_csrf(cfg, request) or "",
                 # First-run onboarding wizard gate (#463) — see the inference above.
                 "onboarded": onboarded_val,
+                # What's new (#971): the newest release notes the operator dismissed, or null.
+                # Always present, so the SPA can tell "never seen" from a server without the key.
+                "whats_new_seen": prefs.get_whats_new_seen(),
                 "new_session_engines": [
                     p.engine_id
                     for p in engines.all_providers()
@@ -653,6 +676,16 @@ def register(
             if not isinstance(v, bool):
                 raise HTTPException(status_code=422, detail="onboarded must be a boolean")
             out["onboarded"] = prefs.set_onboarded(v)
+        if "whats_new_seen" in payload:
+            # What's new (#971). The store keeps the numeric maximum, so the response carries the
+            # value actually kept — which is newer than the request's when another device got there.
+            v = payload["whats_new_seen"]
+            if prefs.release_tuple(v) is None:
+                raise HTTPException(
+                    status_code=422, detail="whats_new_seen must be a release version like 0.20.0"
+                )
+            _require_onboarded_for_whats_new({"onboarded": prefs.get_onboarded()})
+            out["whats_new_seen"] = prefs.set_whats_new_seen(v)
         if "mission_playbooks" in payload:
             # Re-validated by `set_mission_playbooks` itself, which is the point of the preflight
             # comment above: this pass and the write are edited at different times, so the write

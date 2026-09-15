@@ -408,6 +408,20 @@
   text-decoration: none;
   border-bottom: 1px solid transparent;
 }
+/* What's new (#971): a button that reads as one of the About links beside it. */
+.aboutLinkButton {
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  border-radius: 0;
+  font-family: inherit;
+  cursor: pointer;
+}
+.aboutLinkButton:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 .aboutLink:hover {
   color: var(--brand-soft);
   border-bottom-color: var(--brand);

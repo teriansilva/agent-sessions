@@ -11,6 +11,7 @@ import {
   Mail,
   RefreshCw,
   ShieldCheck,
+  Sparkles,
   Trash2,
 } from "lucide-react";
 import {
@@ -101,6 +102,8 @@ import {
   type SettingsSectionId,
 } from "./settingsTabs";
 import styles from "./Settings.module.css";
+import { whatsNewLabel } from "../whatsnew/due";
+import { useOpenWhatsNew } from "../whatsnew/WhatsNewContext";
 
 const BUY_ME_A_COFFEE = "https://buymeacoffee.com/teriansilva";
 const SOURCE_URL = "https://github.com/teriansilva/agent-sessions";
@@ -2318,6 +2321,9 @@ export function Settings() {
     setTermFontFamily(norm);
   };
   const [version, setVersion] = useState<string | null>(null);
+  // What's new (#971): reopened from About; null outside the shell (no dialog to open).
+  const openWhatsNew = useOpenWhatsNew();
+  const whatsNewButton = openWhatsNew ? whatsNewLabel() : null;
   // Return to wherever the gear was tapped from (#155) — the session, overview, or landing —
   // instead of always dropping to the new-session landing. Only trust an in-app path, and
   // never Settings itself (any tab URL) — no loop (#357).
@@ -2900,6 +2906,15 @@ export function Settings() {
                 </dd>
               </dl>
               <div className={styles.aboutLinks}>
+                {openWhatsNew && whatsNewButton && (
+                  <button
+                    type="button"
+                    className={`${styles.aboutLink} ${styles.aboutLinkButton}`}
+                    onClick={openWhatsNew}
+                  >
+                    <Sparkles size={15} aria-hidden="true" /> {whatsNewButton}
+                  </button>
+                )}
                 <a
                   className={styles.aboutLink}
                   href={SOURCE_URL}

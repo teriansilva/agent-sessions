@@ -436,6 +436,49 @@ def has_any_prefs(path: Path | None = None) -> bool:
     return bool(_load(path or _default_path()))
 
 
+# What's new (#971): the release whose notes the operator last dismissed. Exactly
+# MAJOR.MINOR.PATCH — `[0-9]` rather than `\d` (which also matches other scripts' digits), and no
+# leading zeros, so one release has one spelling.
+_RELEASE_RE = re.compile(r"(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})")
+
+
+def release_tuple(value: object) -> tuple[int, int, int] | None:
+    """``"0.20.0"`` → ``(0, 20, 0)``; anything that is not exactly a release version → ``None``.
+
+    Integer tuples, never string order: ``0.10.0`` is newer than ``0.9.0``."""
+    if not isinstance(value, str):
+        return None
+    m = _RELEASE_RE.fullmatch(value)
+    if m is None:
+        return None
+    major, minor, patch = (int(g) for g in m.groups())
+    return (major, minor, patch)
+
+
+def get_whats_new_seen(path: Path | None = None) -> str | None:
+    """The newest release whose What's new slides were dismissed, or ``None`` when never (or when
+    the stored value is not a release version)."""
+    v = _load(path or _default_path()).get("whats_new_seen")
+    return v if release_tuple(v) is not None else None
+
+
+def set_whats_new_seen(value: str, path: Path | None = None) -> str:
+    """Record that the What's new slides for ``value`` were dismissed; returns the value KEPT.
+
+    Never lowers what is stored (#971). The comparison runs inside ``_mutate``'s lock and keeps the
+    numeric maximum, so an older tab acting on stale config — or a reopen of older notes — cannot
+    undo a newer acknowledgement another device wrote in between."""
+    incoming = release_tuple(value)
+    if incoming is None:
+        raise ValueError("whats_new_seen must be a release version like 0.20.0")
+
+    def keep_newest(stored: object) -> object:
+        current = release_tuple(stored)
+        return stored if current is not None and current >= incoming else value
+
+    return _mutate("whats_new_seen", keep_newest, path)  # type: ignore[return-value]
+
+
 def get_accent(path: Path | None = None) -> str:
     """The persisted brand accent (#rrggbb), or the default when unset/unreadable/invalid."""
     return coerce_accent(_load(path or _default_path()).get("accent"))

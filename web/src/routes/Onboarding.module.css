@@ -354,24 +354,17 @@
   color: var(--text-2);
   line-height: 1.55;
 }
-.dots {
+/* Position (#971): the shared slideshow's dots (hidden at ≤800px) and its counter. */
+.tourNav {
   display: flex;
-  gap: 6px;
-  margin: 14px 0 0;
-}
-.dots i {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--line-strong);
-}
-.dots i.dotOn {
-  width: 18px;
-  border-radius: 0;
-  background: var(--accent);
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 10px 0 0;
 }
 .foot {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   margin-top: 16px;

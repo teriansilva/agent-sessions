@@ -443,8 +443,19 @@ export const api = {
     mutateJson<Record<string, unknown>>("POST", "/api/prefs", partial),
   /** First-run onboarding (#463): mark the wizard complete (or skipped) so it never shows
    *  again. Persists `onboarded: true` via the prefs store. CSRF-guarded. */
-  completeOnboarding: () =>
-    postJson<Record<string, unknown>>("/api/prefs", { onboarded: true }),
+  completeOnboarding: (whatsNewSeen?: string) =>
+    postJson<Record<string, unknown>>(
+      "/api/prefs",
+      whatsNewSeen ? { onboarded: true, whats_new_seen: whatsNewSeen } : { onboarded: true },
+    ),
+  /** What's new (#971): record the release whose notes were dismissed. `onboarded: true` rides along
+   *  because the server only stores the key beside it; the dialog only ever shows once onboarding
+   *  resolves true, so it states nothing new. The response carries the value the server KEPT. */
+  dismissWhatsNew: (version: string) =>
+    mutateJson<{ onboarded: boolean; whats_new_seen: string }>("POST", "/api/prefs", {
+      onboarded: true,
+      whats_new_seen: version,
+    }),
   /** Optional TOTP 2FA (#116). All CSRF-guarded. */
   enroll2fa: () => postJson<TwoFactorEnrollment>("/api/2fa/enroll"),
   confirm2fa: (code: string) => postVoid("/api/2fa/confirm", { code }),

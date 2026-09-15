@@ -639,6 +639,9 @@ export interface AppConfig {
    *  true once completed/skipped, or inferred true for an existing install. Absent on older
    *  servers (the SPA treats absent as onboarded so it never shows for them). */
   onboarded?: boolean;
+  /** What's new (#971): the newest release whose notes were dismissed, `null` until then. Absent
+   *  on a server from before #971 — and an absent key means "not due", so the dialog stays shut. */
+  whats_new_seen?: string | null;
   /** Per-user UI theme id (dark|light); applied at load. Absent on older servers. */
   theme?: string;
   /** Per-user brand accent (#rrggbb) driving --accent + the xterm cursor (#211 Phase 2);
