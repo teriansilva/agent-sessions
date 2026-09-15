@@ -104,6 +104,15 @@
   color: var(--accent);
 }
 
+/* The session-menu ⋯ while its session is off the map (#968): dimmed, not hidden — its title
+   carries the reason, and a control that vanishes explains nothing. */
+.btns button[aria-disabled="true"],
+.btns button[aria-disabled="true"]:hover {
+  color: var(--text-3);
+  opacity: 0.4;
+  cursor: default;
+}
+
 .btns button:focus-visible,
 .resize:focus-visible {
   outline: 1px solid var(--accent);

@@ -70,8 +70,11 @@ export function ProjectGroupNode({ data }: NodeProps) {
         className="tr-ov-handle"
         isConnectable={false}
       />
+      {/* The header is the cluster's drag handle (#968, `dragHandle` in overviewGraph) as well as
+          its collapse toggle — React Flow suppresses the click after a real drag, so the two
+          gestures stay apart. `nopan` keeps a press here from panning the canvas instead. */}
       <div
-        className="tr-ov-group-head nodrag nopan"
+        className="tr-ov-group-head nopan"
         aria-expanded={!collapsed}
         title={`${collapsed ? "Expand" : "Collapse"} ${kind === "folder" ? cwd : project}`}
       >

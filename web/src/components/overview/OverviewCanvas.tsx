@@ -8,6 +8,7 @@ import {
   ReactFlowProvider,
   useNodesState,
   useReactFlow,
+  useStoreApi,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import {
@@ -18,6 +19,7 @@ import {
   FolderTree,
   Minus,
   Plus,
+  RotateCcw,
   SquareDashedBottom,
 } from "lucide-react";
 import {
@@ -30,7 +32,9 @@ import {
   useRef,
   useState,
 } from "react";
+import { flushSync } from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
+import { useConfig } from "../../app/config";
 import { useOverviewPrefs } from "../../app/overviewPrefs";
 import { useWorkspaceCtx } from "../../app/workspaceWindows";
 import { api, ApiError } from "../../lib/api";
@@ -41,11 +45,22 @@ import {
   DEFAULT_PROJECT_ID,
   expandableKeys,
   type GroupBy,
+  sessionOnMap,
   type ProjectGroupData,
   type SessionNodeData,
 } from "../../lib/overviewGraph";
 import { useIsMobile } from "../../lib/useIsMobile";
 import type { ProjectRef, Session } from "../../types/api";
+import type { MenuAnchor } from "../sidebar/RowMenu";
+import { MapSessionMenu } from "./MapSessionMenu";
+import {
+  applyPins,
+  loadPins,
+  savePins,
+  withoutLayout,
+  withPin,
+} from "./mapLayout";
+import { restoreFocus, windowsForSession } from "./mapMenu";
 import { anchorPointOf } from "./nodeAnchor";
 import { OverviewActionsCtx } from "./overviewActions";
 import { ProjectGroupNode } from "./ProjectGroupNode";
@@ -69,6 +84,12 @@ const GROUP_MODES: { key: GroupBy; label: string; Icon: typeof FolderTree }[] =
     { key: "project", label: "Projects", Icon: Boxes },
     { key: "agent", label: "Agents", Icon: Bot },
   ];
+
+/** Below this zoom a chip cannot hold a 44-screen-px ⋯ target beside a chip-body target (#968):
+ *  44px / 0.55 = 80 flow px, the chip's full height. The CSS hides the touch ⋯ under it. */
+const KEBAB_TOUCH_MIN_ZOOM = 44 / 80;
+
+const LAYOUTS: readonly GroupBy[] = ["folder", "project", "agent"];
 
 /** A session row → the seed a window opens from (#936). One mapping, shared by the chip click
  *  and the drained requests, so the map cannot open a window under a different identity than the
@@ -153,6 +174,7 @@ function OverviewCanvasInner({
     drain,
     clearRejected,
     setCap,
+    close: closeWindow,
   } = ws;
   const wrapRef = useRef<HTMLDivElement>(null);
   const barRef = useRef<HTMLDivElement>(null);
@@ -206,6 +228,24 @@ function OverviewCanvasInner({
       window.removeEventListener("resize", measure);
     };
   }, []);
+
+  // Touch targets after zoom (#968): the chip ⋯ is counter-scaled by the viewport zoom so its hit
+  // square stays ≥44 SCREEN px, and hides below the zoom where it cannot sit beside a chip-body
+  // target. Written straight onto the wrapper from a store subscription — a React subscription
+  // would re-render the canvas on every zoom frame for a value only CSS reads. A data attribute,
+  // not a class: React owns `className` here and would overwrite a class on its next change.
+  const storeApi = useStoreApi();
+  useEffect(() => {
+    const apply = (zoom: number) => {
+      const el = wrapRef.current;
+      if (!el) return;
+      el.style.setProperty("--ov-zoom", String(zoom));
+      if (zoom < KEBAB_TOUCH_MIN_ZOOM) el.dataset.zoomFar = "";
+      else delete el.dataset.zoomFar;
+    };
+    apply(storeApi.getState().transform[2]);
+    return storeApi.subscribe((st) => apply(st.transform[2]));
+  }, [storeApi]);
 
 
   // Non-archived project entities (#447) → empty ones still render as drag-target clusters in
@@ -441,10 +481,40 @@ function OverviewCanvasInner({
   // React Flow needs to own node positions to drag them, so mirror the derived graph into RF
   // state and re-sync whenever the layout is recomputed (mode/expand/reassign) — this also
   // snaps a dropped chip back to its computed slot.
-  const [rfNodes, setRfNodes, onNodesChange] = useNodesState(nodes);
+  //
+  // Clusters the operator moved (#968) are PINNED, per layout, on this device (`mapLayout.ts`).
+  // The pins live in a ref rather than among `buildOverview`'s inputs, and that is the #936 rule
+  // applied to a drop: React Flow already holds the dropped position, so recording a pin must not
+  // rebuild the node array — a fresh array re-measures every node and the map blanks while it
+  // does. The ref is folded in here, whenever the graph genuinely rebuilds.
+  const [initialPins] = useState(loadPins);
+  const pinsRef = useRef(initialPins);
+  // Which layouts have pins at all — Reset layout's visibility and nothing else. Its own small
+  // state, so showing the control never touches the graph.
+  const [pinnedLayouts, setPinnedLayouts] = useState<Set<GroupBy>>(
+    () =>
+      new Set(LAYOUTS.filter((l) => Object.keys(initialPins[l]).length > 0)),
+  );
+  const hasPins = pinnedLayouts.has(groupBy);
+  const [rfNodes, setRfNodes, onNodesChange] = useNodesState(
+    applyPins(nodes, initialPins[groupBy]),
+  );
   useEffect(() => {
+    setRfNodes(applyPins(nodes, pinsRef.current[groupBy]));
+  }, [nodes, groupBy, setRfNodes]);
+
+  // Reset layout: this layout's clusters back to their computed slots — the one deliberate
+  // rebuild the pins ever cause.
+  const resetLayout = useCallback(() => {
+    pinsRef.current = withoutLayout(pinsRef.current, groupBy);
+    savePins(pinsRef.current);
+    setPinnedLayouts((prev) => {
+      const next = new Set(prev);
+      next.delete(groupBy);
+      return next;
+    });
     setRfNodes(nodes);
-  }, [nodes, setRfNodes]);
+  }, [groupBy, nodes, setRfNodes]);
 
   // Toggle keys available to expand (still visible) — drives "Expand all".
   const allKeys = useMemo(
@@ -489,10 +559,28 @@ function OverviewCanvasInner({
     [onRefetch, fetchProjects],
   );
 
-  const onNodeDragStart = useCallback(() => setDragging(true), []);
+  // The drop-target outline is a CHIP-drag signal: a cluster is never dropped onto anything.
+  const onNodeDragStart = useCallback((_e: MouseEvent, node: Node) => {
+    if (node.type === "session") setDragging(true);
+  }, []);
   const onNodeDragStop = useCallback(
     (_e: MouseEvent, node: Node) => {
       setDragging(false);
+      if (node.type === "projectGroup") {
+        // A cluster drop (#968): pin it where it landed and return BEFORE the chip snap-back
+        // below. Nothing is rebuilt — React Flow already shows the cluster there.
+        pinsRef.current = withPin(
+          pinsRef.current,
+          groupBy,
+          (node.data as ProjectGroupData).groupKey,
+          node.position,
+        );
+        savePins(pinsRef.current);
+        setPinnedLayouts((prev) =>
+          prev.has(groupBy) ? prev : new Set(prev).add(groupBy),
+        );
+        return;
+      }
       if (draggable && node.type === "session") {
         const target = rf
           .getIntersectingNodes(node)
@@ -520,10 +608,10 @@ function OverviewCanvasInner({
           }
         }
       }
-      // No actionable target → snap the chip back to its computed slot.
-      setRfNodes(nodes);
+      // No actionable target → snap the chip back to its computed slot (clusters keep their pins).
+      setRfNodes(applyPins(nodes, pinsRef.current[groupBy]));
     },
-    [draggable, rf, reassign, setRfNodes, nodes],
+    [draggable, rf, reassign, setRfNodes, nodes, groupBy],
   );
 
   // All node interaction goes through React Flow's onNodeClick. This is required, not just
@@ -606,10 +694,191 @@ function OverviewCanvasInner({
     [navigate],
   );
 
-  // Group nodes reach the sessions refetch via context (#361 Phase 4) — see overviewActions.
-  const actions = useMemo(
-    () => ({ refetchSessions: onRefetch ?? (() => {}) }),
+  // ---- The session menu (#968) --------------------------------------------------------------
+  // ONE menu for the whole map — the sidebar row's (`useSessionMenu`) — opened from a chip's ⋯, a
+  // right-click on a chip, or a window's chrome. The target captures the row it opened on, so a
+  // dialog already open keeps naming its session after a refetch drops the chip; the POPOVER only
+  // shows while the session is still on the map, so a menu never outlives its session.
+  // The rows actually DRAWN in this layout — the graph's own predicate (#968 review), so a menu's
+  // availability can never disagree with the chips: a hidden folder's session has no chip in
+  // Folders layout, and its window's ⋯ must say so. Collapse does not count; see `sessionOnMap`.
+  const mapRows = useMemo(
+    () =>
+      effectiveSessions.filter((s) =>
+        sessionOnMap(s, { groupBy, includeArchived, excluded: dropped }),
+      ),
+    [effectiveSessions, groupBy, includeArchived, dropped],
+  );
+  const rowsRef = useRef(mapRows);
+  useEffect(() => {
+    rowsRef.current = mapRows;
+  });
+  const [menuTarget, setMenuTarget] = useState<{
+    key: string;
+    anchor: MenuAnchor | null;
+    opener: HTMLElement | null;
+    row: Session;
+  } | null>(null);
+  const openSessionMenu = useCallback(
+    (key: string, anchor: MenuAnchor, opener: HTMLElement | null) => {
+      const row = rowsRef.current.find((s) => s.id === key);
+      if (row) setMenuTarget({ key, anchor, opener, row });
+    },
+    [],
+  );
+  const menuRow = menuTarget
+    ? mapRows.find((s) => s.id === menuTarget.key)
+    : undefined;
+  const openerRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    openerRef.current = menuTarget?.opener ?? null;
+  });
+  const onMenuClose = useCallback((refocus: boolean) => {
+    setMenuTarget((t) => (t ? { ...t, anchor: null } : t));
+    if (refocus) restoreFocus(openerRef.current, wrapRef.current);
+  }, []);
+  const onMenuDone = useCallback(() => setMenuTarget(null), []);
+
+  // Right-click a chip → the menu at the pointer. On Android a long-press fires the same event,
+  // which is the touch path to the menu below the zoom where the ⋯ hides.
+  const onNodeContextMenu = useCallback(
+    (e: MouseEvent, node: Node) => {
+      if (node.type !== "session") return;
+      e.preventDefault();
+      const opener =
+        (e.currentTarget as HTMLElement | null)?.querySelector<HTMLElement>(
+          "[data-chip-menu]",
+        ) ?? null;
+      openSessionMenu(
+        node.id,
+        { point: { x: e.clientX, y: e.clientY } },
+        opener,
+      );
+    },
+    [openSessionMenu],
+  );
+
+  // A window's ⋯ names its TRANSPORT key; the menu acts on the session the server knows, which is
+  // the window's `actionKey` after a converge (#867).
+  const openWindowMenu = useCallback(
+    (wkey: string, anchor: MenuAnchor, opener: HTMLElement | null) => {
+      const w = windowsRef.current.find((x) => x.key === wkey);
+      if (w) openSessionMenu(w.actionKey, anchor, opener);
+    },
+    [openSessionMenu],
+  );
+  const isOnMap = useCallback(
+    (key: string) => mapRows.some((s) => s.id === key),
+    [mapRows],
+  );
+
+  // The menu's actions on the map: the same routes the sidebar calls, then a map refetch (the map
+  // holds no in-place row patches). A failure shows the server's detail in the toolbar's error
+  // slot. The sidebar list converges on its own poll.
+  const aiConfigured = useConfig()?.ai_review?.configured ?? false;
+  const [actionErr, setActionErr] = useState<string | null>(null);
+  // Reviews in flight, per session (#968 review). Owned HERE rather than by a menu host, because the
+  // host that started one can be gone before it settles — the menu closed, or another session's menu
+  // replaced it — and a second Review now is a second paid model call whose result can land out of
+  // order. The ref is the guard (synchronous, so two presses in one tick still send one request);
+  // the state is what the menu renders from.
+  const reviewingRef = useRef(new Set<string>());
+  const [reviewingKeys, setReviewingKeys] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const mutate = useCallback(
+    async (fn: () => Promise<unknown>, fallback: string) => {
+      setActionErr(null);
+      try {
+        await fn();
+        onRefetch?.();
+      } catch (ex) {
+        setActionErr(
+          ex instanceof ApiError && ex.message ? ex.message : fallback,
+        );
+      }
+    },
     [onRefetch],
+  );
+  const menuHandlers = useMemo(
+    () => ({
+      onRename: (id: string, title: string) =>
+        mutate(() => api.rename(id, title), "Couldn’t rename the session."),
+      onSetTag: (id: string, tag: string) =>
+        mutate(() => api.setTag(id, tag), "Couldn’t set the tag."),
+      onToggleFavorite: (id: string, value: boolean) =>
+        mutate(
+          () => (value ? api.favorite(id) : api.unfavorite(id)),
+          "Couldn’t update the favorite.",
+        ),
+      onSetProject: (id: string, ref: ProjectRef | null) =>
+        mutate(async () => {
+          await api.setSessionProject(
+            id,
+            ref && ref.kind === "project" ? ref.id : null,
+          );
+          fetchProjects(); // a project may have just emptied/filled (#447)
+        }, "Couldn’t move the session."),
+      // Archive reaps the session's runtime (#523), and a live socket would try to relaunch into
+      // an archived session (#631). So every window showing it closes FIRST — matched on
+      // `actionKey`, so a converged placeholder window counts — and the close is committed
+      // synchronously (`flushSync`) and given a task to tear its terminal down before the
+      // request leaves. A refused archive does not reopen anything: the operator reopens from the
+      // chip, which stays. Focus moves to the map now, because the ⋯ that would get it back is
+      // about to disappear with its chip.
+      onToggleArchive: async (id: string, currentlyArchived: boolean) => {
+        if (!currentlyArchived) {
+          wrapRef.current?.focus({ preventScroll: true });
+          const doomed = windowsForSession(windowsRef.current, id);
+          if (doomed.length) {
+            flushSync(() => {
+              for (const w of doomed) closeWindow(w.key);
+            });
+            await new Promise((r) => setTimeout(r, 0));
+          }
+        }
+        await mutate(
+          () => (currentlyArchived ? api.unarchive(id) : api.archive(id)),
+          currentlyArchived
+            ? "Couldn’t unarchive the session."
+            : "Couldn’t archive the session.",
+        );
+      },
+      // AI review, gated exactly as in the sidebar (#356): absent handlers hide the items.
+      ...(aiConfigured
+        ? {
+            onReviewNow: async (id: string) => {
+              if (reviewingRef.current.has(id)) return;
+              reviewingRef.current.add(id);
+              setReviewingKeys(new Set(reviewingRef.current));
+              try {
+                await mutate(() => api.reviewNow(id), "Review failed.");
+              } finally {
+                reviewingRef.current.delete(id);
+                setReviewingKeys(new Set(reviewingRef.current));
+              }
+            },
+            onToggleReviewExcluded: (id: string, excluded: boolean) =>
+              mutate(
+                () => api.reviewExclude(id, excluded),
+                "Couldn’t update the AI review setting.",
+              ),
+            onToggleOrchestratorExcluded: (id: string, excluded: boolean) =>
+              mutate(
+                () => api.setOrchestratorExcluded(id, excluded),
+                "Couldn’t update the mission control setting.",
+              ),
+          }
+        : {}),
+    }),
+    [mutate, fetchProjects, closeWindow, aiConfigured],
+  );
+
+  // Group nodes reach the sessions refetch via context (#361 Phase 4) — see overviewActions — and
+  // chips reach the session menu the same way (#968), keeping `buildOverview` function-free.
+  const actions = useMemo(
+    () => ({ refetchSessions: onRefetch ?? (() => {}), openSessionMenu }),
+    [onRefetch, openSessionMenu],
   );
 
   // "+ New project" (#361 Phase 4): a standalone entity (no folders) from an inline name
@@ -659,6 +928,9 @@ function OverviewCanvasInner({
         ref={wrapRef}
         className={`tr-overview${dragging ? " tr-overview--dragging" : ""}`}
         style={{ position: "relative" }}
+        // Focus's fallback when the element that opened a menu is gone (#968).
+        tabIndex={-1}
+        data-overview-map=""
       >
         {partial && (
           <div className="tr-ov-partial">Showing the most recent sessions</div>
@@ -732,6 +1004,16 @@ function OverviewCanvasInner({
           >
             <ChevronsDownUp size={14} /> Collapse all
           </button>
+          {hasPins && (
+            <button
+              type="button"
+              onClick={resetLayout}
+              title="Put every cluster in this layout back where the map lays it out"
+              data-reset-layout
+            >
+              <RotateCcw size={14} /> Reset layout
+            </button>
+          )}
           {layerOn && (
             <>
               {/* The readout IS the cap control (#936): the limit is configured where it is
@@ -783,14 +1065,16 @@ function OverviewCanvasInner({
             </>
           )}
         </div>
-        {(createErr || dragErr) && (
-          <div className="tr-ov-toolbar-err">{createErr || dragErr}</div>
-        )}
-        {draggable && (
-          <div className="tr-ov-hint" aria-hidden="true">
-            Drag a session onto a project to move it
+        {(createErr || dragErr || actionErr) && (
+          <div className="tr-ov-toolbar-err" role="alert" data-map-error>
+            {createErr || dragErr || actionErr}
           </div>
         )}
+        <div className="tr-ov-hint" aria-hidden="true">
+          {draggable
+            ? "Drag a session onto a project to move it · drag a cluster header to rearrange"
+            : "Drag a cluster header to rearrange"}
+        </div>
         {emptyMap && (
           <div className="tr-ov-state tr-ov-state--overlay">
             No sessions to map yet — the open windows below stay live.
@@ -802,6 +1086,7 @@ function OverviewCanvasInner({
           edges={edges}
           nodeTypes={nodeTypes}
           onNodeClick={onNodeClick}
+          onNodeContextMenu={onNodeContextMenu}
           onNodesChange={onNodesChange}
           onNodeDragStart={onNodeDragStart}
           onNodeDragStop={onNodeDragStop}
@@ -855,6 +1140,23 @@ function OverviewCanvasInner({
             onRect={ws.setRect}
             onRole={ws.setRole}
             onReconcile={ws.reconcile}
+            onMenu={openWindowMenu}
+            isOnMap={isOnMap}
+          />
+        )}
+        {menuTarget && (
+          <MapSessionMenu
+            // Keyed by session: switching the menu to another session mounts a FRESH host, so one
+            // session's busy / reviewing / dialog state can never leak into another's menu
+            // (#968 review). A review still in flight for the previous session stays guarded by
+            // `reviewingKeys`, which the canvas owns for exactly this reason.
+            key={menuTarget.key}
+            session={menuRow ?? menuTarget.row}
+            anchor={menuRow ? menuTarget.anchor : null}
+            handlers={menuHandlers}
+            onMenuClose={onMenuClose}
+            onDone={onMenuDone}
+            reviewInFlight={reviewingKeys.has(menuTarget.key)}
           />
         )}
       </div>

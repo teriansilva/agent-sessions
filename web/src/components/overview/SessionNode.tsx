@@ -1,4 +1,5 @@
 import { type NodeProps } from "@xyflow/react";
+import { MoreHorizontal } from "lucide-react";
 import { type CSSProperties } from "react";
 import {
   engineBadge,
@@ -9,18 +10,24 @@ import {
 } from "../../lib/format";
 import type { SessionNodeData } from "../../lib/overviewGraph";
 import { HudFrame } from "../hud/HudFrame";
+import { useOverviewActions } from "./overviewActions";
 
 /** A session chip inside a project cluster — at information parity with the sidebar list row
  *  (#424 Phase 4): a working/idle LED, the title, an intervention "!" badge, the AI summary,
  *  the engine badge, the project + folder, and the relative time. Framed by the HudFrame corner
  *  brackets only (#476) — no engine left rail; engine identity reads off the coloured dot/handles
- *  + badge. Archived dimmed; `selected` highlights the open session. Presentational — the click is
+ *  + badge. Archived dimmed; `selected` highlights the open session. The chip body's click is
  *  handled by the canvas's React Flow `onNodeClick` (opens the session); in Projects layout the
  *  chip is also draggable to reassign it (#424 Phase 5), so it carries `nopan` (no canvas pan on
- *  press) but NOT `nodrag` — React Flow tells a click from a drag by the movement threshold. */
+ *  press) but NOT `nodrag` — React Flow tells a click from a drag by the movement threshold.
+ *
+ *  The ⋯ (#968) is the one control on the chip that is not the chip: it opens the sidebar row's
+ *  session menu, and it must never open a window or start a drag — hence `nodrag` and a stopped
+ *  click. Right-click anywhere on the chip opens the same menu (the canvas's `onNodeContextMenu`). */
 export function SessionNode({ data }: NodeProps) {
   const { session, active, working, selected, folderLabel, opened } =
     data as SessionNodeData;
+  const { openSessionMenu } = useOverviewActions();
   const color = engineColor(session.engine);
   // #284: the server already resolves the meaningful display title (manual rename → AI
   // title → meaningful first message, else ""). Never fall back to the RAW first message
@@ -55,6 +62,23 @@ export function SessionNode({ data }: NodeProps) {
           ▣
         </span>
       )}
+      <button
+        type="button"
+        className="tr-ov-kebab nodrag nopan"
+        aria-label={`Session actions: ${title}`}
+        title="Session actions"
+        aria-haspopup="menu"
+        data-chip-menu
+        onClick={(e) => {
+          // The chip's own click opens a window; this press is the menu's alone.
+          e.stopPropagation();
+          openSessionMenu(session.id, { element: e.currentTarget }, e.currentTarget);
+        }}
+      >
+        <span className="tr-ov-kebab-glyph" aria-hidden="true">
+          <MoreHorizontal size={14} />
+        </span>
+      </button>
       <span className="tr-ov-chip-head">
         <span
           className={`tr-ov-dot ${working ? "working" : active ? "active" : "idle"}`}

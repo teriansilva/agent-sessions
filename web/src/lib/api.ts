@@ -729,23 +729,23 @@ export const api = {
    *  hidden session can still name its project and folder. 404 when nothing has that id. */
   session: (id: string) => getJson<Session>(`/api/sessions/${enc(id)}`),
   rename: (id: string, title: string) =>
-    postJson<{ id: string; title: string }>(`/api/sessions/${enc(id)}/rename`, {
+    mutateJson<{ id: string; title: string }>("POST", `/api/sessions/${enc(id)}/rename`, {
       title,
     }),
   /** Set (or clear, with "") a session's custom tag (#551): a short label shown before the
    *  AI summary in the sidebar row. Trimmed + length-capped server-side. */
   setTag: (id: string, tag: string) =>
-    postJson<{ id: string; tag: string }>(`/api/sessions/${enc(id)}/tag`, {
+    mutateJson<{ id: string; tag: string }>("POST", `/api/sessions/${enc(id)}/tag`, {
       tag,
     }),
   /** Favorite/unfavorite a session (#122): flips the sidecar `sticky` flag so the row
    *  pins to the top of the sidebar. Engine-agnostic; CSRF-guarded. Returns `{id, sticky}`. */
   favorite: (id: string) =>
-    postJson<{ id: string; sticky: boolean }>(
+    mutateJson<{ id: string; sticky: boolean }>("POST",
       `/api/sessions/${enc(id)}/favorite`,
     ),
   unfavorite: (id: string) =>
-    postJson<{ id: string; sticky: boolean }>(
+    mutateJson<{ id: string; sticky: boolean }>("POST",
       `/api/sessions/${enc(id)}/unfavorite`,
     ),
   /** Compose draft (#477): fetch the saved draft (text + attachment pills) to restore the
@@ -763,11 +763,11 @@ export const api = {
       draft,
     ),
   archive: (id: string) =>
-    postJson<{ id: string; archived: boolean }>(
+    mutateJson<{ id: string; archived: boolean }>("POST",
       `/api/sessions/${enc(id)}/archive`,
     ),
   unarchive: (id: string) =>
-    postJson<{ id: string; archived: boolean }>(
+    mutateJson<{ id: string; archived: boolean }>("POST",
       `/api/sessions/${enc(id)}/unarchive`,
     ),
   /** Bulk-archive every non-archived session older than `hours` (#142). CSRF-guarded. */
@@ -834,7 +834,7 @@ export const api = {
   /** AI review (#356): set (or toggle, when `excluded` is omitted) the per-session
    *  exclude-from-review flag. CSRF-guarded. */
   reviewExclude: (id: string, excluded?: boolean) =>
-    postJson<{ id: string; review_excluded: boolean }>(
+    mutateJson<{ id: string; review_excluded: boolean }>("POST",
       `/api/sessions/${enc(id)}/review-exclude`,
       excluded === undefined ? undefined : { excluded },
     ),

@@ -7,6 +7,7 @@ import {
   DEFAULT_PROJECT_NAME,
   expandableKeys,
   type ProjectGroupData,
+  sessionOnMap,
 } from "./overviewGraph";
 
 const NOW = 1_700_000_000;
@@ -749,4 +750,53 @@ test("folder node's owner badge colour falls back to the entity id hash (#445/#2
   const g = nodes.find((n) => n.id === "group:/p/app")!
     .data as ProjectGroupData;
   expect(g.owner).toEqual({ name: "Side", color: projectColor("p-1") });
+});
+
+// --- sessionOnMap: the one visibility rule the graph and the map's menus share (#968 review) ----
+
+test("sessionOnMap: archived sessions are off the map unless archived are included", () => {
+  const a = s({ id: "a", archived: true });
+  expect(sessionOnMap(a, {})).toBe(false);
+  expect(sessionOnMap(a, { includeArchived: true })).toBe(true);
+});
+
+test("sessionOnMap: a hidden cwd hides an entity-backed session in Folders and Agents, not in Projects", () => {
+  const entity = s({
+    id: "e",
+    cwd: "/home/u/alpha",
+    project: { kind: "project", id: "p1", name: "Alpha" },
+  });
+  const loose = s({ id: "l", cwd: "/home/u/alpha" });
+  const excluded = new Set(["/home/u/alpha"]);
+  expect(sessionOnMap(entity, { groupBy: "project", excluded })).toBe(true);
+  expect(sessionOnMap(entity, { groupBy: "folder", excluded })).toBe(false);
+  expect(sessionOnMap(entity, { groupBy: "agent", excluded })).toBe(false);
+  expect(sessionOnMap(loose, { groupBy: "project", excluded })).toBe(false);
+});
+
+test("sessionOnMap agrees with buildOverview's chips — and a collapsed cluster does not take its sessions off the map", () => {
+  const sessions = [
+    s({ id: "e", cwd: "/home/u/alpha", project: { kind: "project", id: "p1", name: "Alpha" } }),
+    s({ id: "l", cwd: "/home/u/alpha" }),
+    s({ id: "b", cwd: "/home/u/beta" }),
+  ];
+  const excluded = new Set(["/home/u/alpha"]);
+  for (const groupBy of ["project", "folder", "agent"] as const) {
+    const expanded = new Set(expandableKeys(sessions, excluded, groupBy));
+    const chips = buildOverview(sessions, { groupBy, excluded, expanded, nowS: NOW })
+      .nodes.filter((n) => n.type === "session")
+      .map((n) => n.id)
+      .sort();
+    const onMap = sessions
+      .filter((x) => sessionOnMap(x, { groupBy, excluded }))
+      .map((x) => x.id)
+      .sort();
+    expect(chips, groupBy).toEqual(onMap);
+    // Collapsed: no chips are drawn, yet every session the predicate admits is still counted.
+    const collapsed = buildOverview(sessions, { groupBy, excluded, nowS: NOW }).nodes.filter(
+      (n) => n.type === "projectGroup",
+    );
+    const counted = collapsed.reduce((acc, n) => acc + (n.data as ProjectGroupData).count, 0);
+    expect(counted, groupBy).toBe(onMap.length);
+  }
 });

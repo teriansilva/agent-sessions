@@ -196,6 +196,21 @@ const clusterOf = (s: Session, groupBy: GroupBy): Cluster => {
 const keepsHiddenCwd = (s: Session, groupBy: GroupBy): boolean =>
   groupBy === "project" && s.project.kind === "project";
 
+/** Is this session DRAWN on the map in this layout? The one visibility rule: `buildOverview`
+ *  filters by it, and the canvas asks it before offering a session's menu or leaving a window's ⋯
+ *  enabled (#968 review) — so the two can never disagree about a hidden folder's session.
+ *  Independent of collapse on purpose: a session inside a collapsed cluster is still on the map. */
+export function sessionOnMap(
+  s: Session,
+  opts: { groupBy?: GroupBy; includeArchived?: boolean; excluded?: Set<string> },
+): boolean {
+  if (s.archived && !opts.includeArchived) return false;
+  return (
+    keepsHiddenCwd(s, opts.groupBy ?? "project") ||
+    !(opts.excluded?.has(s.cwd) ?? false)
+  );
+}
+
 /** The owning project for a folder node (#445, Folders layout): the single user project all the
  *  folder's sessions resolve to (an adopted folder), else the synthetic Default. A folder with
  *  any unadopted (`kind:"folder"`) session, or sessions split across >1 project, reads as
@@ -270,9 +285,13 @@ export function buildOverview(
   // cwd visibility prefs apply per `keepsHiddenCwd`: an entity-resolved session in `project`
   // mode survives a hidden cwd (server sidebar/facet parity, #361); in `folder`/`agent` mode
   // a hidden cwd hides its sessions outright (#424 Phase 2).
-  const visible = (
-    opts.includeArchived ? sessions : sessions.filter((s) => !s.archived)
-  ).filter((s) => keepsHiddenCwd(s, groupBy) || !excluded.has(s.cwd));
+  const visible = sessions.filter((s) =>
+    sessionOnMap(s, {
+      groupBy,
+      includeArchived: opts.includeArchived,
+      excluded,
+    }),
+  );
 
   const groups = new Map<
     string,
@@ -420,7 +439,11 @@ export function buildOverview(
             : undefined,
       } satisfies ProjectGroupData,
       style: { width: w, height: h },
-      draggable: false,
+      // Every cluster can be moved, in every layout (#968) — by its HEADER only, so a press on an
+      // expanded cluster's body still pans the canvas. Where it lands is pinned by the canvas
+      // (`mapLayout.ts`); this module keeps computing where it starts.
+      draggable: true,
+      dragHandle: ".tr-ov-group-head",
       selectable: false,
     });
     if (isExpanded) {

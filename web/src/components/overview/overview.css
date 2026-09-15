@@ -382,6 +382,75 @@
   color: var(--eng, var(--accent));
 }
 
+/* The chip's session-menu ⋯ (#968). An absolutely-positioned HIT SQUARE anchored to the chip's
+ * top-right corner, with the visible glyph pinned in that corner — so the square can grow for
+ * touch without moving the glyph or reflowing the chip. The head reserves the glyph's width so
+ * the engine badge never sits under it. */
+.tr-ov-chip-head {
+  padding-right: 20px;
+}
+.tr-ov-kebab {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 2;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  width: 30px;
+  height: 30px;
+  padding: 6px 5px 0 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-3, var(--text-muted));
+  cursor: pointer;
+}
+.tr-ov-kebab-glyph {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid transparent;
+}
+.tr-ov-chip:hover .tr-ov-kebab,
+.tr-ov-kebab:focus-visible {
+  color: var(--accent);
+}
+.tr-ov-kebab:hover .tr-ov-kebab-glyph,
+.tr-ov-kebab[aria-expanded="true"] .tr-ov-kebab-glyph {
+  background: var(--bg-2);
+  border-color: var(--border);
+}
+.tr-ov-kebab:focus-visible {
+  outline: none;
+}
+.tr-ov-kebab:focus-visible .tr-ov-kebab-glyph {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+/* Touch: the hit square is measured in SCREEN pixels after zoom. The canvas writes the viewport
+ * zoom to --ov-zoom, so 44px / zoom flow px is 44 screen px at any zoom. At 0.55 that square is
+ * the chip's full 80px height; below it (data-zoom-far) there is no room for a ⋯ target beside a
+ * chip-body target, so the ⋯ hides and long-press (contextmenu) is the way to the menu. */
+@media (pointer: coarse) {
+  .tr-ov-kebab {
+    width: calc(44px / var(--ov-zoom, 1));
+    height: calc(44px / var(--ov-zoom, 1));
+  }
+  .tr-overview[data-zoom-far] .tr-ov-kebab {
+    display: none;
+  }
+}
+/* The map wrapper takes focus when the element that opened a menu is gone (an archived chip);
+ * it is a fallback target, not a control, so it draws no ring. */
+.tr-overview:focus {
+  outline: none;
+}
+/* A cluster in flight (#968): React Flow marks the node wrapper `.dragging`. */
+.tr-overview .react-flow__node.dragging .tr-ov-group-head {
+  cursor: grabbing;
+}
+
 /* Empty / loading / error states. */
 .tr-ov-state {
   width: 100%;

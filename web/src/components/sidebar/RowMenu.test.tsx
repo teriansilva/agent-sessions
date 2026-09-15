@@ -1,8 +1,8 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Archive, Pencil, Sparkles } from "lucide-react";
-import { expect, test, vi } from "vitest";
-import { RowMenu, type RowMenuEntry } from "./RowMenu";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { MenuPopover, RowMenu, type RowMenuEntry } from "./RowMenu";
 
 function entries(over: {
   onReview?: () => void;
@@ -162,6 +162,111 @@ test("separators render with role=separator between groups", async () => {
   render(<RowMenu items={entries({})} />);
   await user.click(screen.getByRole("button", { name: "Session actions" }));
   expect(screen.getByRole("separator")).toBeInTheDocument();
+});
+
+// --- MenuPopover at a pointer (#968) ------------------------------------------------------------
+// jsdom lays nothing out, so the menu's measured size is stubbed; the viewport is jsdom's 1024×768.
+describe("MenuPopover — point anchor", () => {
+  beforeEach(() => {
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(200);
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(100);
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  const placed = () => {
+    const menu = screen.getByRole("menu", { name: "Session actions" });
+    return {
+      top: menu.style.getPropertyValue("--rm-top"),
+      right: menu.style.getPropertyValue("--rm-right"),
+    };
+  };
+
+  test("its top-left corner sits on the pointer", () => {
+    render(
+      <MenuPopover items={entries({})} anchor={{ point: { x: 100, y: 120 } }} onClose={() => {}} />,
+    );
+    // right = innerWidth − (x + menu width) = 1024 − 300
+    expect(placed()).toEqual({ top: "120px", right: "724px" });
+    expect(screen.getByRole("menuitem", { name: "Review session now" })).toHaveFocus();
+  });
+
+  test("near the bottom-right corner it flips left and up to stay on screen", () => {
+    render(
+      <MenuPopover items={entries({})} anchor={{ point: { x: 1000, y: 740 } }} onClose={() => {}} />,
+    );
+    // left = 1000 − 200 → right = 1024 − 1000; top = 740 − 100
+    expect(placed()).toEqual({ top: "640px", right: "24px" });
+  });
+
+  test("a pointer without coordinates places it at the viewport edge, never at NaN", () => {
+    render(
+      <MenuPopover
+        items={entries({})}
+        anchor={{ point: { x: Number.NaN, y: Number.NaN } }}
+        onClose={() => {}}
+      />,
+    );
+    expect(placed()).toEqual({ top: "8px", right: "816px" });
+  });
+
+  test("an outside press closes it without refocus; a press on its owner does not", () => {
+    const onClose = vi.fn();
+    render(
+      <div>
+        <button type="button">owner</button>
+        <button type="button">elsewhere</button>
+      </div>,
+    );
+    const owner = screen.getByRole("button", { name: "owner" });
+    render(
+      <MenuPopover
+        items={entries({})}
+        anchor={{ point: { x: 10, y: 10 } }}
+        onClose={onClose}
+        ownerRef={{ current: owner }}
+      />,
+    );
+    fireEvent.pointerDown(owner);
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.pointerDown(screen.getByRole("button", { name: "elsewhere" }));
+    expect(onClose).toHaveBeenCalledWith(false);
+  });
+});
+
+describe("MenuPopover — element anchor", () => {
+  beforeEach(() => {
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(200);
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(100);
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  const anchorAt = (left: number, top: number) => {
+    const el = document.createElement("button");
+    el.getBoundingClientRect = () =>
+      ({ left, right: left + 30, top, bottom: top + 30, width: 30, height: 30, x: left, y: top }) as DOMRect;
+    document.body.appendChild(el);
+    return el;
+  };
+  const placed = () => {
+    const menu = screen.getByRole("menu", { name: "Session actions" });
+    return {
+      top: menu.style.getPropertyValue("--rm-top"),
+      right: menu.style.getPropertyValue("--rm-right"),
+    };
+  };
+
+  test("right-aligned under its trigger, as the sidebar always had it", () => {
+    render(<MenuPopover items={entries({})} anchor={{ element: anchorAt(970, 200) }} onClose={() => {}} />);
+    // right = 1024 − trigger.right (1000); top = trigger.bottom + GAP
+    expect(placed()).toEqual({ top: "234px", right: "24px" });
+  });
+
+  test("a trigger near the LEFT edge (a panned map chip) keeps the whole menu on screen (#968 review)", () => {
+    render(<MenuPopover items={entries({})} anchor={{ element: anchorAt(100, 200) }} onClose={() => {}} />);
+    // Unclamped, right = 1024 − 130 = 894 would put the menu's left edge at −70. Clamped so the
+    // left edge sits at EDGE: right = 1024 − 8 − 200.
+    expect(placed()).toEqual({ top: "234px", right: "816px" });
+  });
 });
 
 test("onOpenChange mirrors open/close so the row can pin its action cluster visible", async () => {

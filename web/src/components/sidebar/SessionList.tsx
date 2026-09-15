@@ -1,19 +1,8 @@
 import {
-  Archive,
-  ArchiveRestore,
-  ArrowLeftRight,
-  Bot,
-  BotOff,
   Check,
-  Eye,
-  EyeOff,
-  FolderInput,
-  Pencil,
   Plus,
-  ScrollText,
   Sparkles,
   Star,
-  Tag,
   X,
   Crosshair,
 } from "lucide-react";
@@ -29,27 +18,21 @@ import {
 import { Link, NavLink, useMatch, useNavigate } from "react-router-dom";
 import { useConfig } from "../../app/config";
 import { MAP_PATH, useMapWindows } from "../../app/workspaceWindows";
-import { isNewSessionPlaceholder, useSessionsStore } from "../../app/sessionsStore";
+import { useSessionsStore } from "../../app/sessionsStore";
 import { useSessionsList } from "../../hooks/useSessionsList";
 import { ApiError } from "../../lib/api";
 import {
   engineBadge,
   engineName,
-  parseSessionKey,
   projectColor,
   relTime,
-  sessionPathFromKey,
 } from "../../lib/format";
 import { sessionStatus } from "../../lib/sessionStatus";
 import type { ProjectRef, Session } from "../../types/api";
-import { HandoffModal } from "../terminal/HandoffModal";
-import { SessionRecapModal } from "../terminal/SessionRecapModal";
 import { FiltersBar } from "./Filters";
-import { AdoptToMissionModal } from "../sessions/AdoptToMissionModal";
-import { MoveToProjectModal } from "./MoveToProjectModal";
-import { RowMenu, type RowMenuEntry } from "./RowMenu";
+import { RowMenu } from "./RowMenu";
+import { sessionPeers, useSessionMenu } from "../sessions/useSessionMenu";
 import styles from "./SessionList.module.css";
-import { missionLink } from "../../lib/missionLink";
 
 /** Activity since the last successful review makes the summary stale (#356): the AI's
  *  one-liner describes an older state, so the row exposes the review's age instead of
@@ -174,33 +157,24 @@ function Row({
   // input row. "none" = not editing; `draft` holds whichever value is being edited.
   const [editMode, setEditMode] = useState<"none" | "title" | "tag">("none");
   const [draft, setDraft] = useState(s.title);
-  const [busy, setBusy] = useState(false);
-  const [reviewing, setReviewing] = useState(false);
   // Keeps the hover-revealed ⋯ cluster visible while its menu is open: the menu lives
   // in a body portal, so :focus-within on the row no longer covers the open state.
   const [menuOpen, setMenuOpen] = useState(false);
-  // "Move to project" picker (#424 Phase 5b) — the keyboard path for drag-to-reassign.
-  const [moving, setMoving] = useState(false);
-  const [moveReturnFocus, setMoveReturnFocus] = useState<HTMLElement | null>(
-    null,
-  );
-  // "Adopt to mission" (#948 P5) — the same picker the pane header opens.
-  const [adopting, setAdopting] = useState(false);
-  const [adoptReturnFocus, setAdoptReturnFocus] = useState<HTMLElement | null>(
-    null,
-  );
-  // Session brief (Recap) + Hand off, mirrored from the terminal header into the ⋯ menu so
-  // both are reachable from the sidebar without opening the session first (#597 follow-up).
-  const [recapOpen, setRecapOpen] = useState(false);
-  const [recapReturnFocus, setRecapReturnFocus] = useState<HTMLElement | null>(
-    null,
-  );
-  const [handoffOpen, setHandoffOpen] = useState(false);
-  const [handoffReturnFocus, setHandoffReturnFocus] =
-    useState<HTMLElement | null>(null);
-  // Imperative route to a handoff peer from the ⋯ menu (#597 Phase 2) — the row itself is
-  // a NavLink, so the peer link can't be nested inside it.
-  const navigate = useNavigate();
+  // The ⋯ menu's items and the dialogs they open are shared with the Overview map (#968) — one
+  // implementation, so the two surfaces cannot drift. The row keeps only its own editor.
+  const menu = useSessionMenu(s, {
+    onToggleArchive,
+    onToggleFavorite,
+    onReviewNow,
+    onToggleReviewExcluded,
+    onToggleOrchestratorExcluded,
+    onSetProject,
+    onEdit: (mode) => {
+      setDraft(mode === "tag" ? (s.tag ?? "") : s.title);
+      setEditMode(mode);
+    },
+  });
+  const { busy, reviewing, runBusy } = menu;
   // While a map is up and can host a window, a row press opens the session THERE instead of
   // navigating away from the map (#936). `null` outside the shell's provider, and `mapReady`
   // is false on mobile, in the squeezed embed, and on a map too small to host a window at its
@@ -232,51 +206,6 @@ function Row({
     onNavigate?.();
   };
 
-  const handleMove = async (ref: ProjectRef | null) => {
-    setMoving(false);
-    const current = s.project.kind === "project" ? s.project.id : null;
-    const next = ref && ref.kind === "project" ? ref.id : null;
-    if (next === current) return; // chose the current assignment → no-op
-    setBusy(true);
-    try {
-      await onSetProject(s.id, ref);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const reviewNow = async () => {
-    if (!onReviewNow) return;
-    setReviewing(true);
-    try {
-      await onReviewNow(s.id);
-    } catch {
-      /* fail-soft (#356): the last good result + its stale age keep showing */
-    } finally {
-      setReviewing(false);
-    }
-  };
-
-  const toggleOrchestrated = async () => {
-    if (!onToggleOrchestratorExcluded) return;
-    setBusy(true);
-    try {
-      await onToggleOrchestratorExcluded(s.id, !s.orchestrator_excluded);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const toggleExcluded = async () => {
-    if (!onToggleReviewExcluded) return;
-    setBusy(true);
-    try {
-      await onToggleReviewExcluded(s.id, !s.review_excluded);
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const commit = async () => {
     const value = draft.trim();
     if (editMode === "tag") {
@@ -285,13 +214,10 @@ function Row({
         setEditMode("none");
         return;
       }
-      setBusy(true);
-      try {
+      await runBusy(async () => {
         await onSetTag(s.id, value);
         setEditMode("none");
-      } finally {
-        setBusy(false);
-      }
+      });
       return;
     }
     // Title (Rename): an empty title is a no-op, unlike a tag.
@@ -299,31 +225,10 @@ function Row({
       setEditMode("none");
       return;
     }
-    setBusy(true);
-    try {
+    await runBusy(async () => {
       await onRename(s.id, value);
       setEditMode("none");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const toggleArchive = async () => {
-    setBusy(true);
-    try {
-      await onToggleArchive(s.id, s.archived);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const toggleFavorite = async () => {
-    setBusy(true);
-    try {
-      await onToggleFavorite(s.id, !s.sticky);
-    } finally {
-      setBusy(false);
-    }
+    });
   };
 
   if (editMode !== "none") {
@@ -372,216 +277,8 @@ function Row({
     );
   }
 
-  // Handoff provenance (#597 Phase 2). A row can be the TARGET of one handoff and the
-  // SOURCE of another — a chained session carries BOTH, so both are rendered and both get
-  // a menu entry (Hermes on #703: `from || to` hid the outbound half of a chain). Peer ids
-  // are display strings: a peer may be archived/deleted, so the menu item just routes there
-  // and lets that route render its own empty state.
-  const peers = (
-    [
-      { key: s.handoff_from ?? "", inbound: true },
-      { key: s.handoff_to ?? "", inbound: false },
-    ] as const
-  )
-    .filter((p) => p.key)
-    .map((p) => ({
-      ...p,
-      parsed: parseSessionKey(p.key),
-      path: sessionPathFromKey(p.key),
-    }))
-    .filter((p) => p.parsed !== null);
-
-  // The row's single ⋯ menu (#384) — replaces the four inline icon buttons. Items are
-  // assembled as logical groups joined by `pushGroup`, which inserts a separator only
-  // *between* non-empty groups, so an absent group (no peers, AI-review not configured)
-  // never leaves a doubled or leading rule. Group order: primary session actions (mirrored
-  // from the terminal header) → handoff provenance backlinks → AI-review → row management.
-  // Busy items stay in place (aria-disabled) rather than being removed, so the menu doesn't
-  // reflow.
-  const menuItems: RowMenuEntry[] = [];
-  const pushGroup = (group: RowMenuEntry[]) => {
-    if (group.length === 0) return;
-    if (menuItems.length > 0) menuItems.push("separator");
-    menuItems.push(...group);
-  };
-
-  // Primary actions, mirrored from the terminal header (#597 follow-up) so they're reachable
-  // from the sidebar without opening the session first: the session brief (Recap) and Hand
-  // off. Handoff is offered for every engine except `shell` — the same `canHandoff` gate the
-  // header uses (no agent transcript to seed). Each stashes the focused element so focus
-  // returns to the ⋯ trigger when the modal closes.
-  const primary: RowMenuEntry[] = [
-    {
-      key: "brief",
-      label: "Session brief",
-      ariaLabel: "Open session brief",
-      icon: <ScrollText size={15} />,
-      onSelect: () => {
-        setRecapReturnFocus(document.activeElement as HTMLElement | null);
-        setRecapOpen(true);
-      },
-    },
-  ];
-  if (s.engine !== "shell") {
-    primary.push({
-      key: "handoff",
-      label: "Hand off…",
-      ariaLabel: "Hand off session to another engine",
-      icon: <ArrowLeftRight size={15} />,
-      onSelect: () => {
-        setHandoffReturnFocus(document.activeElement as HTMLElement | null);
-        setHandoffOpen(true);
-      },
-    });
-  }
-  pushGroup(primary);
-
-  // Mission membership (#948 P5) — one of the two places adoption lives. `mission` ABSENT means
-  // the server could not read the store, so neither item is offered: "Adopt" would advertise a
-  // mutation nobody checked, and "Open" would name a mission nobody read. Archived rows and an
-  // unreconciled `new-<uuid>` placeholder (which `canonical_key` refuses) are not adoptable either.
-  if (s.mission !== undefined && !s.archived && !isNewSessionPlaceholder(s.id)) {
-    const held = s.mission;
-    pushGroup([
-      held
-        ? {
-            key: "open-mission",
-            label: "Open mission",
-            ariaLabel: `Open mission ${held.title}`,
-            icon: <Crosshair size={15} />,
-            onSelect: () => navigate(missionLink(held.id)),
-          }
-        : {
-            key: "adopt-mission",
-            label: "Adopt to mission…",
-            ariaLabel: "Adopt session to a mission",
-            icon: <Crosshair size={15} />,
-            disabled: busy,
-            onSelect: () => {
-              setAdoptReturnFocus(document.activeElement as HTMLElement | null);
-              setAdopting(true);
-            },
-          },
-    ]);
-  }
-
-  // Handoff provenance backlinks (#597 Phase 2): route to a peer session. Peer ids are
-  // display strings — a peer may be archived/deleted, so this just navigates and lets that
-  // route render its own empty state.
-  const peerItems: RowMenuEntry[] = [];
-  for (const p of peers) {
-    const path = p.path;
-    if (!path || !p.parsed) continue;
-    peerItems.push({
-      key: p.inbound ? "handoff-source" : "handoff-target",
-      label: p.inbound ? "Open source session" : "Open handoff target",
-      ariaLabel: p.inbound
-        ? `Open the session this was handed off from (${engineName(p.parsed.engine)})`
-        : `Open the session this was handed off to (${engineName(p.parsed.engine)})`,
-      icon: <ArrowLeftRight size={15} />,
-      onSelect: () => navigate(path),
-    });
-  }
-  pushGroup(peerItems);
-
-  // AI-review actions — present only when the review handlers were passed down
-  // (ai_review.configured); the exclude item flips its label for an excluded row.
-  const reviewItems: RowMenuEntry[] = [];
-  if (onReviewNow && !s.review_excluded) {
-    reviewItems.push({
-      key: "review",
-      label: "Review now",
-      ariaLabel: "Review session now",
-      icon: (
-        <Sparkles size={15} className={reviewing ? styles.spin : undefined} />
-      ),
-      disabled: busy || reviewing,
-      onSelect: () => void reviewNow(),
-    });
-  }
-  if (onToggleReviewExcluded) {
-    reviewItems.push({
-      key: "exclude",
-      label: s.review_excluded
-        ? "Include in AI review"
-        : "Exclude from AI review",
-      icon: s.review_excluded ? <Eye size={15} /> : <EyeOff size={15} />,
-      disabled: busy || reviewing,
-      onSelect: () => void toggleExcluded(),
-    });
-  }
-  if (onToggleOrchestratorExcluded) {
-    // Separate entry from "Exclude from AI review" on purpose: this withdraws only the
-    // orchestrator's agency. The session keeps its summary and its needs-you flag.
-    reviewItems.push({
-      key: "orchestrate",
-      label: s.orchestrator_excluded
-        ? "Let mission control manage this"
-        : "Stop mission control managing this",
-      icon: s.orchestrator_excluded ? <Bot size={15} /> : <BotOff size={15} />,
-      disabled: busy,
-      onSelect: () => void toggleOrchestrated(),
-    });
-  }
-  pushGroup(reviewItems);
-
-  // Row management: favorite / rename / tag / move / archive.
-  pushGroup([
-    {
-      // Favorite toggle (#508): relocated off the row surface into the menu. The visible
-      // ★ now lives as a small prefix on the meta line (favorited rows only); this item
-      // carries the on/off accessible state the old standalone .favBtn used to.
-      key: "favorite",
-      label: s.sticky ? "Unfavorite" : "Favorite",
-      ariaLabel: s.sticky ? "Unfavorite session" : "Favorite session",
-      icon: <Star size={15} fill={s.sticky ? "currentColor" : "none"} />,
-      disabled: busy,
-      onSelect: () => void toggleFavorite(),
-    },
-    {
-      key: "rename",
-      label: "Rename",
-      ariaLabel: "Rename session",
-      icon: <Pencil size={15} />,
-      disabled: busy,
-      onSelect: () => {
-        setDraft(s.title);
-        setEditMode("title");
-      },
-    },
-    {
-      // Custom tag (#551): the same inline input as Rename, seeded with the current tag.
-      key: "tag",
-      label: s.tag ? "Edit tag…" : "Set tag…",
-      ariaLabel: s.tag ? "Edit session tag" : "Set session tag",
-      icon: <Tag size={15} />,
-      disabled: busy,
-      onSelect: () => {
-        setDraft(s.tag ?? "");
-        setEditMode("tag");
-      },
-    },
-    {
-      key: "move",
-      label: "Move to project…",
-      ariaLabel: "Move session to a project",
-      icon: <FolderInput size={15} />,
-      disabled: busy,
-      onSelect: () => {
-        // The trigger had focus when the menu item fired; restore to it when the modal closes.
-        setMoveReturnFocus(document.activeElement as HTMLElement | null);
-        setMoving(true);
-      },
-    },
-    {
-      key: "archive",
-      label: s.archived ? "Unarchive" : "Archive",
-      ariaLabel: s.archived ? "Unarchive session" : "Archive session",
-      icon: s.archived ? <ArchiveRestore size={15} /> : <Archive size={15} />,
-      disabled: busy,
-      onSelect: () => void toggleArchive(),
-    },
-  ]);
+  // Handoff provenance (#597 Phase 2) — the same peers the menu's backlinks route to.
+  const peers = sessionPeers(s);
 
   // #477: one leading status dot carries the whole row state — colour is the only signal, no
   // extra glyph or row width. The precedence lives in `sessionStatus` (#744) so the session brief
@@ -614,53 +311,9 @@ function Row({
 
   return (
     <li ref={rowRef} className={styles.rowWrap}>
-      {adopting && (
-        <AdoptToMissionModal
-          session={s}
-          sessionKey={s.id}
-          onClose={() => setAdopting(false)}
-          returnFocusTo={adoptReturnFocus}
-        />
-      )}
-      {moving && (
-        <MoveToProjectModal
-          session={s}
-          onCancel={() => setMoving(false)}
-          onMove={(ref) => void handleMove(ref)}
-          returnFocusTo={moveReturnFocus}
-        />
-      )}
-      {/* Session brief + Hand off from the ⋯ menu (#597 follow-up): the same modals the
-          terminal header mounts, keyed to this row's session — no need to open it first. */}
-      {recapOpen && (
-        <SessionRecapModal
-          sessionId={s.id}
-          engine={s.engine}
-          title={s.title}
-          project={s.project}
-          lastMtime={s.last_mtime}
-          // The same resolver the row's own dot uses (#744) — one session, one status, whichever
-          // surface you open the brief from.
-          statusRow={s}
-          summary={s.ai_summary}
-          recap={s.ai_recap}
-          interventionRequired={s.intervention_required}
-          interventionReason={s.intervention_reason}
-          reviewedAt={s.reviewed_at}
-          reviewExcluded={s.review_excluded}
-          onClose={() => setRecapOpen(false)}
-          returnFocusTo={recapReturnFocus}
-        />
-      )}
-      {handoffOpen && (
-        <HandoffModal
-          sessionId={s.id}
-          engine={s.engine}
-          title={s.title}
-          onClose={() => setHandoffOpen(false)}
-          returnFocusTo={handoffReturnFocus}
-        />
-      )}
+      {/* Session brief, Hand off, Move to project and Adopt to mission from the ⋯ menu: the
+          same dialogs the terminal header mounts, keyed to this row's session. */}
+      {menu.dialogs}
       {/* Still a NavLink, deliberately (#936): the row keeps its href, so ⌘-click, middle-click
         and "copy link" behave exactly as they always have, and a map that cannot host a window
         needs no fallback branch — it simply doesn't preventDefault. */}
@@ -789,7 +442,7 @@ function Row({
         className={`${styles.actions} ${menuOpen ? styles.actionsOpen : ""}`}
       >
         <RowMenu
-          items={menuItems}
+          items={menu.items}
           title={s.title || "(untitled)"}
           triggerIcon={
             reviewing ? (

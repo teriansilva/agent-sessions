@@ -1,6 +1,7 @@
 import { type Node, useReactFlow, useStore } from "@xyflow/react";
 import { type RefObject, useCallback, useMemo } from "react";
 import type { TermRole } from "../../lib/termSocket";
+import type { MenuAnchor } from "../sidebar/RowMenu";
 import { anchorPointOf } from "./nodeAnchor";
 import { SessionWindow } from "./SessionWindow";
 import styles from "./windowLayer.module.css";
@@ -14,6 +15,11 @@ import {
   tetherAnchor,
   tetherPath,
 } from "./workspace";
+
+/** Why a window's ⋯ is disabled: its menu reads the session's row from the map, and the row is
+ *  not there (#968). Shown as the control's title, so the state explains itself. */
+const OFF_MAP_REASON =
+  "This session isn't on the map right now — change the map filter or open it full screen";
 
 /** The floating window layer over the map (#208).
  *
@@ -44,6 +50,8 @@ export function WindowLayer({
   onRect,
   onRole,
   onReconcile,
+  onMenu,
+  isOnMap,
 }: {
   layerRef: RefObject<HTMLDivElement | null>;
   windows: WorkspaceWindow[];
@@ -66,6 +74,10 @@ export function WindowLayer({
   onRole: (key: string, role: TermRole) => void;
   /** A window launched under a `new-<uuid>` placeholder adopting the id its engine minted. */
   onReconcile: (key: string, sid: string) => void;
+  /** Open the session menu for a window (#968). Absent → the chrome carries no ⋯. */
+  onMenu?: (key: string, anchor: MenuAnchor, opener: HTMLElement | null) => void;
+  /** Is this session (by `actionKey`) on the map, where its menu reads the row from? */
+  isOnMap?: (sessionKey: string) => boolean;
 }) {
   const { flowToScreenPosition } = useReactFlow();
   // Re-project on every pan/zoom. The store's transform is a stable reference that changes only
@@ -76,7 +88,8 @@ export function WindowLayer({
   // DIFFERENT layout but often the SAME node count (two projects → two engines), so no
   // subscribed value changed, nothing recomputed, and every tether stayed at its old
   // coordinates until an unrelated pan or zoom happened to wake the layer up. React Flow
-  // replaces this array whenever nodes are set or moved, so its identity is the honest signal.
+  // replaces this array whenever nodes are set or moved, so its identity is the honest signal —
+  // which is also what keeps a tether on its cluster while that cluster is dragged (#968).
   const nodes = useStore((s) => s.nodes);
   // Look anchors up in the SAME snapshot we are subscribed to, rather than through
   // `getNode` — that reads the live store, so a projection could mix a fresh position with a
@@ -175,6 +188,12 @@ export function WindowLayer({
             onRect={onRect}
             onRole={onRole}
             onReconcile={onReconcile}
+            onMenu={onMenu}
+            // A primitive, so a refetch that leaves this window's session on the map re-renders
+            // nothing inside the memoized window.
+            menuDisabledReason={
+              onMenu && isOnMap && !isOnMap(w.actionKey) ? OFF_MAP_REASON : undefined
+            }
           />
         </div>
       ))}
