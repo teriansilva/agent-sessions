@@ -1,4 +1,4 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
+import { expect, type Locator, type Page, test, type WebSocketRoute } from "@playwright/test";
 
 /** The map's window workspace (#208) — the acceptance matrix, in a real browser.
  *
@@ -42,6 +42,10 @@ interface SockLog {
   input: Record<string, string[]>;
   /** Per session: how many resize frames ({"t":"r",cols,rows}) it sent. */
   resize: Record<string, number>;
+  /** Per session: every resize frame's grid, and which connection (`Conn.seq`) carried it. */
+  frames: Record<string, { cols: number; rows: number; conn: number }[]>;
+  /** The routed sockets, in connect order — a test closes one to force a reconnect. */
+  routes: WebSocketRoute[];
 }
 
 /** Projects and engines CROSSED, so the two layouts partition the same sessions differently
@@ -103,7 +107,7 @@ async function mockApp(
     projects?: { id: string; name: string; color: string; archived: boolean }[];
   } = {},
 ): Promise<SockLog> {
-  const log: SockLog = { conns: [], input: {}, resize: {} };
+  const log: SockLog = { conns: [], input: {}, resize: {}, frames: {}, routes: [] };
   const visible = opts.visible ?? (() => sessions);
   const expanded = opts.expanded ?? ["project:p1"];
   const projects = opts.projects ?? [
@@ -144,14 +148,19 @@ async function mockApp(
     );
     const conn: Conn = { seq: log.conns.length, key, closed: false };
     log.conns.push(conn);
+    log.routes.push(ws);
     log.input[key] ??= [];
     log.resize[key] ??= 0;
+    log.frames[key] ??= [];
     ws.onMessage((raw) => {
       if (typeof raw !== "string") return;
       try {
-        const msg = JSON.parse(raw) as { t?: string; d?: string };
+        const msg = JSON.parse(raw) as { t?: string; d?: string; cols?: number; rows?: number };
         if (msg.t === "i" && typeof msg.d === "string") log.input[key].push(msg.d);
-        if (msg.t === "r") log.resize[key] += 1;
+        if (msg.t === "r") {
+          log.resize[key] += 1;
+          log.frames[key].push({ cols: msg.cols ?? 0, rows: msg.rows ?? 0, conn: conn.seq });
+        }
       } catch {
         /* not a control frame we care about */
       }
@@ -213,6 +222,106 @@ async function wideDesktop(page: Page) {
 async function openMap(page: Page) {
   await page.goto("/overview");
   await expect(chip(page, 1)).toBeVisible();
+}
+
+/** Open window 1 and let its opening fit settle. */
+async function openFirstWindow(page: Page, log: SockLog) {
+  await openMap(page);
+  await chip(page, 1).click();
+  await expect.poll(() => log.conns.length).toBe(1);
+  await expect(win(page, 1).locator(".xterm-screen")).toBeVisible();
+  await page.waitForTimeout(500);
+}
+
+/** Opt-in CPU throttling for stress runs (`E2E_CPU_THROTTLE=4`); a no-op otherwise (#995). */
+async function throttleIfAsked(page: Page) {
+  const rate = Number(process.env.E2E_CPU_THROTTLE ?? "0");
+  if (!rate) return;
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Emulation.setCPUThrottlingRate", { rate });
+}
+
+/** One-clock resize tracing (#995), on the PAGE's `performance.now()`: every ResizeObserver
+ *  callback that observed a window's terminal host, and every resize frame the page sent.
+ *  Installed after `mockApp`, so it wraps the WebSocket class `routeWebSocket` placed in the page. */
+async function traceResizes(page: Page) {
+  await page.addInitScript(() => {
+    const trace = { ro: [] as number[], frames: [] as [number, number, number][] };
+    (window as unknown as { __resizeTrace: typeof trace }).__resizeTrace = trace;
+    const RO = window.ResizeObserver;
+    window.ResizeObserver = class extends RO {
+      constructor(cb: ResizeObserverCallback) {
+        super((entries, obs) => {
+          const onHost = entries.some((e) => {
+            const el = e.target as HTMLElement;
+            return !!el.closest?.("[data-session-window]") && !!el.querySelector?.(".xterm");
+          });
+          if (onHost) trace.ro.push(performance.now());
+          cb(entries, obs);
+        });
+      }
+    };
+    const send = WebSocket.prototype.send;
+    WebSocket.prototype.send = function (data) {
+      if (typeof data === "string" && data.includes('"t":"r"')) {
+        const m = JSON.parse(data) as { cols: number; rows: number };
+        trace.frames.push([performance.now(), m.cols, m.rows]);
+      }
+      return send.call(this, data);
+    };
+  });
+}
+
+type ResizeTrace = { ro: number[]; frames: [number, number, number][] };
+
+const readTrace = (page: Page): Promise<ResizeTrace> =>
+  page.evaluate(() => (window as unknown as { __resizeTrace: ResizeTrace }).__resizeTrace);
+
+const resetTrace = (page: Page) =>
+  page.evaluate(() => {
+    const t = (window as unknown as { __resizeTrace: ResizeTrace }).__resizeTrace;
+    t.ro.length = 0;
+    t.frames.length = 0;
+  });
+
+/** Shrink window 1 by `steps` × 10px through its keyboard resize, ONE keydown per animation frame,
+ *  dispatched inside the page — so no automation round trip sits between two steps (#995). */
+async function keyboardResizeBurst(page: Page, steps: number) {
+  const grip = win(page, 1).locator("[data-window-resize]");
+  await grip.focus();
+  await grip.evaluate(async (el, n) => {
+    for (let i = 0; i < n; i++) {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      el.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+    }
+  }, steps);
+}
+
+/** Wait until a session has sent no resize frame for a while: past the trailing debounce. */
+async function framesQuiet(log: SockLog, key: string) {
+  await expect
+    .poll(
+      async () => {
+        const n = log.frames[key].length;
+        await new Promise((r) => setTimeout(r, 400));
+        return log.frames[key].length === n;
+      },
+      { timeout: 15_000 },
+    )
+    .toBe(true);
+}
+
+/** The grid a FRESH fit produces, measured independently of the frames under test: the server drops
+ *  the socket, the pane reconnects, and `refit(true)` sends its real size past the grid dedupe. */
+async function freshFitGrid(log: SockLog, key: string): Promise<[number, number]> {
+  const seq = log.conns.length;
+  await log.routes[log.routes.length - 1].close({ code: 1001, reason: "e2e: re-measure" });
+  await expect.poll(() => log.conns.length, { timeout: 15_000 }).toBe(seq + 1);
+  await expect
+    .poll(() => log.frames[key].filter((f) => f.conn === seq).length, { timeout: 15_000 })
+    .toBeGreaterThan(0);
+  const first = log.frames[key].filter((f) => f.conn === seq)[0];
+  return [first.cols, first.rows];
 }
 
 test.describe("desktop workspace", () => {
@@ -393,25 +502,77 @@ test.describe("desktop workspace", () => {
     expect(await top(win(page, 1))).toBe(before1);
   });
 
-  test("moving emits no resize frames, and resizing stays debounced (#227/#349)", async ({
-    page,
-  }) => {
+  test("moving a window emits no resize frames (#227/#349)", async ({ page }) => {
     const log = await mockApp(page);
-    await openMap(page);
-
-    await chip(page, 1).click();
-    await expect.poll(() => log.conns.length).toBe(1);
-    await expect(win(page, 1).locator(".xterm-screen")).toBeVisible();
-    await page.waitForTimeout(500); // let the opening fit settle
+    await openFirstWindow(page, log);
     const afterOpen = log.resize["claude:s1"];
 
     // A MOVE changes no dimension, so the agent must never see a resize at all.
     await dragWindow(page, 1, { x: 700, y: 500 });
     await page.waitForTimeout(500);
     expect(log.resize["claude:s1"]).toBe(afterOpen);
+  });
 
-    // A RESIZE goes through the pane's own debounced refit — many pointer moves, few frames.
+  /* THE DEBOUNCE CONTRACT, AND WHY IT IS NOT "AT MOST THREE FRAMES PER DRAG" (#995).
+   *
+   * The refit behind a window is a TRAILING 120ms debounce (`Terminal.tsx` `refitSoon`): size
+   * changes less than 120ms apart collapse into one refit; changes further apart may each get
+   * their own, and that is correct. The old test drove 20 AWAITED `page.mouse.move` calls and
+   * capped the whole drag at three frames — but each awaited move is a round trip through the
+   * automation channel, measured at 110–315ms apart on the shared CI host even unthrottled. Every
+   * such gap legitimately ended a debounce window, so the cap failed without any regression: a
+   * one-clock trace of 12 drags found every frame sent ≥122ms after the last size change before it,
+   * and frame counts that tracked the ≥120ms gaps exactly.
+   *
+   * So the collapsing contract is pinned where the cadence is the PAGE's frame rate: a keyboard
+   * resize burst dispatched inside the page, one step per animation frame, asserted against the
+   * debounce windows it actually produced. With the debounce bypassed it fails (one frame per grid
+   * change, sent at once). The real pointer drag stays as a smoke test with no timing ceiling. */
+  test("a resize burst settles into one trailing refit per debounce window, on the real grid (#227/#349/#995)", async ({
+    page,
+  }) => {
+    const log = await mockApp(page);
+    await traceResizes(page);
+    await openFirstWindow(page, log);
+    await throttleIfAsked(page);
+    const widthBefore = Math.round((await rectOf(win(page, 1))).width);
+    await resetTrace(page);
+
+    // 720px → the 560px minimum, 10px a step: every step is a real size change, none is clamped.
+    const STEPS = 16;
+    await keyboardResizeBurst(page, STEPS);
+    await framesQuiet(log, "claude:s1");
+    expect(Math.round((await rectOf(win(page, 1))).width)).toBe(widthBefore - STEPS * 10);
+
+    const tr = await readTrace(page);
+    const gaps = tr.ro.slice(1).map((t, i) => t - tr.ro[i]);
+    const windows = 1 + gaps.filter((g) => g >= 120).length;
+    const shown = `observer gaps ${JSON.stringify(gaps.map(Math.round))}, frames ${JSON.stringify(
+      tr.frames.map(([t, c, r]) => [Math.round(t), c, r]),
+    )}`;
+    // The burst really was one: most steps landed inside a debounce interval of the step before.
+    expect(windows, shown).toBeLessThanOrEqual(Math.ceil(STEPS / 3));
+    // It refitted, at most once per debounce window — never once per size change…
+    expect(tr.frames.length, shown).toBeGreaterThan(0);
+    expect(tr.frames.length, shown).toBeLessThanOrEqual(windows);
+    // …and every refit TRAILED: sent a debounce interval after the last size change before it.
+    for (const [t] of tr.frames) {
+      const lastChange = tr.ro.filter((x) => x <= t);
+      expect(t - lastChange[lastChange.length - 1], shown).toBeGreaterThanOrEqual(100);
+    }
+    // It converged: the last frame is the grid a FRESH fit produces, measured outside the burst.
+    const last = tr.frames[tr.frames.length - 1];
+    expect(await freshFitGrid(log, "claude:s1")).toEqual([last[1], last[2]]);
+  });
+
+  test("a real pointer resize refits and converges on the real grid — no timing ceiling (#995)", async ({
+    page,
+  }) => {
+    const log = await mockApp(page);
+    await openFirstWindow(page, log);
+    await throttleIfAsked(page);
     const before = log.resize["claude:s1"];
+
     const grip = await rectOf(win(page, 1).locator("[data-window-resize]"));
     await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
     await page.mouse.down();
@@ -422,10 +583,15 @@ test.describe("desktop workspace", () => {
       );
     }
     await page.mouse.up();
-    await page.waitForTimeout(800);
-    const emitted = log.resize["claude:s1"] - before;
-    expect(emitted).toBeGreaterThan(0); // it did refit
-    expect(emitted).toBeLessThanOrEqual(3); // but not once per pointer move
+    await framesQuiet(log, "claude:s1");
+
+    // It refitted. How MANY frames is deliberately not asserted: the awaited moves above can land a
+    // debounce interval apart on a loaded host, and each such gap legitimately ends a window (see
+    // the burst test, which owns the collapsing contract).
+    expect(log.resize["claude:s1"] - before).toBeGreaterThan(0);
+    const ours = log.frames["claude:s1"].filter((f) => f.conn === 0);
+    const last = ours[ours.length - 1];
+    expect(await freshFitGrid(log, "claude:s1")).toEqual([last.cols, last.rows]);
   });
 
   test("the tether tracks its chip through pan and zoom, at a non-zero shell offset", async ({
