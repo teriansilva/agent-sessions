@@ -65,6 +65,7 @@ from .scrollback import (  # noqa: F401 — re-exported so `webterm.<name>` stay
     attach_modes_payload,
     clear_scrollback,
     get_last_output_at,
+    get_last_visible_output_at,
     live_tail_text,
     note_attach,
     scrollback_cache_stats,

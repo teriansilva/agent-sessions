@@ -16,8 +16,21 @@ import asyncio
 
 import pytest
 
-from agent_sessions import actuator
+from agent_sessions import actuator, session_input
 from agent_sessions import orchestrator_ledger as ledger
+
+
+@pytest.fixture(autouse=True)
+def _sessions_are_live(monkeypatch):
+    """This file is about how a live action is PROJECTED, not whether its session still exists.
+
+    Since #969 every retiring read also withdraws an action whose session has no writer, which is
+    what a dead session looks like in production (startup `discover()` streams every live master).
+    The fixtures here seed actions for sessions nobody registered, so without this they would be
+    withdrawn before the projection under test ever saw them.
+    """
+    monkeypatch.setattr(session_input, "is_live", lambda key: True)
+
 
 # state -> (projection, can_approve, can_reject)
 TABLE = {

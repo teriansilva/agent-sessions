@@ -176,10 +176,16 @@ async def sweep(registry=None) -> dict:
 
     # Housekeeping first: it is cheap, needs no endpoint, and must happen even on a sweep that
     # then short-circuits as unchanged — an overdue proposal should expire on time regardless.
-    expired = await asyncio.to_thread(ledger.expire_due)
+    # Withdrawal rides with expiry, through the SAME helper the state read and the mission cards
+    # use (#969), so no surface keeps offering a decision another has already retired.
+    expired, _withdrawn = await asyncio.to_thread(actuator.housekeep_pending)
 
     working = _working_keys(registry)
-    cards, _skipped = await asyncio.to_thread(orchestrator.eligible_cards, working_keys=working)
+    # Snapshotted HERE, on the event loop — `snapshot()` iterates a mutable dict (#969).
+    busy = actuator.busy_keys(registry)
+    cards, _skipped = await asyncio.to_thread(
+        orchestrator.eligible_cards, working_keys=working, busy_keys=busy
+    )
 
     # Settlement RESTORES work, and the fingerprint alone cannot see that.
     #
@@ -202,7 +208,11 @@ async def sweep(registry=None) -> dict:
         return {"skipped": "unchanged", "expired": len(expired)}
 
     async with aitasks.single_flight("orchestrator", "auto"):
-        report = await orchestrator.run_pass(working_keys=working, offset=_next_offset)
+        report = await orchestrator.run_pass(
+            working_keys=working,
+            busy_keys=lambda: actuator.busy_keys(registry),
+            offset=_next_offset,
+        )
         # Deliver what the pass auto-approved. Without this the `yolo` tier is inert: the pass
         # records `approved` and nothing ever sends it, so the operator is told the orchestrator
         # acts on its own while it waits for a tap it was never supposed to need.

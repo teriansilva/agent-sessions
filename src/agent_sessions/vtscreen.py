@@ -80,6 +80,29 @@ _CUP_ROW = re.compile(rb"\x1b\[(\d+);\d*[Hf]")
 # OSC ] · DCS P · PM ^ · APC _ · SOS X.
 _INTRODUCERS = (b"\x1b]", b"\x1bP", b"\x1b^", b"\x1b_", b"\x1bX")
 
+# The string controls as whole sequences, for `has_visible_bytes`: the first two `_TOKEN`
+# alternatives, with the terminator optional for the same reason.
+_STRING_CONTROL = re.compile(rb"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b[P^_X][^\x1b]*(?:\x1b\\)?")
+
+
+def has_visible_bytes(data: bytes) -> bool:
+    """Does this output chunk carry anything besides string controls (OSC / DCS / PM / APC / SOS)?
+
+    A window-title write is output, but it changes no cell on the screen. A codex session waiting
+    on the operator rewrites its title about once a second (#969), so counting that as activity
+    marks exactly the sessions that need a decision as busy. Everything else — text, CSI cursor
+    moves, erases — counts, because any of it can change what the screen shows.
+
+    Called per output chunk, so the common case (no introducer at all) is a byte scan, not a regex.
+    A control string split across two chunks leaves its tail looking visible; that errs towards
+    "busy", which only ever withholds a proposal.
+    """
+    if not data:
+        return False
+    if b"\x1b" not in data or not any(i in data for i in _INTRODUCERS):
+        return True
+    return bool(_STRING_CONTROL.sub(b"", data))
+
 
 def starts_inside_control_string(buf: bytes, start: int) -> bool:
     """Does byte offset ``start`` of ``buf`` fall INSIDE an unterminated control string?

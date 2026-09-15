@@ -104,8 +104,9 @@ def _attach_pending(overview: dict) -> dict:
         # Retire overdue proposals FIRST. `live_actions` filters on persisted state and never
         # looks at `expires_at`, and the expiry sweep lived only in the sibling orchestrator
         # endpoint — which is fetched independently, so a card could offer Approve/Reject for a
-        # proposal that had already timed out.
-        orchestrator_ledger.expire_due()
+        # proposal that had already timed out. Withdrawal of what can no longer be delivered rides
+        # with it, through the one helper every retiring surface shares (#969).
+        actuator.housekeep_pending()
         for a in orchestrator_ledger.live_actions():
             # `live_actions` includes `claimed`, which is an action already being delivered —
             # neither rejectable nor waiting on the operator. Overlaying one puts Approve/Reject
@@ -405,7 +406,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         """Cached state: config, pending actions, and the activity feed. NEVER runs a pass —
         same contract as `GET /api/pulse` (cache-only, instant)."""
         cfg = prefs.public_orchestrator()
-        expired = await asyncio.to_thread(orchestrator_ledger.expire_due)
+        # The read the session pane's decision strip polls: a proposal whose session moved on
+        # leaves here on the next poll, not at its TTL (#969). One helper for every retiring site.
+        expired, _withdrawn = await asyncio.to_thread(actuator.housekeep_pending)
         pending, feed = await asyncio.to_thread(_pending_and_feed)
         return JSONResponse(
             {
@@ -464,7 +467,10 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         """
         try:
             async with aitasks.single_flight("orchestrator", "manual"):
-                report = await orchestrator.run_pass(working_keys=_working_keys())
+                report = await orchestrator.run_pass(
+                    working_keys=_working_keys(),
+                    busy_keys=lambda: actuator.busy_keys(registry),
+                )
                 # A manual pass in `yolo` must deliver what it approved too — otherwise
                 # "Run now" behaves differently from the scheduled sweep for no stated reason.
                 await actuator.deliver_pass_actions(report["actions"], registry=registry)
@@ -506,9 +512,13 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         not here: a check that runs at approve time and a write that happens milliseconds later
         are two different moments, and `choose 1` into a screen that moved is exactly the
         failure this design exists to stop. A moved screen comes back `409 stale`.
+
+        This is the ONE place `operator_approval` is set (#969): every approval surface — the
+        session pane's strip, the mission console — posts here, and the operator's tap is what
+        lets an attached viewer (usually that very pane) not count as someone else typing.
         """
         try:
-            rec = await actuator.deliver(action_id, registry=registry)
+            rec = await actuator.deliver(action_id, registry=registry, operator_approval=True)
         except actuator.NotDeliverable as e:
             return JSONResponse({"detail": str(e)}, status_code=409)
         if rec.get("state") in ("stale", "expired"):

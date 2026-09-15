@@ -44,6 +44,7 @@ from . import (
     metadata,
     orchestrator,
     prefs,
+    ptybridge,
     scrollback,
     session_input,
 )
@@ -75,6 +76,35 @@ def working_keys(registry) -> set[str]:
         for r in registry.snapshot():
             if r.get("working") or r.get("attached"):
                 keys.add(r["id"])
+    return keys
+
+
+# How recent screen-changing output must be to count as "working right now" (#969). The same
+# 10 s window as the `working` indicator (`session_stream._WORKING_WINDOW_S`, #156) — a test
+# pins the two equal, since importing `session_stream` here would drag in the terminal stack.
+BUSY_WINDOW_S = 10.0
+
+
+def busy_keys(registry, now: float | None = None) -> set[str]:
+    """Sessions VISIBLY working right now: output that could change the screen within
+    :data:`BUSY_WINDOW_S` (#969). Call on the event loop — `snapshot()` iterates a mutable dict.
+
+    Deliberately not `working_keys`. That overlay also counts an attached browser and a
+    window-title blink, so an idle session in an open pane — or a codex session waiting on the
+    operator — would read as busy, and those are exactly the sessions a proposal exists for.
+    Best-effort: a registry hiccup yields no busy set, which leaves eligibility as it was before
+    this filter existed; delivery's own preconditions are untouched either way.
+    """
+    if registry is None:
+        return set()
+    now = time.time() if now is None else now
+    keys: set[str] = set()
+    with contextlib.suppress(Exception):
+        for r in registry.snapshot():
+            seen = r.get("visible_output_at")
+            if isinstance(seen, int | float) and not isinstance(seen, bool):
+                if now - seen < BUSY_WINDOW_S:
+                    keys.add(r["id"])
     return keys
 
 
@@ -138,16 +168,23 @@ def render(action: dict, cfg: dict) -> bytes:
     raise NotDeliverable(f"verb {verb!r} is not deliverable")
 
 
-def _viewer_busy(phys_key: str, registry) -> bool:
+def _viewer_busy(phys_key: str, registry, *, operator_approval: bool = False) -> bool:
     """True when a browser is attached, or was producing output very recently. Best-effort: a
-    registry hiccup must not silently *enable* a write, so an error reads as busy."""
+    registry hiccup must not silently *enable* a write, so an error reads as busy.
+
+    ``operator_approval`` (#969) drops ONLY the attached half. The rule keeps the orchestrator off
+    the keyboard while the operator is at it — but an explicit approval IS the operator, and since
+    #948 P3 it is tapped inside the session's own pane, which is itself an attached viewer, so
+    every one was refused. Recent output still refuses (typing echoes, so it covers someone
+    typing too), and an error still reads as busy.
+    """
     if registry is None:
         return False
     try:
         for row in registry.snapshot():
             if row.get("id") != phys_key:
                 continue
-            if row.get("attached"):
+            if row.get("attached") and not operator_approval:
                 return True
             last = row.get("last_output_at")
             if isinstance(last, int | float) and (time.time() - last) < VIEWER_RECENT_S:
@@ -157,12 +194,34 @@ def _viewer_busy(phys_key: str, registry) -> bool:
         return True
 
 
-def check_precondition(action: dict, *, registry=None) -> tuple[bool, str]:
+def screen_matches(phys: str, pre: dict) -> tuple[bool, str]:
+    """The screen half of the precondition: does the session still show what the pass judged?
+
+    Shared by delivery (`check_precondition`) and withdrawal (`withdraw_undeliverable`, #969), so
+    a proposal is withdrawn for exactly the reason its delivery would be refused, never for a
+    near-copy of it. A precondition with no fingerprint has nothing to compare. Blocking.
+    """
+    want_fp = pre.get("screen_fingerprint")
+    if not want_fp:
+        return True, ""
+    screen = scrollback.live_tail_text(phys, orchestrator.PRECONDITION_CHARS)
+    if orchestrator._screen_fingerprint(screen) != want_fp:
+        return False, "the session's screen changed since this was proposed"
+    want_class = pre.get("prompt_class")
+    if want_class and orchestrator._prompt_class(screen) != want_class:
+        return False, "the session is at a different kind of prompt now"
+    return True, ""
+
+
+def check_precondition(
+    action: dict, *, registry=None, operator_approval: bool = False
+) -> tuple[bool, str]:
     """Re-verify everything the proposal assumed. Blocking (ring replay + metadata read).
 
     Returns ``(ok, reason)``. Deliberately re-derives from live state rather than trusting
     anything cached on the action — a check that reads its own inputs from the record it is
-    guarding is not a check.
+    guarding is not a check. ``operator_approval`` narrows only the viewer check (see
+    `_viewer_busy`); everything else is identical for a tap and for an autonomous send.
     """
     sid = action.get("session_id") or ""
     try:
@@ -183,20 +242,11 @@ def check_precondition(action: dict, *, registry=None) -> tuple[bool, str]:
     phys = engines.physical_key(sid)
 
     # (3) nobody else is at the keyboard.
-    if _viewer_busy(phys, registry):
+    if _viewer_busy(phys, registry, operator_approval=operator_approval):
         return False, "a viewer is attached or was just active"
 
     # (4) the screen still is what the pass judged.
-    pre = action.get("precondition") or {}
-    want_fp = pre.get("screen_fingerprint")
-    if want_fp:
-        screen = scrollback.live_tail_text(phys, orchestrator.PRECONDITION_CHARS)
-        if orchestrator._screen_fingerprint(screen) != want_fp:
-            return False, "the session's screen changed since this was proposed"
-        want_class = pre.get("prompt_class")
-        if want_class and orchestrator._prompt_class(screen) != want_class:
-            return False, "the session is at a different kind of prompt now"
-    return True, ""
+    return screen_matches(phys, action.get("precondition") or {})
 
 
 def _policy_fingerprint() -> tuple:
@@ -397,12 +447,99 @@ def _settle_waiting(action_id: str, state: str, **fields) -> dict | None:
     return ledger.compare_and_set(action_id, ledger.REJECTABLE_STATES, state, **fields)
 
 
-async def deliver(action_id: str, *, registry=None, authority=None, extra_fingerprint=None) -> dict:
+def _master_confirmed_dead(phys: str) -> bool:
+    """True only on PROOF the session's dtach master is gone: no socket at its path, or a probe
+    verdict of ``DEAD`` (the connect was refused).
+
+    Not `scrollback._session_alive`: that is a boolean view for eviction and attach-vs-launch,
+    and it reads ``UNKNOWN`` — every connect timed out, which a live master on a starved host
+    can do — as "not alive". Withdrawal is irreversible, so ``UNKNOWN``, an unresolvable key and
+    any lookup or probe error all keep the decision (#975 review 4846). The same rule
+    `ptybridge.unlink_if_stale` applies before its own destructive step.
+    """
+    try:
+        prov, native = engines.parse_key(phys)
+        sock = ptybridge.socket_path(prov.engine_id, native)
+        if not sock.exists():
+            return True
+        return sock.is_socket() and ptybridge.probe_master(sock) == ptybridge.DEAD
+    except Exception:  # noqa: BLE001 — doubt keeps the decision
+        return False
+
+
+def withdraw_undeliverable(path=None) -> list[str]:
+    """Settle as ``stale`` every waiting action whose delivery can no longer succeed. Returns ids.
+
+    A proposal used to stay on every decision surface for its whole TTL after its session moved
+    on, offering an Approve `deliver` would refuse (#969). Withdrawal cannot be undone, so it
+    takes only conditions that do not clear on their own:
+
+    * **the session is dead** — no registered writer AND a master CONFIRMED gone
+      (`_master_confirmed_dead`). A missing writer alone is not death: attach and detach hand the
+      writer over (`SessionRegistry.on_attach` stops the headless one before the pane registers
+      its own), and a poll landing in that gap must not erase the decision the operator is
+      opening the pane to approve. Neither is a probe that timed out. Delivery stays fail-closed
+      through the gap without any help from here.
+    * **the screen moved** — `screen_matches`, the helper `check_precondition` uses, re-run on
+      every read. There is deliberately no skip-replay shortcut: a sound one would have to track
+      every input the renderer reads (ring bytes, width, height), and an unsound one keeps
+      offering decisions delivery would refuse (#975 review). One replay per live candidate.
+
+    Viewer state is deliberately not a reason: an attached viewer is transient, and that viewer may
+    be the operator about to tap. Only :data:`CLAIMABLE_STATES` are candidates — ``claimed``
+    belongs to a delivery in flight — and the write is a compare-and-set from those states, so a
+    claim that lands first wins and this does nothing. Blocking (ring replay, plus a dtach socket
+    probe for a session with no writer); call under ``asyncio.to_thread``.
+    """
+    moved: list[str] = []
+    for rec in ledger.live_actions(path):
+        if rec.get("state") not in CLAIMABLE_STATES:
+            continue
+        try:
+            phys = engines.physical_key(str(rec.get("session_id") or ""))
+        except Exception:  # noqa: BLE001, S112 — an unresolvable id is delivery's to refuse
+            continue
+        if not session_input.is_live(phys):
+            if not _master_confirmed_dead(phys):
+                continue  # a writer handoff, or a master that did not answer in time: keep it
+            why = "session is not live"
+        else:
+            ok, why = screen_matches(phys, rec.get("precondition") or {})
+            if ok:
+                continue
+        if ledger.compare_and_set(rec["id"], CLAIMABLE_STATES, "stale", path, detail=why):
+            moved.append(rec["id"])
+    return moved
+
+
+def housekeep_pending(path=None) -> tuple[list[str], list[str]]:
+    """Expire overdue actions, then withdraw undeliverable ones: ``(expired, withdrawn)``.
+
+    ONE function for every place that retires waiting actions (#969) — the orchestrator state read
+    the pane strip polls, the mission cards' overlay, and the scheduled sweep. Each used to call
+    `expire_due` on its own, and a retirement rule added to only one of them would let two
+    surfaces disagree about whether a decision is still pending. Blocking.
+    """
+    return ledger.expire_due(path=path), withdraw_undeliverable(path)
+
+
+async def deliver(
+    action_id: str,
+    *,
+    registry=None,
+    authority=None,
+    extra_fingerprint=None,
+    operator_approval: bool = False,
+) -> dict:
     """Deliver one ledger action. Returns the resulting ledger record.
 
     The state machine is the safety property, so the ordering matters: ``claimed`` is written
     and fsynced BEFORE any byte reaches the PTY. That is what makes a crash recoverable — the
     record proves a delivery was in flight even though it cannot prove the outcome.
+
+    ``operator_approval`` is set by the approve route and by nothing else (#969). It reaches BOTH
+    precondition callbacks below, and it narrows only the viewer check: an attached viewer stops
+    counting as someone else at the keyboard, because the tap is the operator.
     """
     rec = ledger.get(action_id)
     if rec is None:
@@ -507,13 +644,17 @@ async def deliver(action_id: str, *, registry=None, authority=None, extra_finger
                 return False, "the session's mission is being archived; it accepts no writes"
         # The screen/viewer contract is "no viewer at the keyboard, and the screen still looks
         # like the one that was proposed against" — as of NOW, not as of setup.
-        return check_precondition(rec, registry=registry)
+        return check_precondition(rec, registry=registry, operator_approval=operator_approval)
 
     outcome = await asyncio.to_thread(
         session_input.send_input,
         phys,
         payload,
-        precondition=lambda: check_precondition(rec, registry=registry),
+        # The SAME flag as `_final_guard` above: two callbacks that disagreed about who counts as
+        # being at the keyboard would let one approve what the other refuses (#969).
+        precondition=lambda: check_precondition(
+            rec, registry=registry, operator_approval=operator_approval
+        ),
         final_guard=_final_guard,
         # The third domain. `_final_guard` reads policy and then does the screen check, so a
         # flip between those two still slipped through — the guard's verdict is only as fresh

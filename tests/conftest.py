@@ -69,6 +69,7 @@ def _isolate_scrollback(tmp_path, monkeypatch) -> None:
         webterm._BUFFERS,
         webterm._TOTALS,
         webterm._LAST_OUTPUT_AT,
+        webterm.scrollback._LAST_VISIBLE_OUTPUT_AT,
         webterm._SUPPRESS_OUTPUT_UNTIL,
         webterm.scrollback._MODES,
         webterm.scrollback._MODE_CARRY,

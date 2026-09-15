@@ -119,6 +119,12 @@ def reader_size(key: str) -> tuple[int, int]:
 # SessionStream keeps it fresh even with no browser attached. Best-effort and bounded by
 # the same LRU as the buffers.
 _LAST_OUTPUT_AT: OrderedDict[str, float] = OrderedDict()
+# The same stamp for chunks that could change the SCREEN (#969) — string-control-only chunks do
+# not count (`vtscreen.has_visible_bytes`). A codex session waiting on the operator rewrites its
+# window title about once a second, which keeps `_LAST_OUTPUT_AT` fresh on a session doing
+# nothing. The orchestrator's "working right now" test reads this; the `working` indicator keeps
+# reading `_LAST_OUTPUT_AT`, unchanged. Same replay grace, same eviction.
+_LAST_VISIBLE_OUTPUT_AT: OrderedDict[str, float] = OrderedDict()
 
 # Post-attach replay grace (#195). A fresh ``dtach -a`` client triggers a screen REPLAY
 # (the TUI repaints its current state via SIGWINCH) — a byte burst that is NOT new agent
@@ -668,6 +674,7 @@ def _drop_buffer(key: str) -> None:
         _BUFFERS.pop(key, None)
     _TOTALS.pop(key, None)
     _LAST_OUTPUT_AT.pop(key, None)
+    _LAST_VISIBLE_OUTPUT_AT.pop(key, None)
     _SUPPRESS_OUTPUT_UNTIL.pop(key, None)
     # Private-mode state (#397) is in-memory only here; the `.modes` sidecar is durable
     # (removed solely by `clear_scrollback`), so a later touch re-hydrates it via
@@ -1021,6 +1028,9 @@ def _buffer_append(key: str, data: bytes) -> None:
         first_output = key not in _LAST_OUTPUT_AT
         _LAST_OUTPUT_AT[key] = now
         _LAST_OUTPUT_AT.move_to_end(key)
+        if vtscreen.has_visible_bytes(data):
+            _LAST_VISIBLE_OUTPUT_AT[key] = now
+            _LAST_VISIBLE_OUTPUT_AT.move_to_end(key)
         if first_output:
             # First genuine (post-replay-grace) output for this session (#552): wake the
             # AI-review loop now so a brand-new session's title/summary populates promptly
@@ -1140,6 +1150,14 @@ def live_tail_text(key: str, max_chars: int = 4000) -> str:
             if screen:
                 return screen[-max_chars:]
     return _stripped_tail_text(raw, max_chars)
+
+
+def get_last_visible_output_at(key: str) -> float | None:
+    """Wall-clock of the last output chunk that could change the screen (#969) — the
+    ``_LAST_OUTPUT_AT`` stamp minus string-control-only chunks such as a window-title blink.
+    ``None`` when none has been observed. Best-effort, same eviction as ``get_last_output_at``.
+    """
+    return _LAST_VISIBLE_OUTPUT_AT.get(key)
 
 
 def get_last_output_at(key: str) -> float | None:

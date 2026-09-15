@@ -41,6 +41,7 @@ import math
 import re
 import time
 import uuid
+from collections.abc import Callable
 
 from . import (
     engines,
@@ -156,7 +157,10 @@ def stale_hours(cfg: dict | None = None) -> float:
 
 
 def eligible_cards(
-    *, now: float | None = None, working_keys: set[str] | None = None
+    *,
+    now: float | None = None,
+    working_keys: set[str] | None = None,
+    busy_keys: set[str] | None = None,
 ) -> tuple[list[dict], dict[str, int]]:
     """The sessions the orchestrator may consider, plus a count of what was filtered and why.
 
@@ -168,8 +172,13 @@ def eligible_cards(
       perfectly valid, so no id check can catch it.
     * **per-session opt-out** — ``orchestrator_excluded``.
 
+    ``busy_keys`` (#969) is `actuator.busy_keys` — sessions VISIBLY working right now, snapshotted
+    by the caller on the event loop. Not ``working_keys``: that overlay also counts an open browser
+    and a window-title blink, and both mark sessions a proposal is FOR.
+
     Blocking (FS + metadata); call under ``asyncio.to_thread``.
     """
+    busy = busy_keys or set()
     cards = pulse.build_cards(window_days=None, now=now, working_keys=working_keys)
     stale_after = stale_hours()
     actuable = engines.orchestrator_input_engines()
@@ -186,19 +195,27 @@ def eligible_cards(
         for r in ledger.live_actions()
         if r.get("state") in ledger.OPERATOR_PENDING_STATES
     }
-    skipped = {"engine": 0, "excluded": 0, "pending": 0, "stale": 0}
+    skipped = {"engine": 0, "excluded": 0, "pending": 0, "working": 0, "stale": 0}
     out: list[dict] = []
     for card in cards:
         if card.get("engine") not in actuable:
             skipped["engine"] += 1
             continue
         key = card["id"]
-        m = meta_index.get(key) or meta_index.get(engines.physical_key(key, aliases))
+        phys = engines.physical_key(key, aliases)
+        m = meta_index.get(key) or meta_index.get(phys)
         if m is not None and m.orchestrator_excluded:
             skipped["excluded"] += 1
             continue
         if key in pending_sessions:
             skipped["pending"] += 1
+            continue
+        # A session repainting its screen right now needs nothing (#969). Measured on the live
+        # ledger: `continue` proposed one minute after a session's last transcript write, with its
+        # spinner running, and the operator asked why there was anything to approve. The registry
+        # names sessions by physical key, so both forms are checked — as `build_cards` does.
+        if key in busy or phys in busy:
+            skipped["working"] += 1
             continue
         # A session silent for days is not waiting on anyone. `build_cards` is called with
         # `window_days=None`, so without this every session the app has ever seen stays eligible
@@ -223,11 +240,11 @@ def _last_action_at() -> dict[str, float]:
     return out
 
 
-def _eligible_ids(working_keys: set[str] | None) -> list[dict]:
+def _eligible_ids(working_keys: set[str] | None, busy_keys: set[str] | None = None) -> list[dict]:
     """Re-derive the eligible set. Used to re-check eligibility AFTER the model call, so a
     session excluded (or an engine made non-actuable) mid-flight is dropped before anything is
-    recorded against it."""
-    cards, _ = eligible_cards(working_keys=working_keys)
+    recorded against it — and, given a fresh ``busy_keys``, one that started working (#969)."""
+    cards, _ = eligible_cards(working_keys=working_keys, busy_keys=busy_keys)
     return cards
 
 
@@ -559,6 +576,7 @@ def _decide(action: dict, cfg: dict) -> tuple[str, str | None]:
 async def run_pass(
     *,
     working_keys: set[str] | None = None,
+    busy_keys: Callable[[], set[str]] | None = None,
     now: float | None = None,
     offset: int = 0,
 ) -> dict:
@@ -568,12 +586,18 @@ async def run_pass(
     :class:`review.NotConfiguredError` when the AI endpoint isn't configured (the route answers
     409) and :class:`review.ReviewError` on an endpoint failure (502) — unlike a Pulse scan
     there is no useful non-LLM fallback for a decision.
+
+    ``busy_keys`` (#969) is a SNAPSHOT FUNCTION, not a set, because it is asked twice: before the
+    model call and again after it. Both calls happen here on the event loop, never in a worker.
     """
     review._require_config()  # fail fast before any FS work, like pulse_chat.ask
     cfg = prefs.get_orchestrator()
     now = time.time() if now is None else now
 
-    cards, skipped = await asyncio.to_thread(eligible_cards, now=now, working_keys=working_keys)
+    busy = busy_keys() if busy_keys is not None else set()
+    cards, skipped = await asyncio.to_thread(
+        eligible_cards, now=now, working_keys=working_keys, busy_keys=busy
+    )
     if not cards:
         return {
             "assessment": "No sessions to manage right now.",
@@ -602,7 +626,10 @@ async def run_pass(
     # Re-read the config and re-derive eligibility BEFORE recording anything: an operator who
     # withdrew agency mid-call must not find an `approved` action waiting for them afterwards.
     cfg = prefs.get_orchestrator()
-    still_eligible = {c["id"] for c in await asyncio.to_thread(_eligible_ids, working_keys)}
+    # …and with a FRESH busy snapshot (#969): the model call takes seconds to minutes, and a
+    # session that started working inside it must not come back with a proposal.
+    busy = busy_keys() if busy_keys is not None else set()
+    still_eligible = {c["id"] for c in await asyncio.to_thread(_eligible_ids, working_keys, busy)}
     dropped = [a for a in actions if a["session_id"] not in still_eligible]
     actions = [a for a in actions if a["session_id"] in still_eligible]
     cap = int(cfg["max_actions_per_pass"])

@@ -2957,3 +2957,251 @@ def test_only_the_low_confidence_kind_reaches_the_card_with_an_approve(
     assert (q["can_approve"], q["can_reject"]) == (False, True)
     assert (low["can_approve"], low["can_reject"]) == (True, True)
     assert q["projection"] == low["projection"] == "actionable"
+
+
+# --- #969: a working session gets no proposal; an explicit approval is not refused by its viewer --
+
+BUSY_UID = "96996996-9699-4699-8699-969969969969"
+
+
+class _Registry:
+    """Stands in for `SessionRegistry` — rows exactly as `snapshot()` returns them."""
+
+    def __init__(self, rows):
+        self.rows = rows
+
+    def snapshot(self):
+        return [dict(r) for r in self.rows]
+
+
+def _continue_reply(sid: str):
+    return _transport(
+        {
+            "assessment": "x",
+            "actions": [
+                {"session_id": sid, "verb": "continue", "confidence": 0.9, "rationale": "carry on"}
+            ],
+        }
+    )
+
+
+def _proposals_for(sid: str) -> list[dict]:
+    return [r for r in ledger.latest_by_id().values() if r.get("session_id") == sid]
+
+
+def test_969_a_session_that_is_visibly_working_is_never_proposed(monkeypatch, configured_ai):
+    """The operator's report: "why do i even have these notes when the AI is simply working?"
+
+    The live ledger had `continue` proposed one minute after a session's last transcript write,
+    on a pane with its spinner running. Nothing excluded a working session before the model was
+    asked, and the digest could not tell it apart (`in_flight` also means "a browser is open").
+    """
+    now = time.time()
+    busy = f"claude:{BUSY_UID}"
+    _setup(monkeypatch, [FakeSession("claude", BUSY_UID, "/a", now)])
+    monkeypatch.setattr(orchestrator.scrollback, "live_tail_text", lambda *a, **k: "✻ Cooking…")
+    monkeypatch.setattr(review, "_TRANSPORT", _continue_reply(busy))
+    prefs.set_orchestrator({"enabled": True})
+    reg = _Registry(
+        [
+            {
+                "id": busy,
+                "attached": True,
+                "working": True,
+                "last_output_at": now,
+                "visible_output_at": now,
+            }
+        ]
+    )
+
+    asyncio.run(orchestrator_loop.sweep(reg))
+
+    assert _proposals_for(busy) == [], "a session repainting its screen right now was proposed"
+
+
+def test_969_a_session_only_blinking_its_title_is_still_proposed(monkeypatch, configured_ai):
+    """Measured on the live host: a codex session waiting on the operator rewrites its window
+    title about once a second (`ESC ]0;[ ! ] Action Required … BEL`). That is output, so
+    `working` is True — but it is exactly the session that needs a decision."""
+    now = time.time()
+    waiting = f"claude:{BUSY_UID}"
+    _setup(monkeypatch, [FakeSession("claude", BUSY_UID, "/a", now)])
+    monkeypatch.setattr(orchestrator.scrollback, "live_tail_text", lambda *a, **k: "› waiting")
+    monkeypatch.setattr(review, "_TRANSPORT", _continue_reply(waiting))
+    prefs.set_orchestrator({"enabled": True})
+    reg = _Registry(
+        [
+            {
+                "id": waiting,
+                "attached": True,
+                "working": True,
+                "last_output_at": now,
+                "visible_output_at": None,
+            }
+        ]
+    )
+
+    asyncio.run(orchestrator_loop.sweep(reg))
+
+    assert [r["verb"] for r in _proposals_for(waiting)] == ["continue"]
+
+
+def test_969_an_explicit_approval_is_not_refused_by_the_viewer_it_was_tapped_in(
+    auth_cfg, fake_jsonl, tmp_path, monkeypatch
+):  # noqa: ARG001
+    """Through the real authenticated route and the real delivery path, into a real pty.
+
+    The decision strip lives INSIDE the session pane (#948 P3), and that pane is an attached
+    viewer — so `_viewer_busy` refused every approval tapped there as "a viewer is attached".
+    """
+    import threading
+
+    from agent_sessions import actuator, engines, session_input
+
+    monkeypatch.setenv("AGENT_SESSIONS_NOTIFICATIONS", str(tmp_path / "n.json"))
+    prefs.set_orchestrator({"enabled": True})
+    monkeypatch.setattr(actuator.metadata, "resolve_key", lambda k: k)
+    monkeypatch.setattr(actuator.metadata, "get", lambda *a, **k: metadata.SessionMeta())
+    monkeypatch.setattr(actuator.scrollback, "live_tail_text", lambda *a, **k: "› waiting on you")
+    sid = f"claude:{BUSY_UID}"
+    master, slave = os.openpty()
+    session_input.reset()
+    try:
+        phys = engines.physical_key(sid)
+        session_input.register_writer(phys, master, threading.Lock(), "attached")
+        ledger.append(
+            {
+                "id": "act-969",
+                "state": "proposed",
+                "verb": "continue",
+                "session_id": sid,
+                "confidence": 0.9,
+                "ts": time.time(),
+                "expires_at": time.time() + 600,
+                "precondition": orchestrator.precondition_for(phys),
+            }
+        )
+        app = create_app(auth_cfg)
+        app.state.session_registry.snapshot = lambda: [
+            {"id": phys, "attached": True, "working": False, "last_output_at": None}
+        ]
+        c = TestClient(app, base_url="https://testserver")
+        csrf = _login(c, auth_cfg)
+
+        r = c.post(
+            "/api/pulse/actions/act-969/approve",
+            headers={"Origin": auth_cfg.origin, "X-CSRF-Token": csrf},
+        )
+
+        assert r.status_code == 200, r.text
+        assert r.json()["state"] == "delivered"
+        os.set_blocking(slave, False)
+        assert b"continue" in os.read(slave, 4096)
+    finally:
+        session_input.reset()
+        for fd in (master, slave):
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+
+def test_969_a_session_that_starts_working_during_the_model_call_is_dropped(
+    monkeypatch, configured_ai
+):
+    """The busy set is asked TWICE — before the model call and after it. The call takes seconds
+    to minutes; a session that started working inside it must not come back with a proposal."""
+    now = time.time()
+    sid = f"claude:{BUSY_UID}"
+    _setup(monkeypatch, [FakeSession("claude", BUSY_UID, "/a", now)])
+    monkeypatch.setattr(orchestrator.scrollback, "live_tail_text", lambda *a, **k: "› waiting")
+    monkeypatch.setattr(review, "_TRANSPORT", _continue_reply(sid))
+    snapshots = [set(), {sid}]  # idle when the digest is built, busy by the time the model answers
+
+    report = asyncio.run(orchestrator.run_pass(now=now, busy_keys=lambda: snapshots.pop(0)))
+
+    assert snapshots == [], "the busy set was not re-read after the model call"
+    assert report["actions"] == [] and report["dropped_ineligible"] == 1
+    assert _proposals_for(sid) == []
+
+
+def test_969_a_session_that_stops_working_is_reconsidered_on_the_next_sweep(
+    monkeypatch, configured_ai
+):
+    """No change-detection work was needed, and this pins that: while busy the eligible set is
+    empty (which clears the fingerprint), so the sweep after it goes quiet runs a pass."""
+    now = time.time()
+    sid = f"claude:{BUSY_UID}"
+    _setup(monkeypatch, [FakeSession("claude", BUSY_UID, "/a", now)])
+    monkeypatch.setattr(orchestrator.scrollback, "live_tail_text", lambda *a, **k: "› waiting")
+    monkeypatch.setattr(review, "_TRANSPORT", _continue_reply(sid))
+    prefs.set_orchestrator({"enabled": True})
+    row = {"id": sid, "attached": True, "working": True, "last_output_at": now}
+
+    busy = asyncio.run(orchestrator_loop.sweep(_Registry([{**row, "visible_output_at": now}])))
+    idle = asyncio.run(
+        orchestrator_loop.sweep(_Registry([{**row, "visible_output_at": now - 600}]))
+    )
+
+    assert busy.get("skipped") == "empty"
+    assert idle.get("ran") is True
+    assert [r["verb"] for r in _proposals_for(sid)] == ["continue"]
+
+
+@pytest.mark.parametrize("surface", ["state read", "mission cards", "sweep"])
+def test_969_every_retiring_surface_withdraws_a_proposal_that_can_no_longer_be_delivered(
+    auth_cfg, fake_jsonl, tmp_path, monkeypatch, configured_ai, surface
+):  # noqa: ARG001
+    """One housekeeping helper behind all three places that retire waiting actions, so no surface
+    keeps offering a decision another has already retired — and its escalation alert goes with it.
+
+    Withdrawal settles through the ledger's own hook, which retires ESCALATION rows only; a
+    `notify: all` informational row is a log of what happened and is deliberately kept (#800)."""
+    from agent_sessions import notifications, session_input
+
+    monkeypatch.setenv("AGENT_SESSIONS_NOTIFICATIONS", str(tmp_path / "n.json"))
+    sid = f"claude:{BUSY_UID}"
+    ledger.append(
+        {
+            "id": "act-gone",
+            "state": "proposed",
+            "verb": "continue",
+            "session_id": sid,
+            "confidence": 0.9,
+            "ts": time.time(),
+            "expires_at": time.time() + 600,
+            "precondition": {"screen_fingerprint": "f" * 32, "prompt_class": "open"},
+        }
+    )
+    notifications.add(
+        title="needs you",
+        project="p",
+        reason="low confidence",
+        session_id=sid,
+        engine="claude",
+        action_id="act-gone",
+        escalation=True,
+    )
+    assert len(notifications.listing()["notifications"]) == 1
+    # The session is gone: no writer (this file stubs `is_live` True by default) AND no dtach
+    # master — a missing writer alone is a handoff, which withdrawal must leave alone.
+    monkeypatch.setattr(session_input, "is_live", lambda key: False)
+    monkeypatch.setattr(
+        orchestrator.scrollback.ptybridge, "socket_path", lambda *_a: tmp_path / "no-master.sock"
+    )
+
+    if surface == "sweep":
+        prefs.set_orchestrator({"enabled": True})
+        _setup(monkeypatch, [])
+        asyncio.run(orchestrator_loop.sweep())
+    else:
+        c = _client(auth_cfg)
+        _login(c, auth_cfg)
+        if surface == "state read":
+            assert c.get("/api/pulse/orchestrator").json()["pending"] == []
+        else:
+            monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
+            cards = c.get("/api/pulse").json()["cards"]
+            assert not any(x.get("pending_action") for x in cards)
+
+    rec = ledger.get("act-gone")
+    assert rec["state"] == "stale" and rec["detail"] == "session is not live"
+    assert notifications.listing()["notifications"] == [], "the withdrawn decision's alert stayed"

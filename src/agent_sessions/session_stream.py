@@ -564,6 +564,9 @@ class SessionRegistry:
             "attached": entry["attached"],
             "last_output_at": last,
             "working": (last is not None) and (time.time() - last < _WORKING_WINDOW_S),
+            # Output that could change the screen, i.e. not a title blink (#969). Feeds the
+            # orchestrator's busy filter only; `working` above is unchanged.
+            "visible_output_at": webterm.get_last_visible_output_at(key),
         }
 
     def snapshot(self) -> list[dict]:

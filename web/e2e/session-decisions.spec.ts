@@ -123,6 +123,34 @@ test("the controls are the server's projection: Approve on a low-confidence esca
   await expect(done.getByRole("button", { name: /approve/i })).toHaveCount(0);
 });
 
+test("a proposal the server withdrew leaves the pane on the strip's next poll, not at its TTL", async ({
+  page,
+}) => {
+  // #969. The server now withdraws a proposal whose session moved on (screen changed, or no longer
+  // live) during the state read this strip polls. This pins the client half: the next 60 s poll
+  // drops the row with nothing tapped. The server half — that the read really withdraws it — is
+  // proven in pytest (`withdraw_undeliverable` through `GET /api/pulse/orchestrator`); this spec
+  // mocks `/api` at the network edge and proves nothing about the server.
+  await page.clock.install();
+  await setupBench(page, { sessions: [{ engine: ENGINE, uuid: UUID, title: "Fix the flaky upload retry" }] });
+  let pending: Action[] = [action("act_mine", KEY, "The agent stopped mid-task.")];
+  await page.route(/\/api\/pulse\/orchestrator$/, (r) =>
+    r.fulfill({
+      json: { config: {}, pending, feed: [], expired_now: 0, delivering_verbs: ["continue"] },
+    }),
+  );
+
+  await page.goto(`/s/${ENGINE}/${UUID}`);
+  const strip = page.getByTestId("session-decisions");
+  await expect(strip).toContainText("The agent stopped mid-task.");
+
+  // The session started working; the server's next read no longer lists the proposal.
+  pending = [];
+  await page.clock.fastForward(60_001);
+
+  await expect(page.getByTestId("session-decisions")).toHaveCount(0);
+});
+
 test("a refused LAST decision says nothing was sent, even when the re-read fails", async ({ page }) => {
   // #959 review 4805, finding 2. A 409 carries the settled record, which removes the row; when it
   // was the session's only pending action the strip used to unmount and take the explanation with
