@@ -37,7 +37,8 @@ import { Composer, type AskTurn } from "./Composer";
 import { MissionComposer } from "./MissionComposer";
 import { MissionQuestionCard } from "./MissionQuestionCard";
 import { MissionPlanCard } from "./MissionPlanCard";
-import { MissionLifecycle } from "./MissionLifecycle";
+import { MissionHeaderActions } from "./MissionHeaderActions";
+import { useMissionStart } from "./useMissionStart";
 import { type ObjectiveOp } from "./MissionObjectives";
 import { MissionRail } from "./MissionRail";
 import { ContextPane, ObjectivesPane, TimelinePane } from "./MissionDetail";
@@ -496,13 +497,39 @@ function MissionBody({
     />
   );
 
-  const lifecycle = d.mission ? (
-    <MissionLifecycle
+  /** BOTH HALVES, like every other mutation on this screen (#904 review 18, finding 2). `d.reload`
+   *  re-reads the mission DETAIL and nothing else, so planning left the rail row saying `draft` next
+   *  to a pane showing the plan, and a dispatch left the session it had just attached sitting in
+   *  UNTRACKED until the next supervisor poll. */
+  const onLifecycleChanged = (opts?: {
+    movedTo?: "active" | "archived";
+    membershipChanged?: boolean;
+  }) => {
+    d.reload();
+    changedIfCurrent(opts);
+  };
+
+  /** THE START MODEL, owned here so the header and the plan card read ONE copy (#967). Begin and
+   *  Plan again are drawn by the header; the reason, the armed launch and the brief that decides it
+   *  are drawn by the card. Both used to live in the card, which portalled its buttons into the
+   *  header beside the lifecycle's — two owners for one row.
+   *
+   *  `onNote` goes THROUGH THE MOUNT FENCE, like every other async consumer (#904 review 17,
+   *  finding 2). A dispatch is the LONGEST await on this screen — it launches a process — and the
+   *  operator is free to move to another mission while it runs; the raw callback rendered mission
+   *  A's failure on mission B's pane. */
+  const start = useMissionStart(d.mission ?? null, {
+    onChanged: onLifecycleChanged,
+    onNote: noteIfCurrent,
+    onPlan: onConversation,
+    onObjectives: showObjectives,
+  });
+
+  const header = d.mission ? (
+    <MissionHeaderActions
       mission={d.mission}
-      onChanged={(opts) => {
-        d.reload();
-        changedIfCurrent(opts);
-      }}
+      start={start}
+      onChanged={onLifecycleChanged}
       onNote={noteIfCurrent}
     />
   ) : null;
@@ -561,9 +588,7 @@ function MissionBody({
         <span>Details</span>
         <small>{detailsSummary}</small>
       </button>
-      {lifecycleSlot && lifecycle
-        ? createPortal(lifecycle, lifecycleSlot)
-        : null}
+      {lifecycleSlot && header ? createPortal(header, lifecycleSlot) : null}
       {/* THE THREAD COLUMN — a scrolling pane with the composer docked under it (#942).
           The composer used to be the last child of the scrolling pane, so it sat immediately
           after the final event and everything below it was empty: on a 1600×950 desktop with a
@@ -591,7 +616,7 @@ function MissionBody({
 
             Rendered in place when no slot is offered, which is what keeps this component
             standalone in a unit test. */}
-            {d.mission && !lifecycleSlot ? lifecycle : null}
+            {d.mission && !lifecycleSlot ? header : null}
             {
               <>
                 {!configured ? (
@@ -634,30 +659,10 @@ function MissionBody({
                 {/* THE PROPOSAL (#893 Phase 4). The only thing on this screen asking the operator
                 for a decision that starts an agent — and it renders nothing at all once the
                 mission has left the planning states. */}
+                {/* The card reads the body's start model (`start`, above), whose callbacks carry
+                    both halves of a change and the mount fence. */}
                 {d.mission ? (
-                  <MissionPlanCard
-                    mission={d.mission}
-                    actionSlot={lifecycleSlot}
-                    onObjectives={showObjectives}
-                    onPlan={onConversation}
-                    // BOTH HALVES, like every other mutation on this screen (#904 review 18, finding
-                    // 2). `d.reload` re-reads the mission DETAIL and nothing else, so planning left
-                    // the rail row saying `draft` next to a pane showing the plan, and a dispatch
-                    // left the session it had just attached sitting in UNTRACKED until the next
-                    // supervisor poll. The rule is stated forty lines up and this was the one
-                    // surface that did not follow it.
-                    onChanged={(opts) => {
-                      d.reload();
-                      changedIfCurrent(opts);
-                    }}
-                    // THROUGH THE MOUNT FENCE, like every other async consumer (#904 review 17,
-                    // finding 2). A dispatch is the LONGEST await on this screen — it launches a
-                    // process — and the operator is free to move to another mission while it runs.
-                    // The raw callback here made the claim four lines above ("every consumer gets
-                    // the one fence") false by exactly one component: mission A's failure was
-                    // rendered on mission B's pane.
-                    onNote={noteIfCurrent}
-                  />
+                  <MissionPlanCard mission={d.mission} start={start} />
                 ) : null}
                 {decisions.map((a) => (
                   <ActionRow

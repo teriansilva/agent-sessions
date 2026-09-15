@@ -694,25 +694,28 @@
    so nothing here uses a status token. No radius, no gradients.
    --------------------------------------------------------------------------------------------- */
 
+/* The mode control (#889): a segmented pair that rides first in the composer box's footer (#967).
+   The pressed mode carries the edge; the other is text on the box's ground. */
 .composerModes {
   display: flex;
-  gap: 6px;
-  padding: 8px 14px 0;
+  flex: none;
+  gap: 0;
 }
 .modeBtn {
   min-height: 44px;
-  padding: 8px 12px;
-  border: 1px solid var(--line-strong);
+  padding: 8px 10px;
+  border: 1px solid transparent;
   background: transparent;
   color: var(--text-2);
   font-family: var(--font-mono);
   font-size: 0.66rem;
   letter-spacing: 0.12em;
+  white-space: nowrap;
   cursor: pointer;
 }
 .modeBtn:focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline-offset: -2px;
 }
 .modeOn {
   color: var(--text-1);
@@ -720,46 +723,120 @@
   background: var(--row-hover);
 }
 
-.newMissionRow {
-  display: flex;
-  gap: 8px;
-  align-items: flex-end;
-  flex-wrap: wrap;
-}
+/* The project picker, in the footer: a ghost-looking select with the project's name in mono. It is
+   the one control a mission cannot start without, so it holds the 44px floor like every other. */
 .newMissionProject {
-  flex: 0 1 210px;
-  min-width: 0;
+  flex: 0 1 180px;
+  min-width: 96px;
   min-height: 44px;
-  padding: 10px;
-  border: 1px solid var(--line-strong);
-  background: var(--surface-3);
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-1);
   color: var(--text-1);
-  font: inherit;
-  font-size: 0.82rem;
+  font-family: var(--font-mono);
+  font-size: 12px;
 }
 .newMissionProject:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -1px;
 }
-.newMissionActions {
-  display: flex;
-  gap: 8px;
-  justify-content: flex-end;
-}
-/* The NEW MISSION form STACKS, where `.composer` is a row — so it gets its own class rather than
-   an override on `.composer`. Two layouts sharing one class is how the ask form starts drifting
-   the day this one changes. */
-.newMissionForm {
+
+/* --- ONE COMPOSER BOX (#967) ----------------------------------------------------------------------
+   The start screen used to be four loose pieces: the mode strip above, the project picker beside the
+   text, a hint line under it, and the buttons on a row of their own. Each mode is now one box, a 1px
+   `--line-strong` edge on `--bg-1`, holding the text, a hairline and ONE footer row:
+   [mode] [project] [Template] … [Ctrl + Enter] [Start mission]. The count and any error sit under the
+   box, never in the row. e2e/mission-control-polish.spec.ts measures it. */
+.composerBox {
   display: flex;
   flex-direction: column;
-  align-items: stretch;
-  gap: 8px;
-  padding: 10px 14px;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-1);
+  container-type: inline-size;
+}
+/* Inside the box the text has no edge of its own: the hairline above the footer divides them. */
+.boxInput {
+  border: 0;
+  background: transparent;
+  padding: 12px 14px;
+}
+.composerFoot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
   border-top: 1px solid var(--line);
 }
+.footLead,
+.footTrail {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.footLead {
+  flex: 0 1 auto;
+}
+.footTrail {
+  flex: 1 0 auto;
+}
+.footSpacer {
+  flex: 1 1 0;
+}
+.footHint {
+  flex: none;
+  padding: 0 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+/* What the form needs from the operator, under the box and a little apart from it. */
+.boxNote {
+  margin-top: 8px;
+}
+/* A NARROW BOX WRAPS the new-mission footer into [mode][project] / [Template][Start mission], the
+   second control of each row taking the rest of it, and drops the shortcut hint. On a phone (≤800px)
+   by the viewport, as #967 specifies, and in a narrow desktop pane by the box's own width, which is
+   the fact that decides whether one row fits. The ASK footer is two controls and never needs it. */
+@container (max-width: 660px) {
+  .newMissionForm .composerFoot {
+    flex-wrap: wrap;
+  }
+  .newMissionForm .footLead,
+  .newMissionForm .footTrail {
+    flex: 1 1 100%;
+  }
+  .newMissionForm .newMissionProject,
+  .newMissionForm .footTrail > [type="submit"] {
+    flex: 1 1 0;
+  }
+  .newMissionForm .footSpacer,
+  .newMissionForm .footHint {
+    display: none;
+  }
+}
+@media (max-width: 800px) {
+  .newMissionForm .composerFoot {
+    flex-wrap: wrap;
+  }
+  .newMissionForm .footLead,
+  .newMissionForm .footTrail {
+    flex: 1 1 100%;
+  }
+  .newMissionForm .newMissionProject,
+  .newMissionForm .footTrail > [type="submit"] {
+    flex: 1 1 0;
+  }
+  .newMissionForm .footSpacer,
+  .newMissionForm .footHint {
+    display: none;
+  }
+}
 
-/* A secondary control: same geometry as `.send`, no accent fill. Used for CANCEL and for every
-   mission lifecycle action that is not the primary one. */
+/* A secondary control in mono: the ⋯ menu's items and the unarchive choice. The header's own buttons
+   are the shared action buttons (ui/actionButton.module.css, #967). */
 .missionBtn {
   flex: 0 0 auto;
   min-height: 44px;
@@ -794,27 +871,72 @@
   color: var(--danger-text);
 }
 
-/* The mission's state + actions. It renders INSIDE the console's header row (#942), so it carries
- * no padding and no rule of its own — it used to be a second bar under the title, and its
- * border-bottom drew a stray 250px line across the header when it moved.
+/* The mission header's actions (#942, #967): ONE row of a state chip, at most one primary and ⋯,
+ * drawn by one component. It renders inside the console's header row, so it carries no padding and
+ * no rule of its own.
  *
- * IT STILL WRAPS, and that is not a leftover. The bar also hosts the UNARCHIVE confirmation — a
- * full sentence about restarting agents plus two buttons — and `nowrap` ran that straight off the
- * right edge: the phone geometry sweep caught RECORD ONLY and RESTART AGENTS at `x=724..951` on a
- * 412px viewport, with the sentence clipped mid-word. `.topbar` decides where the row breaks; this
- * only has to not fight it. */
-.missionBar {
+ * IT NO LONGER WRAPS, because nothing that wraps lives in it. It once hosted the start reason and the
+ * UNARCHIVE confirmation, a full sentence plus two buttons, and `nowrap` ran that straight off the
+ * right edge (the phone sweep caught RECORD ONLY at `x=724..951` on 412px). The reason moved to the
+ * plan card and the choice opens in `.headerConfirm` below the row, which this box anchors. `.topbar`
+ * decides whether the whole cluster fits beside the title. */
+.headerActions {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+/* The state chip: the rail's dot, at the session LED's 6px, and its label in an `.engineTag`-style
+ * 1px box. */
+.stateChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--line-strong);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+/* A failed mission's label is the text-safe `--danger-text`, its edge the status hue — never the
+ * accent (§3). */
+.stateChipFailed {
+  color: var(--danger-text);
+  border-color: var(--status-down);
+}
+.chipDot {
+  width: 6px;
+  height: 6px;
+  margin: 0;
+  border-radius: 50%;
+}
+/* The unarchive choice. A sentence and two buttons do not belong in a header row, so they open under
+ * it, against the right edge, and never wider than the viewport. */
+.headerConfirm {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  width: min(340px, calc(100vw - 16px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-2);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+.headerConfirmActions {
   display: flex;
   flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
-  align-items: center;
-}
-.missionBarState {
-  font-family: var(--font-mono);
-  font-size: 0.66rem;
-  letter-spacing: 0.12em;
-  color: var(--text-2);
-  margin-right: auto;
 }
 .missionConfirm {
   flex: 1 1 100%;
@@ -1115,6 +1237,23 @@
   padding-left: 8px;
   color: var(--text-1);
   font-size: 0.78rem;
+  /* The warning above its Cancel (#967). It is armed from the fixed header while this card scrolls
+   * with the thread, so it is scrolled into view when it appears; the margin keeps it off the edge. */
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  scroll-margin: 12px;
+}
+/* It takes focus when armed. A pointer press shows no ring; a keyboard arrival shows the accent reticle. */
+.planConfirm:focus {
+  outline: none;
+}
+.planConfirm:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.planConfirmText {
+  margin: 0;
 }
 .planError {
   overflow-wrap: anywhere;
@@ -1122,24 +1261,6 @@
   padding-left: 8px;
   color: var(--text-1);
   font-size: 0.78rem;
-}
-.planBtn {
-  min-height: 44px;
-  border: 1px solid var(--line-strong);
-  background: transparent;
-  color: var(--text-1);
-  font-family: var(--font-mono);
-  font-size: 0.68rem;
-  letter-spacing: 0.1em;
-  cursor: pointer;
-}
-.planBtn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-.planBtn[disabled] {
-  opacity: 0.5;
-  cursor: default;
 }
 
 /* The empty-checklist recovery, on the card itself (#904 review 7, finding 3). One row, because
@@ -1346,9 +1467,13 @@
   top: calc(100% + 4px);
   z-index: 40;
   min-width: 180px;
+  /* As wide as its longest item, and as wide as a confirmation sentence needs, up to 300px (#967). */
+  width: max-content;
+  max-width: min(300px, calc(100vw - 16px));
   border: 1px solid var(--line-strong);
   background: var(--bg-2);
-  padding: 6px;
+  /* Rows run edge to edge, as RowMenu's do (#967). */
+  padding: 4px 0;
   /* Flat fill, hairline border, zero radius — `docs/design.md`. The elevation cue is the border
    * and the ground change, never a shadow gradient. */
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
@@ -1358,7 +1483,7 @@
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 4px;
+  gap: 0;
 }
 .overflowItems:focus-visible {
   outline: none;
@@ -1371,14 +1496,51 @@
   /* The coarse-pointer floor, as everywhere else. */
   min-height: 44px;
 }
+/* The consequence of the confirmation an item is waiting on, under the items and outside the menu
+ * role (#967). */
+.overflowMenu > .missionConfirm {
+  margin: 8px 12px 4px;
+}
 
-/* The header's action slot (#942): the mission's state + primary + overflow, on the same row as
- * its title. `margin-left: auto` is what makes it a right-hand cluster without a second grid. */
-/* The header's action slot (#942): the mission's state + primary + overflow. `margin-left: auto`
- * is what makes it a right-hand cluster without a second grid — and on the wrap it simply starts
- * the next line, still right-aligned. `flex-shrink: 0` keeps the controls at their real size: a
- * shrunk `MARK DONE` is a control the operator cannot read, and the title is the thing that should
- * give way (it already wraps at any character). */
+/* THE MENU'S ROWS ARE THE PLATFORM'S CONTEXT-MENU ROWS (#967). The header ⋯ drew each item as a
+ * bordered mono button, which read as a stack of buttons rather than a menu. The rows compose RowMenu's
+ * own `.item`, `.itemIcon` and `.sep` (borderless, full width, an icon and a label, a hover and focus
+ * tint, a hairline before the destructive group), so the two menus cannot drift. Added here is only
+ * what this menu needs on top: the 44px floor (above), a disabled look for a real `disabled` attribute
+ * where RowMenu uses `aria-disabled`, and danger TEXT for the destructive items, never a red border.
+ * The danger rules carry the panel's classes so they outrank RowMenu's hover and focus colours without
+ * depending on which sheet loads first. */
+.menuItem {
+  composes: item from "../sidebar/RowMenu.module.css";
+}
+.menuIcon {
+  composes: itemIcon from "../sidebar/RowMenu.module.css";
+}
+.menuSep {
+  composes: sep from "../sidebar/RowMenu.module.css";
+}
+.overflowMenu .overflowItems .menuItem:disabled {
+  opacity: 0.4;
+  cursor: default;
+  pointer-events: none;
+}
+.overflowMenu .overflowItems .menuDanger,
+.overflowMenu .overflowItems .menuDanger:hover,
+.overflowMenu .overflowItems .menuDanger:focus,
+.overflowMenu .overflowItems .menuDanger .menuIcon,
+.overflowMenu .overflowItems .menuDanger:hover .menuIcon,
+.overflowMenu .overflowItems .menuDanger:focus .menuIcon {
+  color: var(--danger-text);
+}
+.headerConfirm .missionConfirm {
+  flex: none;
+  margin: 0;
+}
+
+/* The header's action slot (#942), where `MissionHeaderActions` renders on the title's row (#967).
+ * `margin-left: auto` makes it a right-hand cluster without a second grid, and on a wrap it starts the
+ * next line, still right-aligned. `flex-shrink: 0` keeps the controls at their real size: a shrunk
+ * Mark done is a control the operator cannot read, and the title is the thing that gives way. */
 .topbarActions {
   margin-left: auto;
   display: inline-flex;
@@ -1489,12 +1651,16 @@
 .hideDetails {
   display: none;
 }
+/* ONE HEADER ROW, VERTICALLY CENTRED (#967): the title on the left, the actions on the right, on one
+ * line wherever they fit. The title's flex basis is 0, so it never pushes the actions onto a second
+ * line by itself: the row wraps only when even the title's minimum width and the actions cannot share
+ * a line (a 320px phone mid-confirmation), and then the actions start the next line, right-aligned. */
 .topbar {
   flex: none;
   gap: 12px;
-  align-items: flex-start;
+  align-items: center;
   flex-wrap: wrap;
-  padding: 12px 14px;
+  padding: 8px 14px;
 }
 .missionTitle {
   padding-top: 8px;
@@ -1503,12 +1669,13 @@
 }
 .titleButton {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 8px;
-  min-width: 0;
+  flex: 1 1 0;
+  min-width: min(4.5rem, 100%);
   max-width: 100%;
   min-height: 44px;
-  padding: 8px 0 0;
+  padding: 0;
   border: 0;
   background: transparent;
   color: var(--text-1);
@@ -1525,7 +1692,6 @@
 }
 .titleButton > svg {
   flex: none;
-  margin-top: 5px;
 }
 .titleButton:focus-visible {
   outline: 2px solid var(--accent);
@@ -1555,33 +1721,21 @@
 }
 .topbarActions {
   max-width: 100%;
-  flex-wrap: wrap;
-  gap: 12px;
   justify-content: flex-end;
   min-width: 0;
 }
-.startControls {
-  order: -1;
-  min-width: 0;
-  max-width: 460px;
+/* The start reason and the armed launch, in the plan card beside the plan they describe (#967). They
+ * used to sit in a 460px box under the header's buttons, which is what wrapped the header. */
+.planStatus {
+  overflow-wrap: anywhere;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.5;
 }
-.startButtons {
+.planStatusActions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  justify-content: flex-end;
-}
-.startButtons > button {
-  white-space: nowrap;
-  min-height: 44px;
-  padding: 0 16px;
-}
-.startReason {
-  font-size: 11px;
-  color: var(--text-2);
-  line-height: 1.5;
-  margin-top: 8px;
-  overflow-wrap: anywhere;
 }
 .linkButton {
   display: inline-block;
@@ -1638,22 +1792,6 @@
 @media (max-width: 800px) {
   .topbar {
     padding: 10px 8px;
-  }
-  .topbarActions {
-    width: 100%;
-  }
-  .startControls {
-    flex: 1;
-    max-width: none;
-  }
-  .overflowWrap > .missionBtn {
-    min-width: 44px;
-    padding: 8px;
-  }
-  .startButtons > button {
-    padding: 0 10px;
-    flex: 1 0 auto;
-    min-width: max-content;
   }
   .planFields {
     grid-template-columns: 1fr;
@@ -1931,8 +2069,9 @@
 
 /* --- #948 P3: the workspace type scale, on the §4 specs ----------------------------- */
 /* Prose and the composer at the 14px body size; the mode control at 11px mono; the mission title at
- * 16px/600. These used to run at 0.66–0.84rem. SEND keeps its size on purpose: #944/#946 pin the
- * section navigation buttons to Send's typography, and moving one alone breaks that pairing. */
+ * 16px/600. These used to run at 0.66–0.84rem. The composer's Send is not in this sheet: it is the
+ * session pane's Send (#967). The section navigation, which #944/#946 pinned to the old mono Send,
+ * declares its own values in App.css. */
 .composerInput {
   font-size: 14px;
 }

@@ -1,4 +1,4 @@
-/** The mission's lifecycle controls (#889).
+/** The mission header's actions (#889; one owner and one row since #967).
  *
  *  The case this file exists for is the FIRST one: a transition whose compare-and-set lost must
  *  render what the mission actually is, never what the operator asked for. That is the console's
@@ -8,6 +8,10 @@
  *  Each test is mutation-checked in the PR: the 409 case fails against an implementation that
  *  applies the requested state optimistically, and the archive cases fail against one that sends
  *  a constant `abandon`.
+ *
+ *  The component was `MissionLifecycle` until #967 folded Begin and Plan again into it. Most tests
+ *  mount it without the start model, which is the lifecycle half on its own; the planning-state
+ *  tests mount it with one (`WithStart`).
  */
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -16,7 +20,8 @@ import { beforeEach, expect, test, vi } from "vitest";
 import { ApiError, api } from "../../lib/api";
 import type { Mission } from "../../types/api";
 
-import { MissionLifecycle } from "./MissionLifecycle";
+import { MissionHeaderActions } from "./MissionHeaderActions";
+import { useMissionStart } from "./useMissionStart";
 
 vi.mock("../../lib/api", async () => {
   const actual =
@@ -27,6 +32,7 @@ vi.mock("../../lib/api", async () => {
       setMissionState: vi.fn(),
       archiveMission: vi.fn(),
       unarchiveMission: vi.fn(),
+      planMission: vi.fn(),
     },
   };
 });
@@ -55,15 +61,29 @@ function mission(over: Partial<Mission> = {}): Mission {
   } as Mission;
 }
 
+/** The header as the console mounts it: with the mission body's start model. */
+function WithStart({ mission: m }: { mission: Mission }) {
+  const start = useMissionStart(m, { onChanged: () => {}, onNote: () => {} });
+  return (
+    <MissionHeaderActions
+      mission={m}
+      start={start}
+      onChanged={() => {}}
+      onNote={() => {}}
+    />
+  );
+}
+
 beforeEach(() => {
   vi.mocked(api.setMissionState).mockReset();
   vi.mocked(api.archiveMission).mockReset();
   vi.mocked(api.unarchiveMission).mockReset();
+  vi.mocked(api.planMission).mockReset();
 });
 
 /** Open the secondary-lifecycle menu (#942).
  *
- *  ARCHIVE, ABANDON, MARK FAILED and NOT YET moved behind `⋯` — four controls at near-equal
+ *  Archive, Abandon, Mark failed and Not yet moved behind `⋯` — four controls at near-equal
  *  weight, two destructive, left the operator no primary to aim at. They kept their testids and
  *  their confirmations; the only change a test needs is to open the menu, which is what an
  *  operator now does too. */
@@ -82,7 +102,7 @@ async function openOverflow() {
 test("a transition sends the state the client BELIEVES, as the comparand", async () => {
   vi.mocked(api.setMissionState).mockResolvedValue(mission({ state: "done" }));
   render(
-    <MissionLifecycle
+    <MissionHeaderActions
       mission={mission({ state: "running" })}
       onChanged={() => {}}
       onNote={() => {}}
@@ -113,7 +133,7 @@ test("a LOST RACE re-reads instead of showing the state that was asked for", asy
   const onChanged = vi.fn();
   const onNote = vi.fn();
   render(
-    <MissionLifecycle
+    <MissionHeaderActions
       mission={mission({ state: "running" })}
       onChanged={onChanged}
       onNote={onNote}
@@ -138,7 +158,7 @@ test("the re-read happens on SUCCESS too, not only on a refusal", async () => {
   vi.mocked(api.setMissionState).mockResolvedValue(mission({ state: "done" }));
   const onChanged = vi.fn();
   render(
-    <MissionLifecycle
+    <MissionHeaderActions
       mission={mission({ state: "running" })}
       onChanged={onChanged}
       onNote={() => {}}
@@ -149,9 +169,35 @@ test("the re-read happens on SUCCESS too, not only on a refusal", async () => {
   await waitFor(() => expect(onChanged).toHaveBeenCalled());
 });
 
-test("planning states leave Begin and Re-plan to the shared plan owner", () => {
+test("a planning state offers Begin as its one primary, and Plan again behind ⋯ (#967)", async () => {
+  // Begin and Re-plan used to be two buttons in the header, owned by the plan card. With one owner
+  // the row holds ONE action; Re-plan is still there, as "Plan again", under the same testid.
+  render(<WithStart mission={mission({ state: "planned", sessions: [] })} />);
+  const begin = screen.getByTestId("mission-begin");
+  // No plan and no session: nothing to start yet, and the reason names the way forward.
+  expect(begin).toBeDisabled();
+  expect(begin).toHaveAttribute("aria-describedby", "mission-start-reason");
+  expect(screen.queryByTestId("mission-replan")).toBeNull();
+  expect(screen.queryByTestId("mission-done")).toBeNull();
+
+  await openOverflow();
+  const again = screen.getByTestId("mission-replan");
+  expect(again).toHaveTextContent("Plan again");
+  vi.mocked(api.planMission).mockResolvedValue({} as never);
+  await userEvent.click(again);
+  await waitFor(() => expect(api.planMission).toHaveBeenCalledWith("msn_1"));
+});
+
+test("the chip reads the rail's label: dispatching is 'starting', and the primary says so (#967)", () => {
+  render(<WithStart mission={mission({ state: "dispatching", sessions: [] })} />);
+  expect(screen.getByTestId("mission-state")).toHaveTextContent(/^starting$/);
+  expect(screen.getByTestId("mission-begin")).toHaveTextContent("Starting…");
+  expect(screen.getByTestId("mission-begin")).toBeDisabled();
+});
+
+test("without the start model, a planning state offers no Begin to press", () => {
   render(
-    <MissionLifecycle
+    <MissionHeaderActions
       mission={mission({ state: "planned" })}
       onChanged={() => {}}
       onNote={() => {}}
@@ -164,7 +210,7 @@ test("planning states leave Begin and Re-plan to the shared plan owner", () => {
 test("archiving a LIVE mission confirms first, and says it will stop the agents", async () => {
   vi.mocked(api.archiveMission).mockResolvedValue({ mission: mission() });
   render(
-    <MissionLifecycle
+    <MissionHeaderActions
       mission={mission({ state: "running" })}
       onChanged={() => {}}
       onNote={() => {}}
@@ -194,7 +240,7 @@ test("archiving a LIVE mission confirms first, and says it will stop the agents"
 test("archiving a CLOSED mission does not ask to abandon it", async () => {
   vi.mocked(api.archiveMission).mockResolvedValue({ mission: mission() });
   render(
-    <MissionLifecycle
+    <MissionHeaderActions
       mission={mission({ state: "done", outcome: "done" })}
       onChanged={() => {}}
       onNote={() => {}}
@@ -215,7 +261,7 @@ test("archiving a CLOSED mission does not ask to abandon it", async () => {
 
 test("an archived mission offers UNARCHIVE and nothing else", () => {
   render(
-    <MissionLifecycle
+    <MissionHeaderActions
       mission={mission({ state: "done", archived_at: 99 })}
       onChanged={() => {}}
       onNote={() => {}}
@@ -234,7 +280,7 @@ test("abandon is confirmed, and says it cannot be undone", async () => {
     mission({ state: "abandoned" }),
   );
   render(
-    <MissionLifecycle
+    <MissionHeaderActions
       mission={mission({ state: "running" })}
       onChanged={() => {}}
       onNote={() => {}}
@@ -261,7 +307,7 @@ test("only the transitions the server's graph allows are offered", () => {
   // agrees ({"done": {"running"}}). An offered control the server refuses on the GRAPH (as
   // opposed to on a race) is a bug in this mirror, not a race.
   render(
-    <MissionLifecycle
+    <MissionHeaderActions
       mission={mission({ state: "done", outcome: "done" })}
       onChanged={() => {}}
       onNote={() => {}}
@@ -278,7 +324,7 @@ test("MARK DONE confirms before it closes the mission", async () => {
   // every session the mission holds — an accidental tap changed session ownership immediately.
   vi.mocked(api.setMissionState).mockResolvedValue(mission({ state: "done" }));
   render(
-    <MissionLifecycle
+    <MissionHeaderActions
       mission={mission({ state: "running" })}
       onChanged={() => {}}
       onNote={() => {}}
@@ -300,7 +346,7 @@ test("UNARCHIVE offers RECORD ONLY beside restarting the agents", async () => {
   // operator who read UNARCHIVE as "put the record back" could start several agents.
   vi.mocked(api.unarchiveMission).mockResolvedValue({ mission: mission() });
   render(
-    <MissionLifecycle
+    <MissionHeaderActions
       mission={mission({ state: "done", archived_at: 99 })}
       onChanged={() => {}}
       onNote={() => {}}
@@ -323,7 +369,7 @@ test("UNARCHIVE offers RECORD ONLY beside restarting the agents", async () => {
 test("UNARCHIVE can still restart the agents, explicitly", async () => {
   vi.mocked(api.unarchiveMission).mockResolvedValue({ mission: mission() });
   render(
-    <MissionLifecycle
+    <MissionHeaderActions
       mission={mission({ state: "done", archived_at: 99 })}
       onChanged={() => {}}
       onNote={() => {}}
@@ -351,7 +397,7 @@ test("a LOST terminal CAS still reconciles the OVERVIEW, and still does not move
   );
   const onChanged = vi.fn();
   render(
-    <MissionLifecycle
+    <MissionHeaderActions
       mission={mission({ state: "running" })}
       onChanged={onChanged}
       onNote={() => {}}
@@ -379,7 +425,7 @@ test("a FAILED archive reconciles membership too, but leaves the scope alone", a
   );
   const onChanged = vi.fn();
   render(
-    <MissionLifecycle
+    <MissionHeaderActions
       mission={mission({ state: "done", closed_at: 2 })}
       onChanged={onChanged}
       onNote={() => {}}
@@ -407,7 +453,7 @@ test("UNARCHIVE names the scope the mission moved INTO", async () => {
   );
   const onChanged = vi.fn();
   render(
-    <MissionLifecycle
+    <MissionHeaderActions
       mission={mission({ state: "done", archived_at: 5 })}
       onChanged={onChanged}
       onNote={() => {}}

@@ -17,7 +17,9 @@ import { ApiError, api } from "../../lib/api";
 import { objectivesDigestInput, sha256Hex } from "../../lib/digest";
 import type { Mission, MissionPlan } from "../../types/api";
 
+import { MissionHeaderActions } from "./MissionHeaderActions";
 import { MissionPlanCard } from "./MissionPlanCard";
+import { useMissionStart } from "./useMissionStart";
 
 vi.mock("../../lib/api", async () => {
   const actual =
@@ -30,6 +32,8 @@ vi.mock("../../lib/api", async () => {
       editMissionPlan: vi.fn(),
       dispatchMission: vi.fn(),
       patchMissionObjectives: vi.fn(),
+      archiveMission: vi.fn(),
+      unarchiveMission: vi.fn(),
     },
   };
 });
@@ -85,9 +89,43 @@ function mission(over: Partial<Mission> = {}): Mission {
   } as Mission;
 }
 
+/** The card as the console mounts it (#967): beside the header, both reading ONE start model. Begin
+ *  and Plan again are the header's; the reason, the confirmation and the brief are the card's. A test
+ *  of either half alone would be a test of a state split the product no longer has. */
+function Harness({
+  mission: m,
+  onChanged,
+  onNote,
+  onObjectives,
+}: {
+  mission: Mission;
+  onChanged: () => void;
+  onNote: (msg: string) => void;
+  onObjectives?: () => void;
+}) {
+  const start = useMissionStart(m, { onChanged, onNote, onObjectives });
+  return (
+    <>
+      <MissionHeaderActions
+        mission={m}
+        start={start}
+        onChanged={onChanged}
+        onNote={onNote}
+      />
+      <MissionPlanCard mission={m} start={start} />
+    </>
+  );
+}
+
 function mount(m: Mission, onChanged = vi.fn(), onNote = vi.fn()) {
-  render(<MissionPlanCard mission={m} onChanged={onChanged} onNote={onNote} />);
+  render(<Harness mission={m} onChanged={onChanged} onNote={onNote} />);
   return { onChanged, onNote };
+}
+
+/** Plan again lives behind the header's ⋯ (#967). */
+async function openOverflow() {
+  const t = screen.getByTestId("mission-overflow");
+  if (t.getAttribute("aria-expanded") !== "true") await userEvent.click(t);
 }
 
 beforeEach(() => {
@@ -109,6 +147,7 @@ beforeEach(() => {
 
 test("an unplanned mission offers PLAN, and planning launches nothing", async () => {
   const { onChanged } = mount(mission());
+  await openOverflow();
   await userEvent.click(screen.getByTestId("mission-replan"));
   await waitFor(() => expect(api.planMission).toHaveBeenCalledWith("msn_1"));
   // THE SEPARATION IS THE FEATURE: a proposal, and no launch.
@@ -294,7 +333,7 @@ test("the card says WHAT DONE MEANS, and says so when there is nothing", () => {
 test("an empty checklist links to the editable Objectives section", async () => {
   const onObjectives = vi.fn();
   render(
-    <MissionPlanCard
+    <Harness
       mission={mission({
         state: "planned",
         plan: plan(),
@@ -398,7 +437,7 @@ test("the SECOND tap cannot approve a checklist the FIRST tap never saw", async 
     });
   const onNote = vi.fn();
   const { rerender } = render(
-    <MissionPlanCard
+    <Harness
       mission={withObjectives("A PR is open")}
       onChanged={vi.fn()}
       onNote={onNote}
@@ -416,7 +455,7 @@ test("the SECOND tap cannot approve a checklist the FIRST tap never saw", async 
   // THE CHECKLIST CHANGES UNDER THE ARMED BUTTON — a poll, or another tab retitling it. The plan
   // is untouched, so the card is NOT remounted by its `plan_id` key.
   rerender(
-    <MissionPlanCard
+    <Harness
       mission={withObjectives("A PR is open AND approved")}
       onChanged={vi.fn()}
       onNote={onNote}
@@ -446,7 +485,7 @@ test("the digest DISPATCH sends is the one the confirmation was armed on", async
     ] as never,
   });
   const { rerender } = render(
-    <MissionPlanCard mission={first} onChanged={vi.fn()} onNote={vi.fn()} />,
+    <Harness mission={first} onChanged={vi.fn()} onNote={vi.fn()} />,
   );
   await userEvent.click(screen.getByTestId("mission-begin"));
   // The arm has to have LANDED before the rerender below, or this tests the rerender, not the arm.
@@ -455,7 +494,7 @@ test("the digest DISPATCH sends is the one the confirmation was armed on", async
   // An objective becoming MET is progress, not a different checklist — the digest covers key,
   // title and gate only — so the arm survives this and the send must still happen.
   rerender(
-    <MissionPlanCard
+    <Harness
       mission={{
         ...first,
         objectives: [
@@ -514,7 +553,7 @@ test("refused tracking stays visible, waits for reload and never launches", asyn
     sessions: [{ session_key: "claude:a", removed_at: null }] as never,
   });
   const { rerender } = render(
-    <MissionPlanCard mission={original} onChanged={vi.fn()} onNote={vi.fn()} />,
+    <Harness mission={original} onChanged={vi.fn()} onNote={vi.fn()} />,
   );
   await userEvent.click(screen.getByTestId("mission-begin"));
   await waitFor(() =>
@@ -523,7 +562,7 @@ test("refused tracking stays visible, waits for reload and never launches", asyn
   expect(screen.getByTestId("mission-begin")).toBeDisabled();
   expect(api.dispatchMission).not.toHaveBeenCalled();
   rerender(
-    <MissionPlanCard
+    <Harness
       mission={{ ...original }}
       onChanged={vi.fn()}
       onNote={vi.fn()}
@@ -558,7 +597,7 @@ test("a poll during Begin cannot count as its post-result refresh", async () => 
   });
   const original = mission({ state: "planned", plan: plan() });
   const { rerender } = render(
-    <MissionPlanCard mission={original} onChanged={vi.fn()} onNote={vi.fn()} />,
+    <Harness mission={original} onChanged={vi.fn()} onNote={vi.fn()} />,
   );
   await userEvent.click(screen.getByTestId("mission-begin"));
   // Armed first (async digest): a second tap that lands before the arm only arms again.
@@ -566,13 +605,13 @@ test("a poll during Begin cannot count as its post-result refresh", async () => 
   await userEvent.click(screen.getByTestId("mission-begin"));
   const polled = { ...original };
   rerender(
-    <MissionPlanCard mission={polled} onChanged={vi.fn()} onNote={vi.fn()} />,
+    <Harness mission={polled} onChanged={vi.fn()} onNote={vi.fn()} />,
   );
   await act(async () => finish());
   expect(screen.getByRole("alert")).toHaveTextContent("connection lost");
   expect(screen.getByTestId("mission-begin")).toBeDisabled();
   rerender(
-    <MissionPlanCard
+    <Harness
       mission={{ ...polled }}
       onChanged={vi.fn()}
       onNote={vi.fn()}

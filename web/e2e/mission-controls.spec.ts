@@ -375,9 +375,11 @@ test("BEGIN is refused without a session, and says what unblocks it", async ({
   const begin = page.getByTestId("mission-begin");
   await expect(begin).toBeVisible();
   await expect(begin).toBeDisabled();
-  // The reason is ON the control. A disabled button with no explanation is a dead end.
+  // The reason DESCRIBES the control, and it sits in the plan card beside the plan it is about
+  // (#967). A disabled button with no explanation is a dead end.
+  await expect(begin).toHaveAttribute("aria-describedby", "mission-start-reason");
   await expect(page.locator("#mission-start-reason")).toContainText(
-    /Re-plan to prepare a proposal/i,
+    /Plan again, under ⋯, to prepare a proposal/i,
   );
 });
 
@@ -954,7 +956,7 @@ test("CLOSING a mission also re-reads the overview that stamps ownership", async
   await expect.poll(() => overviewReads).toBeGreaterThan(before);
 });
 
-test("a CREATE that lands after CANCEL refreshes the rail but does not steal the SELECTION", async ({
+test("a CREATE that lands after switching to ASK refreshes the rail but does not steal the SELECTION", async ({
   page,
 }) => {
   // The first version of this asserted only that the composer was back in ASK mode — which CANCEL
@@ -966,7 +968,7 @@ test("a CREATE that lands after CANCEL refreshes the rail but does not steal the
   await page.route("**/api/missions**", async (r) => {
     const u = new URL(r.request().url());
     if (r.request().method() === "POST" && u.pathname === "/api/missions") {
-      await new Promise((res) => setTimeout(res, 900)); // held open, so CANCEL lands first
+      await new Promise((res) => setTimeout(res, 900)); // held open, so the switch to ASK lands first
       return r.fulfill({
         status: 201,
         json: {
@@ -1012,7 +1014,9 @@ test("a CREATE that lands after CANCEL refreshes the rail but does not steal the
   await page.getByTestId("new-mission-project").selectOption("p1");
   const before = lists.length;
   await page.getByTestId("new-mission-start").click();
-  await page.getByTestId("new-mission-cancel").click();
+  // CANCEL is gone (#967): on the landing it only switched to ASK, which the segmented control does.
+  // Switching unmounts the form, and its `liveRef` fence is what withholds the focus below.
+  await page.getByTestId("composer-mode-ask").click();
   await selectMission(page, "Bravo");
   await expectMissionSelected(page, "Bravo");
 
@@ -2849,6 +2853,8 @@ test("PLANNING a mission refreshes the RAIL, not just the pane", async ({
   await expect.poll(railState, { timeout: 10_000 }).toContain("draft");
 
   await selectOnlyMission(page);
+  // Plan again lives behind the header's ⋯ (#967), under Re-plan's testid.
+  await overflow(page);
   await expect(page.getByTestId("mission-replan")).toBeVisible();
   await page.getByTestId("mission-replan").click();
 

@@ -766,8 +766,11 @@ body.hud-static-grid {
   text-transform: uppercase;
 }
 
-/* The work sections share the wordmark row at every width (#944 / #946).
- * Match Send's compact mono typography and 44px hit area; the active section carries its fill. */
+/* The work sections share the wordmark row at every width (#944 / #946); the active section carries
+ * its fill. Their typography is their OWN (#967): mono 0.68rem at weight 400, 0.1em tracking,
+ * uppercase, a 44px hit area. It was pinned to the mission Send's mono type while that button had
+ * one; the mission Send is now the session pane's Send, so these values stand alone and
+ * e2e/mission-sections.spec.ts asserts them as numbers. */
 .section-nav {
   display: flex;
   align-self: center;

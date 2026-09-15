@@ -33,17 +33,23 @@
  *  usable, not a surface that owns the screen, and claiming otherwise would tell a screen reader
  *  the console had gone away.
  */
+import { Ellipsis } from "lucide-react";
 import { useRef, useState } from "react";
 
+import action from "../ui/actionButton.module.css";
 import styles from "./mission.module.css";
 import { useModalDrawer } from "./useModalDrawer";
 
 export function MissionOverflow({
   busy,
   children,
+  note,
 }: {
   busy?: boolean;
   children: React.ReactNode;
+  /** A sentence under the items — the consequence of the confirmation an item is waiting on (#967).
+   *  It sits in the panel but OUTSIDE `role="menu"`, whose children may only be menu items. */
+  note?: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -116,10 +122,12 @@ export function MissionOverflow({
 
   return (
     <span className={styles.overflowWrap}>
+      {/* The shared 44×44 ghost icon button (#967), and a drawn glyph rather than the "⋯" character,
+          whose width and baseline were the font's to decide. */}
       <button
         type="button"
         ref={triggerRef}
-        className={styles.missionBtn}
+        className={action.icon}
         disabled={busy}
         aria-haspopup="menu"
         aria-expanded={open}
@@ -127,23 +135,28 @@ export function MissionOverflow({
         onClick={() => setOpen((v) => !v)}
         data-testid="mission-overflow"
       >
-        ⋯
+        <Ellipsis size={18} aria-hidden="true" />
       </button>
       {open ? (
         <div
           ref={panelRef}
           className={styles.overflowMenu}
-          role="menu"
-          aria-label="More mission actions"
           data-testid="mission-overflow-menu"
           onKeyDown={onKeyDown}
         >
-          {/* The focus target on open. A wrapper rather than the first button, because which
-              button is first depends on the mission's state — and focusing "whatever happens to
-              be first" would land on a destructive action in some states and not others. */}
-          <div ref={firstRef} tabIndex={-1} className={styles.overflowItems}>
+          {/* The focus target on open, and the menu itself. A wrapper rather than the first button,
+              because which button is first depends on the mission's state — and focusing "whatever
+              happens to be first" would land on a destructive action in some states and not others. */}
+          <div
+            ref={firstRef}
+            tabIndex={-1}
+            className={styles.overflowItems}
+            role="menu"
+            aria-label="More mission actions"
+          >
             {children}
           </div>
+          {note}
         </div>
       ) : null}
     </span>

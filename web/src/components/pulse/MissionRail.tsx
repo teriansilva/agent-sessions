@@ -15,20 +15,18 @@ import filterStyles from "../sidebar/Filters.module.css";
 import listStyles from "../sidebar/SessionList.module.css";
 
 import styles from "./mission.module.css";
+import { missionDotClass, missionStateLabel } from "./missionState";
 
-/** The state dot's class. SEMANTIC tokens only — the brand accent never means a state. */
+/** The state dot's class. Needs-you outranks the state; the state's own colour is the one the
+ *  header's chip uses too (#967). */
 function dotClass(m: MissionListRow): string {
   if (m.needs_you) return styles.dotNeedsYou;
-  if (m.state === "running" || m.state === "dispatching")
-    return styles.dotRunning;
-  if (m.state === "failed") return styles.dotFailed;
-  if (m.state === "done" || m.state === "abandoned") return styles.dotDone;
-  return styles.dot;
+  return missionDotClass(m.state);
 }
 
 function stateLabel(m: MissionListRow): string {
   if (m.needs_you) return "needs you";
-  return m.state === "dispatching" ? "starting" : m.state;
+  return missionStateLabel(m.state);
 }
 
 export interface MissionRailProps {

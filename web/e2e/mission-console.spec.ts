@@ -474,6 +474,12 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
       await expect(page.getByTestId("mission-begin")).toBeVisible();
     },
     async () => {
+      // PLAN AGAIN, behind the header's ⋯ (#967). Re-plan was a header button and is a menu item
+      // now, and a menu nobody opens is a menu nobody measures.
+      await page.getByTestId("mission-overflow").click();
+      await expect(page.getByTestId("mission-replan")).toBeVisible();
+    },
+    async () => {
       // REOPEN: a terminal mission. Same argument, other end of the lifecycle.
       await openMissionRail(page);
       await page.locator('[data-testid="rail-mission"]:visible').nth(2).click();
@@ -627,6 +633,12 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
     // The REQUIRED project picker — the control the sweep could not see at all until `select`
     // joined the selector above.
     "new-mission-project",
+    // #967 moved these: Template and the mode control into the composer box's footer, Re-plan into
+    // ⋯ as Plan again, and ⋯ itself became the shared 44×44 icon button.
+    "new-mission-template",
+    "composer-mode-ask",
+    "mission-overflow",
+    "mission-replan",
   ]) {
     expect(seen, `the inventory never reached ${id}`).toContain(id);
   }

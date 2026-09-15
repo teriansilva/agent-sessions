@@ -41,20 +41,34 @@
  * under UNTRACKED and under the no-missions-and-no-sessions empty state as well as inside a
  * mission, so there is never a screen from which a first mission cannot be started.
  *
+ * **ONE COMPOSER BOX (#967).** Each mode is a bordered box: the text on top, then one footer row
+ * inside the box carrying the NEW MISSION | ASK segmented control and that mode's controls. The
+ * mode strip used to float above the form, the project picker beside the text and the buttons on a
+ * row of their own under a hint line, which read as four loose pieces rather than one input.
+ *
  * **The project is an ENTITY id, never a folder cwd.** `POST /api/missions` resolves the working
  * directory server-side from `project_id` against the project store, and rejects a client-sent
  * `cwd` outright (422). A folder row's id IS its cwd, so sending one here is a 404 "unknown
  * project" — the two pickers are not interchangeable, which is why this reads
  * `api.projectEntities()` and not `api.folders()`.
  */
-import { BookMarked } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { BookMarked, Send } from "lucide-react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 import { Link } from "react-router-dom";
 
 import { api, ApiError } from "../../lib/api";
 import type { Mission, ProjectEntity, PulseAskMatch } from "../../types/api";
 
+import compose from "../terminal/Compose.module.css";
+import action from "../ui/actionButton.module.css";
 import styles from "./mission.module.css";
 import { renderTemplate } from "../../lib/templateMessage";
 import { TemplatePickerModal } from "../templates/TemplatePickerModal";
@@ -95,17 +109,18 @@ const INSTRUCTION_MAX = 8000;
 
 function NewMissionForm({
   onCreated,
-  onCancel,
+  modes,
   visit,
   isVisitCurrent,
 }: {
   /** `focus` says whether the console should SELECT the new mission.
    *
-   *  A create that resolves after the operator cancelled or moved on still has to refresh the
+   *  A create that resolves after the operator switched to ASK or moved on still has to refresh the
    *  rail — the mission exists, and hiding it would be worse than showing it — but it must not
    *  steal the selection. Those are two different things and were one before (#896 review 2). */
   onCreated: (m: Mission, opts: { focus: boolean }) => void;
-  onCancel: () => void;
+  /** The NEW MISSION | ASK control, drawn first in this box's footer (#967). */
+  modes: ReactNode;
   /** The visit this create belongs to, captured when START is pressed. */
   visit: () => number;
   /** Is that visit still the one on screen? Read at RESOLUTION time, never captured. */
@@ -124,11 +139,13 @@ function NewMissionForm({
   /** Where focus returns when the picker closes — the Template button, recorded when it is pressed
    *  (state rather than a ref read during render). */
   const [templatesTrigger, setTemplatesTrigger] = useState<HTMLElement | null>(null);
+  const noteId = useId();
   const length = instruction.trim().length;
   const overCap = length > INSTRUCTION_MAX;
-  /** False once this form has been cancelled or unmounted. A create is not abortable, so the
-   *  completion has to be fenced rather than the request cancelled — the same shape as the ask
-   *  path's liveness fence above, and for the same reason. */
+  /** False once this form has unmounted — which is what switching to ASK does, now that there is no
+   *  CANCEL (#967). A create is not abortable, so the completion has to be fenced rather than the
+   *  request cancelled — the same shape as the ask path's liveness fence above, and for the same
+   *  reason. */
   const liveRef = useRef(true);
   useEffect(
     () => () => {
@@ -179,7 +196,7 @@ function NewMissionForm({
           instruction: text,
           project_id: projectId,
         });
-        // FENCED AT RESOLUTION, ON THE VISIT. The operator may have cancelled, or moved to
+        // FENCED AT RESOLUTION, ON THE VISIT. The operator may have switched to ASK, or moved to
         // another mission, or flipped Active → Archived while this was in flight. The last of
         // those is the case an id fence cannot see: this form sits on the landing (it sat in the
         // untracked view before #948), which the scope flip does not unmount, so "the same view
@@ -208,16 +225,37 @@ function NewMissionForm({
     [instruction, projectId, busy, overCap, onCreated, visit, isVisitCurrent],
   );
 
+  /* SAID BEFORE THE CREATE, and it names the fix rather than a control that does not exist.
+     The earlier copy said "pick one before it can run", which was a promise this console
+     cannot keep: a mission created without a project has no cwd, the server then refuses
+     `running` for ever, and there is no assignment path to reach afterwards (#896 review 9,
+     finding 2). So a project is REQUIRED where one can be offered, and where none can be —
+     an empty list, or one that would not load — the message says which and what to do.
+
+     THE ORDINARY HINT IS THE PICKER'S DESCRIPTION, NOT A LINE (#967). "Pick the project…" only
+     restated what the empty option already says ("Choose a project"), so it is kept for assistive
+     technology as the select's `aria-describedby` and hidden visually. The other two are states
+     with a fix, so they stay visible under the box. */
+  const note =
+    projects !== null && !projectId
+      ? projectsError
+        ? "The project list could not be read, so there is nothing to start this in. Try again in a moment."
+        : projects.length === 0
+          ? "No projects yet. Add one in Settings → Projects, then start the mission here."
+          : "Pick the project this mission works in. It decides where its agent runs."
+      : null;
+  const noteVisible = projectsError || projects?.length === 0;
+
   return (
-    <form
-      className={styles.newMissionForm}
-      onSubmit={submit}
-      data-testid="new-mission-form"
-      aria-label="Start a new mission"
-    >
-      <div className={styles.newMissionRow}>
+    <>
+      <form
+        className={`${styles.composerBox} ${styles.newMissionForm}`}
+        onSubmit={submit}
+        data-testid="new-mission-form"
+        aria-label="Start a new mission"
+      >
         <textarea
-          className={styles.composerInput}
+          className={`${styles.composerInput} ${styles.boxInput}`}
           rows={1}
           value={instruction}
           onChange={(e) => setInstruction(e.target.value)}
@@ -228,51 +266,106 @@ function NewMissionForm({
               e.currentTarget.form?.requestSubmit();
             }
           }}
+          aria-keyshortcuts="Control+Enter Meta+Enter"
           placeholder="Describe the outcome you want — e.g. fix the flaky upload retry and open a PR"
           aria-label="Mission instruction"
           data-testid="new-mission-instruction"
         />
-        <select
-          className={styles.newMissionProject}
-          value={projectId}
-          onChange={(e) => setProjectId(e.target.value)}
-          aria-label="Project"
-          data-testid="new-mission-project"
+        {/* THE FOOTER ROW, inside the box: mode, project, Template, a spacer, the shortcut and Start
+            (#967). Two groups so a phone can wrap it into [mode][project] / [Template][Start]. */}
+        <div className={styles.composerFoot} data-testid="composer-foot">
+          <div className={styles.footLead}>
+            {modes}
+            <select
+              className={styles.newMissionProject}
+              value={projectId}
+              onChange={(e) => setProjectId(e.target.value)}
+              aria-label="Project"
+              aria-describedby={note ? noteId : undefined}
+              data-testid="new-mission-project"
+            >
+              <option value="">
+                {projects === null
+                  ? "Loading projects…"
+                  : projectsError
+                    ? "The project list could not be read"
+                    : projects.length === 0
+                      ? "No projects yet"
+                      : "Choose a project"}
+              </option>
+              {(projects ?? []).map((pr) => (
+                <option key={pr.id} value={pr.id}>
+                  {pr.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className={styles.footTrail}>
+            <button
+              type="button"
+              className={action.ghost}
+              onClick={(e) => {
+                setTemplatesTrigger(e.currentTarget);
+                setTemplatesOpen(true);
+              }}
+              data-testid="new-mission-template"
+            >
+              <BookMarked size={13} aria-hidden="true" /> Template
+            </button>
+            <span className={styles.footSpacer} aria-hidden="true" />
+            {/* The shortcut, for the eye. The textarea's `aria-keyshortcuts` is its accessible form. */}
+            <span
+              className={styles.footHint}
+              aria-hidden="true"
+              data-testid="new-mission-hint"
+            >
+              Ctrl + Enter
+            </span>
+            <button
+              type="submit"
+              className={action.primary}
+              // A PROJECT IS REQUIRED. Without one the mission has no cwd, the server refuses
+              // `running` for ever, and this console has no way to assign one afterwards — so
+              // offering START would be offering a dead end (#896 review 9, finding 2).
+              disabled={busy || !instruction.trim() || !projectId || overCap}
+              data-testid="new-mission-start"
+            >
+              {busy ? "Starting…" : "Start mission"}
+            </button>
+          </div>
+        </div>
+        {templatesOpen ? (
+          <TemplatePickerModal
+            insertLabel="Insert into mission brief"
+            onInsert={(t, values) => {
+              // The same assembly the session composer pastes — body, then image paths — so a
+              // template reads identically wherever it lands (#905's one-seam rule).
+              const text = renderTemplate(t, values);
+              setInstruction((prev) =>
+                prev.trim() ? `${prev.replace(/\s+$/, "")}\n${text}` : text,
+              );
+              setTemplatesOpen(false);
+            }}
+            onClose={() => setTemplatesOpen(false)}
+            returnFocusTo={templatesTrigger}
+          />
+        ) : null}
+      </form>
+      {/* Under the box: what the form needs from the operator, never inside the row. */}
+      {note ? (
+        <div
+          id={noteId}
+          className={
+            noteVisible ? `${styles.objReason} ${styles.boxNote}` : "sr-only"
+          }
+          data-testid="new-mission-draft-note"
         >
-          <option value="">
-            {projects === null
-              ? "Loading projects…"
-              : projectsError
-                ? "The project list could not be read"
-                : projects.length === 0
-                  ? "No projects yet"
-                  : "Choose a project…"}
-          </option>
-          {(projects ?? []).map((pr) => (
-            <option key={pr.id} value={pr.id}>
-              {pr.name}
-            </option>
-          ))}
-        </select>
-      </div>
-      {/* SAID BEFORE THE CREATE, and it names the fix rather than a control that does not exist.
-          The earlier copy said "pick one before it can run", which was a promise this console
-          cannot keep: a mission created without a project has no cwd, the server then refuses
-          `running` for ever, and there is no assignment path to reach afterwards (#896 review 9,
-          finding 2). So a project is REQUIRED where one can be offered, and where none can be —
-          an empty list, or one that would not load — the message says which and what to do. */}
-      {projects !== null && !projectId ? (
-        <div className={styles.objReason} data-testid="new-mission-draft-note">
-          {projectsError
-            ? "The project list could not be read, so there is nothing to start this in. Try again in a moment."
-            : projects.length === 0
-              ? "No projects yet. Add one in Settings → Projects, then start the mission here."
-              : "Pick the project this mission works in. It decides where its agent runs."}
+          {note}
         </div>
       ) : null}
       {length > INSTRUCTION_MAX * 0.9 ? (
         <div
-          className={overCap ? styles.objStale : styles.objReason}
+          className={`${overCap ? styles.objStale : styles.objReason} ${styles.boxNote}`}
           role="status"
           data-testid="new-mission-count"
         >
@@ -282,67 +375,14 @@ function NewMissionForm({
       ) : null}
       {error ? (
         <div
-          className={styles.objStale}
+          className={`${styles.objStale} ${styles.boxNote}`}
           role="alert"
           data-testid="new-mission-error"
         >
           {error}
         </div>
       ) : null}
-      <div className={styles.newMissionActions}>
-        <button
-          type="button"
-          className={styles.missionBtn}
-          onClick={(e) => {
-            setTemplatesTrigger(e.currentTarget);
-            setTemplatesOpen(true);
-          }}
-          data-testid="new-mission-template"
-        >
-          <BookMarked size={13} aria-hidden="true" /> TEMPLATE
-        </button>
-        <button
-          type="button"
-          className={styles.missionBtn}
-          onClick={() => {
-            // Cancelling while a create is in flight does not un-send it — the mission will
-            // exist. It withdraws the FOCUS: the operator said they were done here.
-            liveRef.current = false;
-            onCancel();
-          }}
-          data-testid="new-mission-cancel"
-        >
-          CANCEL
-        </button>
-        <button
-          type="submit"
-          className={styles.send}
-          // A PROJECT IS REQUIRED. Without one the mission has no cwd, the server refuses
-          // `running` for ever, and this console has no way to assign one afterwards — so
-          // offering START would be offering a dead end (#896 review 9, finding 2).
-          disabled={busy || !instruction.trim() || !projectId || overCap}
-          data-testid="new-mission-start"
-        >
-          {busy ? "…" : "START"}
-        </button>
-      </div>
-      {templatesOpen ? (
-        <TemplatePickerModal
-          insertLabel="Insert into mission brief"
-          onInsert={(t, values) => {
-            // The same assembly the session composer pastes — body, then image paths — so a
-            // template reads identically wherever it lands (#905's one-seam rule).
-            const text = renderTemplate(t, values);
-            setInstruction((prev) =>
-              prev.trim() ? `${prev.replace(/\s+$/, "")}\n${text}` : text,
-            );
-            setTemplatesOpen(false);
-          }}
-          onClose={() => setTemplatesOpen(false)}
-          returnFocusTo={templatesTrigger}
-        />
-      ) : null}
-    </form>
+    </>
   );
 }
 
@@ -394,7 +434,7 @@ export function Composer({
   visit: () => number;
   isVisitCurrent: (at: number) => boolean;
   /** A mission was just created here. `focus` is false when the completion arrived after the
-   *  operator cancelled or moved on: the rail still refreshes, the selection does not move. */
+   *  operator switched to ASK or moved on: the rail still refreshes, the selection does not move. */
   onCreated: (m: Mission, opts: { focus: boolean }) => void;
 }) {
   const [text, setText] = useState("");
@@ -484,6 +524,45 @@ export function Composer({
     [text, busy, configured, missionId, onTurns, turns, visit, isVisitCurrent],
   );
 
+  /** Switch mode. Each mode is its own box, so the pressed button unmounts with the box it was in;
+   *  focus follows to the same control in the box that replaces it rather than falling to <body>.
+   *  NEW MISSION's own effect above moves focus on into the brief. */
+  const switchMode = (next: boolean) => {
+    onCreatingChange(next);
+    if (next) return;
+    requestAnimationFrame(() => {
+      document
+        .querySelector<HTMLElement>('[data-testid="composer-mode-ask"]')
+        ?.focus();
+    });
+  };
+
+  /* The mode control. NEW MISSION is available even with no AI endpoint — creating, adopting and
+     objectives all work without a model, and only the ASK half genuinely needs one. A segmented
+     control that rides first in the box's footer (#967). */
+  const modes = (
+    <div className={styles.composerModes} role="group" aria-label="Composer mode">
+      <button
+        type="button"
+        className={`${styles.modeBtn} ${creating ? styles.modeOn : ""}`}
+        aria-pressed={creating}
+        onClick={() => switchMode(true)}
+        data-testid="composer-mode-new"
+      >
+        NEW MISSION
+      </button>
+      <button
+        type="button"
+        className={`${styles.modeBtn} ${creating ? "" : styles.modeOn}`}
+        aria-pressed={!creating}
+        onClick={() => switchMode(false)}
+        data-testid="composer-mode-ask"
+      >
+        ASK
+      </button>
+    </div>
+  );
+
   return (
     <>
       {turns.length > 0 ? (
@@ -537,35 +616,9 @@ export function Composer({
         </div>
       ) : null}
 
-      {/* The mode strip. NEW MISSION is available even with no AI endpoint — creating, adopting
-          and objectives all work without a model, and only the ASK half genuinely needs one. */}
-      <div
-        className={styles.composerModes}
-        role="group"
-        aria-label="Composer mode"
-      >
-        <button
-          type="button"
-          className={`${styles.modeBtn} ${creating ? styles.modeOn : ""}`}
-          aria-pressed={creating}
-          onClick={() => onCreatingChange(true)}
-          data-testid="composer-mode-new"
-        >
-          NEW MISSION
-        </button>
-        <button
-          type="button"
-          className={`${styles.modeBtn} ${creating ? "" : styles.modeOn}`}
-          aria-pressed={!creating}
-          onClick={() => onCreatingChange(false)}
-          data-testid="composer-mode-ask"
-        >
-          ASK
-        </button>
-      </div>
-
       {creating ? (
         <NewMissionForm
+          modes={modes}
           visit={visit}
           isVisitCurrent={isVisitCurrent}
           onCreated={(m, opts) => {
@@ -585,12 +638,15 @@ export function Composer({
             if (opts?.focus !== false) onCreatingChange(false);
             onCreated(m, opts);
           }}
-          onCancel={() => onCreatingChange(false)}
         />
       ) : (
-        <form className={styles.composer} onSubmit={submit}>
+        <form
+          className={`${styles.composerBox} ${styles.askForm}`}
+          onSubmit={submit}
+          data-testid="ask-form"
+        >
           <textarea
-            className={styles.composerInput}
+            className={`${styles.composerInput} ${styles.boxInput}`}
             rows={1}
             value={text}
             onChange={(e) => setText(e.target.value)}
@@ -603,14 +659,23 @@ export function Composer({
             aria-label="Ask about your past work"
             data-testid="composer-input"
           />
-          <button
-            type="submit"
-            className={styles.send}
-            disabled={!configured || busy || !text.trim()}
-            data-testid="composer-send"
-          >
-            {busy ? "…" : "SEND"}
-          </button>
+          <div className={styles.composerFoot} data-testid="composer-foot">
+            <div className={styles.footLead}>{modes}</div>
+            <div className={styles.footTrail}>
+              <span className={styles.footSpacer} aria-hidden="true" />
+              {/* THE SESSION PANE'S SEND (#967), its class and its icon — identical by construction,
+                  so the landing, the mission thread and a session cannot draw three different Sends. */}
+              <button
+                type="submit"
+                className={`${compose.send} shine`}
+                disabled={!configured || busy || !text.trim()}
+                data-testid="composer-send"
+              >
+                <Send size={15} aria-hidden="true" />
+                Send
+              </button>
+            </div>
+          </div>
         </form>
       )}
     </>

@@ -909,7 +909,7 @@ test("a confirmation rerender does not throw focus out of the open menu (#942)",
 
   // The rerender: the item becomes its own confirmation.
   await page.keyboard.press("Enter");
-  await expect(menu.getByTestId("mission-failed")).toContainText(/^CONFIRM/);
+  await expect(menu.getByTestId("mission-failed")).toContainText(/^Confirm/);
 
   // FOCUS IS STILL ON THE ITEM, not on the trigger behind it.
   await expect(menu).toBeVisible();

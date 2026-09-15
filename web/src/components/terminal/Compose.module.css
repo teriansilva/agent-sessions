@@ -178,7 +178,14 @@
   overflow: hidden;
   white-space: nowrap;
 }
-/* Primary Send: solid amber CTA; the global .shine class adds the rare HUD glitch (#211). */
+/* Primary Send: solid amber CTA; the global .shine class adds the rare HUD glitch (#211).
+ *
+ * It is also the MISSION Send (#967): MissionComposer and the mission landing's ASK form use this class
+ * and its paper-plane icon, so the two Sends are identical by construction. That brings two rules the
+ * session pane never needed on its own. A disabled look, because the mission Send is disabled on an
+ * empty draft and the session Send never is. And the §8 44px floor under a coarse pointer and at
+ * ≤800px, the same condition the sidebars use, because the mission screen holds every control to it
+ * (e2e/mission-console.spec.ts). */
 .send {
   display: inline-flex;
   align-items: center;
@@ -193,11 +200,20 @@
   font-weight: 600;
   cursor: pointer;
 }
-.send:hover {
+.send:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 84%, #fff);
 }
-.send:active {
+.send:active:not(:disabled) {
   background: var(--cta-bg-2);
+}
+.send:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+@media (pointer: coarse), (max-width: 800px) {
+  .send {
+    height: 44px;
+  }
 }
 .toggle {
   flex: 0 0 auto;

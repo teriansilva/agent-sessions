@@ -90,7 +90,7 @@ export async function setupSections(page: Page) {
   });
 }
 
-test("section buttons share the brand row and Send typography at every width (#946)", async ({
+test("section buttons share the brand row and keep their own declared typography at every width (#946, #967)", async ({
   page,
 }) => {
   await setupSections(page);
@@ -105,15 +105,18 @@ test("section buttons share the brand row and Send typography at every width (#9
     const hb = (await header.boundingBox())!;
     const bb = (await brand.boundingBox())!;
     expect(hb.height, `header at ${width}`).toBeLessThanOrEqual(52);
-    const sendStyle = await page.getByTestId("composer-send").evaluate((el) => {
-      const s = getComputedStyle(el);
-      return [
-        s.fontFamily,
-        s.fontSize,
-        s.fontWeight,
-        s.letterSpacing,
-        s.minHeight,
-      ];
+    // THE NAV'S OWN VALUES (#967). They were pinned to the mission Send's mono type (#944/#946); that
+    // Send is now the session pane's Send, so the look is asserted as the values App.css declares:
+    // --font-mono at 0.68rem and weight 400, 0.1em tracking, uppercase, 44px. Drift in the nav, or in
+    // the tokens behind it, fails here.
+    const declared = await page.evaluate(() => {
+      const probe = document.createElement("span");
+      probe.style.fontFamily = "var(--font-mono)";
+      document.body.append(probe);
+      const family = getComputedStyle(probe).fontFamily;
+      probe.remove();
+      const size = parseFloat(getComputedStyle(document.documentElement).fontSize) * 0.68;
+      return { family, size, spacing: size * 0.1 };
     });
     for (const name of ["Sessions", "Missions"]) {
       const link = nav.getByRole("link", { name, exact: true });
@@ -126,18 +129,21 @@ test("section buttons share the brand row and Send typography at every width (#9
       expect(b.x + b.width).toBeLessThanOrEqual(width);
       expect(b.height).toBeGreaterThanOrEqual(44);
       expect(b.height).toBeLessThanOrEqual(44);
-      expect(
-        await link.evaluate((el) => {
-          const s = getComputedStyle(el);
-          return [
-            s.fontFamily,
-            s.fontSize,
-            s.fontWeight,
-            s.letterSpacing,
-            s.minHeight,
-          ];
-        }),
-      ).toEqual(sendStyle);
+      const look = await link.evaluate((el) => {
+        const s = getComputedStyle(el);
+        return {
+          family: s.fontFamily,
+          size: parseFloat(s.fontSize),
+          weight: s.fontWeight,
+          spacing: parseFloat(s.letterSpacing),
+          minHeight: s.minHeight,
+          transform: s.textTransform,
+        };
+      });
+      expect(look.family, `${name} family at ${width}`).toBe(declared.family);
+      expect(Math.abs(look.size - declared.size), `${name} size at ${width}`).toBeLessThan(0.01);
+      expect(Math.abs(look.spacing - declared.spacing), `${name} tracking at ${width}`).toBeLessThan(0.01);
+      expect([look.weight, look.minHeight, look.transform]).toEqual(["400", "44px", "uppercase"]);
       await link.click({ trial: true });
     }
     await page.locator(".hud-topbar > .navToggle").click({ trial: true });
@@ -589,7 +595,10 @@ for (const initial of ["draft", "planned"]) {
     await page.goto("/mission");
     await selectMission(page);
     await expect(page.getByTestId("mission-begin")).toBeEnabled();
+    // Plan again is still offered, behind ⋯ (#967); Begin stays the row's one primary.
+    await page.getByTestId("mission-overflow").click();
     await expect(page.getByTestId("mission-replan")).toBeVisible();
+    await page.keyboard.press("Escape");
     await page.getByTestId("mission-begin").click();
     await expect(page.getByTestId("mission-state")).toHaveText("running");
     expect(transitions).toEqual(
@@ -654,14 +663,15 @@ test("Begin confirms one saved launch and stays disabled until its result is rea
       .getByTestId("mission-begin")
       .evaluate((el) => el.scrollWidth <= el.clientWidth),
   ).toBe(true);
-  const consequence = (await page
-    .getByTestId("mission-dispatch-confirm")
-    .boundingBox())!;
-  // The consequence sits in the header, clear of the workspace below it. It was measured against
-  // the Conversation / Details tab strip, which #948 P3 removed; the workspace's top edge is the
-  // same boundary.
-  const workspace = (await page.getByTestId("split").boundingBox())!;
-  expect(consequence.y + consequence.height).toBeLessThanOrEqual(workspace.y);
+  // The consequence sits in the PLAN CARD, beside the plan it confirms (#967). It used to sit in the
+  // header under Begin, which is what wrapped the header onto a second line. It is on screen, and
+  // inside the card rather than clipped by it.
+  const consequenceEl = page.getByTestId("mission-dispatch-confirm");
+  await expect(consequenceEl).toBeInViewport();
+  const consequence = (await consequenceEl.boundingBox())!;
+  const card = (await page.getByTestId("mission-plan-card").boundingBox())!;
+  expect(consequence.y).toBeGreaterThanOrEqual(card.y);
+  expect(consequence.y + consequence.height).toBeLessThanOrEqual(card.y + card.height);
   await page.screenshot({
     path: `../design-review/actual-begin-${info.project.name}.png`,
   });
@@ -670,6 +680,8 @@ test("Begin confirms one saved launch and stays disabled until its result is rea
   );
   await page.getByTestId("mission-begin").click();
   await expect(page.getByTestId("mission-begin")).toBeDisabled();
+  // Plan again, behind ⋯ (#967), is held with it.
+  await page.getByTestId("mission-overflow").click();
   await expect(page.getByTestId("mission-replan")).toBeDisabled();
   expect(launches).toBe(1);
   release();

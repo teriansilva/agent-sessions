@@ -27,11 +27,13 @@
  * boolean captured when the request started answers the question as it was at the moment that
  * does not matter.
  */
+import { Send } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api, ApiError } from "../../lib/api";
 import type { Mission, MissionOpenTurn, MissionTurn } from "../../types/api";
 
+import compose from "../terminal/Compose.module.css";
 import styles from "./mission.module.css";
 
 /** What this component is holding while a send is outstanding. `id` is the stable `turn_id`. */
@@ -332,13 +334,17 @@ export function MissionComposer({
           aria-label="Send a message to this mission"
           data-testid="composer-input"
         />
+        {/* THE SESSION PANE'S SEND (#967): the same class and the same paper-plane icon, so the two
+            Sends are identical by construction rather than by copied values. A turn in flight
+            disables it; the label stays "Send" so the control does not change width under a tap. */}
         <button
           type="submit"
-          className={styles.send}
+          className={`${compose.send} shine`}
           disabled={!configured || busy || !text.trim()}
           data-testid="composer-send"
         >
-          {busy ? "…" : "SEND"}
+          <Send size={15} aria-hidden="true" />
+          Send
         </button>
       </form>
     </>
