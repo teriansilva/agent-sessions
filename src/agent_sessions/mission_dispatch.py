@@ -210,6 +210,30 @@ async def _settle(
         return {"settled": False, "state": "dispatching", "adopted": False}
 
 
+async def _record_evidence(mission_id: str, out, *, expect_plan: str | None) -> None:
+    """Persist what the launch typed, and whether its teardown was proved, BEFORE settling (#966).
+
+    Written onto the dispatch record so the settlement copies it into the failure it records. The
+    launcher's own words are used and nothing is inferred: a stand-in that carries no evidence
+    records `unknown`, and only a `stopped` teardown counts as confirmed. A write that fails leaves
+    the record's `unknown` in place, which is the conservative answer.
+    """
+    seed = str(getattr(out, "seed_outcome", "") or "unknown")
+    confirmed = getattr(out, "teardown", "") == "stopped"
+    try:
+        await asyncio.to_thread(
+            functools.partial(
+                missions.note_dispatch_evidence,
+                mission_id,
+                expect_plan=expect_plan,
+                seed_outcome=seed,
+                teardown_confirmed=confirmed,
+            )
+        )
+    except Exception:  # noqa: BLE001
+        log.warning("mission %s: the launch evidence could not be recorded", mission_id)
+
+
 class _Reconciled(NamedTuple):
     """What the one reconciliation actually achieved — all three facts, none of them assumed.
 
@@ -553,6 +577,56 @@ async def run(
             "reason": f"the launch failed ({type(e).__name__})",
             "session_key": minted,
         }
+
+    # EVERYTHING AFTER THE LAUNCHER RETURNS IS ONE PROTECTED SCOPE (#966, PR #980 review P1).
+    #
+    # The launcher has returned, and `out` says what happened. From here the mission has to reach a
+    # state somebody answers for: the evidence recorded FIRST, because the settlement copies it,
+    # and THEN the adoption, or the failure settlement and its orphan reconciliation. A cancelled
+    # request that escaped any await in that sequence, the evidence write included, left the
+    # mission `dispatching` under this process's live lease, which is the row recovery skips. And
+    # cancelling a `to_thread` await stops nothing on its worker.
+    #
+    # So the sequence runs as ONE task the request's cancellation cannot reach: shielded, joined to
+    # completion, and only then is the cancellation re-raised. Nothing inside it changed order.
+    concluding = asyncio.ensure_future(
+        _conclude(mission_id, out, engine=engine, cwd=cwd, plan_id=plan_id)
+    )
+    try:
+        return await asyncio.shield(concluding)
+    except asyncio.CancelledError:
+        await _join_conclusion(mission_id, concluding)
+        raise
+
+
+async def _join_conclusion(mission_id: str, task: asyncio.Future) -> None:
+    """Wait until a shielded conclusion has FINISHED, however often the waiter is cancelled.
+
+    Bounded because everything it waits on is: store writes carry a busy timeout and the teardown
+    escalates to SIGKILL. The conclusion's own failure is logged, never raised over the
+    cancellation that is about to propagate.
+    """
+    while not task.done():
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await asyncio.shield(task)
+    if not task.cancelled() and task.exception() is not None:
+        log.warning(
+            "mission %s: concluding a cancelled dispatch failed",
+            mission_id,
+            exc_info=task.exception(),
+        )
+
+
+async def _conclude(mission_id: str, out, *, engine: str, cwd: str, plan_id: str | None) -> dict:
+    """Everything `run` does once the launcher has returned: record the evidence, then settle.
+
+    Runs as its own task so a cancelled request cannot interrupt it part-way (see `run`). If the
+    evidence write fails, the record keeps the claim's `unknown` and an unconfirmed teardown, and
+    the settlement proceeds on that, so Start again stays refused.
+    """
+    # THE EVIDENCE GOES ON THE RECORD BEFORE ANY SETTLEMENT (#966). A crash after this line leaves
+    # it for recovery to copy; a crash before it leaves the claim's `unknown`.
+    await _record_evidence(mission_id, out, expect_plan=plan_id)
 
     if not out.ok and not out.launched:
         # REFUSED BEFORE ANYTHING EXISTED — a withdrawn policy, a lock held elsewhere, a dispatch

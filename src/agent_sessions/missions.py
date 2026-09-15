@@ -65,7 +65,7 @@ log = logging.getLogger(__name__)
 MISSION_ID_RE = re.compile(r"^msn_[0-9a-f]{32}$")
 
 #: Bumped whenever the schema changes; ``PRAGMA user_version`` carries it in the file.
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 26
 
 #: How many live SUB-AGENTS one mission may hold, beyond the session it is already running.
 #:
@@ -178,13 +178,24 @@ _ALLOWED: dict[str, frozenset[str]] = {
     "running": frozenset({"review", "done", "failed", "abandoned", "dispatching"}),
     "review": frozenset({"running", "done", "failed", "abandoned"}),
     "done": frozenset({"running"}),
-    "failed": frozenset({"running"}),
+    # `failed -> planned` is START AGAIN (#966), and it is guarded rather than free: `set_state`
+    # allows it only on the persisted evidence of a primary launch that typed nothing and whose
+    # session was proved stopped, re-read inside the transaction (see `_retry_verdict`).
+    "failed": frozenset({"running", "planned"}),
     # Terminal in the strong sense: abandoning is the operator saying "not this". Reopening it
     # would resurrect a mission whose sessions were already released and possibly archived.
     "abandoned": frozenset(),
 }
 
 OUTCOMES: frozenset[str] = frozenset({"done", "abandoned", "failed"})
+
+#: What a launch typed into its session (#966), as the seed store's claim/ack record says.
+#: `unknown` is the default and the answer for anything not affirmatively established.
+SEED_OUTCOMES: frozenset[str] = frozenset(
+    {"not_attempted", "zero_write", "partial", "delivered", "unknown"}
+)
+#: The only outcomes that establish NOTHING was written, and so the only ones Start again accepts.
+RETRYABLE_SEED_OUTCOMES: frozenset[str] = frozenset({"not_attempted", "zero_write"})
 
 # ---------------------------------------------------------------- events + objectives
 
@@ -976,7 +987,12 @@ CREATE TABLE IF NOT EXISTS mission_dispatches (
   -- It carries the PARENT'S session key because the settlement is what adopts, and a sub-agent
   -- that lands in the roster without saying whose it is cannot afterwards be told from the
   -- mission's own session.
-  spawn_parent  TEXT
+  spawn_parent  TEXT,
+  -- WHAT THE LAUNCH TYPED, and whether its teardown was proved (#966). NULL is `unknown`: the
+  -- claim writes nothing here, so a crash anywhere before the dispatcher records the answer
+  -- leaves no evidence rather than a guess. Recorded BEFORE the settlement, which copies it.
+  seed_outcome  TEXT,
+  teardown_confirmed INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS mission_settlements (
   action_id TEXT PRIMARY KEY,
@@ -1058,6 +1074,28 @@ CREATE INDEX IF NOT EXISTS idx_mission_spawns_open
 # step, so the two paths cannot drift.
 _SCHEMA += MISSION_SPAWNS_DDL
 
+# THE EVIDENCE OF THE LAST FAILED PRIMARY LAUNCH (#966). A failed settlement deletes the dispatch
+# record, so the seed outcome and teardown proof it carried are copied here in the same commit —
+# with the proposal, which is what Start again restores as the plan. One row per mission; any other
+# lifecycle move deletes it, and Start again consumes it. The brief lives here only until then, and
+# goes with the mission (ON DELETE CASCADE).
+MISSION_DISPATCH_EVIDENCE_DDL = """
+CREATE TABLE IF NOT EXISTS mission_dispatch_evidence (
+  mission_id         TEXT PRIMARY KEY REFERENCES missions(id) ON DELETE CASCADE,
+  plan_id            TEXT NOT NULL,
+  session_key        TEXT,
+  seed_outcome       TEXT NOT NULL,
+  teardown_confirmed INTEGER NOT NULL DEFAULT 0,
+  failed_at          REAL NOT NULL,
+  project_id         TEXT,
+  cwd                TEXT,
+  engine             TEXT,
+  engine_reason      TEXT,
+  brief              TEXT
+);
+"""
+_SCHEMA += MISSION_DISPATCH_EVIDENCE_DDL
+
 
 def _migrate(con) -> int:
     """Bring the file to :data:`SCHEMA_VERSION`. Explicit and tested, never implicit.
@@ -1128,6 +1166,8 @@ def _migrate(con) -> int:
             _migrate_23_to_24(con)
         if version < 25:
             _migrate_24_to_25(con)
+        if version < 26:
+            _migrate_25_to_26(con)
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return SCHEMA_VERSION
 
@@ -1426,6 +1466,26 @@ def _migrate_24_to_25(con) -> None:
             )
         else:
             con.execute("UPDATE missions SET plan_state='skipped' WHERE plan_state IS NULL")
+
+
+def _migrate_25_to_26(con) -> None:
+    """v26 records what a failed launch typed, so Start again can be decided on evidence (#966).
+
+    Existing dispatch rows get NULL `seed_outcome` — `unknown` — and an unconfirmed teardown, so no
+    failure that predates the evidence can be started again. The evidence table is created from the
+    same DDL string the base schema carries, one statement, inside the ladder's transaction.
+    """
+    if _has_table(con, "mission_dispatches"):
+        have = {r["name"] for r in con.execute("PRAGMA table_info(mission_dispatches)").fetchall()}
+        if "seed_outcome" not in have:
+            con.execute("ALTER TABLE mission_dispatches ADD COLUMN seed_outcome TEXT")
+        if "teardown_confirmed" not in have:
+            con.execute(
+                "ALTER TABLE mission_dispatches "
+                "ADD COLUMN teardown_confirmed INTEGER NOT NULL DEFAULT 0"
+            )
+    if _has_table(con, "missions"):
+        con.execute(MISSION_DISPATCH_EVIDENCE_DDL)
 
 
 def _migrate_22_to_23(con) -> None:
@@ -2549,6 +2609,9 @@ def get_mission(
         # THE ATTENTION PROJECTION, IN THIS SAME SNAPSHOT (#900 review 8, finding 1).
         attention_rows = _attention_rows(con, [mission_id]) if attention else None
         question = _open_question_row(con, mission_id) if attention else None
+        # START AGAIN, from the same predicate the state write uses and in this same snapshot
+        # (#966). Advisory: the write re-reads it under its own transaction.
+        retry = _retry_verdict(con, mission_id)
         con.execute("COMMIT")
     except BaseException:
         with contextlib.suppress(sqlite3.Error):
@@ -2567,6 +2630,11 @@ def get_mission(
         _attach_settlements(mission["events"], path=path)
     mission["events_next_seq"] = mission["events"][-1]["seq"] if len(events) == limit else None
     mission["turn"] = _turn_row(turn)
+    mission["retry_eligible"] = bool(retry["eligible"])
+    mission["seed_outcome"] = retry["seed_outcome"]
+    mission["retry_reason"] = (
+        retry["reason"] if mission.get("state") == "failed" and not retry["eligible"] else None
+    )
     if attention_rows is not None:
         merged = _attention_merge(
             {mission_id: {"needs_you": False, "why": []}}, [mission_id], *attention_rows
@@ -3009,6 +3077,17 @@ def set_state(
                         f"(a running mission with no session has nothing to follow through on)",
                         status=409,
                     )
+            # START AGAIN (#966). Decided HERE, on the evidence as this transaction reads it, never
+            # on what the caller last saw. A mission that is no longer `failed` falls through to
+            # the CAS below, which refuses it with the ordinary lost-race answer.
+            restart: dict | None = None
+            if from_state == "failed" and to_state == "planned" and row["state"] == "failed":
+                restart = _retry_verdict(con, mission_id)
+                if not restart["eligible"]:
+                    raise MissionError(
+                        f"mission {mission_id} cannot be started again: {restart['reason']}",
+                        status=409,
+                    )
             terminal = to_state in TERMINAL_STATES
             cur = con.execute(
                 # `outcome` is CLEARED on a non-terminal transition rather than carried forward.
@@ -3033,6 +3112,15 @@ def set_state(
             if not cur.rowcount:
                 con.execute("ROLLBACK")
                 raise MissionError(f"mission {mission_id} is no longer {from_state}", status=409)
+            restored_plan: str | None = None
+            if restart is not None:
+                restored_plan = _restore_plan_for_start_again_tx(
+                    con, mission_id, restart["evidence"], ts
+                )
+            # THE EVIDENCE IS ABOUT ONE FAILURE. Any lifecycle move supersedes it, and Start again
+            # consumes it, so it can never justify a second reopening or outlive a mission that
+            # went on to run (#966).
+            con.execute("DELETE FROM mission_dispatch_evidence WHERE mission_id=?", (mission_id,))
             # A QUESTION IS ONLY WORTH ASKING ON A MISSION AN ANSWER CAN ACT ON (#900 review 6,
             # finding 3). Clearing the holds only for TERMINAL states left `review` stranding
             # them: `propose_completion` moves a mission there while another objective still has
@@ -3066,7 +3154,20 @@ def set_state(
                 "state",
                 at=ts,
                 text=_cap(detail, EVENT_TEXT_MAX) or None,
-                meta={"from": from_state, "to": to_state, "released": released},
+                meta={
+                    "from": from_state,
+                    "to": to_state,
+                    "released": released,
+                    **(
+                        {
+                            "start_again": True,
+                            "seed_outcome": restart["seed_outcome"],
+                            "plan_id": restored_plan,
+                        }
+                        if restart is not None
+                        else {}
+                    ),
+                },
             )
             con.execute("COMMIT")
         except BaseException:
@@ -6644,6 +6745,14 @@ def clear_dispatch(
             #                so a genuinely pre-launch `reserved` row stays unprobeable.
             if expect_plan:
                 _reconcile_reservation_tx(con, expect_plan, stopped=stopped, now=time.time())
+            # A PROVED STOP CONFIRMS THE FAILED ATTEMPT'S TEARDOWN (#966). `stopped` is the one
+            # answer that means the boundary is empty; `spared` and an unproved stop change nothing.
+            if stopped and expect_plan:
+                con.execute(
+                    "UPDATE mission_dispatch_evidence SET teardown_confirmed=1 "
+                    "WHERE mission_id=? AND plan_id=?",
+                    (mission_id, expect_plan),
+                )
             con.execute("COMMIT")
         except BaseException:
             with contextlib.suppress(sqlite3.Error):
@@ -7043,7 +7152,9 @@ def claim_plan(
                 # EVERY primary-specific field, named. An upsert that lists only what it means to
                 # change inherits the rest from whatever it landed on, which is how a primary
                 # dispatch came to be parented to a child.
-                "owner=excluded.owner, spawn_parent=NULL",
+                "owner=excluded.owner, spawn_parent=NULL, "
+                # A new attempt has typed nothing YET: `unknown`, never the last attempt's answer.
+                "seed_outcome=NULL, teardown_confirmed=0",
                 (
                     mission_id,
                     plan_id,
@@ -7056,6 +7167,8 @@ def claim_plan(
                     owner or process_owner(),
                 ),
             )
+            # A NEW ATTEMPT SUPERSEDES THE LAST FAILURE'S EVIDENCE (#966).
+            con.execute("DELETE FROM mission_dispatch_evidence WHERE mission_id=?", (mission_id,))
             con.execute("COMMIT")
         except BaseException:
             with contextlib.suppress(sqlite3.Error):
@@ -7139,6 +7252,192 @@ def note_dispatch_session(
         finally:
             con.close()
     return bool(n)
+
+
+def _seed_outcome(value: object) -> str:
+    """A stored seed outcome, with anything unrecognised — including NULL — read as `unknown`."""
+    return value if isinstance(value, str) and value in SEED_OUTCOMES else "unknown"
+
+
+def note_dispatch_evidence(
+    mission_id: str,
+    *,
+    expect_plan: str | None,
+    seed_outcome: str,
+    teardown_confirmed: bool,
+    path: Path | None = None,
+) -> bool:
+    """Record what this attempt typed and whether its teardown was proved (#966). True if stamped.
+
+    Called by the dispatcher once the launcher has returned and BEFORE the mission is settled, so
+    the settlement can copy it. Bound to the attempt by `expect_plan`, like every other write on
+    this record: a superseded attempt's evidence must not land on the next attempt's row. An
+    unrecognised outcome is stored as `unknown`, and only a literal `True` confirms a teardown.
+    """
+    validate_id(mission_id)
+    seed = _seed_outcome(seed_outcome)
+    confirmed = 1 if teardown_confirmed is True else 0
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            if expect_plan is None:
+                n = con.execute(
+                    "UPDATE mission_dispatches SET seed_outcome=?, teardown_confirmed=? "
+                    "WHERE mission_id=?",
+                    (seed, confirmed, mission_id),
+                ).rowcount
+            else:
+                n = con.execute(
+                    "UPDATE mission_dispatches SET seed_outcome=?, teardown_confirmed=? "
+                    "WHERE mission_id=? AND plan_id=?",
+                    (seed, confirmed, mission_id, expect_plan),
+                ).rowcount
+            con.execute("COMMIT")
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+    return bool(n)
+
+
+#: The operator-facing sentence for each outcome. "Nothing was typed" appears ONLY for the two
+#: outcomes that establish it. No brief text, ever.
+_SEED_MESSAGES = {
+    "not_attempted": "The session never became ready, so nothing was typed.",
+    "zero_write": (
+        "Typing the brief failed before any of it reached the session, so nothing was typed."
+    ),
+    "partial": "Part of the brief may have been typed before the session stopped.",
+    "delivered": "The brief was typed before the launch failed.",
+    "unknown": "The brief may have been typed before the session stopped.",
+}
+
+#: Why Start again is refused for an outcome that does not establish nothing was written.
+_SEED_REFUSALS = {
+    "partial": "part of the brief may have been typed, so starting again could type it twice",
+    "delivered": "the brief was typed, so the agent may already have acted on it",
+    "unknown": "nothing shows the brief was not typed, so starting again could repeat it",
+}
+
+
+def _failure_message(seed: str, confirmed: bool) -> str:
+    """The plain-language line a failure event carries beside its technical detail (#966)."""
+    base = _SEED_MESSAGES.get(seed, _SEED_MESSAGES["unknown"])
+    if seed not in RETRYABLE_SEED_OUTCOMES:
+        return f"{base} It cannot be started again."
+    if not confirmed:
+        return (
+            f"{base} The session could not be confirmed stopped, so it cannot be started again yet."
+        )
+    return f"{base} Start again restores the plan."
+
+
+def _retry_verdict(con, mission_id: str) -> dict:
+    """May this mission be started again? Read INSIDE the caller's transaction (#966).
+
+    Returns ``{"eligible", "seed_outcome", "reason", "evidence"}``. Eligible only when ALL hold:
+
+    * the mission is `failed` and not archived or mid-archive;
+    * a failed primary launch left evidence, the mission never ran (`running`, `review` or `done`
+      on its timeline), and that evidence establishes nothing was written (`not_attempted` or
+      `zero_write`) with a confirmed teardown;
+    * no dispatch record remains — neither an attempt in flight nor a retained teardown obligation,
+      either of which means an agent may still be out there;
+    * there is a plan to restore.
+
+    The first failing condition names the reason. The caller's own evidence is never consulted.
+    """
+    ev = con.execute(
+        "SELECT plan_id, session_key, seed_outcome, teardown_confirmed, project_id, cwd, engine, "
+        "engine_reason, brief FROM mission_dispatch_evidence WHERE mission_id=?",
+        (mission_id,),
+    ).fetchone()
+    seed = _seed_outcome(ev["seed_outcome"]) if ev is not None else None
+
+    def verdict(reason: str) -> dict:
+        return {"eligible": not reason, "seed_outcome": seed, "reason": reason, "evidence": ev}
+
+    m = con.execute(
+        "SELECT state, archived_at, archiving_at, unarchiving_at FROM missions WHERE id=?",
+        (mission_id,),
+    ).fetchone()
+    if m is None:
+        return verdict("the mission does not exist")
+    state = str(m["state"] or "")
+    if state != "failed":
+        return verdict(f"only a failed mission can be started again, and this one is {state}")
+    if m["archived_at"] is not None or m["archiving_at"] is not None or m["unarchiving_at"]:
+        return verdict("an archived mission cannot be started again; unarchive it first")
+    if ev is None:
+        return verdict("there is no record of what the failed launch typed")
+    ran = con.execute(
+        "SELECT 1 FROM mission_events WHERE mission_id=? AND kind='state' AND "
+        "(CASE WHEN json_valid(meta) THEN json_extract(meta, '$.to') END) "
+        "IN ('running', 'review', 'done') LIMIT 1",
+        (mission_id,),
+    ).fetchone()
+    if ran is not None:
+        return verdict("this mission has run, so its agent may already have acted")
+    if seed not in RETRYABLE_SEED_OUTCOMES:
+        return verdict(_SEED_REFUSALS.get(str(seed), _SEED_REFUSALS["unknown"]))
+    if not ev["teardown_confirmed"]:
+        return verdict("the failed session could not be confirmed stopped")
+    if con.execute("SELECT 1 FROM mission_dispatches WHERE mission_id=?", (mission_id,)).fetchone():
+        return verdict("a launch for this mission is still in flight or not yet accounted for")
+    has_plan = con.execute(
+        "SELECT 1 FROM mission_plans WHERE mission_id=?", (mission_id,)
+    ).fetchone()
+    if has_plan is None and not (ev["engine"] and ev["cwd"] and ev["brief"]):
+        return verdict("there is no plan to start again from")
+    return verdict("")
+
+
+def _restore_plan_for_start_again_tx(con, mission_id: str, ev, ts: float) -> str:
+    """Put the failed launch's proposal back as the plan, `ready` under the CURRENT generation.
+
+    **Caller holds the transaction.** Returns the plan id. A plan row that somehow exists is kept
+    and re-bound to the current generation; otherwise the proposal is inserted under a NEW plan id,
+    so a late write keyed on the failed attempt's id — `expect_plan` on a recovery pass — cannot
+    land on the attempt Begin starts next. Never leaves `plan_state='ready'` without a plan row:
+    `_retry_verdict` refuses when there is nothing to restore.
+    """
+    have = con.execute(
+        "SELECT plan_id FROM mission_plans WHERE mission_id=?", (mission_id,)
+    ).fetchone()
+    if have is not None:
+        plan_id = str(have["plan_id"])
+        con.execute(
+            "UPDATE mission_plans SET generation=(SELECT plan_generation FROM missions WHERE id=?) "
+            "WHERE mission_id=?",
+            (mission_id, mission_id),
+        )
+    else:
+        plan_id = f"pln_{uuid.uuid4().hex}"
+        con.execute(
+            "INSERT INTO mission_plans "
+            "(mission_id, plan_id, project_id, cwd, engine, engine_reason, brief, created_at, "
+            " generation) "
+            "VALUES (?,?,?,?,?,?,?,?,(SELECT plan_generation FROM missions WHERE id=?))",
+            (
+                mission_id,
+                plan_id,
+                ev["project_id"],
+                ev["cwd"],
+                ev["engine"],
+                str(ev["engine_reason"] or ""),
+                str(ev["brief"]),
+                ts,
+                mission_id,
+            ),
+        )
+    con.execute(
+        "UPDATE missions SET plan_state='ready', plan_at=?, plan_detail=NULL WHERE id=?",
+        (ts, mission_id),
+    )
+    return plan_id
 
 
 def open_spawn_count(mission_id: str, *, path: Path | None = None) -> int:
@@ -7258,7 +7557,8 @@ def get_dispatch(mission_id: str, *, path: Path | None = None) -> dict | None:
     try:
         row = con.execute(
             "SELECT plan_id, engine, cwd, session_key, started_at, project_id, engine_reason, "
-            "brief, owner, spawn_parent FROM mission_dispatches WHERE mission_id=?",
+            "brief, owner, spawn_parent, seed_outcome, teardown_confirmed "
+            "FROM mission_dispatches WHERE mission_id=?",
             (mission_id,),
         ).fetchone()
         if row is None:
@@ -7276,6 +7576,9 @@ def get_dispatch(mission_id: str, *, path: Path | None = None) -> dict | None:
             "owner": row["owner"],
             # NULL for the mission's own launch; the parent's session key for a spawn (#894).
             "spawn_parent": row["spawn_parent"],
+            # What this attempt typed, and whether its teardown was proved (#966).
+            "seed_outcome": _seed_outcome(row["seed_outcome"]),
+            "teardown_confirmed": bool(row["teardown_confirmed"]),
         }
     finally:
         con.close()
@@ -7585,6 +7888,60 @@ def settle_dispatch(
                     "UPDATE missions SET closed_at=? WHERE id=? AND closed_at IS NULL",
                     (ts, mission_id),
                 )
+            # THE EVIDENCE OF A FAILED PRIMARY LAUNCH OUTLIVES ITS RECORD (#966). The dispatch row
+            # may be deleted below, so what the dispatcher recorded on it is copied in this commit.
+            # A record with no evidence copies `unknown`. Any other outcome supersedes old evidence.
+            failure_meta: dict = {}
+            if to == "failed" and not is_spawn:
+                ev = con.execute(
+                    "SELECT plan_id, session_key, seed_outcome, teardown_confirmed, project_id, "
+                    "cwd, engine, engine_reason, brief FROM mission_dispatches WHERE mission_id=?",
+                    (mission_id,),
+                ).fetchone()
+                seed = _seed_outcome(ev["seed_outcome"]) if ev is not None else "unknown"
+                confirmed = bool(ev["teardown_confirmed"]) if ev is not None else False
+                if ev is not None:
+                    con.execute(
+                        "INSERT INTO mission_dispatch_evidence "
+                        "(mission_id, plan_id, session_key, seed_outcome, teardown_confirmed, "
+                        " failed_at, project_id, cwd, engine, engine_reason, brief) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?) "
+                        "ON CONFLICT(mission_id) DO UPDATE SET plan_id=excluded.plan_id, "
+                        "session_key=excluded.session_key, seed_outcome=excluded.seed_outcome, "
+                        "teardown_confirmed=excluded.teardown_confirmed, "
+                        "failed_at=excluded.failed_at, project_id=excluded.project_id, "
+                        "cwd=excluded.cwd, engine=excluded.engine, "
+                        "engine_reason=excluded.engine_reason, brief=excluded.brief",
+                        (
+                            mission_id,
+                            str(ev["plan_id"]),
+                            session_key or ev["session_key"],
+                            seed,
+                            1 if confirmed else 0,
+                            ts,
+                            ev["project_id"],
+                            ev["cwd"],
+                            ev["engine"],
+                            ev["engine_reason"],
+                            ev["brief"],
+                        ),
+                    )
+                else:
+                    con.execute(
+                        "DELETE FROM mission_dispatch_evidence WHERE mission_id=?", (mission_id,)
+                    )
+                # A SNAPSHOT for the thread. The state write re-checks everything, including
+                # conditions that settle after this commit (a retained record being discharged).
+                failure_meta = {
+                    "seed_outcome": seed,
+                    "teardown_confirmed": confirmed,
+                    "retry_eligible": seed in RETRYABLE_SEED_OUTCOMES and confirmed,
+                    "message": _failure_message(seed, confirmed),
+                }
+            else:
+                con.execute(
+                    "DELETE FROM mission_dispatch_evidence WHERE mission_id=?", (mission_id,)
+                )
             _append_event(
                 con,
                 mission_id,
@@ -7596,6 +7953,7 @@ def settle_dispatch(
                     "to": to,
                     "detail": detail,
                     **({"session_key": session_key} if session_key else {}),
+                    **failure_meta,
                 },
             )
             if keep_record:

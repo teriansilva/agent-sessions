@@ -116,6 +116,13 @@ class Dispatch:
     briefed: bool = False
     reason: str = ""
     events: list[str] = field(default_factory=list)
+    #: WHAT WAS TYPED (#966), from the seed store's claim/ack record once the launch is over:
+    #: `not_attempted`, `zero_write`, `partial`, `delivered` or `unknown` (see
+    #: `handoff.retire_seed`). `unknown` until something establishes otherwise.
+    seed_outcome: str = "unknown"
+    #: The teardown's own word for a failed launch: `stopped` (the boundary was proved empty),
+    #: `spared`, `leaked` or `error`. Empty when no teardown ran.
+    teardown: str = ""
 
     @property
     def state(self) -> str:
@@ -285,6 +292,9 @@ async def _abandon(key: str, out: Dispatch) -> None:
         # survived SIGKILL — a child that outlived its master. Reporting `abandoned` over that
         # tells the operator the unattended, possibly permission-bypassed agent is gone when it
         # is still running, which is the one thing this record exists to get right.
+        # The word `mission_fence.abandon` would give (#966): only a non-spared, non-leaked
+        # teardown proved the boundary empty.
+        out.teardown = outcome if outcome in ("leaked", "spared") else "stopped"
         if outcome == "leaked":
             log.error("headless dispatch %s: teardown left a live process group", key)
             out.events.append("abandon-leaked")
@@ -298,6 +308,7 @@ async def _abandon(key: str, out: Dispatch) -> None:
         # The dispatch already failed; a failed cleanup is additional bad news, not a replacement
         # for the reason. Appended so an operator can see both.
         log.warning("headless dispatch %s: cleanup failed (%s)", key, type(e).__name__)
+        out.teardown = "error"
         out.events.append(f"abandon-failed:{type(e).__name__}")
         out.reason = f"{out.reason} (and the launched session could not be stopped)"
 
@@ -846,3 +857,13 @@ async def dispatch(
                 # session BUSY with nothing running.
                 with contextlib.suppress(Exception):
                     lock.release()
+        # WHAT WAS TYPED, asked of the seed store AFTER the teardown (#966). The claim/ack record is
+        # the only witness to whether bytes reached the PTY, and reading it last means no writer of
+        # this launch is left to change the answer. Retiring the seed in the same step means a
+        # later attach cannot type the brief into a session this launch has given up on. A read
+        # that fails leaves `unknown`, never a guess.
+        if out.ok:
+            out.seed_outcome = "delivered"
+        else:
+            with contextlib.suppress(Exception):
+                out.seed_outcome = handoff.retire_seed(key)

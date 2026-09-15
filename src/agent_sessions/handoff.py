@@ -515,6 +515,11 @@ class _Handoff:
     # seed is consumed only on a delivered/aborted ACK, never at claim time, so a failed
     # delivery can release the claim and leave the seed intact for the next attach.
     seed_claimed: bool = False
+    # WHAT THE CLAIMS DID, for `retire_seed` (#966). How many claims were taken, and the ack that
+    # consumed the seed (`delivered` / `abort`), if one did. A `retry` ack leaves no result: it is
+    # the injector's statement that the claim wrote zero bytes.
+    seed_claims: int = 0
+    seed_result: str | None = None
     spawned: bool = False  # aliveness gate passed (master alive past the instant-exit window)
     watch_armed: bool = False  # a spawn-watch task exists (never arm two)
     real_target_key: str | None = None  # reconciled real id (mint-own-id engines)
@@ -668,6 +673,7 @@ def claim_seed(target_key: str) -> str | None:
         if h is None or h.seed is None or h.seed_claimed:
             return None
         h.seed_claimed = True
+        h.seed_claims += 1
         return h.seed
 
 
@@ -687,7 +693,48 @@ def ack_seed(target_key: str, outcome: str) -> None:
         h.seed_claimed = False
         if outcome in ("delivered", "abort"):
             h.seed = None
+            h.seed_result = outcome
             _release_if_done_locked(h)
+
+
+def retire_seed(target_key: str) -> str:
+    """Say what was TYPED into ``target_key``, and make sure nothing more can be (#966).
+
+    For a launch that is over. The answer is read from the claim/ack protocol, which is the only
+    party that knows whether bytes reached the PTY, and it is deliberately one-sided:
+
+    * ``not_attempted`` — the seed is intact and was never claimed. Nothing writes without a claim.
+    * ``zero_write`` — every claim was released with ``retry``, the injector's zero-bytes ack.
+    * ``partial`` — a claim acked ``abort``: part of the paste reached the PTY.
+    * ``delivered`` — a claim acked ``delivered``.
+    * ``unknown`` — anything else: a claim is still outstanding (a write may have completed before
+      its ack), or the entry is gone (expired, or never bound). A missing acknowledgement is not
+      evidence that nothing was written.
+
+    The seed is dropped in the same critical section, so a later attach to the same session cannot
+    type the brief after this answer was given. An outstanding claimant keeps the text it already
+    holds; its ack then finds no entry and changes nothing.
+    """
+    with _lock:
+        h = _entry_locked(target_key)
+        if h is None:
+            return "unknown"
+        if h.seed_claimed:
+            outcome = "unknown"
+        elif h.seed_result == "delivered":
+            outcome = "delivered"
+        elif h.seed_result == "abort":
+            outcome = "partial"
+        elif h.seed is None:
+            outcome = "unknown"
+        elif h.seed_claims == 0:
+            outcome = "not_attempted"
+        else:
+            outcome = "zero_write"
+        h.seed = None
+        _BY_TARGET.pop(target_key, None)
+        _HANDLES.pop(h.handle, None)
+        return outcome
 
 
 def arm_watch(target_key: str) -> bool:
