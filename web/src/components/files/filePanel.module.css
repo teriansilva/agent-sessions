@@ -1464,6 +1464,70 @@
 }
 
 /* Branch menu extras, on top of the shared `.headMenu` popover chrome. */
+
+/* THREE regions, not one scrolling column (#1005): the list scrolls inside the cap while the
+ * actions stay pinned, so they can never be scrolled out of reach. This is a MODIFIER — the cap
+ * and the flex column must not land on `.headMenu` itself, which the terminal head's own overflow
+ * menu shares and which must stay a single scrolling column (#958). */
+.branchMenu {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+.menuList {
+  flex: 1 1 auto;
+  /* Without `min-height: 0` a flex item refuses to shrink below its content, so the box would
+   * grow past the cap and the scroll would never engage. */
+  min-height: 0;
+  padding: 4px 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.menuFoot {
+  flex: none;
+  padding: 4px 0;
+  border-top: 1px solid var(--line);
+}
+/* Pinned ABOVE the scrolling list: a filter that scrolls away with the rows is a filter you
+ * cannot clear once you have scrolled (#1005). */
+.menuTop {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px 6px;
+  border-bottom: 1px solid var(--line);
+}
+.menuSearch {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: var(--bg-2);
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+.menuSearch:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+.menuCount {
+  align-self: flex-start;
+}
+/* The matched run. `mark` paints a yellow ground by default, which is not this palette. */
+.menuHit {
+  background: transparent;
+  color: var(--accent);
+}
+@media (pointer: coarse) {
+  .menuSearch {
+    min-height: 44px;
+    font-size: 12.5px;
+  }
+}
 .menuHead {
   padding: 8px 12px 4px;
   border-top: 1px solid var(--line);

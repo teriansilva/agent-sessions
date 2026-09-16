@@ -60,6 +60,18 @@ const BRANCHES = {
   remote: ["origin/main"],
 };
 
+/** 34 local + 6 remote — what a long-lived checkout actually looks like, and the count at which
+ *  the uncapped menu ran off the bottom of every viewport (#1005). Three branches never could. */
+const MANY = {
+  repo: CWD,
+  current: "devopsagent/git-write",
+  local: [
+    "devopsagent/git-write",
+    ...Array.from({ length: 33 }, (_, i) => `devopsagent/branch-${String(i + 1).padStart(2, "0")}`),
+  ],
+  remote: Array.from({ length: 6 }, (_, i) => `origin/branch-${i + 1}`),
+};
+
 /** Deliberately NOT `origin`: the control must render the target the SERVER resolved, so a
  *  hardcoded `origin` in the UI would show up here as a mismatch. */
 const PUSH_TARGET = {
@@ -78,6 +90,7 @@ const PUSH_TARGET = {
 
 type Opts = {
   status?: unknown;
+  branches?: unknown;
   push?: unknown;
   onWrite?: (url: string) => void;
   /** Park the push preflight until this settles, to observe the pre-answer state. */
@@ -130,7 +143,7 @@ async function mockApp(page: Page, opts: Opts = {}) {
     }),
   );
   await page.route("**/api/git/status**", (r) => r.fulfill({ json: status }));
-  await page.route("**/api/git/branches**", (r) => r.fulfill({ json: BRANCHES }));
+  await page.route("**/api/git/branches**", (r) => r.fulfill({ json: opts.branches ?? BRANCHES }));
   await page.route("**/api/git/push-target**", async (r) => {
     if (opts.pushParked) await opts.pushParked;
     await r.fulfill({ json: opts.push ?? PUSH_TARGET });
@@ -196,6 +209,261 @@ test("the branch strip is the menu trigger, and the menu lands inside the viewpo
   expect(box.x).toBeGreaterThanOrEqual(0);
   expect(box.x + box.width).toBeLessThanOrEqual(vp.width + 1);
   expect(box.y).toBeGreaterThanOrEqual(0);
+});
+
+test.describe("the branch menu at a realistic branch count (#1005)", () => {
+  /** The bottom edge is the assertion the original spec never made: a ~1400px column in a 720px
+   *  window satisfies every x-axis and top-edge check above while the whole Remote-tracking group
+   *  and both actions sit below the fold, unreachable by scroll, search or keyboard. */
+  const fitsInside = async (page: Page, sel: string) => {
+    const box = (await page.locator(sel).boundingBox())!;
+    const vp = page.viewportSize()!;
+    return { bottom: box.y + box.height, limit: vp.height + 1, top: box.y };
+  };
+
+  test("its bottom edge stays inside the viewport with 40 branches", async ({ page }) => {
+    await openGit(page, { branches: MANY });
+    await page.locator("[data-branch-trigger]").click();
+    await expect(page.locator("[data-branch-menu]")).toBeVisible();
+    const m = await fitsInside(page, "[data-branch-menu]");
+    expect(m.top).toBeGreaterThanOrEqual(0);
+    expect(m.bottom).toBeLessThanOrEqual(m.limit);
+  });
+
+  test("its bottom edge stays inside a short landscape viewport", async ({ page }) => {
+    // `top` is clamped to innerHeight - 120, so this is the case where a naive minimum height
+    // would push the bottom back out — containment has to win over the floor.
+    //
+    // Load at the project's OWN viewport and shorten it afterwards. Building the layout at an
+    // unusual size leaves the Git tab hidden in both projects — that would test the harness, not
+    // the menu. Height only: a rotation or a keyboard does not change the width, and changing the
+    // width crosses a breakpoint that remounts the panel and closes the menu.
+    await openGit(page, { branches: MANY });
+    const vp0 = page.viewportSize()!;
+    await page.setViewportSize({ width: vp0.width, height: 360 });
+    await page.locator("[data-branch-trigger]").click();
+    await expect(page.locator("[data-branch-menu]")).toBeVisible();
+    const m = await fitsInside(page, "[data-branch-menu]");
+    expect(m.bottom).toBeLessThanOrEqual(m.limit);
+  });
+
+  test("the pinned actions stay reachable without scrolling the list", async ({ page }) => {
+    await openGit(page, { branches: MANY });
+    await page.locator("[data-branch-trigger]").click();
+    await expect(page.locator("[data-branch-foot]")).toBeVisible();
+    const f = await fitsInside(page, "[data-branch-foot]");
+    expect(f.bottom).toBeLessThanOrEqual(f.limit);
+  });
+
+  test("the list scrolls, and a late remote-tracking row can actually be reached", async ({
+    page,
+  }) => {
+    await openGit(page, { branches: MANY });
+    await page.locator("[data-branch-trigger]").click();
+    const list = page.locator("[data-branch-list]");
+    await expect(list).toBeVisible();
+    // The list — not the page, and not a clipped fixed box — is what overflows.
+    expect(await list.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeGreaterThan(0);
+    const last = page.locator("[data-branch-remote='origin/branch-6']");
+    await last.scrollIntoViewIfNeeded();
+    const r = await fitsInside(page, "[data-branch-remote='origin/branch-6']");
+    expect(r.top).toBeGreaterThanOrEqual(0);
+    expect(r.bottom).toBeLessThanOrEqual(r.limit);
+  });
+
+  test("the delete view keeps its own back-out control reachable, and gains no second launcher", async ({
+    page,
+  }) => {
+    await openGit(page, { branches: MANY });
+    await page.locator("[data-branch-trigger]").click();
+    await page.getByRole("menuitem", { name: /Delete branch…/ }).click();
+    const back = page.getByRole("menuitem", { name: "Back" });
+    await expect(back).toBeVisible();
+    const b = await fitsInside(page, "[data-branch-menu] [data-menu-back]");
+    expect(b.bottom).toBeLessThanOrEqual(b.limit);
+    // Deleting is the view you are already in; a second "Delete branch…" here would be a
+    // redundant launcher, not a control.
+    await expect(page.getByRole("menuitem", { name: /Delete branch…/ })).toHaveCount(0);
+  });
+
+  /** The bottom edge, or a value that can never pass. A vanished menu has no box, and reporting
+   *  that as "contained" would make every assertion below vacuous — the menu closing is a
+   *  failure here, not a pass. */
+  const bottomEdge = async (page: Page) => {
+    const box = await page.locator("[data-branch-menu]").boundingBox();
+    return box ? Math.round(box.y + box.height) : 99_999;
+  };
+
+  test("the cap re-measures when the viewport shrinks under an open menu", async ({ page }) => {
+    await openGit(page, { branches: MANY });
+    await page.locator("[data-branch-trigger]").click();
+    const menu = page.locator("[data-branch-menu]");
+    await expect(menu).toBeVisible();
+    // HEIGHT only. A keyboard does not change the width, and changing it here crosses a layout
+    // breakpoint that remounts the panel and closes the menu — which would make this assertion
+    // measure nothing rather than measure the wrong thing.
+    const vp0 = page.viewportSize()!;
+    await page.setViewportSize({ width: vp0.width, height: 360 });
+    await expect(menu).toBeVisible();
+    await expect.poll(() => bottomEdge(page)).toBeLessThanOrEqual(361);
+  });
+
+  test("the cap follows the VISUAL viewport, which is what an on-screen keyboard shrinks", async ({
+    page,
+  }) => {
+    await openGit(page, { branches: MANY });
+    await page.locator("[data-branch-trigger]").click();
+    const menu = page.locator("[data-branch-menu]");
+    await expect(menu).toBeVisible();
+    // `window.innerHeight` does not move when a keyboard opens; `visualViewport.height` does — so
+    // a window-resize test alone passes against code that never reads the visual viewport, which
+    // is precisely the phone case this menu has to survive.
+    await page.evaluate(() => {
+      const vv = window.visualViewport!;
+      Object.defineProperty(vv, "height", { value: 300, configurable: true });
+      vv.dispatchEvent(new Event("resize"));
+    });
+    await expect(menu).toBeVisible();
+    await expect.poll(() => bottomEdge(page)).toBeLessThanOrEqual(301);
+  });
+
+  test("with the keyboard open the rows stay usable and the actions stay inside the menu", async ({
+    page,
+  }) => {
+    await openGit(page, { branches: MANY });
+    await page.locator("[data-branch-trigger]").click();
+    await expect(page.locator("[data-branch-menu]")).toBeVisible();
+    await page.evaluate(() => {
+      const vv = window.visualViewport!;
+      Object.defineProperty(vv, "height", { value: 300, configurable: true });
+      vv.dispatchEvent(new Event("resize"));
+    });
+
+    // Fitting the OUTER box inside the viewport is not the promise. A cap smaller than the pinned
+    // header and footer clips the rows and the actions away behind `overflow: hidden` — inside the
+    // viewport, and still unreachable. So measure the contents against the menu's own clipping
+    // rectangle, not against the viewport.
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const el = document.querySelector("[data-branch-menu]");
+          const foot = document.querySelector("[data-branch-foot]");
+          if (!el || !foot) return 99_999;
+          return Math.round(
+            foot.getBoundingClientRect().bottom - el.getBoundingClientRect().bottom,
+          );
+        }),
+      )
+      .toBeLessThanOrEqual(1);
+    // And the list needs room for an actual row, not just its own padding.
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const list = document.querySelector("[data-branch-list]");
+          return list ? Math.round((list as HTMLElement).clientHeight) : 0;
+        }),
+      )
+      .toBeGreaterThanOrEqual(40);
+    // The assertion that settles it: the action is genuinely clickable, not merely measured.
+    await page.getByRole("menuitem", { name: /Delete branch…/ }).click();
+    await expect(page.locator("[data-menu-back]")).toBeVisible();
+  });
+});
+
+test.describe("filtering the branch menu (#1005)", () => {
+  const openMenu = async (page: Page) => {
+    await openGit(page, { branches: MANY });
+    await page.locator("[data-branch-trigger]").click();
+    await expect(page.locator("[data-branch-menu]")).toBeVisible();
+  };
+
+  test("the filter opens focused, so an operator can just type", async ({ page }) => {
+    await openMenu(page);
+    expect(
+      await page.evaluate(() => document.activeElement?.getAttribute("data-branch-filter")),
+    ).toBe("");
+  });
+
+  test("a query narrows BOTH groups, and the count names the total it filtered from", async ({
+    page,
+  }) => {
+    await openMenu(page);
+    await expect(page.locator("[data-branch-count]")).toContainText("34 local // 6 remote");
+    await page.locator("[data-branch-filter]").fill("branch-1");
+    // 10 local (branch-10…19) + 1 remote (origin/branch-1). The count has to name the total, so
+    // "my branch is missing" is answerable without clearing the filter.
+    await expect(page.locator("[data-branch-count]")).toContainText("11 match // 40 total");
+    await expect(page.locator("[data-branch='devopsagent/branch-10']")).toBeVisible();
+    await expect(page.locator("[data-branch-remote='origin/branch-1']")).toBeVisible();
+    await expect(page.locator("[data-branch='devopsagent/branch-22']")).toHaveCount(0);
+  });
+
+  test("the matched run is marked on local rows, not only on remote ones", async ({ page }) => {
+    await openMenu(page);
+    await page.locator("[data-branch-filter]").fill("branch-1");
+    // The local group is the one most likely to be filtered, and it was the group left rendering
+    // plain text while the remote rows marked their match — a gap no count or visibility
+    // assertion could see.
+    await expect(page.locator("[data-branch='devopsagent/branch-10'] mark")).toHaveText(
+      "branch-1",
+    );
+    await expect(page.locator("[data-branch-remote='origin/branch-1'] mark")).toHaveText(
+      "branch-1",
+    );
+  });
+
+  test("a query matching nothing names the query and says how to clear it", async ({ page }) => {
+    await openMenu(page);
+    await page.locator("[data-branch-filter]").fill("hotfix");
+    const empty = page.locator("[data-branch-empty]");
+    await expect(empty).toContainText("hotfix");
+    await expect(empty).toContainText("40");
+  });
+
+  test("Escape clears the filter BEFORE it closes the menu", async ({ page }) => {
+    await openMenu(page);
+    await page.locator("[data-branch-filter]").fill("hotfix");
+    await page.keyboard.press("Escape");
+    // One step at a time: the first press owes the operator their list back, not a closed menu.
+    await expect(page.locator("[data-branch-menu]")).toBeVisible();
+    await expect(page.locator("[data-branch-filter]")).toHaveValue("");
+    await page.keyboard.press("Escape");
+    await expect(page.locator("[data-branch-menu]")).toHaveCount(0);
+  });
+
+  test("Enter in the filter focuses the first match and never switches branch", async ({
+    page,
+  }) => {
+    const writes: string[] = [];
+    await openGit(page, { branches: MANY, onWrite: (u) => writes.push(u) });
+    await page.locator("[data-branch-trigger]").click();
+    await page.locator("[data-branch-filter]").fill("branch-10");
+    await page.keyboard.press("Enter");
+    // A switch touches the working tree; one keystroke from a typed filter must not fire it.
+    expect(writes.filter((u) => u.endsWith("/switch"))).toHaveLength(0);
+    expect(await page.evaluate(() => document.activeElement?.getAttribute("data-branch"))).toBe(
+      "devopsagent/branch-10",
+    );
+  });
+
+  test("Enter with zero matches does not fall through to a pinned action", async ({ page }) => {
+    await openMenu(page);
+    await page.locator("[data-branch-filter]").fill("hotfix");
+    await page.keyboard.press("Enter");
+    // Still the list view: no create form was opened, no delete view was entered.
+    await expect(page.locator("#git-new-branch")).toHaveCount(0);
+    await expect(page.locator("[data-menu-back]")).toHaveCount(0);
+    await expect(page.locator("[data-branch-menu]")).toBeVisible();
+  });
+
+  test("the delete view filters through the same shell", async ({ page }) => {
+    await openMenu(page);
+    await page.getByRole("menuitem", { name: /Delete branch…/ }).click();
+    await expect(page.locator("[data-menu-back]")).toBeVisible();
+    await page.locator("[data-branch-filter]").fill("branch-10");
+    await expect(page.locator("[data-branch-delete='devopsagent/branch-10']")).toBeVisible();
+    await expect(page.locator("[data-branch-delete='devopsagent/branch-22']")).toHaveCount(0);
+  });
 });
 
 test("the branch menu is keyboard-operable and hands focus back on Escape", async ({ page }) => {

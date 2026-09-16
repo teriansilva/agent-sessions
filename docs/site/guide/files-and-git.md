@@ -216,6 +216,18 @@ The branch name at the top of the tab opens the branch menu:
 - **New branch…** creates a branch from the current one, and switches;
 - **Delete branch…** lists the other local branches.
 
+The menu is capped to the space under the branch name and the list scrolls inside that cap, so it
+fits the screen at any number of branches — on a phone, in landscape, and while an on-screen
+keyboard is open. **New branch…** and **Delete branch…** are pinned below the list rather than
+sitting at the end of it, so they stay reachable however far the list runs.
+
+A filter sits above the list. Typing narrows the local and the remote-tracking groups together, by
+case-insensitive substring, and the count beside it reads `11 match // 40 total` — so a branch that
+is filtered out is distinguishable from one that is not there at all. Enter moves focus to the
+first match and never switches branch, since a switch touches the working tree and one keystroke
+from a typed filter is too easy to fire by accident. Escape clears the filter first and closes the
+menu on the second press. The delete list filters the same way.
+
 Switching and creating are refused while there are uncommitted changes, because `git switch` would
 silently carry them onto the other branch. If a change appears while a switch is running, the panel
 goes back to the branch you were on.

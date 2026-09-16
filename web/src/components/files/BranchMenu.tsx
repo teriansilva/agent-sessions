@@ -15,6 +15,30 @@ type View = "list" | "create" | "delete";
  *  one (delete) sorts **last**, where a mis-tap is least likely, and it is not actually
  *  destructive: the server runs `git branch -d`, which refuses an unmerged branch outright.
  */
+/** The viewport the menu has to fit inside.
+ *
+ *  `window.innerHeight` does not move when an on-screen keyboard opens — `visualViewport` does,
+ *  and on a phone the keyboard is exactly what appears underneath an open menu. Falls back to the
+ *  window where `visualViewport` is absent. */
+function viewport() {
+  const vv = typeof window === "undefined" ? null : window.visualViewport;
+  return { width: vv?.width ?? window.innerWidth, height: vv?.height ?? window.innerHeight };
+}
+
+/** The branch name with the matched run marked, so a filtered list says WHY each row is there. */
+function marked(name: string, q: string) {
+  if (!q) return name;
+  const at = name.toLowerCase().indexOf(q);
+  if (at < 0) return name;
+  return (
+    <>
+      {name.slice(0, at)}
+      <mark className={styles.menuHit}>{name.slice(at, at + q.length)}</mark>
+      {name.slice(at + q.length)}
+    </>
+  );
+}
+
 export function BranchMenu({
   current,
   local,
@@ -47,16 +71,71 @@ export function BranchMenu({
 }) {
   const [view, setView] = useState<View>("list");
   const [name, setName] = useState("");
+  const [query, setQuery] = useState("");
   const menuRef = useRef<HTMLDivElement>(null);
+
+  const [vp, setVp] = useState(viewport);
+
+  // Re-place when the viewport moves under an OPEN menu: a keyboard opening, a rotation, a window
+  // resize. Without this the menu keeps the geometry it was placed with and the bottom edge ends
+  // up outside whatever is left of the screen.
+  useEffect(() => {
+    const onChange = () => setVp(viewport());
+    const vv = window.visualViewport;
+    vv?.addEventListener("resize", onChange);
+    vv?.addEventListener("scroll", onChange);
+    window.addEventListener("resize", onChange);
+    return () => {
+      vv?.removeEventListener("resize", onChange);
+      vv?.removeEventListener("scroll", onChange);
+      window.removeEventListener("resize", onChange);
+    };
+  }, []);
 
   // Clamped into the viewport: at 360px the panel is the whole screen and an un-clamped left
   // would push the menu off the right edge, which is exactly where the actions live. Computed
   // during render from the measurement the parent took — no effect, no cascading render.
-  const width = Math.min(Math.max(rect.width, 200), window.innerWidth - 16);
+  //
+  // Containment outranks the minimum height (#1005). A floor may move the menu UP; it may never
+  // push the bottom edge past the viewport — a `Math.max(160, …)` cap under a `top` that is itself
+  // clamped to `height - 120` ends 40px off the bottom of a 360px-tall window, which is the bug
+  // this menu is being fixed for, reintroduced by its own fix.
+  const EDGE = 8;
+  // The pinned header and footer are spent before a single row can show, so a cap smaller than
+  // them buys nothing: the box sits inside the viewport while `overflow: hidden` clips the rows
+  // and the actions away — the original bug in another shape (Hermes on #1008). Measured on a
+  // coarse pointer: header 77px, footer 97px, a row 44px. A side must hold all three to be worth
+  // choosing.
+  const CHROME = 174;
+  const ROW = 44;
+  const MIN_USABLE = CHROME + ROW;
+  const width = Math.min(Math.max(rect.width, 200), vp.width - 2 * EDGE);
+  const below = vp.height - (rect.bottom + 2) - EDGE;
+  const above = rect.top - 2 * EDGE;
+  const room = Math.max(0, vp.height - 2 * EDGE);
+  let top: number;
+  let maxHeight: number;
+  if (Math.max(below, above) >= MIN_USABLE) {
+    // A side that can seat the chrome and a row: prefer below, flip above when it is roomier.
+    if (below >= above) {
+      top = Math.max(EDGE, rect.bottom + 2);
+      maxHeight = vp.height - top - EDGE;
+    } else {
+      top = EDGE;
+      maxHeight = rect.top - EDGE - top;
+    }
+  } else {
+    // Neither side can. Stop pinning to the trigger and take the whole visual viewport — an
+    // overlaid menu the operator can actually use beats a tidily-placed one they cannot.
+    top = EDGE;
+    maxHeight = room;
+  }
   const pos = {
-    top: Math.min(rect.bottom + 2, window.innerHeight - 120),
-    left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)),
+    top,
+    left: Math.max(EDGE, Math.min(rect.left, vp.width - width - EDGE)),
     width,
+    // Never taller than the viewport itself, whichever branch chose it.
+    maxHeight: Math.max(0, Math.min(maxHeight, room)),
   };
 
   const close = useCallback(() => {
@@ -86,6 +165,12 @@ export function BranchMenu({
       if (e.key === "Escape") {
         e.preventDefault();
         e.stopPropagation();
+        // One step at a time, and a typed filter is the FIRST step: clearing it before backing
+        // out of the delete view means Escape never throws away two things at once.
+        if (query) {
+          setQuery("");
+          return;
+        }
         // A sub-view backs out to the list first: Escape should undo one step, not throw away
         // a half-typed branch name AND close the menu in a single press.
         if (view !== "list") {
@@ -104,7 +189,7 @@ export function BranchMenu({
     };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
-  }, [close, move, view]);
+  }, [close, move, view, query]);
 
   // Focus the first item when the view changes, so a keyboard user is never left on <body>.
   useEffect(() => {
@@ -116,7 +201,64 @@ export function BranchMenu({
 
   const deletable = local.filter((b) => b !== current);
 
-  const body =
+  // Filtering is a render-time derivation, not state: the query is the only thing stored and the
+  // three lists fall out of it during render — no effect, no cascading render, the same discipline
+  // the placement already follows. Filtered-out rows leave the DOM entirely, which is what lets the
+  // roving-focus query keep walking exactly what is on screen.
+  const q = query.trim().toLowerCase();
+  const hits = (b: string) => b.toLowerCase().includes(q);
+  const shownLocal = q ? local.filter(hits) : local;
+  const shownRemote = q ? remote.filter(hits) : remote;
+  const shownDeletable = q ? deletable.filter(hits) : deletable;
+
+  const total = view === "delete" ? deletable.length : local.length + remote.length;
+  const shown =
+    view === "delete" ? shownDeletable.length : shownLocal.length + shownRemote.length;
+  // The count is what answers "is my branch hidden, or not there at all?" — so it always names
+  // the total it was filtered from.
+  const countText = q
+    ? `${shown} match // ${total} total`
+    : view === "delete"
+      ? `${deletable.length} deletable`
+      : `${local.length} local // ${remote.length} remote`;
+
+  /** Enter in the filter moves FOCUS to the first match. Deliberately never a checkout: a switch
+   *  touches the working tree, and one keystroke from a typed filter is far too easy to fire by
+   *  accident. With no matches there is nothing to focus and the press must not fall through to a
+   *  pinned action either, so it is swallowed. */
+  const onFilterKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    menuRef.current
+      ?.querySelector<HTMLElement>(
+        "[data-branch]:not(:disabled), [data-branch-remote]:not(:disabled), [data-branch-delete]:not(:disabled)",
+      )
+      ?.focus();
+  };
+
+  const header =
+    view === "create" ? null : (
+      <div className={styles.menuTop} data-branch-header="">
+        <input
+          type="search"
+          data-menu-item=""
+          data-branch-filter=""
+          className={styles.menuSearch}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={onFilterKey}
+          placeholder="Filter branches…"
+          aria-label="Filter branches"
+          autoComplete="off"
+          spellCheck={false}
+        />
+        <span className={`hud-tag ${styles.menuCount}`} data-branch-count="">
+          {countText}
+        </span>
+      </div>
+    );
+
+  const list =
     view === "create" ? (
       <form
         className={styles.branchForm}
@@ -171,7 +313,12 @@ export function BranchMenu({
             There is no other local branch to delete.
           </div>
         )}
-        {deletable.map((b) => (
+        {deletable.length > 0 && shownDeletable.length === 0 && (
+          <div className={styles.menuEmpty} data-branch-empty="">
+            No branch matches “{query}”. Clear the filter to see all {deletable.length}.
+          </div>
+        )}
+        {shownDeletable.map((b) => (
           <button
             key={b}
             type="button"
@@ -186,22 +333,13 @@ export function BranchMenu({
             onClick={() => onDelete(b)}
           >
             <Trash2 size={12} aria-hidden="true" />
-            {b}
+            <span className={styles.menuItemText}>{marked(b, q)}</span>
           </button>
         ))}
-        <button
-          type="button"
-          role="menuitem"
-          data-menu-item=""
-          className={styles.headMenuItem}
-          onClick={() => setView("list")}
-        >
-          Back
-        </button>
       </>
     ) : (
       <>
-        {local.map((b) => (
+        {shownLocal.map((b) => (
           <button
             key={b}
             type="button"
@@ -219,15 +357,15 @@ export function BranchMenu({
             ) : (
               <GitBranch size={12} aria-hidden="true" />
             )}
-            <span className={styles.menuItemText}>{b}</span>
+            <span className={styles.menuItemText}>{marked(b, q)}</span>
           </button>
         ))}
-        {remote.length > 0 && (
+        {shownRemote.length > 0 && (
           <>
             <div className={styles.menuHead}>
               <span className="hud-tag">Remote-tracking</span>
             </div>
-            {remote.map((b) => (
+            {shownRemote.map((b) => (
               <button
                 key={b}
                 type="button"
@@ -243,12 +381,37 @@ export function BranchMenu({
                 onClick={() => onCreate(b.split("/").slice(1).join("/") || b, b)}
               >
                 <GitBranch size={12} aria-hidden="true" />
-                <span className={styles.menuItemText}>{b}</span>
+                <span className={styles.menuItemText}>{marked(b, q)}</span>
               </button>
             ))}
           </>
         )}
-        <div className={styles.menuSep} aria-hidden="true" />
+        {q && shownLocal.length === 0 && shownRemote.length === 0 && (
+          <div className={styles.menuEmpty} data-branch-empty="">
+            No branch matches “{query}”. Clear the filter to see all {total} branches.
+          </div>
+        )}
+      </>
+    );
+
+  // Pinned BELOW the scrolling list rather than sitting at the end of it. At 34 branches the
+  // actions were 34 rows past the fold with no way to reach them, which is the complaint this
+  // menu is being fixed for. The delete view keeps its own back-out control here and gains no
+  // second delete launcher — deleting is the view it is already in.
+  const foot =
+    view === "delete" ? (
+      <button
+        type="button"
+        role="menuitem"
+        data-menu-item=""
+        data-menu-back=""
+        className={styles.headMenuItem}
+        onClick={() => setView("list")}
+      >
+        Back
+      </button>
+    ) : view === "list" ? (
+      <>
         <button
           type="button"
           role="menuitem"
@@ -272,7 +435,7 @@ export function BranchMenu({
           Delete branch…
         </button>
       </>
-    );
+    ) : null;
 
   return createPortal(
     <>
@@ -284,13 +447,21 @@ export function BranchMenu({
       />
       <div
         ref={menuRef}
-        className={`${styles.headMenu} ${styles.aboveSheet}`}
+        className={`${styles.headMenu} ${styles.branchMenu} ${styles.aboveSheet}`}
         role="menu"
         aria-label="Branches"
         data-branch-menu=""
-        style={{ top: pos.top, left: pos.left, width: pos.width }}
+        style={{ top: pos.top, left: pos.left, width: pos.width, maxHeight: pos.maxHeight }}
       >
-        {body}
+        {header}
+        <div className={styles.menuList} data-branch-list="">
+          {list}
+        </div>
+        {foot && (
+          <div className={styles.menuFoot} data-branch-foot="">
+            {foot}
+          </div>
+        )}
       </div>
     </>,
     document.body,
