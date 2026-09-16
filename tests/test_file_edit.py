@@ -352,8 +352,19 @@ def test_a_process_holding_the_file_open_refuses_the_save_before_anything_is_wri
             fileedit.save(str(p), "replaced\n", sha(b"line\n"))
         assert e.value.fields["reason"] == "open_elsewhere"
         holder = e.value.fields["holder"]
-        if dumpable:
-            assert holder is not None and holder["pid"] == child.pid
+        # Naming the holder is best-effort BY CONTRACT: `lease_holder` walks /proc under
+        # HOLDER_SCAN_BUDGET_S (0.3 s) and gives up rather than delay a save to decorate a
+        # message. On a loaded runner — ~4,500 tests, ~1 h, thousands of pids in arbitrary
+        # `listdir` order — that budget expires before the walk reaches this child and the field
+        # is None. Asserting it is ALWAYS populated made this test the only failure on three
+        # unrelated branches (CI python tasks 18569, 18564, 18550), hitting one or both dumpable
+        # parametrisations depending on where the walk ran out. Reproduced deterministically by
+        # forcing the budget negative; the refusal below is unaffected either way.
+        #
+        # What must hold is that the panel never names the WRONG process. Whether it manages to
+        # name one at all is a decoration; the refusal itself is the kernel's answer (asserted
+        # above) and never depends on the scan.
+        assert holder is None or holder["pid"] == child.pid
         # A non-dumpable holder is not NAMEABLE — and is refused all the same, which is the point
         # of asking the kernel rather than scanning /proc.
     assert p.read_bytes() == b"line\n"
