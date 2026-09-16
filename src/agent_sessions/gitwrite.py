@@ -91,7 +91,7 @@ import time
 from typing import NamedTuple
 from urllib.parse import unquote
 
-from . import procgroup
+from . import privatedir, procgroup, ptybridge
 from .files import FsError, contained_path
 from .fsbrowse import home_root
 from .gitpanel import (
@@ -167,8 +167,11 @@ _EXPECT_SHAPE = re.compile(
 #: has no business passing on (`@{...}`, a leading dash, anything non-printable).
 _REF_SHAPE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._/-]{0,254}\Z")
 
-_hooks_void_dir: str | None = None
-_hooks_void_lock = threading.Lock()
+#: The one directory handed to git as ``core.hooksPath``, and the mode it must carry. ``0500`` is
+#: readable + searchable and **not writable even by us**, so nothing can drop a hook in without
+#: first changing the mode — which :func:`privatedir.ensure_private_dir` then refuses.
+HOOKS_VOID_NAME = "hooks-void"
+HOOKS_VOID_MODE = 0o500
 
 #: One writer per repository *within this process*. Not a substitute for git's own `index.lock`
 #: (another process — the agent — can hold that), but it stops the panel racing itself.
@@ -182,19 +185,43 @@ def hooks_void() -> str:
     A directory rather than ``/dev/null`` because git treats the value as a path to search; both
     were measured effective, and a real empty dir is the one that cannot surprise us on a git that
     starts stat-ing the target.
+
+    **One** directory, reused across calls, processes and restarts — never one per process in
+    shared temp (#1006). Nothing about the value needs to be unique: it has exactly two
+    requirements, that it exists and that it holds no hook executables, which is what makes a
+    single stable directory viable. Both are re-established on **every** call rather than cached,
+    because the cached form of this check was ``os.path.isdir()`` — "a directory of that name
+    exists", which is equally true of a directory another local account just created in its place.
+
+    Raises :class:`GitError` when the subtree cannot be verified, which refuses the git write.
+    There is deliberately no fallback to shared temp: that fallback is the defect being removed,
+    and a security check with a permissive failure branch is not a check.
     """
-    global _hooks_void_dir
-    with _hooks_void_lock:
-        if _hooks_void_dir is None or not os.path.isdir(_hooks_void_dir):
-            _hooks_void_dir = tempfile.mkdtemp(prefix="agent-sessions-hooks-void-")
-            os.chmod(_hooks_void_dir, 0o500)  # readable + searchable, never writable
-        return _hooks_void_dir
-
-
-def reset_hooks_void_for_test() -> None:
-    global _hooks_void_dir
-    with _hooks_void_lock:
-        _hooks_void_dir = None
+    try:
+        target = ptybridge.runtime_dir() / HOOKS_VOID_NAME
+        void = privatedir.ensure_private_dir(target, mode=HOOKS_VOID_MODE)
+    except privatedir.PrivateDirError as exc:
+        raise GitError(f"refusing to run git: {exc}", status=500) from exc
+    except OSError as exc:
+        raise GitError(
+            f"refusing to run git: the runtime directory is unusable ({exc.strerror})", status=500
+        ) from exc
+    # Reported, never "repaired". Whatever put an entry into a 0500 directory we own is a fact the
+    # operator needs; deleting it would destroy the evidence and leave the cause in place.
+    try:
+        entries = os.listdir(void)
+    except OSError as exc:
+        raise GitError(
+            f"refusing to run git: {void} cannot be listed ({exc.strerror})", status=500
+        ) from exc
+    if entries:
+        raise GitError(
+            f"refusing to run git: the hooks-void directory {void} is not empty "
+            f"({len(entries)} entries) — it is never emptied automatically; inspect it and "
+            "remove the contents by hand",
+            status=500,
+        )
+    return void
 
 
 def _repo_lock(toplevel: str) -> threading.Lock:
@@ -3052,7 +3079,6 @@ __all__ = [
     "refuse_local_destination",
     "admit_destination",
     "tls_pin_for",
-    "reset_hooks_void_for_test",
     "resolve_push",
     "resolve_repo",
     "run_git_write",

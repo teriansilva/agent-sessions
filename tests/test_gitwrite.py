@@ -23,13 +23,15 @@ import os
 import shutil
 import socket
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.parse
+from pathlib import Path
 
 import pytest
 
-from agent_sessions import files, gitpanel, gitwrite
+from agent_sessions import files, gitpanel, gitwrite, ptybridge
 from agent_sessions.files import FsError
 
 
@@ -58,7 +60,6 @@ def _reset():
     files._inflight_by_root.clear()
     gitpanel.reset_flights_for_test()
     gitpanel.reset_git_bin_for_test()
-    gitwrite.reset_hooks_void_for_test()
     yield
     gitpanel.reset_flights_for_test()
     files._inflight_total = 0
@@ -379,6 +380,167 @@ def test_hooks_void_is_an_empty_directory():
     void = gitwrite.hooks_void()
     assert os.path.isdir(void)
     assert os.listdir(void) == []
+
+
+def test_hooks_void_is_not_in_shared_temp():
+    """RED against the pre-#1006 tree, which used `tempfile.mkdtemp()` — i.e. shared `/tmp`.
+
+    A name in a world-writable directory is not ours: delete it and any local account may recreate
+    it holding executable hooks, which a peer then hands to git as `core.hooksPath`. That is the
+    hazard #993's prune category was cut for, and it is removed by where the directory now lives.
+    """
+    void = Path(gitwrite.hooks_void())
+    shared = {Path(p).resolve() for p in ("/tmp", "/var/tmp", "/dev/shm", tempfile.gettempdir())}
+    assert void.parent.resolve() not in shared, f"{void} sits directly in shared temp"
+    assert void.parent.resolve() == Path(os.environ["AGENT_SESSIONS_RUNTIME_DIR"]).resolve()
+
+
+def test_hooks_void_is_one_stable_directory_across_calls_and_a_restart(monkeypatch):
+    """RED against the pre-#1006 tree: one `mkdtemp` per PROCESS, so every restart left another
+    directory behind — which is how 34,282 of them accumulated on this host.
+
+    `raising=False` because the pre-fix tree has a `_hooks_void_dir` module global and this tree
+    deliberately has none; clearing whatever memo exists is what makes this a restart rather than
+    a second call.
+    """
+    first = gitwrite.hooks_void()
+    assert gitwrite.hooks_void() == first, "two calls in one process disagreed"
+    inode = os.stat(first).st_ino
+
+    monkeypatch.setattr(gitwrite, "_hooks_void_dir", None, raising=False)
+    monkeypatch.setattr(ptybridge, "_DIR_READY_FOR", None, raising=False)
+
+    again = gitwrite.hooks_void()
+    assert again == first, "a restart produced a second directory instead of reusing the one"
+    assert os.stat(again).st_ino == inode, "the directory was recreated rather than reused"
+
+
+def test_hooks_void_survives_concurrent_first_use():
+    """Creation is idempotent, so the loser of the race verifies the winner's directory."""
+    results: list[str] = []
+    errors: list[Exception] = []
+    barrier = threading.Barrier(8)
+
+    def call():
+        try:
+            barrier.wait(timeout=10)
+            results.append(gitwrite.hooks_void())
+        except Exception as exc:  # noqa: BLE001 — reported by the assertion below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=call) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=20)
+    assert not errors, f"concurrent first use raised: {errors}"
+    assert len(results) == 8
+    assert len(set(results)) == 1, f"concurrent first use produced {len(set(results))} directories"
+
+
+def test_hooks_void_refuses_instead_of_falling_back_when_the_subtree_is_not_private():
+    """Fail closed. The refusal is the whole point: a permissive failure branch here would put
+    the directory straight back into shared temp, which is the defect being removed."""
+    runtime = Path(os.environ["AGENT_SESSIONS_RUNTIME_DIR"])
+    runtime.chmod(0o777)
+    try:
+        with pytest.raises(gitpanel.GitError, match="other-writable"):
+            gitwrite.hooks_void()
+    finally:
+        runtime.chmod(0o700)
+
+
+def test_hooks_void_refuses_a_symlinked_runtime_dir(tmp_path, monkeypatch):
+    """`lstat`, not `stat`: resolving first would answer about the target and say nothing about
+    the link, which is the component an attacker controls."""
+    real = tmp_path / "elsewhere"
+    real.mkdir(mode=0o700)
+    link = tmp_path / "linked-runtime"
+    link.symlink_to(real)
+    monkeypatch.setenv("AGENT_SESSIONS_RUNTIME_DIR", str(link))
+    monkeypatch.setattr(ptybridge, "_DIR_READY_FOR", None, raising=False)
+    with pytest.raises(gitpanel.GitError, match="not a real directory"):
+        gitwrite.hooks_void()
+
+
+def test_hooks_void_reports_unexpected_contents_and_never_deletes_them():
+    """Refuse, never "repair". Deleting the entry would destroy the evidence an operator needs
+    and leave whatever produced it in place."""
+    void = Path(gitwrite.hooks_void())
+    void.chmod(0o700)  # 0500 refuses even our own write, which is the point of 0500
+    planted = void / "post-checkout"
+    planted.write_text("#!/bin/sh\necho pwned\n")
+    void.chmod(0o500)
+
+    with pytest.raises(gitpanel.GitError, match="not empty"):
+        gitwrite.hooks_void()
+    assert planted.exists(), "the refusal deleted the evidence instead of reporting it"
+
+
+def test_a_hook_does_not_run_on_the_network_path(repo, root, tmp_path, monkeypatch):
+    """The SECOND caller — `gitwrite.py`'s isolated network command, not just the write path.
+
+    MEASURED on git 2.43.0, and the baseline below re-measures it on every run: the scratch gitdir
+    a network command runs against carries none of the repository's own config, but `$HOME`'s
+    global config still applies — and a global `core.hooksPath` runs a `reference-transaction`
+    hook during a plain `fetch`, because a fetch updates refs. `-c core.hooksPath=<void>` stops it.
+
+    The remote is a local path, reached through `run_git_net`'s own `allow_protocol` parameter.
+    The production allowlist is `https:ssh` precisely so a repository cannot name a path on this
+    machine, which is also why a faithful end-to-end fetch cannot otherwise be exercised offline;
+    using the code's own seam keeps the argv under test the real one.
+    """
+    fake_home = tmp_path / "githome"
+    fake_home.mkdir()
+    hooks = tmp_path / "evilhooks"
+    hooks.mkdir()
+    hit = tmp_path / "net-hook.ran"
+    hook = hooks / "reference-transaction"
+    hook.write_text(f'#!/bin/sh\ntouch "{hit}"\n')
+    hook.chmod(0o755)
+    (fake_home / ".gitconfig").write_text(f"[core]\n\thooksPath = {hooks}\n")
+    monkeypatch.setenv("HOME", str(fake_home))
+
+    source = root / "remote-src"
+    source.mkdir()
+    _git(source, "init", "-q")
+    _git(source, "config", "user.email", "t@t")
+    _git(source, "config", "user.name", "t")
+    (source / "f.txt").write_text("x\n")
+    _git(source, "add", "f.txt")
+    _git(source, "commit", "-qm", "one")
+
+    rp = gitwrite.resolve_repo(str(repo))
+    fetch = ["fetch", "--no-tags", "--", str(source), "+refs/heads/*:refs/remotes/probe/*"]
+
+    # Baseline: prove the vector is real in THIS environment, so a clean sentinel below means the
+    # mitigation worked rather than that nothing would have fired anyway.
+    with gitwrite._isolated_gitdir(rp) as gitdir:
+        subprocess.run(
+            ["git", f"--git-dir={gitdir}", "-c", "protocol.file.allow=always", *fetch],
+            check=True,
+            capture_output=True,
+            env={
+                "HOME": str(fake_home),
+                "PATH": os.environ["PATH"],
+                "GIT_ALLOW_PROTOCOL": "file",
+                "GIT_OBJECT_DIRECTORY": os.path.join(rp.common(), "objects"),
+            },
+        )
+    assert hit.exists(), "vector not reproduced — the sentinel below would prove nothing"
+    hit.unlink()
+
+    with gitwrite._isolated_gitdir(rp) as gitdir:
+        gitwrite.run_git_net(
+            rp,
+            gitdir,
+            fetch,
+            # `extra_config` is spliced into the argv RAW, so it carries its own `-c` — the same
+            # shape `_fetch_isolated` passes its TLS pins in.
+            extra_config=["-c", "protocol.file.allow=always"],
+            allow_protocol="file",
+        )
+    assert not hit.exists(), "a repository-reachable hook executed during a panel network command"
 
 
 def test_every_write_invocation_is_a_literal_argv_list(repo, monkeypatch):

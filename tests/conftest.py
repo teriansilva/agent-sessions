@@ -7,12 +7,14 @@ every fixture sets up isolated paths.
 from __future__ import annotations
 
 import re
+import shutil
 import sqlite3
+import tempfile
 from pathlib import Path
 
 import pytest
 
-from agent_sessions import auth
+from agent_sessions import auth, privatedir
 from agent_sessions.auth import AuthConfig, hash_password
 
 # The production work factor, captured at conftest import — i.e. before ANY fixture (in
@@ -123,6 +125,45 @@ def _isolate_lock_dir(tmp_path, monkeypatch) -> None:
     keeps its exact cross-process semantics — it is still a real ``flock`` — on a file that is the
     test's own. Autouse so no test can reach the production fence by forgetting to override."""
     monkeypatch.setenv("AGENT_SESSIONS_LOCK_DIR", str(tmp_path / "locks"))
+
+
+@pytest.fixture(autouse=True)
+def _isolate_runtime_dir(tmp_path, monkeypatch) -> None:
+    """Point the app's runtime dir at a per-test tmp dir, and declare that dir the trust root.
+
+    **Both halves are required**, which is why #1006 spells it out. ``AGENT_SESSIONS_HOME`` does
+    not reach ``ptybridge.runtime_dir()``: that helper reads ``AGENT_SESSIONS_RUNTIME_DIR`` and
+    otherwise falls back to ``Path.home()/".agent-sessions"/"pty"``. So a test that pinned only the
+    app home would create ``hooks-void`` in the operator's **real** runtime dir — on this host, the
+    one the live ``agent-sessions`` service and every concurrent CI job also use. Autouse so no
+    test can reach it by forgetting, exactly like the lock dir and the edit-recovery store above.
+
+    The second half is the ``/tmp`` exception. :mod:`agent_sessions.privatedir` refuses a subtree
+    anchored in shared temp, and pytest's ``tmp_path`` is precisely that
+    (``/tmp/pytest-of-<user>/...``), so without a declared test root every git-write test would be
+    refused. It is injected **here, in the harness**, and has no production spelling — no
+    environment variable, no route, no pref, no config key (pinned by
+    ``tests/test_privatedir.py``). A path outside the declared root is still judged by the
+    production rules, which is what lets the default-home positive test assert the real policy.
+
+    ``AGENT_SESSIONS_HOME`` is pinned alongside it at the same sub-path ``tmp_home`` would produce,
+    so the two agree wherever a test uses both.
+
+    **The runtime dir deliberately does NOT live under ``tmp_path``, and that is a hard kernel
+    limit rather than a preference.** ``AF_UNIX`` caps ``sun_path`` at 108 bytes, and pytest's
+    ``tmp_path`` already spends ~90 of them on a long test name. MEASURED: pointing the runtime dir
+    at ``tmp_path`` made the socket for ``test_teardown_reaps_the_master_not_just_the_client``
+    **146 bytes**, so ``dtach`` could not bind it and the test failed with "the dtach master never
+    came up" — a failure with no mention of paths anywhere in it. A short ``mkdtemp`` keeps the
+    same socket at ~65 bytes. Both that directory and ``tmp_path`` are declared trust roots,
+    because the suite verifies paths under each."""
+    runtime = tempfile.mkdtemp(prefix="blrt-")  # short on purpose — see the AF_UNIX note above
+    monkeypatch.setenv("AGENT_SESSIONS_RUNTIME_DIR", runtime)
+    monkeypatch.setenv("AGENT_SESSIONS_HOME", str(tmp_path / ".local" / "share" / "agent-sessions"))
+    privatedir.set_policy_for_test(privatedir.TrustPolicy(test_roots=(str(tmp_path), runtime)))
+    yield
+    privatedir.set_policy_for_test(None)
+    shutil.rmtree(runtime, ignore_errors=True)
 
 
 @pytest.fixture(autouse=True)

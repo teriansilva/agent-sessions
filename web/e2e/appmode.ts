@@ -1,6 +1,7 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { expect, type Page } from "@playwright/test";
 
@@ -178,6 +179,9 @@ export async function startStack(): Promise<Stack> {
    *  never by name — a `pgrep -f "agent-sessions serve"` would also match the operator's OWN
    *  running service. Awaiting is what makes the subsequent delete safe rather than a race. */
   const killAll = () => killGroupsAndWait(procs);
+  /** The app's runtime dir (dtach sockets + the #1006 hooks-void), declared before the fence for
+   *  exactly the reason `procs` is: the failure path has to be able to remove it. */
+  let runtimeDir = "";
 
   // EVERYTHING below runs inside the fence, seeding included. The previous shape created the
   // temp home, built a git repository in it, and only then opened a try/catch around the process
@@ -225,11 +229,24 @@ export async function startStack(): Promise<Stack> {
     child.stdout?.on("data", add);
     child.stderr?.on("data", add);
   };
+  // The runtime dir must NOT sit under the temp HOME, and that is a production rule rather than a
+  // test detail (#1006). `hooks_void()` hands git `core.hooksPath`, so it verifies that directory's
+  // WHOLE ancestry is private — and the temp home is under `/tmp`, whose 1777 mode means any local
+  // account can create a name we would then trust. The app refuses that by design, with no env-var
+  // escape hatch, so the harness supplies a genuinely private directory instead of asking the app
+  // to relax. `~/.cache` is 0700 under a home we own, which is the same shape production uses
+  // (the installer sets `AGENT_SESSIONS_RUNTIME_DIR=$HOME/pty`), so this makes the stack MORE
+  // faithful, not less. Without it the panel's branch switch is refused and never reaches disk —
+  // measured: `appmode-git.spec.ts` failed with the repository still on `master`.
+  mkdirSync(join(homedir(), ".cache"), { recursive: true });
+  runtimeDir = mkdtempSync(join(homedir(), ".cache", "bl-e2e-rt-"));
+
   const env = {
     ...clean,
     HOME: home,
     AGENT_SESSIONS_HOME: home,
     AGENT_SESSIONS_FS_ROOT: home,
+    AGENT_SESSIONS_RUNTIME_DIR: runtimeDir,
     AGENT_SESSIONS_AUTH_MODE: "none",
     // `create_app` reads these regardless of auth mode, so they are supplied rather than
     // inherited. Throwaway values for a throwaway stack.
@@ -312,12 +329,19 @@ export async function startStack(): Promise<Stack> {
       await killAll();
       // `removeTree` stays as the belt: bounded, best-effort, never throws.
       removeTree(home);
+      removeTree(runtimeDir);
     },
   };
   }
     },
     // Runs before the temp home is removed: a child still holding it as its cwd has to go first.
-    killAll,
+    // The runtime dir goes here too — `withTempHome` only knows about the home, so a boot that
+    // threw would otherwise leak a `~/.cache/bl-e2e-rt-*` on every failed run, which is the same
+    // accumulation `removeTree`'s own header records having been bitten by.
+    async () => {
+      await killAll();
+      if (runtimeDir) removeTree(runtimeDir);
+    },
   );
 }
 
