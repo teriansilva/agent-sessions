@@ -56,6 +56,7 @@ import { ChunkErrorBoundary } from "./ChunkErrorBoundary";
 import { lazyWithReload } from "./lazyWithReload";
 import { useAppVersion } from "./useAppVersion";
 import { OverviewPrefsProvider } from "./OverviewPrefsContext";
+import { OverviewSessionsProvider } from "./OverviewSessionsContext";
 import { SessionsProvider } from "./SessionsContext";
 import { WorkspaceProvider } from "./WorkspaceContext";
 import { useSessionsStore } from "./sessionsStore";
@@ -798,14 +799,21 @@ export default function App() {
           <TermSizeProvider>
             <TermFontProvider>
               <OverviewPrefsProvider>
-                <SessionsProvider>
-                  {/* ABOVE the router (#936): the map's window records have to survive the
-                    navigations they exist to be resilient to, and a provider inside the routed
-                    tree would be remounted by exactly those. */}
-                  <WorkspaceProvider>
-                    <RouterProvider router={router} />
-                  </WorkspaceProvider>
-                </SessionsProvider>
+                {/* ABOVE the router for the same reason (#1007), and with the same split: the
+                  map's last SUCCESSFUL COMPLETE result is retained here, so re-entering
+                  /overview renders warm instead of re-running the whole multi-page sequence
+                  behind a blocking spinner. Data only — loading and cancellation stay
+                  route-owned, because the route unmount is what cancels. */}
+                <OverviewSessionsProvider>
+                  <SessionsProvider>
+                    {/* ABOVE the router (#936): the map's window records have to survive the
+                      navigations they exist to be resilient to, and a provider inside the routed
+                      tree would be remounted by exactly those. */}
+                    <WorkspaceProvider>
+                      <RouterProvider router={router} />
+                    </WorkspaceProvider>
+                  </SessionsProvider>
+                </OverviewSessionsProvider>
               </OverviewPrefsProvider>
             </TermFontProvider>
           </TermSizeProvider>
