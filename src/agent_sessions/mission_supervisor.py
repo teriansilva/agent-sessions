@@ -35,7 +35,7 @@ import logging
 import time
 import uuid
 
-from . import mission_directions, mission_probes, mission_questions, missions
+from . import mission_directions, mission_probes, mission_questions, missions, prefs
 from . import orchestrator_ledger as ledger
 
 log = logging.getLogger(__name__)
@@ -45,6 +45,15 @@ log = logging.getLogger(__name__)
 #: can distinguish "the agent needed a reminder" from "the agent is not moving", which is the
 #: distinction the escalation is about.
 NUDGE_BUDGET = 3
+
+#: The action kind an AI-drafted direction becomes (#983 P3). One spelling, owned by `prefs` beside
+#: the autonomy ceiling it is deliberately outside of.
+DRAFT_VERB = prefs.DRAFT_DIRECTION_VERB
+
+#: The longest draft accepted from the model, in characters. The same bound as a model-authored
+#: `answer` (`orchestrator.ANSWER_MAX`, pinned equal by a test). A longer draft is DROPPED, never
+#: truncated: a shortened draft is text nobody wrote.
+DRAFT_MAX = 800
 
 #: How much of the latest recap the question prompt is shown. Bounded because a recap is
 #: model-authored text of unbounded length and this is the second model call it feeds.
@@ -127,12 +136,15 @@ def budget_state(
             # a second event for an action whose record already landed.
             try:
                 rec = latest.get(aid) or {}
+                is_draft = rec.get("verb") == DRAFT_VERB
                 missions.ensure_held_event(
                     mission_id,
                     action_id=aid,
                     session_key=str(rec.get("session_id") or ""),
                     text=(
-                        "A nudge was prepared but not delivered: "
+                        f"An AI-drafted direction was not sent: {_draft_not_sent(rec)}"
+                        if is_draft
+                        else "A nudge was prepared but not delivered: "
                         f"{rec.get('error') or 'the delivery settled as ' + str(rec.get('state'))}"
                     ),
                     meta={
@@ -141,6 +153,7 @@ def budget_state(
                         "episode": episode,
                         "held": True,
                         "state": str(rec.get("state") or ""),
+                        **({"draft": True} if is_draft else {}),
                     },
                     path=path,
                 )
@@ -175,6 +188,18 @@ def budget_state(
         "indeterminate": indeterminate,
         "unreadable": False,
     }
+
+
+def _draft_not_sent(rec: dict) -> str:
+    """Why an AI-drafted direction never became agent input, in the operator's terms (#983 P3)."""
+    if rec.get("outcome") == "replaced_by_operator_edit":
+        return "you sent your own edit instead"
+    state = str(rec.get("state") or "")
+    if state == "rejected":
+        return "you dismissed it"
+    if state == "expired":
+        return "it expired before you decided"
+    return str(rec.get("detail") or "") or f"it settled as {state or 'unknown'}"
 
 
 def may_nudge(
@@ -331,6 +356,13 @@ def assess(mission_id: str, *, now: float | None = None, path=None) -> dict:
                 "gate": gate,
                 "state": state,
                 "met": met,
+                # WHETHER THE OPERATOR WROTE A DIRECTION for it (#983 P3). A mechanical fact from
+                # the stored row, and the one that decides whether a model's draft is accepted.
+                "has_direction": mission_directions.has_direction(o),
+                # THE OBJECTIVE'S IDENTITY IN THIS SNAPSHOT (#983 P3, review 4887). What the model
+                # is shown is bound to it, so prose about this objective can never be stamped with
+                # a replacement's identity.
+                "incarnation": str(o.get("incarnation") or ""),
                 # `met` is the stored settlement; `current` is whether the latest observation
                 # still supports it. The board renders the difference rather than hiding it.
                 "current": current,
@@ -504,13 +536,13 @@ async def consider(mission_id: str, session_key: str, *, path=None) -> dict:
         return {"skipped": "the session has not changed since the last recap", "input_fp": input_fp}
 
     row = missions.get_mission(mission_id, path=path) or {}
+    # THE OBJECTIVES' OWN CHECKED FACTS (#983 P3), so a draft can say something concrete. Off the
+    # loop, one snapshot per objective, and bounded by the closed placeholder table.
+    facts = await missions.run_admitted(
+        lambda: _objective_facts(mission_id, [o["key"] for o in a["objectives"]], path=path)
+    )
     checklist = (
-        "\n".join(
-            f"- {o['key']}: {o['title']} — {o['state']}"
-            + ("  [GATE]" if o["gate"] else "")
-            + (f"  [nudges spent {o['spent']}/{NUDGE_BUDGET}]" if o["spent"] else "")
-            for o in a["objectives"]
-        )
+        "\n".join(_checklist_line(o, facts.get(o["key"]) or []) for o in a["objectives"])
         or "(no objectives)"
     )
 
@@ -537,12 +569,83 @@ _INPUT_MAX = 6000
 _ASSESSMENTS = frozenset({"on_track", "blocked", "needs_approval", "stalled", "likely_done"})
 
 
+def _objective_facts(mission_id: str, keys: list[str], *, path=None) -> dict[str, list[dict]]:
+    """`{objective_key: typed facts}` for the checklist the model is shown (#983 P3). Blocking.
+
+    A snapshot that cannot be read shows no facts rather than failing the recap: facts help the
+    model draft, and nothing is decided or typed from this list.
+    """
+    now = mission_directions._now()
+    out: dict[str, list[dict]] = {}
+    for key in keys:
+        try:
+            snap = missions.objective_snapshot(mission_id, key, path=path)
+            out[key] = mission_directions.typed_facts(snap, now=now)
+        except Exception:  # noqa: BLE001 — an unread fact is left out, never guessed
+            out[key] = []
+    return out
+
+
+def _checklist_line(o: dict, facts: list[dict]) -> str:
+    """One objective as the model reads it: its state, and now its direction flag and checked facts.
+
+    The facts are `name=value` pairs from `mission_directions.typed_facts`: an int, a closed enum or
+    a shape-checked operator argument, at most one per placeholder. They are DATA for the model. The
+    prompt says so, and the prompt stays guarded.
+    """
+    line = f"- {o['key']}: {o['title']} — {o['state']}"
+    if o["gate"]:
+        line += "  [GATE]"
+    if o["spent"]:
+        line += f"  [nudges spent {o['spent']}/{NUDGE_BUDGET}]"
+    line += "  [direction: set]" if o.get("has_direction") else "  [direction: none]"
+    if facts:
+        line += "  [facts: " + ", ".join(f"{f['name']}={f['value']}" for f in facts) + "]"
+    return line
+
+
+def _draft_reading(raw: object, a: dict) -> dict | None:
+    """Narrow a model's `draft` (#983 P3). Drops, never repairs, exactly like a nudge.
+
+    Accepted only for an objective on the checklist that is unmet and has NO direction, with text
+    of at most :data:`DRAFT_MAX` characters. Text over the cap is dropped, not truncated. An
+    objective the operator already wrote a direction for gets the operator's words, never the
+    model's.
+    """
+    if not isinstance(raw, dict):
+        return None
+    key = raw.get("objective_key")
+    text = raw.get("text")
+    if not isinstance(key, str) or not isinstance(text, str):
+        return None
+    o = next((o for o in a["objectives"] if o["key"] == key), None)
+    if o is None or o.get("met") or o.get("has_direction"):
+        return None
+    if not text.strip() or len(text) > DRAFT_MAX:
+        return None
+    # THE IDENTITY THE MODEL ACTUALLY READ rides with the text (review 4887, finding 1). The reply
+    # is about the objective on THIS checklist; the slot may hold a different one by the time the
+    # answer lands, and a draft must be dropped rather than rebound to it.
+    return {
+        "objective_key": key,
+        "text": text,
+        "objective_episode": int(o.get("episode") or 0),
+        "objective_incarnation": str(o.get("incarnation") or ""),
+    }
+
+
 def _reading(reply: dict, a: dict, input_fp: str) -> dict:
     """Narrow the model's answer to something the caller may act on. Drops, never repairs.
 
     A `nudge` naming an objective that is not on the checklist is DROPPED rather than mapped to
     the nearest one: the model choosing which objective to nudge about is the whole of its
     authority here, and quietly substituting a different objective would exceed it.
+
+    **At most one of `nudge` and `draft` survives** (#983 P3). A draft is accepted only for an
+    unmet objective without a direction (`_draft_reading`), so when both name an objective that
+    HAS a direction the nudge is used. When both name the same objective without one, the draft is
+    used and no plain `continue` is also proposed. A draft naming a different objective than the
+    nudge is dropped.
     """
     keys = {o["key"] for o in a["objectives"]}
     assessment = reply.get("assessment")
@@ -556,11 +659,18 @@ def _reading(reply: dict, a: dict, input_fp: str) -> dict:
         }
     else:
         nudge = None
+    draft = _draft_reading(reply.get("draft"), a)
+    if draft is not None and nudge is not None:
+        if draft["objective_key"] != nudge["objective_key"]:
+            draft = None
+        else:
+            nudge = None
     recap = reply.get("recap")
     return {
         "recap": str(recap)[:2000] if isinstance(recap, str) else "",
         "assessment": assessment,
         "nudge": nudge,
+        "draft": draft,
         "input_fp": input_fp,
         # The mechanical reading rides along, so a caller never has to ask the model what the
         # store already knows.
@@ -811,6 +921,158 @@ async def nudge(
     return out
 
 
+async def propose_draft(
+    mission_id: str,
+    *,
+    session_key: str,
+    objective_key: str,
+    text: str,
+    expect_episode: int,
+    expect_incarnation: str,
+    path=None,
+) -> dict:
+    """Mint ONE AI-drafted direction as a proposal for the operator (#983 P3). Never delivers it.
+
+    `expect_episode` and `expect_incarnation` are the objective identity the MODEL READ, carried
+    from the snapshot its input was built from (review 4887, finding 1). They are required, not
+    defaulted: adopting whatever is in the slot now is exactly the bug — a drop and a re-add of the
+    same key during the call would stamp the model's prose with the replacement's identity, which
+    every later guard then agrees with, because they all read that same current row.
+
+    Returns ``{"proposed": True, "id", "episode"}`` or ``{"proposed": False, "why"}``.
+
+    **A draft is model-authored text, so it is always a proposal.** It is minted `proposed` whatever
+    the tier, with verb :data:`DRAFT_VERB`, and nothing here or downstream delivers it on its own.
+    `actuator.deliver` types it only for the approve route, and `actuator.deliver_auto` refuses it.
+
+    **The same reservation as a nudge.** The binding is written before the append and counted by
+    `max_per_episode`, so a draft is one pending intervention for the episode: `may_nudge` sees it
+    live and no second nudge or draft is proposed. Its delivery is charged like a nudge's. A
+    rejection, including the one an operator's edit makes, costs nothing.
+
+    **Re-authorized at the write boundary**, as every model-driven write is. The model call that
+    produced the text ran against a snapshot, so the objective is re-read here: it must still exist,
+    be unmet, be in the same episode and still have no direction. The draft is bound to the
+    objective's key, episode and INCARNATION, so removing and re-creating the objective makes it
+    stale at delivery even if a binding for the new one is taken under the same key.
+    """
+    from . import engines, handoff, orchestrator
+
+    ok, why_stale = _still_authorized(mission_id, objective_key, session_key=session_key, path=path)
+    if not ok:
+        return {"proposed": False, "why": why_stale}
+    allowed, refusal = may_nudge(mission_id, objective_key, path=path)
+    if not allowed:
+        return {"proposed": False, "why": refusal}
+    if not isinstance(text, str) or len(text) > DRAFT_MAX:
+        return {"proposed": False, "why": f"the draft is longer than {DRAFT_MAX} characters"}
+    try:
+        # What is SHOWN is what is typed: stored sanitized, and `actuator.render` sanitizes again,
+        # which changes nothing on text that already passed.
+        clean = handoff.sanitize_seed(text)
+    except handoff.HandoffError:
+        return {"proposed": False, "why": "the draft has no text that can be typed"}
+
+    if not expect_incarnation:
+        return {"proposed": False, "why": "the objective has no identity to bind a draft to"}
+
+    episode, _ = missions.objective_episode(mission_id, objective_key, path=path)
+    cfg = prefs.get_orchestrator()
+    snapshot = await missions.run_admitted(
+        lambda: missions.objective_snapshot(mission_id, objective_key, path=path)
+    )
+    if snapshot is None:
+        return {"proposed": False, "why": "the objective was dropped while this was prepared"}
+    if mission_directions.has_direction(snapshot):
+        return {"proposed": False, "why": "the objective has a direction now, so no draft is used"}
+    # AGAINST WHAT THE MODEL READ, never merely against itself. Both comparisons are the same
+    # question — is this still the objective the draft is about — asked of the two facts that can
+    # move: the episode it is in, and which objective is in the slot.
+    if episode != int(expect_episode) or int(snapshot.get("episode") or 0) != episode:
+        return {"proposed": False, "why": "the objective started a new episode meanwhile"}
+    incarnation = str(snapshot.get("incarnation") or "")
+    if incarnation != expect_incarnation:
+        return {"proposed": False, "why": "the objective was re-created while this was prepared"}
+
+    action_id = uuid.uuid4().hex
+    now = time.time()
+    rec = {
+        "id": action_id,
+        # ALWAYS a proposal. Not `approved` under YOLO: no tier makes model-authored text typeable.
+        "state": "proposed",
+        "verb": DRAFT_VERB,
+        "session_id": session_key,
+        "source": "supervisor",
+        "mission_id": mission_id,
+        "objective_key": objective_key,
+        "objective_episode": episode,
+        "objective_incarnation": expect_incarnation,
+        "draft": clean,
+        # Server-authored. The model's words are the draft and nothing else.
+        "title": "An AI-drafted direction is waiting for your tap",
+        # No confidence is claimed for model prose; 0 is below every threshold the tier accepts.
+        "confidence": 0.0,
+        "evidence": "none",
+        "ts": now,
+        "expires_at": now + int(cfg.get("proposal_ttl_minutes") or 30) * 60,
+        "tier": cfg.get("autonomy"),
+    }
+    rec["precondition"] = await missions.run_admitted(
+        lambda: orchestrator.precondition_for(engines.physical_key(session_key))
+    )
+
+    # AGAIN AT THE DURABLE APPEND, for the reason `nudge` gives: ownership, the objective and the
+    # incarnation can all move inside `precondition_for`.
+    ok, why_stale = _still_authorized(
+        mission_id, objective_key, session_key=session_key, episode=episode, path=path
+    )
+    if not ok:
+        return {"proposed": False, "why": why_stale}
+    # THE ELIGIBILITY AND THE BINDING ARE ONE STEP (review 4887, findings 1 and 2). The incarnation
+    # and the absence of a direction are re-checked inside the reservation's own transaction, so
+    # neither a re-creation nor a `set_direction` landing during the precondition capture can slip
+    # between the check and the insert. This is mint-time eligibility only: a direction written
+    # AFTER a valid reservation is settled at approval, where delivery re-renders.
+    reserved = await missions.run_admitted(
+        lambda: missions.record_supervisor_action(
+            mission_id,
+            session_key=session_key,
+            objective_key=objective_key,
+            episode=episode,
+            action_id=action_id,
+            max_per_episode=NUDGE_BUDGET,
+            expect_incarnation=expect_incarnation,
+            require_no_direction=True,
+            path=path,
+        )
+    )
+    if not reserved:
+        # The transaction is the decision; this only names it for the operator.
+        why = f"the {NUDGE_BUDGET}-nudge budget for this episode is spent"
+        with contextlib.suppress(Exception):
+            latest = await missions.run_admitted(
+                lambda: missions.objective_snapshot(mission_id, objective_key, path=path)
+            )
+            if latest is None:
+                why = "the objective was dropped while this was prepared"
+            elif str(latest.get("incarnation") or "") != expect_incarnation:
+                why = "the objective was re-created while this was prepared"
+            elif mission_directions.has_direction(latest):
+                why = "the objective has a direction now, so no draft is used"
+            elif int(latest.get("episode") or 0) != episode:
+                why = "the objective started a new episode meanwhile"
+        return {"proposed": False, "why": why}
+    kept = await missions.run_admitted(lambda: orchestrator._persist([rec]))
+    if not kept:
+        # A KNOWN refusal: nothing was appended, so the binding is let go (see `nudge`).
+        with contextlib.suppress(Exception):
+            await missions.run_admitted(
+                lambda: missions.forget_supervisor_action(mission_id, action_id, path=path)
+            )
+        return {"proposed": False, "why": "the session already had a live action", "id": action_id}
+    return {"proposed": True, "id": action_id, "episode": episode}
+
+
 async def escalate(
     mission_id: str,
     *,
@@ -957,6 +1219,7 @@ async def run_pass(mission_id: str, *, registry=None, path=None) -> dict:
     out: dict = {
         "assessment": None,
         "nudged": None,
+        "drafted": None,
         "escalated": None,
         "probes": probes or None,
         "asked": None,
@@ -1065,12 +1328,22 @@ async def run_pass(mission_id: str, *, registry=None, path=None) -> dict:
             may_actuate=not actuated,
         )
         per_session.append(res)
-        if (res.get("nudged") or {}).get("sent") or res.get("escalated"):
+        # A PROPOSED DRAFT counts as this pass's one action (#983 P3): at most one intervention per
+        # pass, whichever kind it is.
+        if (
+            (res.get("nudged") or {}).get("sent")
+            or (res.get("drafted") or {}).get("proposed")
+            or res.get("escalated")
+        ):
             actuated = True
     out["per_session"] = per_session
     for r in per_session:
         if r.get("nudged") and r["nudged"].get("sent"):
             out["nudged"] = r["nudged"]
+            break
+    for r in per_session:
+        if (r.get("drafted") or {}).get("proposed"):
+            out["drafted"] = r["drafted"]
             break
     for r in per_session:
         if r.get("escalated"):
@@ -1113,6 +1386,7 @@ async def _pass_one_session(
         "session_key": session_key,
         "assessment": None,
         "nudged": None,
+        "drafted": None,
         "escalated": None,
         "asked": None,
     }
@@ -1178,9 +1452,12 @@ async def _pass_one_session(
     # operator was never told there was a decision waiting. "It escalates" has to mean a DURABLE
     # artifact — the model's own text is never the artifact, only the trigger for one.
     proposal = reading.get("nudge")
+    # …or an AI-DRAFTED DIRECTION (#983 P3). `_reading` has already left at most one of the two.
+    draft = reading.get("draft")
     escalate_because = ""
     if reading.get("assessment") == "needs_approval":
         proposal = None
+        draft = None
         escalate_because = "the agent is waiting on a decision only you can make"
 
     # (4b) A STALLED session is not nudged, and that is the follow-through rather than the absence
@@ -1189,6 +1466,7 @@ async def _pass_one_session(
     # wall and the budget drains against a wall. The operator is the only one who can clear it.
     if stalled:
         proposal = None
+        draft = None
         escalate_because = f"the agent has written nothing since it started ({out['stalled']})"
 
     if escalate_because:
@@ -1211,9 +1489,10 @@ async def _pass_one_session(
                 break
         return out
 
-    if proposal and not may_actuate:
+    if (proposal or draft) and not may_actuate:
         out["held_back"] = "another session in this pass already acted"
         proposal = None
+        draft = None
 
     if proposal:
         res = await nudge(
@@ -1242,6 +1521,18 @@ async def _pass_one_session(
             ):
                 out["escalated"] = {"objective_key": key, "reason": reason}
                 _announce(row, session_key, reason)
+    elif draft:
+        # A PROPOSAL, never a send (#983 P3). Nothing is typed until the operator approves it.
+        out["drafted"] = await propose_draft(
+            mission_id,
+            session_key=session_key,
+            objective_key=draft["objective_key"],
+            text=draft["text"],
+            # The identity from the checklist the model read, not from the slot as it is now.
+            expect_episode=int(draft["objective_episode"]),
+            expect_incarnation=str(draft["objective_incarnation"]),
+            path=path,
+        )
 
     if not may_actuate:
         return out

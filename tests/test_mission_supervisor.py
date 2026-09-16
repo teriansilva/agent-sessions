@@ -463,20 +463,46 @@ async def test_the_supervisor_prompt_goes_through_the_REGISTRY(store, configured
 # ---- acting on the reading: one verb, one escalation, no new entry point --------------------
 
 
-def test_the_supervisor_may_mint_only_CONTINUE(store):
+def test_the_supervisor_may_mint_only_CONTINUE_and_a_never_auto_DRAFT_DIRECTION(store):
     """`choose` and `answer` type an ANSWER into a prompt.
 
     A supervisor that guessed which option an agent should pick would be making the operator's
     decision for them, so `needs_approval` escalates instead of becoming bytes. Asserted on the
     verb the module can mint, not on the label the model returned (#885).
+
+    **Changed on purpose by #983 P3.** This test was `…may_mint_only_CONTINUE`. The supervisor may
+    now also mint `draft_direction`: model-authored text that is only ever a proposal. It widens
+    what may be MINTED for approval and nothing about what may auto-deliver. `continue` stays the
+    one auto-capable verb, and `draft_direction` is outside the autonomy ceiling, outside the
+    orchestrator's vocabulary, and refused by every automatic path (pinned in
+    `tests/test_mission_drafts.py`).
     """
-    from agent_sessions import orchestrator
+    from agent_sessions import actuator, orchestrator, prefs
 
     assert sup.NUDGE_VERB == "continue"
     assert sup.NUDGE_VERB in orchestrator.DELIVERING_VERBS
+    assert sup.NUDGE_VERB in prefs.AUTO_VERBS_V1
+
+    assert sup.DRAFT_VERB == prefs.DRAFT_DIRECTION_VERB == "draft_direction"
+    assert sup.DRAFT_VERB not in prefs.AUTO_VERBS_V1, "an AI draft became auto-deliverable"
+    assert sup.DRAFT_VERB not in prefs.ORCH_VERBS, "the orchestrator pass can name a draft"
+    assert sup.DRAFT_VERB not in orchestrator.DELIVERING_VERBS
+    assert sup.DRAFT_VERB in actuator.RENDERABLE_VERBS  # an operator's approval can deliver it
+
+    # The two verbs are the WHOLE vocabulary: no other verb literal is minted here.
+    import ast
+
     src = (__import__("pathlib").Path(sup.__file__)).read_text()
-    for forbidden in ('"choose"', '"answer"'):
+    for forbidden in ('"choose"', '"answer"', '"relay"', '"escalate"'):
         assert forbidden not in src, f"the supervisor can mint {forbidden}"
+    minted: set[str] = set()
+    for node in ast.walk(ast.parse(src)):
+        if not isinstance(node, ast.Dict):
+            continue
+        for key, value in zip(node.keys, node.values, strict=True):
+            if isinstance(key, ast.Constant) and key.value == "verb":
+                minted.add(getattr(value, "id", None) or repr(getattr(value, "value", value)))
+    assert minted == {"NUDGE_VERB", "DRAFT_VERB"}, minted
 
 
 @pytest.mark.anyio

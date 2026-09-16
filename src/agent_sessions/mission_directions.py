@@ -515,6 +515,49 @@ def render(obj: dict | None, cfg: dict, *, now: float | None = None) -> dict:
     return rendered
 
 
+def has_direction(obj: dict | None) -> bool:
+    """Does this objective carry operator direction text? One spelling of the question (#983)."""
+    direction = (obj or {}).get("direction")
+    return isinstance(direction, str) and bool(direction.strip())
+
+
+def typed_facts(obj: dict | None, *, now: float | None = None) -> list[dict]:
+    """The placeholder values this objective could fill right now, as ``[{name, value}]`` (#983 P3).
+
+    What the supervisor's model is shown beside each objective, so a draft can be concrete. It
+    uses the same closed table and the same checks as :func:`render`. A value is listed only when
+    its placeholder fits the objective's probe, its fact is fresh, comes from this objective's own
+    target and arguments, has the right shape, and is left unchanged by the sanitizer. Anything
+    else is left out, because a fact the renderer would refuse is not a fact.
+
+    BOUNDED by construction: at most one entry per row of :data:`PLACEHOLDERS`, each an int, a
+    closed enum or a shape-checked operator argument. Never a probe `detail`, a title or session
+    content. The values are data for the model, and nothing here is ever typed.
+    """
+    from . import handoff
+
+    if not obj:
+        return []
+    ts = _now() if now is None else now
+    probe = str(obj.get("probe") or "")
+    out: list[dict] = []
+    for ph in PLACEHOLDERS.values():
+        if probe not in ph.probes:
+            continue
+        try:
+            if ph.source == "observed":
+                value, _where = _observed_fact(ph, obj, ts)
+            else:
+                value, _where = _config_fact(ph, obj)
+            typed = str(value)
+            if handoff.sanitize_seed(typed) != typed:
+                continue
+        except (NotRenderable, handoff.HandoffError):
+            continue
+        out.append({"name": ph.name, "value": value})
+    return out
+
+
 def matches(persisted: object, fresh: dict) -> tuple[bool, str]:
     """Is `fresh` still the render that was proposed? ``(ok, why_not)``.
 

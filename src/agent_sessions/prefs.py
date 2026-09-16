@@ -1348,6 +1348,13 @@ ORCH_VERBS: tuple[str, ...] = ("observe", "continue", "choose", "answer", "dispa
 # that can add `answer` means `answer` is autonomous in v1 no matter what the docs say.
 AUTO_VERBS_V1: frozenset[str] = frozenset({"continue"})
 
+# An AI-DRAFTED DIRECTION (#983 P3): model-authored text proposed for one objective, so it is the
+# narrowest action kind there is. It is not in `ORCH_VERBS`, so the orchestrator pass cannot name
+# it. It is not in `AUTO_VERBS_V1`, so `allowed_verbs` validation refuses it and a hand-edited file
+# is clamped on read. And it is delivered only by the operator's approval: `actuator.deliver`
+# refuses it on any other path, and `actuator.deliver_auto` refuses it before asking any of this.
+DRAFT_DIRECTION_VERB = "draft_direction"
+
 ORCH_INTERVAL_MIN = 5
 ORCH_INTERVAL_MAX = 24 * 60
 ORCH_CONFIDENCE_MIN_LO = 0.5

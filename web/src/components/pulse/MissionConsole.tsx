@@ -31,6 +31,8 @@ import type {
 import { useSearchParams } from "react-router-dom";
 
 import { ActionRow } from "./ActionRow";
+import type { DraftEdit } from "./draftDirection";
+import { announceActionResolved } from "../../lib/actionEvents";
 import { Composer, type AskTurn } from "./Composer";
 import { MissionComposer } from "./MissionComposer";
 import { MissionQuestionCard } from "./MissionQuestionCard";
@@ -172,6 +174,45 @@ function MissionBody({
       .filter((c) => mine.has(c.id) && c.pending_action)
       .map((c) => c.pending_action as OrchestratorAction);
   }, [cards, keys]);
+
+  /** EDIT on an AI-drafted direction (#983 P3). The draft's text goes to the composer of the
+   *  session it was drafted for, in the Context section, which opens for it. Nothing is settled
+   *  here: the draft stays a proposal until a send replaces it or it is dismissed. */
+  const [draftEdit, setDraftEdit] = useState<DraftEdit | null>(null);
+  const [revealContext, setRevealContext] = useState(0);
+  /** MONOTONIC, and deliberately not derived from `draftEdit` (review 4887, finding 4). A
+   *  successful replacement clears that state, so a nonce counted from it restarts at 1 — and the
+   *  composer, which is still mounted and has already seen 1, ignores the next draft entirely.
+   *  This counts EDITS, so every one of them is a new command. */
+  const editSeq = useRef(0);
+  const onEditDraft = useCallback(
+    (a: OrchestratorAction) => {
+      if (typeof a.draft !== "string") return;
+      const text = a.draft;
+      editSeq.current += 1;
+      setDraftEdit({
+        actionId: a.id,
+        sessionKey: a.session_id,
+        text,
+        nonce: editSeq.current,
+      });
+      onDetails();
+      setRevealContext((n) => n + 1);
+    },
+    [onDetails],
+  );
+  /** The server closed the draft for a send. It is resolved like a tap on Dismiss: the console
+   *  re-reads its decisions, and the bell and the session pane hear about it too. */
+  const onDraftReplaced = useCallback(
+    (actionId: string) => {
+      setDraftEdit((cur) => (cur?.actionId === actionId ? null : cur));
+      const a = decisions.find((x) => x.id === actionId);
+      const settled = { ...(a ?? { id: actionId }), state: "rejected" as const };
+      announceActionResolved(settled);
+      onResolved(settled as OrchestratorAction);
+    },
+    [decisions, onResolved],
+  );
 
   /** THIS MOUNT, as an immutable fact — the fence every late outcome below is measured against
    *  (#896 review 10, finding 3).
@@ -420,6 +461,8 @@ function MissionBody({
       onMembershipChanged={d.reloadContext}
       onDetach={editable ? onDetach : undefined}
       busy={mutating}
+      draftEdit={draftEdit}
+      onDraftReplaced={onDraftReplaced}
       // SPAWN IS OFFERED ONLY WHERE IT COULD LAND (#894): a mission actually `running`, with an
       // engine to reuse and a directory to run in. Everything else — planning, a launch already
       // in flight, a closed record — would 409, and a control that can only fail is worse than no
@@ -678,6 +721,8 @@ function MissionBody({
                 // browser test that caught the lifecycle instance of this now covers this path
                 // too; it is the same bug one consumer further along.
                 onNote={noteIfCurrent}
+                // Edit on an AI draft, only where the mission can still be written to.
+                onEditDraft={editable ? onEditDraft : undefined}
               />
             ))}
             {d.events.length === 0 && decisions.length === 0 ? (
@@ -708,6 +753,7 @@ function MissionBody({
           }
           timeline={timeline}
           revealObjectives={revealObjectives}
+          revealContext={revealContext}
           summaries={{
             context: d.context?.cwd ? "Folder & sessions" : "Unavailable",
             objectives: d.objectivesFailed

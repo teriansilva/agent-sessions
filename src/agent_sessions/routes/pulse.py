@@ -96,11 +96,14 @@ def _operator_projection(a: dict, cfg: dict, titles: dict[str, dict]) -> dict:
     # reads, no `git status`). A checkout HEAD the agent moved with its own git is not visible here;
     # Approve runs the full check and refuses it as stale.
     status = actuator.render_status(a, cfg)
-    if status is None:
+    if status is not None:
+        out["render_status"] = status
+        if not status["sendable"]:
+            out["can_approve"] = False
+    elif a.get("verb") != prefs.DRAFT_DIRECTION_VERB:
         return out
-    out["render_status"] = status
-    if not status["sendable"]:
-        out["can_approve"] = False
+    # …and an AI-DRAFTED DIRECTION (#983 P3) is named by its objective the same way. Its text is the
+    # stored `draft`, which never re-renders, so there is no status to project.
     mid = str(a.get("mission_id") or "")
     key = str(a.get("objective_key") or "")
     if mid and key:

@@ -6,6 +6,9 @@ import { announceActionResolved } from "../../lib/actionEvents";
 import { engineBadge, relTime } from "../../lib/format";
 import type { EvidenceKind, OrchestratorAction } from "../../types/api";
 import styles from "./Orchestrator.module.css";
+import d from "./direction.module.css";
+import { DraftDirection } from "./DraftDirection";
+import { draftView } from "./draftDirection";
 import { SupervisorNudge } from "./SupervisorNudge";
 import { nudgeView } from "./supervisorNudge";
 import {
@@ -144,6 +147,7 @@ export function ActionRow({
   onNote,
   deliveringVerbs,
   embedded,
+  onEditDraft,
 }: {
   action: OrchestratorAction;
   onResolved?: (a: OrchestratorAction) => void;
@@ -151,6 +155,10 @@ export function ActionRow({
   deliveringVerbs?: Set<string>;
   /** Rendered inside a session card, which already names the session. */
   embedded?: boolean;
+  /** #983 P3: open an AI-drafted direction in its session's message box, under Context. Absent
+   *  where there is no message box to open it in (the session pane), which withholds Edit rather
+   *  than offering a dead control. */
+  onEditDraft?: (a: OrchestratorAction) => void;
 }) {
   const delivering = (deliveringVerbs ?? DELIVERING_FALLBACK).has(action.verb);
   const [busy, setBusy] = useState<"" | "approve" | "reject">("");
@@ -324,6 +332,34 @@ export function ActionRow({
   // A SUPERVISOR NUDGE shows the exact text it will type (#983 P2). Same requests, frame and footer;
   // the body is the nudge's, because the decision being asked for is about that text rather than
   // about the model's sentence. Whether it can still be sent is the server's `render_status`.
+  // AN AI-DRAFTED DIRECTION (#983 P3). Send as written is the server's `can_approve` and nothing
+  // else: no legacy fallback, because drafts postdate the projection, and no verb set, because the
+  // console renders these rows without one.
+  const draft = draftView(action, {
+    approvable: action.can_approve === true,
+    rejectable,
+    editable: !!onEditDraft,
+  });
+  if (draft) {
+    return (
+      <Root
+        className={`${styles.act} ${toneOf(action)} ${embedded ? styles.actEmbedded : d.draftFrame}`}
+        data-testid="draft-row"
+      >
+        <DraftDirection
+          view={draft}
+          busy={busy}
+          boxed={!!embedded}
+          onSend={() => void act("approve")}
+          onEdit={() => onEditDraft?.(action)}
+          onDismiss={() => void act("reject")}
+        />
+        {note && <p className={styles.stale}>{note}</p>}
+        {footer}
+      </Root>
+    );
+  }
+
   const nudge = nudgeView(action, { approvable, rejectable });
   if (nudge) {
     return (

@@ -114,6 +114,48 @@ describe("a nudge that was not typed", () => {
   });
 });
 
+describe("an AI-drafted direction (#983 P3)", () => {
+  test("a delivered draft is a Nudged row naming it as the AI's draft", () => {
+    const row = threadRow(
+      ev("action", TYPED, {
+        source: "supervisor",
+        objective_key: "review",
+        episode: 1,
+        delivered: true,
+        text_source: "ai_draft",
+        digest: null,
+        stage: "delivered",
+      }),
+    );
+    expect(row).toEqual({ type: "nudged", objectiveKey: "review", source: "ai_draft", text: TYPED });
+  });
+
+  test("a dismissed or replaced draft is a draft-not-sent row with the reason", () => {
+    const meta = {
+      source: "supervisor",
+      objective_key: "review",
+      episode: 1,
+      held: true,
+      state: "rejected",
+      draft: true,
+      stage: "held",
+    };
+    expect(
+      threadRow(ev("action", "An AI-drafted direction was not sent: you dismissed it", meta)),
+    ).toEqual({ type: "held", objectiveKey: "review", reason: "you dismissed it", draft: true });
+    expect(
+      threadRow(
+        ev("action", "An AI-drafted direction was not sent: you sent your own edit instead", meta),
+      ),
+    ).toEqual({
+      type: "held",
+      objectiveKey: "review",
+      reason: "you sent your own edit instead",
+      draft: true,
+    });
+  });
+});
+
 describe("what stays as it was", () => {
   test("an ordinary escalation is not a Held row", () => {
     expect(

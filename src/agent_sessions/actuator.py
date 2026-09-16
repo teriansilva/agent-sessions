@@ -111,7 +111,9 @@ def busy_keys(registry, now: float | None = None) -> set[str]:
 # What `render()` can actually turn into bytes. Declared HERE, beside the renderer, and shipped
 # to the client by the state route — the UI previously kept its own copy that included
 # `dispatch`, so it offered Approve on an action every delivery attempt would 409.
-RENDERABLE_VERBS: frozenset[str] = frozenset({"continue", "choose", "answer", "relay"})
+RENDERABLE_VERBS: frozenset[str] = frozenset(
+    {"continue", "choose", "answer", "relay", prefs.DRAFT_DIRECTION_VERB}
+)
 
 #: `relay` is OPERATOR-AUTHORED bytes, and #840 §9 is explicit that this makes it a **narrower**
 #: authority than the model-authored `answer`, not a wider one — the operator typing their own
@@ -151,6 +153,23 @@ def default_nudge_text(cfg: dict) -> str:
 
 def _is_supervisor_nudge(action: dict) -> bool:
     return action.get("verb") == "continue" and str(action.get("source") or "") == "supervisor"
+
+
+def _is_draft(action: dict) -> bool:
+    """An AI-drafted direction (#983 P3): model text, typed only on the operator's approval."""
+    return action.get("verb") == prefs.DRAFT_DIRECTION_VERB
+
+
+def draft_text(action: dict) -> str:
+    """The exact text an AI-drafted direction types: its stored draft, sanitized like `answer`.
+
+    Raises :class:`NotDeliverable` for a draft with nothing typeable. The stored draft was sanitized
+    when it was proposed, so this is the text the card showed.
+    """
+    try:
+        return handoff.sanitize_seed(str(action.get("draft") or ""))
+    except handoff.HandoffError:
+        raise NotDeliverable("an AI-drafted direction with no usable text") from None
 
 
 def supervisor_render(action: dict, cfg: dict, *, resolve_target: bool = True) -> dict:
@@ -279,6 +298,11 @@ def render(action: dict, cfg: dict) -> bytes:
         if not text.strip():
             raise NotDeliverable("relay with no usable text")
         return session_input.bracketed_paste(text)
+    if _is_draft(action):
+        # AN AI-DRAFTED DIRECTION (#983 P3): model prose, rendered exactly like `answer` (sanitized,
+        # one bracketed paste). What keeps it safe is not the payload rule but WHO may deliver it:
+        # `deliver` refuses it unless the operator approved it.
+        return session_input.bracketed_paste(draft_text(action))
     raise NotDeliverable(f"verb {verb!r} is not deliverable")
 
 
@@ -460,6 +484,12 @@ def _supervisor_authority(rec: dict):
     raw_ep = rec.get("objective_episode")
     episode = int(raw_ep) if isinstance(raw_ep, int) and not isinstance(raw_ep, bool) else None
     action_id = str(rec.get("id") or "")
+    # THE INCARNATION, for an action that was bound to one (#983 P3). A draft MUST carry it. The
+    # binding already refuses a drop-and-re-add, but a binding for the NEW objective can be reserved
+    # under the old action's key (a re-add landing between a draft's snapshot and its reservation).
+    # The incarnation is the identity that cannot come back.
+    want_incarnation = rec.get("objective_incarnation")
+    needs_incarnation = _is_draft(rec) or want_incarnation is not None
 
     def _state():
         from . import missions
@@ -490,6 +520,15 @@ def _supervisor_authority(rec: dict):
                 if bound is not None and int(episode) != int(bound):
                     return False, (
                         "this supervisor action's recorded episode does not match its binding"
+                    )
+            if needs_incarnation:
+                have = state[6] if len(state) > 6 else None
+                if not (isinstance(want_incarnation, str) and want_incarnation) or (
+                    have != want_incarnation
+                ):
+                    return False, (
+                        "the objective this was written for was removed and re-created, so it "
+                        "no longer applies"
                     )
             return missions.supervisor_action_verdict(mission_id, state)
         except Exception:  # noqa: BLE001
@@ -691,6 +730,11 @@ async def deliver(
     rec = ledger.get(action_id)
     if rec is None:
         raise NotDeliverable("unknown action")
+    # APPROVE-ONLY (#983 P3). An AI-drafted direction is model-authored text, and the operator's tap
+    # on the approve route is the only authority to type it. Refused before anything is settled, so
+    # the proposal stays exactly where it was for the operator to decide.
+    if _is_draft(rec) and not operator_approval:
+        raise NotDeliverable("an AI-drafted direction is sent only when you approve it")
     if rec.get("state") not in CLAIMABLE_STATES:
         raise NotDeliverable(f"action is {rec.get('state')}, not deliverable")
 
@@ -851,6 +895,11 @@ async def deliver(
     # `render`, so that record already is what was typed; the settlement names it explicitly, and
     # nothing later rewrites either. Later direction or template edits change neither.
     snapshot = rec.get("render") if (state == "delivered" and _is_supervisor_nudge(rec)) else None
+    if state == "delivered" and _is_draft(rec):
+        # …and a delivered DRAFT keeps the text that was typed the same way (#983 P3): the stored
+        # draft, sanitized, which is what `render` turned into the payload.
+        with contextlib.suppress(NotDeliverable):
+            snapshot = {"text": draft_text(rec), "source": "ai_draft", "digest": None}
     delivered: dict = {}
     if isinstance(snapshot, dict):
         delivered = {
@@ -936,6 +985,12 @@ async def deliver_auto(
     Composed AND, and the prefs checks run first, so a withdrawn tier short-circuits before any
     extra work. A refusal from either half is a refusal.
     """
+    # NEVER AN AI-DRAFTED DIRECTION (#983 P3), and asked FIRST, before any preference. The ceiling
+    # below already excludes the verb, but that is a property of a set a later release may widen.
+    # This refusal is a property of the action kind: model-authored text is typed only by the
+    # operator's approval, at every tier and every confidence.
+    if _is_draft(action):
+        return None
     cfg = prefs.get_orchestrator()
     # `enabled` is the master switch and belongs in this gate too. Checking only the tier
     # meant a disabled orchestrator still delivered anything a pass had already approved —
@@ -957,6 +1012,8 @@ async def deliver_auto(
         window has withdrawn the authority this delivery rests on, and it must not proceed on
         the strength of a tier they have left.
         """
+        if _is_draft(action):
+            return False, "an AI-drafted direction is never sent automatically"
         if live.get("autonomy") != "yolo":
             return False, "autonomy left yolo before the write"
         if action.get("verb") not in set(live["allowed_verbs"]):

@@ -158,6 +158,12 @@ mission, such as `PR #{pr} checks are {checks} on {branch}. Open the failing che
   separate. If the text is no longer true, the decision says **not sendable** and offers only
   Dismiss. The thread records a **Nudged** row for each nudge that was sent, with **Show text** for
   exactly what was typed, and a **Held** row for a nudge that was not.
+- **Drafts from the AI.** For an objective without a direction, mission control may draft one from
+  the session. It shows as a dashed **AI-drafted direction** card and is never sent on its own, at
+  any autonomy level. **Send as written** types exactly the text shown. **Edit** puts the text in
+  that session's message box under the mission's **Context**, where sending it replaces the draft
+  and it goes as your own message. **Dismiss** drops it. A draft you send counts against the
+  objective's nudge budget like a nudge does; your own edited message does not.
 
 When every gate is met the supervisor proposes completion and **closes nothing** — it quotes the
 list back and the call is yours. It says which objectives were *observed* to hold and which you

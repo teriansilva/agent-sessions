@@ -9,6 +9,7 @@ import { Link } from "react-router-dom";
 
 import type { MissionContext as MissionContextData } from "../../types/api";
 
+import type { DraftEdit } from "./draftDirection";
 import { MissionScreen } from "./MissionScreen";
 
 import { MissionSpawn } from "./MissionSpawn";
@@ -48,8 +49,14 @@ export function MissionContextPanel({
   onDetach,
   busy,
   spawn,
+  draftEdit,
+  onDraftReplaced,
 }: {
   context: MissionContextData | null;
+  /** #983 P3: an AI draft opened for editing. It prefills the composer of THE SESSION IT WAS
+   *  DRAFTED FOR, and no other, because replacing it types into that session. */
+  draftEdit?: DraftEdit | null;
+  onDraftReplaced?: (actionId: string) => void;
   /** The server told a control that this mission no longer holds its session. The roster the
    *  blocks are built from is stale, so it is re-read — that is what removes the block, and it
    *  is the console's to do because the roster is the console's (#903 review 3, finding 1). */
@@ -143,6 +150,12 @@ export function MissionContextPanel({
                 sessionKey={s.session_key}
                 role={s.role ?? null}
                 onGone={onMembershipChanged}
+                prefill={
+                  draftEdit && draftEdit.sessionKey === s.session_key
+                    ? draftEdit
+                    : null
+                }
+                onDraftReplaced={onDraftReplaced}
               />
               {spawn ? (
                 <MissionSpawn

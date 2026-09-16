@@ -281,7 +281,9 @@ function NudgedRow({
       ? "your direction"
       : row.source === "default_nudge"
         ? "your default nudge"
-        : null;
+        : row.source === "ai_draft"
+          ? "the AI's draft, sent by you"
+          : null;
   return (
     <div
       className={t.box}
@@ -343,12 +345,13 @@ function HeldRow({
     <div
       className={`${t.quiet} ${t.line}`}
       role="group"
-      aria-label={`Held: ${objective}`}
+      aria-label={`${row.draft ? "Draft not sent" : "Held"}: ${objective}`}
       data-testid="thread-held"
+      data-draft={row.draft ? "true" : undefined}
     >
       <CirclePause size={14} className={t.icon} aria-hidden="true" />
       <span className={`${t.lineText} ${t.note}`}>
-        Held
+        {row.draft ? "Draft not sent" : "Held"}
         <span className={t.sep}>·</span>
         <b className={d.threadStrong}>{objective}</b>
         <span className={t.sep}>·</span>

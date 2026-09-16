@@ -1671,10 +1671,80 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 return _fail(
                     missions.MissionError("this mission does not hold that session", status=409)
                 )
+            # AN EDIT OF AN AI-DRAFTED DIRECTION (#983 P3). Optional; when present it names the
+            # draft this relay replaces, and it must be exactly that: a supervisor
+            # `draft_direction` for THIS mission and THIS session.
+            replaces = body.get("replaces_draft")
+            if replaces is not None and not (isinstance(replaces, str) and replaces.strip()):
+                return _fail(missions.MissionError("replaces_draft must be an action id", 422))
         except missions.MissionError as e:
             return _fail(e)
 
+        draft_id = replaces.strip() if isinstance(replaces, str) else ""
+        if draft_id:
+            status, draft = await asyncio.to_thread(orchestrator_ledger.lookup, draft_id)
+            if status == "unreadable":
+                return _fail(
+                    missions.MissionError(
+                        "nothing was sent: the action ledger could not be read", status=503
+                    )
+                )
+            if status != "found" or draft is None:
+                return _fail(missions.MissionError("unknown draft", status=404))
+            if (
+                draft.get("verb") != prefs.DRAFT_DIRECTION_VERB
+                or str(draft.get("source") or "") != "supervisor"
+                or str(draft.get("mission_id") or "") != mission_id
+                or str(draft.get("session_id") or "") != key
+            ):
+                return _fail(
+                    missions.MissionError(
+                        "that action is not an AI-drafted direction for this mission's session",
+                        status=409,
+                    )
+                )
+
         action_id = f"relay_{uuid.uuid4().hex}"
+
+        # REPLACING A DRAFT IS AN ORDERED, FAIL-CLOSED PROTOCOL (#983 P3), not a transaction: the
+        # draft lives in the append-only ledger, the relay's record in the missions store, and the
+        # two cannot share one. So the draft is CLOSED FIRST, by the same single-lock
+        # compare-and-set the reject route uses, before any record of this relay exists. If that
+        # fails (the draft was claimed, delivered, rejected or went stale) nothing is sent and the
+        # operator keeps their text. Once it has succeeded the draft is terminal: every failure
+        # after this point leaves it `rejected`, so it can never be claimed afterwards, and a relay
+        # that never recorded its action typed nothing. An approve racing this takes the same
+        # ledger lock around its own read, so exactly one of the two wins.
+        replaced: dict = {}
+        if draft_id:
+            closed = await asyncio.to_thread(
+                orchestrator_ledger.compare_and_set,
+                draft_id,
+                orchestrator_ledger.REJECTABLE_STATES,
+                "rejected",
+                None,
+                outcome="replaced_by_operator_edit",
+                replaced_by=action_id,
+                detail="you sent your own edit instead",
+            )
+            if closed is None:
+                cur = await asyncio.to_thread(orchestrator_ledger.get, draft_id)
+                now_state = str((cur or {}).get("state") or "unknown")
+                return JSONResponse(
+                    {
+                        "detail": (
+                            f"nothing was sent: the AI's draft is already {now_state}, so your "
+                            "edit did not replace it"
+                        ),
+                        "draft_replaced": False,
+                        "draft_state": now_state,
+                    },
+                    status_code=409,
+                )
+            replaced = {"draft_replaced": True, "replaced_draft": draft_id}
+
+        def _refused(detail: str, status: int) -> JSONResponse:
+            return JSONResponse({"detail": detail, **replaced}, status_code=status)
 
         # THE OPERATOR'S RECORD IS WRITTEN BEFORE THE BYTES, and a failure to write it refuses
         # the relay (#903 review, finding 2).
@@ -1691,15 +1761,16 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                     text=text,
                     session_key=key,
                     action_id=action_id,
-                    meta={"relay": True, "state": "sending"},
+                    meta={
+                        "relay": True,
+                        "state": "sending",
+                        **({"replaces_draft": draft_id} if draft_id else {}),
+                    },
                 )
             )
         except Exception:  # noqa: BLE001
-            return _fail(
-                missions.MissionError(
-                    "nothing was sent: the mission's own record of it could not be written",
-                    status=502,
-                )
+            return _refused(
+                "nothing was sent: the mission's own record of it could not be written", 502
             )
 
         # THE APPEND IS ITS OWN STEP, and its failure is a DIFFERENT fact from a delivery
@@ -1732,9 +1803,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 "failed",
                 f"nothing was sent: the action could not be recorded ({type(e).__name__})",
             )
-            return _fail(
-                missions.MissionError(f"the relay failed ({type(e).__name__})", status=502)
-            )
+            return _refused(f"the relay failed ({type(e).__name__})", 502)
 
         try:
             rec = await actuator.deliver(action_id, registry=registry)
@@ -1744,7 +1813,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # claim or on a lost claim race; either way nothing of ours reached the pty, and a
             # record still reading `sending` would be a claim about a delivery that is over.
             await _settle_relay(mission_id, action_id, "failed", str(e))
-            return _fail(missions.MissionError(str(e), status=409))
+            return _refused(str(e), 409)
         except Exception as e:  # noqa: BLE001
             # AMBIGUOUS, AND SAID SO (#903 review 3, finding 3). Once `deliver` has claimed the
             # action the bytes may already be on the pty — the post-write ledger CAS is inside
@@ -1806,6 +1875,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                     ),
                     "state": "indeterminate",
                     "action_id": action_id,
+                    **replaced,
                 },
                 status_code=502,
             )
@@ -1824,6 +1894,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 "state": rec.get("state"),
                 "detail": rec.get("detail"),
                 "session_key": key,
+                **replaced,
             }
         )
 

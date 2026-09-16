@@ -311,7 +311,7 @@ export function deferred(): { promise: Promise<void>; release: () => void } {
  *  422 with that detail instead, and `hold` keeps one pending until it is released. */
 export async function missionConsole(
   page: Page,
-  opts: { pending?: unknown; events?: unknown[]; state?: string } = {},
+  opts: { pending?: unknown; events?: unknown[]; state?: string; context?: unknown } = {},
 ): Promise<ConsoleServer> {
   await commonMocks(page);
   const server: ConsoleServer = {
@@ -367,6 +367,8 @@ export async function missionConsole(
       events: opts.events ?? [],
       events_next_seq: null,
     },
+    // #983 P3: a roster, so the Context section renders the session's composer.
+    ...(opts.context !== undefined ? { context: opts.context } : {}),
   });
   // Registered AFTER mockMissions, so it wins for the objectives URL (newest route first).
   await page.route("**/api/missions/*/objectives", async (r) => {

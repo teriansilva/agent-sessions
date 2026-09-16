@@ -299,7 +299,15 @@ export type OrchestratorTier = "off" | "suggest" | "yolo";
 
 /** #726: what the orchestrator proposed. `observe`/`escalate` never reach a session. */
 export type OrchestratorVerb =
-  "observe" | "continue" | "choose" | "answer" | "dispatch" | "escalate";
+  | "observe"
+  | "continue"
+  | "choose"
+  | "answer"
+  | "dispatch"
+  | "escalate"
+  /** #983 P3: an AI-drafted direction. Minted only by a mission's supervisor, always a proposal,
+   *  and typed only when the operator approves it. Never in the autonomy ceiling. */
+  | "draft_direction";
 
 /** #726: the lifecycle of one action. `indeterminate` is deliberate: if the process dies
  *  between the PTY write and the durable record, nothing on disk can prove whether the bytes
@@ -406,6 +414,11 @@ export interface OrchestratorAction {
   render_status?: RenderStatus;
   /** What a delivered supervisor nudge typed (#983). */
   delivered_text?: string;
+  /** An AI-drafted direction's text (#983 P3): stored sanitized at proposal, exactly what Send as
+   *  written types. Model-authored, so it renders as text and is never interpreted. */
+  draft?: string;
+  /** The objective incarnation a draft is bound to (#983 P3). Server-side identity; not shown. */
+  objective_incarnation?: string;
 }
 
 /** One checked fact a direction was filled with (#983). `observed_at` is null for a fact that came

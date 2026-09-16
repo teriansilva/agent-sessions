@@ -14,6 +14,7 @@ export function MissionDetails({
   timeline,
   summaries,
   revealObjectives = 0,
+  revealContext = 0,
 }: {
   missionId: string;
   context: ReactNode;
@@ -27,6 +28,8 @@ export function MissionDetails({
     timeline: string;
   };
   revealObjectives?: number;
+  /** #983 P3: bumped when an AI draft is opened in the Context section's composer. */
+  revealContext?: number;
 }) {
   const [expanded, setExpanded] = useSectionState<Record<string, boolean>>(
     `mission.${missionId}.details`,
@@ -40,6 +43,14 @@ export function MissionDetails({
     setSeenReveal(revealObjectives);
     if (revealObjectives)
       setExpanded((prev) => ({ ...prev, objectives: true }));
+  }
+  const [seenContext, setSeenContext] = useSectionState(
+    `mission.${missionId}.revealContext`,
+    0,
+  );
+  if (seenContext !== revealContext) {
+    setSeenContext(revealContext);
+    if (revealContext) setExpanded((prev) => ({ ...prev, context: true }));
   }
   const id = useId();
   const sections = [

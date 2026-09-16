@@ -347,6 +347,45 @@
   gap: 8px;
 }
 
+/* --- an AI-drafted direction (#983 P3) ----------------------------------------------------------- */
+
+/* The frame is DASHED all round: the words inside are the model's. Applied to ActionRow's frame, so
+   the tone stripe on the left edge stays the decision's status colour. */
+.draftFrame.draftFrame {
+  /* Doubled for specificity: this has to win over the host row's own solid border, whichever of the
+     two stylesheets loads last. */
+  border-style: dashed;
+  border-left-style: solid;
+}
+.draftBox {
+  padding: 10px 12px;
+  border: 1px dashed var(--line-strong);
+}
+.draftFlag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 7px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-1);
+  border: 1px dashed var(--text-3);
+  white-space: nowrap;
+}
+.draftHint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-3);
+}
+.draftHint b {
+  font-weight: 600;
+  color: var(--text-2);
+}
+
 /* --- the objective row's direction mark, and the thread's nudge rows ---------------------------- */
 
 .objDirection {

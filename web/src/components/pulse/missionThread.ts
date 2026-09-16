@@ -44,12 +44,14 @@ export type ThreadRow =
   | {
       type: "nudged";
       objectiveKey: string | null;
-      source: "direction" | "default_nudge" | null;
+      /** `ai_draft`: an AI-drafted direction the operator approved (#983 P3). */
+      source: "direction" | "default_nudge" | "ai_draft" | null;
       /** Verbatim, exactly as the server recorded what was typed. */
       text: string;
     }
-  /** A supervisor nudge that was not typed, with the server's reason (#983). */
-  | { type: "held"; objectiveKey: string | null; reason: string }
+  /** A supervisor nudge that was not typed, with the server's reason (#983). `draft` marks an
+   *  AI-drafted direction that was dismissed, replaced by an edit, or went stale (P3). */
+  | { type: "held"; objectiveKey: string | null; reason: string; draft?: true }
   | { type: "system"; label: string; text: string | null };
 
 function str(meta: Record<string, unknown> | null, key: string): string | null {
@@ -200,14 +202,23 @@ export function threadRow(e: MissionEvent): ThreadRow {
       return {
         type: "nudged",
         objectiveKey,
-        source: src === "direction" || src === "default_nudge" ? src : null,
+        source:
+          src === "direction" || src === "default_nudge" || src === "ai_draft" ? src : null,
         text: typeof e.text === "string" ? e.text : "",
       };
     }
     const reason = (text(e) ?? "")
-      .replace(/^\s*A nudge was prepared but not delivered:\s*/i, "")
+      .replace(
+        /^\s*(A nudge was prepared but not delivered|An AI-drafted direction was not sent):\s*/i,
+        "",
+      )
       .trim();
-    return { type: "held", objectiveKey, reason: reason || "it was not sent" };
+    return {
+      type: "held",
+      objectiveKey,
+      reason: reason || "it was not sent",
+      ...(meta?.draft === true ? { draft: true as const } : {}),
+    };
   }
 
   // …and a direction that could not be filled, which the supervisor held and escalated (#983). Its

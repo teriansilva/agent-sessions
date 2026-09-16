@@ -5219,10 +5219,20 @@ def record_supervisor_action(
     episode: int,
     action_id: str,
     max_per_episode: int | None = None,
+    expect_incarnation: str | None = None,
+    require_no_direction: bool = False,
     now: float | None = None,
     path: Path | None = None,
 ) -> bool:
     """Bind an action to the objective episode it was sent for. True if the binding was taken.
+
+    **`expect_incarnation` and `require_no_direction` are the AI-drafted direction's eligibility,
+    enforced HERE** (#983 P3, review 4887). Both are properties the caller checked earlier and then
+    awaited on — a precondition capture is an external read — and neither moves anything the other
+    guards watch: a re-created objective under the same key restarts at episode 1, and
+    `set_direction` changes neither episode nor incarnation. Checked in the transaction that takes
+    the binding, they have no window at all. A caller passing neither gets exactly the old
+    behaviour.
 
     Written BEFORE the ledger append is delivered, so a crash leaves a binding whose action may or
     may not have landed; the ledger's terminal state for that id then says which. That ordering is
@@ -5249,6 +5259,28 @@ def record_supervisor_action(
             if not _objective_is_current(con, mission_id, objective_key, episode):
                 con.execute("ROLLBACK")
                 return False
+            if expect_incarnation is not None or require_no_direction:
+                row = con.execute(
+                    "SELECT incarnation, direction FROM mission_objectives "
+                    "WHERE mission_id=? AND key=?",
+                    (mission_id, objective_key),
+                ).fetchone()
+                if row is None:
+                    con.execute("ROLLBACK")
+                    return False
+                # THE INCARNATION THE CALLER WAS WRITING ABOUT. An episode number is not an
+                # identity: a drop and a re-add of the same key starts at 1 again.
+                if (
+                    expect_incarnation is not None
+                    and str(row["incarnation"] or "") != expect_incarnation
+                ):
+                    con.execute("ROLLBACK")
+                    return False
+                # …and an objective the operator has since given a direction gets the operator's
+                # words, so there is nothing for a draft to be.
+                if require_no_direction and str(row["direction"] or "").strip():
+                    con.execute("ROLLBACK")
+                    return False
             if max_per_episode is not None:
                 n = con.execute(
                     "SELECT COUNT(*) AS n FROM mission_supervisor_actions "
@@ -5494,7 +5526,10 @@ def supervisor_authority(
     action_id: str = "",
     path: Path | None = None,
 ) -> tuple:
-    """`(holder, objective_state, episode, stood_down, bound_episode, question_seq)` — one read.
+    """`(holder, objective_state, episode, stood_down, bound_episode, question_seq, incarnation)`.
+
+    One read. `incarnation` is the objective's current identity, or `None` when the slot is empty
+    (#983 P3): an action bound to an incarnation compares it inside the same snapshot.
 
     `bound_episode` is the episode the supervisor BINDING records for `action_id`, or `None` when
     no binding exists. It is part of this tuple — rather than a separate lookup the caller does
@@ -5528,7 +5563,7 @@ def supervisor_authority(
             (session_key,),
         ).fetchone()
         obj = con.execute(
-            "SELECT state FROM mission_objectives WHERE mission_id=? AND key=?",
+            "SELECT state, incarnation FROM mission_objectives WHERE mission_id=? AND key=?",
             (mission_id, objective_key),
         ).fetchone()
         ep = con.execute(
@@ -5558,6 +5593,7 @@ def supervisor_authority(
         bool(ep["stood_down"]) if ep is not None else False,
         bound,
         0 if ep is None else int(ep["question_seq"] or 0),
+        None if obj is None else (str(obj["incarnation"] or "") or None),
     )
 
 
@@ -5780,12 +5816,18 @@ def delivered_event_action_ids(action_ids: list[str], *, path: Path | None = Non
         con.close()
 
 
+#: The supervisor action kinds whose delivered text the thread keeps (#983): a nudge, and an
+#: AI-drafted direction the operator approved (P3). Spelled here rather than imported from `prefs`
+#: because this store sits below it; a test pins the second to `prefs.DRAFT_DIRECTION_VERB`.
+DELIVERED_TEXT_VERBS: frozenset[str] = frozenset({"continue", "draft_direction"})
+
+
 def is_delivered_supervisor_nudge(rec: object) -> bool:
-    """A ledger row that is a DELIVERED supervisor `continue` carrying the text it typed (#983)."""
+    """A ledger row that is a DELIVERED supervisor action carrying the text it typed (#983)."""
     return (
         isinstance(rec, dict)
         and rec.get("state") == "delivered"
-        and rec.get("verb") == "continue"
+        and rec.get("verb") in DELIVERED_TEXT_VERBS
         and str(rec.get("source") or "") == "supervisor"
         and isinstance(rec.get("delivered_text"), str)
         and isinstance(rec.get("id"), str)
@@ -5856,7 +5898,9 @@ def reconcile_delivered_records(records, *, path: Path | None = None) -> dict:
             if ensure_delivered_nudge_event(
                 r,
                 text=r["delivered_text"],
-                source=(r.get("render") or {}).get("source")
+                source="ai_draft"
+                if r.get("verb") == "draft_direction"
+                else (r.get("render") or {}).get("source")
                 if isinstance(r.get("render"), dict)
                 else None,
                 digest=r.get("delivered_digest"),

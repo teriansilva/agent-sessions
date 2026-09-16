@@ -1080,11 +1080,50 @@
   flex: 1;
   min-width: 0;
   min-height: 44px;
-  padding: 0 11px;
+  /* A textarea since #983 P3, so a prefilled AI draft keeps its line breaks. Sized to read as the
+     one-line field it was until it holds more. */
+  padding: 11px;
+  line-height: 1.4;
+  resize: vertical;
   background: var(--bg-2);
   color: var(--text-1);
   border: 1px solid var(--border);
   font: inherit;
+}
+
+/* Editing an AI-drafted direction (#983 P3), STACKED: the note, a full-width field that grows with
+   its text, then Cancel and Send on one row. The Context column is ~330px, and a field sharing its
+   row with the button wrapped a draft at about twenty characters. */
+.relayDraftForm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+.relayDraft {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-2);
+}
+/* `flex: none`, because `.relayInput`'s `flex: 1` would stretch it down a column. Its height is set
+   from its content by MissionScreen, up to this cap, and then it scrolls. */
+.relayDraftInput {
+  flex: none;
+  width: 100%;
+  max-height: 280px;
+  overflow-y: auto;
+  resize: none;
+}
+.relayDraftActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+@media (max-width: 800px) {
+  .relayDraftActions > * {
+    flex: 1 1 0;
+  }
 }
 
 .relayInput:focus-visible {

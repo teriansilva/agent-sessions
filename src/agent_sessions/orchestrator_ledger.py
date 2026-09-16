@@ -1082,19 +1082,13 @@ def _preserve_deliveries(doomed: list[dict]) -> list[dict]:
     the reconciliation cannot run at all, every doomed delivered nudge with text is pinned. Nothing
     else is retained longer.
     """
-    candidates = [
-        r
-        for r in doomed
-        if r.get("state") == "delivered"
-        and r.get("verb") == "continue"
-        and str(r.get("source") or "") == "supervisor"
-        and isinstance(r.get("delivered_text"), str)
-    ]
+    from . import missions
+
+    # The store's own predicate, so a delivered AI draft (#983 P3) is kept exactly as a nudge is.
+    candidates = [r for r in doomed if missions.is_delivered_supervisor_nudge(r)]
     if not candidates:
         return doomed
     try:
-        from . import missions
-
         keep = set(missions.reconcile_delivered_records(candidates)["unrecorded"])
     except Exception as e:  # noqa: BLE001 — unknown is not "recorded"
         log.warning("ledger: could not reconcile delivered nudges before compaction (%s)", e)

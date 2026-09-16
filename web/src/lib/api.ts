@@ -1075,15 +1075,26 @@ export const api = {
    *  `mutateJson` because the refusals are the interesting part and each has a different fix:
    *  "this mission does not hold that session", "session is not live", "a viewer is attached".
    */
-  relayToSession: (id: string, sessionKey: string, text: string) =>
+  relayToSession: (
+    id: string,
+    sessionKey: string,
+    text: string,
+    /** #983 P3: the AI-drafted direction this relay replaces. The server closes the draft BEFORE
+     *  it records the relay, and a draft that is no longer waiting is a 409 with nothing sent. */
+    replacesDraft?: string,
+  ) =>
     mutateJson<{
       action_id: string;
       state: string;
       detail?: string;
       session_key: string;
+      /** Present whenever `replacesDraft` was sent and the server got as far as the draft. */
+      draft_replaced?: boolean;
+      replaced_draft?: string;
     }>("POST", `/api/missions/${encodeURIComponent(id)}/relay`, {
       session_key: sessionKey,
       text,
+      ...(replacesDraft ? { replaces_draft: replacesDraft } : {}),
     }),
   /** One durable operator turn on a mission (#871, wired in #890).
    *

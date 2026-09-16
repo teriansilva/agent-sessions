@@ -9,6 +9,7 @@ import type {
 } from "../../types/api";
 
 import { MissionContextPanel } from "./MissionContext";
+import type { DraftEdit } from "./draftDirection";
 import { MissionObjectives, type ObjectiveOp } from "./MissionObjectives";
 import type { DirectionOp } from "./objectiveDirection";
 import { MissionTimeline } from "./MissionTimeline";
@@ -68,6 +69,8 @@ export function ContextPane({
   onMembershipChanged,
   busy,
   spawn,
+  draftEdit,
+  onDraftReplaced,
 }: {
   context: MissionContext | null;
   loading: boolean;
@@ -86,6 +89,9 @@ export function ContextPane({
     onChanged: (opts?: { membershipChanged?: boolean }) => void;
     onNote: (msg: string) => void;
   };
+  /** #983 P3: an AI draft opened for editing, and what to do once a send has replaced it. */
+  draftEdit?: DraftEdit | null;
+  onDraftReplaced?: (actionId: string) => void;
 }) {
   return (
     <MissionContextPanel
@@ -95,6 +101,8 @@ export function ContextPane({
       onMembershipChanged={onMembershipChanged}
       busy={busy}
       spawn={spawn}
+      draftEdit={draftEdit}
+      onDraftReplaced={onDraftReplaced}
     />
   );
 }
