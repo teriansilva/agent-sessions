@@ -709,6 +709,9 @@ export interface AppConfig {
   /** What's new (#971): the newest release whose notes were dismissed, `null` until then. Absent
    *  on a server from before #971 — and an absent key means "not due", so the dialog stays shut. */
   whats_new_seen?: string | null;
+  /** Usage analytics (#1009): the operator's decision, and whether this server allows it at all
+   *  (`available` is false under `AGENT_SESSIONS_ANALYTICS=0`). Absent on an older server. */
+  analytics?: AnalyticsState;
   /** Per-user UI theme id (dark|light); applied at load. Absent on older servers. */
   theme?: string;
   /** Per-user brand accent (#rrggbb) driving --accent + the xterm cursor (#211 Phase 2);
@@ -1619,4 +1622,12 @@ export interface MissionContext {
   /** The exception KIND only, never the path or message — the panel says "git could not be
    *  read" without leaking where. Fails closed: `git` stays null. */
   git_error: string | null;
+}
+
+/** Usage analytics (#1009). `decided` false means the operator was never asked or never answered —
+ *  which is off. */
+export interface AnalyticsState {
+  enabled: boolean;
+  decided: boolean;
+  available: boolean;
 }

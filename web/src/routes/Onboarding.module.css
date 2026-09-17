@@ -177,6 +177,11 @@
   color: var(--text-2);
   line-height: 1.55;
 }
+/* A bulleted list in running copy (#1009's "what is sent"): it continues the paragraph above it. */
+.list {
+  margin-top: 4px;
+  padding-left: 18px;
+}
 .stepBody {
   margin-top: 16px;
 }
@@ -348,6 +353,15 @@
 .ghost {
   border-color: transparent;
   color: var(--text-3);
+}
+/* The §8 44px touch floor, under coarse pointers and at ≤800px (docs/design.md). The wizard's buttons
+ * sat at 35.5px on a phone; the real-browser spec for #1009's step measures it. */
+@media (max-width: 800px), (pointer: coarse) {
+  .btn,
+  .pri,
+  .ghost {
+    min-height: 44px;
+  }
 }
 .btn:disabled,
 .pri:disabled {

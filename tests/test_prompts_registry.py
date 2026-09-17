@@ -76,7 +76,7 @@ TRANSPORT_FUNC = "_post_chat"
 HTTP_CLIENT_LIBS = frozenset(
     {"httpx", "requests", "aiohttp", "urllib3", "urllib.request", "http.client"}
 )
-HTTP_MODULES = frozenset({"review", "webpush", "appproxy", "forge", "mission_probes"})
+HTTP_MODULES = frozenset({"review", "webpush", "appproxy", "forge", "mission_probes", "analytics"})
 
 # Layer 2 — inside those modules, every outbound call is pinned to a function AND a count, so
 # a SECOND call added to an already-approved function is a mismatch rather than a free ride.
@@ -115,6 +115,10 @@ POST_SITES = {
     # an inherited pass — which is the entire point of counting rather than listing.
     ("forge", "_get"): 1,  # `ForgeClient._get` — the adapter's single read
     ("mission_probes", "_probe_http"): 1,  # `http_status` / `http_revision`
+    # USAGE ANALYTICS (#1009): the one opt-in daily report to the project's Umami. A FIXED
+    # destination — no request, pref or model output reaches its URL, headers or body — and one
+    # call site, so a second report path added beside it is a mismatch here.
+    ("analytics", "send_once"): 1,
 }
 
 # Layer 3 — a module that never imports a client can still be handed one. `.post(` / `.request(`

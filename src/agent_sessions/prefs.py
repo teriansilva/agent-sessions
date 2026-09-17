@@ -23,6 +23,9 @@ import copy
 import math
 import os
 import re
+import time
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -2337,3 +2340,100 @@ def set_mission_playbooks(
         return {**checked, "revision": rev + 1}
 
     return _mutate("mission_playbooks", merge, path)
+
+
+# Usage analytics consent (#1009). The block is ABSENT until the operator decides, and absent means
+# off: nothing here ever writes it on a read, so an install that never saw the question stays
+# undecided. `install_id` exists only while consent is true. The day's budget — `last_sent_day`,
+# `attempt_day`, `attempts` — is non-identifying and deliberately survives a consent change: it is
+# what stops a same-day off → on from spending a second budget or counting a second visitor.
+ANALYTICS_KEY = "analytics"
+ANALYTICS_MAX_ATTEMPTS = 3
+_DAY_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+_UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
+
+
+def utc_today() -> str:
+    """The UTC calendar day the analytics budget is counted against."""
+    return datetime.now(UTC).date().isoformat()
+
+
+def _coerce_analytics(raw: object) -> dict:
+    """The stored block narrowed to its known, well-formed fields. Never raises: a hand-edited or
+    corrupt block loses the bad field rather than taking the config route down."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict = {}
+    if isinstance(raw.get("consent"), bool):
+        out["consent"] = raw["consent"]
+    at = raw.get("decided_at")
+    if isinstance(at, int) and not isinstance(at, bool) and at >= 0:
+        out["decided_at"] = at
+    iid = raw.get("install_id")
+    if out.get("consent") is True and isinstance(iid, str) and _UUID_RE.fullmatch(iid):
+        out["install_id"] = iid
+    for day in ("last_sent_day", "attempt_day"):
+        v = raw.get(day)
+        if isinstance(v, str) and _DAY_RE.fullmatch(v):
+            out[day] = v
+    n = raw.get("attempts")
+    if "attempt_day" in out and isinstance(n, int) and not isinstance(n, bool):
+        out["attempts"] = max(0, min(n, ANALYTICS_MAX_ATTEMPTS))
+    return out
+
+
+def analytics_state(path: Path | None = None) -> dict:
+    """The whole stored block, for the sender only. No route returns this: it carries the id."""
+    return _coerce_analytics(_load(path or _default_path()).get(ANALYTICS_KEY))
+
+
+def get_analytics(path: Path | None = None) -> dict:
+    """The public view: whether the operator said yes, and whether they said anything at all."""
+    block = analytics_state(path)
+    return {"enabled": block.get("consent") is True, "decided": "consent" in block}
+
+
+def update_analytics(step, path: Path | None = None) -> dict | None:
+    """Read-modify-write the analytics block under the prefs flock, writing ONLY when ``step``
+    returns a block. ``step`` gets a copy of the coerced block; returning ``None`` means "leave the
+    file alone", which is what keeps a guard that bails from creating the block as a side effect.
+    Returns what was written, or ``None``."""
+    path = path or _default_path()
+    with json_write_lock(path):
+        data = read_json_doc(path)
+        new = step(_coerce_analytics(data.get(ANALYTICS_KEY)))
+        if new is None:
+            return None
+        data[ANALYTICS_KEY] = _coerce_analytics(new)
+        atomic_write_json(path, data)
+        return data[ANALYTICS_KEY]
+
+
+def set_analytics_consent(
+    value: bool, path: Path | None = None, *, today: str | None = None
+) -> dict:
+    """Record the operator's decision; returns the public view.
+
+    ``True`` keeps an existing install id or mints a new one. A NEW id minted on a day that already
+    had an attempt exhausts that day's budget in the same write, so its first request is tomorrow:
+    the earlier attempt may have been recorded even though it never settled (a timeout after Umami
+    wrote it, or a revoke that blocked the settle), and a second id that day would count a second
+    visitor. ``False`` deletes the id and keeps the budget.
+    """
+    if not isinstance(value, bool):
+        raise ValueError("analytics consent must be a boolean")
+    day = today or utc_today()
+
+    def step(block: dict) -> dict:
+        block["consent"] = value
+        block["decided_at"] = int(time.time())
+        if not value:
+            block.pop("install_id", None)
+        elif "install_id" not in block:
+            block["install_id"] = str(uuid.uuid4())
+            if block.get("attempt_day") == day and block.get("attempts", 0) > 0:
+                block["attempts"] = ANALYTICS_MAX_ATTEMPTS
+        return block
+
+    update_analytics(step, path)
+    return get_analytics(path)

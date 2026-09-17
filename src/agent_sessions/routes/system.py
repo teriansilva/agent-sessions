@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse, Response
 
 from .. import (
     aitasks,
+    analytics,
     discover,
     engines,
     handoff,
@@ -156,6 +157,8 @@ def _preflight_prefs(payload: dict) -> None:
             raise bad("project_names must be an object of string→string")
     if "onboarded" in payload and not isinstance(payload["onboarded"], bool):
         raise bad("onboarded must be a boolean")
+    if "analytics_consent" in payload and not isinstance(payload["analytics_consent"], bool):
+        raise bad("analytics_consent must be a boolean")
     if "whats_new_seen" in payload:
         if prefs.release_tuple(payload["whats_new_seen"]) is None:
             raise bad("whats_new_seen must be a release version like 0.20.0")
@@ -376,6 +379,9 @@ def register(
                 onboarded_val = any(True for _ in engines.scan_all())
             except Exception:
                 onboarded_val = True
+        # Usage analytics (#1009): an operator fetched the config, so today's report starts if one
+        # is due. Returns at once and never raises — the response does not wait on the report.
+        analytics.note_active()
         return JSONResponse(
             {
                 "csrf": current_csrf(cfg, request) or "",
@@ -384,6 +390,9 @@ def register(
                 # What's new (#971): the newest release notes the operator dismissed, or null.
                 # Always present, so the SPA can tell "never seen" from a server without the key.
                 "whats_new_seen": prefs.get_whats_new_seen(),
+                # Usage analytics (#1009): the decision and whether this server allows it at all.
+                # Never the install id or the day's budget.
+                "analytics": analytics.public_state(),
                 "new_session_engines": [
                     p.engine_id
                     for p in engines.all_providers()
@@ -691,6 +700,13 @@ def register(
             if not isinstance(v, bool):
                 raise HTTPException(status_code=422, detail="onboarded must be a boolean")
             out["onboarded"] = prefs.set_onboarded(v)
+        if "analytics_consent" in payload:
+            # Usage analytics (#1009): the operator's own decision, from the wizard or Settings.
+            # A JSON boolean only — `1`, "true" and null are not a decision anyone made.
+            v = payload["analytics_consent"]
+            if not isinstance(v, bool):
+                raise HTTPException(status_code=422, detail="analytics_consent must be a boolean")
+            out["analytics"] = analytics.set_consent(v)
         if "whats_new_seen" in payload:
             # What's new (#971). The store keeps the numeric maximum, so the response carries the
             # value actually kept — which is newer than the request's when another device got there.

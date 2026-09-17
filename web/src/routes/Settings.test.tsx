@@ -7,6 +7,7 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useEffect, useState } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
 import { ConfigCtx, ConfigRefreshCtx } from "../app/config";
@@ -67,6 +68,8 @@ vi.mock("../lib/api", async () => {
       prompts: vi.fn().mockResolvedValue({ prompts: [] }),
       // #956: the Endpoint & model page checks a draft through this route.
       testAiEndpoint: vi.fn(),
+      // #1009: the Usage analytics page saves consent through this route.
+      setAnalyticsConsent: vi.fn(),
     },
   };
 });
@@ -90,22 +93,26 @@ function renderSettings(
   accent = "#ffb000",
   initialPath = "/settings",
   authMode: "single-user" | "none" = "single-user",
+  configOver: Partial<AppConfig> = {},
 ) {
   const setTheme = vi.fn();
   const setAccent = vi.fn();
+  const publishRef: { current: (c: AppConfig) => void } = { current: () => {} };
   render(
     <MemoryRouter initialEntries={[initialPath]}>
       {/* #682: the Security tab is now config-driven (useConfig gates the login-off vs 2FA/Account
           cards), so the harness must provide a resolved config — single-user here, matching the
           api.config mock — or the panel renders empty. */}
-      <ConfigCtx.Provider
-        value={
+      <ConfigHost
+        publishRef={publishRef}
+        initial={
           {
             csrf: "t",
             new_session_engines: [],
             terminal_backend: "ws",
             auth_mode: authMode,
             two_factor_enabled: false,
+            ...configOver,
           } as AppConfig
         }
       >
@@ -120,10 +127,32 @@ function renderSettings(
             </OverviewPrefsProvider>
           </AccentCtx.Provider>
         </ThemeCtx.Provider>
-      </ConfigCtx.Provider>
+      </ConfigHost>
     </MemoryRouter>,
   );
-  return { setTheme, setAccent };
+  return {
+    setTheme,
+    setAccent,
+    publishConfig: (c: AppConfig) => publishRef.current(c),
+  };
+}
+
+/** Holds the config in state so a test can publish a newer one — what ConfigContext does when a
+ *  refresh lands (#1009: a setup replay saving over a mounted Settings page). */
+function ConfigHost({
+  initial,
+  publishRef,
+  children,
+}: {
+  initial: AppConfig;
+  publishRef: { current: (c: AppConfig) => void };
+  children: React.ReactNode;
+}) {
+  const [config, setConfig] = useState(initial);
+  useEffect(() => {
+    publishRef.current = setConfig;
+  }, [publishRef]);
+  return <ConfigCtx.Provider value={config}>{children}</ConfigCtx.Provider>;
 }
 
 /** The About tab is the only one that shows the version — on other tabs, flush the pending
@@ -346,6 +375,7 @@ test.each([
   ["agents", ["Connected agents"]],
   ["security", ["Two-factor authentication", "Account"]],
   ["updates", ["Updates"]],
+  ["analytics", ["Usage analytics"]],
   ["system", ["Host"]],
   ["maintenance", ["Archive old sessions", "Scrollback cache"]],
   ["about", ["Support", "About"]],
@@ -359,7 +389,139 @@ test.each([
 
 test("the registry and the pages agree: every section id renders something", () => {
   // A registry entry with no body in Settings.tsx would be a nav link to a blank page.
-  expect(SETTINGS_SECTIONS).toHaveLength(16);
+  expect(SETTINGS_SECTIONS).toHaveLength(17);
+});
+
+// ---- Usage analytics (#1009) ----------------------------------------------------------------
+
+const UNDECIDED = { enabled: false, decided: false, available: true };
+const ANALYTICS_ON = { enabled: true, decided: true, available: true };
+
+function analyticsBox() {
+  return screen.getByRole("checkbox", { name: "Share usage analytics" });
+}
+
+test("usage analytics: an undecided install shows off, and ticking saves true", async () => {
+  vi.mocked(api.setAnalyticsConsent).mockResolvedValue({
+    analytics: ANALYTICS_ON,
+  });
+  renderSettings("dark", "#ffb000", "/settings/analytics", "single-user", {
+    analytics: UNDECIDED,
+  });
+  expect(analyticsBox()).not.toBeChecked();
+  await userEvent.click(analyticsBox());
+  expect(api.setAnalyticsConsent).toHaveBeenCalledWith(true);
+  await waitFor(() => expect(analyticsBox()).toBeChecked());
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  await flushFetches();
+});
+
+test("usage analytics: a failed save shows the server's state, not the click", async () => {
+  vi.mocked(api.setAnalyticsConsent).mockRejectedValue(new Error("offline"));
+  vi.mocked(api.config).mockResolvedValue({
+    csrf: "t",
+    new_session_engines: [],
+    terminal_backend: "ws",
+    analytics: ANALYTICS_ON,
+  });
+  renderSettings("dark", "#ffb000", "/settings/analytics", "single-user", {
+    analytics: ANALYTICS_ON,
+  });
+  await userEvent.click(analyticsBox()); // untick
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "your previous setting (on) is still in effect",
+  );
+  expect(analyticsBox()).toBeChecked();
+  await flushFetches();
+});
+
+test("usage analytics: a save whose response was lost but which landed is a success", async () => {
+  vi.mocked(api.setAnalyticsConsent).mockRejectedValue(new Error("timeout"));
+  vi.mocked(api.config).mockResolvedValue({
+    csrf: "t",
+    new_session_engines: [],
+    terminal_backend: "ws",
+    analytics: { enabled: false, decided: true, available: true },
+  });
+  renderSettings("dark", "#ffb000", "/settings/analytics", "single-user", {
+    analytics: ANALYTICS_ON,
+  });
+  await userEvent.click(analyticsBox());
+  await waitFor(() => expect(analyticsBox()).not.toBeChecked());
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  await flushFetches();
+});
+
+test("usage analytics: a newer config replaces what the last save showed (setup replayed over the page)", async () => {
+  vi.mocked(api.setAnalyticsConsent).mockResolvedValue({
+    analytics: { enabled: false, decided: true, available: true },
+  });
+  const { publishConfig } = renderSettings(
+    "dark",
+    "#ffb000",
+    "/settings/analytics",
+    "single-user",
+    { analytics: ANALYTICS_ON },
+  );
+  await userEvent.click(analyticsBox()); // off, here
+  await waitFor(() => expect(analyticsBox()).not.toBeChecked());
+  // …then the wizard, replayed from Help over this mounted page, turns it back on and refreshes.
+  act(() =>
+    publishConfig({
+      csrf: "t",
+      new_session_engines: [],
+      terminal_backend: "ws",
+      auth_mode: "single-user",
+      analytics: ANALYTICS_ON,
+    } as AppConfig),
+  );
+  await waitFor(() => expect(analyticsBox()).toBeChecked());
+  await flushFetches();
+});
+
+test("usage analytics: a stale config landing during the save does not roll the result back", async () => {
+  let resolveSave: (v: { analytics: typeof ANALYTICS_ON }) => void = () => {};
+  vi.mocked(api.setAnalyticsConsent).mockReturnValue(
+    new Promise((res) => {
+      resolveSave = res;
+    }),
+  );
+  const { publishConfig } = renderSettings(
+    "dark",
+    "#ffb000",
+    "/settings/analytics",
+    "single-user",
+    { analytics: ANALYTICS_ON },
+  );
+  await userEvent.click(analyticsBox()); // off — pending
+  expect(analyticsBox()).toBeDisabled();
+  // A read issued before the save resolves meanwhile, still carrying "on".
+  act(() =>
+    publishConfig({
+      csrf: "t",
+      new_session_engines: [],
+      terminal_backend: "ws",
+      auth_mode: "single-user",
+      analytics: ANALYTICS_ON,
+    } as AppConfig),
+  );
+  await act(async () => {
+    resolveSave({ analytics: { enabled: false, decided: true, available: true } });
+  });
+  await waitFor(() => expect(analyticsBox()).not.toBeChecked());
+  await flushFetches();
+});
+
+test("usage analytics: the server's kill switch disables the toggle and says why", async () => {
+  renderSettings("dark", "#ffb000", "/settings/analytics", "single-user", {
+    analytics: { enabled: true, decided: true, available: false },
+  });
+  expect(analyticsBox()).toBeDisabled();
+  expect(analyticsBox()).not.toBeChecked();
+  expect(
+    screen.getByText(/Turned off for this server by AGENT_SESSIONS_ANALYTICS=0/),
+  ).toBeInTheDocument();
+  await flushFetches();
 });
 
 test("the Endpoint & model page renders the endpoint fields", async () => {

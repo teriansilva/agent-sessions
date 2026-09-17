@@ -32,6 +32,7 @@ export const SETTINGS_SECTIONS = [
   { id: "agents", label: "Agents & usage", group: "system" },
   { id: "security", label: "Security", group: "system" },
   { id: "updates", label: "Updates", group: "system" },
+  { id: "analytics", label: "Usage analytics", group: "system" },
   { id: "system", label: "Host", group: "system" },
   { id: "maintenance", label: "Maintenance", group: "system" },
   { id: "about", label: "About", group: "about" },

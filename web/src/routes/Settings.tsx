@@ -33,6 +33,11 @@ import { useConfig, useConfigRefresh } from "../app/config";
 import { EnableLoginDetails } from "../components/EnableLoginDetails";
 import { useOverviewPrefs } from "../app/overviewPrefs";
 import { api, ApiError } from "../lib/api";
+import {
+  ANALYTICS_DOCS_URL,
+  consentSaveError,
+  saveAnalyticsConsent,
+} from "../lib/analyticsConsent";
 import { engineName, humanBytes, humanDuration, shortCwd } from "../lib/format";
 import { stalenessNote, tone, usageCaption } from "../lib/agentUsage";
 import {
@@ -75,6 +80,7 @@ import { useTheme } from "../theme/themeStore";
 import type {
   AgentUsageResponse,
   AgentUsageRow,
+  AnalyticsState,
   EngineInfo,
   ProjectEntity,
   SystemInfo,
@@ -792,6 +798,91 @@ function SystemCard() {
             ))}
         </dl>
       )}
+    </section>
+  );
+}
+
+/** Usage analytics (#1009): the operator's consent. The checkbox shows what the SERVER holds — after
+ *  a failed save, the reconciled state, never the click — and is disabled while a save is in flight
+ *  or when the server has analytics turned off wholesale. */
+function AnalyticsCard() {
+  const config = useConfig();
+  const refresh = useConfigRefresh();
+  // What the last save learned, shown until the config it asks for arrives. ANY newer config
+  // replaces it: the setting can change elsewhere in this tab (a setup replay from Help saves over
+  // this page while it stays mounted underneath), and a snapshot that outlived that would show the
+  // wrong state for as long as the page is open. It cannot be rolled back by a stale read either:
+  // the refresh below is issued in the same tick the snapshot is set, and ConfigContext applies
+  // only the latest ISSUED read, so every config that lands after this point postdates the save.
+  const [override, setOverride] = useState<{
+    state: AnalyticsState | null;
+  } | null>(null);
+  const [seenConfig, setSeenConfig] = useState(config);
+  if (config !== seenConfig) {
+    setSeenConfig(config);
+    if (override) setOverride(null);
+  }
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const state = override?.state ?? config?.analytics ?? null;
+
+  const save = async (value: boolean) => {
+    setBusy(true);
+    setErr(null);
+    const r = await saveAnalyticsConsent(value);
+    setBusy(false);
+    setOverride({ state: r.state });
+    if (!r.ok) setErr(consentSaveError(r.state));
+    refresh();
+  };
+
+  const available = state?.available ?? false;
+  return (
+    <section className={styles.section} aria-labelledby="analytics-h">
+      <h2 id="analytics-h">Usage analytics</h2>
+      {state && !available && (
+        <p className={styles.warn}>
+          Turned off for this server by AGENT_SESSIONS_ANALYTICS=0 — nothing is
+          sent, and this setting can&apos;t be changed here.
+        </p>
+      )}
+      <label className={styles.aiToggle}>
+        <input
+          type="checkbox"
+          checked={available && !!state?.enabled}
+          disabled={!state || !available || busy}
+          onChange={(e) => void save(e.currentTarget.checked)}
+        />
+        <span>Share usage analytics</span>
+      </label>
+      {err && (
+        <p className={styles.err} role="alert">
+          {err}
+        </p>
+      )}
+      <p className={styles.hint}>
+        When on, BattleLab sends a daily active-install report on days you open
+        it, with up to three delivery attempts: a random install ID (not derived
+        from this machine, your account or your network), the BattleLab version
+        and your operating system. Nothing about your sessions, prompts, code,
+        files, projects or hosts is sent.
+      </p>
+      <p className={styles.hint}>
+        It goes to the BattleLab team&apos;s self-hosted Umami server, which uses
+        your IP address to estimate an approximate location and does not store
+        the address; the web server in front of it keeps standard access logs,
+        which include it, for up to 52 days. Switching it off deletes the install
+        ID and stops future reports — one already under way may still arrive;
+        switching it back on creates a new ID.{" "}
+        <a
+          className={styles.inlineLink}
+          href={ANALYTICS_DOCS_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          What exactly is sent
+        </a>
+      </p>
     </section>
   );
 }
@@ -2844,6 +2935,7 @@ export function Settings() {
         {section === "agents" && <ConnectedAgents />}
         {section === "security" && <SecurityPanel />}
         {section === "updates" && <UpdatesCard />}
+        {section === "analytics" && <AnalyticsCard />}
         {section === "system" && <SystemCard />}
         {section === "maintenance" && (
           <>

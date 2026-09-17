@@ -6,6 +6,7 @@ import type {
   AgentBudgets,
   AgentUsageResponse,
   AiActivity,
+  AnalyticsState,
   AppConfig,
   AutoSortReport,
   DirectionPreview,
@@ -450,6 +451,11 @@ export const api = {
       "/api/prefs",
       whatsNewSeen ? { onboarded: true, whats_new_seen: whatsNewSeen } : { onboarded: true },
     ),
+  /** Usage analytics (#1009): record the operator's decision. The response is the stored state. */
+  setAnalyticsConsent: (value: boolean) =>
+    postJson<{ analytics: AnalyticsState }>("/api/prefs", {
+      analytics_consent: value,
+    }),
   /** What's new (#971): record the release whose notes were dismissed. `onboarded: true` rides along
    *  because the server only stores the key beside it; the dialog only ever shows once onboarding
    *  resolves true, so it states nothing new. The response carries the value the server KEPT. */

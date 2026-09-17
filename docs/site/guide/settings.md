@@ -118,6 +118,32 @@ rollback-guarded installer), the release channel — **stable** (tagged releases
 development branch) — and the manual update control. The channel and the toggle persist
 server-side and apply immediately. See [Update & rollback](/start/update).
 
+### Usage analytics · `analytics` {#usage-analytics}
+
+Whether this install sends the BattleLab team a daily **active-install report**, so they can see how
+many installs are in use. It is **off unless you said yes**: setup asks as its last step before
+Launch, with the box unticked, and an install that existed before this setting starts off and is
+not asked.
+
+When on, the report goes out on days you open BattleLab — at most one per day, with up to three
+delivery attempts — as one request to the team's self-hosted Umami at `analytics.superstatus.io`.
+It carries exactly:
+
+| Field | Value |
+|---|---|
+| Install ID | a random UUID created on this machine when you agree — not derived from the machine, your account or your network |
+| Version | the BattleLab version, e.g. `0.21.0` |
+| OS | the operating system name, e.g. `Linux` |
+
+Nothing about your sessions, prompts, code, files, projects, hostnames or account is sent. Umami uses
+the connecting IP address to estimate an approximate location and does not store the address; the
+web server in front of it keeps standard access logs, which include it, for up to 52 days.
+
+Switching it off deletes the install ID and stops future reports; a report already under way may
+still arrive. Switching it back on creates a new ID, and if today already had a delivery attempt its
+first report waits for the next day. `AGENT_SESSIONS_ANALYTICS=0` turns it off for the whole server —
+the toggle is then disabled and says why.
+
 ### Host · `system`
 
 The host's OS, platform, CPU and load, memory, disk, uptime and Python version.

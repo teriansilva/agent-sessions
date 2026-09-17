@@ -104,8 +104,9 @@ install came from (`AGENT_SESSIONS_REPO`, default the public GitHub mirror).
 
 ## Mode 1 — self-host (default)
 
-No BattleLab-owned infrastructure is involved at runtime (the full egress picture, including
-update checks and the agents' own provider traffic, is in the table below). The app binds
+No BattleLab-owned infrastructure is involved at runtime unless you opt in to usage analytics
+(the full egress picture, including update checks, that opt-in report and the agents' own provider
+traffic, is in the table below). The app binds
 `127.0.0.1:8765` and you
 provide reachability: typically a reverse proxy terminating TLS in front of it (a worked nginx
 example ships in [`deploy/nginx.example.conf`](../deploy/nginx.example.conf)), or a LAN/VPN bind
@@ -123,6 +124,7 @@ path**, but the box is not egress-free. For firewall / privacy planning:
 | Install only, when needed | `github.com` (python-build-standalone), `nodejs.org` | vendored toolchains, only if the host lacks Python ≥ 3.11 / Node ≥ 20 |
 | Runtime — update checks | the source repo | `git ls-remote` on a manual update check, or daily while auto-update is enabled |
 | Runtime — optional AI features | the operator-configured OpenAI-compatible endpoint | AI session review / auto-sort / mission control — only if you configure them |
+| Runtime — usage analytics, only if you opt in | `analytics.superstatus.io` (the BattleLab team's self-hosted Umami) | one daily active-install report — a random install ID, the version and the OS name — on days the app is opened; off unless you agreed in setup or in Settings → System → Usage analytics; `AGENT_SESSIONS_ANALYTICS=0` turns it off for the server |
 | Runtime — the agent CLIs themselves | each agent's own model provider (Anthropic, OpenAI, Google, …) | the coding agents BattleLab launches talk to their providers exactly as they would from a plain terminal |
 
 ## Mode 2 — stream via BattleLab (Home Free)

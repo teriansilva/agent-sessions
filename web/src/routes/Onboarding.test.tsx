@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
@@ -18,6 +18,9 @@ vi.mock("../lib/api", () => ({
     createProject: vi.fn(),
     aiReviewModels: vi.fn(),
     testAiEndpoint: vi.fn(),
+    // #1009: the Usage analytics step saves through this, and reconciles a failure with config().
+    setAnalyticsConsent: vi.fn(),
+    config: vi.fn(),
   },
   ApiError: class ApiError extends Error {
     status: number;
@@ -105,6 +108,8 @@ beforeEach(() => {
   vi.mocked(api.setPrefs).mockReset().mockResolvedValue({});
   vi.mocked(api.aiReviewModels).mockReset().mockResolvedValue({ models: [] });
   vi.mocked(api.completeOnboarding).mockReset().mockResolvedValue({});
+  vi.mocked(api.setAnalyticsConsent).mockReset();
+  vi.mocked(api.config).mockReset();
   vi.mocked(api.createProject)
     .mockReset()
     .mockResolvedValue({
@@ -366,4 +371,174 @@ test("the tour answers the arrow keys (#971)", async () => {
   expect(screen.getByText("1 / 10")).toBeInTheDocument();
   // Without the shell's callback there is nothing to open, so no button.
   expect(screen.queryByRole("button", { name: /what's new/i })).not.toBeInTheDocument();
+});
+
+// ---- Usage analytics (#1009) ----------------------------------------------------------------
+
+const UNDECIDED = { enabled: false, decided: false, available: true };
+const ANALYTICS_ON = { enabled: true, decided: true, available: true };
+
+async function gotoAnalyticsStep() {
+  await gotoLaunchStep(); // → project
+  await finishTourToLaunch(); // Finish tour → the analytics step, when the server offers it
+  expect(
+    await screen.findByRole("heading", { name: "Usage analytics" }),
+  ).toBeInTheDocument();
+}
+
+function railLabels() {
+  const rail = screen.getByRole("navigation", { name: "Setup steps" });
+  return within(rail)
+    .getAllByText(/./, { selector: "span:not([class*=stepDot]):not([class*=railHead])" })
+    .map((el) => el.textContent?.replace(/^\d+/, "").trim());
+}
+
+test("usage analytics: a fresh install is asked between Tour and Launch, unticked; ticking saves true", async () => {
+  vi.mocked(api.setAnalyticsConsent).mockResolvedValue({ analytics: ANALYTICS_ON });
+  const refresh = vi.fn();
+  renderWizard(vi.fn(), cfg({ analytics: UNDECIDED }), refresh);
+  const labels = railLabels();
+  expect(labels.slice(-3)).toEqual(["Tour", "Usage analytics", "Launch"]);
+  await gotoAnalyticsStep();
+  const box = screen.getByRole("checkbox", { name: "Share usage analytics" });
+  expect(box).not.toBeChecked();
+  expect(
+    screen.getByText(/Nothing is sent unless you tick the box and continue\./),
+  ).toBeInTheDocument();
+  await userEvent.click(box);
+  await userEvent.click(screen.getByRole("button", { name: /^continue/i }));
+  expect(api.setAnalyticsConsent).toHaveBeenCalledWith(true);
+  // The refreshed config fetch is what lets the first day count.
+  expect(refresh).toHaveBeenCalled();
+  expect(
+    await screen.findByRole("heading", { name: /start your first session/i }),
+  ).toBeInTheDocument();
+});
+
+test("usage analytics: continuing without ticking records a no", async () => {
+  vi.mocked(api.setAnalyticsConsent).mockResolvedValue({
+    analytics: { enabled: false, decided: true, available: true },
+  });
+  renderWizard(vi.fn(), cfg({ analytics: UNDECIDED }));
+  await gotoAnalyticsStep();
+  await userEvent.click(screen.getByRole("button", { name: /^continue/i }));
+  expect(api.setAnalyticsConsent).toHaveBeenCalledWith(false);
+  expect(
+    await screen.findByRole("heading", { name: /start your first session/i }),
+  ).toBeInTheDocument();
+});
+
+test("usage analytics: the choice and Back are frozen while the save is pending, so a late edit cannot be dropped", async () => {
+  let resolveSave: (v: { analytics: typeof ANALYTICS_ON }) => void = () => {};
+  vi.mocked(api.setAnalyticsConsent).mockReturnValue(
+    new Promise((res) => {
+      resolveSave = res;
+    }),
+  );
+  renderWizard(vi.fn(), cfg({ analytics: UNDECIDED }));
+  await gotoAnalyticsStep();
+  const box = screen.getByRole("checkbox", { name: "Share usage analytics" });
+  await userEvent.click(box); // tick
+  await userEvent.click(screen.getByRole("button", { name: /^continue/i })); // POST true, pending
+  expect(box).toBeDisabled();
+  expect(screen.getByRole("button", { name: /back/i })).toBeDisabled();
+  await userEvent.click(box); // an untick attempt while pending does nothing
+  expect(box).toBeChecked();
+  await act(async () => {
+    resolveSave({ analytics: ANALYTICS_ON });
+  });
+  expect(
+    await screen.findByRole("heading", { name: /start your first session/i }),
+  ).toBeInTheDocument();
+  expect(api.setAnalyticsConsent).toHaveBeenCalledTimes(1);
+  expect(api.setAnalyticsConsent).toHaveBeenCalledWith(true);
+});
+
+test("usage analytics: an onboarded operator replaying setup also starts unticked", async () => {
+  renderWizard(vi.fn(), cfg({ onboarded: true, analytics: UNDECIDED }));
+  await gotoAnalyticsStep();
+  expect(
+    screen.getByRole("checkbox", { name: "Share usage analytics" }),
+  ).not.toBeChecked();
+});
+
+test("usage analytics: a stored decision wins, and the closing line says it stays in effect", async () => {
+  renderWizard(vi.fn(), cfg({ analytics: ANALYTICS_ON }));
+  await gotoAnalyticsStep();
+  expect(
+    screen.getByRole("checkbox", { name: "Share usage analytics" }),
+  ).toBeChecked();
+  expect(
+    screen.getByText(/Your current setting stays in effect until you continue\./),
+  ).toBeInTheDocument();
+});
+
+test("usage analytics: the server's kill switch removes the step", async () => {
+  renderWizard(
+    vi.fn(),
+    cfg({ analytics: { enabled: false, decided: false, available: false } }),
+  );
+  expect(railLabels()).not.toContain("Usage analytics");
+  await gotoLaunchStep();
+  await finishTourToLaunch();
+  expect(
+    await screen.findByRole("heading", { name: /start your first session/i }),
+  ).toBeInTheDocument();
+  expect(api.setAnalyticsConsent).not.toHaveBeenCalled();
+});
+
+test("usage analytics: a failed untick on an enabled replay stays, names 'on', and offers Try again", async () => {
+  vi.mocked(api.setAnalyticsConsent).mockRejectedValueOnce(new Error("offline"));
+  vi.mocked(api.config).mockResolvedValue(cfg({ onboarded: true, analytics: ANALYTICS_ON }));
+  renderWizard(vi.fn(), cfg({ onboarded: true, analytics: ANALYTICS_ON }));
+  await gotoAnalyticsStep();
+  const box = screen.getByRole("checkbox", { name: "Share usage analytics" });
+  expect(box).toBeChecked();
+  await userEvent.click(box);
+  await userEvent.click(screen.getByRole("button", { name: /^continue/i }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "your previous setting (on) is still in effect",
+  );
+  expect(screen.getByRole("heading", { name: "Usage analytics" })).toBeInTheDocument();
+  // Try again, and this time it lands.
+  vi.mocked(api.setAnalyticsConsent).mockResolvedValueOnce({
+    analytics: { enabled: false, decided: true, available: true },
+  });
+  await userEvent.click(screen.getByRole("button", { name: /^try again/i }));
+  expect(
+    await screen.findByRole("heading", { name: /start your first session/i }),
+  ).toBeInTheDocument();
+});
+
+test("usage analytics: a lost response whose write landed advances", async () => {
+  vi.mocked(api.setAnalyticsConsent).mockRejectedValueOnce(new Error("timeout"));
+  vi.mocked(api.config).mockResolvedValue(cfg({ analytics: ANALYTICS_ON }));
+  renderWizard(vi.fn(), cfg({ analytics: UNDECIDED }));
+  await gotoAnalyticsStep();
+  await userEvent.click(screen.getByRole("checkbox", { name: "Share usage analytics" })); // tick
+  await userEvent.click(screen.getByRole("button", { name: /^continue/i }));
+  expect(
+    await screen.findByRole("heading", { name: /start your first session/i }),
+  ).toBeInTheDocument();
+});
+
+test("usage analytics: when the save and the read both fail, the setting is reported unknown", async () => {
+  vi.mocked(api.setAnalyticsConsent).mockRejectedValueOnce(new Error("offline"));
+  vi.mocked(api.config).mockRejectedValueOnce(new Error("offline"));
+  renderWizard(vi.fn(), cfg({ analytics: UNDECIDED }));
+  await gotoAnalyticsStep();
+  await userEvent.click(screen.getByRole("button", { name: /^continue/i }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "the current setting couldn't be read",
+  );
+  expect(screen.getByRole("heading", { name: "Usage analytics" })).toBeInTheDocument();
+});
+
+test("usage analytics: skipping setup records no analytics decision", async () => {
+  const onClose = vi.fn();
+  renderWizard(onClose, cfg({ analytics: UNDECIDED }));
+  await userEvent.click(screen.getByRole("button", { name: /skip setup/i }));
+  await waitFor(() => expect(onClose).toHaveBeenCalled());
+  expect(api.completeOnboarding).toHaveBeenCalled();
+  expect(api.setAnalyticsConsent).not.toHaveBeenCalled();
 });

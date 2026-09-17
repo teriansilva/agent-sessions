@@ -84,6 +84,19 @@ def _isolate_scrollback(tmp_path, monkeypatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_usage_analytics(monkeypatch) -> None:
+    """The suite never reports usage (#1009). Every config fetch would otherwise be a candidate
+    report, so the server-wide switch is off for every test; the analytics tests turn it back on
+    for themselves and swap in an ``httpx.MockTransport``, so none of them reaches the network."""
+    from agent_sessions import analytics
+
+    monkeypatch.setenv("AGENT_SESSIONS_ANALYTICS", "0")
+    monkeypatch.setattr(analytics, "_TRANSPORT", None)
+    monkeypatch.setattr(analytics, "_in_flight", False)
+    monkeypatch.setattr(analytics, "_last_attempt", None)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_prefs(tmp_path, monkeypatch) -> None:
     """Point operator prefs (#465) at a per-test tmp file so a LIVE config on the machine running
     the suite can't leak in. ``prefs.get_project_roots()`` — read FIRST by

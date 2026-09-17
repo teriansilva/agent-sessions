@@ -11,8 +11,9 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useConfig } from "../app/config";
+import { useConfig, useConfigRefresh } from "../app/config";
 import { api } from "../lib/api";
+import { consentSaveError, saveAnalyticsConsent } from "../lib/analyticsConsent";
 import { DOCS_HOME_URL } from "../lib/links";
 import { EnableLoginDetails } from "../components/EnableLoginDetails";
 import { mintNewSessionId } from "../lib/newSession";
@@ -102,6 +103,7 @@ const WIZARD_STEPS = [
   "ai",
   "project",
   "tour",
+  "analytics",
   "launch",
 ] as const;
 type Step = (typeof WIZARD_STEPS)[number];
@@ -112,6 +114,7 @@ const STEP_LABEL: Record<Step, string> = {
   ai: "Set up AI",
   project: "First project",
   tour: "Tour",
+  analytics: "Usage analytics",
   launch: "Launch",
 };
 
@@ -235,6 +238,18 @@ export function Onboarding({
   const effectiveCwd = cwd || folders[0]?.cwd || "";
   const [bypass, setBypass] = useState(true);
   const [busy, setBusy] = useState(false);
+  // Usage analytics (#1009). The step exists only when the server supports it and allows it
+  // (`available` is false under AGENT_SESSIONS_ANALYTICS=0). The toggle is seeded once, below.
+  const refreshConfig = useConfigRefresh();
+  const analyticsStep = !!config?.analytics?.available;
+  const analyticsDecided = !!config?.analytics?.decided;
+  const [shareAnalytics, setShareAnalytics] = useState(false);
+  const [analyticsBusy, setAnalyticsBusy] = useState(false);
+  const [analyticsErr, setAnalyticsErr] = useState<string | null>(null);
+  const steps = useMemo(
+    () => WIZARD_STEPS.filter((s) => s !== "analytics" || analyticsStep),
+    [analyticsStep],
+  );
 
   // Load engine discovery once we reach (or mount on) the wizard.
   useEffect(() => {
@@ -264,6 +279,10 @@ export function Onboarding({
   if (!seeded && config) {
     setSeeded(true);
     if (config.default_project) setCwd(config.default_project);
+    // A stored decision wins; undecided starts UNTICKED, on a fresh install and on a replay alike.
+    // The product owner's call on #1009: consent is a box the operator ticks, never one pre-ticked.
+    const a = config.analytics;
+    if (a) setShareAnalytics(a.decided && a.enabled);
   }
 
   const finish = useCallback(async () => {
@@ -367,13 +386,31 @@ export function Onboarding({
     );
   }
 
-  const idx = WIZARD_STEPS.indexOf(step);
+  const idx = steps.indexOf(step);
+
+  const saveAnalytics = async () => {
+    setAnalyticsBusy(true);
+    setAnalyticsErr(null);
+    const r = await saveAnalyticsConsent(shareAnalytics);
+    setAnalyticsBusy(false);
+    if (r.ok) {
+      // The refreshed config fetch is also what lets a new install count on its first day.
+      refreshConfig();
+      setStep("launch");
+      return;
+    }
+    setAnalyticsErr(
+      r.state
+        ? `${consentSaveError(r.state)} Try again, or close setup and change it in Settings.`
+        : `${consentSaveError(null)} Check it in Settings → Usage analytics.`,
+    );
+  };
 
   return (
     <Overlay onClose={finish} title="Set up BattleLab" wide>
       <nav className={styles.rail} aria-label="Setup steps">
         <span className={styles.railHead}>SETUP</span>
-        {WIZARD_STEPS.map((s, n) => (
+        {steps.map((s, n) => (
           <span
             key={s}
             className={`${styles.step} ${n === idx ? styles.cur : ""} ${n < idx ? styles.done : ""}`}
@@ -736,9 +773,80 @@ export function Onboarding({
             desc="A 30-second tour of the main surfaces."
           >
             <Slideshow
-              onDone={() => setStep("launch")}
+              onDone={() => setStep(analyticsStep ? "analytics" : "launch")}
               doneLabel="Finish tour"
             />
+          </Step>
+        )}
+
+        {step === "analytics" && (
+          <Step
+            title="Usage analytics"
+            desc="A daily active-install report tells us how many installs are in use. Your call."
+          >
+            <label className={styles.checkbox}>
+              {/* Frozen while a save is in flight: the save carries the value captured when
+                  Continue was pressed, so an edit made meanwhile would be silently dropped. */}
+              <input
+                type="checkbox"
+                checked={shareAnalytics}
+                disabled={analyticsBusy}
+                onChange={(e) => setShareAnalytics(e.target.checked)}
+              />
+              <span>Share usage analytics</span>
+            </label>
+            <p className={styles.copy}>
+              <b>What is sent</b> — a daily active-install report on days you
+              open BattleLab, with up to three delivery attempts:
+            </p>
+            <ul className={`${styles.copy} ${styles.list}`}>
+              <li>
+                a random install ID — not derived from this machine, your
+                account or your network
+              </li>
+              <li>the BattleLab version and your operating system</li>
+            </ul>
+            <p className={styles.copy}>
+              <b>Never sent</b> — sessions, prompts, code, file or project
+              names, hostnames, account details.
+            </p>
+            <p className={styles.copy}>
+              <b>Where</b> — the BattleLab team&apos;s self-hosted Umami server.
+              It uses your IP address to estimate an approximate location and
+              does not store the address; the web server in front of it keeps
+              standard access logs, which include it, for up to 52 days.
+            </p>
+            <p className={styles.copy}>
+              {analyticsDecided
+                ? "Your current setting stays in effect until you continue."
+                : "Nothing is sent unless you tick the box and continue."}{" "}
+              Change it any time in <b>Settings → Usage analytics</b>.
+            </p>
+            {analyticsErr && (
+              <p className={styles.err} role="alert">
+                {analyticsErr}
+              </p>
+            )}
+            <Foot>
+              <span className={styles.grow} />
+              <button
+                type="button"
+                className={styles.btn}
+                onClick={() => setStep("tour")}
+                disabled={analyticsBusy}
+              >
+                <ArrowLeft size={14} /> Back
+              </button>
+              <button
+                type="button"
+                className={`${styles.pri} shine`}
+                onClick={() => void saveAnalytics()}
+                disabled={analyticsBusy}
+              >
+                {analyticsErr ? "Try again" : "Continue"}{" "}
+                <ArrowRight size={14} />
+              </button>
+            </Foot>
           </Step>
         )}
 
@@ -802,7 +910,7 @@ export function Onboarding({
               <button
                 type="button"
                 className={styles.btn}
-                onClick={() => setStep("tour")}
+                onClick={() => setStep(analyticsStep ? "analytics" : "tour")}
               >
                 <ArrowLeft size={14} /> Back
               </button>
