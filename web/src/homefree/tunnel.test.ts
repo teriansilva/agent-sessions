@@ -1,7 +1,8 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 
 import { type TermStatus, TermSocket } from "../lib/termSocket";
-import { Mux, type Stream } from "./mux";
+import { api, setApiFetch } from "../lib/api";
+import { Mux, type Stream, StreamReset } from "./mux";
 import {
   type CloseEventLike,
   createTunnel,
@@ -521,4 +522,96 @@ test("a large body the agent DOES drain arrives whole", async () => {
     "hung",
   );
   expect((await resp.json()).bytes).toBe(n);
+});
+
+// ------------------------------ cancellation (#1007) ------------------------------
+//
+// A real `fetch` honours `init.signal`; `tunnelFetch` ignored it, so in Home Free app mode every
+// caller that cancels — the map abandoning its paging sequence on navigate-away, `uploadBlob`
+// dropping a scrolled-away image — waited for its request to complete anyway. An abort now rejects
+// the call at once and RESETs the stream. That is a browser-side release only: the agent's request
+// to the app, and any session scan the app runs in a worker thread for it, still finish.
+
+/** An agent that takes the request and never answers, exposing the stream so the test can see
+ *  what the browser did to it. */
+function silentAgent() {
+  const seen: { stream: Stream | null; opened: number } = { stream: null, opened: 0 };
+  const { tunnel } = wire(async (_i, s) => {
+    seen.opened += 1;
+    await drain(s); // the GET's END
+    seen.stream = s;
+  });
+  return { tunnel, seen };
+}
+
+/** How a rejected request settled: `"AbortError"` for a cancellation, otherwise the error itself
+ *  (so a request that never settled reads as the `within` timeout, not as a bare "Error"). */
+const settledAs = (e: unknown) =>
+  (e as { name?: string }).name === "AbortError" ? "AbortError" : String(e);
+
+/** After the request's END was drained, a further read is a clean EOF (empty) — unless the
+ *  browser reset the stream, in which case it throws. */
+const agentReadAfterEnd = (s: Stream) =>
+  s.read().then(
+    () => "eof",
+    (e: unknown) => (e instanceof StreamReset ? "reset" : `error: ${String(e)}`),
+  );
+
+test("tunnelFetch honours an abort in flight: rejects with AbortError and RESETs the stream (#1007)", async () => {
+  const { tunnel, seen } = silentAgent();
+  const ctl = new AbortController();
+  const p = tunnel.fetch("/api/sessions?limit=200&offset=0", { signal: ctl.signal });
+  const outcome = within(p, 2000, "the aborted request never settled").then(
+    () => "resolved",
+    settledAs,
+  );
+  await vi.waitFor(() => expect(seen.stream).not.toBeNull());
+
+  ctl.abort();
+  expect(await outcome).toBe("AbortError");
+  await tick();
+  expect(await agentReadAfterEnd(seen.stream!)).toBe("reset");
+});
+
+test("tunnelFetch opens no stream for an already-aborted signal (#1007)", async () => {
+  const { tunnel, seen } = silentAgent();
+  const ctl = new AbortController();
+  ctl.abort();
+  const outcome = await within(
+    tunnel.fetch("/api/sessions?limit=200&offset=200", { signal: ctl.signal }),
+    2000,
+    "the pre-aborted request never settled",
+  ).then(
+    () => "resolved",
+    settledAs,
+  );
+  await tick();
+  expect(outcome).toBe("AbortError");
+  expect(seen.opened).toBe(0);
+});
+
+test("the map's signal survives the setApiFetch swap: api.sessions → tunnel → stream RESET (#1007)", async () => {
+  // The real binding path, not the adapter alone: `api.sessions` with a signal, while the tunnel
+  // is the installed fetch — exactly what `homefree/appMount.ts` sets up.
+  const { tunnel, seen } = silentAgent();
+  const ctl = new AbortController();
+  setApiFetch(tunnel.fetch);
+  try {
+    const outcome = within(
+      api.sessions({ limit: 200, offset: 400, archived: false }, { signal: ctl.signal }),
+      2000,
+      "the aborted api.sessions call never settled",
+    ).then(
+      () => "resolved",
+      settledAs,
+    );
+    await vi.waitFor(() => expect(seen.stream).not.toBeNull());
+
+    ctl.abort();
+    expect(await outcome).toBe("AbortError");
+    await tick();
+    expect(await agentReadAfterEnd(seen.stream!)).toBe("reset");
+  } finally {
+    setApiFetch(null);
+  }
 });

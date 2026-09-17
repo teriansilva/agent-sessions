@@ -1,6 +1,6 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useRef, type ReactNode } from "react";
+import { StrictMode, useRef, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "../lib/api";
 import { useOverviewSessions } from "../hooks/useOverviewSessions";
@@ -332,4 +332,168 @@ test("a LATE generation is discarded whole — it never overwrites newer data (#
   // partial array it is.
   await press("commit-slow");
   expect(retainedTitles()).toBe("New");
+});
+
+/* CANCELLATION (#1007 Phase 2). Leaving the map aborts its run: the page in flight is cancelled, no
+ * further page is requested, and nothing the run collected is committed. None of this saves the
+ * server's scan — it runs in a worker thread a browser abort cannot reach, and it is page 1, which
+ * has usually finished by the time anyone leaves. What is pinned here is the client contract, and
+ * above all that AN ABORT IS NOT A FAILURE. */
+describe("cancellation", () => {
+  /** A page request that settles only when told to. `honoursSignal` makes it behave like a real
+   *  fetch — rejecting with an `AbortError` the moment its signal aborts; without it, it models a
+   *  transport that could not cancel in time and resolves after the abort anyway. */
+  function heldPage(signal: AbortSignal | undefined, honoursSignal: boolean) {
+    let resolve!: (p: SessionsPage) => void;
+    const promise = new Promise<SessionsPage>((res, rej) => {
+      resolve = res;
+      if (honoursSignal)
+        signal?.addEventListener("abort", () =>
+          rej(new DOMException("The operation was aborted.", "AbortError")),
+        );
+    });
+    return { promise, resolve };
+  }
+  /** The signal the Nth `api.sessions` call (0-based) was given. */
+  const signalOf = (n: number) => mockSessions.mock.calls[n]?.[1]?.signal ?? undefined;
+  /** Let every settled promise run its continuation. */
+  const flush = () => act(async () => {});
+
+  test("leaving mid-sequence ABORTS the page in flight and requests no further page (#1007)", async () => {
+    mockSessions.mockResolvedValue(pageOf([sess("A"), sess("B")]));
+    const { rerender } = render(<Shell open />);
+    await waitFor(() => expect(titles()).toBe("A,B"));
+
+    // The revalidation collects page 1 and is waiting on page 2 when the operator leaves.
+    mockSessions.mockReset();
+    mockSessions
+      .mockResolvedValueOnce(pageOf([sess("X")], 200))
+      .mockImplementationOnce((_q, init) => heldPage(init?.signal ?? undefined, true).promise)
+      .mockResolvedValue(pageOf([sess("Z")]));
+    rerender(<Shell open={false} />);
+    rerender(<Shell open />);
+    await waitFor(() => expect(mockSessions).toHaveBeenCalledTimes(2));
+    expect(signalOf(1)?.aborted).not.toBe(true);
+
+    rerender(<Shell open={false} />);
+    await flush();
+
+    // Cancelled rather than downloaded and thrown away...
+    expect(signalOf(1)?.aborted).toBe(true);
+    // ...and the sequence stopped there: page 3 was never asked for.
+    expect(mockSessions).toHaveBeenCalledTimes(2);
+  });
+
+  test("an AbortError reaches neither the error state nor the failed-refresh path (StrictMode) (#1007)", async () => {
+    // StrictMode mounts, unmounts and remounts the route in development, which aborts the first run
+    // of the SAME run key. Were the abort handled as a failure, that run would mark the key settled
+    // — dropping the spinner — and, with nothing retained, paint "Couldn’t load sessions." over a
+    // cold map whose real load is still in flight.
+    const held: ReturnType<typeof heldPage>[] = [];
+    mockSessions.mockImplementation((_q, init) => {
+      const h = heldPage(init?.signal ?? undefined, true);
+      held.push(h);
+      return h.promise;
+    });
+    render(
+      <StrictMode>
+        <Shell open />
+      </StrictMode>,
+    );
+    await waitFor(() => expect(mockSessions).toHaveBeenCalledTimes(2));
+    // The first run really was aborted — otherwise nothing below is being tested.
+    expect(signalOf(0)?.aborted).toBe(true);
+    await flush();
+
+    expect(screen.getByTestId("error").textContent).toBe("");
+    expect(loading()).toBe("true");
+
+    // The live run is unaffected by the aborted one, and lands.
+    expect(signalOf(1)?.aborted).toBe(false);
+    held[1].resolve(pageOf([sess("Cold")]));
+    await waitFor(() => expect(titles()).toBe("Cold"));
+    expect(screen.getByTestId("error").textContent).toBe("");
+  });
+
+  test("a scope change mid cold load aborts the old run without raising an error (#1007)", async () => {
+    // The production path to the same defect: the operator changes an exclusion while the first
+    // load is still paging. The replaced run's abort must not surface as the map's error.
+    const held: ReturnType<typeof heldPage>[] = [];
+    mockSessions.mockImplementation((_q, init) => {
+      const h = heldPage(init?.signal ?? undefined, true);
+      held.push(h);
+      return h.promise;
+    });
+    const { rerender } = render(<Shell open />);
+    await waitFor(() => expect(mockSessions).toHaveBeenCalledTimes(1));
+
+    rerender(<Shell open exclusions={["/x"]} />);
+    await waitFor(() => expect(mockSessions).toHaveBeenCalledTimes(2));
+    expect(signalOf(0)?.aborted).toBe(true);
+    await flush();
+
+    expect(screen.getByTestId("error").textContent).toBe("");
+    expect(loading()).toBe("true");
+    held[1].resolve(pageOf([sess("Narrowed")]));
+    await waitFor(() => expect(titles()).toBe("Narrowed"));
+  });
+
+  test("an aborted run never commits, even when its page RESOLVES after the abort (#1007)", async () => {
+    mockSessions.mockResolvedValue(pageOf([sess("A"), sess("B")]));
+    const { rerender } = render(<Shell open />);
+    await waitFor(() => expect(titles()).toBe("A,B"));
+
+    // Page 2 goes to a transport that cannot cancel: it resolves after the operator has left,
+    // pointing at a page 3 that must never be requested.
+    const late = heldPage(undefined, false);
+    mockSessions.mockReset();
+    mockSessions
+      .mockResolvedValueOnce(pageOf([sess("X")], 200))
+      .mockReturnValueOnce(late.promise)
+      .mockResolvedValueOnce(pageOf([sess("Z")]));
+    rerender(<Shell open={false} />);
+    rerender(<Shell open />);
+    await waitFor(() => expect(mockSessions).toHaveBeenCalledTimes(2));
+
+    rerender(<Shell open={false} />);
+    late.resolve(pageOf([sess("Y")], 400));
+    await flush();
+    expect(mockSessions).toHaveBeenCalledTimes(2); // no page 3
+
+    // Return, with the next revalidation still pending: what is drawn is the retained result,
+    // whole — not "X", not "X,Y", not "X,Y,Z".
+    mockSessions.mockReset(); // drop the unused page-3 answer, so it cannot serve the return
+    mockSessions.mockImplementation(() => heldPage(undefined, false).promise);
+    rerender(<Shell open />);
+    expect(titles()).toBe("A,B");
+    await flush();
+    expect(titles()).toBe("A,B");
+  });
+
+  test("an abort followed by a fresh run commits the fresh run; the abandoned run's late page cannot overwrite it (#1007)", async () => {
+    mockSessions.mockResolvedValue(pageOf([sess("A"), sess("B")]));
+    const { rerender } = render(<Shell open />);
+    await waitFor(() => expect(titles()).toBe("A,B"));
+
+    const abandoned = heldPage(undefined, false);
+    mockSessions.mockReset();
+    mockSessions.mockReturnValueOnce(abandoned.promise);
+    rerender(<Shell open={false} />);
+    rerender(<Shell open />);
+    await waitFor(() => expect(mockSessions).toHaveBeenCalledTimes(1));
+    rerender(<Shell open={false} />); // leave
+    expect(signalOf(0)?.aborted).toBe(true);
+
+    mockSessions.mockResolvedValueOnce(pageOf([sess("Fresh")]));
+    rerender(<Shell open />); // come back
+    await waitFor(() => expect(titles()).toBe("Fresh"));
+    // Its own controller: the earlier abort did not reach it.
+    expect(signalOf(1)).not.toBe(signalOf(0));
+    expect(signalOf(1)?.aborted).toBe(false);
+
+    abandoned.resolve(pageOf([sess("Stale")]));
+    await flush();
+    expect(titles()).toBe("Fresh");
+    expect(mockSessions).toHaveBeenCalledTimes(2);
+  });
 });

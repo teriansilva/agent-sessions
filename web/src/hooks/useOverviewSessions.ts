@@ -30,6 +30,20 @@ export interface OverviewSessions {
  *  CANCELLATION stay here, route-owned. The route unmount is the canceller, so hoisting this
  *  effect would remove exactly the cleanup that stops a sequence nobody is waiting for.
  *
+ *  CANCELLATION IS AN ABORT (Phase 2). Each run owns an `AbortController` whose signal rides every
+ *  page request into the transport, and the effect cleanup — unmount, or a newer run replacing
+ *  this one — aborts it. The page in flight is cancelled instead of downloaded and discarded, no
+ *  further page is requested, and nothing the run collected is committed. What it does NOT do is
+ *  save server work: the server runs its walk in a worker thread that a browser abort cannot
+ *  reach, and the walk is page 1 (measured 3,551 ms, against 0.3 ms for pages 2–8 together), which
+ *  has usually finished by the time anyone leaves.
+ *
+ *  AN ABORT IS NOT A FAILURE. A cancelled run reaches neither the error state nor the
+ *  failed-refresh path, and never touches the retained result — it simply stops. Treating it as a
+ *  failure is not harmless: StrictMode's mount → unmount → mount aborts the first run of the SAME
+ *  run key, and marking that run settled would drop the spinner and paint "Couldn’t load
+ *  sessions." over a cold map whose real load is still in flight.
+ *
  *  EVERY MOUNT REVALIDATES. There is no freshness window and no "skip the fetch" path, and that is
  *  the correctness argument rather than an oversight: making the retained result authoritative for
  *  even 30 s required every mutating surface in the app to announce itself, and review found two
@@ -78,7 +92,10 @@ export function useOverviewSessions(): OverviewSessions {
   }, [usable]);
 
   useEffect(() => {
-    let alive = true;
+    // One controller per run, never shared: a run started after an abort gets a fresh signal, so
+    // the abandoned run cannot cancel it. `signal.aborted` is also the run's only liveness flag.
+    const ctl = new AbortController();
+    const { signal } = ctl;
     const mine = begin();
     const forScope = scopeKey; // the scope this sequence is asking under
     const mineRun = runKey;
@@ -88,18 +105,22 @@ export function useOverviewSessions(): OverviewSessions {
       let partial = false;
       try {
         for (let page = 0; page < MAX_PAGES; page++) {
-          const res = await api.sessions({ limit: PAGE, offset, archived: false });
-          // Navigated away mid-sequence: stop asking for pages nobody is waiting for, and never
-          // commit what we have — a partial array is not a smaller map, it is a map that lost
-          // sessions. (Stopping the REQUESTS is all a browser can do here; the server runs its
-          // walk in a worker thread and finishes regardless. Phase 2 threads the signal.)
-          if (!alive) return;
+          const res = await api.sessions(
+            { limit: PAGE, offset, archived: false },
+            { signal },
+          );
+          // Abandoned mid-sequence. Normally the request above rejected on the abort, but a page
+          // can still RESOLVE after it — the response had already arrived, or a transport could
+          // not cancel in time. Drop it with everything collected so far and ask for nothing
+          // more: a partial array is not a smaller map, it is a map that lost sessions.
+          if (signal.aborted) return;
           acc.push(...res.sessions);
           if (res.next_offset == null) break;
           offset = res.next_offset;
           if (page === MAX_PAGES - 1) partial = true; // cap hit with more to come
         }
-        if (!alive) return;
+        // In the same synchronous turn as the commit, so no abort can land between the two.
+        if (signal.aborted) return;
         // Whole-sequence commit, checked against the generation it claimed AND the scope it asked
         // under: neither a slower sequence resolving after a newer one, nor one whose scope moved
         // beneath it, may overwrite the retained result.
@@ -107,15 +128,16 @@ export function useOverviewSessions(): OverviewSessions {
         setError(null);
         setSettledRun(mineRun);
       } catch {
-        if (!alive) return;
+        // An abort is not a failure, whatever shape it surfaced in (a fetch `AbortError`, the
+        // signal's own reason, a transport reset that raced it). Checked FIRST: a cancelled run
+        // must not mark its run settled or raise an error — see the StrictMode note above.
+        if (signal.aborted) return;
         setSettledRun(mineRun);
         // Preserve the prior good result. Only a failure with nothing showable is surfaced.
         if (!usableRef.current) setError("Couldn’t load sessions.");
       }
     })();
-    return () => {
-      alive = false;
-    };
+    return () => ctl.abort();
   }, [gen, scopeKey, runKey, begin, commit]);
 
   return {

@@ -741,7 +741,14 @@ export const api = {
         project_id: projectId,
       },
     ),
-  sessions: (q?: SessionsQuery) => getJson<SessionsPage>(sessionsUrl(q)),
+  /** One page of the session listing. `init.signal` cancels the request (#1007 Phase 2: the map
+   *  aborts its paging sequence when the route unmounts), the same seam `filesRead`/`gitDiff` use.
+   *  It reaches whichever fetch is bound AT CALL TIME — `getJson` reads the `apiFetch` binding per
+   *  request, so a `setApiFetch` swap to the Home Free tunnel is honoured. Omitted, the request is
+   *  exactly what it was before: the sidebar's `useSessionsList` passes nothing. An abort stops the
+   *  browser waiting; it cannot stop a server scan already running in a worker thread. */
+  sessions: (q?: SessionsQuery, init?: RequestInit) =>
+    getJson<SessionsPage>(sessionsUrl(q), init),
   /** ONE session row by id (#867) — what the session pane reads when the sidebar's page
    *  doesn't hold it. Unlike `sessions()` this is a lookup, not a listing: it ignores the
    *  list's pagination, filters, archived tab and visibility scope, so a deep-linked or

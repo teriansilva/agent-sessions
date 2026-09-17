@@ -122,16 +122,30 @@ class CookieJar {
   }
 }
 
+/** What a cancelled request rejects with: the signal's own reason, as a real `fetch` does. */
+function abortReason(signal: AbortSignal): unknown {
+  return (
+    signal.reason ?? new DOMException("The operation was aborted.", "AbortError")
+  );
+}
+
 /** A `fetch`-compatible function that proxies one `/api` request over one HTTP mux stream. */
 function makeTunnelFetch(mux: Mux, jar: CookieJar): TunnelFetch {
-  return async (input, init) => {
+  return async (input, init = {}) => {
+    // `init.signal` is honoured HERE, the way a real `fetch` honours it (#1007 Phase 2). Without
+    // this the tunnel silently dropped it: the call ran to completion however early its caller
+    // gave up, so in Home Free app mode the map's navigate-away, `uploadBlob`'s scrolled-away
+    // image and the file viewer's superseded reads were not cancelled at all. It is taken out of
+    // what goes to `new Request`, which exists only to serialize the body and headers and would
+    // otherwise hold a signal nothing listens to.
+    const { signal, ...requestInit } = init;
     // Normalize via a Request so every body kind serializes uniformly — JSON strings,
     // Blobs, and FormData/multipart (whose boundary Content-Type the Request sets and we
     // forward). `arrayBuffer()` yields the exact bytes matching that Content-Type.
     const path = toPath(input);
     const req = new Request(
       path.startsWith("/") ? `http://app.local${path}` : input,
-      init,
+      requestInit,
     );
     const headers: Record<string, string> = {};
     req.headers.forEach((v, k) => {
@@ -141,11 +155,20 @@ function makeTunnelFetch(mux: Mux, jar: CookieJar): TunnelFetch {
     const cookie = jar.header(headers.cookie);
     if (cookie) headers.cookie = cookie;
     const body = new Uint8Array(await req.arrayBuffer());
+    // Abandoned before it went out: open no stream at all.
+    if (signal?.aborted) throw abortReason(signal);
     const s = mux.open(
       te.encode(
         JSON.stringify({ k: "http", method: req.method, path, headers }),
       ),
     );
+    // Abandoned in flight: RESET the stream, which wakes the reader below so the request rejects
+    // now, and releases the stream on this side. It cancels nothing on the box: the agent's own
+    // request to the app still runs to completion, and so does whatever the app started for it (a
+    // session scan runs in a worker thread). Response bytes still sent for the dropped stream are
+    // ignored here.
+    const onAbort = () => s.reset();
+    signal?.addEventListener("abort", onAbort, { once: true });
     // The request body and the response are pumped CONCURRENTLY, and the order matters (#807).
     // Writing the whole body and END *before* the first read deadlocks against an early
     // response: the mux grants only a 256 KiB send window, so a proxy that answers mid-upload
@@ -213,10 +236,14 @@ function makeTunnelFetch(mux: Mux, jar: CookieJar): TunnelFetch {
       // A reset mid-request (app down, disallowed path, transport closed) surfaces as a
       // network-style failure — the same shape a real `fetch` rejects with.
       s.cancelSend();
+      // Our own reset reads as a reset too; the caller asked for an abort and gets one, so it can
+      // tell "I cancelled this" from "the transport failed".
+      if (signal?.aborted) throw abortReason(signal);
       if (e instanceof StreamReset)
         throw new TypeError("tunnel: stream reset", { cause: e });
       throw e;
     } finally {
+      signal?.removeEventListener("abort", onAbort);
       // Settle the writer on every path so a cancelled upload cannot outlive its request.
       await writer;
       void writeFailed;
