@@ -48,6 +48,7 @@ from .gemini import GeminiProvider
 from .kimi import KimiProvider
 from .opencode import OPENCODE_SCHEMA, OpenCodeProvider
 from .registry import (  # noqa: F401 — public re-exports
+    LATE_ID_CAPABILITIES,
     all_providers,
     archive_state,
     canonical_key,
@@ -59,6 +60,7 @@ from .registry import (  # noqa: F401 — public re-exports
     logical_key,
     orchestrator_input_engines,
     parse_key,
+    parse_runtime_key,
     physical_key,
     present_providers,
     resolve_session,
@@ -68,6 +70,7 @@ from .registry import (  # noqa: F401 — public re-exports
     session_key,
     set_scan_cache_ttl,
     supports_orchestrator_input,
+    unattended_start_state,
 )
 from .shell import ShellProvider
 
@@ -100,6 +103,9 @@ __all__ = [
     "logical_key",
     "is_new_session_placeholder",
     "is_opencode_new_placeholder",
+    "parse_runtime_key",
+    "unattended_start_state",
+    "LATE_ID_CAPABILITIES",
     "CLAUDE_BIN",
     "OPENCODE_BIN",
     "CODEX_BIN",

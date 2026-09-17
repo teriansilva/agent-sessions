@@ -36,9 +36,34 @@ import functools
 import logging
 from typing import NamedTuple
 
-from . import headless_dispatch, missions, session_input
+from . import engines, headless_dispatch, launch_binding, missions, session_input
 
 log = logging.getLogger(__name__)
+
+
+def publish_binding(physical_key: str, logical_key: str) -> bool:
+    """Publish the alias of a late-bound adoption. Idempotent; returns whether it wrote (#989).
+
+    **A projection of committed state, never the authority.** It runs only after the settlement
+    that adopted `logical_key` has committed — which is also the transaction that recorded
+    `session_runtime_bindings` — and the startup pass (`mission_dispatch_recover.
+    repair_projections`) re-runs it from that store row if a crash or a failed write left it
+    missing. A dispatch that failed or was cancelled therefore publishes nothing.
+
+    The alias is what lets every engine-agnostic reader — the sidebar, the terminal route, the
+    reviewer — map the real key back to the placeholder its runtime lives under. A mission
+    dispatch has no source session, so there is no handoff backlink to publish beside it.
+    """
+    from . import metadata
+
+    if not physical_key or not logical_key or physical_key == logical_key:
+        return False
+    if metadata.load_aliases().get(physical_key) == logical_key:
+        return False
+    metadata.set_alias(physical_key, logical_key)
+    # The real session is only now discoverable under its own id, so the list's snapshot goes.
+    engines.invalidate_scan_cache()
+    return True
 
 
 async def _abandon_session(key: str) -> str:
@@ -74,9 +99,15 @@ def fenced_settle(
     keep_record: bool = False,
     expect_plan: str | None = None,
     discharge_resource: bool = True,
+    physical_key: str | None = None,
     path=None,
 ) -> dict:
     """Settle a dispatch UNDER THE ADOPTION FENCE when it adopts. Raises what the store raises.
+
+    `physical_key` is set when the adopted `session_key` was bound after the launch (#989): the
+    placeholder the runtime lives under, which this settlement both LOCKS and RECORDS. It has to be
+    named rather than looked up, because the mapping it would be looked up from is written by this
+    very transaction.
 
     A settlement that carries a `session_key` IS a durable adoption — the mission takes ownership
     of the session it has just started — and a recovery pass tearing that session down as an
@@ -100,6 +131,7 @@ def fenced_settle(
             # `spared` child's record is legitimately discharged while its process keeps running
             # under another mission, and only the caller knows which of those happened.
             discharge_resource=discharge_resource,
+            physical_key=physical_key,
             path=path,
         )
 
@@ -112,7 +144,13 @@ def fenced_settle(
     # question or a withdrawal that enumerated the mission's sessions a moment ago — and a
     # settlement that adopts is exactly the thing that makes such an enumeration stale. Taking
     # one of the two is not most of the guarantee; it is a different, smaller one.
-    with session_input.sessions_transaction(mission_fence.adoption_keys(mission_id, session_key)):
+    #
+    # For a late-bound session the session's lock is the PLACEHOLDER, named by the caller (#989):
+    # a teardown of this launch locks that key, and resolving the real key here would lock
+    # nothing any teardown takes, across exactly the interval this settlement is committing.
+    with session_input.sessions_transaction(
+        mission_fence.adoption_keys(mission_id, session_key, physical_key=physical_key)
+    ):
         return _commit()
 
 
@@ -148,6 +186,7 @@ async def settle_offloop(
     session_key: str | None = None,
     keep_record: bool = False,
     expect_plan: str | None = None,
+    physical_key: str | None = None,
     path=None,
 ) -> dict:
     """`fenced_settle` on a WORKER THREAD. The only shape a coroutine may settle in (#904 rev 9).
@@ -169,6 +208,7 @@ async def settle_offloop(
             session_key=session_key,
             keep_record=keep_record,
             expect_plan=expect_plan,
+            physical_key=physical_key,
             path=path,
         )
     )
@@ -477,13 +517,20 @@ async def run(
     # write — and the handler below cannot tell that from a refusal before anything ran. Keeping
     # the key is what lets it tell the truth in the one direction that matters.
     minted: str | None = None
+    # THIS ATTEMPT'S NONCE (#989). Minted here rather than in the launcher so the record can carry
+    # it beside the key before anything spawns; the launcher delivers it only for a late-id engine,
+    # where it is what proves which session the launch became.
+    nonce = launch_binding.mint_nonce()
 
     def on_key(key: str) -> None:
         # The record must be ahead of the master, never behind it. `False` means the dispatch has
         # already been settled by somebody else, and starting an agent for it would produce
         # exactly the orphan this whole path exists to prevent.
         nonlocal minted
-        if not missions.note_dispatch_session(mission_id, key, expect_plan=plan_id):
+        # The nonce rides with a PLACEHOLDER only: a pinned-id key is the session, and recording a
+        # discriminator it will never use would be a second fact for recovery to misread.
+        late = {"nonce": nonce} if engines.is_new_session_placeholder(key) else {}
+        if not missions.note_dispatch_session(mission_id, key, expect_plan=plan_id, **late):
             raise missions.MissionError("this dispatch is no longer current", status=409)
         # THE RESOURCE IDENTITY IS PERSISTED HERE, at the real pre-launch callback (#894 review 2,
         # finding 1). `note_spawn_session` previously had no production caller at all, so a child
@@ -515,6 +562,7 @@ async def run(
             bypass=False,
             on_key=on_key,
             authorize=authorize,
+            nonce=nonce,
         )
     except headless_dispatch.DispatchError as e:
         # Could not be ATTEMPTED — an ineligible engine, a brief the sanitiser refused. Nothing
@@ -702,7 +750,12 @@ async def _conclude(mission_id: str, out, *, engine: str, cwd: str, plan_id: str
                 mission_id,
                 to="running",
                 detail=f"dispatched {engine} in {cwd}",
-                session_key=out.key,
+                # THE SESSION IT BECAME, under the key its runtime lives under (#989). A pinned-id
+                # launch has no `bound_key`: its key is the session and there is no mapping. A
+                # late-id launch adopts the real id it bound, and names the placeholder so this
+                # settlement locks — and records — the key every teardown of it takes.
+                session_key=(getattr(out, "bound_key", "") or out.key),
+                physical_key=(out.key if getattr(out, "bound_key", "") else None),
                 expect_plan=plan_id,
                 # Preserved through a REFUSED settlement; the branches below drop it once the
                 # session has been proved stopped. A successful settlement deletes it, which is
@@ -816,9 +869,25 @@ async def _conclude(mission_id: str, out, *, engine: str, cwd: str, plan_id: str
     # `stopped=False`, and deliberately: this is the SUCCESS path. The agent is running and the
     # mission holds it, so its reservation stays open — that is what the budget is counting.
     missions.clear_dispatch(mission_id, expect_plan=plan_id, stopped=False)
+    adopted_key = getattr(out, "bound_key", "") or out.key
+    if adopted_key != out.key:
+        # THE PROJECTION, AFTER THE COMMIT (#989). The store already records where this session's
+        # runtime lives; the alias is what lets everything outside the mission store find it. A
+        # write that fails here leaves the mission correctly owning its session and the startup
+        # repair pass to publish it, so it is logged and never allowed to undo the adoption.
+        try:
+            await asyncio.to_thread(publish_binding, out.key, adopted_key)
+        except Exception:  # noqa: BLE001
+            log.warning(
+                "mission %s: the alias %s -> %s could not be published yet; startup repairs it",
+                mission_id,
+                out.key,
+                adopted_key,
+                exc_info=True,
+            )
     return {
         "state": "running",
         "outcome": "started",
         "reason": "",
-        "session_key": out.key,
+        "session_key": adopted_key,
     }

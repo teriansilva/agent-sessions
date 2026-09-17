@@ -310,6 +310,11 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             # both act on closed missions, and this pass is what closes them.
             with contextlib.suppress(Exception):
                 await mission_dispatch_recover.recover_once()
+            # …and the projection of a late-bound adoption (#989): the store records where such a
+            # session's runtime lives in the adopting commit, and the alias that lets everything
+            # else find it is published after. A crash between the two is repaired here.
+            with contextlib.suppress(Exception):
+                await mission_dispatch_recover.repair_projections()
             # Objective production is a durable intent (#883): a crash between a mission's commit
             # and its model call leaves a checklist nobody will ever fill. Boot is the caller
             # that discharges it, exactly as it is for a half-finished archive above.

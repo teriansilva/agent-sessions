@@ -65,7 +65,7 @@ log = logging.getLogger(__name__)
 MISSION_ID_RE = re.compile(r"^msn_[0-9a-f]{32}$")
 
 #: Bumped whenever the schema changes; ``PRAGMA user_version`` carries it in the file.
-SCHEMA_VERSION = 27
+SCHEMA_VERSION = 28
 
 #: How many live SUB-AGENTS one mission may hold, beyond the session it is already running.
 #:
@@ -687,6 +687,23 @@ CREATE TABLE IF NOT EXISTS mission_sessions (
   PRIMARY KEY (mission_id, session_key)
 );
 
+-- WHERE A SESSION'S RUNTIME LIVES, when that is not its own key (#989; #994 review 3).
+--
+-- A late-id engine is launched under a `<engine>:new-<uuid>` placeholder and adopted under the
+-- real id it revealed afterwards; its master, lock and ring stay under the placeholder for life.
+--
+-- **Deliberately NOT part of mission history**, which is what the first version got wrong. The
+-- mapping lived on `mission_sessions`, whose rows cascade when retention deletes a closed
+-- mission — so a session whose alias publication had failed lost the only record of where it
+-- runs while its agent was still running, and nothing could repair it afterwards. This is a fact
+-- about a RUNTIME, so its lifetime is the runtime's: written in the adopting transaction, and
+-- deleted only when a teardown proves the boundary empty or an archive stops it.
+CREATE TABLE IF NOT EXISTS session_runtime_bindings (
+  logical_key  TEXT PRIMARY KEY,
+  physical_key TEXT NOT NULL,
+  bound_at     REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS mission_objectives (
   mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
   key        TEXT NOT NULL,
@@ -1004,7 +1021,11 @@ CREATE TABLE IF NOT EXISTS mission_dispatches (
   -- claim writes nothing here, so a crash anywhere before the dispatcher records the answer
   -- leaves no evidence rather than a guess. Recorded BEFORE the settlement, which copies it.
   seed_outcome  TEXT,
-  teardown_confirmed INTEGER NOT NULL DEFAULT 0
+  teardown_confirmed INTEGER NOT NULL DEFAULT 0,
+  -- THE ATTEMPT'S NONCE, for a late-id engine (#989). Minted per attempt, recorded with the
+  -- placeholder key before the spawn and delivered as the brief's last line; the session whose
+  -- first turn carries it is the one this attempt became. NULL for a pinned-id engine.
+  attempt_nonce TEXT
 );
 CREATE TABLE IF NOT EXISTS mission_settlements (
   action_id TEXT PRIMARY KEY,
@@ -1182,6 +1203,8 @@ def _migrate(con) -> int:
             _migrate_25_to_26(con)
         if version < 27:
             _migrate_26_to_27(con)
+        if version < 28:
+            _migrate_27_to_28(con)
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return SCHEMA_VERSION
 
@@ -1517,6 +1540,30 @@ def _migrate_26_to_27(con) -> None:
         con.execute("ALTER TABLE mission_objectives ADD COLUMN direction TEXT")
     if "direction_source" not in have:
         con.execute("ALTER TABLE mission_objectives ADD COLUMN direction_source TEXT")
+
+
+#: The same DDL the base schema carries, so an upgraded store gets exactly what a fresh one has.
+SESSION_RUNTIME_BINDINGS_DDL = """CREATE TABLE IF NOT EXISTS session_runtime_bindings (
+  logical_key  TEXT PRIMARY KEY,
+  physical_key TEXT NOT NULL,
+  bound_at     REAL NOT NULL
+)"""
+
+
+def _migrate_27_to_28(con) -> None:
+    """v28 lets a mission own a session whose id was bound after its launch (#989).
+
+    `session_runtime_bindings` records where a late-bound session's runtime lives, and
+    `mission_dispatches.attempt_nonce` records the discriminator its launch delivered. An existing
+    store gets an empty table and NULL nonces, which is exactly right: every session adopted before
+    this version was adopted under the key its runtime lives under, and no earlier dispatch carried
+    a nonce.
+    """
+    con.execute(SESSION_RUNTIME_BINDINGS_DDL)
+    if _has_table(con, "mission_dispatches"):
+        have = {r["name"] for r in con.execute("PRAGMA table_info(mission_dispatches)").fetchall()}
+        if "attempt_nonce" not in have:
+            con.execute("ALTER TABLE mission_dispatches ADD COLUMN attempt_nonce TEXT")
 
 
 def _migrate_22_to_23(con) -> None:
@@ -3366,6 +3413,10 @@ def _adopt_tx(
             (role, spawned_by, mission_id, key),
         )
         return
+    # NOTHING ABOUT THE RUNTIME IS WRITTEN HERE (#994 review 3). Where a late-bound session runs is
+    # a fact about its master, kept in `session_runtime_bindings` and keyed by the session — so it
+    # already travels with the session across a release and a second mission's adoption, and it
+    # survives retention deleting this mission's history.
     try:
         if mine is not None:
             con.execute(
@@ -3397,10 +3448,16 @@ def _adopt_tx(
 def _holder_of(session_key: str, *, path: Path | None = None) -> str | None:
     con = _ready(path)
     try:
+        # BY EITHER NAME (#989). A late-bound session is held under the real id it revealed and
+        # runs under the placeholder it was launched with, and a teardown of that launch asks by
+        # the placeholder. Matching only `session_key` answered "nobody" for a session a mission
+        # had just adopted — and the teardown that trusts this answer would have stopped it.
         row = con.execute(
-            "SELECT mission_id FROM mission_sessions "
-            "WHERE session_key=? AND removed_at IS NULL LIMIT 1",
-            (session_key,),
+            "SELECT mission_id FROM mission_sessions WHERE removed_at IS NULL AND ("
+            "  session_key=? OR session_key IN ("
+            "    SELECT logical_key FROM session_runtime_bindings WHERE physical_key=?)"
+            ") LIMIT 1",
+            (session_key, session_key),
         ).fetchone()
         return row["mission_id"] if row else None
     finally:
@@ -3749,6 +3806,51 @@ def active_session_keys(mission_id: str, *, path: Path | None = None) -> list[st
             (mission_id,),
         ).fetchall()
         return [r["session_key"] for r in rows]
+    finally:
+        con.close()
+
+
+def _bind_runtime_tx(con, logical_key: str, physical_key: str, ts: float) -> None:
+    """Record where a session's runtime lives, inside the caller's transaction (#989).
+
+    Idempotent by primary key, and a re-bind of the same session overwrites: the mapping describes
+    the master that session currently runs under, and the newest adoption is the one that knows it.
+    """
+    con.execute(
+        "INSERT INTO session_runtime_bindings (logical_key, physical_key, bound_at) "
+        "VALUES (?,?,?) ON CONFLICT(logical_key) DO UPDATE SET "
+        "physical_key=excluded.physical_key, bound_at=excluded.bound_at",
+        (logical_key, physical_key, ts),
+    )
+
+
+def physical_key_of(session_key: str, *, path: Path | None = None) -> str | None:
+    """The placeholder a late-bound session's runtime lives under, or None (#989).
+
+    A fact about the session's RUNTIME, not about any mission: it outlives the mission releasing
+    the session, and retention deleting that mission's history (#994 review 3). Raises on an
+    unreadable store — the callers are fences and teardowns, and one that guesses its key is not a
+    fence.
+    """
+    con = _ready(path)
+    try:
+        row = con.execute(
+            "SELECT physical_key FROM session_runtime_bindings WHERE logical_key=?",
+            (session_key,),
+        ).fetchone()
+        return str(row["physical_key"]) if row else None
+    finally:
+        con.close()
+
+
+def physical_bindings(*, path: Path | None = None) -> list[tuple[str, str]]:
+    """Every recorded ``(logical_key, physical_key)`` mapping: what the alias repair republishes."""
+    con = _ready(path)
+    try:
+        rows = con.execute(
+            "SELECT logical_key, physical_key FROM session_runtime_bindings"
+        ).fetchall()
+        return [(str(r["logical_key"]), str(r["physical_key"])) for r in rows]
     finally:
         con.close()
 
@@ -7497,9 +7599,14 @@ def note_dispatch_session(
     session_key: str,
     *,
     expect_plan: str | None = None,
+    nonce: str | None = None,
     path: Path | None = None,
 ) -> bool:
     """Stamp the key a dispatch is about to launch, BEFORE it exists (#904 review 2).
+
+    `nonce` is the attempt's discriminator for a late-id launch (#989), stamped in the same write
+    as its placeholder key. Omitted, the column is cleared, so a record never carries an earlier
+    attempt's nonce beside a later attempt's key.
 
     Called from inside the launcher the instant the id is minted and before anything is spawned.
     The record is therefore allowed to name a session that never came to be — recovery probes the
@@ -7524,14 +7631,15 @@ def note_dispatch_session(
             con.execute("BEGIN IMMEDIATE")
             if expect_plan is None:
                 n = con.execute(
-                    "UPDATE mission_dispatches SET session_key=? WHERE mission_id=?",
-                    (session_key, mission_id),
+                    "UPDATE mission_dispatches SET session_key=?, attempt_nonce=? "
+                    "WHERE mission_id=?",
+                    (session_key, nonce, mission_id),
                 ).rowcount
             else:
                 n = con.execute(
-                    "UPDATE mission_dispatches SET session_key=? "
+                    "UPDATE mission_dispatches SET session_key=?, attempt_nonce=? "
                     "WHERE mission_id=? AND plan_id=?",
-                    (session_key, mission_id, expect_plan),
+                    (session_key, nonce, mission_id, expect_plan),
                 ).rowcount
             # THE LEDGER MOVES IN THE SAME TRANSACTION (#894 review 4, carry-forward).
             #
@@ -7862,7 +7970,7 @@ def get_dispatch(mission_id: str, *, path: Path | None = None) -> dict | None:
     try:
         row = con.execute(
             "SELECT plan_id, engine, cwd, session_key, started_at, project_id, engine_reason, "
-            "brief, owner, spawn_parent, seed_outcome, teardown_confirmed "
+            "brief, owner, spawn_parent, seed_outcome, teardown_confirmed, attempt_nonce "
             "FROM mission_dispatches WHERE mission_id=?",
             (mission_id,),
         ).fetchone()
@@ -7884,6 +7992,8 @@ def get_dispatch(mission_id: str, *, path: Path | None = None) -> dict | None:
             # What this attempt typed, and whether its teardown was proved (#966).
             "seed_outcome": _seed_outcome(row["seed_outcome"]),
             "teardown_confirmed": bool(row["teardown_confirmed"]),
+            # The discriminator a late-id launch delivered (#989); None for a pinned-id engine.
+            "attempt_nonce": row["attempt_nonce"],
         }
     finally:
         con.close()
@@ -7930,6 +8040,9 @@ def unsettled_dispatches(*, path: Path | None = None) -> list[dict]:
             # what "owns it now" means everywhere else in this store, so it means it here too.
             # ANY open mission, not this row's own: the question is whether the session has an
             # owner at all, because that is what makes it not an orphan.
+            # A late-bound adoption needs nothing more here (#989): the settlement that adopts the
+            # real key rewrites this record's `session_key` to it in the same commit, so the record
+            # and the roster never name the session differently.
             "  (SELECT 1 FROM mission_sessions s "
             "     JOIN missions om ON om.id = s.mission_id "
             "   WHERE s.session_key = d.session_key AND s.removed_at IS NULL "
@@ -7964,10 +8077,15 @@ def settle_dispatch(
     keep_record: bool = False,
     expect_plan: str | None = None,
     discharge_resource: bool = True,
+    physical_key: str | None = None,
     now: float | None = None,
     path: Path | None = None,
 ) -> dict:
     """End a dispatch: adopt its session and leave `dispatching`, in ONE transaction.
+
+    `physical_key` names the placeholder a late-bound `session_key` runs under (#989), recorded on
+    the adopted row in this same transaction. Omitted — the only shape before #989 — the session
+    runs under its own key.
 
     **The adoption and the final state are one settlement, and that is the point** (#904 review
     3). Adopting first and transitioning after is two moments, and the gap is exactly long enough
@@ -8183,6 +8301,14 @@ def settle_dispatch(
                     )
                 else:
                     _adopt_tx(con, mission_id, session_key, "primary", "dispatch", ts, path)
+                # WHERE ITS RUNTIME LIVES, in the adopting transaction (#989). A late-bound session
+                # is adopted under the real id it revealed and runs under the placeholder it was
+                # launched with; recording that here means the store knows the mapping from the
+                # instant it owns the session, and the alias published after the commit is only a
+                # projection of it. It is keyed by the SESSION, not by this mission, so it survives
+                # the mission being released, closed and eventually deleted (#994 review 3).
+                if physical_key and physical_key != session_key:
+                    _bind_runtime_tx(con, session_key, physical_key, ts)
                 adopted = True
             con.execute(
                 "UPDATE missions SET state=?, updated_at=? WHERE id=? AND state='dispatching'",

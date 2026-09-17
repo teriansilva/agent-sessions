@@ -476,3 +476,54 @@ def canonical_key(raw: str) -> str:
     """Normalize a raw/back-compat id to its canonical ``engine:native_id`` form."""
     prov, native = parse_key(raw)
     return f"{prov.engine_id}:{native}"
+
+
+def parse_runtime_key(raw: str) -> tuple[base.EngineProvider, str]:
+    """`parse_key` that also accepts a late-id engine's ``new-<uuid>`` placeholder (#989).
+
+    **INTERNAL to owned-runtime teardown, and nothing else.** A dispatch that failed before its
+    engine revealed a real id leaves a master, a lock and a ring keyed on the placeholder, and
+    stopping it must not need an id that never existed. Every public path — adoption, resume,
+    routes — keeps `parse_key`/`canonical_key`, which refuse the placeholder shape, so a
+    placeholder can never be adopted, attached to or resumed.
+    """
+    return parse_key(raw, allow_new_placeholder=True)
+
+
+#: What a LATE-ID engine must declare before it may be dispatched unattended (#989). Each one is a
+#: provider method; the dispatcher only asks. A pinned-id engine keeps the existing path, where the
+#: id is known before the launch and is therefore bound at launch.
+LATE_ID_CAPABILITIES: tuple[str, ...] = (
+    "unattended_preflight",
+    "start_evidence",
+    "bind_session",
+    "snapshot_session_ids",
+)
+
+
+def unattended_start_state(prov: base.EngineProvider | None) -> tuple[bool, str | None]:
+    """``(supported, reason)`` for an UNATTENDED launch of ``prov`` (#989).
+
+    Separate from `handoff.seed_start_state` on purpose: that one answers "can this engine take a
+    seed at all", which an operator watching a terminal is allowed to rely on. This one answers
+    "can the app tell, with nobody watching, that the brief will land in an agent and which session
+    it became". A mission offers and dispatches only engines for which both are true.
+
+    **Default-deny for late-id engines**, for the reason the dispatcher refused them before this
+    existed: their store cannot be asked before the brief is typed, and a trust or consent dialog
+    is armed, painted and quiet. An engine that has not declared every capability is refused, and
+    the reason names what is missing rather than stopping at the session id.
+    """
+    if prov is None:
+        return False, "unknown engine"
+    if not getattr(prov, "new_session_reconciles", False):
+        return True, None
+    missing = [c for c in LATE_ID_CAPABILITIES if not callable(getattr(prov, c, None))]
+    if missing:
+        return False, (
+            f"{prov.engine_id} does not reveal its session id until after its first turn, and "
+            f"has no unattended start check yet (missing: {', '.join(missing)}), so nothing can "
+            "tell a live agent from a first-run or consent screen before the brief is typed. "
+            "Unattended dispatch is refused for this engine; start it from a terminal."
+        )
+    return True, None

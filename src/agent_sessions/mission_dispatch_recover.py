@@ -58,7 +58,7 @@ import contextlib
 import functools
 import logging
 
-from . import headless_dispatch, mission_dispatch, missions
+from . import engines, headless_dispatch, mission_dispatch, missions
 
 log = logging.getLogger(__name__)
 
@@ -127,6 +127,34 @@ async def _stop(key: str) -> str:
     # about an agent another mission had adopted and was still running. The rule, and the word for
     # what happened, both live in one place now.
     return await mission_fence.abandon(key)
+
+
+async def repair_projections(*, path=None) -> int:
+    """Re-publish the alias of every adopted late-bound session that is missing it (#989).
+
+    The store is the authority: `session_runtime_bindings` is written in the same transaction
+    that adopts the real key. The metadata alias — what lets the sidebar, the terminal route and
+    every engine-agnostic reader map that real key back to the placeholder's runtime — is a
+    projection published after the commit, so a crash between the two, or a publication that
+    failed, leaves the store right and the projection missing. This puts it back. Idempotent: an
+    alias that already says the right thing is not rewritten.
+
+    Never raises; returns how many aliases it wrote. Runs at startup, beside `recover_once`.
+    """
+    try:
+        pairs = await asyncio.to_thread(functools.partial(missions.physical_bindings, path=path))
+    except Exception:  # noqa: BLE001
+        log.warning("the late-bound session mappings could not be read", exc_info=True)
+        return 0
+    wrote = 0
+    for logical, physical in pairs:
+        try:
+            if await asyncio.to_thread(mission_dispatch.publish_binding, physical, logical):
+                wrote += 1
+                log.info("restored the alias %s -> %s from the mission store", physical, logical)
+        except Exception:  # noqa: BLE001 — one failed write must not stop the others
+            log.warning("could not restore the alias %s -> %s", physical, logical, exc_info=True)
+    return wrote
 
 
 async def recover_once(*, path=None) -> int:
@@ -260,6 +288,28 @@ async def recover_once(*, path=None) -> int:
             detail = "the app stopped before the agent was started"
             adopt = None
             resource_stopped = True
+        elif engines.is_new_session_placeholder(str(key)):
+            # A LATE-ID LAUNCH THAT NEVER BOUND ITS REAL ID (#989). There is no id to ask the
+            # engine's store about — `parse_key` refuses the placeholder, which is why this row used
+            # to be skipped as "could not look" for ever beside a possibly live agent — and no proof
+            # of which engine session it became, so it is NEVER adopted. Its master, lock and ring
+            # are keyed on the placeholder, so the teardown needs nothing more than the key it has.
+            outcome = await _stop(str(key))
+            if outcome == "spared":
+                detail = (
+                    f"the app stopped before the session id of {key} was bound; a mission holds "
+                    "that session and is running it"
+                )
+            elif outcome == "leaked":
+                detail = (
+                    f"the app stopped before the session id of {key} was bound, and it could not "
+                    "be proved stopped — something may still be running"
+                )
+            else:
+                detail = "the app stopped before the session id was bound"
+            clean = outcome != "leaked"
+            resource_stopped = outcome == "stopped"
+            adopt = None
         else:
             present = await _has_session(str(key), str(row["cwd"]))
             if present is None:

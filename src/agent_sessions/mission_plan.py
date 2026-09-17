@@ -187,6 +187,13 @@ def engine_options() -> list[dict]:
         supported, _why = handoff.seed_start_state(prov, present=prov.is_present())
         if not supported:
             continue
+        # …AND IT CAN BE STARTED WITH NOBODY WATCHING (#989). A second, separate check rather than
+        # a change to `seed_start_state`: the handoff picker has an operator at the terminal and
+        # keeps offering every seedable engine, while a mission offers only engines whose launch
+        # can be proved started and bound to a session without one.
+        unattended, _why = engines.unattended_start_state(prov)
+        if not unattended:
+            continue
         out.append({"id": prov.engine_id, "label": prov.engine_id})
     return out[:MAX_ENGINES]
 

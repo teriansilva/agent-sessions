@@ -750,7 +750,7 @@ async def nudge(
     survive a crash: a binding with no ledger row reads as `indeterminate` (charged, and the
     automatic attempts stop), which is the honest answer for a write nobody can account for.
     """
-    from . import actuator, engines, orchestrator, prefs
+    from . import actuator, mission_fence, orchestrator, prefs
 
     # RE-AUTHORIZE AT THE WRITE BOUNDARY, not at the read that produced the proposal. Everything
     # this checks was already true when `assess()` ran, but a model call and a delivery wait sit
@@ -817,7 +817,7 @@ async def nudge(
         "render": rendered,
     }
     rec["precondition"] = await missions.run_admitted(
-        lambda: orchestrator.precondition_for(engines.physical_key(session_key))
+        lambda: orchestrator.precondition_for(mission_fence.physical_of(session_key))
     )
 
     # RE-AUTHORIZE AT THE DURABLE APPEND FENCE. The early check ran before `precondition_for`,

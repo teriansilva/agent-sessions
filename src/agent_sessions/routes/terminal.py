@@ -38,6 +38,7 @@ from .. import (
     engines,
     fsbrowse,
     handoff,
+    missions,
     owner,
     perfstats,
     prefs,
@@ -55,6 +56,37 @@ from .. import (
 from ..auth import AuthConfig, origin_matches, session_uid
 
 log = logging.getLogger("agent_sessions.terminal")
+
+
+async def resolve_physical_key(prov, native: str, *, is_new: bool) -> str | None:
+    """The PHYSICAL key a terminal for ``prov:native`` must lock and attach under, or ``None``.
+
+    The metadata alias answers first, as it always has (#127). **For a late-id engine it is not the
+    only answer** (#994 review 1, finding 2): a mission that adopted a late-bound session records
+    the placeholder in its store in the adopting commit and publishes the alias afterwards, so a
+    publication that failed — or a restart whose repair pass has not run yet — leaves a real key
+    with no alias. Resolving it to itself then takes the LOGICAL key's launch lock while the
+    placeholder's master holds its own, and the ws launches a second writer beside the running
+    agent. The store's mapping closes that window.
+
+    ``None`` means the store could not be read for a key that might be mapped. The caller refuses
+    rather than guessing, because the guess is exactly the duplicate writer. Pinned-id engines
+    never have a mapping and never read the store; nor does the ``new=1`` launch, whose key is the
+    physical one by construction. Read off the event loop, like every other store read here.
+    """
+    logical = f"{prov.engine_id}:{native}"
+    if is_new:
+        return logical
+    resolved = engines.physical_key(logical)
+    if resolved != logical or not getattr(prov, "new_session_reconciles", False):
+        return resolved
+    try:
+        stored = await asyncio.to_thread(missions.physical_key_of, logical)
+    except Exception:  # noqa: BLE001 — an unreadable mapping is not permission to launch
+        log.warning("terminal %s: the mission store's session mapping could not be read", logical)
+        return None
+    return stored or logical
+
 
 # How often the active viewer re-asserts its lease (#293). Must be < owner.LEASE_S so a
 # live holder never reads as stale; the same call doubles as the demotion check — it
@@ -345,10 +377,14 @@ def register(
         # — the placeholder for a reconciled opencode session, else == native. Never
         # overwrite `native` with the placeholder, or a real URL would 4404 on LAUNCH.
         phys_native = native
-        if not is_new:
-            resolved = engines.physical_key(f"{prov.engine_id}:{native}")
-            if resolved != f"{prov.engine_id}:{native}":
-                _eng, _, phys_native = resolved.partition(":")
+        # The alias first, then — for a late-id engine with no alias — the mission store's own
+        # mapping (#994 review 1, finding 2). `None` is a store we could not read for a key that
+        # may be mapped: refused retryably, because resolving it to itself is the duplicate writer.
+        resolved = await resolve_physical_key(prov, native, is_new=is_new)
+        if resolved is None:
+            return await reject(4502)
+        if resolved != f"{prov.engine_id}:{native}":
+            _eng, _, phys_native = resolved.partition(":")
         phys_key = f"{prov.engine_id}:{phys_native}"
         transcript_key = f"{prov.engine_id}:{native}"
 

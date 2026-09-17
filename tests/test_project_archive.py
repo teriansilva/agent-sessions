@@ -183,7 +183,7 @@ def test_project_archive_reaps_each_member_runtime(auth_cfg, fake_jsonl, monkeyp
 
     seen: list = []
 
-    async def rec_cleanup(engine, native, *, spare_if=None):
+    async def rec_cleanup(engine, native, *, spare_if=None, **_kw):
         seen.append((engine, native))
         return "gone"
 
@@ -205,7 +205,7 @@ def test_project_archive_cleanup_failure_does_not_abort_batch(auth_cfg, fake_jso
     # abort the batch, and every member still archives.
     from agent_sessions.routes import sessions as sroutes
 
-    async def boom_cleanup(engine, native, *, spare_if=None):
+    async def boom_cleanup(engine, native, *, spare_if=None, **_kw):
         raise RuntimeError("teardown failed")
 
     monkeypatch.setattr(sroutes.runtime_cleanup, "cleanup_runtime", boom_cleanup)
@@ -253,7 +253,7 @@ def test_project_unarchive_never_reaps(auth_cfg, fake_jsonl, monkeypatch):
 
     calls: list = []
 
-    async def rec_cleanup(engine, native, *, spare_if=None):
+    async def rec_cleanup(engine, native, *, spare_if=None, **_kw):
         calls.append((engine, native))
         return "gone"
 

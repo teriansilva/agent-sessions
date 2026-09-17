@@ -24,12 +24,56 @@ No shell anywhere: this only orchestrates the existing argv-list / syscall helpe
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 
 from . import engines, owner, ptybridge, reaper, scrollback, sessionlock
 
 
-async def cleanup_runtime(engine: str, native: str, *, spare_if=None) -> str:
+class UnresolvableRuntime(RuntimeError):
+    """Where a session's runtime lives could not be established (#994 review 2, finding 1).
+
+    Raised before anything is signalled. A caller must not record the session as archived on the
+    strength of a teardown that could not even name its target: the agent is very possibly still
+    running under a key nobody looked at.
+    """
+
+
+async def resolve_runtime_key(engine: str, native: str) -> str:
+    """The PHYSICAL key ``engine:native``'s runtime lives under. Raises `UnresolvableRuntime`.
+
+    The alias answers first, as it always has (#127). **A late-id engine's real key can have no
+    alias and still be mapped** (#989): a mission that adopted a late-bound session records the
+    placeholder in its store in the adopting commit and publishes the alias afterwards, so a failed
+    publication — or a restart before the repair pass — leaves the real key resolving to itself
+    while the master runs under the placeholder. Archive then terminated a runtime that does not
+    exist and reported the session archived, with the agent still running. The store's mapping is
+    read in that case, and a store that cannot be read refuses rather than guessing.
+
+    Pinned-id engines never have a mapping and never read the store; nor does a placeholder, which
+    IS the physical key.
+    """
+    logical = f"{engine}:{native}"
+    phys = engines.physical_key(logical)
+    if phys != logical or engines.is_new_session_placeholder(logical):
+        return phys
+    if not getattr(engines.get(engine), "new_session_reconciles", False):
+        return phys
+    from . import missions  # lazy: this module is the teardown, not a mission-store dependency
+
+    try:
+        stored = await asyncio.to_thread(missions.physical_key_of, logical)
+    except Exception as e:  # noqa: BLE001 — an unreadable mapping is not permission to guess
+        raise UnresolvableRuntime(
+            f"could not tell where {logical}'s runtime lives ({type(e).__name__}); "
+            "nothing was stopped or archived"
+        ) from e
+    return stored or phys
+
+
+async def cleanup_runtime(
+    engine: str, native: str, *, spare_if=None, physical_key: str | None = None
+) -> str:
     """Free the live runtime footprint of ``engine:native``; return the master outcome.
 
     Resolves the PHYSICAL key first (alias → real id), terminates the ``dtach`` master via
@@ -46,10 +90,16 @@ async def cleanup_runtime(engine: str, native: str, *, spare_if=None) -> str:
     ``"gone" | "spared" | "term" | "kill" | "leaked"``. ``"leaked"`` means something in the
     session's process group survived SIGKILL — the local state below is still cleaned, but a
     caller that reports "stopped" on it is reporting a process that is still running (#898).
-    Best-effort: every teardown step past the terminate is exception-suppressed; the caller
-    should still wrap the whole call so even a resolution error can't block its own work.
+    **Best-effort is the TEARDOWN, not the resolution** (#994 review 3). Every step past the
+    terminate is exception-suppressed, and a caller may wrap the whole call so a teardown hiccup
+    never blocks its own work — but `UnresolvableRuntime` is a different answer: nothing was
+    signalled because nothing could be named, and an archive that swallows it records a session
+    archived while its agent keeps running. Archive callers therefore resolve first (see
+    `resolve_runtime_key`) and refuse on that, suppressing only what comes after.
     """
-    phys_key = engines.physical_key(f"{engine}:{native}")
+    # The caller's resolution when it made one — archive resolves first so that a runtime it cannot
+    # locate is refused rather than archived past — otherwise resolved here (#994 review 2).
+    phys_key = physical_key or await resolve_runtime_key(engine, native)
     _eng, _, phys_native = phys_key.partition(":")
 
     # Kill the master (and its agent process group). The single-writer lock the master

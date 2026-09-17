@@ -23,15 +23,15 @@ A dispatch that reaches `started` and never reaches `briefed` is a **failure wit
 success. That is the whole point: an unattended, permission-bypassed session reported as working
 when it is stalled on a modal is a false report the operator's next decision is made on.
 
-**The ORDER of the last two depends on who mints the id, and only the order does.** For a
+**Who mints the id changes how the facts are established, never whether they are.** For a
 pinned-id engine (claude, shell) the id is known before the launch, so the store record is
 required BEFORE anything is typed — the trust screen above is armed, painted and quiet, so the
-readiness gate alone cannot tell it from a running agent. For a mint-own-id engine (codex,
-opencode, kimi, antigravity) that order is impossible: the engine writes its id only after its
-first turn, so requiring evidence first means the id waits on the first turn, the first turn waits
-on the brief and the brief waits on the id. There, reconciliation runs CONCURRENTLY with the
-delivery and the store is asked once the id resolves. `ok` requires both facts either way, so the
-order changes when each is established and never whether it is.
+readiness gate alone cannot tell it from a running agent. An engine that mints its own id (codex,
+opencode, kimi, antigravity) writes that id only after its first turn, so its store cannot be asked
+for it before the brief. There the question is split (#989): start evidence is asked of the
+LAUNCH — the provider's own check, still before any byte is typed — and a fourth fact, **bound**
+(which session the launch became), is established after the brief on a proof that the session
+found received this attempt's paste. `ok` requires every fact the engine has.
 
 ## Why the screen is not the diagnostic
 
@@ -49,12 +49,12 @@ lock. One of each.
 
 ## What it does not cover, and why that is stated rather than implied
 
-**Only engines whose session id is known before the launch.** `claude` qualifies; `codex`,
-`opencode`, `kimi` and `antigravity` mint their own id and do not reveal it until after their
-first turn — so the store cannot be asked before the brief is typed, and briefing first is the
-one thing this module refuses to do. Those engines are refused at the capability fence, before
-anything is spawned, with a reason that says so. Establishing a noninteractive bootstrap proof
-per engine is real work against the real engines and is its own issue; assuming one would put
+**A late-id engine that has not declared how to answer those questions.** The preflight, the start
+evidence and the binding proof are facts about each engine, measured against the real CLI rather
+than assumed, and they live on its provider (`engines/base.py`). An engine that has not declared
+every one of them is refused at the capability fence (`engines.unattended_start_state`), before
+anything is spawned, with a reason naming what is missing. As of #989 that is every late-id
+engine: the contract exists and none has passed its measurement yet. Assuming an answer would put
 the operator's brief in front of a consent screen with nobody watching.
 """
 
@@ -75,12 +75,14 @@ from . import (
     engine_auth,
     engines,
     handoff,
+    launch_binding,
     ptybridge,
     scopedspawn,
     session_input,
     sessionlock,
     start_evidence,
 )
+from .engines import base as engine_base
 
 log = logging.getLogger(__name__)
 
@@ -90,6 +92,11 @@ log = logging.getLogger(__name__)
 #: that never ends.
 START_EVIDENCE_TIMEOUT_S = 90.0
 START_POLL_S = 1.0
+
+#: How long a late-id launch waits, from the delivery's acknowledgement, for its real session id to
+#: be bound with a proof (#989). The same budget as start evidence and for the same reason: a cold
+#: engine writes its first turn slowly, and "never bound" must eventually be the answer.
+BIND_TIMEOUT_S = START_EVIDENCE_TIMEOUT_S
 
 SPAWN_TIMEOUT_S = 20.0
 
@@ -123,11 +130,29 @@ class Dispatch:
     #: The teardown's own word for a failed launch: `stopped` (the boundary was proved empty),
     #: `spared`, `leaked` or `error`. Empty when no teardown ran.
     teardown: str = ""
+    #: THE THIRD FACT, which session this launch became (#989). `None` for a pinned-id engine: its
+    #: id is known before the launch, so `key` is the session and there is nothing to bind.
+    #: `False` until a late-id launch binds its real id with a proof, then `True`.
+    bound: bool | None = None
+    #: The engine-qualified REAL key a late-id launch bound, e.g. `kimi:session_<uuid>`. `key`
+    #: stays the physical placeholder the master, lock and ring live under.
+    bound_key: str = ""
+    #: Which proof bound it (`nonce` / `linkage`). Empty until bound.
+    bound_proof: str = ""
+    #: The attempt nonce a late-id launch delivered as its brief's last line. Empty otherwise.
+    nonce: str = ""
+
+    @property
+    def adopt_key(self) -> str:
+        """What a mission adopts: the bound real key, or `key` for a pinned-id engine."""
+        return self.bound_key or self.key
 
     @property
     def state(self) -> str:
         """The furthest point reached. `briefed` now precedes `started` for a mint-own-ID engine,
         so this reports the *highest* fact rather than assuming an order."""
+        if self.started and self.briefed and self.bound is False:
+            return "unbound"
         if self.started and self.briefed:
             return "briefed"
         if self.briefed:
@@ -147,8 +172,13 @@ class Dispatch:
         a CONJUNCTION rather than as "the later one", because the order is engine-dependent: a
         mint-own-id engine writes its id only after its first turn, so there the brief necessarily
         comes first.
+
+        **And BOUND, for a late-id launch** (#989). A brief that reached an agent whose session
+        nobody can name is not a dispatch anyone can follow through on — and without this, the
+        caller adopts the placeholder, which no public path can resolve. `bound is None` is a
+        pinned-id launch, whose key is the session.
         """
-        return self.briefed and self.started
+        return self.briefed and self.started and self.bound is not False
 
 
 def _row_ids(row) -> tuple[str, str]:
@@ -217,7 +247,9 @@ def _has_store_record(prov, native: str, cwd: str) -> bool:
 _START_EVIDENCE = {"claude": start_evidence.claude_start_state}
 
 
-async def _await_start_evidence(prov, native: str, cwd: str, *, timeout: float) -> tuple[bool, str]:
+async def _await_start_evidence(
+    prov, native: str, cwd: str, *, timeout: float, launch=None
+) -> tuple[bool, str]:
     """Condition 5. Returns ``(started, why_not)``.
 
     Polls for evidence the agent STARTED. Deliberately NOT `ptybridge.probe_master` or
@@ -235,7 +267,25 @@ async def _await_start_evidence(prov, native: str, cwd: str, *, timeout: float) 
     actually mattered, where a dispatch into an already-trusted folder failed identically and was
     told the same story.
     """
-    adapter = _START_EVIDENCE.get(prov.engine_id)
+    if launch is not None:
+        # A LATE-ID LAUNCH IS ASKED BY ITS LAUNCH, never by an id it does not have yet (#989). The
+        # provider answers in the same three words; anything else — or a raise — is `unreadable`,
+        # which keeps polling and never counts as a start.
+        def adapter(_native: str, _cwd: str) -> tuple[str, str]:
+            try:
+                state, detail = prov.start_evidence(launch)
+            except Exception as e:  # noqa: BLE001
+                return start_evidence.UNREADABLE, f"the start check raised ({type(e).__name__})"
+            if state not in (
+                start_evidence.FOUND,
+                start_evidence.ABSENT,
+                start_evidence.UNREADABLE,
+            ):
+                return start_evidence.UNREADABLE, "the start check gave no recognisable answer"
+            return state, str(detail or "")
+
+    else:
+        adapter = _START_EVIDENCE.get(prov.engine_id)
     deadline = time.monotonic() + timeout
     last_state, last_detail = "", ""
     while time.monotonic() < deadline:
@@ -264,6 +314,109 @@ async def _await_start_evidence(prov, native: str, cwd: str, *, timeout: float) 
         f"the agent did not register a live session within {int(timeout)}s: {last_detail}. "
         "The process is up, so it is most likely holding a screen that takes input first — "
         "a trust, onboarding or re-authentication prompt."
+    )
+
+
+def _admission_key(engine: str, cwd: str) -> str:
+    """The flock name that serialises unattended late-id launches of one engine in one folder."""
+    return f"unattended-admit-{engine}-{uuid.uuid5(uuid.NAMESPACE_URL, 'file://' + cwd)}"
+
+
+async def _await_binding(
+    prov, launch: engine_base.LaunchContext, *, timeout: float
+) -> tuple[engine_base.Binding | None, str]:
+    """Which session did this late-id launch become? Returns ``(binding, why_not)`` (#989).
+
+    Polls `prov.bind_session(launch)` until the deadline. It publishes nothing and adopts nothing:
+    discovery is side-effect-free, so a dispatch that fails or is cancelled here leaves no trace.
+
+    **The dispatcher checks the answer rather than trusting it.** `bound` is accepted only with a
+    known proof and an id this engine can actually have; anything else is treated as `unreadable`,
+    because a provider that says "bound" without saying how is not an answer about this launch.
+    `ambiguous` fails at once — waiting cannot make two proven candidates into one. `pending` and
+    `unreadable` keep polling, and the one standing at the deadline decides the sentence: "never
+    appeared" is a claim about the engine, "could not tell" is a claim about our reading of it.
+    """
+    engine = launch.engine
+    deadline = time.monotonic() + timeout
+    last = engine_base.Binding(engine_base.BIND_PENDING)
+    # Whether ANY call has come back with an answer. A call cut off by the deadline, or one that
+    # answers after it, says nothing new: when an earlier call answered, THAT answer stands (so a
+    # launch whose binder kept saying `pending` still "never appeared"). Only when no call ever
+    # answered is the binder itself the reason.
+    answered = False
+    while time.monotonic() < deadline:
+        # THE DEADLINE BOUNDS EACH CALL, NOT ONLY THE LOOP (#994 review 1, finding 4). A binder that
+        # stalls used to hold the dispatch — and the folder's admission flock — for as long as it
+        # took, and its answer was then accepted however late it came. The call now gets what is
+        # left of the budget. A worker thread cannot be cancelled, so a call that overruns keeps
+        # running after we stop waiting; that is why `bind_session` must be a bounded,
+        # side-effect-free read (`engines/base.py`) — abandoning it leaves nothing behind.
+        remaining = deadline - time.monotonic()
+        try:
+            got = await asyncio.wait_for(
+                asyncio.to_thread(prov.bind_session, launch), timeout=max(remaining, 0.0)
+            )
+        except TimeoutError:
+            if not answered:
+                last = engine_base.Binding(
+                    engine_base.BIND_UNREADABLE,
+                    detail="the binder did not answer within the binding budget",
+                )
+            break
+        except Exception as e:  # noqa: BLE001 — a binder that raises cannot answer this poll
+            got = engine_base.Binding(
+                engine_base.BIND_UNREADABLE, detail=f"the binder raised ({type(e).__name__})"
+            )
+        if time.monotonic() > deadline:
+            # A LATE ANSWER IS NOT AN ANSWER. Whatever it says — `bound` included — the budget the
+            # operator's launch was given has passed, and binding past it would adopt a session the
+            # failure path has already been entitled to tear down. The answer standing from the
+            # last call that came back in time decides the sentence.
+            if not answered:
+                last = engine_base.Binding(
+                    engine_base.BIND_UNREADABLE,
+                    detail="the binder answered only after the binding budget; not accepted",
+                )
+            break
+        answered = True
+        if not isinstance(got, engine_base.Binding):
+            got = engine_base.Binding(
+                engine_base.BIND_UNREADABLE, detail="the binder gave no recognisable answer"
+            )
+        if got.state == engine_base.BIND_BOUND:
+            if got.proof not in engine_base.BIND_PROOFS:
+                got = engine_base.Binding(
+                    engine_base.BIND_UNREADABLE,
+                    detail="a binding arrived without a proof, and was not accepted",
+                )
+            elif not prov.id_pattern.match(str(got.native or "")):
+                got = engine_base.Binding(
+                    engine_base.BIND_UNREADABLE,
+                    detail="a binding named an id this engine cannot have, and was not accepted",
+                )
+            else:
+                return got, ""
+        if got.state == engine_base.BIND_AMBIGUOUS:
+            return None, (
+                f"more than one {engine} session in this folder carries this launch's proof "
+                f"({got.detail or 'ambiguous'}); none was picked"
+            )
+        if got.state not in (engine_base.BIND_PENDING, engine_base.BIND_UNREADABLE):
+            got = engine_base.Binding(
+                engine_base.BIND_UNREADABLE, detail=f"the binder answered {got.state!r}"
+            )
+        last = got
+        await asyncio.sleep(START_POLL_S)
+    if last.state == engine_base.BIND_UNREADABLE:
+        return None, (
+            f"could not tell which {engine} session this launch became within {int(timeout)}s — "
+            f"{last.detail or 'the answer could not be read'}. This is not a report that it did "
+            "not start."
+        )
+    return None, (
+        f"the {engine} session id never appeared within {int(timeout)}s of the brief being "
+        "delivered"
     )
 
 
@@ -330,6 +483,7 @@ async def dispatch(
     start_timeout: float | None = None,
     on_key: Callable[[str], None] | None = None,
     authorize: Callable[[int], str | None] | None = None,
+    nonce: str | None = None,
 ) -> Dispatch:
     """Launch `engine` in `cwd` with nobody watching, and deliver `brief`.
 
@@ -385,32 +539,41 @@ async def dispatch(
     except handoff.HandoffError as e:
         raise DispatchError(str(getattr(e, "detail", None) or e)) from None
 
-    # MINT-OWN-ID ENGINES ARE REFUSED, before the spawn (#898 review 4, finding 2).
+    # WHO MINTS THE ID DECIDES THE PATH (#989), and a late-id engine must bring its own answers.
     #
-    # The safety property this whole module is about is condition 5: the ENGINE'S OWN STORE is
-    # what tells a running agent apart from a first-run trust screen, because that screen is
+    # The safety property this whole module is about is condition 5: something the engine writes
+    # is what tells a running agent apart from a first-run trust screen, because that screen is
     # armed, painted and quiet and satisfies every signal the readiness gate can see. For a
     # pinned-id engine the id is known before the launch, so the store can be asked BEFORE
     # anything is typed and the property holds.
     #
-    # For an engine that mints its own id it cannot: `_reconcile_new_session`'s own contract says
-    # the id may not appear "until the first message/output", so requiring evidence first is a
-    # deadlock — the id waits on the first turn, the first turn waits on the brief, and the brief
-    # waits on the id. Briefing first breaks the deadlock and breaks the property with it: the
-    # operator's words, plus a submit, can land on a consent screen with nobody watching.
-    #
-    # There may well be an engine-specific noninteractive bootstrap proof for each of these — a
-    # rollout file, a store row written at startup rather than at first turn — but it is a
-    # different fact per engine and it has to be established against the real engine rather than
-    # assumed. Until then the honest answer is the one #732 gave: refuse. This is a smaller
-    # feature than the issue sketched and it says so, rather than shipping a path whose safety
-    # rests on a modal not looking like an agent. Tracked as its own issue.
-    if bool(getattr(prov, "new_session_reconciles", False)):
-        raise DispatchError(
-            f"{engine} does not reveal its session id until after its first turn, so nothing "
-            "can tell a live agent from a first-run or consent screen before the brief is "
-            "typed. Unattended dispatch is refused for this engine; start it from a terminal."
-        )
+    # For an engine that mints its own id, asking the store for THE ID before the brief is a
+    # deadlock — the id waits on the first turn, the first turn waits on the brief, the brief on
+    # the id — and #898 refused them outright. The way out keeps the property: start evidence is
+    # asked of the LAUNCH (a provider capability, still before any byte is typed) and the id is
+    # bound AFTER the brief, by a proof that the session found is the one this attempt pasted into.
+    # Every one of those answers is engine-specific and measured against the real engine, so an
+    # engine that has not declared them all is refused here, before anything is spawned, with a
+    # reason naming what is missing (`engines.unattended_start_state`).
+    late_id = bool(getattr(prov, "new_session_reconciles", False))
+    unattended, why_not = engines.unattended_start_state(prov)
+    if not unattended:
+        raise DispatchError(why_not or f"{engine} cannot be dispatched unattended")
+    attempt_nonce = ""
+    if late_id:
+        # THE NONCE RIDES INSIDE THE SANITISED TEXT, so the cap covers it too: a brief with no room
+        # left for its nonce line is refused rather than delivered without the one line that says
+        # which session it became. `nonce` is the caller's when it recorded one before the spawn.
+        attempt_nonce = nonce or launch_binding.mint_nonce()
+        try:
+            cleaned = handoff.sanitize_seed(launch_binding.envelope(cleaned, attempt_nonce))
+        except ValueError:
+            raise DispatchError("the dispatch carries a malformed attempt nonce") from None
+        except handoff.HandoffError as e:
+            raise DispatchError(
+                "the brief leaves no room for this attempt's identifying line "
+                f"({getattr(e, 'detail', None) or e})"
+            ) from None
     # The executable the launcher will actually exec, not whatever `PATH` resolves — a probe of a
     # different binary answers a question about a different process.
     try:
@@ -418,9 +581,14 @@ async def dispatch(
     except Exception:  # noqa: BLE001
         probe_bin = engine
 
-    native = str(uuid.uuid4())
+    # A LATE-ID ENGINE LAUNCHES UNDER A PLACEHOLDER it never sees (#989): its `new_launch_argv`
+    # ignores the id and starts a fresh session, so the id only keys the socket, the lock and the
+    # ring — for the life of the master. The real id is bound after the brief, into `bound_key`.
+    native = f"new-{uuid.uuid4()}" if late_id else str(uuid.uuid4())
     key = f"{engine}:{native}"
-    out = Dispatch(key=key, engine=engine, native=native, cwd=cwd)
+    out = Dispatch(key=key, engine=engine, native=native, cwd=cwd, nonce=attempt_nonce)
+    if late_id:
+        out.bound = False
 
     # BEFORE THE LOCK, BEFORE THE SPAWN. Nothing exists yet, so a caller that records this and
     # then dies has a record of an intention — which is precisely what it can reconcile against
@@ -461,6 +629,12 @@ async def dispatch(
     # session was BUSY for the life of the process. A cleanup that can itself fail is not one.
     dirfd: int | None = None
     spawn_cwd = cwd
+    # A late-id launch's admission flock and its launch context (#989), bound here for the same
+    # reason `dirfd` is: the `finally` releases the flock on every path, including the refusals that
+    # return before either is assigned.
+    admission: sessionlock.SessionLock | None = None
+    admission_task: asyncio.Future | None = None
+    launch_ctx: engine_base.LaunchContext | None = None
 
     async def _reclaim() -> None:
         """Wait out the spawn worker, and reap whatever it produced after we stopped wanting it."""
@@ -587,11 +761,23 @@ async def dispatch(
             with session_input.launch_fence(timeout=SPAWN_TIMEOUT_S) as epoch:
                 yield authorize(epoch) if authorize is not None else ""
 
-        auth_task = asyncio.ensure_future(
-            asyncio.to_thread(
-                engine_auth.check, probe_bin, cwd=spawn_cwd, probe=auth_probe, gate=_probe_gate
+        if late_id:
+            # THE PROVIDER'S OWN PREFLIGHT (#989), under exactly the same ownership: this worker,
+            # this probe (so `abandon` reaches whatever it spawns), and this gate — the launch
+            # fence around each spawn and never across a read or a wait (#921).
+            auth_task = asyncio.ensure_future(
+                asyncio.to_thread(
+                    lambda: prov.unattended_preflight(
+                        cwd=spawn_cwd, probe=auth_probe, gate=_probe_gate
+                    )
+                )
             )
-        )
+        else:
+            auth_task = asyncio.ensure_future(
+                asyncio.to_thread(
+                    engine_auth.check, probe_bin, cwd=spawn_cwd, probe=auth_probe, gate=_probe_gate
+                )
+            )
         try:
             # SHIELDED, and joined in the `finally` — the idiom the spawn below uses, for the
             # identical reason: a thread cannot be cancelled, so the only way this frame can
@@ -614,7 +800,18 @@ async def dispatch(
             # must keep propagating to the `finally` that joins the worker.
             out.reason = f"the launch could not be authorized ({type(e).__name__})"
             return out
-        if not engine_auth.may_dispatch(auth_state):
+        if late_id:
+            # ONLY `ok` OPENS THE GATE, exactly as only `AUTHENTICATED` does below: `unknown` is not
+            # permission, and it must not be reported as a refusal the engine never made.
+            if auth_state != engine_base.PREFLIGHT_OK:
+                out.reason = (
+                    f"{engine} refused an unattended start on this host ({auth_why})"
+                    if auth_state == engine_base.PREFLIGHT_REFUSED
+                    else f"could not confirm that {engine} can start unattended ({auth_why}); "
+                    "refusing to start an unattended agent on an unknown"
+                )
+                return out
+        elif not engine_auth.may_dispatch(auth_state):
             out.reason = (
                 f"{engine} cannot authenticate on this host, so an unattended agent would take "
                 f"the brief and be unable to act on it ({auth_why})"
@@ -623,6 +820,50 @@ async def dispatch(
                 "to start an unattended agent on an unknown"
             )
             return out
+
+        if late_id:
+            # ONE UNATTENDED LAUNCH PER (ENGINE, FOLDER) (#989). Two of them diffing the same store
+            # could each find the other's new id; the nonce already refuses to bind a session that
+            # did not receive this attempt's paste, so this is a second fence rather than the only
+            # one — and it deliberately does NOT claim to cover interactive launches, which the
+            # proof alone excludes. A flock, so it holds across app instances like the writer lock.
+            # THE ACQUISITION IS OWNED, like the spawn and auth workers (#994 review 2, finding 2).
+            # The flock is handed across an await, and a cancellation after the worker takes it
+            # but before `admission` is bound left a raw fd nothing would ever release — every
+            # later unattended launch in this folder refused, with nothing running. The task is
+            # kept, and the `finally` joins it and releases whatever it acquired.
+            admission_task = asyncio.ensure_future(
+                asyncio.to_thread(sessionlock.acquire, _admission_key(engine, cwd))
+            )
+            admission = await asyncio.shield(admission_task)
+            if admission is None:
+                out.reason = (
+                    f"another unattended {engine} launch is starting in this folder; "
+                    "try again once it has started"
+                )
+                return out
+            # THE BASELINE, taken AFTER the preflight — whose own probe may leave a session behind
+            # in this folder — and BEFORE the spawn. A read that failed is not an empty folder:
+            # every id already there would then look new, so nothing is launched on it.
+            try:
+                snapshot = await asyncio.to_thread(prov.snapshot_session_ids, cwd)
+            except Exception:  # noqa: BLE001 — a store that raises has told us it cannot answer
+                snapshot = None
+            if snapshot is None:
+                out.reason = (
+                    f"{engine}'s own store could not be read before the launch, so the session "
+                    "this launch becomes could not be told apart from one that already existed"
+                )
+                return out
+            launch_ctx = engine_base.LaunchContext(
+                engine=engine,
+                key=key,
+                native=native,
+                cwd=cwd,
+                nonce=attempt_nonce,
+                snapshot=frozenset(str(s) for s in snapshot),
+                launched_at=time.time(),
+            )
 
         may_have_inherited = True
         try:
@@ -756,13 +997,13 @@ async def dispatch(
         evidence_timeout = START_EVIDENCE_TIMEOUT_S if start_timeout is None else start_timeout
 
         try:
-            # STORE EVIDENCE FIRST, ALWAYS. Only pinned-id engines reach here (the rest are
-            # refused above), so the id is known before the launch and there is nothing to wait
-            # for — which is what makes this order possible at all. The store record is the one
-            # signal a trust screen cannot fake: it is armed, painted and quiet, so it passes the
-            # readiness gate perfectly and is invisible to everything else.
+            # START EVIDENCE FIRST, ALWAYS. For a pinned-id engine the id is known before the
+            # launch, so the store can be asked directly. For a late-id engine it is asked of the
+            # LAUNCH (#989) — the provider's own start check, still before any byte is typed. Either
+            # way it is the one signal a trust screen cannot fake: that screen is armed, painted
+            # and quiet, so it passes the readiness gate perfectly and is invisible to all else.
             started, why_not = await _await_start_evidence(
-                prov, native, cwd, timeout=evidence_timeout
+                prov, native, cwd, timeout=evidence_timeout, launch=launch_ctx
             )
             if not started:
                 out.reason = why_not
@@ -771,13 +1012,34 @@ async def dispatch(
             out.events.append("started")
 
             # The readiness gate still protects the delivery — armed + painted + quiet — with the
-            # store evidence above as a SECOND fence in front of it, not a replacement for it.
+            # start evidence above as a SECOND fence in front of it, not a replacement for it.
             delivered, why = await headless_seed.deliver(key, key)
             if not delivered:
                 out.reason = why or "the brief was not delivered"
                 return out
             out.briefed = True
             out.events.append("briefed")
+
+            if launch_ctx is not None:
+                # WHICH SESSION IT BECAME (#989), bound AFTER the brief because that is when a
+                # late-id engine writes its id — and bound only on a proof that the session found
+                # received THIS paste. Nothing is published here: the caller adopts first, and the
+                # alias is a projection of that commit. A launch that never binds is a failure with
+                # a reason, and the `finally` below tears it down like any other.
+                binding, why_unbound = await _await_binding(
+                    prov,
+                    launch_ctx,
+                    # ITS OWN BUDGET (#994 review 1, finding 4). `start_timeout` still overrides it,
+                    # as it overrides every wait in this function, so a test states one budget.
+                    timeout=(BIND_TIMEOUT_S if start_timeout is None else start_timeout),
+                )
+                if binding is None:
+                    out.reason = why_unbound
+                    return out
+                out.bound = True
+                out.bound_key = f"{engine}:{binding.native}"
+                out.bound_proof = binding.proof
+                out.events.append("bound")
             return out
         except Exception as e:  # noqa: BLE001
             out.reason = f"the dispatch failed ({type(e).__name__})"
@@ -867,3 +1129,18 @@ async def dispatch(
         else:
             with contextlib.suppress(Exception):
                 out.seed_outcome = handoff.retire_seed(key)
+        # THE ADMISSION FLOCK LAST (#989), after the teardown: releasing it while a failed launch
+        # is still being stopped would let the next unattended launch in this folder snapshot a
+        # store this one's agent may still be writing to.
+        if admission is None and admission_task is not None:
+            # A cancelled acquisition may still have taken the lock on its worker. Join it —
+            # shielded and repeated, because this runs while a cancellation is unwinding — and
+            # release what it got, so the folder is never left refusing launches.
+            while not admission_task.done():
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await asyncio.shield(admission_task)
+            if not admission_task.cancelled() and admission_task.exception() is None:
+                admission = admission_task.result()
+        if admission is not None:
+            with contextlib.suppress(Exception):
+                admission.release()

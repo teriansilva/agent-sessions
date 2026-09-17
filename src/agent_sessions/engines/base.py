@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -150,3 +151,76 @@ class EngineProvider(Protocol):
 
     def archive(self, native_id: str) -> None: ...
     def unarchive(self, native_id: str) -> None: ...
+
+
+# --- unattended launch contract (#989) ------------------------------------------------------
+#
+# An engine that mints its own session id can be dispatched unattended only if it answers three
+# questions the dispatcher cannot answer for it, each as an OPTIONAL provider method:
+#
+#   unattended_preflight(*, cwd, probe, gate) -> (PREFLIGHT_*, why)
+#       Before spawn, inside the session's single-writer lock, with the pinned cwd. Reads run
+#       OUTSIDE the global launch-policy fence; `gate` is a context manager the provider enters
+#       around each process it spawns and nothing else (#921). `probe` owns those processes.
+#   start_evidence(launch: LaunchContext) -> (EVIDENCE_*, detail)
+#       After spawn and BEFORE any byte is typed. Keyed on the launch, never on the id.
+#   bind_session(launch: LaunchContext) -> Binding
+#       Polled after delivery until the binding deadline. `bound` carries a proof or is not one.
+#       It MUST be a bounded, side-effect-free read: the dispatcher stops waiting on a call at the
+#       deadline and cannot cancel the worker thread it ran on, so an implementation that blocks
+#       on I/O it does not bound itself outlives the dispatch it was asked about.
+#
+# `snapshot_session_ids(cwd)` (the reconcile adapters every late-id engine already has) is the
+# fourth. An engine missing any of them is refused (`registry.unattended_start_state`). A pinned-id
+# engine keeps the existing dispatch path: its id is known before the launch, so it is bound then.
+
+PREFLIGHT_OK = "ok"
+PREFLIGHT_REFUSED = "refused"
+PREFLIGHT_UNKNOWN = "unknown"
+
+#: The same three words `start_evidence` uses for claude, so one reason formatter serves both.
+EVIDENCE_FOUND = "found"
+EVIDENCE_ABSENT = "absent"
+EVIDENCE_UNREADABLE = "unreadable"
+
+BIND_BOUND = "bound"
+BIND_PENDING = "pending"
+BIND_AMBIGUOUS = "ambiguous"
+#: NOT a flavour of `pending`: "not there yet" and "could not look" are opposite facts, and only the
+#: first may be reported as the id never appearing.
+BIND_UNREADABLE = "unreadable"
+
+#: The attempt nonce appears in the session's first user turn. Only a session that received this
+#: launch's paste can carry it.
+PROOF_NONCE = "nonce"
+#: A provider-specific fact tying the session to this launch's own process.
+PROOF_LINKAGE = "linkage"
+BIND_PROOFS = frozenset({PROOF_NONCE, PROOF_LINKAGE})
+
+
+@dataclass(frozen=True)
+class LaunchContext:
+    """One unattended launch, as the provider capabilities see it (#989).
+
+    `key` is the PHYSICAL key the master, lock and ring live under — a `<engine>:new-<uuid>`
+    placeholder for a late-id engine. `snapshot` is the engine's own id set for `cwd` taken before
+    the spawn; `None` means that read failed, and nothing may be bound against it.
+    """
+
+    engine: str
+    key: str
+    native: str
+    cwd: str
+    nonce: str
+    snapshot: frozenset[str] | None = None
+    launched_at: float = 0.0
+
+
+@dataclass(frozen=True)
+class Binding:
+    """What `bind_session` found. `native` and `proof` are meaningful only when `state` is bound."""
+
+    state: str
+    native: str = ""
+    proof: str = ""
+    detail: str = ""

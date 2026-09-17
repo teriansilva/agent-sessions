@@ -242,8 +242,21 @@ async def _teardown_effect(mission_id: str, session_key: str, token: str | None)
         )
         return "failed"
 
+    # WHERE ITS RUNTIME LIVES, established before anything is stopped (#994 review 2, finding 1).
+    # A late-bound session whose alias was never published runs under a placeholder only the
+    # mission store names; a store that cannot be read is a refusal, never an archived session.
+    try:
+        runtime_key = await runtime_cleanup.resolve_runtime_key(prov.engine_id, native)
+    except runtime_cleanup.UnresolvableRuntime as e:
+        why = str(e)
+        await missions.run_admitted(
+            lambda: missions.settle_session_archive(
+                mission_id, session_key, "failed", reason=why, token=token
+            )
+        )
+        return "failed"
     with contextlib.suppress(Exception):
-        await runtime_cleanup.cleanup_runtime(prov.engine_id, native)
+        await runtime_cleanup.cleanup_runtime(prov.engine_id, native, physical_key=runtime_key)
 
     # Background-agent guard (#631): with our own master gone, a live process STILL holding this
     # transcript is a Claude background agent we don't manage. Moving its open JSONL would make
@@ -266,6 +279,11 @@ async def _teardown_effect(mission_id: str, session_key: str, token: str | None)
             mission_id, session_key, outcome, reason=reason, token=token
         )
     )
+    # THE BINDING SURVIVES THE ARCHIVE (#994 review 5). A successful archive says the transcript
+    # moved; it does not say the runtime is gone. The teardown above is exception-suppressed and
+    # can answer `leaked` — a process group that survived SIGKILL — so deleting the mapping here
+    # would remove the only locator of an agent that is still running. Append-only instead; #1017
+    # is where retirement gets a protocol that can actually prove it.
     with contextlib.suppress(Exception):
         engines.invalidate_scan_cache()  # a moved JSONL means the next list must re-walk (#561)
     return outcome

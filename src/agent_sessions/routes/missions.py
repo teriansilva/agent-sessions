@@ -337,7 +337,13 @@ def _reap_dead_spawns(mission_id: str) -> int:
             # Reserved but never launched: the settlement path owns that row, not this one.
             continue
         try:
-            engine, native = engines.parse_key(key)
+            # WHERE THE RUNTIME LIVES, not the key the ledger names (#994 review 1, finding 1). A
+            # late-bound child is recorded under the real id it revealed while its master stays
+            # under the placeholder it was launched with, so probing the ledger key found no socket
+            # and freed the slot of a child that was still running. The store's mapping is read
+            # first; an unreadable store raises here and leaves the row charged.
+            phys = mission_fence.physical_of(key)
+            engine, native = engines.parse_runtime_key(phys)
             verdict = ptybridge.probe_master(ptybridge.socket_path(engine.engine_id, native))
         except Exception:  # noqa: BLE001
             log.debug("mission %s: could not probe %s", mission_id, key)
@@ -675,8 +681,10 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                         # that set. Both sides take the roster's own pseudo-key, so "the roster is
                         # changing" and "a question is being committed against it" cannot
                         # interleave.
+                        # `adoption_keys`, the one protocol, rather than a second spelling of it:
+                        # the session's lock is the store's physical mapping first (#989).
                         with session_input.sessions_transaction(
-                            [mission_fence.roster_key(mission_id), engines.physical_key(key)]
+                            mission_fence.adoption_keys(mission_id, key)
                         ):
                             # THE TOKEN, not just the lock (#896 review 21). The heartbeat above
                             # keeps the claim fresh; this proves it was never lost — the store

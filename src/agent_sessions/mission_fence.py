@@ -46,14 +46,32 @@ def roster_key(mission_id: str) -> str:
     return f"mission-roster:{mission_id}"
 
 
+def physical_of(session_key: str, *, path=None) -> str:
+    """The PHYSICAL key a session's runtime lives under, from the store's mapping first (#989).
+
+    A session a mission adopted after binding a late id keeps its master under the placeholder, and
+    the store records that mapping in the same transaction as the adoption. The alias in the
+    metadata sidecar is published afterwards, so between the commit and the publication — or after
+    a publication that failed — `engines.physical_key` would answer the logical key and a fence
+    would lock a key no runtime lives under. Raises when the store cannot be read: a fence that
+    guesses its key is not a fence.
+    """
+    stored = missions.physical_key_of(session_key, path=path)
+    return stored or engines.physical_key(session_key)
+
+
 def held_keys(mission_id: str, *, path=None) -> list[str]:
     """The mission's ACTIVE sessions as PHYSICAL keys. Raises rather than answering partially.
 
     Physical, not app-facing: the write fence is keyed on the pty, which is what `session_input`
-    bumps and compares.
+    bumps and compares. The stored mapping wins over the alias for the reason `physical_of` gives.
+
+    The roster is read through `missions.active_session_keys` — the one enumeration every fence
+    fails closed on — and each key is then resolved on its own. A roster is a handful of sessions,
+    so the per-key lookup costs nothing, and a failure in either read still raises.
     """
     return [
-        engines.physical_key(str(k)) for k in missions.active_session_keys(mission_id, path=path)
+        physical_of(str(k), path=path) for k in missions.active_session_keys(mission_id, path=path)
     ]
 
 
@@ -109,7 +127,9 @@ async def fenced_write(mission_id: str, fn, *, path=None):
     return await missions.run_admitted(_run)
 
 
-def adoption_keys(mission_id: str, session_key: str) -> list[str]:
+def adoption_keys(
+    mission_id: str, session_key: str, *, physical_key: str | None = None
+) -> list[str]:
     """The lock set a DURABLE ADOPTION takes: the roster, and the session joining or leaving it.
 
     One protocol, and it has to be one for the reason rule 2 above gives (#904 review 9, finding
@@ -118,8 +138,15 @@ def adoption_keys(mission_id: str, session_key: str) -> list[str]:
     decide what it is writing about, and have a dispatch add a session outside that lock. Locking
     only the roster orders it against the question and leaves the teardown race open. Every
     session-bearing settlement therefore takes both, exactly as `routes/missions.adopt` does.
+
+    **`physical_key` names the lock for the FIRST adoption of a late-bound session** (#989). That
+    settlement is the transaction that writes the store's mapping, and the alias is published only
+    after it — so at the moment the lock is chosen neither exists, and resolving the real key would
+    lock the real key while the runtime (and every teardown of it) lives under the placeholder. The
+    caller passes the placeholder it recorded before the spawn. Every later adoption reads the
+    committed mapping through `physical_of`.
     """
-    return [roster_key(mission_id), engines.physical_key(session_key)]
+    return [roster_key(mission_id), physical_key or physical_of(session_key)]
 
 
 async def fenced_teardown(key: str, *, spare_if=None) -> str:
@@ -155,8 +182,16 @@ async def fenced_teardown(key: str, *, spare_if=None) -> str:
 
     from . import runtime_cleanup
 
-    prov, native = engines.parse_key(key)
-    phys = engines.physical_key(key)
+    # THE RUNTIME PARSER, not the public one (#989). A late-id launch that failed before it bound
+    # its real id leaves a master keyed on `<engine>:new-<uuid>`, and stopping it must not need an
+    # id that never existed. `parse_runtime_key` is the one place that shape is accepted, and this
+    # teardown is its only caller besides `runtime_cleanup`'s own resolution.
+    prov, _native = engines.parse_runtime_key(key)
+    # THE STORE'S MAPPING, not the alias: between an adoption's commit and the alias publication,
+    # the real key resolves to itself and nothing lives there. Raises on an unreadable store,
+    # which `abandon` reports as `leaked` — a teardown that cannot name its target proved nothing.
+    phys = physical_of(key)
+    _eng, _, phys_native = phys.partition(":")
 
     def _unowned() -> bool:
         try:
@@ -172,8 +207,17 @@ async def fenced_teardown(key: str, *, spare_if=None) -> str:
                 return "spared"
             # `spare_if` stays as well — belt and braces inside a boundary that already excludes
             # the race, and the only thing that still speaks for a caller-specific reason to stop.
+            # THE BINDING IS NOT RETIRED HERE, and a proved stop is not permission to (#994
+            # review 5). `cleanup_runtime` deliberately leaves the socket alone when the physical
+            # key's launch lock is HELD — a NEW generation owns that path — and still returns the
+            # OLD master's result, so `stopped` can describe a boundary a replacement already took.
+            # Readers that resolved this mapping before the teardown began sit outside this
+            # transaction too, so no check made here can speak for them either.
+            # The mapping is therefore append-only, exactly like the alias it projects
+            # (`metadata.set_alias` has no deleter). Retiring one safely needs a generation-safe
+            # protocol, which is #1017.
             return asyncio.run(
-                runtime_cleanup.cleanup_runtime(prov.engine_id, native, spare_if=_unowned)
+                runtime_cleanup.cleanup_runtime(prov.engine_id, phys_native, spare_if=_unowned)
             )
 
     return await asyncio.to_thread(_fenced)

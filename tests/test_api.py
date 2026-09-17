@@ -1974,7 +1974,7 @@ def test_archive_route_reaps_runtime_then_archives(auth_cfg, fake_jsonl, monkeyp
 
     order: list = []
 
-    async def fake_cleanup(engine, native, *, spare_if=None):
+    async def fake_cleanup(engine, native, *, spare_if=None, **_kw):
         order.append(("cleanup", engine, native))
         return "gone"
 
@@ -2000,7 +2000,7 @@ def test_archive_succeeds_even_if_cleanup_raises(auth_cfg, fake_jsonl, monkeypat
     # #523: teardown is best-effort — a cleanup failure must never block the archive itself.
     from agent_sessions.routes import sessions as sroutes
 
-    async def boom_cleanup(engine, native, *, spare_if=None):
+    async def boom_cleanup(engine, native, *, spare_if=None, **_kw):
         raise RuntimeError("teardown blew up")
 
     monkeypatch.setattr(sroutes.runtime_cleanup, "cleanup_runtime", boom_cleanup)
@@ -2013,13 +2013,44 @@ def test_archive_succeeds_even_if_cleanup_raises(auth_cfg, fake_jsonl, monkeypat
     assert r.status_code == 200 and r.json()["archived"] is True
 
 
+def test_archive_route_refuses_when_a_late_bound_runtime_cannot_be_located(
+    auth_cfg, fake_jsonl, monkeypatch
+):
+    # #994 review 2, finding 1: teardown stays best-effort, but not being able to NAME its target
+    # does not. A late-id key with no alias is resolved through the mission store; when that store
+    # cannot be read the archive is refused, never recorded over a possibly still running agent.
+    from agent_sessions import missions
+    from agent_sessions.routes import sessions as sroutes
+
+    called: list = []
+
+    async def rec_cleanup(engine, native, **_kw):
+        called.append((engine, native))
+        return "gone"
+
+    def unreadable(*_a, **_k):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(sroutes.runtime_cleanup, "cleanup_runtime", rec_cleanup)
+    monkeypatch.setattr(missions, "physical_key_of", unreadable)
+
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    key = "kimi:session_11111111-2222-3333-4444-555555555555"
+    r = c.post(f"/api/sessions/{key}/archive", headers=hdr)
+    assert r.status_code == 503, r.text
+    assert "could not tell where" in r.json()["detail"]
+    assert called == [], "the teardown ran against a runtime nobody could locate"
+
+
 def test_unarchive_does_not_reap_runtime(auth_cfg, fake_jsonl, monkeypatch):
     # #523: unarchive restores a session — it must NOT tear down runtime resources.
     from agent_sessions.routes import sessions as sroutes
 
     called: list = []
 
-    async def rec_cleanup(engine, native, *, spare_if=None):
+    async def rec_cleanup(engine, native, *, spare_if=None, **_kw):
         called.append((engine, native))
         return "gone"
 
@@ -2046,7 +2077,7 @@ def test_archive_older_reaps_each_and_continues_on_cleanup_error(auth_cfg, fake_
 
     seen: list = []
 
-    async def rec_cleanup(engine, native, *, spare_if=None):
+    async def rec_cleanup(engine, native, *, spare_if=None, **_kw):
         seen.append((engine, native))
         raise RuntimeError("one session's teardown fails")
 
@@ -2074,7 +2105,7 @@ def test_archive_refuses_when_transcript_owned_by_bg_agent(auth_cfg, fake_jsonl,
     # than shutil.move its open JSONL — moving it would diverge the file across the two trees.
     from agent_sessions.routes import sessions as sroutes
 
-    async def gone_cleanup(engine, native, *, spare_if=None):
+    async def gone_cleanup(engine, native, *, spare_if=None, **_kw):
         return "gone"  # a background agent has no dtach master → cleanup is a no-op
 
     monkeypatch.setattr(sroutes.runtime_cleanup, "cleanup_runtime", gone_cleanup)

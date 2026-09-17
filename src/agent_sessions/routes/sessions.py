@@ -833,8 +833,20 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                             # every member's dtach master + agent running. Best-effort per member
                             # (mirrors ``archive_older``) so one teardown hiccup never aborts the
                             # batch; unarchive NEVER reaps (it restores a session).
+                            # Where the runtime lives first, and a refusal if that cannot be told
+                            # (#994 review 2): a member archived past an unresolved late-bound
+                            # runtime leaves its agent running.
+                            try:
+                                runtime_key = await runtime_cleanup.resolve_runtime_key(
+                                    prov.engine_id, native
+                                )
+                            except runtime_cleanup.UnresolvableRuntime as e:
+                                results.append({"id": key, "result": failed, "reason": str(e)})
+                                continue
                             with contextlib.suppress(Exception):
-                                await runtime_cleanup.cleanup_runtime(prov.engine_id, native)
+                                await runtime_cleanup.cleanup_runtime(
+                                    prov.engine_id, native, physical_key=runtime_key
+                                )
                             # Background-agent guard (#631, Hermes): even inside a PROJECT
                             # archive, never ``shutil.move`` a Claude transcript a live process
                             # still owns. cleanup can't reap a background agent (it has no
@@ -1224,8 +1236,15 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # stale socket, release the single-writer lock. Terminate-first so a still-running
         # claude can't recreate its JSONL under projects/ between the move and the kill.
         # Best-effort — a teardown hiccup must never block the archive itself.
+        # WHERE ITS RUNTIME LIVES, established first (#994 review 2, finding 1). The teardown below
+        # stays best-effort; not being able to name its target does not, because archiving past it
+        # records a session archived while its late-bound agent keeps running.
+        try:
+            runtime_key = await runtime_cleanup.resolve_runtime_key(prov.engine_id, native)
+        except runtime_cleanup.UnresolvableRuntime as e:
+            raise HTTPException(status_code=503, detail=str(e)) from None
         with contextlib.suppress(Exception):
-            await runtime_cleanup.cleanup_runtime(prov.engine_id, native)
+            await runtime_cleanup.cleanup_runtime(prov.engine_id, native, physical_key=runtime_key)
         # Background-agent guard (#631): with our own master now gone, a live process STILL
         # holding this transcript is a Claude background agent (a ``claude daemon`` fork) we
         # don't manage. ``prov.archive`` would ``shutil.move`` its open JSONL out from under it,
@@ -1318,8 +1337,19 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                     async with missions.holding(key, hold):
                         # Free runtime resources before recording the archive (#523), best-effort
                         # per session so one teardown hiccup never aborts the batch.
+                        # Where the runtime lives first (#994 review 2): an unresolvable late-bound
+                        # runtime is skipped, never archived past.
+                        try:
+                            runtime_key = await runtime_cleanup.resolve_runtime_key(
+                                prov.engine_id, native
+                            )
+                        except runtime_cleanup.UnresolvableRuntime:
+                            skipped += 1
+                            continue
                         with contextlib.suppress(Exception):
-                            await runtime_cleanup.cleanup_runtime(prov.engine_id, native)
+                            await runtime_cleanup.cleanup_runtime(
+                                prov.engine_id, native, physical_key=runtime_key
+                            )
                         # Background-agent guard (#631): never move a Claude transcript a live
                         # process still owns — skip it, exactly as single/project archive do.
                         if prov.engine_id == "claude" and transcript_owner.transcript_is_owned(

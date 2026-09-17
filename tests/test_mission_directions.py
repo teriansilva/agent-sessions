@@ -1532,7 +1532,7 @@ def test_v27_upgrades_a_v26_store_with_NULL_directions_and_the_fresh_column_orde
     assert (rows[0]["direction"], rows[0]["direction_source"]) == (None, None)
     con = sqlite3.connect(db)
     try:
-        assert con.execute("PRAGMA user_version").fetchone()[0] == 27
+        assert con.execute("PRAGMA user_version").fetchone()[0] == missions.SCHEMA_VERSION
     finally:
         con.close()
     missions.reset_schema_cache_for_test()
