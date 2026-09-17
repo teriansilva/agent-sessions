@@ -696,8 +696,14 @@ CREATE TABLE IF NOT EXISTS mission_sessions (
 -- mapping lived on `mission_sessions`, whose rows cascade when retention deletes a closed
 -- mission — so a session whose alias publication had failed lost the only record of where it
 -- runs while its agent was still running, and nothing could repair it afterwards. This is a fact
--- about a RUNTIME, so its lifetime is the runtime's: written in the adopting transaction, and
--- deleted only when a teardown proves the boundary empty or an archive stops it.
+-- about a RUNTIME, so its lifetime is the runtime's.
+--
+-- **APPEND-ONLY**: written in the adopting transaction and never deleted (#994 review 5). A proved
+-- stop is not proof that a mapping may go — `cleanup_runtime` spares the socket while the physical
+-- key's launch lock is HELD, because a NEW generation owns it, yet still reports the OLD master's
+-- result; and callers that resolved the mapping before a teardown began sit outside its
+-- transaction anyway. The alias this projects has no deleter either (`metadata.set_alias`).
+-- Retiring one safely needs a generation-safe protocol: #1017.
 CREATE TABLE IF NOT EXISTS session_runtime_bindings (
   logical_key  TEXT PRIMARY KEY,
   physical_key TEXT NOT NULL,
@@ -8083,9 +8089,10 @@ def settle_dispatch(
 ) -> dict:
     """End a dispatch: adopt its session and leave `dispatching`, in ONE transaction.
 
-    `physical_key` names the placeholder a late-bound `session_key` runs under (#989), recorded on
-    the adopted row in this same transaction. Omitted — the only shape before #989 — the session
-    runs under its own key.
+    `physical_key` names the placeholder a late-bound `session_key` runs under (#989), recorded in
+    `session_runtime_bindings` in this same transaction — a table of its own, never a column on the
+    roster row, so the mapping outlives the mission that adopted it (#994 reviews 3 and 5). Omitted
+    — the only shape before #989 — the session runs under its own key.
 
     **The adoption and the final state are one settlement, and that is the point** (#904 review
     3). Adopting first and transitioning after is two moments, and the gap is exactly long enough
