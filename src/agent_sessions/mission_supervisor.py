@@ -93,6 +93,21 @@ def budget_state(
     """
     if episode is None:
         episode, _ = missions.objective_episode(mission_id, objective_key, path=path)
+
+    def _reserved() -> bool:
+        """Has this episode's one autonomous AI send been taken? THE RESERVATION IS THE BOUND.
+
+        Asked on every return path below, including the ones that leave early. The reservation is
+        taken at the write boundary and does not depend on a supervisor binding existing, so a
+        budget that consulted it only when bindings happened to be present would report an
+        allowance as free while the row that bounds it was sitting right there.
+        """
+        try:
+            holder = missions.ai_direction_holder(mission_id, objective_key, episode, path=path)
+        except Exception:  # noqa: BLE001 — an unreadable reservation is not a free one
+            return True
+        return holder is not None
+
     ids = missions.supervisor_action_ids(mission_id, objective_key, episode, path=path)
     if not ids:
         return {
@@ -100,6 +115,9 @@ def budget_state(
             "spent": 0,
             "remaining": NUDGE_BUDGET,
             "live": 0,
+            # No bindings does NOT mean no reservation: the slot is taken at the write boundary,
+            # and `_forget_objective` clears bindings without that meaning the allowance is free.
+            "ai_sent": 1 if _reserved() else 0,
             "indeterminate": False,
             "unreadable": False,
         }
@@ -114,6 +132,10 @@ def budget_state(
             "spent": 0,
             "remaining": 0,
             "live": 0,
+            # The LEDGER is what could not be read; the reservation lives in the missions store and
+            # usually still answers. A budget nobody could read must never report an unspent
+            # AI-text allowance, and the caller stands down on `unreadable` regardless.
+            "ai_sent": 1 if _reserved() else 0,
             "indeterminate": False,
             "unreadable": True,
         }
@@ -163,28 +185,46 @@ def budget_state(
                 log.debug("mission %s: could not settle held action %s", mission_id, aid)
         ids = [aid for aid in ids if aid not in released]
 
-    spent = live = 0
+    spent = live = ai_sent = 0
     indeterminate = False
     for aid in ids:
-        state = str((latest.get(aid) or {}).get("state") or "")
+        rec = latest.get(aid) or {}
+        state = str(rec.get("state") or "")
         if not state:
             # Recorded as sent, absent from the ledger. Indistinguishable from an append that
             # landed and was lost, so it is treated the same way an `indeterminate` is: charged,
-            # and the automatic attempts end.
+            # and the automatic attempts end. The AI-text allowance is charged too: a row that
+            # compaction has already dropped may well have been an autonomous send, and a budget
+            # that RESET itself on a missing row would hand the episode a second unreviewed write.
             spent += 1
+            ai_sent += 1
             indeterminate = True
         elif state in ledger.LIVE_STATES:
             live += 1
         elif state == _INDETERMINATE:
             spent += 1
+            ai_sent += 1
             indeterminate = True
         elif state in _CHARGED:
             spent += 1
+    # AT MOST ONE AUTONOMOUSLY SENT AI DIRECTION PER EPISODE (#983 P4), READ FROM THE RESERVATION.
+    #
+    # Not counted from terminal rows, which is what the first version did and why it did not hold:
+    # between two overlapping passes both actions are `claimed`, and a claimed action counts as
+    # `live` rather than spent — so both readers saw zero and both typed. The reservation is taken
+    # before any byte and is never released, so this is the same fact the bound itself rests on
+    # rather than a second opinion about it.
+    #
+    # An indeterminate outcome still consumes it: an action nobody can account for may well have
+    # been an autonomous send, and an allowance that reset itself on one would hand the episode a
+    # second unreviewed write.
+    reserved = ai_sent > 0 or _reserved()
     return {
         "episode": episode,
         "spent": spent,
         "remaining": max(0, NUDGE_BUDGET - spent),
         "live": live,
+        "ai_sent": 1 if reserved else 0,
         "indeterminate": indeterminate,
         "unreadable": False,
     }
@@ -623,12 +663,21 @@ def _draft_reading(raw: object, a: dict) -> dict | None:
         return None
     if not text.strip() or len(text) > DRAFT_MAX:
         return None
+    # THE MODEL'S OWN CONFIDENCE (#983 P4), narrowed like everything else here: dropped, never
+    # repaired. A missing, non-numeric, boolean or out-of-range value is not a LOW confidence, it
+    # is NO confidence — and 0 is below every threshold the opt-in can be set to, so an unusable
+    # value can never make a draft auto-deliverable. `isinstance(True, int)` is True in Python, so
+    # booleans are rejected on type; `nan` and `±inf` fail the range comparison on their own.
+    conf = raw.get("confidence")
+    if not isinstance(conf, int | float) or isinstance(conf, bool) or not (0.0 <= conf <= 1.0):
+        conf = 0.0
     # THE IDENTITY THE MODEL ACTUALLY READ rides with the text (review 4887, finding 1). The reply
     # is about the objective on THIS checklist; the slot may hold a different one by the time the
     # answer lands, and a draft must be dropped rather than rebound to it.
     return {
         "objective_key": key,
         "text": text,
+        "confidence": float(conf),
         "objective_episode": int(o.get("episode") or 0),
         "objective_incarnation": str(o.get("incarnation") or ""),
     }
@@ -921,6 +970,96 @@ async def nudge(
     return out
 
 
+async def _maybe_auto_send(
+    rec: dict,
+    mission_id: str,
+    *,
+    objective_key: str,
+    episode: int,
+    registry=None,
+    path=None,
+) -> str | None:
+    """Type an AI-drafted direction with nobody reading it, IF the operator opted in (#983 P4).
+
+    Returns the settled state, or ``None`` when the mode does not apply and the draft simply stays
+    a proposal. Refusing is the default and costs the episode nothing.
+
+    **This is the one place the app gives up "a model never authors the bytes typed into a
+    permission-bypassed agent"**, and only inside the grant the operator gave on #983: YOLO only,
+    off by default, at or above their threshold (floor 0.90). Everything else is unchanged — the
+    draft was minted, sanitized, bound to the objective identity the model read and reserved
+    against the episode by `propose_draft` above, and delivery runs the same fence every other
+    write runs. No second sending pipeline exists.
+
+    Two conditions are asked here AND again inside the write fence, because the gap between them
+    contains a quiet wait, an fd borrow and a lock queue: the policy (via
+    `actuator.draft_auto_allowed`, and again in the in-fence policy fingerprint) and the objective's
+    own state (via `extra_authority`). The operator getting their own direction in, or clearing the
+    toggle, at any point before byte one refuses the write.
+    """
+    from . import actuator
+
+    cfg = prefs.get_orchestrator()
+    if not actuator.draft_auto_allowed(rec, cfg):
+        return None
+    session_key = str(rec.get("session_id") or "")
+    action_id = str(rec.get("id") or "")
+    b = budget_state(mission_id, objective_key, episode=episode, path=path)
+    if b["unreadable"] or b["ai_sent"]:
+        return None
+    # TAKE THE EPISODE'S ONE AUTONOMOUS SEND, DURABLY, BEFORE ANY BYTE (#983 P4 review).
+    #
+    # The read above is a hint and cannot be the bound: two passes on different sessions of this
+    # objective can both pass it, because until either settles both of their actions are `claimed`
+    # — in flight, not spent. This INSERT is the bound; its primary key picks exactly one winner,
+    # and the loser leaves its draft as an ordinary proposal for the operator to tap.
+    took = await missions.run_admitted(
+        lambda: missions.reserve_ai_direction(
+            mission_id,
+            objective_key=objective_key,
+            episode=episode,
+            action_id=action_id,
+            expect_incarnation=str(rec.get("objective_incarnation") or "") or None,
+        )
+    )
+    if not took:
+        return None
+
+    def _authority() -> tuple[bool, str]:
+        """Re-asked UNDER the write lock, immediately before the first byte.
+
+        Everything above ran before the claim and the lock queue. The three facts that can move in
+        that window and are not policy: the mission's authority over this objective and session,
+        whether the operator has written their own direction for it (their text always wins), and
+        whether this episode has meanwhile spent its one AI-written send.
+        """
+        ok, why = _still_authorized(
+            mission_id, objective_key, session_key=session_key, episode=episode, path=path
+        )
+        if not ok:
+            return False, why
+        try:
+            snap = missions.objective_snapshot(mission_id, objective_key, path=path)
+        except Exception:  # noqa: BLE001 — unverifiable is not verified
+            return False, "the objective could not be re-read before the write"
+        if snap is None:
+            return False, "the objective was dropped before the write"
+        if mission_directions.has_direction(snap):
+            return False, "the objective gained your own direction before the write"
+        # THE RESERVATION MUST STILL BE OURS — not merely "one exists", which it does, because we
+        # took it above. A bare existence check here would refuse this very send.
+        try:
+            holder = missions.ai_direction_holder(mission_id, objective_key, episode, path=path)
+        except Exception:  # noqa: BLE001 — unverifiable authority is not authority
+            return False, "this episode's AI-written send could not be re-read before the write"
+        if holder != action_id:
+            return False, "another session holds this objective episode's one AI-written send"
+        return True, ""
+
+    settled = await actuator.deliver_auto(rec, registry=registry, extra_authority=_authority)
+    return str((settled or {}).get("state") or "") or None
+
+
 async def propose_draft(
     mission_id: str,
     *,
@@ -929,9 +1068,14 @@ async def propose_draft(
     text: str,
     expect_episode: int,
     expect_incarnation: str,
+    confidence: float = 0.0,
+    registry=None,
     path=None,
 ) -> dict:
-    """Mint ONE AI-drafted direction as a proposal for the operator (#983 P3). Never delivers it.
+    """Mint ONE AI-drafted direction as a proposal for the operator (#983 P3).
+
+    Delivers it WITHOUT a tap only under the operator's explicit opt-in (#983 P4, see
+    `_maybe_auto_send`); with the opt-in off — the default — nothing here or downstream sends it.
 
     `expect_episode` and `expect_incarnation` are the objective identity the MODEL READ, carried
     from the snapshot its input was built from (review 4887, finding 1). They are required, not
@@ -956,7 +1100,7 @@ async def propose_draft(
     objective's key, episode and INCARNATION, so removing and re-creating the objective makes it
     stale at delivery even if a binding for the new one is taken under the same key.
     """
-    from . import engines, handoff, orchestrator
+    from . import handoff, mission_fence, orchestrator
 
     ok, why_stale = _still_authorized(mission_id, objective_key, session_key=session_key, path=path)
     if not ok:
@@ -998,7 +1142,10 @@ async def propose_draft(
     now = time.time()
     rec = {
         "id": action_id,
-        # ALWAYS a proposal. Not `approved` under YOLO: no tier makes model-authored text typeable.
+        # MINTED AS A PROPOSAL, always — never `approved`, because no TIER on its own makes
+        # model-authored text typeable. With the opt-in off (the default) that is also where it
+        # stays. With it on, `_maybe_auto_send` claims this same proposal through the ordinary
+        # delivery path, having first reserved the episode's one autonomous send.
         "state": "proposed",
         "verb": DRAFT_VERB,
         "session_id": session_key,
@@ -1010,15 +1157,24 @@ async def propose_draft(
         "draft": clean,
         # Server-authored. The model's words are the draft and nothing else.
         "title": "An AI-drafted direction is waiting for your tap",
-        # No confidence is claimed for model prose; 0 is below every threshold the tier accepts.
-        "confidence": 0.0,
+        # THE MODEL'S OWN CONFIDENCE in its prose (#983 P4), already narrowed by `_draft_reading`
+        # to a real number in 0..1 — anything unusable arrived as 0, which is below every threshold
+        # the opt-in can be set to. It is consulted for one thing only: whether the operator's
+        # autonomous-direction threshold is met. It is self-reported and is NOT a safety check.
+        "confidence": float(confidence),
         "evidence": "none",
         "ts": now,
         "expires_at": now + int(cfg.get("proposal_ttl_minutes") or 30) * 60,
         "tier": cfg.get("autonomy"),
     }
     rec["precondition"] = await missions.run_admitted(
-        lambda: orchestrator.precondition_for(engines.physical_key(session_key))
+        # `mission_fence.physical_of`, NOT `engines.physical_key` (#989, carried into this path by
+        # the P4 merge). A session adopted after binding a late id keeps its master under the
+        # placeholder, and the store records that mapping; the sidecar alias is published
+        # afterwards. Between the two, `physical_key` answers the logical key and the precondition
+        # would be captured against a pty no runtime lives under. `nudge` above takes the same
+        # route — this is the draft path, which #989 could not know about.
+        lambda: orchestrator.precondition_for(mission_fence.physical_of(session_key))
     )
 
     # AGAIN AT THE DURABLE APPEND, for the reason `nudge` gives: ownership, the objective and the
@@ -1070,7 +1226,20 @@ async def propose_draft(
                 lambda: missions.forget_supervisor_action(mission_id, action_id, path=path)
             )
         return {"proposed": False, "why": "the session already had a live action", "id": action_id}
-    return {"proposed": True, "id": action_id, "episode": episode}
+    out = {"proposed": True, "id": action_id, "episode": episode}
+    # …AND, ONLY BEHIND THE OPERATOR'S OPT-IN, send it without waiting for a tap (#983 P4). With
+    # the pref off this is a no-op and the draft stays exactly the P3 proposal.
+    sent = await _maybe_auto_send(
+        kept[0],
+        mission_id,
+        objective_key=objective_key,
+        episode=episode,
+        registry=registry,
+        path=path,
+    )
+    if sent is not None:
+        out["auto_sent"] = sent
+    return out
 
 
 async def escalate(
@@ -1531,6 +1700,10 @@ async def _pass_one_session(
             # The identity from the checklist the model read, not from the slot as it is now.
             expect_episode=int(draft["objective_episode"]),
             expect_incarnation=str(draft["objective_incarnation"]),
+            # Already narrowed to a real 0..1 by `_draft_reading`; only ever compared against the
+            # operator's own threshold, and only while they have opted in (#983 P4).
+            confidence=float(draft.get("confidence") or 0.0),
+            registry=registry,
             path=path,
         )
 

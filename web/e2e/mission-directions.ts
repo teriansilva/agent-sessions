@@ -61,6 +61,12 @@ export const ORCH = {
   notify: "escalations",
   configured: true,
   default_nudge_template: NUDGE_TEMPLATE,
+  // #983 P4: off by default, exactly as a real install ships. A spec that wants the mode on says
+  // so explicitly, so no existing spec's copy changes underneath it.
+  auto_ai_directions: false,
+  ai_direction_confidence_min: 0.9,
+  ai_direction_confidence_floor: 0.9,
+  ai_direction_confidence_max: 1,
 };
 
 export const PLAYBOOKS = {
@@ -311,9 +317,25 @@ export function deferred(): { promise: Promise<void>; release: () => void } {
  *  422 with that detail instead, and `hold` keeps one pending until it is released. */
 export async function missionConsole(
   page: Page,
-  opts: { pending?: unknown; events?: unknown[]; state?: string; context?: unknown } = {},
+  opts: {
+    pending?: unknown;
+    events?: unknown[];
+    state?: string;
+    context?: unknown;
+    /** Override the orchestrator block `/api/config` serves (#983 P4) — the console reads it to
+     *  decide whether the thread offers Turn off and whether a draft card may claim it waits for
+     *  a tap. Merged over `ORCH` rather than mutating it, so no other spec sees the change. */
+    orchestrator?: Record<string, unknown>;
+  } = {},
 ): Promise<ConsoleServer> {
   await commonMocks(page);
+  if (opts.orchestrator) {
+    const orch = { ...ORCH, ...opts.orchestrator };
+    // After `commonMocks`, so this wins: Playwright matches the newest route first.
+    await page.route("**/api/config", (r) =>
+      r.fulfill({ json: { ...CONFIG, orchestrator: orch } }),
+    );
+  }
   const server: ConsoleServer = {
     rows: OBJECTIVES(),
     patches: [],
@@ -480,13 +502,39 @@ export const THREAD = [
   }),
 ];
 
-/** Settings → AI → Mission control, with the orchestrator block above. */
-export async function missionControlSettings(page: Page) {
+/** Settings → AI → Mission control, with the orchestrator block above.
+ *
+ *  `over` puts the panel in any orchestrator state WITHOUT mutating the shared `ORCH` fixture —
+ *  module state outlives a test inside a worker, so a mutated fixture would leak into the next
+ *  spec. Returns the `orchestrator` block of every `POST /api/prefs` the page makes, so a test can
+ *  assert what a control actually saved rather than what it appears to show (#983 P4). */
+export async function missionControlSettings(
+  page: Page,
+  over: Record<string, unknown> = {},
+) {
+  const saves: Record<string, unknown>[] = [];
+  const orch = { ...ORCH, ...over };
   await commonMocks(page);
-  await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
+  // Registered AFTER `commonMocks`, so these win — Playwright matches the newest route first.
+  await page.route("**/api/config", (r) =>
+    r.fulfill({ json: { ...CONFIG, orchestrator: orch } }),
+  );
+  await page.route("**/api/prefs", (r) => {
+    const body = r.request().postDataJSON() as {
+      orchestrator?: Record<string, unknown>;
+    } | null;
+    const patch = body?.orchestrator ?? {};
+    saves.push(patch);
+    // ECHO THE MERGED BLOCK, as the real route does (`out["orchestrator"] = public_orchestrator()`).
+    // Answering `{}` leaves the panel's CONTROLLED inputs reverting to their previous value, so a
+    // checkbox reads as "the click did nothing" — a mock artefact that looks exactly like a bug.
+    Object.assign(orch, patch);
+    return r.fulfill({ json: { orchestrator: { ...orch } } });
+  });
   await page.route("**/api/pulse/orchestrator", (r) =>
-    r.fulfill({ json: { config: ORCH, pending: [], feed: [], expired_now: 0, last: {} } }),
+    r.fulfill({ json: { config: orch, pending: [], feed: [], expired_now: 0, last: {} } }),
   );
   await mockMissions(page);
   await page.goto(settingsPath("ai-mission-control"));
+  return saves;
 }

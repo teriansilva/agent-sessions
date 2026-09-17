@@ -71,3 +71,27 @@ describe("the card", () => {
     expect(draftView(draft(), ALL)!.canDismiss).toBe(true);
   });
 });
+
+describe("the opt-in decides the card's promise (#983 P4)", () => {
+  test("with the mode off — the default — the card makes P3's promise", () => {
+    // Absent and explicitly-off must agree: a surface that does not know reads as off.
+    expect(draftView(draft(), ALL)!.autoThreshold).toBeNull();
+    expect(
+      draftView(draft(), { ...ALL, auto: { on: false, threshold: 0.9 } })!.autoThreshold,
+    ).toBeNull();
+    expect(draftView(draft(), { ...ALL, auto: null })!.autoThreshold).toBeNull();
+  });
+
+  test("with it on, the card carries the operator's own threshold", () => {
+    expect(
+      draftView(draft(), { ...ALL, auto: { on: true, threshold: 0.95 } })!.autoThreshold,
+    ).toBe(0.95);
+  });
+
+  test("a threshold that is not a finite number is not a promise", () => {
+    // `NaN.toFixed(2)` renders "NaN", which would read as a real setting on the card.
+    expect(
+      draftView(draft(), { ...ALL, auto: { on: true, threshold: Number.NaN } })!.autoThreshold,
+    ).toBeNull();
+  });
+});

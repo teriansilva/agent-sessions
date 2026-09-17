@@ -478,6 +478,16 @@ export interface OrchestratorConfig {
   notify: "none" | "escalations" | "all";
   configured: boolean;
   default_nudge_template: string;
+  /** AUTONOMOUS AI-WRITTEN DIRECTIONS (#983 P4). Off by default, and the server refuses to turn it
+   *  on outside `yolo` — leaving that tier switches it off durably, so the UI must never treat a
+   *  remembered `true` as still armed. While it is on, an AI-drafted direction at or above the
+   *  threshold below is typed into a session with nobody reading it first. */
+  auto_ai_directions: boolean;
+  ai_direction_confidence_min: number;
+  /** The approved FLOOR (0.90) and ceiling (1.00) for the threshold. Sent by the server rather
+   *  than spelled here, so the control cannot offer a value the save would 422. */
+  ai_direction_confidence_floor: number;
+  ai_direction_confidence_max: number;
 }
 
 export interface PulseNotification {

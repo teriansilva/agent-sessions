@@ -1532,6 +1532,11 @@ def test_v27_upgrades_a_v26_store_with_NULL_directions_and_the_fresh_column_orde
     assert (rows[0]["direction"], rows[0]["direction_source"]) == (None, None)
     con = sqlite3.connect(db)
     try:
+        # `_migrate` always stamps straight to the CURRENT version, so this pins "the upgrade
+        # completed", not a particular number — v28 is #989's late-bound-session work and #983 P4
+        # is v29. Spelled the way every other schema pin in the suite is (`test_missions.py`,
+        # `test_mission_plan_intent.py`), so a later bump does not have to come back and edit a
+        # test about direction columns.
         assert con.execute("PRAGMA user_version").fetchone()[0] == missions.SCHEMA_VERSION
     finally:
         con.close()

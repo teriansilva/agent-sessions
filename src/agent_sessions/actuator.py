@@ -160,6 +160,76 @@ def _is_draft(action: dict) -> bool:
     return action.get("verb") == prefs.DRAFT_DIRECTION_VERB
 
 
+def draft_auto_allowed(action: dict, cfg: dict) -> bool:
+    """May THIS AI-drafted direction be typed with nobody reading it, under THIS policy? (#983 P4)
+
+    The operator's approved grant, expressed once and asked everywhere: the opt-in is on, the tier
+    is `yolo`, the master switch is on, the verb is in the allowed set, and the model's own
+    reported confidence is at or above the operator's threshold. Every conjunct is independent —
+    the threshold is an EXTRA gate, never a replacement for the switch or the verb ceiling.
+
+    Two deliberate belts. The confidence must be a real number (`isinstance(True, int)` is True in
+    Python, so a boolean is refused on type), and the threshold is floored at
+    :data:`prefs.ORCH_AI_DIRECTION_CONF_LO` whatever the config says — a corrupted or hand-edited
+    block cannot lower the bound below the one the operator actually approved.
+
+    **This is not the whole fence.** It answers only "does policy permit this kind of send"; the
+    objective's own authority, the episode's AI-text budget, the screen, the viewer and the archive
+    fence are all asked separately, and all of them are re-asked inside the write fence.
+    """
+    if not _is_draft(action):
+        return False
+    if cfg.get("auto_ai_directions") is not True:
+        return False
+    if not cfg.get("enabled") or cfg.get("autonomy") != "yolo":
+        return False
+    if prefs.DRAFT_DIRECTION_VERB not in set(cfg.get("allowed_verbs") or ()):
+        return False
+    conf = action.get("confidence")
+    # A REAL confidence, IN RANGE, or nothing. `isinstance(True, int)` is True in Python, so a
+    # boolean is refused on type; `nan` and `±inf` fail this comparison on their own; and a value
+    # ABOVE 1.0 is not a confidence either — a forged or hand-edited row must not be able to clear
+    # the operator's threshold by overshooting it.
+    if not isinstance(conf, int | float) or isinstance(conf, bool) or not (0.0 <= conf <= 1.0):
+        return False
+    floor = cfg.get("ai_direction_confidence_min")
+    if not isinstance(floor, int | float) or isinstance(floor, bool):
+        floor = prefs.ORCH_AI_DIRECTION_CONF_DEFAULT
+    return float(conf) >= max(float(floor), prefs.ORCH_AI_DIRECTION_CONF_LO)
+
+
+def _reserve_auto_slot(rec: dict) -> bool:
+    """Take this objective episode's ONE autonomous AI-written send for `rec`. Blocking.
+
+    Idempotent for an action that already holds it, exclusive against any other. Called from
+    :func:`deliver` for every draft that is NOT an operator tap, so the bound belongs to the write
+    boundary rather than to whichever caller happened to ask — the first version reserved in
+    `mission_supervisor._maybe_auto_send`, which left a caller that reached `deliver` by another
+    route free of it, and its send uncounted (#983 P4 review).
+
+    **Fails closed.** A draft that names no mission, objective or episode has nothing to bound, and
+    an unreadable store is not a free slot.
+    """
+    from . import missions
+
+    mission_id = str(rec.get("mission_id") or "")
+    objective_key = str(rec.get("objective_key") or "")
+    raw = rec.get("objective_episode")
+    episode = int(raw) if isinstance(raw, int) and not isinstance(raw, bool) else None
+    if not (mission_id and objective_key and episode is not None):
+        return False
+    try:
+        return missions.reserve_ai_direction(
+            mission_id,
+            objective_key=objective_key,
+            episode=episode,
+            action_id=str(rec.get("id") or ""),
+            expect_incarnation=str(rec.get("objective_incarnation") or "") or None,
+        )
+    except Exception:  # noqa: BLE001 — an unverifiable allowance is not an allowance
+        return False
+
+
 def draft_text(action: dict) -> str:
     """The exact text an AI-drafted direction types: its stored draft, sanitized like `answer`.
 
@@ -400,6 +470,13 @@ def _policy_fingerprint() -> tuple:
         str(cfg.get("autonomy")),
         tuple(sorted(cfg.get("allowed_verbs") or ())),
         float(cfg.get("confidence_min") or 0),
+        # THE AUTONOMOUS-AI-DIRECTION GRANT (#983 P4), and this is where its withdrawal actually
+        # bites. `_final_guard` asks `draft_auto_allowed` too, but a guard's verdict is only as
+        # fresh as the moment it ran — the operator can clear the toggle, or leave yolo, in the
+        # gap between the guard returning and byte one. This tuple is re-read inside that gap,
+        # under the registry lock, so a withdrawal anywhere up to the write refuses the payload.
+        cfg.get("auto_ai_directions") is True,
+        float(cfg.get("ai_direction_confidence_min") or 0),
     )
 
 
@@ -534,6 +611,66 @@ def _supervisor_authority(rec: dict):
         except Exception:  # noqa: BLE001
             # Unverifiable authority is not authority — same rule as the fence itself.
             return False, "the mission authority for this action could not be re-read"
+
+    return _check, _state
+
+
+def _draft_direction_authority(rec: dict, operator_approval: bool):
+    """`(check, fingerprint)` for an AUTONOMOUS AI-drafted direction, or `(None, None)` (#983 P4).
+
+    **"Operator text always wins" has to win at the write fence, not only at the guard.** Until
+    this existed, `has_direction` was asked once — in `mission_supervisor._maybe_auto_send`'s
+    authority callback — and nothing re-read it before byte one. The fallback fingerprint is the
+    supervisor state tuple (state, incarnation, episode, binding), which does not carry the
+    direction, and the render fingerprint covers a `continue` rather than a draft. So a
+    `set_direction` committed by a SIBLING INSTANCE after the guard ran still lost the race: this
+    process's policy epoch never moves for a write another process made, and the AI's words landed
+    in a session the operator had just written their own direction for.
+
+    DERIVED FROM THE RECORD, at the common autonomous-draft boundary, so every path that can type a
+    draft without a tap inherits it — including a direct `deliver_auto` call that passes no
+    callbacks of its own. Fails CLOSED: an objective that cannot be re-read is not an objective
+    without a direction.
+    """
+    if not _is_draft(rec) or operator_approval:
+        return None, None
+    mission_id = str(rec.get("mission_id") or "")
+    objective_key = str(rec.get("objective_key") or "")
+    if not (mission_id and objective_key):
+        return None, None
+
+    def _snapshot():
+        from . import missions
+
+        return missions.objective_snapshot(mission_id, objective_key)
+
+    def _state() -> object:
+        from . import mission_directions
+
+        try:
+            snap = _snapshot()
+        except Exception:  # noqa: BLE001
+            return object()  # unreadable compares equal to nothing, so the fence refuses
+        if snap is None:
+            return object()
+        return (
+            bool(mission_directions.has_direction(snap)),
+            str(snap.get("incarnation") or ""),
+            int(snap.get("episode") or 0),
+        )
+
+    def _check() -> tuple[bool, str]:
+        from . import mission_directions
+
+        try:
+            snap = _snapshot()
+        except Exception:  # noqa: BLE001
+            return False, "the objective could not be re-read before the write"
+        if snap is None:
+            return False, "the objective was dropped before the write"
+        if mission_directions.has_direction(snap):
+            return False, "the objective gained your own direction before the write"
+        return True, ""
 
     return _check, _state
 
@@ -730,11 +867,6 @@ async def deliver(
     rec = ledger.get(action_id)
     if rec is None:
         raise NotDeliverable("unknown action")
-    # APPROVE-ONLY (#983 P3). An AI-drafted direction is model-authored text, and the operator's tap
-    # on the approve route is the only authority to type it. Refused before anything is settled, so
-    # the proposal stays exactly where it was for the operator to decide.
-    if _is_draft(rec) and not operator_approval:
-        raise NotDeliverable("an AI-drafted direction is sent only when you approve it")
     if rec.get("state") not in CLAIMABLE_STATES:
         raise NotDeliverable(f"action is {rec.get('state')}, not deliverable")
 
@@ -743,6 +875,33 @@ async def deliver(
         return _settle_waiting(action_id, "expired") or rec
 
     cfg = prefs.get_orchestrator()
+    # APPROVE-ONLY, UNLESS THE OPERATOR OPTED IN (#983 P3, widened in P4). An AI-drafted direction
+    # is model-authored text, so the operator's tap on the approve route is normally the only
+    # authority to type it. The one exception is the grant they gave explicitly: with
+    # `auto_ai_directions` on, in yolo, at or above their threshold, the automatic path may send it
+    # — and `deliver_auto` has already asked the same question before it got here.
+    #
+    # Refused before anything is settled, so a proposal nobody may auto-send stays exactly where it
+    # was for the operator to decide.
+    if _is_draft(rec) and not operator_approval and not draft_auto_allowed(rec, cfg):
+        raise NotDeliverable(
+            "an AI-drafted direction is sent only when you approve it, unless you have turned "
+            "on AI-written directions"
+        )
+    if _is_draft(rec) and not operator_approval:
+        # THE EPISODE'S ONE AUTONOMOUS SEND, TAKEN HERE (#983 P4 review). At the write boundary,
+        # so the bound is a property of delivering an unreviewed direction rather than of the one
+        # caller that remembers to ask for it. Idempotent for an action that reserved it upstream;
+        # an episode whose slot another action holds settles `stale` and types nothing.
+        if not await asyncio.to_thread(_reserve_auto_slot, rec):
+            return (
+                _settle_waiting(
+                    action_id,
+                    "stale",
+                    detail="this objective episode's one AI-written direction is already spent",
+                )
+                or rec
+            )
     # The master switch fences EVERY write, not just autonomous ones. This read used to feed
     # `render` only, so a proposal sitting in a stale tab could still be approved after the
     # operator switched orchestration off — directly contradicting the OFF tier's own copy,
@@ -773,6 +932,7 @@ async def deliver(
     sup_check, sup_state = _supervisor_authority(rec)
     mem_check, mem_state = _mission_membership_authority(rec)
     txt_check, txt_state = _render_authority(rec)
+    dir_check, dir_state = _draft_direction_authority(rec, operator_approval)
 
     def _final_guard() -> tuple[bool, str]:
         """Evaluated UNDER the write lock, immediately before the first byte.
@@ -820,6 +980,13 @@ async def deliver(
         # change after this line is caught before byte one too.
         if txt_check is not None:
             ok, why = txt_check()
+            if not ok:
+                return False, why
+        # …and, for an autonomous AI-drafted direction, that the operator has not meanwhile written
+        # their OWN direction for this objective (#983 P4 review). The same fact rides the in-fence
+        # fingerprint below, so a sibling instance committing one after this line still refuses.
+        if dir_check is not None:
+            ok, why = dir_check()
             if not ok:
                 return False, why
         # THE MISSION FENCE, and it belongs HERE — in the guard every delivery passes through —
@@ -870,17 +1037,24 @@ async def deliver(
         policy_fingerprint=_compose_fingerprint(
             _compose_fingerprint(
                 _compose_fingerprint(
-                    _authority_fingerprint(str(rec.get("session_id") or "")),
-                    extra_fingerprint if extra_fingerprint is not None else sup_state,
+                    _compose_fingerprint(
+                        _authority_fingerprint(str(rec.get("session_id") or "")),
+                        extra_fingerprint if extra_fingerprint is not None else sup_state,
+                    ),
+                    # Membership rides in the fingerprint as well as in the guard, for the
+                    # reason every other term does: the guard's verdict is only as fresh as
+                    # the moment it ran, and the re-adopt can land between it and byte one.
+                    mem_state,
                 ),
-                # Membership rides in the fingerprint as well as in the guard, for the reason every
-                # other term does: the guard's verdict is only as fresh as the moment it ran, and
-                # the re-adopt can land between it and byte one.
-                mem_state,
+                # …and so does a supervisor nudge's render digest (#983): a direction,
+                # template, head or observation change after `_final_guard` evaluated is
+                # refused before byte one.
+                txt_state,
             ),
-            # …and so does a supervisor nudge's render digest (#983): a direction, template, head
-            # or observation change after `_final_guard` evaluated is refused before byte one.
-            txt_state,
+            # …and an autonomous draft's OPERATOR-DIRECTION eligibility (#983 P4 review). Read
+            # from the shared store, the only thing a sibling instance and this one agree on:
+            # its `set_direction` never moves this process's epoch, so nothing else sees it.
+            dir_state,
         ),
     )
     state = {
@@ -894,18 +1068,46 @@ async def deliver(
     # THE DELIVERED SNAPSHOT (#983). A supervisor nudge types only a text equal to its persisted
     # `render`, so that record already is what was typed; the settlement names it explicitly, and
     # nothing later rewrites either. Later direction or template edits change neither.
+    # HOW IT WAS SENT, recorded ON THE ACTION at delivery (#983 P4). Everything downstream reads
+    # this recorded fact and never the live policy: the one-per-episode AI-text budget, the thread's
+    # label, and the bell. The tier and the toggle can both change a second after the bytes land,
+    # so a send classified by re-reading them would be reclassified by the operator's next tap —
+    # and the budget that limits autonomous sends would reset itself.
+    #
+    # DERIVED FROM WHAT MADE IT DELIVERABLE, not from how it happened to be triggered.
+    #
+    # For a DRAFT there are exactly two grounds, and they are mutually exclusive: the operator's
+    # tap, or `draft_auto_allowed` — the guard above admits nothing else. So anything that is not a
+    # tap got here on the grant and is autonomous, whoever called us. Keying this on `authority`
+    # instead would mislabel a future caller that delivered a draft without passing one (a retry, a
+    # sweep, a route added later): the thread row would read as operator-sent and the AI-text
+    # budget would go uncharged, which is the one accounting error that hands an episode a second
+    # unreviewed write. No such caller exists today; this makes the record correct if one appears.
+    #
+    # For every other verb `authority` remains the honest signal — it is supplied by `deliver_auto`
+    # and by nothing else.
+    if _is_draft(rec):
+        sent_by = "operator" if operator_approval else "auto"
+    else:
+        sent_by = "auto" if authority is not None else "operator"
     snapshot = rec.get("render") if (state == "delivered" and _is_supervisor_nudge(rec)) else None
     if state == "delivered" and _is_draft(rec):
         # …and a delivered DRAFT keeps the text that was typed the same way (#983 P3): the stored
-        # draft, sanitized, which is what `render` turned into the payload.
+        # draft, sanitized, which is what `render` turned into the payload. P4 splits the source in
+        # two, because "the AI wrote this and you sent it" and "the AI wrote this and it was sent
+        # with nobody reading it" are different things to tell an operator.
         with contextlib.suppress(NotDeliverable):
-            snapshot = {"text": draft_text(rec), "source": "ai_draft", "digest": None}
+            snapshot = {
+                "text": draft_text(rec),
+                "source": "ai_auto" if sent_by == "auto" else "ai_draft",
+                "digest": None,
+            }
     delivered: dict = {}
+    if state == "delivered":
+        delivered["sent_by"] = sent_by
     if isinstance(snapshot, dict):
-        delivered = {
-            "delivered_text": snapshot.get("text"),
-            "delivered_digest": snapshot.get("digest"),
-        }
+        delivered["delivered_text"] = snapshot.get("text")
+        delivered["delivered_digest"] = snapshot.get("digest")
     # CAS strictly from `claimed`: we hold the claim, so any other state means something
     # else settled this action while we were writing and its verdict must stand.
     settled = ledger.compare_and_set(
@@ -923,7 +1125,89 @@ async def deliver(
         # supervisor sweep and at boot (#983 review).
         with contextlib.suppress(Exception):
             await asyncio.to_thread(_record_delivered_nudge, rec, snapshot)
+        # …and the bell, for an AI-written direction that was sent with nobody reading it (#983 P4).
+        # Same posture and the same repair path as the thread row above: best-effort here, restored
+        # from the settled ledger row by the sweep, and idempotent on the action id so the repair
+        # cannot announce it twice. Driven by the SETTLED row, so it announces what was recorded.
+        if sent_by == "auto" and _is_draft(rec):
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(_announce_auto_direction, settled)
     return settled or rec
+
+
+def _auto_direction_title(rec: dict) -> str:
+    """What the bell says about an autonomously sent AI-written direction (#983 P4).
+
+    Server-authored, and deliberately NOT the draft itself: the text is model prose and the bell
+    carries no session content. The thread row holds the words; this says an unreviewed send
+    happened, and which objective it was about, so the operator knows where to look.
+    """
+    key = str(rec.get("objective_key") or "").strip()
+    return (
+        f"An AI-written direction was sent for “{key}”"
+        if key
+        else "An AI-written direction was sent"
+    )
+
+
+def _ensure_receipt(action_id: str, mission_id: str = "") -> bool:
+    """Make this announcement's durable receipt exist. True only if it now does (#983 P4).
+
+    The write is idempotent, so an identity that already has a receipt answers True without a
+    second row — which is exactly right for the caller's question, "is it safe to forget this".
+    Fails CLOSED: an unwritable store answers False and the identity is kept.
+    """
+    from . import missions
+
+    try:
+        missions.record_auto_announcement(action_id, mission_id)
+        return True
+    except Exception:  # noqa: BLE001 — an unverifiable receipt is not a durable one
+        return False
+
+
+def _announce_auto_direction(rec: dict, path=None) -> None:
+    """Announce ONE autonomously sent AI-written direction. Idempotent on the action id (#983 P4).
+
+    This mode types text nobody read into a permission-bypassed agent, so every send is announced —
+    it is the operator's only live signal that it happened. Its own announcing class, never
+    `escalation`: an escalation means "you need to decide something", and this is the opposite
+    report ("this was done on your behalf"), so enrolling it in the decision badge would say the
+    wrong thing. Blocking; call off the loop.
+    """
+    from . import missions, notifications
+
+    if not _is_draft(rec) or str(rec.get("sent_by") or "") != "auto":
+        return
+    action_id = str(rec.get("id") or "")
+    mission_id = str(rec.get("mission_id") or "")
+    if not action_id:
+        return
+    # THE DURABLE RECEIPT IS THE AUTHORITY; THE TOMBSTONE COVERS THE WINDOW IT CANNOT.
+    #
+    # `notifications.add` reads both inside its own lock, writes the row and the tombstone in one
+    # document, and runs `after` there too — so this call is the whole announcement, with nothing
+    # for a caller to sequence or forget. `recorded` is the unbounded record the compaction pin
+    # also reads; the tombstone only has to bridge the gap before it lands, which is why its
+    # eviction is not load-bearing. See `notifications.add` and `_remember`.
+    notifications.add(
+        title=_auto_direction_title(rec),
+        project=str(rec.get("project") or ""),
+        reason="sent automatically by mission control, without review",
+        session_id=str(rec.get("session_id") or ""),
+        engine=str(rec.get("engine") or ""),
+        action_id=action_id,
+        auto_direction=True,
+        recorded=lambda: missions.auto_announcement_recorded(action_id),
+        after=lambda: missions.record_auto_announcement(action_id, mission_id),
+        # CONVERGE-THEN-RECLAIM. The bell asks this before dropping an identity from its dedupe
+        # list, and keeps the identity when it answers False — so nothing is ever reclaimed whose
+        # receipt is not durable. The mission is carried for the action being announced now; an
+        # older candidate is written without one, which costs nothing, because that column is
+        # provenance and every lookup keys on the action id alone.
+        record=lambda aid: _ensure_receipt(aid, mission_id if aid == action_id else ""),
+        path=path,
+    )
 
 
 def _record_delivered_nudge(rec: dict, snapshot: dict, *, at: float | None = None) -> bool:
@@ -939,6 +1223,10 @@ def _record_delivered_nudge(rec: dict, snapshot: dict, *, at: float | None = Non
         text=str(snapshot.get("text") or ""),
         source=snapshot.get("source"),
         digest=snapshot.get("digest"),
+        # The two facts that make the row say "AI-written · sent automatically" (#983 P4). `ai_auto`
+        # is minted from the RECORDED `sent_by`, so the repair path reconstructs the same row.
+        auto=snapshot.get("source") == "ai_auto",
+        confidence=rec.get("confidence") if _is_draft(rec) else None,
         at=at,
     )
 
@@ -962,7 +1250,19 @@ def reconcile_delivered_nudges() -> int:
     if status != "ok":
         return 0
     # The same record-level reconciliation compaction runs over the rows it is about to delete.
-    return int(missions.reconcile_delivered_records(latest.values())["written"])
+    written = int(missions.reconcile_delivered_records(latest.values())["written"])
+    # …AND THE BELL, from the same rows on the same sweep (#983 P4). The announcement is written
+    # after the settlement and is best-effort, so a failure in that gap would otherwise leave an
+    # unreviewed send with no live signal at all — which is the one thing this mode owes the
+    # operator. THE SAME repair path, deliberately: a second one would be a second place for the
+    # rule to drift. It never types and never re-sends — its only input is a row already settled
+    # `delivered` — and `notifications.add` is idempotent on the action id within this class, so
+    # running it on every sweep announces nothing twice.
+    for r in latest.values():
+        if r.get("state") == "delivered" and _is_draft(r) and str(r.get("sent_by") or "") == "auto":
+            with contextlib.suppress(Exception):
+                _announce_auto_direction(r)
+    return written
 
 
 async def deliver_auto(
@@ -985,13 +1285,15 @@ async def deliver_auto(
     Composed AND, and the prefs checks run first, so a withdrawn tier short-circuits before any
     extra work. A refusal from either half is a refusal.
     """
-    # NEVER AN AI-DRAFTED DIRECTION (#983 P3), and asked FIRST, before any preference. The ceiling
-    # below already excludes the verb, but that is a property of a set a later release may widen.
-    # This refusal is a property of the action kind: model-authored text is typed only by the
-    # operator's approval, at every tier and every confidence.
-    if _is_draft(action):
-        return None
     cfg = prefs.get_orchestrator()
+    # AN AI-DRAFTED DIRECTION IS REFUSED UNLESS THE OPERATOR OPTED IN (#983 P3, widened in P4), and
+    # it is asked as its own question rather than left to the ceiling below. The ceiling is a SET,
+    # and a set is the kind of thing a later edit widens by accident; `draft_auto_allowed` is the
+    # whole approved grant in one expression — off by default, yolo only, master switch on, verb in
+    # the allowed set, at or above the operator's threshold. With the pref off this is exactly the
+    # P3 refusal: no tier, no confidence and no hand-edited prefs file can send model prose.
+    if _is_draft(action) and not draft_auto_allowed(action, cfg):
+        return None
     # `enabled` is the master switch and belongs in this gate too. Checking only the tier
     # meant a disabled orchestrator still delivered anything a pass had already approved —
     # switching it off has to stop writes, not just stop new proposals.
@@ -1012,8 +1314,8 @@ async def deliver_auto(
         window has withdrawn the authority this delivery rests on, and it must not proceed on
         the strength of a tier they have left.
         """
-        if _is_draft(action):
-            return False, "an AI-drafted direction is never sent automatically"
+        if _is_draft(action) and not draft_auto_allowed(action, live):
+            return False, "autonomous AI-written directions were switched off before the write"
         if live.get("autonomy") != "yolo":
             return False, "autonomy left yolo before the write"
         if action.get("verb") not in set(live["allowed_verbs"]):

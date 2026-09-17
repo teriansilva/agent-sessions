@@ -65,7 +65,7 @@ log = logging.getLogger(__name__)
 MISSION_ID_RE = re.compile(r"^msn_[0-9a-f]{32}$")
 
 #: Bumped whenever the schema changes; ``PRAGMA user_version`` carries it in the file.
-SCHEMA_VERSION = 28
+SCHEMA_VERSION = 29
 
 #: How many live SUB-AGENTS one mission may hold, beyond the session it is already running.
 #:
@@ -1113,6 +1113,47 @@ CREATE INDEX IF NOT EXISTS idx_mission_spawns_open
 # step, so the two paths cannot drift.
 _SCHEMA += MISSION_SPAWNS_DDL
 
+#: v28 (#983 P4). Two tables, both about the ONE autonomous AI-written direction an objective
+#: episode may get.
+#:
+#: **`mission_ai_directions` IS the bound**, not a record of one. The primary key admits exactly one
+#: row per (mission, objective, episode), so the allowance is taken by a database constraint rather
+#: than by a check. Counting completed sends cannot enforce it: a claimed action is IN FLIGHT, not
+#: spent, so two overlapping passes on different sessions of the same objective both read zero —
+#: before the claim and again inside their own write fences — and both type. Reserved before any
+#: byte, and **never released**: an in-flight or indeterminate outcome consumes the allowance for
+#: good, because losing one possible send is acceptable and a second unreviewed write is not.
+#:
+#: **`mission_auto_announcements` is the durable RECEIPT** for the bell. The notification ring is
+#: bounded (200 rows) and dismissible, so a receipt kept there is destroyed by ordinary operator
+#: action — and the next sweep then re-announces a delivery the operator had already cleared. No
+#: foreign key: a tombstone has to outlive whatever it is a tombstone for.
+AUTO_DIRECTION_DDL = """
+CREATE TABLE IF NOT EXISTS mission_ai_directions (
+  mission_id    TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+  objective_key TEXT NOT NULL,
+  -- KEYED BY INCARNATION TOO. An episode number is not an identity: dropping an objective
+  -- resets the episode and clears the supervisor bindings, so the same key added back arrives at
+  -- episode 1 again and a reservation keyed only on (mission, key, episode) still matched it —
+  -- the new objective inherited a spent allowance and its draft could never send. The incarnation
+  -- is the identity P3 already carries, and it makes a stale row self-evident instead of
+  -- something a second delete has to chase.
+  incarnation   TEXT NOT NULL,
+  episode       INTEGER NOT NULL,
+  action_id     TEXT NOT NULL,
+  at            REAL NOT NULL,
+  PRIMARY KEY (mission_id, objective_key, incarnation, episode)
+);
+
+CREATE TABLE IF NOT EXISTS mission_auto_announcements (
+  action_id  TEXT PRIMARY KEY,
+  mission_id TEXT NOT NULL,
+  at         REAL NOT NULL
+);
+"""
+
+_SCHEMA += AUTO_DIRECTION_DDL
+
 # THE EVIDENCE OF THE LAST FAILED PRIMARY LAUNCH (#966). A failed settlement deletes the dispatch
 # record, so the seed outcome and teardown proof it carried are copied here in the same commit —
 # with the proposal, which is what Start again restores as the plan. One row per mission; any other
@@ -1211,6 +1252,8 @@ def _migrate(con) -> int:
             _migrate_26_to_27(con)
         if version < 28:
             _migrate_27_to_28(con)
+        if version < 29:
+            _migrate_28_to_29(con)
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return SCHEMA_VERSION
 
@@ -1570,6 +1613,21 @@ def _migrate_27_to_28(con) -> None:
         have = {r["name"] for r in con.execute("PRAGMA table_info(mission_dispatches)").fetchall()}
         if "attempt_nonce" not in have:
             con.execute("ALTER TABLE mission_dispatches ADD COLUMN attempt_nonce TEXT")
+
+
+def _migrate_28_to_29(con) -> None:
+    """v29 adds the autonomous AI direction's reservation and its announcement receipt (#983 P4).
+
+    This was written as v28 and renumbered when #989's late-bound-session work took that number
+    first on main — so it follows that migration rather than competing with it, and a store already
+    at v28 runs only this one.
+
+    New tables only, and applied from the SAME DDL string a fresh install runs, so an upgraded
+    store and a new one cannot end up with different definitions of the constraint the bound rests
+    on. Existing stores gain no rows, so every objective episode starts with its one allowance
+    unspent and nothing already delivered is treated as owing an announcement.
+    """
+    con.executescript(AUTO_DIRECTION_DDL)
 
 
 def _migrate_22_to_23(con) -> None:
@@ -5441,6 +5499,161 @@ def forget_supervisor_action(mission_id: str, action_id: str, *, path: Path | No
             con.close()
 
 
+def reserve_ai_direction(
+    mission_id: str,
+    *,
+    objective_key: str,
+    episode: int,
+    action_id: str,
+    expect_incarnation: str | None = None,
+    now: float | None = None,
+    path: Path | None = None,
+) -> bool:
+    """Take this episode's ONE autonomous AI-written direction. True if `action_id` holds it.
+
+    **This is the bound, not a report of it** (#983 P4 review). It is taken BEFORE any byte, in
+    one transaction, and the primary key decides the winner — so two overlapping supervisor calls
+    on different sessions of the same objective episode cannot both proceed. The previous shape
+    counted completed sends, which cannot work: between the two reads that would have to disagree,
+    both actions are merely `claimed`, and a claimed action is in flight rather than spent.
+
+    **Never released.** A caller that reserved and then failed, was refused at the fence, or crashed
+    leaves the allowance spent for this episode. That is deliberate: losing one possible autonomous
+    send costs the operator a nudge they can still make by tapping, while releasing it on an
+    outcome nobody can account for risks a second unreviewed write into a live agent.
+
+    The objective must still be current and, when `expect_incarnation` is given, still be the same
+    incarnation — checked in this transaction, so a drop-and-re-add cannot slip between.
+    """
+    validate_id(mission_id)
+    # NO IDENTITY, NO BOUND. The incarnation is what distinguishes this objective from a later one
+    # reusing its key, so a caller that cannot name it does not get to reserve against it.
+    if not expect_incarnation:
+        return False
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            if not _objective_is_current(con, mission_id, objective_key, episode):
+                con.execute("ROLLBACK")
+                return False
+            row = con.execute(
+                "SELECT incarnation FROM mission_objectives WHERE mission_id=? AND key=?",
+                (mission_id, objective_key),
+            ).fetchone()
+            if row is None or str(row["incarnation"] or "") != expect_incarnation:
+                con.execute("ROLLBACK")
+                return False
+            cur = con.execute(
+                "INSERT OR IGNORE INTO mission_ai_directions "
+                "(mission_id, objective_key, incarnation, episode, action_id, at) "
+                "VALUES (?,?,?,?,?,?)",
+                (mission_id, objective_key, expect_incarnation, episode, action_id, ts),
+            )
+            took = bool(cur.rowcount)
+            if not took:
+                # IDEMPOTENT FOR THE SAME ACTION, exclusive across different ones. The delivery
+                # path re-takes this slot at the write boundary for an action that already
+                # reserved it upstream, and that must not read as "somebody else holds it".
+                row = con.execute(
+                    "SELECT action_id FROM mission_ai_directions "
+                    "WHERE mission_id=? AND objective_key=? AND incarnation=? AND episode=?",
+                    (mission_id, objective_key, expect_incarnation, episode),
+                ).fetchone()
+                took = row is not None and str(row["action_id"]) == action_id
+            con.execute("COMMIT")
+            return took
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
+
+
+def ai_direction_holder(
+    mission_id: str, objective_key: str, episode: int, *, path: Path | None = None
+) -> str | None:
+    """Which action holds this episode's one autonomous AI direction, or ``None``.
+
+    The in-fence question is "is the reservation still MINE", not "does one exist" — the caller has
+    already taken it, so a bare existence check would refuse its own send.
+    """
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        # JOINED TO THE OBJECTIVE'S CURRENT INCARNATION, so a reservation left behind by an
+        # objective that was dropped and re-created simply does not match — the new incarnation
+        # reads as unspent without anything having to go and delete the old row first.
+        row = con.execute(
+            "SELECT d.action_id FROM mission_ai_directions d "
+            "JOIN mission_objectives o ON o.mission_id = d.mission_id "
+            "AND o.key = d.objective_key AND o.incarnation = d.incarnation "
+            "WHERE d.mission_id=? AND d.objective_key=? AND d.episode=?",
+            (mission_id, objective_key, episode),
+        ).fetchone()
+        return str(row["action_id"]) if row is not None else None
+    finally:
+        con.close()
+
+
+def record_auto_announcement(
+    action_id: str, mission_id: str, *, now: float | None = None, path: Path | None = None
+) -> None:
+    """Durably record that an autonomous send HAS been announced (#983 P4).
+
+    Kept here rather than in the notification ring because that ring is evictable and dismissible:
+    a receipt living there is destroyed by the operator clearing the very row it is a receipt for,
+    and the next sweep announces it again as unread.
+    """
+    ts = time.time() if now is None else now
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute(
+                "INSERT OR IGNORE INTO mission_auto_announcements (action_id, mission_id, at) "
+                "VALUES (?,?,?)",
+                (action_id, mission_id, ts),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+
+def auto_announcement_recorded(action_id: str, *, path: Path | None = None) -> bool:
+    """Has this autonomous send already been announced? One durable answer for every caller."""
+    con = _ready(path)
+    try:
+        row = con.execute(
+            "SELECT 1 FROM mission_auto_announcements WHERE action_id=?", (action_id,)
+        ).fetchone()
+        return row is not None
+    finally:
+        con.close()
+
+
+def unannounced_auto_ids(action_ids: list[str], *, path: Path | None = None) -> set[str]:
+    """Which of `action_ids` still OWE an announcement. Bulk read for the compaction pin."""
+    ids = [a for a in action_ids if a]
+    if not ids:
+        return set()
+    con = _ready(path)
+    try:
+        have: set[str] = set()
+        for i in range(0, len(ids), 500):
+            chunk = ids[i : i + 500]
+            marks = ",".join("?" * len(chunk))
+            rows = con.execute(
+                f"SELECT action_id FROM mission_auto_announcements WHERE action_id IN ({marks})",  # noqa: S608
+                chunk,
+            ).fetchall()
+            have.update(str(r["action_id"]) for r in rows)
+        return {a for a in ids if a not in have}
+    finally:
+        con.close()
+
+
 def supervisor_action_episode(
     mission_id: str, action_id: str, *, path: Path | None = None
 ) -> int | None:
@@ -5949,6 +6162,8 @@ def ensure_delivered_nudge_event(
     text: str,
     source: object,
     digest: object,
+    auto: bool = False,
+    confidence: object = None,
     at: float | None = None,
     path: Path | None = None,
 ) -> bool:
@@ -5970,6 +6185,16 @@ def ensure_delivered_nudge_event(
             "delivered": True,
             "text_source": source,
             "digest": digest,
+            # AN AUTONOMOUSLY SENT AI-WRITTEN DIRECTION (#983 P4): the two extra facts its row
+            # needs — that nobody read it, and how sure the model said it was. Both come from the
+            # SETTLED ledger row, so the delivery and the repair write the same row. Omitted
+            # entirely rather than written false/null, so every pre-P4 event reads unchanged.
+            **({"auto": True} if auto else {}),
+            **(
+                {"confidence": float(confidence)}
+                if isinstance(confidence, int | float) and not isinstance(confidence, bool)
+                else {}
+            ),
         },
         stage="delivered",
         now=at,
@@ -6002,15 +6227,24 @@ def reconcile_delivered_records(records, *, path: Path | None = None) -> dict:
         if r["id"] in have:
             continue
         ts = r.get("ts")
+        # THE RECORDED PROVENANCE, never the live policy (#983 P4). `sent_by` was stamped on the row
+        # by the settling compare-and-set, so a repair running days later — after the operator has
+        # turned the mode off — still restores the row as it was actually sent.
+        is_draft = r.get("verb") == "draft_direction"
+        auto = is_draft and str(r.get("sent_by") or "") == "auto"
+        if is_draft:
+            source: object = "ai_auto" if auto else "ai_draft"
+        elif isinstance(r.get("render"), dict):
+            source = (r.get("render") or {}).get("source")
+        else:
+            source = None
         try:
             if ensure_delivered_nudge_event(
                 r,
                 text=r["delivered_text"],
-                source="ai_draft"
-                if r.get("verb") == "draft_direction"
-                else (r.get("render") or {}).get("source")
-                if isinstance(r.get("render"), dict)
-                else None,
+                source=source,
+                auto=auto,
+                confidence=r.get("confidence") if is_draft else None,
                 digest=r.get("delivered_digest"),
                 at=float(ts) if isinstance(ts, int | float) and not isinstance(ts, bool) else None,
                 path=path,
@@ -8994,6 +9228,14 @@ def _forget_objective(con, mission_id: str, key: str) -> None:
     )
     con.execute(
         "DELETE FROM mission_escalations WHERE mission_id=? AND objective_key=?",
+        (mission_id, key),
+    )
+    # …and the autonomous-AI-direction reservation (#983 P4). Keying it by incarnation already
+    # makes a leftover row unmatchable, so this is housekeeping rather than the fix — but this
+    # function documents itself as the complete inventory of what is bound to an objective
+    # identity, and a table missing from it is exactly what that claim exists to prevent.
+    con.execute(
+        "DELETE FROM mission_ai_directions WHERE mission_id=? AND objective_key=?",
         (mission_id, key),
     )
 

@@ -1086,13 +1086,36 @@ def _preserve_deliveries(doomed: list[dict]) -> list[dict]:
 
     # The store's own predicate, so a delivered AI draft (#983 P3) is kept exactly as a nudge is.
     candidates = [r for r in doomed if missions.is_delivered_supervisor_nudge(r)]
+    # …AND THE BELL'S OBLIGATION (#983 P4 review). An autonomous AI-written direction announces
+    # itself after the settlement, best-effort, and the repair reads THIS row to do it — so
+    # dropping the row while the announcement is still owed discards it for good: the action is
+    # gone and no notification was ever made. Pinned until the receipt is durable, which is the
+    # same promise the thread record above gets — and the pin RELEASES in the ordinary case,
+    # because a receipt whose first write failed is re-attempted on every later announcement of
+    # the same action (`notifications._converge`). That receipt is also what the announce path
+    # consults, so a pinned row can never outlive the record that stops it being re-announced.
+    owing: set[str] = set()
+    auto = [
+        r
+        for r in doomed
+        if r.get("state") == "delivered"
+        and r.get("verb") == "draft_direction"
+        and str(r.get("sent_by") or "") == "auto"
+    ]
+    if auto:
+        try:
+            owing = missions.unannounced_auto_ids([str(r.get("id") or "") for r in auto])
+        except Exception as e:  # noqa: BLE001 — unknown is not "announced"
+            log.warning("ledger: could not read announcement receipts before compaction (%s)", e)
+            owing = {str(r.get("id") or "") for r in auto}
     if not candidates:
-        return doomed
+        return [r for r in doomed if str(r.get("id") or "") not in owing] if owing else doomed
     try:
         keep = set(missions.reconcile_delivered_records(candidates)["unrecorded"])
     except Exception as e:  # noqa: BLE001 — unknown is not "recorded"
         log.warning("ledger: could not reconcile delivered nudges before compaction (%s)", e)
         keep = {str(r.get("id") or "") for r in candidates}
+    keep |= owing
     if not keep:
         return doomed
     log.warning(

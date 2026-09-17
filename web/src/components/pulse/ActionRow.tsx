@@ -2,6 +2,7 @@ import { Check, ChevronDown, MonitorPlay, X } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, ApiError } from "../../lib/api";
+import { useConfig } from "../../app/config";
 import { announceActionResolved } from "../../lib/actionEvents";
 import { engineBadge, relTime } from "../../lib/format";
 import type { EvidenceKind, OrchestratorAction } from "../../types/api";
@@ -163,6 +164,10 @@ export function ActionRow({
   const delivering = (deliveringVerbs ?? DELIVERING_FALLBACK).has(action.verb);
   const [busy, setBusy] = useState<"" | "approve" | "reject">("");
   const [note, setNote] = useState<string | null>(null);
+  // THE OPT-IN (#983 P4), read here rather than threaded in from each host: both surfaces that
+  // render a draft card — the mission console and the session pane — need the same answer, and
+  // `ConfigCtx` already holds it. A hook, so it sits with the others and above every branch.
+  const orch = useConfig()?.orchestrator;
   // WHICH CONTROLS ARE OFFERED IS THE SERVER'S ANSWER, not ours (#852/#840 §16).
   //
   // This used to derive it from `state`, treating `proposed` and `approved` alike — so an
@@ -339,6 +344,13 @@ export function ActionRow({
     approvable: action.can_approve === true,
     rejectable,
     editable: !!onEditDraft,
+    // While the mode is on the card must stop promising "never sent on its own" (#983 P4).
+    auto: orch
+      ? {
+          on: orch.auto_ai_directions,
+          threshold: orch.ai_direction_confidence_min,
+        }
+      : null,
   });
   if (draft) {
     return (

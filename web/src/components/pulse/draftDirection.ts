@@ -20,6 +20,17 @@ export interface DraftView {
   /** Edit: only where a composer can take it, and only while the draft is still waiting. */
   canEdit: boolean;
   canDismiss: boolean;
+  /** THE OPERATOR'S OPT-IN (#983 P4). The threshold at or above which a draft is typed with nobody
+   *  reading it, or `null` when the mode is off — which is the default, and in which case the card
+   *  says exactly what P3 said. A card that still promises "never sent on its own" while the mode
+   *  is on would be the most misleading sentence in the app, so the copy follows the pref. */
+  autoThreshold: number | null;
+}
+
+/** The opt-in as the card needs it: on/off plus the threshold. */
+export interface AutoDirections {
+  on: boolean;
+  threshold: number;
 }
 
 export function isDraftDirection(a: OrchestratorAction): boolean {
@@ -34,12 +45,17 @@ export function draftView(
     rejectable: boolean;
     /** Whether this surface has a composer to open the draft in. */
     editable: boolean;
+    /** The orchestrator block's opt-in, when the surface knows it. Absent reads as off. */
+    auto?: AutoDirections | null;
   },
 ): DraftView | null {
   if (!isDraftDirection(a)) return null;
+  const auto = controls.auto;
   return {
     objective: a.objective_title?.trim() || a.objective_key || "an objective",
     text: a.draft as string,
+    autoThreshold:
+      auto && auto.on && Number.isFinite(auto.threshold) ? auto.threshold : null,
     canSend: controls.approvable,
     // An edit REPLACES the draft, which the server does only while the draft is still waiting:
     // the same condition under which it can be dismissed.

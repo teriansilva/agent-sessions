@@ -21,6 +21,10 @@ const FALLBACK: OrchestratorConfig = {
   notify: "escalations",
   configured: false,
   default_nudge_template: "",
+  auto_ai_directions: false,
+  ai_direction_confidence_min: 0.9,
+  ai_direction_confidence_floor: 0.9,
+  ai_direction_confidence_max: 1,
 };
 
 /** Idle-window presets (#768). The useful values are few and the units need saying, so a
@@ -59,12 +63,14 @@ export function OrchestratorSettings() {
     String(block.interval_minutes),
   );
   const [confDraft, setConfDraft] = useState(block.confidence_min);
+  const [aiConfDraft, setAiConfDraft] = useState(block.ai_direction_confidence_min);
   const [nudgeDraft, setNudgeDraft] = useState(block.nudge_template);
   const [seeded, setSeeded] = useState(block);
   if (seeded !== block) {
     setSeeded(block);
     setIntervalDraft(String(block.interval_minutes));
     setConfDraft(block.confidence_min);
+    setAiConfDraft(block.ai_direction_confidence_min);
     setNudgeDraft(block.nudge_template);
   }
 
@@ -141,6 +147,13 @@ export function OrchestratorSettings() {
     // on the current value should not cost a round trip.
     if (confDraft === block.confidence_min) return;
     void save({ confidence_min: confDraft });
+  };
+
+  // Same drag-then-save rule as `commitConf` (#776): `onChange` fires per pixel, and a locked
+  // read-modify-write of prefs.json per pixel is what made the panel feel stuck.
+  const commitAiConf = () => {
+    if (aiConfDraft === block.ai_direction_confidence_min) return;
+    void save({ ai_direction_confidence_min: aiConfDraft });
   };
 
   const commitInterval = () => {
@@ -276,6 +289,18 @@ export function OrchestratorSettings() {
           facts it checked itself, or your default nudge below. The AI decides
           when, never what. Picking an option, answering a question or starting a
           new session always waits for your approval.
+          {/* …UNLESS THE OPERATOR TURNED ON THE ONE EXCEPTION (#983 P4). With the toggle off this
+              paragraph is exactly P3's, and it is true; with it on, the sentence above would be a
+              flat untruth, so the exception is stated here rather than only next to the toggle. */}
+          {block.auto_ai_directions ? (
+            <>
+              {" "}
+              <strong>One exception, which you turned on:</strong> an AI-written
+              direction the model rates{" "}
+              {block.ai_direction_confidence_min.toFixed(2)} or higher is sent on
+              its own, with nobody reading it first.
+            </>
+          ) : null}
         </p>
       </div>
 
@@ -306,6 +331,70 @@ export function OrchestratorSettings() {
           Below this, mission control asks you instead of acting. Unsure means ask — never
           guess.
         </p>
+      </div>
+
+      {/* AUTONOMOUS AI-WRITTEN DIRECTIONS (#983 P4). The one mode in which a model authors the
+          bytes typed into a permission-bypassed agent. The honest-limits warning sits BESIDE the
+          control, never in a tooltip: a caveat you have to hover to discover is not a disclosure. */}
+      <div className={styles.aiField} data-testid="orchestrator-auto-ai">
+        <label className={styles.aiToggle}>
+          <input
+            type="checkbox"
+            checked={block.auto_ai_directions}
+            disabled={block.autonomy !== "yolo"}
+            onChange={(e) =>
+              void save({ auto_ai_directions: e.currentTarget.checked })
+            }
+            data-testid="auto-ai-toggle"
+          />
+          <span>Let mission control send AI-written directions on its own</span>
+        </label>
+        <p className={styles.hint} data-testid="auto-ai-warning">
+          <strong>
+            This is the one thing the AI writes that gets typed into a session for you.
+          </strong>{" "}
+          Confidence is the model&rsquo;s own opinion of its own work, not a safety check. What a
+          session contains — its output, the files and PR comments it read — is untrusted, and an
+          instruction hidden in any of it can shape both the text and the confidence. Nobody reads
+          the text before it reaches the agent. Every send is announced, even if you have
+          notifications turned down. It is off unless you turn it on, YOLO only, and one send per
+          objective attempt.
+        </p>
+        {block.autonomy !== "yolo" ? (
+          <p className={styles.hint} data-testid="auto-ai-tier-note">
+            Available on <strong>YOLO</strong> only. Leaving YOLO turns it off.
+          </p>
+        ) : null}
+        {block.auto_ai_directions ? (
+          <>
+            <label className={styles.aiFieldLabel} htmlFor="orch-ai-conf">
+              Send an AI-written direction at or above
+            </label>
+            <div className={styles.aiIntervalRow}>
+              <input
+                id="orch-ai-conf"
+                type="range"
+                min={block.ai_direction_confidence_floor}
+                max={block.ai_direction_confidence_max}
+                step={0.01}
+                value={aiConfDraft}
+                onChange={(e) => setAiConfDraft(Number(e.target.value))}
+                onPointerUp={commitAiConf}
+                onKeyUp={commitAiConf}
+                onBlur={commitAiConf}
+                data-testid="auto-ai-threshold"
+              />
+              <span data-testid="auto-ai-threshold-value">
+                {aiConfDraft.toFixed(2)}
+              </span>
+            </div>
+            <p className={styles.hint}>
+              {block.ai_direction_confidence_floor.toFixed(2)} is the floor and cannot be
+              lowered — it is the threshold this mode was approved for. Below it, a draft still
+              waits for your tap.
+            </p>
+          </>
+        ) : null}
       </div>
 
       <div className={styles.aiField}>

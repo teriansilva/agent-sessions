@@ -1358,6 +1358,34 @@ AUTO_VERBS_V1: frozenset[str] = frozenset({"continue"})
 # refuses it on any other path, and `actuator.deliver_auto` refuses it before asking any of this.
 DRAFT_DIRECTION_VERB = "draft_direction"
 
+# THE ONE APPROVED WIDENING (#983 P4), and it is deliberately spelled as a pref rather than as a
+# second entry in `AUTO_VERBS_V1`. Turning it on gives up the property every other line in this
+# module protects — "a model never authors the bytes typed into a permission-bypassed agent" — so
+# it is off by default, YOLO-only, and enabled explicitly by the operator, who approved exactly
+# that on #983: "I approve the autonomous AI directions, YOLO only, threshold 0.90".
+#
+# The floor is 0.90 because that is the threshold the approval names. RAISING it needs no new
+# approval; LOWERING it would exceed the grant, so 0.89 is a 422 rather than a clamp.
+ORCH_AI_DIRECTION_CONF_LO = 0.90
+ORCH_AI_DIRECTION_CONF_HI = 1.00
+ORCH_AI_DIRECTION_CONF_DEFAULT = 0.90
+
+
+def auto_verbs(cfg: object) -> frozenset[str]:
+    """The verbs that may be delivered WITHOUT a tap, for this configuration.
+
+    `AUTO_VERBS_V1` is the static v1 ceiling and stays exactly `{"continue"}`. The only thing that
+    widens it is the operator's own opt-in, and only while it is on — so the ceiling is a function
+    of policy rather than a constant a later edit can quietly grow. Every caller asks this instead
+    of reading the frozenset, which is what makes "turning the pref off withdraws it at once" true
+    everywhere rather than at the sites somebody remembered.
+    """
+    cfg = cfg if isinstance(cfg, dict) else {}
+    if cfg.get("auto_ai_directions") is True:
+        return AUTO_VERBS_V1 | {DRAFT_DIRECTION_VERB}
+    return AUTO_VERBS_V1
+
+
 ORCH_INTERVAL_MIN = 5
 ORCH_INTERVAL_MAX = 24 * 60
 ORCH_CONFIDENCE_MIN_LO = 0.5
@@ -1427,17 +1455,25 @@ _ORCH_DEFAULTS: dict[str, object] = {
     "nudge_template": DEFAULT_ORCH_NUDGE,
     "prompt": DEFAULT_ORCH_PROMPT,
     "notify": "escalations",
+    # Off by default. See `ORCH_AI_DIRECTION_CONF_LO` above for why the floor is what it is.
+    "auto_ai_directions": False,
+    "ai_direction_confidence_min": ORCH_AI_DIRECTION_CONF_DEFAULT,
 }
 
 
-def coerce_allowed_verbs(value: object) -> list[str]:
-    """Narrow any input to a sorted subset of the ``AUTO_VERBS_V1`` ceiling. Read-side
-    counterpart of the validator: a sidecar hand-edited to include ``answer`` (or a value
-    written before the ceiling existed) is clamped on READ, so the ceiling holds even against
-    a file the validator never saw."""
+def coerce_allowed_verbs(value: object, *, allow_draft: bool = False) -> list[str]:
+    """Narrow any input to a sorted subset of the ceiling. Read-side counterpart of the
+    validator: a sidecar hand-edited to include ``answer`` (or a value written before the ceiling
+    existed) is clamped on READ, so the ceiling holds even against a file the validator never saw.
+
+    ``allow_draft`` is the operator's opt-in (#983 P4), resolved by the caller BEFORE this runs —
+    so a hand-edited file naming ``draft_direction`` without `auto_ai_directions` is clamped away
+    exactly like `answer` is. The pref is the authority; the verb list never enables itself.
+    """
+    ceiling = AUTO_VERBS_V1 | {DRAFT_DIRECTION_VERB} if allow_draft else AUTO_VERBS_V1
     if not isinstance(value, list):
         return sorted(AUTO_VERBS_V1)
-    return sorted({v for v in value if isinstance(v, str) and v in AUTO_VERBS_V1})
+    return sorted({v for v in value if isinstance(v, str) and v in ceiling})
 
 
 def get_orchestrator(path: Path | None = None) -> dict:
@@ -1461,8 +1497,25 @@ def _coerce_orchestrator(raw: object) -> dict:
         n = raw.get("notify")
         if isinstance(n, str) and n in ORCH_NOTIFY:
             out["notify"] = n
+        # THE OPT-IN (#983 P4), resolved BEFORE `allowed_verbs` because it decides that list's
+        # ceiling. `is True`, never truthiness: `"false"` is a truthy string and a hand-edited
+        # file is exactly where one lands. YOLO-only is enforced here as well as at the write, so
+        # a stored `true` sitting beside a tier the operator has left reads as off, not as armed.
+        if raw.get("auto_ai_directions") is True and out["autonomy"] == "yolo":
+            out["auto_ai_directions"] = True
+        ac = raw.get("ai_direction_confidence_min")
+        # The range check also disposes of `nan` and `±inf`, each of which fails every comparison
+        # it is asked (`LO <= nan` is False), so a non-finite stored value falls back to the floor.
+        if (
+            isinstance(ac, int | float)
+            and not isinstance(ac, bool)
+            and ORCH_AI_DIRECTION_CONF_LO <= ac <= ORCH_AI_DIRECTION_CONF_HI
+        ):
+            out["ai_direction_confidence_min"] = float(ac)
         if "allowed_verbs" in raw:
-            out["allowed_verbs"] = coerce_allowed_verbs(raw["allowed_verbs"])
+            out["allowed_verbs"] = coerce_allowed_verbs(
+                raw["allowed_verbs"], allow_draft=out["auto_ai_directions"] is True
+            )
         c = raw.get("confidence_min")
         if (
             isinstance(c, int | float)
@@ -1482,6 +1535,14 @@ def _coerce_orchestrator(raw: object) -> dict:
         for k in ("prompt", "nudge_template"):
             if isinstance(raw.get(k), str):
                 out[k] = raw[k]
+    # THE OPT-IN IS THIS VERB'S SWITCH (#983 P4), so turning it on puts the verb in the allowed set
+    # rather than merely permitting it there. Without this the feature would be dead on arrival for
+    # every existing install: `allowed_verbs` defaults to `["continue"]` and is absent from most
+    # stored blocks, so `deliver_auto`'s verb check would refuse every draft the operator just
+    # opted into. The check stays enforced INDEPENDENTLY of the threshold — it is still the list
+    # delivery consults — and with the pref off the clamp above has already removed the verb.
+    if out["auto_ai_directions"] is True:
+        out["allowed_verbs"] = sorted({*out["allowed_verbs"], DRAFT_DIRECTION_VERB})
     if not str(out["prompt"]).strip():
         out["prompt"] = DEFAULT_ORCH_PROMPT
     if not str(out["nudge_template"]).strip():
@@ -1497,13 +1558,23 @@ def public_orchestrator(path: Path | None = None) -> dict:
     out.pop("prompt", None)  # edited through /api/prompts (#824); no copy here (#956)
     out["configured"] = bool(public_ai_review(path)["configured"])
     out["default_nudge_template"] = DEFAULT_ORCH_NUDGE
-    out["auto_verbs_ceiling"] = sorted(AUTO_VERBS_V1)
+    # The LIVE ceiling, not the static one: with the opt-in on it names `draft_direction`, which is
+    # what lets the UI show that an AI-written direction can now be sent without a tap (#983 P4).
+    out["auto_verbs_ceiling"] = sorted(auto_verbs(out))
+    out["ai_direction_confidence_floor"] = ORCH_AI_DIRECTION_CONF_LO
+    out["ai_direction_confidence_max"] = ORCH_AI_DIRECTION_CONF_HI
     return out
 
 
-def validate_orchestrator_patch(patch: object) -> str | None:
+def validate_orchestrator_patch(patch: object, path: Path | None = None) -> str | None:
     """Server-side schema validation for a partial `orchestrator` write (#726): returns a
-    human-readable error (→ 422) or None. Unknown keys are rejected so a typo can't no-op."""
+    human-readable error (→ 422) or None. Unknown keys are rejected so a typo can't no-op.
+
+    A partial patch's meaning depends on what is already stored — "turn the opt-in on" is legal
+    only beside a `yolo` tier, which the same patch may or may not be setting — so the stored block
+    is read lazily for exactly those questions. That read is for the MESSAGE, not the enforcement:
+    `set_orchestrator` re-applies both rules inside `_mutate`'s lock, where there is no window.
+    """
     if not isinstance(patch, dict):
         return "orchestrator must be an object"
     unknown = set(patch) - set(_ORCH_DEFAULTS)
@@ -1515,11 +1586,56 @@ def validate_orchestrator_patch(patch: object) -> str | None:
         return f"orchestrator.autonomy must be one of {list(ORCH_TIERS)}"
     if "notify" in patch and patch["notify"] not in ORCH_NOTIFY:
         return f"orchestrator.notify must be one of {list(ORCH_NOTIFY)}"
+
+    _stored: list[dict] = []
+
+    def stored() -> dict:
+        if not _stored:
+            _stored.append(get_orchestrator(path))
+        return _stored[0]
+
+    # THE OPT-IN (#983 P4). A bool on TYPE — `isinstance(True, int)` is True in Python and the
+    # string "false" is truthy, so anything looser lets a hand-written payload arm the one mode
+    # that gives up the no-model-authored-bytes guarantee.
+    if "auto_ai_directions" in patch and not isinstance(patch["auto_ai_directions"], bool):
+        return "orchestrator.auto_ai_directions must be a boolean"
+    if patch.get("auto_ai_directions") is True:
+        tier = patch.get("autonomy") if "autonomy" in patch else stored()["autonomy"]
+        if tier != "yolo":
+            return (
+                "orchestrator.auto_ai_directions can only be turned on while autonomy is "
+                "'yolo' — autonomous AI-written directions were approved for that tier only."
+            )
+    if "ai_direction_confidence_min" in patch:
+        v = patch["ai_direction_confidence_min"]
+        if (
+            not isinstance(v, int | float)
+            or isinstance(v, bool)
+            or not (ORCH_AI_DIRECTION_CONF_LO <= v <= ORCH_AI_DIRECTION_CONF_HI)
+        ):
+            # Say WHY the floor is a floor: an operator hitting this is trying to lower a bound
+            # that is not the server's to relax — it is the one the approval names.
+            return (
+                f"orchestrator.ai_direction_confidence_min must be a number between "
+                f"{ORCH_AI_DIRECTION_CONF_LO:.2f} and {ORCH_AI_DIRECTION_CONF_HI:.2f}. "
+                f"{ORCH_AI_DIRECTION_CONF_LO:.2f} is the approved floor for autonomous "
+                "AI-written directions: it can be raised, never lowered."
+            )
     if "allowed_verbs" in patch:
         v = patch["allowed_verbs"]
         if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
             return "orchestrator.allowed_verbs must be a list of strings"
+        # Ask what is STORED only when the answer could change the verdict. A list naming nothing
+        # beyond the static ceiling passes under either, and one naming `answer` is over both —
+        # `draft_direction` is the single verb whose legality depends on the opt-in, so it is the
+        # only one that costs a prefs read.
         over = sorted(set(v) - AUTO_VERBS_V1)
+        if DRAFT_DIRECTION_VERB in over:
+            opt_in = patch["auto_ai_directions"] if "auto_ai_directions" in patch else None
+            if not isinstance(opt_in, bool):
+                opt_in = stored().get("auto_ai_directions") is True
+            if opt_in:
+                over.remove(DRAFT_DIRECTION_VERB)
         if over:
             # The ceiling is the contract, so say why rather than just refusing: an operator
             # hitting this is trying to enable exactly what v1 deliberately withholds.
@@ -1577,7 +1693,25 @@ def set_orchestrator(patch: dict, path: Path | None = None) -> dict:
         for k in _ORCH_DEFAULTS:
             if k in patch:
                 cur[k] = patch[k].strip() if isinstance(patch[k], str) else patch[k]
-        cur["allowed_verbs"] = coerce_allowed_verbs(cur.get("allowed_verbs"))
+        # LEAVING YOLO TURNS IT OFF, DURABLY (#983 P4) — and this is the enforcement, inside the
+        # lock, not the validator's advisory 422. Clamping only on read would let a tier round-trip
+        # through `suggest` and back silently re-arm a mode the operator switched away from; the
+        # stored value is what has to change, so coming back to yolo requires saying so again.
+        if cur.get("auto_ai_directions") is not True or cur.get("autonomy") != "yolo":
+            cur["auto_ai_directions"] = False
+        conf = cur.get("ai_direction_confidence_min")
+        cur["ai_direction_confidence_min"] = (
+            float(conf)
+            if isinstance(conf, int | float)
+            and not isinstance(conf, bool)
+            and ORCH_AI_DIRECTION_CONF_LO <= conf <= ORCH_AI_DIRECTION_CONF_HI
+            else ORCH_AI_DIRECTION_CONF_DEFAULT
+        )
+        cur["allowed_verbs"] = coerce_allowed_verbs(
+            cur.get("allowed_verbs"), allow_draft=cur["auto_ai_directions"] is True
+        )
+        if cur["auto_ai_directions"] is True:
+            cur["allowed_verbs"] = sorted({*cur["allowed_verbs"], DRAFT_DIRECTION_VERB})
         if not str(cur["prompt"]).strip():
             cur["prompt"] = DEFAULT_ORCH_PROMPT
         if not str(cur["nudge_template"]).strip():

@@ -44,10 +44,15 @@ export type ThreadRow =
   | {
       type: "nudged";
       objectiveKey: string | null;
-      /** `ai_draft`: an AI-drafted direction the operator approved (#983 P3). */
-      source: "direction" | "default_nudge" | "ai_draft" | null;
+      /** `ai_draft`: an AI-drafted direction the operator approved (#983 P3).
+       *  `ai_auto`: one the opt-in sent with nobody reading it (#983 P4). The two are separate
+       *  values, never one flag on top of `ai_draft`, because they are different events: the
+       *  operator read one and did not read the other. */
+      source: "direction" | "default_nudge" | "ai_draft" | "ai_auto" | null;
       /** Verbatim, exactly as the server recorded what was typed. */
       text: string;
+      /** The model's self-reported confidence, for an autonomously sent direction only. */
+      confidence?: number;
     }
   /** A supervisor nudge that was not typed, with the server's reason (#983). `draft` marks an
    *  AI-drafted direction that was dismissed, replaced by an edit, or went stale (P3). */
@@ -61,6 +66,13 @@ function str(meta: Record<string, unknown> | null, key: string): string | null {
 
 function text(e: MissionEvent): string | null {
   return typeof e.text === "string" && e.text.trim() ? e.text : null;
+}
+
+/** A finite number from `meta`, or null. `typeof NaN === "number"`, so the finite test is the
+ *  point: a confidence the server could not write properly must not render as "NaN%". */
+function num(meta: Record<string, unknown> | null, key: string): number | null {
+  const v = meta?.[key];
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
 /** `dispatching -> failed: detail` is how the settlement spells its text. The chips already say the
@@ -199,12 +211,19 @@ export function threadRow(e: MissionEvent): ThreadRow {
     const objectiveKey = str(meta, "objective_key");
     if (str(meta, "stage") === "delivered") {
       const src = str(meta, "text_source");
+      // `ai_auto` is read from `text_source`, which the server mints from the RECORDED `sent_by` —
+      // so a row keeps saying it was sent unreviewed however the toggle stands when it is drawn.
+      const source =
+        src === "direction" || src === "default_nudge" || src === "ai_draft" || src === "ai_auto"
+          ? src
+          : null;
+      const confidence = num(meta, "confidence");
       return {
         type: "nudged",
         objectiveKey,
-        source:
-          src === "direction" || src === "default_nudge" || src === "ai_draft" ? src : null,
+        source,
         text: typeof e.text === "string" ? e.text : "",
+        ...(source === "ai_auto" && confidence !== null ? { confidence } : {}),
       };
     }
     const reason = (text(e) ?? "")

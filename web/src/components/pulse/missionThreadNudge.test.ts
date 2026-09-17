@@ -156,6 +156,49 @@ describe("an AI-drafted direction (#983 P3)", () => {
   });
 });
 
+describe("an autonomously sent AI direction (#983 P4)", () => {
+  const AUTO = {
+    source: "supervisor",
+    objective_key: "review",
+    episode: 1,
+    delivered: true,
+    text_source: "ai_auto",
+    auto: true,
+    digest: null,
+    stage: "delivered",
+  };
+
+  test("is its OWN source, carrying the confidence — not a flag on the operator-sent one", () => {
+    expect(threadRow(ev("action", TYPED, { ...AUTO, confidence: 0.97 }))).toEqual({
+      type: "nudged",
+      objectiveKey: "review",
+      source: "ai_auto",
+      text: TYPED,
+      confidence: 0.97,
+    });
+  });
+
+  test("a confidence that is not a finite number is left off rather than rendered", () => {
+    // `typeof NaN === "number"`, so the finite test is what stops the row reading "NaN".
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, "0.9", null]) {
+      expect(threadRow(ev("action", TYPED, { ...AUTO, confidence: bad }))).toEqual({
+        type: "nudged",
+        objectiveKey: "review",
+        source: "ai_auto",
+        text: TYPED,
+      });
+    }
+  });
+
+  test("a draft the OPERATOR sent never carries a confidence, even if one is on the event", () => {
+    expect(
+      threadRow(
+        ev("action", TYPED, { ...AUTO, text_source: "ai_draft", auto: undefined, confidence: 0.97 }),
+      ),
+    ).toEqual({ type: "nudged", objectiveKey: "review", source: "ai_draft", text: TYPED });
+  });
+});
+
 describe("what stays as it was", () => {
   test("an ordinary escalation is not a Held row", () => {
     expect(

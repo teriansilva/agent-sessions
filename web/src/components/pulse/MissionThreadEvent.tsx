@@ -265,17 +265,31 @@ function PlanRow({
 
 /** A supervisor nudge that was typed (#983 P2, D4): one compact row naming the objective and whose
  *  words it was, with Show text revealing the delivered snapshot verbatim. */
+/** The one-tap withdrawal of autonomous AI directions (#983 P4), with enough state to tell a save
+ *  that FAILED from one still in flight. This is the control that stops unreviewed sending, so a
+ *  silent failure would leave the operator believing they had turned it off when they had not. */
+export interface AutoOff {
+  turnOff: () => void;
+  busy: boolean;
+  error: string | null;
+}
+
 function NudgedRow({
   event,
   row,
   objective,
+  autoOff = null,
 }: {
   event: MissionEvent;
   row: Extract<ThreadRow, { type: "nudged" }>;
   objective: string;
+  /** Set only while the opt-in is on, so the turn-off sits on the row that proves why you might
+   *  want it (#983 P4). */
+  autoOff?: AutoOff | null;
 }) {
   const [open, setOpen] = useState(false);
   const textId = useId();
+  const auto = row.source === "ai_auto";
   const whose =
     row.source === "direction"
       ? "your direction"
@@ -283,12 +297,16 @@ function NudgedRow({
         ? "your default nudge"
         : row.source === "ai_draft"
           ? "the AI's draft, sent by you"
-          : null;
+          : auto
+            ? "AI-written · sent automatically"
+            : null;
   return (
     <div
       className={t.box}
       role="group"
-      aria-label={`Nudged: ${objective}`}
+      aria-label={
+        auto ? `AI-written, sent automatically: ${objective}` : `Nudged: ${objective}`
+      }
       data-testid="thread-nudged"
       data-source={row.source ?? ""}
     >
@@ -302,6 +320,14 @@ function NudgedRow({
             <>
               <span className={t.sep}>·</span>
               {whose}
+            </>
+          ) : null}
+          {auto && row.confidence !== undefined ? (
+            <>
+              <span className={t.sep}>·</span>
+              <span data-testid="thread-nudged-confidence">
+                confidence {row.confidence.toFixed(2)}
+              </span>
             </>
           ) : null}
         </span>
@@ -321,7 +347,26 @@ function NudgedRow({
             className={open ? t.chevronOpen : t.chevron}
           />
         </button>
+        {/* ONE TAP OUT, on the row that proves why you might want it (#983 P4). Offered only on an
+            autonomously sent row and only while the mode is still on — a historical row from a mode
+            already switched off would offer to turn off something that is already off. */}
+        {auto && autoOff ? (
+          <button
+            type="button"
+            className={t.disclosure}
+            onClick={autoOff.turnOff}
+            disabled={autoOff.busy}
+            data-testid="thread-turn-off-auto"
+          >
+            {autoOff.busy ? "Turning off…" : "Turn off AI-written directions"}
+          </button>
+        ) : null}
       </div>
+      {auto && autoOff?.error ? (
+        <p className={`${t.lineText} ${t.note}`} role="alert" data-testid="thread-turn-off-error">
+          {autoOff.error}
+        </p>
+      ) : null}
       {open ? (
         <pre id={textId} className={d.threadTyped} data-testid="thread-nudged-text">
           {row.text}
@@ -369,6 +414,7 @@ export function MissionThreadEvent({
   projectName = (id) => id,
   objectiveCount = null,
   objectiveTitle = (key) => key ?? "an objective",
+  autoOff = null,
 }: {
   event: MissionEvent;
   /** Set only on the newest failed start of a mission that is still failed. */
@@ -378,6 +424,8 @@ export function MissionThreadEvent({
   objectiveCount?: number | null;
   /** The title of the objective a supervisor nudge was about, from the checklist on screen. */
   objectiveTitle?: (key: string | null) => string;
+  /** Set only while autonomous AI directions are on (#983 P4). */
+  autoOff?: AutoOff | null;
 }) {
   const row = threadRow(event);
   let body;
@@ -469,7 +517,12 @@ export function MissionThreadEvent({
       break;
     case "nudged":
       body = (
-        <NudgedRow event={event} row={row} objective={objectiveTitle(row.objectiveKey)} />
+        <NudgedRow
+          event={event}
+          row={row}
+          objective={objectiveTitle(row.objectiveKey)}
+          autoOff={autoOff}
+        />
       );
       break;
     case "held":
@@ -498,6 +551,7 @@ export function MissionThreadEvents({
   startAgain,
   objectives,
   projectNames,
+  autoOff = null,
 }: {
   events: MissionEvent[];
   mission: Mission | null;
@@ -505,6 +559,8 @@ export function MissionThreadEvents({
   /** The checklist on screen, or null when it could not be read. */
   objectives: MissionObjective[] | null;
   projectNames: Record<string, string>;
+  /** Set only while autonomous AI directions are on (#983 P4). */
+  autoOff?: AutoOff | null;
 }) {
   const latestFailure = latestFailedStartSeq(events);
   let latestPlan: number | null = null;
@@ -531,6 +587,7 @@ export function MissionThreadEvents({
           projectName={projectName}
           objectiveCount={e.seq === latestPlan ? count : null}
           objectiveTitle={objectiveTitle}
+          autoOff={autoOff}
         />
       ))}
     </>

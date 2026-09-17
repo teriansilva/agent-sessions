@@ -12,6 +12,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
+import { useConfig, useConfigRefresh } from "../../app/config";
 import { useSectionState } from "../../app/sectionState";
 import { MissionFilters, type MissionFiltersValue } from "./MissionFilters";
 import { MissionLanding } from "./MissionLanding";
@@ -143,6 +144,34 @@ function MissionBody({
   }) => void;
 }) {
   const d = useMissionDetail(missionId);
+  // THE OPT-IN AND ITS ONE-TAP EXIT (#983 P4). The thread is where an autonomous send becomes
+  // visible, so the turn-off is offered on the row that proves why you might want it. It is a
+  // pref write, and `refreshConfig` is what makes the thread row and the draft card stop claiming
+  // the mode is on the moment it is not.
+  const orchBlock = useConfig()?.orchestrator;
+  const refreshConfig = useConfigRefresh();
+  const [turnOffBusy, setTurnOffBusy] = useState(false);
+  const [turnOffError, setTurnOffError] = useState<string | null>(null);
+  const turnOffAuto = useCallback(() => {
+    setTurnOffBusy(true);
+    setTurnOffError(null);
+    void api
+      .setPrefs({ orchestrator: { auto_ai_directions: false } })
+      .then(() => {
+        refreshConfig();
+      })
+      .catch((e: unknown) => {
+        // A SWALLOWED FAILURE HERE IS THE WORST KIND (#983 P4 review). This is the control that
+        // stops unreviewed sending, and a save that quietly failed is indistinguishable from one
+        // that worked — the operator walks away believing the mode is off while it is still on.
+        setTurnOffError(
+          e instanceof ApiError
+            ? e.message
+            : "Couldn’t turn it off — please try again.",
+        );
+      })
+      .finally(() => setTurnOffBusy(false));
+  }, [refreshConfig]);
   const [revealObjectives, setRevealObjectives] = useState(0);
   const showObjectives = () => {
     onDetails();
@@ -734,6 +763,11 @@ function MissionBody({
                 startAgain={startAgain}
                 objectives={d.objectivesFailed ? null : d.objectives}
                 projectNames={projectNames}
+                autoOff={
+                  orchBlock?.auto_ai_directions
+                    ? { turnOff: turnOffAuto, busy: turnOffBusy, error: turnOffError }
+                    : null
+                }
               />
             )}
           </div>

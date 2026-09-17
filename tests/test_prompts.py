@@ -98,7 +98,9 @@ EXPECTED_DEFAULT_SHA = {
     "chat_route": "35bb285bc0ad1005",
     "chat_instruct": "eea6dcf1ca69e6f3",
     # #983 P3: the optional `draft` field, the direction flag and the checked facts per objective.
-    "mission_supervisor": "e2ab7ef004f0f6b3",
+    # Re-pinned by #983 P4: the contract gained `draft.confidence`, and the draft rule now says
+    # plainly that an opted-in operator has a draft typed with nobody reading it first.
+    "mission_supervisor": "b13a71453329dd3b",
     "mission_plan": "a4d0cb1003a79e45",
 }
 

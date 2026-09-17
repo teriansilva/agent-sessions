@@ -46,7 +46,9 @@ export function DraftDirection({
           {view.objective}
         </span>
         <span className={d.badge} data-testid="draft-waits">
-          waits for your tap
+          {view.autoThreshold === null
+            ? "waits for your tap"
+            : `sent on its own at ${view.autoThreshold.toFixed(2)}+`}
         </span>
       </div>
       <p className={d.why} data-testid="draft-lead">
@@ -100,7 +102,18 @@ export function DraftDirection({
         </div>
       ) : null}
       <p className={d.draftHint} data-testid="draft-hint">
-        Never sent on its own: it waits for your tap.
+        {/* THE COPY FOLLOWS THE PREF (#983 P4). With the opt-in off — the default — this is P3's
+            sentence, unchanged. With it on, "never sent on its own" would be the most misleading
+            line in the app, so the card says plainly what the operator turned on. */}
+        {view.autoThreshold === null ? (
+          "Never sent on its own: it waits for your tap."
+        ) : (
+          <>
+            You turned on AI-written directions, so a draft the AI rates{" "}
+            <b>{view.autoThreshold.toFixed(2)} or higher</b> is sent on its own, with nobody
+            reading it first. Below that it waits for your tap.
+          </>
+        )}
         {view.canEdit ? (
           <>
             {" "}

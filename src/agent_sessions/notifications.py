@@ -26,6 +26,7 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -97,17 +98,117 @@ def assert_pushable_endpoint(endpoint: str) -> None:
         raise ValueError(str(e)) from None
 
 
-def _read(path: Path) -> list[dict]:
+#: How many announcement tombstones the store keeps, newest last. A tombstone only has to outlive
+#: the ledger row that could drive a repair, and the ledger keeps `HISTORY_MAX` (500) terminal rows
+#: — so this is ample, and it is what stops the set growing without bound on a long-lived install.
+ANNOUNCED_MAX = 1000
+
+#: How many reclamation candidates one insert may try to converge. Bounds the work a single
+#: announcement does while holding this store's lock: without it, a store whose receipts are all
+#: failing would attempt the whole list on every write.
+RECLAIM_ATTEMPTS = 8
+
+
+def _load(path: Path) -> tuple[list[dict], list[str]]:
+    """``(rows, announced)`` from either document shape.
+
+    The store was a bare JSON list and still is whenever there is nothing to remember. It becomes
+    ``{"rows": [...], "announced": [...]}`` only once an announcement tombstone exists, so the
+    push-subscriptions file — which shares these helpers — and every notifications file written
+    before #983 P4 keep exactly the bytes they had.
+    """
     if not path.exists():
-        return []
+        return [], []
     try:
         raw = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
-        return []
-    return [r for r in raw if isinstance(r, dict)] if isinstance(raw, list) else []
+        return [], []
+    if isinstance(raw, list):
+        return [r for r in raw if isinstance(r, dict)], []
+    if isinstance(raw, dict):
+        rows, seen = raw.get("rows"), raw.get("announced")
+        return (
+            [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else [],
+            [a for a in seen if isinstance(a, str)] if isinstance(seen, list) else [],
+        )
+    return [], []
 
 
-def _write(path: Path, rows: list[dict]) -> None:
+def _read(path: Path) -> list[dict]:
+    return _load(path)[0]
+
+
+def _remember(
+    announced: list[str], action_id: str, record: Callable[[str], bool] | None = None
+) -> list[str]:
+    """`announced` plus `action_id`, reclaiming only identities whose receipt is DURABLE.
+
+    **Converge, then reclaim.** Before FIFO drops an identity this tries to make that identity's
+    receipt durable, and refuses to drop it if that fails, moving on to the next candidate. So the
+    list never loses an identity the authority cannot vouch for, and pressure on the list actively
+    repairs receipts instead of silently discarding the only record of an announcement.
+
+    That is stronger than the plain FIFO it replaces, and the difference is reachable with a
+    perfectly healthy store (#983 P4, Hermes 4908). The intervening announcements need not be new
+    autonomous sends: the repair sweep visits every RETAINED delivery once per pass and the
+    compaction pin holds unannounced ones beyond ordinary retention, so an earlier bell-store
+    outage supplies a backlog big enough to roll an identity out after a single transient receipt
+    failure — even though the writer recovered immediately afterwards.
+
+    The incoming identity is appended BEFORE any reclamation runs and is never itself a candidate,
+    which is what stops a full set of unreclaimable entries evicting the very row being written.
+
+    **When the receipt store is durably unwritable the list GROWS past its cap**, by one short
+    action id per autonomous send, and logs once per cap's worth. That is the deliberate trade:
+    slow, bounded-by-traffic memory growth in a broken-store scenario is better than re-announcing
+    work the operator has dismissed. Nothing is ever dropped to stay under the cap.
+    """
+    if action_id not in announced:
+        announced = [*announced, action_id]
+    if len(announced) <= ANNOUNCED_MAX or record is None:
+        return announced
+    over = len(announced) - ANNOUNCED_MAX
+    drop: set[str] = set()
+    attempts = 0
+    for candidate in announced:  # oldest first; the incoming id is newest and so never reached
+        if len(drop) >= over or attempts >= RECLAIM_ATTEMPTS:
+            break
+        if candidate == action_id:
+            continue
+        attempts += 1
+        try:
+            durable = record(candidate)
+        except Exception:  # noqa: BLE001 — unverifiable is not durable
+            durable = False
+        if durable:
+            drop.add(candidate)
+    if not drop and len(announced) % ANNOUNCED_MAX == 0:
+        log.warning(
+            "notifications: %d announcement identities are held because their receipts are not "
+            "durable; the bell's dedupe list is growing past its %d cap",
+            len(announced),
+            ANNOUNCED_MAX,
+        )
+    return [a for a in announced if a not in drop]
+
+
+def _converge(action_id: str, after: Callable[[], None] | None) -> None:
+    """Write the caller's durable receipt. Called with this store's lock HELD.
+
+    Only ever AFTER the document carrying the row and its tombstone is on disk — the receipt is
+    never written first, which is what stops a failure there losing the announcement outright. A
+    tombstone hit runs this too, so a receipt whose first write failed is repaired on any later
+    announcement of the same action and the compaction pin then releases.
+    """
+    if after is None:
+        return
+    try:
+        after()
+    except Exception:  # noqa: BLE001 — still owed; a later announcement retries it
+        log.debug("notifications: the announcement receipt did not converge", exc_info=True)
+
+
+def _write(path: Path, rows: list[dict], *, announced: list[str] | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     # Unique per writer: a shared ".tmp" lets one writer's os.replace unlink the file
     # another is still writing into. The lock above makes this belt-and-braces, but the
@@ -119,9 +220,20 @@ def _write(path: Path, rows: list[dict]) -> None:
     # document — `_read` then fails to parse it and returns `[]`, so the bell silently empties
     # while every caller was told the write succeeded. `BufferedWriter.write` writes everything
     # or raises, which is the property this needs (#839 review).
+    # THE TOMBSTONES RIDE IN THIS SAME DOCUMENT, so the row and the dedupe identity reach disk in
+    # ONE `os.replace` (#983 P4 review). They were two commits in two stores before, which no lock
+    # can make atomic: the row landed, the receipt failed or the process died, `dismiss` deleted the
+    # row — the only evidence — and the next repair announced it again as new unread activity.
+    #
+    # `announced=None` means PRESERVE what is on disk, which is what every caller that is editing
+    # rows wants; a bare list is written whenever there is nothing to remember, so the shared
+    # subscriptions file and every pre-P4 store keep their exact shape.
+    if announced is None:
+        announced = _load(path)[1]
+    doc: object = {"rows": rows, "announced": announced} if announced else rows
     try:
         with os.fdopen(fd, "wb", closefd=True) as fh:
-            fh.write(json.dumps(rows, indent=2, sort_keys=True).encode())
+            fh.write(json.dumps(doc, indent=2, sort_keys=True).encode())
             fh.flush()
             os.fsync(fh.fileno())
     except BaseException:
@@ -146,7 +258,11 @@ def add(
     reason: str = "",
     action_id: str = "",
     escalation: bool = False,
+    auto_direction: bool = False,
     activity_at: float | None = None,
+    recorded: Callable[[], bool] | None = None,
+    after: Callable[[], None] | None = None,
+    record: Callable[[str], bool] | None = None,
     path: Path | None = None,
 ) -> dict | None:
     """Record one notification, or return ``None`` when an equivalent one is already pending.
@@ -156,7 +272,39 @@ def add(
     this signature."""
     p = path or _notifications_path()
     with _locked(p):
-        rows = _read(p)
+        rows, announced = _load(p)
+        # THE DEDUPE IDENTITY IS THIS STORE'S OWN, AND IT IS WRITTEN WITH THE ROW (#983 P4 review).
+        #
+        # Read inside the lock, so a lagging announcer cannot re-announce what a peer has already
+        # committed; and written in the SAME `_write` as the row, so a failure or a crash can never
+        # leave the row present and the identity absent. That torn state was the defect: `dismiss`
+        # is a DELETE and `_evict` drops at the cap, so losing the identity meant the next repair
+        # announced a delivery the operator had already cleared, as new unread activity.
+        #
+        # TWO RECORDS, ONE AUTHORITY, AND THEY ANSWER DIFFERENT HALVES OF THE SAME QUESTION.
+        #
+        # `recorded` is the caller's DURABLE receipt: unbounded, and the authority. The tombstone
+        # covers the one window it cannot — the bell row has landed and the receipt has not, which
+        # no lock can make atomic across two stores. Outside that window an evicted tombstone
+        # simply falls back to the receipt, which is what stops reclamation being load-bearing.
+        #
+        # Both are read INSIDE this lock, so a lagging announcer cannot act on a stale answer. That
+        # is notifications→missions, the direction `_converge` already takes when it writes the
+        # receipt from here, so it adds no lock-order edge. (The compaction pin reads the receipt
+        # rather than this store precisely because ITS direction is the opposite one.)
+        #
+        # A TOMBSTONE HIT CONVERGES, it does not merely suppress: a receipt whose first write
+        # failed is repaired here, and the compaction pin then releases.
+        if auto_direction and action_id:
+            if action_id in announced:
+                _converge(action_id, after)
+                return None
+            try:
+                if recorded is not None and recorded():
+                    return None
+            except Exception:  # noqa: BLE001 — an unreadable receipt is not a licence to re-announce
+                log.debug("notifications: could not read the announcement receipt", exc_info=True)
+                return None
         # Announce an unresolved situation ONCE — but only for escalations. The orchestrator's
         # only dedupe is "at most one
         # LIVE action per session"; an escalation nobody acts on expires, the session reads as
@@ -172,6 +320,30 @@ def add(
         # Scoped to escalations because `notify == "all"` also announces autonomous actions, and
         # collapsing those would stop the operator seeing what was done on their behalf — which
         # is the entire reason that mode exists.
+        # AN AUTONOMOUSLY SENT AI-WRITTEN DIRECTION (#983 P4), deduped BY ACTION ID.
+        #
+        # Its own announcing class, and never `escalation`: an escalation means "you need to decide
+        # something" and enrols the row in the decision badge, while this is the opposite report —
+        # "this was already done on your behalf, with nobody reading it". It still announces,
+        # because an unreviewed write into a permission-bypassed agent is the one thing this mode
+        # owes the operator a live signal for.
+        #
+        # The identity is the ACTION, not the session or the situation: one send, one row. Nothing
+        # model-authored is in the key (the title is server-built and the draft never reaches here),
+        # so the #760 failure — a re-worded title defeating the equivalence test — cannot recur.
+        # Scoped to this class on BOTH sides, exactly like the escalation rule below: the same
+        # action already has a proposal row under `notify: all`, and that is a different event, so
+        # it must neither suppress this nor be suppressed by it. This is what lets the delivery and
+        # the sweep's repair both call `add` freely — whichever runs first announces, the other
+        # finds the row and returns `None`.
+        if auto_direction and action_id:
+            for r in rows:
+                if r.get("auto_direction") is True and r.get("action_id") == action_id:
+                    # Already on the list, which is just as announced — so the tombstone is laid
+                    # here too, or a sweep would keep retrying an announcement that exists.
+                    _write(p, rows, announced=_remember(announced, action_id, record))
+                    _converge(action_id, after)
+                    return None
         if escalation:
             for r in rows:
                 # BOTH sides must be escalations, and the stored row must SAY so. Gating only
@@ -250,10 +422,24 @@ def add(
             # Durable provenance: equivalence is escalation-to-escalation only, and a row has
             # to carry what it was for that to be checkable on the next pass.
             "escalation": bool(escalation),
+            # Durable provenance for the class above, for the same reason `escalation` carries it:
+            # the equivalence test is class-to-class, so a row has to say what it was.
+            "auto_direction": bool(auto_direction),
             "activity_at": activity_at if isinstance(activity_at, int | float) else None,
         }
         rows.append(rec)
-        _write(p, _evict(rows))
+        kept = _evict(rows)
+        if auto_direction and action_id:
+            # ONE WRITE, carrying the row and its tombstone, so a failure or a crash can never
+            # leave the row present and the identity absent. The tombstone is invisible to the
+            # bell — it is not in `rows`, so neither `dismiss` nor `_evict` can reach it — and it
+            # only has to survive until `_converge` makes the durable receipt the record.
+            _write(p, kept, announced=_remember(announced, action_id, record))
+            _converge(action_id, after)
+            return rec
+        _write(p, kept)
+        if after is not None:
+            after()
         return rec
 
 

@@ -720,8 +720,15 @@ def test_the_v28_step_adds_both_columns_to_a_v27_shape_and_converges_when_rerun(
         con.close()
 
 
-def test_a_FRESH_store_has_both_columns_and_the_ladder_reaches_28(work):
-    """Fresh installs are built from the base DDL, not the ladder — so both have to carry them."""
+def test_a_FRESH_store_has_both_columns_and_the_ladder_reaches_the_current_version(work):
+    """Fresh installs are built from the base DDL, not the ladder — so both have to carry them.
+
+    The version this lands on is deliberately NOT a literal. #983 P4 added v29 after this suite was
+    written, so pinning 28 asserted "no later migration exists" — which is not what this test is
+    about, and is a tripwire every future migration would have to come back and edit. Spelled the
+    way the other schema pins are (`test_missions.py`, `test_mission_plan_intent.py`,
+    `test_mission_directions.py`): the subject is that the ladder CONVERGES, columns and all.
+    """
     missions.list_missions()
     path = work.parent / "m.db"
     con = sqlite3.connect(path)
@@ -740,7 +747,7 @@ def test_a_FRESH_store_has_both_columns_and_the_ladder_reaches_28(work):
         version = con.execute("PRAGMA user_version").fetchone()[0]
     finally:
         con.close()
-    assert version == missions.SCHEMA_VERSION == 28
+    assert version == missions.SCHEMA_VERSION
 
 
 # ---- #994 review 1 ---------------------------------------------------------------------------
