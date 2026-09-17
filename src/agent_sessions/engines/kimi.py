@@ -19,7 +19,10 @@ Two consequences shape this provider:
   subtly-different resolver (#720).
 - **Transcript lives in ``agents/main/wire.jsonl``** — a loop-event stream parsed by
   ``transcript._kimi_turns_from_wire`` (#720). ``state.json`` still supplies the sidebar title /
-  recency without touching the transcript.
+  recency without touching the transcript. ``state.json`` itself comes in two schemas that both
+  exist in a live store (#1030): v1 (kimi ≤0.42) with ``workDir`` + ISO timestamps, and v2
+  (kimi 0.43.1+, which self-updates in place) with ``cwd`` + epoch-millisecond timestamps.
+  :func:`_meta` reads both; a session we can't place yields no row, as before.
 
 **Read-only + fail-soft**, like every non-Claude engine: a parse/IO error skips one row and never
 the whole list, and nothing here ever writes Kimi's store — archive rides the engine-agnostic
@@ -30,6 +33,7 @@ sessions launch under a placeholder and reconcile afterwards, the codex/antigrav
 from __future__ import annotations
 
 import json
+import math
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -55,6 +59,29 @@ def _iso_to_epoch(value: object) -> float:
         return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
     except ValueError:
         return 0.0
+
+
+def _state_ts_to_epoch(value: object) -> float:
+    """One ``state.json`` timestamp → epoch seconds, or ``0.0`` (→ the caller's filesystem
+    fallback).
+
+    Kimi writes two shapes here and BOTH exist in a live store (#1030):
+
+    - v1 (≤0.42): ISO-8601 strings — see :func:`_iso_to_epoch`.
+    - v2 (0.43.1+): finite epoch **milliseconds** as a JSON number.
+
+    Booleans are rejected before the numeric branch even though ``bool`` subclasses ``int`` —
+    ``True`` is not a timestamp. Anything malformed (wrong type, non-finite, ≤0) returns
+    ``0.0`` so the ``or st.st_mtime`` / ``or fs_created_at`` fallback in :func:`_meta` stays
+    in charge rather than a bogus value sneaking through.
+    """
+    if isinstance(value, bool):
+        return 0.0
+    if isinstance(value, int | float):
+        if not math.isfinite(value) or value <= 0:
+            return 0.0
+        return value / 1000.0
+    return _iso_to_epoch(value)
 
 
 # --- store reading (module-level + home-injectable) -----------------------------------------
@@ -128,9 +155,20 @@ def _walk_session_dirs(home: Path | None = None) -> dict[str, Path]:
 def _meta(session_dir: Path) -> tuple[str, str, float, float] | None:
     """``(work_dir, title, updated_at, created_at)`` from one session's ``state.json``.
 
-    Returns ``None`` when the session has no usable ``workDir``: cwd is both the launch dir and the
-    open-path allowlist key, so a session we can't place yields **no row** rather than a bogus
+    Returns ``None`` when the session has no usable working dir: cwd is both the launch dir and
+    the open-path allowlist key, so a session we can't place yields **no row** rather than a bogus
     empty-cwd one (the rule codex/gemini/antigravity already follow).
+
+    Two ``state.json`` schemas are read here and BOTH exist in a live store (#1030) — v1
+    (kimi ≤0.42) and v2 (kimi 0.43.1+, which renamed the working-dir field and switched the
+    timestamps to epoch milliseconds):
+
+    - working dir: v2 ``cwd`` wins when it is a non-empty string, v1 ``workDir`` is the
+      fallback (and the only field for old sessions). Precedence is defined (the field the
+      current writer maintains) and pinned by test, so a transitional writer carrying both
+      can never flip the row between scans.
+    - timestamps: :func:`_state_ts_to_epoch` handles both shapes; anything malformed falls
+      back to the filesystem (``st_mtime`` / ``fs_created_at``) as before.
 
     Timestamps come from Kimi's own ``createdAt``/``updatedAt`` rather than file mtimes — they
     survive a copy of the store and don't get bumped by unrelated writes. Both degrade to the
@@ -145,8 +183,16 @@ def _meta(session_dir: Path) -> tuple[str, str, float, float] | None:
         return None
     if not isinstance(state, dict):
         return None
-    work = state.get("workDir")
-    if not isinstance(work, str) or not work:
+
+    def _work_dir(*keys: str) -> str | None:
+        for key in keys:
+            val = state.get(key)
+            if isinstance(val, str) and val:
+                return val
+        return None
+
+    work = _work_dir("cwd", "workDir")
+    if work is None:
         return None
     raw_title = state.get("title")
     # Kimi seeds every session with "New Session" and only replaces it once it has something to
@@ -154,8 +200,8 @@ def _meta(session_dir: Path) -> tuple[str, str, float, float] | None:
     title = (
         raw_title.strip() if isinstance(raw_title, str) and raw_title.strip() != _UNTITLED else ""
     )
-    updated = _iso_to_epoch(state.get("updatedAt")) or st.st_mtime
-    created = _iso_to_epoch(state.get("createdAt")) or fs_created_at(st)
+    updated = _state_ts_to_epoch(state.get("updatedAt")) or st.st_mtime
+    created = _state_ts_to_epoch(state.get("createdAt")) or fs_created_at(st)
     return work, title, updated, created
 
 
@@ -230,8 +276,8 @@ class KimiProvider:
         return out
 
     def _row(self, sid: str, session_dir: Path) -> Session | None:
-        """One row from one session dir's ``state.json``, or ``None`` when it has no usable
-        ``workDir``. Shared by ``scan`` and ``lookup`` (#991)."""
+        """One row from one session dir's ``state.json`` (v1 or v2), or ``None`` when it has no
+        usable working dir. Shared by ``scan`` and ``lookup`` (#991)."""
         meta = _meta(session_dir)
         if meta is None:
             return None
@@ -275,13 +321,14 @@ class KimiProvider:
     # --- new-session reconciliation ---------------------------------------------------------
 
     def _session_ids_in_cwd(self, cwd: str) -> set[str] | None:
-        """Session ids whose ``workDir`` == ``cwd``, or ``None`` if the store read FAILED.
+        """Session ids whose working dir == ``cwd``, or ``None`` if the store read FAILED.
 
         A missing store is a valid empty baseline (fresh Kimi) → ``set()``, not a failure. Scoped
         by cwd so a session created concurrently in another project can't be adopted as ours. The
-        index is authoritative for ``workDir`` here; dirs found only by the walk are resolved via
-        ``state.json``, and any session whose workDir isn't readable yet is excluded so it stays
-        *pending* rather than being misattributed.
+        index is authoritative for ``workDir`` here (v2 kept the field in ``session_index.jsonl``
+        even though ``state.json`` renamed it to ``cwd``); dirs found only by the walk are
+        resolved via :func:`_meta` (v1 or v2), and any session whose working dir isn't readable
+        yet is excluded so it stays *pending* rather than being misattributed.
         """
         root = base._kimi_dir()
         if not root.is_dir():

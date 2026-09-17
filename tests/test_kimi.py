@@ -7,11 +7,17 @@ The synthetic store reproduces Kimi Code 0.27.0's real on-disk layout, captured 
 
 Kimi's native id is ``session_<uuid>`` — NOT a bare UUID — so the id-pattern gate gets its own
 test: reusing the Claude UUID regex would make ``parse_key`` reject every real session.
+
+Kimi 0.43.1 (which self-updates in place) switched ``state.json`` to a v2 schema (#1030):
+``cwd`` instead of ``workDir`` and finite epoch-millisecond timestamps instead of ISO strings.
+Both schemas coexist in a live store, so the v1/v2 fixtures here are written side by side on
+purpose — the mixed-store tests are the regression gate for the sidebar-vanishing bug.
 """
 
 from __future__ import annotations
 
 import json
+import math
 
 import pytest
 
@@ -19,29 +25,59 @@ from agent_sessions import engines, metadata
 
 _SID = "session_25f66293-9603-46af-bbf3-bd79ef84ca54"
 _SID2 = "session_aaaabbbb-cccc-dddd-eeee-ffff00001111"
+_SID3 = "session_b5470439-98ff-4212-a57e-d730681e1ad9"
+
+# Epoch ms constants mirroring the v1 fixture's ISO stamps so v1 and v2 rows assert the SAME
+# converted seconds — one number, two encodings.
+_CREATED_MS = 1784470743061  # == 2026-07-19T14:19:03.061Z
+_UPDATED_MS = 1784474404500  # == 2026-07-19T15:20:04.500Z
 
 
-def _write_session(root, sid, cwd, *, title="New Session", bucket="wd_proj_deadbeef", state=True):
+def _write_session(
+    root,
+    sid,
+    cwd,
+    *,
+    title="New Session",
+    bucket="wd_proj_deadbeef",
+    state=True,
+    v2=False,
+    extra_state=None,
+):
     """One session dir under the per-workdir bucket. ``state=False`` omits ``state.json`` so the
-    'session dir exists but is unreadable' path can be exercised."""
+    'session dir exists but is unreadable' path can be exercised. ``v2=True`` writes the kimi
+    0.43.1 schema (#1030): ``cwd`` + epoch-ms timestamps; ``extra_state`` overrides/extends the
+    payload for precedence and malformed-value cases."""
     sdir = root / "sessions" / bucket / sid
     sdir.mkdir(parents=True, exist_ok=True)
     (sdir / "agents" / "main").mkdir(parents=True, exist_ok=True)
     if state:
-        (sdir / "state.json").write_text(
-            json.dumps(
-                {
-                    "createdAt": "2026-07-19T14:19:03.061Z",
-                    "updatedAt": "2026-07-19T15:20:04.500Z",
-                    "title": title,
-                    "isCustomTitle": title != "New Session",
-                    "agents": {"main": {"homedir": str(sdir / "agents" / "main")}},
-                    "custom": {},
-                    "workDir": cwd,
-                }
-            ),
-            encoding="utf-8",
-        )
+        if v2:
+            payload = {
+                "id": sid,
+                "version": 2,
+                "cwd": cwd,
+                "createdAt": _CREATED_MS,
+                "updatedAt": _UPDATED_MS,
+                "title": title,
+                "isCustomTitle": title != "New Session",
+                "archived": False,
+                "agents": {"main": {"homedir": str(sdir / "agents" / "main")}},
+                "custom": {},
+            }
+        else:
+            payload = {
+                "createdAt": "2026-07-19T14:19:03.061Z",
+                "updatedAt": "2026-07-19T15:20:04.500Z",
+                "title": title,
+                "isCustomTitle": title != "New Session",
+                "agents": {"main": {"homedir": str(sdir / "agents" / "main")}},
+                "custom": {},
+                "workDir": cwd,
+            }
+        if extra_state:
+            payload.update(extra_state)
+        (sdir / "state.json").write_text(json.dumps(payload), encoding="utf-8")
     return sdir
 
 
@@ -146,6 +182,169 @@ def test_scan_blanks_kimis_placeholder_title(kimi_home):
 def test_scan_missing_store_is_empty_not_error(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_SESSIONS_KIMI_DIR", str(tmp_path / "nope"))
     assert _provider().scan() == []
+
+
+# --- v2 state.json (#1030: kimi 0.43.1 renamed workDir→cwd, ISO→epoch-ms) ----------------------
+
+
+def test_scan_reads_v2_state_json(kimi_home):
+    """A 0.43.1-style session (``cwd`` + epoch-ms timestamps, no ``workDir``) lists with its real
+    cwd, title and Kimi's own timestamps — ms converted to seconds, not mtime fallbacks."""
+    _write_session(kimi_home, _SID3, "/home/u/proj", title="DeepSeek V4.1 Flash numbers", v2=True)
+    (row,) = _provider().scan()
+    assert row.engine == "kimi"
+    assert row.uuid == _SID3
+    assert row.cwd == "/home/u/proj"
+    assert row.first_user_message == "DeepSeek V4.1 Flash numbers"
+    # Values asserted, not just presence: v2 ms → seconds matches the v1 fixture's seconds.
+    assert row.created_at == pytest.approx(1784470743.061, abs=0.001)
+    assert row.last_mtime == pytest.approx(1784474404.5, abs=0.001)
+
+
+def test_scan_lists_mixed_v1_and_v2_store(kimi_home):
+    """The live-store condition after the 0.43.1 self-update: old sessions in the v1 schema, new
+    ones in v2, same bucket. Both must list — a v2-only reader dropping v1 rows (or the reverse,
+    the original bug) fails here."""
+    _write_session(kimi_home, _SID, "/home/u/proj")  # v1
+    _write_session(kimi_home, _SID3, "/home/u/proj", v2=True)  # v2, same bucket
+    rows = {r.uuid: r for r in _provider().scan()}
+    assert sorted(rows) == sorted([_SID, _SID3])
+    assert rows[_SID].cwd == "/home/u/proj"
+    assert rows[_SID3].cwd == "/home/u/proj"
+    assert rows[_SID].created_at == pytest.approx(1784470743.061, abs=1)
+    assert rows[_SID3].created_at == pytest.approx(1784470743.061, abs=0.001)
+
+
+def test_v2_cwd_takes_precedence_over_work_dir(kimi_home):
+    """Precedence is defined and pinned: when a transitional writer carries both fields, the v2
+    ``cwd`` (the field the current writer maintains) wins."""
+    _write_session(
+        kimi_home,
+        _SID3,
+        "/home/u/proj",
+        v2=True,
+        extra_state={"workDir": "/home/u/stale"},
+    )
+    (row,) = _provider().scan()
+    assert row.cwd == "/home/u/proj"
+
+
+def test_v2_empty_cwd_falls_back_to_work_dir(kimi_home):
+    """An empty/absent ``cwd`` degrades to v1's ``workDir`` — an old field beats no field."""
+    _write_session(
+        kimi_home, _SID3, "", v2=True, extra_state={"cwd": "", "workDir": "/home/u/proj"}
+    )
+    (row,) = _provider().scan()
+    assert row.cwd == "/home/u/proj"
+
+
+def test_v2_no_usable_working_dir_yields_no_row(kimi_home):
+    """Neither field usable → no row (the can't-place rule, same as v1)."""
+    _write_session(kimi_home, _SID3, "", v2=True, extra_state={"cwd": "", "workDir": ""})
+    assert _provider().scan() == []
+    _write_session(kimi_home, _SID, "/home/u/other", v2=True, extra_state={"cwd": 42})
+    assert _provider().scan() == []
+
+
+def test_lookup_finds_v2_session(kimi_home):
+    """The #1030 404 repro as a unit test: the single-session lookup (what the open tab polls)
+    must resolve a v2 session, not just the list scan."""
+    _write_session(kimi_home, _SID3, "/home/u/proj", v2=True)
+    row = _provider().lookup(_SID3)
+    assert row is not None
+    assert row.uuid == _SID3
+    assert row.cwd == "/home/u/proj"
+    assert row.created_at == pytest.approx(1784470743.061, abs=0.001)
+
+
+def test_v2_boolean_timestamps_fall_back_to_filesystem(kimi_home):
+    """``bool`` subclasses ``int`` — a ``true`` timestamp must be treated as malformed (→ mtime /
+    birthtime fallback), never converted to 0.001s."""
+    from agent_sessions.scanner import fs_created_at
+
+    sdir = _write_session(
+        kimi_home,
+        _SID3,
+        "/home/u/proj",
+        v2=True,
+        extra_state={"createdAt": True, "updatedAt": True},
+    )
+    st = (sdir / "state.json").stat()
+    (row,) = _provider().scan()
+    assert row.created_at == pytest.approx(fs_created_at(st), abs=1)
+    assert row.last_mtime == pytest.approx(st.st_mtime, abs=1)
+
+
+def test_v2_non_finite_and_non_positive_timestamps_fall_back_to_filesystem(kimi_home):
+    """NaN/Infinity (json round-trips them) and ≤0 numbers are malformed → filesystem fallback."""
+    from agent_sessions.scanner import fs_created_at
+
+    sdir = _write_session(
+        kimi_home,
+        _SID3,
+        "/home/u/proj",
+        v2=True,
+        extra_state={"createdAt": 0, "updatedAt": float("nan")},
+    )
+    st = (sdir / "state.json").stat()
+    (row,) = _provider().scan()
+    assert row.created_at == pytest.approx(fs_created_at(st), abs=1)
+    assert row.last_mtime == pytest.approx(st.st_mtime, abs=1)
+    # Negative is also rejected outright, not divided into a bogus small epoch.
+    sdir2 = _write_session(
+        kimi_home,
+        _SID,
+        "/home/u/other",
+        bucket="wd_other_cafe1234",
+        v2=True,
+        extra_state={"createdAt": -5, "updatedAt": float("inf")},
+    )
+    st2 = (sdir2 / "state.json").stat()
+    rows = {r.uuid: r for r in _provider().scan()}
+    assert rows[_SID].created_at == pytest.approx(fs_created_at(st2), abs=1)
+    assert rows[_SID].last_mtime == pytest.approx(st2.st_mtime, abs=1)
+
+
+def test_state_ts_to_epoch_shapes():
+    """Direct seam contract: v1 ISO strings, v2 finite ms → seconds, booleans and junk → 0.0."""
+    from agent_sessions.engines.kimi import _state_ts_to_epoch
+
+    assert _state_ts_to_epoch("2026-07-19T14:19:03.061Z") == pytest.approx(
+        1784470743.061, abs=0.001
+    )
+    assert _state_ts_to_epoch(_CREATED_MS) == pytest.approx(1784470743.061, abs=0.001)
+    assert _state_ts_to_epoch(_UPDATED_MS) == pytest.approx(1784474404.5, abs=0.001)
+    assert _state_ts_to_epoch(True) == 0.0
+    assert _state_ts_to_epoch(False) == 0.0
+    assert _state_ts_to_epoch(0) == 0.0
+    assert _state_ts_to_epoch(-1) == 0.0
+    assert _state_ts_to_epoch(float("nan")) == 0.0
+    assert _state_ts_to_epoch(float("inf")) == 0.0
+    assert _state_ts_to_epoch(None) == 0.0
+    assert _state_ts_to_epoch("") == 0.0
+    assert _state_ts_to_epoch("not-a-timestamp") == 0.0
+    assert not math.isinf(_state_ts_to_epoch(_UPDATED_MS))
+
+
+def test_reconcile_adopts_v2_session_with_index(kimi_home):
+    """A v2 session present in the index (0.43.1 keeps ``workDir`` there) is adopted by the
+    reconcile diff."""
+    prov = _provider()
+    snap = prov.snapshot_session_ids("/home/u/proj")
+    sdir = _write_session(kimi_home, _SID3, "/home/u/proj", v2=True)
+    _write_index(
+        kimi_home, [{"sessionId": _SID3, "sessionDir": str(sdir), "workDir": "/home/u/proj"}]
+    )
+    assert prov.reconcile_new_session("/home/u/proj", snap) == _SID3
+
+
+def test_reconcile_adopts_v2_session_walk_only(kimi_home):
+    """Index-missing (or the row lost): the walk + v2-tolerant ``_meta`` still adopt the session
+    — the reconcile never stalls on the v2 schema."""
+    prov = _provider()
+    snap = prov.snapshot_session_ids("/home/u/proj")
+    _write_session(kimi_home, _SID3, "/home/u/proj", v2=True)
+    assert prov.reconcile_new_session("/home/u/proj", snap) == _SID3
 
 
 # --- launch argv ------------------------------------------------------------------------------
