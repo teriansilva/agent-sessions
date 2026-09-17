@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { throttleIfAsked } from "./browserTiming";
 import { settingsPath } from "../src/routes/settingsTabs";
 // Pane-head actions are reached wherever HeadActions put them: inline on a wide pane, behind the
 // "…" overflow when folded (#783), or in the single ≤800px "Actions" menu on a phone (#948 P6).
@@ -19,14 +20,20 @@ import { clickHeadAction } from "./headActions";
 // WS stub that RECORDS. `sent` is every frame the client pushed; `count` is how many sockets were
 // ever constructed, which is how a test sees a terminal remount it was supposed to avoid.
 const RECORDING_WS = `
-window.__ws = { count: 0, sent: [] };
+window.__ws = { count: 0, sent: [], trace: [] };
 window.WebSocket = class {
   constructor(url) {
     this.url = url; this.readyState = 0; this.binaryType = "arraybuffer";
     window.__ws.count++;
     setTimeout(() => { this.readyState = 1; this.onopen && this.onopen(); }, 20);
   }
-  send(data) { try { window.__ws.sent.push(JSON.parse(data)); } catch { /* binary */ } }
+  send(data) { try {
+    const frame = JSON.parse(data);
+    window.__ws.sent.push(frame);
+    if (frame.t === "r") window.__ws.trace.push({
+      ...frame, at: performance.now(), size: localStorage.getItem("tr-termsize")
+    });
+  } catch { /* binary */ } }
   close() { this.readyState = 3; this.onclose && this.onclose({ code: 1000 }); }
 };
 `;
@@ -77,6 +84,7 @@ function resizes(page: Page): Promise<number[]> {
 }
 
 test.beforeEach(async ({ page }) => {
+  await throttleIfAsked(page);
   await mockApi(page);
   await page.addInitScript(RECORDING_WS);
 });
@@ -125,15 +133,14 @@ test("bigger text gives it fewer, and the pair is reversible (#859)", async ({
 test("a burst of taps drags the agent through ONE width, not four (#859)", async ({
   page,
 }) => {
+  await page.clock.install();
   // The regression for the risk the issue names: one SIGWINCH per tap is the resize storm
   // #227/#349 exist to coalesce — a repaint-heavy TUI piles those frames into scrollback as
   // duplicated/garbled content. "Columns increased" cannot see this.
   //
-  // The assertion counts DISTINCT widths, not frames. Measured: a single size change already
-  // emits two or three frames at the SAME cols as the row count settles under the
-  // ResizeObserver — pre-existing behaviour, unrelated to this control. What a raw fit()
-  // per tap would produce is four DIFFERENT widths, marching the agent through every
-  // intermediate size. That is the property worth pinning, and it is immune to the settling.
+  // Count width TRANSITIONS, not frames. Row-only settling can repeat the starting width
+  // after the first tap; that is not an intermediate width (#1016). Starting the path at
+  // the original width also catches a regression back to it after a new width was sent.
   //
   // A wide viewport so both actions stay inline in both projects: this test is about the
   // debounce, and the mobile overflow path is covered by the tests above.
@@ -143,6 +150,9 @@ test("a burst of taps drags the agent through ONE width, not four (#859)", async
   await expect
     .poll(async () => (await resizes(page)).length)
     .toBeGreaterThan(0);
+
+  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
+  await page.clock.runFor(250);
 
   // Tag the live xterm node so a remount is detectable — a rebuilt terminal is a different
   // element and loses the tag (and its scrollback with it).
@@ -154,21 +164,22 @@ test("a burst of taps drags the agent through ONE width, not four (#859)", async
   );
   const before = await resizes(page);
 
-  // Four taps inside the 120ms debounce window, dispatched from the page: Playwright's
-  // actionability machinery alone takes longer than the debounce, so a `.click()` loop would
-  // pace the taps apart and test nothing. 25ms is short enough to stay inside the window and
-  // long enough for React to re-render between taps, so each one actually steps.
-  await page.evaluate(async () => {
-    for (let i = 0; i < 4; i++) {
+  // Each tap must apply its real font size, but elapsed host time must not split the
+  // intended burst. A 25ms setTimeout is only a minimum delay on a contended runner (#1016).
+  for (let i = 0; i < 4; i++) {
+    await page.evaluate(() => {
       document
         .querySelector<HTMLButtonElement>(
           'button[aria-label="Smaller terminal text"]',
         )
         ?.click();
-      await new Promise((r) => setTimeout(r, 25));
-    }
-  });
-  await page.waitForTimeout(700); // debounce + settle, with headroom on a loaded runner
+    });
+    await expect(page.locator(".xterm-char-measure-element").first()).toHaveCSS(
+      "font-size", `${12 - i}px`,
+    );
+    await page.clock.runFor(16);
+  }
+  await page.clock.runFor(120);
 
   // Identity FIRST, so the tempting wrong implementation — reaching the refit by adding the
   // size to the socket effect's dep array — fails on the assertion that names what it broke
@@ -185,15 +196,21 @@ test("a burst of taps drags the agent through ONE width, not four (#859)", async
   ).toHaveAttribute("data-e2e-tag", "original");
 
   const added = (await resizes(page)).slice(before.length);
+  const trace = await page.evaluate(
+    () => (window as unknown as { __ws: { trace: unknown[] } }).__ws.trace,
+  );
   expect(added.length, "the burst must reach the pty at all").toBeGreaterThan(
     0,
   );
-  // ONE width. Four would mean every tap refit immediately.
+  const path = [before.at(-1) as number, ...added].filter(
+    (cols, i, all) => i === 0 || cols !== all[i - 1],
+  );
+  // Exactly ONE width change. Immediate refits, or a return to the old width, fail this.
   expect(
-    new Set(added).size,
-    "the agent must not be dragged through every intermediate width",
-  ).toBe(1);
-  expect(added[0]).toBeGreaterThan(before.at(-1) as number);
+    path,
+    `the agent must not be dragged through every intermediate width: ${JSON.stringify(trace)}`,
+  ).toHaveLength(2);
+  expect(path[1]).toBeGreaterThan(path[0]);
   // …and all four taps really landed (13 → 9). Without this, a React batch that collapsed the
   // burst into a single STEP would also show one width and pass while proving nothing.
   expect(

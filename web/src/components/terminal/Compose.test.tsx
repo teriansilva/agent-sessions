@@ -1973,19 +1973,30 @@ test("the Return chip rides the send fence: pressed inside a template's paste→
   const user = userEvent.setup();
   renderCompose();
   const dialog = await openPickerAndFill(user);
-  await user.click(within(dialog).getByRole("button", { name: /^send pr review checklist$/i }));
-  await user.click(screen.getByRole("button", { name: /^return$/i }));
+  // Hold the attachment's delivery window while dispatching the intervening input (#1016).
+  vi.useFakeTimers();
+  await act(async () => {
+    fireEvent.click(within(dialog).getByRole("button", { name: /^send pr review checklist$/i }));
+  });
+  fireEvent.click(screen.getByRole("button", { name: /^return$/i }));
   // Unfixed: the chip's Enter went straight to the pty as the THIRD frame, submitting the paste
   // early and leaving the transaction's own Enter to submit an empty turn.
   expect(sendInput).toHaveBeenCalledTimes(2);
-  await waitFor(() => expect(sendInput).toHaveBeenCalledTimes(4));
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(119);
+  });
+  expect(sendInput).toHaveBeenCalledTimes(2);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1);
+  });
+  expect(sendInput).toHaveBeenCalledTimes(4);
   expect(sendInput.mock.calls.map((c) => c[0])).toEqual([
     KEYSEQ.ctrla + KEYSEQ.ctrlk,
     bracketedPaste("Review PR https://x/1 for the linked issue. /up/shot.png"),
     KEYSEQ.enter,
     KEYSEQ.enter,
   ]);
-  await waitFor(() => expect(api.markTemplateUsed).toHaveBeenCalledTimes(1));
+  expect(api.markTemplateUsed).toHaveBeenCalledTimes(1);
 });
 
 test("a send queued behind a readiness hold is in the sent ring the moment it is accepted, and survives an unmount (#908 round 4)", async () => {
@@ -2053,17 +2064,28 @@ test("a key-bar Up inside a template's paste→Enter window is held until that E
   const user = userEvent.setup();
   renderCompose();
   const dialog = await openPickerAndFill(user);
-  await user.click(within(dialog).getByRole("button", { name: /^send pr review checklist$/i }));
-  await user.click(screen.getByRole("button", { name: /^up$/i }));
+  // Hold the attachment's delivery window while dispatching the intervening input (#1016).
+  vi.useFakeTimers();
+  await act(async () => {
+    fireEvent.click(within(dialog).getByRole("button", { name: /^send pr review checklist$/i }));
+  });
+  fireEvent.click(screen.getByRole("button", { name: /^up$/i }));
   expect(sendInput).toHaveBeenCalledTimes(2); // unfixed: Up went out as the third frame
-  await waitFor(() => expect(sendInput).toHaveBeenCalledTimes(4));
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(119);
+  });
+  expect(sendInput).toHaveBeenCalledTimes(2);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1);
+  });
+  expect(sendInput).toHaveBeenCalledTimes(4);
   expect(sendInput.mock.calls.map((c) => c[0])).toEqual([
     KEYSEQ.ctrla + KEYSEQ.ctrlk,
     bracketedPaste("Review PR https://x/1 for the linked issue. /up/shot.png"),
     KEYSEQ.enter,
     KEYSEQ.up,
   ]);
-  await waitFor(() => expect(api.markTemplateUsed).toHaveBeenCalledTimes(1));
+  expect(api.markTemplateUsed).toHaveBeenCalledTimes(1);
 });
 
 test("a keystroke typed into the terminal is HELD only inside the delivery window, and written after its Enter (#908 round 5)", async () => {
@@ -2074,11 +2096,22 @@ test("a keystroke typed into the terminal is HELD only inside the delivery windo
   expect(ref.current!.deferInput("x")).toBe(false);
   expect(sendInput).not.toHaveBeenCalled();
   const dialog = await openPickerAndFill(user);
-  await user.click(within(dialog).getByRole("button", { name: /^send pr review checklist$/i }));
+  // Hold the attachment's delivery window while dispatching the intervening input (#1016).
+  vi.useFakeTimers();
+  await act(async () => {
+    fireEvent.click(within(dialog).getByRole("button", { name: /^send pr review checklist$/i }));
+  });
   // Inside the window: held.
   expect(ref.current!.deferInput("y")).toBe(true);
   expect(sendInput).toHaveBeenCalledTimes(2);
-  await waitFor(() => expect(sendInput).toHaveBeenCalledTimes(4));
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(119);
+  });
+  expect(sendInput).toHaveBeenCalledTimes(2);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1);
+  });
+  expect(sendInput).toHaveBeenCalledTimes(4);
   expect(sendInput.mock.calls.slice(2).map((c) => c[0])).toEqual([KEYSEQ.enter, "y"]);
   // The window is closed again.
   expect(ref.current!.deferInput("z")).toBe(false);

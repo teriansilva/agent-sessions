@@ -419,12 +419,18 @@ test("a FAILED settlement read is retried on a later detail tick, not lost", asy
   });
 
   const { result } = renderHook(() => useMissionDetail("msn_1"));
-  await waitFor(() => expect(api.mission).toHaveBeenCalled());
+  // A started request has not mounted the pending-state poll yet (#1016). Advancing
+  // its whole budget before that render leaves it active during the later settlement.
+  await waitFor(() =>
+    expect(result.current.mission?.objectives_state).toBe("pending"),
+  );
 
   // Past the bounded fast poll, with the producer still working.
+  const beforeFastPoll = vi.mocked(api.mission).mock.calls.length;
   await act(async () => {
     await vi.advanceTimersByTimeAsync(130_000);
   });
+  expect(api.mission).toHaveBeenCalledTimes(beforeFastPoll + 40);
   expect(result.current.mission?.objectives_state).toBe("pending");
 
   // Now it settles, and the read paired with THAT row fails.

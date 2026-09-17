@@ -6,6 +6,7 @@
 //  3. the topbar/classbar read as distinct surfaces on light (firmer edge, lifted telemetry).
 // Dark is pinned unchanged alongside each light assertion. Runs on the desktop AND mobile projects.
 import { expect, test, type Page } from "@playwright/test";
+import { throttleIfAsked } from "./browserTiming";
 import {
   pushOutput,
   setupBench,
@@ -44,14 +45,18 @@ const surfaceBehindTerminal = (page: Page) =>
 const ANSI_SAMPLE =
   "\r\n\x1b[90mDIM90\x1b[0m \x1b[32mGRN32\x1b[0m \x1b[33mYLW33\x1b[0m \x1b[36mCYN36\x1b[0m\r\n";
 
-const ansiColorOf = (page: Page, marker: string) =>
-  page
-    .locator(".xterm-rows span", { hasText: marker })
-    .first()
-    .evaluate((el) => getComputedStyle(el).color);
+// xterm replaces row spans while painting. A locator assertion re-resolves a detached span.
+const ansiSpan = (page: Page, marker: string) =>
+  page.locator(".xterm-rows span", { hasText: marker }).first();
+
+test.beforeEach(async ({ page }) => {
+  await throttleIfAsked(page);
+});
 
 async function openBench(page: Page, theme: "dark" | "light") {
-  await setupBench(page, { sessions: SESSIONS });
+  // This fixture measures colors; the generic resize repaint would erase its injected sample.
+  // Dedicated terminal-bench tests retain the default wipe behavior and pin resize/history.
+  await setupBench(page, { sessions: SESSIONS, wipeOnResizeChange: false });
   await page.addInitScript((t) => localStorage.setItem("tr-theme", t), theme);
   await page.goto("/s/claude/aaa");
   await expectTerminalShows(page, "HIST claudeaaa END");
@@ -69,10 +74,10 @@ test.describe("light theme (#473)", () => {
     await pushOutput(page, ANSI_SAMPLE);
     await expectTerminalShows(page, "CYN36");
     // LIGHT_ANSI (themes.ts) — pre-fix these rendered xterm's dark-oriented Tango defaults.
-    expect(await ansiColorOf(page, "DIM90")).toBe(hexToRgb("#585f6a"));
-    expect(await ansiColorOf(page, "GRN32")).toBe(hexToRgb("#136f2c"));
-    expect(await ansiColorOf(page, "YLW33")).toBe(hexToRgb("#7d5600"));
-    expect(await ansiColorOf(page, "CYN36")).toBe(hexToRgb("#0e6c7c"));
+    await expect(ansiSpan(page, "DIM90")).toHaveCSS("color", hexToRgb("#585f6a"));
+    await expect(ansiSpan(page, "GRN32")).toHaveCSS("color", hexToRgb("#136f2c"));
+    await expect(ansiSpan(page, "YLW33")).toHaveCSS("color", hexToRgb("#7d5600"));
+    await expect(ansiSpan(page, "CYN36")).toHaveCSS("color", hexToRgb("#0e6c7c"));
   });
 
   test("topbar + classbar read as distinct surfaces", async ({
@@ -111,10 +116,10 @@ test.describe("dark theme stays as-is (#473 sanity)", () => {
     // ANSI = xterm's built-in Tango defaults, now pinned explicitly per theme.
     await pushOutput(page, ANSI_SAMPLE);
     await expectTerminalShows(page, "CYN36");
-    expect(await ansiColorOf(page, "DIM90")).toBe(hexToRgb("#555753"));
-    expect(await ansiColorOf(page, "GRN32")).toBe(hexToRgb("#4e9a06"));
-    expect(await ansiColorOf(page, "YLW33")).toBe(hexToRgb("#c4a000"));
-    expect(await ansiColorOf(page, "CYN36")).toBe(hexToRgb("#06989a"));
+    await expect(ansiSpan(page, "DIM90")).toHaveCSS("color", hexToRgb("#555753"));
+    await expect(ansiSpan(page, "GRN32")).toHaveCSS("color", hexToRgb("#4e9a06"));
+    await expect(ansiSpan(page, "YLW33")).toHaveCSS("color", hexToRgb("#c4a000"));
+    await expect(ansiSpan(page, "CYN36")).toHaveCSS("color", hexToRgb("#06989a"));
     // Chrome keeps the dark frosted look: --line edge, --text-3 tags, 55%/96% fill.
     const topbar = page.locator(".hud-topbar");
     await expect(topbar).toHaveCSS(

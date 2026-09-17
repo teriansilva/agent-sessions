@@ -17,6 +17,10 @@ export default defineConfig({
     },
   },
   test: {
+    // Each CI job shares the host with other checks and live agents (#1016). Vitest's
+    // CPU-count default permits 63 workers here; bound this suite's processes without
+    // changing its deadlines, assertions or retries. The CLI can override for profiling.
+    maxWorkers: 4,
     environment: "jsdom",
     globals: true,
     setupFiles: "./src/test/setup.ts",

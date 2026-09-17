@@ -1,4 +1,5 @@
 import { expect, type Locator, type Page, test, type WebSocketRoute } from "@playwright/test";
+import { throttleIfAsked } from "./browserTiming";
 
 /** The map's window workspace (#208) — the acceptance matrix, in a real browser.
  *
@@ -233,14 +234,6 @@ async function openFirstWindow(page: Page, log: SockLog) {
   await page.waitForTimeout(500);
 }
 
-/** Opt-in CPU throttling for stress runs (`E2E_CPU_THROTTLE=4`); a no-op otherwise (#995). */
-async function throttleIfAsked(page: Page) {
-  const rate = Number(process.env.E2E_CPU_THROTTLE ?? "0");
-  if (!rate) return;
-  const cdp = await page.context().newCDPSession(page);
-  await cdp.send("Emulation.setCPUThrottlingRate", { rate });
-}
-
 /** One-clock resize tracing (#995), on the PAGE's `performance.now()`: every ResizeObserver
  *  callback that observed a window's terminal host, and every resize frame the page sent.
  *  Installed after `mockApp`, so it wraps the WebSocket class `routeWebSocket` placed in the page. */
@@ -284,17 +277,23 @@ const resetTrace = (page: Page) =>
     t.frames.length = 0;
   });
 
-/** Shrink window 1 by `steps` × 10px through its keyboard resize, ONE keydown per animation frame,
- *  dispatched inside the page — so no automation round trip sits between two steps (#995). */
+/** Shrink by real keyboard events while the browser clock is paused. Each DOM layout and
+ * observer delivery must land before advancing 16ms: slow rendering cannot split the burst. */
 async function keyboardResizeBurst(page: Page, steps: number) {
   const grip = win(page, 1).locator("[data-window-resize]");
   await grip.focus();
-  await grip.evaluate(async (el, n) => {
-    for (let i = 0; i < n; i++) {
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  const width = Math.round((await rectOf(win(page, 1))).width);
+  for (let i = 0; i < steps; i++) {
+    const observed = (await readTrace(page)).ro.length;
+    await grip.evaluate((el) => {
       el.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
-    }
-  }, steps);
+    });
+    await expect
+      .poll(async () => Math.round((await rectOf(win(page, 1))).width))
+      .toBe(width - (i + 1) * 10);
+    await expect.poll(async () => (await readTrace(page)).ro.length).toBeGreaterThan(observed);
+    await page.clock.runFor(16);
+  }
 }
 
 /** Wait until a session has sent no resize frame for a while: past the trailing debounce. */
@@ -531,16 +530,20 @@ test.describe("desktop workspace", () => {
   test("a resize burst settles into one trailing refit per debounce window, on the real grid (#227/#349/#995)", async ({
     page,
   }) => {
+    await page.clock.install();
     const log = await mockApp(page);
     await traceResizes(page);
     await openFirstWindow(page, log);
     await throttleIfAsked(page);
+    await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
+    await page.clock.runFor(250);
     const widthBefore = Math.round((await rectOf(win(page, 1))).width);
     await resetTrace(page);
 
     // 720px → the 560px minimum, 10px a step: every step is a real size change, none is clamped.
     const STEPS = 16;
     await keyboardResizeBurst(page, STEPS);
+    await page.clock.runFor(120);
     await framesQuiet(log, "claude:s1");
     expect(Math.round((await rectOf(win(page, 1))).width)).toBe(widthBefore - STEPS * 10);
 
@@ -550,8 +553,9 @@ test.describe("desktop workspace", () => {
     const shown = `observer gaps ${JSON.stringify(gaps.map(Math.round))}, frames ${JSON.stringify(
       tr.frames.map(([t, c, r]) => [Math.round(t), c, r]),
     )}`;
-    // The burst really was one: most steps landed inside a debounce interval of the step before.
-    expect(windows, shown).toBeLessThanOrEqual(Math.ceil(STEPS / 3));
+    // The controlled burst really occupies ONE debounce window, even on a slow runner.
+    expect(tr.ro.length, shown).toBeGreaterThanOrEqual(STEPS);
+    expect(windows, shown).toBe(1);
     // It refitted, at most once per debounce window — never once per size change…
     expect(tr.frames.length, shown).toBeGreaterThan(0);
     expect(tr.frames.length, shown).toBeLessThanOrEqual(windows);
@@ -562,6 +566,7 @@ test.describe("desktop workspace", () => {
     }
     // It converged: the last frame is the grid a FRESH fit produces, measured outside the burst.
     const last = tr.frames[tr.frames.length - 1];
+    await page.clock.resume();
     expect(await freshFitGrid(log, "claude:s1")).toEqual([last[1], last[2]]);
   });
 

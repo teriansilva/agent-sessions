@@ -11,6 +11,7 @@
  * key, because `_op_reorder` replaces the whole order and refuses anything less.
  */
 import { expect, test, type Page } from "@playwright/test";
+import { throttleIfAsked } from "./browserTiming";
 
 import {
   MISSION,
@@ -266,6 +267,11 @@ async function exactlyOnePatch(server: Server) {
 // Dragging
 // ==============================================================================================
 
+// Opt-in browser-only sensitivity probe for #1016.
+test.beforeEach(async ({ page }) => {
+  await throttleIfAsked(page);
+});
+
 test("pointer: dragging row 3 above row 1 sends ONE reorder with the full new order", async ({
   page,
 }, testInfo) => {
@@ -317,7 +323,11 @@ test("keyboard: Space, ArrowUp, Space on a handle sends the same ONE reorder, an
   await page.keyboard.press("Space");
   await expect(handle).toHaveAttribute("aria-pressed", "true");
   await page.keyboard.press("ArrowUp");
-  await page.waitForTimeout(250);
+  // The keyboard sensor may smooth-scroll the details column before moving the row.
+  // A wall-clock delay can expire mid-scroll; wait for the actual target before dropping.
+  await expect(page.locator('[id^="DndLiveRegion"]')).toContainText(
+    `"${TITLES.pr}" was moved into position 1 of 4`,
+  );
   await page.keyboard.press("Space");
 
   await exactlyOnePatch(server);
@@ -452,7 +462,9 @@ for (const status of [409, 422]) {
     await page.keyboard.press("Space");
     await expect(handle).toHaveAttribute("aria-pressed", "true");
     await page.keyboard.press("ArrowUp");
-    await page.waitForTimeout(250);
+    await expect(page.locator('[id^="DndLiveRegion"]')).toContainText(
+      `"${TITLES.pr}" was moved into position 1 of 4`,
+    );
     await page.keyboard.press("Space");
 
     // While the server has not answered, the operator sees the order they chose…

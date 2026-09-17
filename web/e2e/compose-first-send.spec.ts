@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { throttleIfAsked } from "./browserTiming";
 
 // #533: the first compose Send into a FRESH session raced the agent's boot — the clear/paste/
 // Enter frames landed before the TUI's input loop was live, the pasted text was swallowed, and
@@ -15,6 +16,8 @@ import { expect, test } from "@playwright/test";
 // the lost first message fell into. Input frames ({t:"i"}) are recorded for the assertions.
 const BOOTING_WS = `
 window.__sentInput = [];
+window.__resizeFrames = 0;
+window.__bootChunksReceived = 0;
 window.__sockets = [];
 window.WebSocket = class {
   constructor(url) {
@@ -23,14 +26,20 @@ window.WebSocket = class {
     setTimeout(() => { this.readyState = 1; this.onopen && this.onopen(); }, 20);
   }
   send(msg) {
-    try { const m = JSON.parse(msg); if (m && m.t === "i") window.__sentInput.push(m.d); } catch {}
+    try {
+      const m = JSON.parse(msg);
+      if (m && m.t === "i") window.__sentInput.push(m.d);
+      if (m && m.t === "r") window.__resizeFrames++;
+    } catch {}
   }
   close() { this.readyState = 3; this.onclose && this.onclose({ code: 1000 }); }
 };
 window.__emitOutput = (s) => {
   const ws = window.__sockets[window.__sockets.length - 1];
-  if (!ws || !ws.onmessage) return;
+  if (!ws || ws.readyState !== 1 || !ws.onmessage)
+    throw new Error("fake boot output requires an open socket and installed receiver");
   ws.onmessage({ data: new TextEncoder().encode(s).buffer });
+  window.__bootChunksReceived++;
   ws.onmessage({ data: JSON.stringify({ t: "seq", n: s.length }) });
 };
 `;
@@ -38,9 +47,16 @@ window.__emitOutput = (s) => {
 declare global {
   interface Window {
     __sentInput: string[];
+    __resizeFrames: number;
+    __bootChunksReceived: number;
     __emitOutput: (s: string) => void;
   }
 }
+
+test.beforeEach(async ({ page }) => {
+  await throttleIfAsked(page);
+  await page.clock.install();
+});
 
 test("first compose Send into a fresh session waits for the agent's first paint to settle, not just ESC[?2004h (#533/#616)", async ({
   page,
@@ -88,7 +104,7 @@ test("first compose Send into a fresh session waits for the agent's first paint 
   await expect(page).toHaveURL(/\/s\/claude\//);
   await expect(page.locator(".xterm")).toBeVisible();
   await expect
-    .poll(async () => page.evaluate(() => window.__sockets.length as number))
+    .poll(async () => page.evaluate(() => window.__resizeFrames))
     .toBeGreaterThan(0);
 
   // Compose is collapsed by default on desktop; open it, type, Send.
@@ -104,6 +120,7 @@ test("first compose Send into a fresh session waits for the agent's first paint 
   await expect(page.getByText(/waiting for agent/i)).toBeVisible();
   const during = await page.evaluate(() => window.__sentInput.slice());
   expect(during).toEqual([]);
+  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
 
   // Claude's PRE-TUI setup arms bracketed paste first — at byte ~25, ~40 bytes before it clears
   // the screen. Nothing may be released on this chunk: the #616 bug delivered here, and the clear
@@ -112,7 +129,7 @@ test("first compose Send into a fresh session waits for the agent's first paint 
   await page.evaluate(() =>
     window.__emitOutput("\x1b[?25h\x1b[?25l\x1b[?2004h"),
   );
-  await page.waitForTimeout(250);
+  await page.clock.runFor(250);
   expect(await page.evaluate(() => window.__sentInput.slice())).toEqual([]);
   await expect(page.getByText(/waiting for agent/i)).toBeVisible();
 
@@ -121,12 +138,17 @@ test("first compose Send into a fresh session waits for the agent's first paint 
   await page.evaluate(() =>
     window.__emitOutput("\x1b[?1000h\x1b[?1006h✳ Claude Code\r\n❯ "),
   );
+  expect(await page.evaluate(() => window.__bootChunksReceived)).toBe(3);
+  await page.clock.runFor(399);
+  expect(await page.evaluate(() => window.__sentInput.slice())).toEqual([]);
+  await page.clock.runFor(1);
 
   // Paint settled → the held message delivers: clear, paste, then the deferred Enter (#180
   // sequencing preserved).
   await expect
     .poll(async () => page.evaluate(() => window.__sentInput.join("")))
     .toContain("\x1b[200~hello from the compose gate\x1b[201~");
+  await page.clock.runFor(250); // the deferred Enter follows the paste
   await expect
     .poll(async () => page.evaluate(() => window.__sentInput.at(-1)))
     .toBe("\r");
@@ -182,6 +204,11 @@ test("fresh Codex send waits for boot output to go quiet before using fallback r
   await page.getByRole("button", { name: /start session/i }).click();
   await expect(page).toHaveURL(/\/s\/codex\/new-/);
   await expect(page.locator(".xterm")).toBeVisible();
+  // Mounting xterm precedes connection. Emitting earlier silently dropped one or BOTH boot
+  // chunks, so this test either passed vacuously or never reached readiness (#1016).
+  await expect
+    .poll(async () => page.evaluate(() => window.__resizeFrames))
+    .toBeGreaterThan(0);
 
   const sendBtn = page.getByRole("button", { name: /^send/i });
   if (!(await sendBtn.isVisible())) {
@@ -190,20 +217,22 @@ test("fresh Codex send waits for boot output to go quiet before using fallback r
   await page.getByPlaceholder(/type here/i).fill("do the first codex task");
   await sendBtn.click();
   await expect(page.getByText(/waiting for agent/i)).toBeVisible();
+  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
 
   // Codex-style boot frames without ESC[?2004h: every chunk resets the fallback timer.
   // Broken behavior sent 1.5s after the FIRST output chunk, while startup was still painting.
   await page.evaluate(() => window.__emitOutput("loading codex…"));
-  await page.waitForTimeout(1000);
+  await page.clock.runFor(1000);
   await page.evaluate(() => window.__emitOutput("still preparing…"));
-  await page.waitForTimeout(700);
+  expect(await page.evaluate(() => window.__bootChunksReceived)).toBe(2);
+  await page.clock.runFor(700);
   expect(await page.evaluate(() => window.__sentInput.slice())).toEqual([]);
+  await page.clock.runFor(800);
 
   await expect
-    .poll(async () => page.evaluate(() => window.__sentInput.join("")), {
-      timeout: 3000,
-    })
+    .poll(async () => page.evaluate(() => window.__sentInput.join("")))
     .toContain("\x1b[200~do the first codex task\x1b[201~");
+  await page.clock.runFor(250);
   await expect
     .poll(async () => page.evaluate(() => window.__sentInput.at(-1)))
     .toBe("\r");

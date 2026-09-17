@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { throttleIfAsked } from "./browserTiming";
 
 // #477: the compose box draft (text + pasted-image attachment pills) is persisted server-side
 // and restored when the session is reopened — survives a full reload, available cross-device.
@@ -75,6 +76,11 @@ async function openCompose(page: import("@playwright/test").Page) {
   return ta;
 }
 
+// Opt-in browser-only sensitivity probe for #1016.
+test.beforeEach(async ({ page }) => {
+  await throttleIfAsked(page);
+});
+
 test("a typed draft is saved and restored verbatim after a full reload (#477)", async ({
   page,
 }) => {
@@ -136,7 +142,12 @@ test("a pasted image is restored as an attachment pill after reload (#477)", asy
 
 test("sending the message clears the saved draft (#477)", async ({ page }) => {
   const store = await mockDrafts(page);
-  await page.addInitScript(FAKE_WS);
+  const frames: { t: string; d?: string }[] = [];
+  await page.routeWebSocket("**/ws/term/**", (ws) => {
+    ws.onMessage((data) => {
+      if (typeof data === "string") frames.push(JSON.parse(data));
+    });
+  });
   await page.goto("/s/claude/draft-send");
   await expect(page.locator(".xterm")).toBeVisible();
 
@@ -146,8 +157,15 @@ test("sending the message clears the saved draft (#477)", async ({ page }) => {
     .poll(() => store["claude:draft-send"]?.text)
     .toBe("about to send this");
 
+  // xterm mounts BEFORE its grid settles and the socket connects. Under load, eight quiet
+  // animation frames can outlast composing the message. A resize on the wire proves the
+  // connection is open; clicking earlier correctly preserves an unsent draft (#1016).
+  await expect.poll(() => frames.some((f) => f.t === "r")).toBe(true);
   // A content send takes the bracketed-paste path and then clears the draft server-side.
   await page.getByRole("button", { name: /^send/i }).click();
+  await expect.poll(() => frames.filter((f) => f.t === "i").at(-1)?.d).toBe("\r");
+  expect(frames.filter((f) => f.t === "i").map((f) => f.d))
+    .toContain("\x1b[200~about to send this\x1b[201~");
   await expect.poll(() => store["claude:draft-send"]).toBeUndefined();
 
   // Reload: nothing to restore — the box comes back empty.
