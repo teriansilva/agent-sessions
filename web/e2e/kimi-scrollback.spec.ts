@@ -29,6 +29,7 @@ const KIMI_READ_WS = `
 window.__kimiFramesSent = 0;
 window.__kimiDone = false;
 window.__startKimiCycles = () => {};
+window.__kimiOneMore = () => {};
 window.WebSocket = class {
   constructor(url) {
     this.url = url; this.readyState = 0; this.binaryType = "blob";
@@ -41,29 +42,38 @@ window.WebSocket = class {
       for (let i = 0; i < 200; i++) s += "kimi transcript " + i + " " + "-".repeat(120) + "\\r\\n";
       if (this.onmessage) this.onmessage({ data: enc.encode(s).buffer });
       if (this.onmessage) this.onmessage({ data: JSON.stringify({ t: "seq", n: s.length }) });
+      const sendFrame = (n) => {
+        window.__kimiFramesSent = n;
+        // Frames 1-2 carry Kimi's own ESC[3J wipe (small enough to stay in the reliable-DOM
+        // regime): the filter must hold WHILE the reader is up in the transcript, not only on
+        // the tail (Hermes #1043 coverage note).
+        let c = "\\x1b[?2026h\\x1b[2J\\x1b[H" + (n <= 2 ? "\\x1b[3J" : "");
+        for (let i = 0; i < 40; i++)
+          c += " kimi live " + n + " row " + i + " " + "-".repeat(120) + "\\r\\n";
+        c += " " + " ".repeat(120) + "context: 3%";
+        c += "\\x1b[?2026l\\x1b[3A\\x1b[6G\\x1b[?25l";
+        const buf = enc.encode(c);
+        for (let off = 0; off < buf.length; off += 65536)
+          if (this.onmessage)
+            this.onmessage({
+              data: buf.slice(off, Math.min(buf.length, off + 65536)).buffer,
+            });
+      };
       window.__startKimiCycles = () => {
         if (this._timer) return;
         let frame = 0;
         this._timer = setInterval(() => {
           frame++;
-          window.__kimiFramesSent = frame;
-          let c = "\\x1b[?2026h\\x1b[2J\\x1b[H";
-          for (let i = 0; i < 40; i++)
-            c += " kimi live " + frame + " row " + i + " " + "-".repeat(120) + "\\r\\n";
-          c += " " + " ".repeat(120) + "context: 3%";
-          c += "\\x1b[?2026l\\x1b[3A\\x1b[6G\\x1b[?25l";
-          const buf = enc.encode(c);
-          for (let off = 0; off < buf.length; off += 65536)
-            if (this.onmessage)
-              this.onmessage({
-                data: buf.slice(off, Math.min(buf.length, off + 65536)).buffer,
-              });
+          sendFrame(frame);
           if (frame >= 4) {
             clearInterval(this._timer);
             window.__kimiDone = true;
           }
         }, 120);
       };
+      // One more frame on demand — emitted AFTER the reader taps back to the tail, so the
+      // test can pin that following actually RESUMED rather than only that the jump landed.
+      window.__kimiOneMore = () => sendFrame(5);
     }, 30);
   }
   send() {}
@@ -306,5 +316,16 @@ test.describe("kimi live-stream scrollback (#1038)", () => {
           viewport.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop),
       )
       .toBeLessThanOrEqual(160);
+    // …and following actually RESUMED: one more frame arrives after the jump and the view
+    // rides it to ITS tail (frame 5's last row + the context line on screen), not merely the
+    // jump landing (Hermes #1043 note).
+    await page.evaluate(() => {
+      (window as unknown as { __kimiOneMore: () => void }).__kimiOneMore();
+    });
+    await page.waitForTimeout(400);
+    await expect(
+      await viewport.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop),
+    ).toBeLessThanOrEqual(160);
+    await expect(page.locator(".xterm-screen")).toContainText("kimi live 5 row 39");
   });
 });

@@ -45,11 +45,14 @@ def test_kimi_live_output_drops_app_clear_scrollback():
 
 def test_kimi_live_output_drops_wipe_at_every_split_point():
     """The wipe can straddle a pty-read boundary at ANY byte offset — the carry must reassemble
-    it and only the complete wipe is ever dropped (the authored ESC[2J ESC[H clear passes)."""
+    it and only the complete wipe is ever dropped (the authored ESC[2J ESC[H clear passes).
+    The split sweep covers EVERY byte offset of the whole fixture, so the ESC[3J itself is cut
+    at all four of its internal boundaries (the review found the first cut only ever landed in
+    the ESC[2J; Hermes #1043)."""
     whole = b"\x1b[2J\x1b[H\x1b[3Jframe"
     expected = b"\x1b[2J\x1b[Hframe"
-    wipe_end = whole.index(b"J") + 1  # last byte of the 3J sequence
-    for cut in range(wipe_end + 1):  # every boundary inside or at the end of the wipe
+    assert whole.index(b"\x1b[3J") > 0  # the wipe is present and NOT at the fixture start
+    for cut in range(len(whole) + 1):  # every boundary, including inside the 3J
         key = f"kimi:split{cut}"
         emitted_before = scrollback.sanitize_live_output(key, whole[:cut])
         emitted_after = scrollback.sanitize_live_output(key, whole[cut:])

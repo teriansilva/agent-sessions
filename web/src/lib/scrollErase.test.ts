@@ -58,11 +58,14 @@ describe("strip — non-member engines and the attach replay", () => {
 
 describe("strip — across-chunk carry", () => {
   test.each(["codex", "kimi"])("%s: the wipe is dropped when split at EVERY offset", (engine) => {
-    // Only the ESC[3J is ever dropped; the authored ESC[2J ESC[H clear passes through.
+    // Only the ESC[3J is ever dropped; the authored ESC[2J ESC[H clear passes through. The
+    // sweep covers EVERY byte offset of the whole fixture, so the ESC[3J itself is cut at all
+    // four of its internal boundaries (the review found the first cut only ever landed in the
+    // ESC[2J; Hermes #1043).
     const whole = new TextEncoder().encode(`\x1b[2J\x1b[H${WIPE}frame`);
     const expected = "\x1b[2J\x1b[Hframe";
-    const wipeEnd = whole.indexOf(0x4a) + 1; // last byte of "J"
-    for (let cut = 0; cut <= wipeEnd; cut++) {
+    expect(Array.from(whole).join(",")).toContain("27,91,51,74"); // the wipe is present
+    for (let cut = 0; cut <= whole.length; cut++) {
       const s = createScrollEraseStripper();
       const first = s.strip(engine, true, whole.slice(0, cut));
       const second = s.strip(engine, true, whole.slice(cut));
