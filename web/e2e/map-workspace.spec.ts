@@ -44,7 +44,14 @@ interface Conn {
 
 async function mockApp(
   page: Page,
-  opts: { engines?: string[] } = {},
+  opts: {
+    engines?: string[];
+    /** Fired when the mock sends the `{"t":"id"}` reconcile frame (#1037). */
+    onReconcileFrame?: () => void;
+    /** Also send a second `id` frame that still names the placeholder, 250 ms later — the
+     *  negative control for the reconcile guard. */
+    placeholderFrameToo?: boolean;
+  } = {},
 ): Promise<Conn[]> {
   const conns: Conn[] = [];
   looked.length = 0;
@@ -121,8 +128,16 @@ async function mockApp(
     // The reconcile frame (#127): an engine that mints its own id answers a `new-<uuid>` launch
     // with the real one. Four of six engines do this, so a window opened from the new-session
     // flow is the normal case, not an edge one.
-    if (key.startsWith("opencode:new-"))
+    if (key.startsWith("opencode:new-")) {
       ws.send(JSON.stringify({ t: "id", sid: RECONCILED }));
+      opts.onReconcileFrame?.();
+      // #1037 negative control: a frame that still names a placeholder must not make the map
+      // refetch (the guard is defensive — the real server never converges to one).
+      if (opts.placeholderFrameToo)
+        setTimeout(() => {
+          ws.send(JSON.stringify({ t: "id", sid: `${key}` }));
+        }, 250);
+    }
     ws.send(Buffer.from(`\x1b[2J\x1b[Hready ${key}\r\n`));
   });
   return conns;
@@ -556,6 +571,87 @@ test.describe("map workspace", () => {
     await page.setViewportSize({ width: 1920, height: 1200 });
     await page.waitForTimeout(800);
     expect(conns.filter((c) => c.launched)).toHaveLength(1);
+  });
+
+  test("a map-created session gains its title, tether and menu when its launch reconciles (#1037)", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1920, height: 1200 });
+    // The reconciled row, served by the map's list only once a map sequence start happens
+    // AFTER the {"t":"id"} frame — what the server guarantees (its scan cache is busted
+    // immediately before the frame) and what the fix's refetch is for. The entry sequence and
+    // the return-from-the-landing sequence both run BEFORE any id frame, so on main nothing
+    // ever re-pulls after the reconcile and the row never arrives.
+    const reconciled = {
+      id: RECONCILED,
+      engine: "opencode",
+      uuid: "ses_9f2b",
+      short_uuid: "ses_9f2b",
+      cwd: "/home/u/proj",
+      project: { kind: "project", id: "p1", name: "proj", color: "#ffb000" },
+      last_mtime: now,
+      first_user_message: "",
+      title: "Reconciled live session",
+      sticky: false,
+      archived: false,
+      ai_summary: "",
+    };
+    let idFrameSent = false;
+    let postIdSeqs = 0;
+    const conns = await mockApp(page, {
+      engines: ["opencode"],
+      onReconcileFrame: () => {
+        idFrameSent = true;
+      },
+      placeholderFrameToo: true,
+    });
+    // Override the list route (registered AFTER mockApp's, so it wins) with a counting one.
+    await page.route("**/api/sessions?**", (r) => {
+      const u = new URL(r.request().url());
+      if (u.searchParams.get("snapshot") === "new" && u.searchParams.get("offset") === "0" && idFrameSent) {
+        postIdSeqs += 1;
+      }
+      const rows =
+        idFrameSent && postIdSeqs >= 1 ? [...sessions, reconciled] : [...sessions];
+      return r.fulfill({
+        json: {
+          sessions: rows,
+          next_offset: null,
+          total: rows.length,
+          facets: { projects: [], engines: [] },
+        },
+      });
+    });
+
+    await openMap(page);
+    // From the map: "+ New session" → the landing → back as a window.
+    await page.locator('.sidebar a[href="/"]').first().click();
+    await expect(page).toHaveURL("/");
+    await page.getByRole("button", { name: /start session/i }).click();
+    await expect(page).toHaveURL(/\/overview/);
+    await expect(page.locator("[data-session-window]")).toHaveCount(1);
+    await expect(page.locator('[aria-label="Session window: New session"]')).toBeVisible();
+
+    // The launch reconciles; the map learns the row; every window surface follows it.
+    // Exactly ONE new map sequence — the reconcile-triggered refetch, nothing else — and the
+    // placeholder control frame (still naming a new- id) must not add another.
+    await expect.poll(() => postIdSeqs, "one refetch after the id frame").toBe(1);
+    await page.waitForTimeout(400); // the negative control's frame lands inside this window
+    expect(postIdSeqs, "a placeholder id frame must not refetch").toBe(1);
+    await expect(
+      page.locator('[aria-label="Session window: Reconciled live session"]'),
+    ).toBeVisible(); // the chrome title followed the row
+    await expect(page.locator("[data-tether]").first()).toBeVisible(); // the tether link
+    await expect(
+      page.locator(".tr-ov-chip.opened", { hasText: "Reconciled live session" }),
+    ).toBeVisible(); // the chip carries the open marker
+    await expect(page.locator("[data-window-menu]")).not.toHaveAttribute(
+      "aria-disabled",
+      "true",
+    ); // the ⋯ menu is enabled
+    // ...and the refetch touched the list, never the connection: still the ONE launch socket.
+    expect(conns).toHaveLength(1);
+    expect(conns[0].closed).toBe(false);
   });
 });
 

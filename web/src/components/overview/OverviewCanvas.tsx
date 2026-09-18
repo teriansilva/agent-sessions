@@ -36,6 +36,7 @@ import { flushSync } from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useConfig } from "../../app/config";
 import { useOverviewPrefs } from "../../app/overviewPrefs";
+import { isNewSessionPlaceholder } from "../../app/sessionsStore";
 import { useWorkspaceCtx } from "../../app/workspaceWindows";
 import { api, ApiError } from "../../lib/api";
 import { engineColor } from "../../lib/format";
@@ -163,6 +164,9 @@ function OverviewCanvasInner({
   // GEOMETRY: measurement, projection, the tether, and the decision of whether a window may open
   // at all. Those are facts about a mounted, measured map, and nothing outside it can know them.
   const ws = useWorkspaceCtx();
+  // The reconcile action alone: a stable callback (the workspace memoizes every action), so the
+  // reconcile wrapper below doesn't have to ride the whole workspace object's identity.
+  const { reconcile: wsReconcile } = ws;
   // The actions are stable `useCallback`s; naming them here keeps them out of the dependency
   // arrays as `ws.*` (which changes identity whenever a window moves).
   const {
@@ -413,10 +417,12 @@ function OverviewCanvasInner({
     );
   }, [rejected, clearRejected, navigate]);
 
-  // Renames (the sidebar's, or an AI title landing) reach an OPEN window's chrome: the live
-  // index goes to the workspace, which keeps each window's own title current. Resolving
-  // live-or-captured at render time instead would make a window REVERT to its old name the
-  // moment its session left the map.
+  // Renames reach an OPEN window's chrome through the MAP's list: the live index goes to the
+  // workspace, which keeps each window's own title current. The map's list updates on its own
+  // revalidations (the menu's mutations, a reconcile-triggered refetch below, a route
+  // re-entry) — a rename that only the sidebar's poll has seen so far lands with the map's
+  // next one; the window never reverts either way. Resolving live-or-captured at render time
+  // instead would make a window REVERT to its old name the moment its session left the map.
   const titles = useMemo(
     () =>
       new Map(
@@ -661,6 +667,38 @@ function OverviewCanvasInner({
       return s ? [key, `group:${clusterKeyFor(s, groupBy)}`] : [key];
     },
     [effectiveSessions, groupBy],
+  );
+
+  // The route's refetch, ref-synced so the reconcile wrapper below stays stable across
+  // refetch identity changes — the same idiom as `windowsRef` above (an unstable prop would
+  // re-render every mounted pane each time the route re-creates its callback).
+  const refetchRef = useRef(onRefetch);
+  useEffect(() => {
+    refetchRef.current = onRefetch;
+  });
+  // A window launched from this map adopting its engine-minted id (#127/#315) — reconcile as
+  // today, then let the MAP's list learn the row (#1037). The map has no poll (#1007), so
+  // every window surface that reads the list — the title sync, the chip the tether anchors
+  // to, the ⋯ menu's isOnMap, the chip's open marker — would otherwise keep aiming at the
+  // `new-` placeholder until the operator happened to leave and re-enter. One refetch,
+  // bounded by the reconcile event itself (the {"t":"id"} frame is emitted once per launch;
+  // reconnects of a converged placeholder resolve via the persisted alias and never re-fire
+  // it). The server persists the alias and busts the scan cache BEFORE that frame
+  // (main._reconcile_new_session), so this revalidation is guaranteed to re-walk WITH the
+  // new row; on failure the retained-list hook keeps the previous map (#1007). The refetch
+  // touches the LIST, never the socket — the window's transport identity and its live
+  // connection are untouched.
+  const onWindowReconcile = useCallback(
+    (key: string, sid: string) => {
+      // Defensive first: the server never converges to a placeholder, and adopting one would
+      // both un-name the record and (below) never refetch — so a placeholder frame is a
+      // complete no-op here. The helper takes the complete composite key as the frame carries
+      // it (web/src/app/sessionsStore.ts).
+      if (isNewSessionPlaceholder(sid)) return;
+      wsReconcile(key, sid);
+      refetchRef.current?.();
+    },
+    [wsReconcile],
   );
 
   // ⤢ — hand this session to the full-screen route.
@@ -1139,7 +1177,7 @@ function OverviewCanvasInner({
             onFullScreen={onFullScreen}
             onRect={ws.setRect}
             onRole={ws.setRole}
-            onReconcile={ws.reconcile}
+            onReconcile={onWindowReconcile}
             onMenu={openWindowMenu}
             isOnMap={isOnMap}
           />

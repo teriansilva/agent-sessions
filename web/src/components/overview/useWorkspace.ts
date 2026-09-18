@@ -68,8 +68,10 @@ export interface WorkspaceWindow {
   engine: string;
   id: string;
   /** The chrome title. The window's record is the single source of truth for it: it starts as
-   *  the name at open time and `syncTitles` keeps it current, so a rename reaches an open
-   *  window and a session that later leaves the map keeps the last name it had. */
+   *  the name at open time and `syncTitles` keeps it current from the MAP's list (which the
+   *  map refreshes on its own revalidations — mutations, the reconcile-triggered refetch
+   *  #1037, a route re-entry), so a rename the map has caught up with reaches an open window
+   *  and a session that later leaves the map keeps the last name it had. */
   title: string;
   /** The size and position the OPERATOR chose. Fitted to the overlay box at RENDER time rather
    *  than rewritten here, so a map that shrinks and grows again returns the window to the layout
