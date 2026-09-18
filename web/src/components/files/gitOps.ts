@@ -1,4 +1,10 @@
-import type { GitEntry, GitPushTarget, GitStatus } from "../../types/api";
+import type {
+  GitEntry,
+  GitLogCommit,
+  GitPushTarget,
+  GitStatus,
+  GitWriteResult,
+} from "../../types/api";
 
 /** What the write side of the GIT tab may do right now, given a status (#806).
  *
@@ -235,6 +241,18 @@ export function pendingState(status: GitStatus | null): PendingState {
   return paths.length > 0 ? { kind: "pending", paths } : { kind: "none" };
 }
 
+/** Whether files the last commit changed still hold its PARENT's version on disk (#950 2b) — the
+ *  worktree half of `pendingState`, with the same three states for the same reason:
+ *  `unsettled_worktree: null` is the server saying it could NOT check (more files, or larger ones,
+ *  than it hashes on a status read, or a failed read). Folding that into "none" would claim nothing
+ *  is behind when the panel simply does not know. */
+export function worktreePendingState(status: GitStatus | null): PendingState {
+  if (!status?.head) return { kind: "none" };
+  if (status.unsettled_worktree === null) return { kind: "unknown" };
+  const paths = status.unsettled_worktree ?? [];
+  return paths.length > 0 ? { kind: "pending", paths } : { kind: "none" };
+}
+
 /** Which row-level actions apply to one entry.
  *
  *  Absent, never disabled-and-inert: a staged row cannot be staged again, and — the one that
@@ -261,4 +279,46 @@ export function rowActionsFor(e: GitEntry): {
   if (e.kind === "unmerged")
     return { stage: false, unstage: false, discard: false, revert: false };
   return { stage: true, unstage: false, discard: true, revert: false };
+}
+
+/** Why REVERT on a recent commit cannot run right now, or null when it can (#950).
+ *
+ *  Same rule as the rest of this module: the server re-checks every one of these inside its lock,
+ *  and this exists so the control is disabled with the reason WRITTEN on it rather than inviting a
+ *  click that comes back 409. The clean-tree rule is `switch`'s, for the same reason — a revert
+ *  landing on uncommitted work would mix the two with no way to tell them apart afterwards.
+ */
+export function revertReason(status: GitStatus | null, commit: GitLogCommit): string | null {
+  if (!status || !status.repo) return NO_REPO;
+  if (status.entries.some((e) => e.kind === "unmerged")) return CONFLICTS;
+  if (!status.branch) return "HEAD is detached — create a branch here before reverting.";
+  const n = status.entries.length;
+  if (n > 0 || status.truncated)
+    return `Revert needs a clean tree — commit or discard the ${status.truncated ? "listed" : n} change${n === 1 && !status.truncated ? "" : "s"} first.`;
+  if (commit.parents > 1) return "This is a merge — choosing a side to revert is terminal work.";
+  if (commit.parents === 0)
+    return "This is the branch's first commit — reverting it would delete every file it added.";
+  return null;
+}
+
+/** What a REVERT of a recent commit reports, before the recovery ids (#950 2b). The commit exists
+ *  whatever else happened, so it leads. Then the index half — an index write that LANDED but could
+ *  not be confirmed on disk (review 4833) is neither "not updated" nor a plain success, and says
+ *  so — and then incomplete restoration. A failed replacement may already have displaced a file,
+ *  with its bytes reachable only through the recovery ids, so never claim it was left untouched. */
+export function revertCommitSummary(short: string, r: GitWriteResult): string {
+  const made = `Reverted ${short} as ${r.commit ?? "a new commit"} — nothing was pushed.`;
+  const indexLeft = r.index_left ?? [];
+  const index =
+    r.index_durable === false
+      ? ` The index was updated, but writing it to disk could not be confirmed${r.index_reason ? ` (${r.index_reason})` : ""} — refresh to check.${indexLeft.length ? ` Not updated: ${indexLeft.join(", ")}.` : ""}`
+      : r.index === "pending"
+        ? ` The index was not updated for ${indexLeft.join(", ")}${r.index_reason ? ` (${r.index_reason})` : ""}.`
+        : "";
+  const left = r.worktree_left ?? [];
+  const tree =
+    r.worktree === "pending"
+      ? ` Restoration is incomplete for ${left.join(", ") || "some files"}${r.worktree_reason ? ` (${r.worktree_reason})` : ""}. Inspect the working tree and use the listed recovery copies where needed.`
+      : "";
+  return `${made}${index}${tree}`;
 }

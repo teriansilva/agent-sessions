@@ -14,6 +14,8 @@ vi.mock("../../lib/api", () => ({
     gitCommitPaths: vi.fn(),
     gitSettle: vi.fn(),
     gitDiscard: vi.fn(),
+    gitLog: vi.fn(),
+    gitRevert: vi.fn(),
   },
 }));
 const { api } = await import("../../lib/api");
@@ -200,4 +202,34 @@ test("REVERT on a staged row confirms and sends from=head with the commit it nam
       HEAD,
     ),
   );
+});
+
+const history = (branch: string) => ({
+  repo: "/home/u/proj", branch, head: HEAD,
+  commits: [{ sha: HEAD, short: "ccccccc", subject: `Change on ${branch}`, author: "t", time: 1, parents: 1 }],
+});
+
+test("revert sends the confirmed branch even if status switches to an equal-tip branch", async () => {
+  vi.mocked(api.gitLog).mockReset().mockResolvedValue(history("main"));
+  vi.mocked(api.gitRevert).mockReset().mockResolvedValue(ok({ sha: HEAD, commit: "ccccccc" }));
+  const view = render(<GitTab {...props("/home/u/proj")} status={status({ head: HEAD })} />);
+  await userEvent.click(screen.getByRole("button", { name: /Recent commits/i }));
+  await userEvent.click(await screen.findByRole("button", { name: "Revert ccccccc: Change on main" }));
+  expect(document.querySelector("[data-revert-commit-confirm]")).toHaveTextContent("main");
+  view.rerender(<GitTab {...props("/home/u/proj")} status={status({ branch: "other", head: HEAD })} />);
+  await userEvent.click(document.querySelector("[data-revert-commit-go]") as HTMLElement);
+  await waitFor(() => expect(api.gitRevert).toHaveBeenCalledWith(
+    "/home/u/proj", HEAD, HEAD, "refs/heads/main",
+  ));
+});
+
+test("an equal-tip branch switch refreshes open history and hides the previous branch", async () => {
+  vi.mocked(api.gitLog).mockReset().mockResolvedValueOnce(history("main")).mockResolvedValue(history("other"));
+  const view = render(<GitTab {...props("/home/u/proj")} status={status({ head: HEAD })} />);
+  await userEvent.click(screen.getByRole("button", { name: /Recent commits/i }));
+  await screen.findByRole("button", { name: "Revert ccccccc: Change on main" });
+  view.rerender(<GitTab {...props("/home/u/proj")} status={status({ branch: "other", head: HEAD })} />);
+  expect(screen.queryByRole("button", { name: "Revert ccccccc: Change on main" })).toBeNull();
+  await screen.findByRole("button", { name: "Revert ccccccc: Change on other" });
+  expect(api.gitLog).toHaveBeenCalledTimes(2);
 });

@@ -22,6 +22,7 @@ import type {
   FsDir,
   GitBranches,
   GitDiff,
+  GitLog,
   GitPushTarget,
   GitStatus,
   GitWriteResult,
@@ -600,6 +601,9 @@ export const api = {
     ),
   /** GIT tab (#806): which remote a push WOULD go to, resolved server-side. A read — it resolves
    *  and reports, and changes nothing, so the control can render `PUSH -> origin` truthfully. */
+  /** RECENT COMMITS (#950): the branch's first-parent history. Read-only. */
+  gitLog: (path: string, init?: RequestInit) =>
+    getJson<GitLog>(`/api/git/log?path=${encodeURIComponent(path)}`, init),
   gitPushTarget: (path: string, remote?: string, init?: RequestInit) =>
     getJson<GitPushTarget>(
       `/api/git/push-target?path=${encodeURIComponent(path)}${remote ? `&remote=${encodeURIComponent(remote)}` : ""}`,
@@ -698,6 +702,10 @@ export const api = {
    *  the parent's entries. Idempotent; never consumes newer staging. */
   gitSettle: (path: string, commit: string) =>
     mutateJson<GitWriteResult>("POST", "/api/git/settle", { path, commit }),
+  /** REVERT A COMMIT (#950): a new commit undoing `commit`, bound to the `head` the panel showed.
+   *  Never `git revert`: computed without touching the tree, published by compare-and-swap. */
+  gitRevert: (path: string, commit: string, head: string, branch: string) =>
+    mutateJson<GitWriteResult>("POST", "/api/git/revert", { path, commit, head, branch }),
   /** Current branch to a server-resolved target; never --force, never a client refspec. */
   gitPush: (path: string, remote?: string, expect?: string) =>
     // `expect` is the target the panel DISPLAYED. The server refuses if it has since resolved

@@ -1165,6 +1165,10 @@ export interface GitStatus {
    *  i.e. staged reversals of it. An unfinished panel commit and a reversal staged on purpose look
    *  identical, so this is reported, never acted on. `null` = could not be determined. */
   unsettled?: string[] | null;
+  /** #950: paths the last commit changed whose index is AT the commit but whose worktree file still
+   *  holds the parent's version — what a revert that could not write a file leaves. `null` = could
+   *  not be determined (too many files, or one too large to hash). Reported, never acted on. */
+  unsettled_worktree?: string[] | null;
 }
 
 /** POST /api/files/upload/batch (#807): a server-side reservation minted from an immutable
@@ -1221,6 +1225,30 @@ export interface GitBranches {
   current: string | null;
   local: string[];
   remote: string[];
+}
+
+/** One RECENT COMMITS row (#950). */
+export interface GitLogCommit {
+  sha: string;
+  short: string;
+  subject: string;
+  author: string;
+  /** Author time, epoch seconds. */
+  time: number | null;
+  /** More than one is a merge, which the panel does not revert; zero is the branch's first commit. */
+  parents: number;
+  /** Whether the upstream already has it. ABSENT when there is no upstream to ask — "not known",
+   *  never "not pushed". */
+  pushed?: boolean;
+}
+
+/** GET /api/git/log (#950): the branch's first-parent history, newest first, off the read path's
+ *  sanitized gitdir. The window it lists is also the only set of commits a revert may name. */
+export interface GitLog {
+  repo: string | null;
+  branch: string | null;
+  head: string | null;
+  commits: GitLogCommit[];
 }
 
 /** GET /api/git/push-target (#806): the dry preflight the PUSH control renders *before* the
@@ -1286,15 +1314,20 @@ export interface GitWriteResult {
   /** #950: present, as `false`, only when the index write LANDED but syncing it to disk could not be
    *  confirmed (review 4833). Neither "not updated" nor a plain success: say so, with `index_reason`. */
   index_durable?: boolean;
-  /** #950 revert-file: whether every file was put back. `pending` is a PARTIAL result, not an
-   *  error: `discarded` lists what was put back, `worktree_left` what was not, and `recoverable`
-   *  still carries every version already moved aside (review 4829). */
-  worktree?: "settled" | "pending";
-  worktree_left?: string[];
-  worktree_reason?: string | null;
   /** #950 revert-file: the staged blob each path had before, recoverable with `git cat-file -p`. */
   staged_recoverable?: Record<string, string>;
   reverted?: string[];
+  /** #950 revert-commit: the commit that was undone (`sha` is the new commit that undoes it). */
+  reverted_commit?: string;
+  /** #950 revert-commit and revert-file: whether worktree restoration completed. `pending`
+   *  lists incomplete paths in `worktree_left`; a path may have been left alone or partially
+   *  restored. Inspect `worktree_reason` and `recoverable`, which carries versions already
+   *  moved aside. For revert-file, `discarded` lists the paths successfully put back. */
+  worktree?: "settled" | "pending";
+  worktree_left?: string[];
+  worktree_reason?: string | null;
+  /** #950 settle: the worktree files SETTLE wrote the committed version of. */
+  worktree_paths?: string[];
 }
 
 // ---------------------------------------------------------------------------------------------

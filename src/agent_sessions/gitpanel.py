@@ -156,7 +156,20 @@ _ATTR_SOURCE = True
 
 
 def _run_git(root: str, args: list[str], *, cwd: str, gitdir: str | None = None) -> bytes:
+    """Run one read-only git command; exit 0 and 1 are both answers, anything else a refusal."""
+    rc, out, _err = _run_git_rc(root, args, cwd=cwd, gitdir=gitdir)
+    if rc not in (0, 1):
+        raise GitError("git could not read this repository", status=400)
+    return out
+
+
+def _run_git_rc(
+    root: str, args: list[str], *, cwd: str, gitdir: str | None = None
+) -> tuple[int, bytes, bytes]:
     """Run one read-only git command with a **literal argv list** and bounded output.
+
+    Returns ``(returncode, stdout, stderr-prefix)`` for the one caller that has to tell exit 0
+    from exit 1 — `merge-tree`, where 1 means a conflict (#950).
 
     ``subprocess.run(capture_output=True)`` is deliberately not used: it buffers the entire output
     before any code could truncate it, so an enormous status or object is fully resident before the
@@ -236,15 +249,13 @@ def _run_git(root: str, args: list[str], *, cwd: str, gitdir: str | None = None)
         for p in (proc.stdout, proc.stderr):
             if p is not None:
                 p.close()
-    if proc.returncode not in (0, 1):
-        if _ATTR_SOURCE and b"attr-source" in bytes(err[:4096]):
-            # An earlier version failed CLOSED here, because safety depended on the flag. It no
-            # longer does — the sanitized gitdir defines no driver — so refusing to run on git
-            # 2.39 would be a hard error for no security gain. Drop it once and retry.
-            _disable_attr_source()
-            return _run_git(root, args, cwd=cwd, gitdir=gitdir)
-        raise GitError("git could not read this repository", status=400)
-    return bytes(out)
+    if proc.returncode not in (0, 1) and _ATTR_SOURCE and b"attr-source" in bytes(err[:4096]):
+        # An earlier version failed CLOSED here, because safety depended on the flag. It no
+        # longer does — the sanitized gitdir defines no driver — so refusing to run on git
+        # 2.39 would be a hard error for no security gain. Drop it once and retry.
+        _disable_attr_source()
+        return _run_git_rc(root, args, cwd=cwd, gitdir=gitdir)
+    return proc.returncode, bytes(out), bytes(err)
 
 
 def _disable_attr_source() -> None:
@@ -1063,7 +1074,9 @@ def bump_epoch(key: str) -> int:
         return nxt
 
 
-def _single_flight(key: str, produce, min_epoch: int | None = None):
+def _single_flight(
+    key: str, produce, min_epoch: int | None = None, *, epoch_key: str | None = None
+):
     """One run per repo at a time, with a 1s reuse window.
 
     A TTL cache alone does not coalesce simultaneous *cold* misses: N pollers arriving together
@@ -1078,9 +1091,10 @@ def _single_flight(key: str, produce, min_epoch: int | None = None):
     """
     now = time.monotonic()
     with _flights_lock:
-        cur = _epochs.get(key, 0)
+        cur = _epochs.get(epoch_key or key, 0)
         fl = _flights.get(key)
-        current_enough = fl is not None and (min_epoch is None or fl.epoch >= min_epoch)
+        required = max(min_epoch or 0, cur if epoch_key is not None else 0)
+        current_enough = fl is not None and fl.epoch >= required
         if fl is not None and current_enough and fl.event.is_set() and now - fl.at < _STATUS_TTL_S:
             if fl.error:
                 raise fl.error
@@ -1146,6 +1160,7 @@ def git_status(path: str | None, min_epoch: int | None = None) -> dict:
             "truncated": False,
             "head": None,
             "unsettled": [],
+            "unsettled_worktree": [],
         }
 
     def produce() -> dict:
@@ -1162,29 +1177,38 @@ def git_status(path: str | None, min_epoch: int | None = None) -> dict:
             # name was read straight from HEAD and is still known.
             parsed["branch"] = parsed["branch"] or branch
             parsed["repo"] = repo.toplevel
-            parsed["unsettled"] = _unsettled(repo, gitdir, parsed.get("head"), parsed["entries"])
+            # HEAD's changes are read ONCE per status and asked two questions of: does the index
+            # still hold the parent's entry, and does the worktree still hold the parent's bytes.
+            changes = _head_changes(repo, gitdir, parsed.get("head"))
+            parsed["unsettled"] = _unsettled_from(changes, parsed["entries"])
+            parsed["unsettled_worktree"] = _unsettled_worktree(
+                repo, gitdir, changes, parsed["entries"]
+            )
             return parsed
 
     return _single_flight(repo.toplevel, produce, min_epoch=min_epoch)
 
 
-def _unsettled(repo: Repo, gitdir: str, head: str | None, entries: list[dict]) -> list[str] | None:
-    """Paths the last commit changed whose index entry still holds the commit's PARENT version.
+#: How many worktree files `unsettled_worktree` hashes on one status read, and how large each
+#: may be. Past either bound the answer is ``None`` — "could not be determined" — never a guess.
+UNSETTLED_WORKTREE_MAX = 50
+UNSETTLED_WORKTREE_BYTES = 8 * 1024 * 1024
 
-    Such a path reads as a staged change that would REVERT the last commit — which is what a
-    commit whose index settlement is still pending looks like (#950), and also what a reversal
-    staged on purpose looks like. The two cannot be told apart from repository state, which is why
-    the panel reports this rather than acting on it.
+_Changes = dict[str, tuple[tuple[str, str] | None, tuple[str, str] | None]]
+
+
+def _head_changes(repo: Repo, gitdir: str, head: str | None) -> _Changes | None:
+    """The paths HEAD changed against its parent, as ``{path: (before, after)}``.
 
     Read on the sanitized gitdir like everything else on this path. `cat-file` reads the commit's
     parent lines; `diff-tree --raw` lists changed paths as modes and object ids only — it produces
     no content diff, so no textconv, external diff or filter driver has anything to run, and the
-    sanitized gitdir defines none anyway. A merge at HEAD reports nothing (the panel never makes
-    one); a root commit compares against the empty tree. ``None`` means "could not be determined"
-    (for example a commit too large for the output budget), never "nothing unsettled".
+    sanitized gitdir defines none anyway. A merge at HEAD (the panel never makes one) and a missing
+    HEAD give ``{}``; a root commit compares against the empty tree. ``None`` means "could not be
+    determined" (for example a commit too large for the output budget), never "nothing changed".
     """
     if not head:
-        return []
+        return {}
     try:
         raw_commit = _run_git(
             home_root(), ["cat-file", "commit", head], cwd=repo.toplevel, gitdir=gitdir
@@ -1196,7 +1220,7 @@ def _unsettled(repo: Repo, gitdir: str, head: str | None, entries: list[dict]) -
         ln[len("parent ") :].strip() for ln in header.splitlines() if ln.startswith("parent ")
     ]
     if len(parents) > 1:
-        return []
+        return {}
     base = parents[0] if parents else EMPTY_TREE
     try:
         blob = _run_git(
@@ -1207,8 +1231,11 @@ def _unsettled(repo: Repo, gitdir: str, head: str | None, entries: list[dict]) -
         )
     except GitError:
         return None
-    # What the index holds, for every path the index differs from HEAD on. A path absent from this
-    # map is at HEAD's entry, i.e. settled.
+    return _parse_raw(blob)
+
+
+def _index_differs(entries: list[dict]) -> dict[str, tuple[str, str] | None]:
+    """What the index holds for every path it differs from HEAD on. Absent = at HEAD's entry."""
     index_of: dict[str, tuple[str, str] | None] = {}
     for e in entries:
         if e.get("kind") != "staged":
@@ -1219,10 +1246,93 @@ def _unsettled(repo: Repo, gitdir: str, head: str | None, entries: list[dict]) -
             index_of[e["path"]] = None
         else:
             index_of[e["path"]] = (e.get("mode_index") or "", e.get("oid_index") or "")
+    return index_of
+
+
+def _unsettled_from(changes: _Changes | None, entries: list[dict]) -> list[str] | None:
+    """Paths the last commit changed whose index entry still holds the commit's PARENT version.
+
+    Such a path reads as a staged change that would REVERT the last commit — which is what a
+    commit whose index settlement is still pending looks like (#950), and also what a reversal
+    staged on purpose looks like. The two cannot be told apart from repository state, which is why
+    the panel reports this rather than acting on it.
+    """
+    if changes is None:
+        return None
+    index_of = _index_differs(entries)
+    return sorted(
+        p for p, (before, _after) in changes.items() if p in index_of and index_of[p] == before
+    )
+
+
+def _unsettled(repo: Repo, gitdir: str, head: str | None, entries: list[dict]) -> list[str] | None:
+    """`_unsettled_from` for callers that have not read HEAD's changes yet."""
+    return _unsettled_from(_head_changes(repo, gitdir, head), entries)
+
+
+def _unsettled_worktree(
+    repo: Repo, gitdir: str, changes: _Changes | None, entries: list[dict]
+) -> list[str] | None:
+    """Paths the last commit changed whose index is AT the commit but whose worktree file still
+    holds the PARENT's version (#950).
+
+    A revert that could not write one of its files leaves exactly this: committed, indexed, and the
+    file on disk still the pre-revert content — an unstaged change that would undo the revert. Like
+    `unsettled` it is derived from state, so it survives a reload, and like `unsettled` it is only
+    reported: SETTLE is the operator's click. A staged path is `unsettled`'s question, not this one.
+
+    Hashed with `hash-object --no-filters` on the sanitized gitdir: no `-w`, so nothing is written,
+    and no clean filter runs. Regular files only, and bounded — past `UNSETTLED_WORKTREE_MAX`
+    candidates or a file over `UNSETTLED_WORKTREE_BYTES` the answer is ``None``.
+    """
+    if changes is None:
+        return None
+    if not changes:
+        return []
+    index_of = _index_differs(entries)
+    worktree = {e["path"]: e for e in entries if e.get("kind") in ("changed", "untracked")}
     out: list[str] = []
-    for chunk_path, (before, _after) in _parse_raw(blob).items():
-        if chunk_path in index_of and index_of[chunk_path] == before:
-            out.append(chunk_path)
+    to_hash: list[tuple[str, tuple[str, str]]] = []
+    for p, (before, _after) in changes.items():
+        if p in index_of or p not in worktree:
+            continue  # staged (the index question), or the worktree is already at HEAD
+        e = worktree[p]
+        if before is None:
+            # HEAD added it and the parent had no such file: unsettled iff the worktree lacks it.
+            if e.get("kind") == "changed" and e.get("worktree") == "D":
+                out.append(p)
+            continue
+        if before[0] in ("100644", "100755"):
+            to_hash.append((p, before))
+    if len(to_hash) + len(out) > UNSETTLED_WORKTREE_MAX:
+        return None
+    regular: list[tuple[str, tuple[str, str], bool]] = []
+    for p, before in to_hash:
+        try:
+            st = os.lstat(os.path.join(repo.toplevel, p))
+        except OSError:
+            continue
+        if (st.st_mode & 0o170000) != 0o100000:
+            continue  # not a regular file: not the parent's version of one
+        if st.st_size > UNSETTLED_WORKTREE_BYTES:
+            return None
+        regular.append((p, before, bool(st.st_mode & 0o111)))
+    if regular:
+        try:
+            blob = _run_git(
+                home_root(),
+                ["hash-object", "--no-filters", "--", *(p for p, _b, _x in regular)],
+                cwd=repo.toplevel,
+                gitdir=gitdir,
+            )
+        except GitError:
+            return None
+        oids = blob.decode("ascii", "replace").split()
+        if len(oids) != len(regular):
+            return None
+        for (p, before, executable), oid in zip(regular, oids, strict=True):
+            if oid == before[1] and (before[0] == "100755") == executable:
+                out.append(p)
     return sorted(out)
 
 
@@ -1293,6 +1403,139 @@ def git_branches(path: str | None) -> dict:
             }
 
     return _single_flight(f"branches:{repo.toplevel}", produce)
+
+
+#: RECENT COMMITS (#950 Phase 2b): how many first-parent commits the panel lists — and so the only
+#: commits a revert may name.
+LOG_LIMIT = 30
+#: Subjects and author names are display text: cut at this length, never refused.
+LOG_TEXT_MAX = 200
+_OID = re.compile(r"\A[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
+
+
+def git_log(path: str | None, limit: object = None) -> dict:
+    """RECENT COMMITS (#950): the current branch's first-parent history, newest first.
+
+    A read on the sanitized gitdir. `log` with no `-p`, no `--stat` and no pathspec produces no
+    diff, so no textconv or external diff has anything to run; `%an` is the raw author name and
+    reads no `.mailmap`. ``pushed`` is present only when the branch has an upstream the snapshot
+    could resolve — an absent key means "not known", never "not pushed". `rev-list --first-parent
+    HEAD ^upstream` capped at the same limit is exact for the listed window: excluding commits can
+    only remove from HEAD's first-parent chain, so every listed unpushed commit is inside the cap.
+    """
+    n = LOG_LIMIT
+    if isinstance(limit, str) and limit.isdigit():
+        n = max(1, min(LOG_LIMIT, int(limit)))
+    elif isinstance(limit, int) and not isinstance(limit, bool):
+        n = max(1, min(LOG_LIMIT, limit))
+    base = contained_path(path or "")
+    repo = discover_repo(base)
+    if repo is None:
+        return {"repo": None, "branch": None, "head": None, "commits": []}
+
+    def produce() -> dict:
+        with sanitized_gitdir(repo) as (gitdir, branch):
+
+            def run(args: list[str]) -> bytes:
+                return _run_git(home_root(), args, cwd=repo.toplevel, gitdir=gitdir)
+
+            head = run(["rev-parse", "--verify", "--quiet", "HEAD"]).decode("ascii", "replace")
+            head = head.strip()
+            if not _OID.match(head):
+                return {"repo": repo.toplevel, "branch": branch, "head": None, "commits": []}
+            blob = run(
+                [
+                    "log",
+                    "--first-parent",
+                    "--no-color",
+                    "--no-decorate",
+                    "--no-show-signature",
+                    f"--max-count={n}",
+                    "--format=%H%x00%h%x00%P%x00%an%x00%at%x00%s%x1e",
+                    head,
+                    "--",
+                ]
+            )
+            unpushed: set[str] | None = None
+            if branch:
+                try:
+                    up = run(["rev-parse", "--verify", "--quiet", "@{upstream}"]).decode(
+                        "ascii", "replace"
+                    )
+                except GitError:
+                    up = ""
+                up = up.strip()
+                if _OID.match(up):
+                    out = run(
+                        ["rev-list", "--first-parent", f"--max-count={n}", head, f"^{up}", "--"]
+                    )
+                    unpushed = set(out.decode("ascii", "replace").split())
+            commits: list[dict] = []
+            for rec in blob.decode("utf-8", "replace").split("\x1e"):
+                parts = rec.strip("\n").split("\x00")
+                if len(parts) != 6 or not _OID.match(parts[0]):
+                    continue  # a subject carrying the separators is display text; skip, never guess
+                sha, short, parents, author, when, subject = parts
+                entry: dict = {
+                    "sha": sha,
+                    "short": short,
+                    "subject": subject[:LOG_TEXT_MAX],
+                    "author": author[:LOG_TEXT_MAX],
+                    "time": int(when) if when.isdigit() else None,
+                    "parents": len(parents.split()),
+                }
+                if unpushed is not None:
+                    entry["pushed"] = sha not in unpushed
+                commits.append(entry)
+            return {"repo": repo.toplevel, "branch": branch, "head": head, "commits": commits}
+
+    # Share the write epoch with status while keeping separate values and single flights. A
+    # mutation invalidates every history limit, including reads still using an older snapshot.
+    return _single_flight(f"log:{n}:{repo.toplevel}", produce, epoch_key=repo.toplevel)
+
+
+def revert_tree(repo: Repo, commit: str, head: str) -> tuple[str | None, list[str]]:
+    """The tree `head` would have with `commit` reverted — computed where no repository code runs.
+
+    `merge-tree --write-tree --merge-base=<commit> <head> <commit>^` is the three-way merge a
+    revert is, and it writes no ref, no index and no worktree file: only objects, into the real
+    store (the snapshot's `objects` links to it), where they stay unreferenced unless a commit is
+    published. It runs in the SANITIZED gitdir because a merge is the one read that can execute
+    repository code: measured on git 2.43.0, a `merge.<name>.driver` bound through
+    `info/attributes` RAN under `merge-tree` in the real gitdir — and turned a conflict into a
+    "clean" merge — while in the config-less gitdir no driver exists for an attribute to bind to.
+
+    Returns ``(tree, [])`` for a clean revert and ``(None, conflicted_paths)`` for a conflict.
+    """
+    with sanitized_gitdir(repo) as (gitdir, _branch):
+        rc, out, err = _run_git_rc(
+            home_root(),
+            [
+                "merge-tree",
+                "--write-tree",
+                "-z",
+                "--name-only",
+                "--no-messages",
+                f"--merge-base={commit}",
+                head,
+                f"{commit}^",
+            ],
+            cwd=repo.toplevel,
+            gitdir=gitdir,
+        )
+    if rc not in (0, 1):
+        if b"merge-base" in err or b"write-tree" in err:
+            raise GitError(
+                "reverting from the panel needs git 2.40 or newer on this host", status=501
+            )
+        raise GitError("git could not compute the revert", status=400)
+    fields = out.split(b"\x00")
+    tree = fields[0].decode("ascii", "replace").strip() if fields else ""
+    if rc == 0:
+        if not _OID.match(tree):
+            raise GitError("git did not return the reverted tree", status=500)
+        return tree, []
+    return None, sorted({f.decode("utf-8", "replace") for f in fields[1:] if f})
 
 
 def git_diff_kw(path: str, staged: bool) -> dict:

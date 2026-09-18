@@ -40,6 +40,7 @@ const entry = (over: Record<string, unknown>) => ({
 const DIRTY = {
   repo: CWD,
   branch: "devopsagent/git-write",
+  head: "d".repeat(40),
   upstream: "origin/devopsagent/git-write",
   ahead: 1,
   behind: 2,
@@ -95,6 +96,7 @@ type Opts = {
   onWrite?: (url: string) => void;
   /** Park the push preflight until this settles, to observe the pre-answer state. */
   pushParked?: Promise<void>;
+  log?: unknown;
 };
 
 async function mockApp(page: Page, opts: Opts = {}) {
@@ -144,12 +146,13 @@ async function mockApp(page: Page, opts: Opts = {}) {
   );
   await page.route("**/api/git/status**", (r) => r.fulfill({ json: status }));
   await page.route("**/api/git/branches**", (r) => r.fulfill({ json: opts.branches ?? BRANCHES }));
+  await page.route("**/api/git/log**", (r) => r.fulfill({ json: opts.log ?? LOG }));
   await page.route("**/api/git/push-target**", async (r) => {
     if (opts.pushParked) await opts.pushParked;
     await r.fulfill({ json: opts.push ?? PUSH_TARGET });
   });
   // Every write answers with a post-write status, which is what the panel settles from.
-  for (const op of ["stage", "discard", "commit", "commit-paths", "settle", "push", "fetch", "pull", "switch"]) {
+  for (const op of ["stage", "discard", "commit", "commit-paths", "settle", "revert", "push", "fetch", "pull", "switch"]) {
     await page.route(`**/api/git/${op}`, (r) => {
       opts.onWrite?.(r.request().url());
       r.fulfill({ json: { status: CLEAN, discarded: ["web/src/GitTab.tsx"], files: 1 } });
@@ -1204,4 +1207,191 @@ test.describe("coarse pointer (#950)", () => {
     await expect(page.locator("[data-git-select='web/src/GitTab.tsx']")).toBeChecked();
     await expect(page.locator("[data-file-viewer]")).toHaveCount(0); // not the row's viewer
   });
+});
+
+// ---------------------------------------------------------------- #950: recent commits, revert
+
+const LOG = {
+  repo: CWD,
+  branch: "devopsagent/git-write",
+  head: "d".repeat(40),
+  commits: [
+    { sha: "d".repeat(40), short: "ddddddd", subject: "Refill the limiter continuously", author: "t", time: NOW - 720, parents: 1, pushed: false },
+    { sha: "e".repeat(40), short: "eeeeeee", subject: "Add rate-limit headers to 429s", author: "t", time: NOW - 7200, parents: 1, pushed: true },
+    { sha: "f".repeat(40), short: "fffffff", subject: "Merge branch 'side'", author: "t", time: NOW - 86400, parents: 2, pushed: true },
+  ],
+};
+
+async function openLog(page: Page) {
+  await page.locator("[data-git-log-toggle]").click();
+  await expect(page.locator("[data-commit-row]")).toHaveCount(3);
+}
+
+test("RECENT COMMITS stays collapsed until opened, then marks what is not pushed", async ({ page }) => {
+  const logReads: string[] = [];
+  // The fixture ages commits from NOW, taken when this file loaded; the page must read the same clock,
+  // or a test that starts a minute into the run sees "13m" for a commit made 12 minutes before NOW.
+  await page.clock.setFixedTime(NOW * 1000);
+  await openGit(page, { status: CLEAN });
+  page.on("request", (r) => {
+    if (r.url().includes("/api/git/log")) logReads.push(r.url());
+  });
+  await expect(page.locator("[data-commit-row]")).toHaveCount(0);
+  expect(logReads).toHaveLength(0); // nothing fetched while collapsed
+  await openLog(page);
+  await expect(page.locator("[data-git-log-toggle]")).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator(`[data-commit-row='${"d".repeat(40)}']`)).toContainText("not pushed");
+  await expect(page.locator(`[data-commit-row='${"e".repeat(40)}']`)).not.toContainText("not pushed");
+  // "Not pushed" is state: it must be fully shown, never squeezed out by a long subject.
+  const when = page.locator(`[data-commit-row='${"d".repeat(40)}'] [class*='logWhen']`);
+  expect(await when.evaluate((el) => el.getBoundingClientRect().width >= el.scrollWidth - 1)).toBe(true);
+  await expect(when).toContainText("12m");
+  // A merge is terminal work: disabled, with the reason written on the control.
+  const merge = page.locator(`[data-git-op='revert-commit'][data-commit='${"f".repeat(40)}']`);
+  await expect(merge).toBeDisabled();
+  await expect(merge).toHaveAttribute("title", /merge/);
+});
+
+test("on a dirty tree every REVERT is disabled and the hint says why", async ({ page }) => {
+  await openGit(page); // DIRTY
+  await openLog(page);
+  await expect(page.locator("[data-log-hint]")).toContainText("clean tree");
+  const reverts = page.locator("[data-git-op='revert-commit']");
+  for (let i = 0; i < 3; i++) await expect(reverts.nth(i)).toBeDisabled();
+});
+
+test("REVERT confirms the new commit, then posts the commit and the head it showed", async ({ page }) => {
+  await openGit(page, { status: CLEAN });
+  const bodies: Record<string, unknown>[] = [];
+  await page.route("**/api/git/revert", (r) => {
+    bodies.push(r.request().postDataJSON());
+    r.fulfill({ json: { status: CLEAN, commit: "abc1234", sha: "a".repeat(40), index: "settled", worktree: "settled" } });
+  });
+  await openLog(page);
+  await page.locator(`[data-git-op='revert-commit'][data-commit='${"e".repeat(40)}']`).click();
+  const dialog = page.locator("[data-revert-commit-confirm]");
+  await expect(dialog).toContainText("new commit");
+  await expect(dialog).toContainText("eeeeeee");
+  await expect(dialog).toContainText("devopsagent/git-write");
+  expect(bodies).toHaveLength(0); // nothing before the confirmation
+  await page.locator("[data-revert-commit-go]").click();
+  await expect.poll(() => bodies.length).toBe(1);
+  expect(bodies[0]).toMatchObject({ path: CWD, commit: "e".repeat(40), head: "d".repeat(40), branch: "refs/heads/devopsagent/git-write" });
+  await expect(page.locator("[data-git-notice]")).toContainText("Reverted eeeeeee as abc1234");
+});
+
+test("history rejects and refetches an old HEAD", async ({ page }) => {
+  const next = "a".repeat(40);
+  await openGit(page, { status: { ...CLEAN, head: next } });
+  let reads = 0;
+  await page.route("**/api/git/log**", (r) => {
+    reads++;
+    r.fulfill({ json: reads === 1 ? LOG : {
+      ...LOG, head: next,
+      commits: [{ ...LOG.commits[0], sha: next, short: "aaaaaaa", subject: "New revert" }, ...LOG.commits],
+    } });
+  });
+  await page.locator("[data-git-log-toggle]").click();
+  await expect(page.locator(`[data-commit-row='${next}']`)).toContainText("New revert");
+  expect(reads).toBe(2);
+});
+
+test("history from another branch at the same HEAD is never offered for revert", async ({ page }) => {
+  await openGit(page, { status: CLEAN, log: { ...LOG, branch: "other" } });
+  await page.locator("[data-git-log-toggle]").click();
+  await expect(page.getByText("History no longer matches this branch and commit. Refresh to load it again.")).toBeVisible();
+  await expect(page.locator("[data-commit-row]")).toHaveCount(0);
+  await page.route("**/api/git/log**", (r) => r.fulfill({ json: LOG }));
+  await page.getByRole("button", { name: "Refresh recent commits" }).click();
+  await expect(page.locator("[data-commit-row]")).toHaveCount(3);
+});
+
+test("a revert whose index write could not be confirmed on disk says so, never plain success (#950)", async ({
+  page,
+}) => {
+  await openGit(page, { status: CLEAN });
+  // Review 4833: the index was replaced, then syncing it failed — neither "not updated" nor success.
+  await page.route("**/api/git/revert", (r) =>
+    r.fulfill({
+      json: {
+        commit: "abc1234",
+        sha: "a".repeat(40),
+        index: "settled",
+        index_left: [],
+        index_reason: "the index was updated, but it could not be confirmed on disk (Input/output error)",
+        index_durable: false,
+        worktree: "settled",
+        worktree_left: [],
+        worktree_reason: null,
+        recoverable: {},
+      },
+    }),
+  );
+  await openLog(page);
+  await page.locator(`[data-git-op='revert-commit'][data-commit='${"e".repeat(40)}']`).click();
+  await page.locator("[data-revert-commit-go]").click();
+  const notice = page.locator("[data-git-notice]");
+  await expect(notice).toContainText("Reverted eeeeeee as abc1234");
+  await expect(notice).toContainText("could not be confirmed");
+});
+
+test("Escape on the revert-commit confirmation closes the dialog, not the panel", async ({ page }) => {
+  await openGit(page, { status: CLEAN });
+  await openLog(page);
+  await page.locator(`[data-git-op='revert-commit'][data-commit='${"e".repeat(40)}']`).click();
+  await expect(page.locator("[data-revert-commit-confirm]")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator("[data-revert-commit-confirm]")).toHaveCount(0);
+  await expect(page.locator("[data-file-panel]")).toBeVisible();
+});
+
+test.describe("coarse pointer (#950 recent commits)", () => {
+  test.skip(({ isMobile }) => !isMobile, "target geometry only matters on touch");
+
+  test("REVERT is a 44px target and the list does not scroll sideways at 360px", async ({ page }) => {
+    await page.setViewportSize({ width: 360, height: 740 });
+    await openGit(page, { status: CLEAN });
+    await page.locator("[data-git-log-toggle]").tap();
+    await expect(page.locator("[data-commit-row]")).toHaveCount(3);
+    const revert = page.locator(`[data-git-op='revert-commit'][data-commit='${"e".repeat(40)}']`);
+    const box = (await revert.boundingBox())!;
+    expect(box.height).toBeGreaterThanOrEqual(44);
+    await page.touchscreen.tap(box.x + 3, box.y + 3);
+    await expect(page.locator("[data-revert-commit-confirm]")).toBeVisible();
+    const over = await page.evaluate(() => {
+      const el = document.querySelector("[data-git-tab]") as HTMLElement | null;
+      return el ? el.scrollWidth - el.clientWidth : 0;
+    });
+    expect(over).toBeLessThanOrEqual(1);
+  });
+});
+
+
+test("an unknown working-tree state says so, and never shows WORKING TREE PENDING as if nothing were behind (#950)", async ({
+  page,
+}) => {
+  // `unsettled_worktree: null` is the server saying it could NOT compare the files (past its bound).
+  await openGit(page, { status: { ...SELECTABLE, unsettled: [], unsettled_worktree: null } });
+  const notice = page.locator("[data-git-worktree-unknown]");
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText("Working tree state unknown");
+  await expect(page.locator("[data-git-pending]")).toHaveCount(0);
+  await expect(page.locator("[data-git-pending-unknown]")).toHaveCount(0);
+});
+
+test("WORKING TREE PENDING names a file a revert could not write, and SETTLE posts the commit", async ({ page }) => {
+  await openGit(page, {
+    status: { ...SELECTABLE, entries: [entry({ path: "src/files.py", fp: "fp-files" })], unsettled: [], unsettled_worktree: ["src/files.py"] },
+  });
+  const bodies: Record<string, unknown>[] = [];
+  await page.route("**/api/git/settle", (r) => {
+    bodies.push(r.request().postDataJSON());
+    r.fulfill({ json: { status: CLEAN, index: "settled", worktree: "settled", worktree_paths: ["src/files.py"] } });
+  });
+  await expect(page.locator("[data-git-pending]")).toContainText("Working tree pending");
+  await expect(page.locator("[data-git-pending-worktree]")).toContainText("src/files.py");
+  await page.locator("[data-git-op='settle']").click();
+  await expect.poll(() => bodies.length).toBe(1);
+  expect(bodies[0]).toMatchObject({ path: CWD, commit: HEAD950 });
+  await expect(page.locator("[data-git-notice]")).toContainText("Wrote the committed src/files.py");
 });

@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
-import type { GitEntry, GitPushTarget, GitStatus } from "../../types/api";
-import { commitPlan, fingerprintsFor, gitOps, pendingState, rowActionsFor } from "./gitOps";
+import type { GitEntry, GitPushTarget, GitStatus, GitWriteResult } from "../../types/api";
+import {
+  commitPlan,
+  fingerprintsFor,
+  gitOps,
+  pendingState,
+  revertCommitSummary,
+  revertReason,
+  rowActionsFor,
+  worktreePendingState,
+} from "./gitOps";
 
 function entry(over: Partial<GitEntry> = {}): GitEntry {
   return { path: "a.txt", index: ".", worktree: "M", kind: "changed", oid: null, ...over };
@@ -314,5 +323,109 @@ describe("a file name that is not UTF-8 is never a write target (#950, review 48
     const p = commitPlan(status({ entries: [odd, fine] }), "all", new Set());
     expect(p.paths).toEqual(["a.txt"]);
     expect(p.reason).toMatch(/not valid UTF-8/);
+  });
+});
+
+describe("revert a recent commit (#950)", () => {
+  const commit = (over: Partial<{ parents: number }> = {}) => ({
+    sha: "c".repeat(40),
+    short: "ccccccc",
+    subject: "s",
+    author: "a",
+    time: 0,
+    parents: 1,
+    ...over,
+  });
+
+  it("is allowed on a clean branch for a single-parent commit", () => {
+    expect(revertReason(status({ entries: [] }), commit())).toBeNull();
+  });
+
+  it("needs a clean tree and names the count", () => {
+    expect(revertReason(status({ entries: [entry()] }), commit())).toMatch(/clean tree.*1 change first/);
+    expect(revertReason(status({ entries: [entry(), entry({ path: "b" })] }), commit())).toMatch(
+      /2 changes first/,
+    );
+  });
+
+  it("refuses a merge, the first commit, a detached HEAD and conflicts", () => {
+    expect(revertReason(status({ entries: [] }), commit({ parents: 2 }))).toMatch(/merge/);
+    expect(revertReason(status({ entries: [] }), commit({ parents: 0 }))).toMatch(/first commit/);
+    expect(revertReason(status({ branch: null, entries: [] }), commit())).toMatch(/detached/);
+    expect(revertReason(status({ entries: [entry({ kind: "unmerged" })] }), commit())).toMatch(/conflict/);
+  });
+});
+
+describe("worktree pending state (#950 2b)", () => {
+  const HEAD = "c".repeat(40);
+
+  it("null means the server could not compare the files — unknown, never none", () => {
+    expect(worktreePendingState(status({ head: HEAD, unsettled_worktree: null }))).toEqual({
+      kind: "unknown",
+    });
+  });
+
+  it("a list is pending; an empty or absent list is none", () => {
+    expect(worktreePendingState(status({ head: HEAD, unsettled_worktree: ["a.txt"] }))).toEqual({
+      kind: "pending",
+      paths: ["a.txt"],
+    });
+    expect(worktreePendingState(status({ head: HEAD, unsettled_worktree: [] }))).toEqual({ kind: "none" });
+    expect(worktreePendingState(status({ head: HEAD }))).toEqual({ kind: "none" });
+  });
+
+  it("with no commit yet nothing can be behind it", () => {
+    expect(worktreePendingState(status({ head: null, unsettled_worktree: null }))).toEqual({ kind: "none" });
+    expect(worktreePendingState(null)).toEqual({ kind: "none" });
+  });
+});
+
+describe("revert a recent commit — what the result says (#950 2b, review 4833)", () => {
+  const done = (over: Partial<GitWriteResult> = {}): GitWriteResult => ({
+    status: null,
+    commit: "abc1234",
+    sha: "a".repeat(40),
+    index: "settled",
+    index_left: [],
+    index_reason: null,
+    worktree: "settled",
+    worktree_left: [],
+    worktree_reason: null,
+    ...over,
+  });
+
+  it("a settled revert names the new commit and that nothing was pushed", () => {
+    expect(revertCommitSummary("eeeeeee", done())).toBe(
+      "Reverted eeeeeee as abc1234 — nothing was pushed.",
+    );
+  });
+
+  it("an index write that could not be confirmed on disk says so, never plain success", () => {
+    const text = revertCommitSummary(
+      "eeeeeee",
+      done({ index_durable: false, index_reason: "fsync failed" }),
+    );
+    expect(text).toMatch(/could not be confirmed \(fsync failed\)/);
+    expect(text).not.toMatch(/was not updated/);
+  });
+
+  it("an index left behind names its paths, and files left behind are named too", () => {
+    const text = revertCommitSummary(
+      "eeeeeee",
+      done({ index: "pending", index_left: ["a.txt"], worktree: "pending", worktree_left: ["b.txt"] }),
+    );
+    expect(text).toMatch(/index was not updated for a\.txt/);
+    expect(text).toMatch(/Restoration is incomplete for b\.txt/);
+  });
+
+  it("a failure after displacement calls for recovery without claiming the file is untouched", () => {
+    const text = revertCommitSummary("eeeeeee", done({
+      worktree: "pending", worktree_left: ["a.txt"],
+      worktree_reason: "blob read failed", recoverable: { "a.txt": ["b".repeat(40)] },
+    }));
+    expect(text).toContain("Restoration is incomplete for a.txt");
+    expect(text).toMatch(/Inspect.*recover/i);
+    expect(text).toContain("blob read failed");
+    expect(text).not.toMatch(/left exactly as found|changed after the check/);
   });
 });

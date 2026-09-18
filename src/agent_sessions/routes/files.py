@@ -319,6 +319,22 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
             ) from None
         return _json(payload)
 
+    @app.get("/api/git/log")
+    async def git_log(request: Request, _user: str = Depends(logged_in)) -> JSONResponse:
+        # RECENT COMMITS (#950): a READ, on the sanitized gitdir like every other read. `limit` is
+        # clamped to the panel's own window, which is also the set a revert may name.
+        raw = request.query_params.get("path")
+        limit = request.query_params.get("limit")
+        try:
+            payload = await _run(raw or "", gitpanel.git_log, raw, limit)
+        except files.FsError as e:
+            raise HTTPException(status_code=e.status, detail=str(e), headers=_NO_STORE) from None
+        except Exception:
+            raise HTTPException(
+                status_code=500, detail="could not list the recent commits", headers=_NO_STORE
+            ) from None
+        return _json(payload)
+
     @app.get("/api/git/push-target")
     async def git_push_target(request: Request, _user: str = Depends(logged_in)) -> JSONResponse:
         # The dry preflight (#806 Phase 3): which remote a push WOULD go to, resolved server-side
@@ -458,6 +474,15 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         # SETTLE (#950): only where the index still holds the parent's entry, so it is idempotent
         # and never consumes newer staging. Offered by the panel, never applied automatically.
         return await _write(request, gitwrite.git_settle, "commit")
+
+    @app.post("/api/git/revert")
+    async def git_revert(
+        request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        # REVERT A COMMIT (#950): not `git revert`. The merge is computed in the sanitized gitdir,
+        # published by compare-and-swap on `head`, then materialised path by path — the response
+        # carries the SHA once the commit exists, with `index` and `worktree` each settled/pending.
+        return await _write(request, gitwrite.git_revert, "commit", "head", "branch")
 
     @app.post("/api/git/push")
     async def git_push(

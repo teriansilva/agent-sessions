@@ -358,6 +358,58 @@ That state looks exactly like a reversal you staged on purpose, so the panel nev
 you. **SETTLE** brings the index up to the last commit for those paths and leaves anything staged
 after it alone. A Staged commit made while the banner is showing asks first, naming the paths.
 
+### Revert a commit
+
+**RECENT COMMITS**, under the change groups, lists the branch's last 30 first-parent commits and
+marks the ones its upstream does not have yet. **REVERT** on one creates a *new* commit that undoes
+it — history is not rewritten and nothing is pushed.
+
+History refreshes after a write and when the displayed branch or last commit changes. If the
+history no longer matches them, the panel offers **Refresh** instead of actions on stale rows.
+
+It needs a clean working tree, so a revert never lands on top of uncommitted work. It is refused for
+a merge, for the branch's first commit, and for a commit that changes a symlink, a submodule or a
+file mode, or replaces a file with a directory (or vice versa) — those are terminal work. A revert
+that would conflict with later commits is refused
+before anything is written, and if the branch moves between opening the confirmation and
+confirming it, nothing is committed. Switching to another branch is also refused when the two
+branches point at the same commit: the confirmation binds both the branch and the commit.
+The merge is computed without the repository's own
+configuration, so a merge driver the repository defines never runs.
+
+After the commit is made, each file is updated only if it still holds the content from before the
+revert; a file someone changed in the meantime is left exactly as it is, and the tab names it. A
+file the revert deletes is saved as a git object first, and its id is listed.
+
+A revert is also refused while a merge, cherry-pick or revert is in progress, or if the session
+switches branch just before the commit is written. If the checkout switches, or a file goes into
+conflict, after the commit is made, the new commit is kept and reported, but that branch's index
+and files, or the conflicted file, are left exactly as they are. If the revert stops part-way for
+any other reason, the tab still shows the new commit, the files it could not update, and every
+version already saved. An incomplete restoration can leave a pathname absent after preserving its
+previous bytes; inspect the working tree and the listed recovery copies. **SETTLE** retains those
+copies and any applied index result if its worktree phase fails, and reports a directory blocking
+a committed file as pending instead of claiming it finished.
+While the revert records its commit and updates the index and files, it
+holds git's own index lock, so a `git switch`, `git commit` or `git merge` run in the session at
+that moment fails with git's ordinary "index.lock exists" error instead of landing halfway through;
+if git itself is busy for more than a couple of seconds, the revert is refused and nothing is
+committed. From the moment its commit is recorded until its files are written it also holds the
+locks on HEAD and the branch, so a `git reset --soft` or a command that repoints HEAD fails with
+git's "cannot lock ref" error; if another git holds one of those at that moment, the commit is kept
+and the index and files are reported as not yet updated. If the session points HEAD at another
+branch in the instant just before the revert's commit is recorded — which git cannot refuse, because
+recording the commit needs HEAD's lock itself — the revert stays where git recorded it, and the tab
+reports its commit id with the index and files still pending. The same applies when HEAD moves
+just after, or a branch is redirected to another branch during publication: the panel leaves the
+index and files untouched and never moves a ref back automatically. Inspect the reported commit
+and preserve uncommitted work before deciding how to recover in the terminal. Reverting is refused
+before publication when `core.logAllRefUpdates` is disabled, because the panel needs that record to
+identify where its commit landed. If the index was updated but writing it to disk could not be confirmed, the tab says so
+rather than reporting a plain success. When the tab cannot check whether files are still behind the last commit —
+there are too many, or they are too large, to compare — it says the working-tree state is unknown
+rather than showing nothing.
+
 ### Push
 
 **PUSH → *remote*** pushes the current branch to the branch of the same name on a remote the
@@ -380,5 +432,5 @@ If the remote accepted the push but the local bookkeeping afterwards did not fin
 so plainly: the remote has the commit, and pushing again is safe but unnecessary.
 
 ::: info Verified against
-Commit `8b1c66b` — `src/agent_sessions/files.py § FILES_MAX_ENTRIES, FILES_SCAN_BUDGET_MS, FILES_MAX_READ, capabilities`; `src/agent_sessions/fileedit.py § MAX_EDIT_BYTES, recovery_dir, resolve_pending, read_file, refuse_recovery_store`; `src/agent_sessions/filewrite.py § MAX_FILE_BYTES, MAX_BATCH_FILES, MAX_BATCH_BYTES, BATCH_IDLE_TTL_S, MAX_LIVE_BATCHES, MAX_LIVE_BATCHES_TOTAL, MAX_DEPTH, MAX_COMPONENT, FILE_MODE, _REPLACE_MAX, validate_relpath, refuse_git_metadata, open_destination`; `src/agent_sessions/gitpanel.py § GIT_MAX_ENTRIES, GIT_TIMEOUT_S, GIT_MAX_STDOUT, DIFF_MAX_*`; `src/agent_sessions/gitwrite.py § NET_TIMEOUT_S, LOCAL_TIMEOUT_S, GIT_ALLOW_PROTOCOL, MAX_PATHS, MAX_MESSAGE, git_fetch, git_pull, git_switch, git_branch_delete, git_stage, git_discard, git_commit, git_commit_paths, git_settle, resolve_push, push_target, git_push`; `web/src/components/files/{UploadControl,UploadQueue,uploadPlan,GitTab,BranchMenu,gitOps}`.
+Commit `8b1c66b` — `src/agent_sessions/files.py § FILES_MAX_ENTRIES, FILES_SCAN_BUDGET_MS, FILES_MAX_READ, capabilities`; `src/agent_sessions/fileedit.py § MAX_EDIT_BYTES, recovery_dir, resolve_pending, read_file, refuse_recovery_store`; `src/agent_sessions/filewrite.py § MAX_FILE_BYTES, MAX_BATCH_FILES, MAX_BATCH_BYTES, BATCH_IDLE_TTL_S, MAX_LIVE_BATCHES, MAX_LIVE_BATCHES_TOTAL, MAX_DEPTH, MAX_COMPONENT, FILE_MODE, _REPLACE_MAX, validate_relpath, refuse_git_metadata, open_destination`; `src/agent_sessions/gitpanel.py § GIT_MAX_ENTRIES, GIT_TIMEOUT_S, GIT_MAX_STDOUT, DIFF_MAX_*`; `src/agent_sessions/gitwrite.py § NET_TIMEOUT_S, LOCAL_TIMEOUT_S, GIT_ALLOW_PROTOCOL, MAX_PATHS, MAX_MESSAGE, git_fetch, git_pull, git_switch, git_branch_delete, git_stage, git_discard, git_commit, git_commit_paths, git_settle, git_log, git_revert, resolve_push, push_target, git_push`; `web/src/components/files/{UploadControl,UploadQueue,uploadPlan,GitTab,BranchMenu,gitOps}`.
 :::

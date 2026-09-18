@@ -305,10 +305,22 @@ def test_only_read_only_subcommands_are_invoked(repo, monkeypatch):
     # field lists the paths the last commit changed. It runs with `--raw` only — modes and object
     # ids, no content diff — so there is nothing for a textconv, external-diff or filter driver to
     # act on, and it runs on the sanitized gitdir, which defines none. `diff` itself stays out.
-    assert subcommands <= {"rev-parse", "status", "cat-file", "diff-tree"}, subcommands
+    # `hash-object` joined it for `unsettled_worktree` (#950 Phase 2b): always `--no-filters` and
+    # never `-w`, so no clean filter runs and nothing is written.
+    assert subcommands <= {
+        "rev-parse",
+        "status",
+        "cat-file",
+        "diff-tree",
+        "hash-object",
+    }, subcommands
     assert "diff" not in subcommands
     diff_tree_calls = [a for a in seen if a[0] == "diff-tree"]
     assert all("--raw" in a and "-p" not in a and "--patch" not in a for a in diff_tree_calls)
+    hash_calls = [a for a in seen if a[0] == "hash-object"]
+    assert all(
+        "--no-filters" in a and "-w" not in a and "--stdin-paths" not in a for a in hash_calls
+    )
 
 
 # --------------------------------------------------------------------------- diff fidelity

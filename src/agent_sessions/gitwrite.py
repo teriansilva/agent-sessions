@@ -97,6 +97,8 @@ from .fsbrowse import home_root
 from .gitpanel import (
     EMPTY_TREE,
     GIT_MAX_INDEX_BYTES,
+    LOG_LIMIT,
+    LOG_TEXT_MAX,
     GitError,
     Repo,
     _copy_nofollow,
@@ -106,6 +108,7 @@ from .gitpanel import (
     git_branches,
     git_status,
     invalidate_status,
+    revert_tree,
 )
 
 #: Network operations get a longer budget than the read path's 10s — a fetch talks to a remote.
@@ -3706,6 +3709,56 @@ def _fence_branch_conversion(
     )
 
 
+def _fence_publication(
+    repo: Repo,
+    refs: _RefLocks,
+    branch: str,
+    mine: str,
+    before_head: str,
+    mark: int | None,
+    stamp: str,
+    names: list[str],
+) -> CasResult | None:
+    """Fence a published commit before either index or worktree settlement.
+
+    The caller owns ``refs`` and releases it after all writes. A returned result means leave
+    both halves alone. ``None`` means HEAD still directly names the original branch and its ref
+    locks are held; the caller must also verify the branch's current OID before writing.
+    Publication is never compensated, including when HEAD moved before it.
+    """
+    why = _lock_head(repo, refs, INDEX_LOCK_WAIT_S)
+    if why is not None:
+        return CasResult([], names, f"{why}, so the index was left alone")
+    fenced = _fence_branch_conversion(repo, branch, mine, stamp, names)
+    if fenced is not None:
+        return fenced
+    expected = (_HEADS + branch).encode("utf-8")
+    targets = _head_targets(repo)
+    if targets is None or not (targets[0] == targets[1] == expected):
+        if _published_through_head(repo, mine, before_head, mark, stamp):
+            # HEAD named the branch when `update-ref` ran and moved only afterwards: the commit
+            # was made on the checkout the operator saw, so it stands and the moved checkout's
+            # index is left for SETTLE.
+            return CasResult(
+                [],
+                names,
+                f"the checkout is no longer on `{branch}`, so its index was left alone",
+            )
+        # It moved BEFORE the publication. Nothing is rewound (review 4920): the commit is
+        # reported on the branch git wrote it to, with its SHA, and the index is left alone.
+        now = None if targets is None else targets[0]
+        return _withdraw_publication(repo, branch, mine, now, names)
+    why = _lock_branch(repo, refs, branch, INDEX_LOCK_WAIT_S)
+    if why is not None:
+        return CasResult([], names, f"{why}, so the index was left alone")
+    # Converted between the fence above and this lock; with the branch's lock held, a
+    # `symbolic-ref` of the branch is refused from here on (measured, git 2.43).
+    fenced = _fence_branch_conversion(repo, branch, mine, stamp, names)
+    if fenced is not None:
+        return fenced
+    return None
+
+
 def _settle_after_publication(
     repo: Repo,
     held: _IndexLock,
@@ -3733,34 +3786,7 @@ def _settle_after_publication(
     names = list(changes)
     refs = _RefLocks()
     try:
-        why = _lock_head(repo, refs, INDEX_LOCK_WAIT_S)
-        if why is not None:
-            return CasResult([], names, f"{why}, so the index was left alone")
-        fenced = _fence_branch_conversion(repo, branch, mine, stamp, names)
-        if fenced is not None:
-            return fenced
-        expected = (_HEADS + branch).encode("utf-8")
-        targets = _head_targets(repo)
-        if targets is None or not (targets[0] == targets[1] == expected):
-            if _published_through_head(repo, mine, before_head, mark, stamp):
-                # HEAD named the branch when `update-ref` ran and moved only afterwards: the commit
-                # was made on the checkout the operator saw, so it stands and the moved checkout's
-                # index is left for SETTLE.
-                return CasResult(
-                    [],
-                    names,
-                    f"the checkout is no longer on `{branch}`, so its index was left alone",
-                )
-            # It moved BEFORE the publication. Nothing is rewound (review 4920): the commit is
-            # reported on the branch git wrote it to, with its SHA, and the index is left alone.
-            now = None if targets is None else targets[0]
-            return _withdraw_publication(repo, branch, mine, now, names)
-        why = _lock_branch(repo, refs, branch, INDEX_LOCK_WAIT_S)
-        if why is not None:
-            return CasResult([], names, f"{why}, so the index was left alone")
-        # Converted between the fence above and this lock; with the branch's lock held, a
-        # `symbolic-ref` of the branch is refused from here on (measured, git 2.43).
-        fenced = _fence_branch_conversion(repo, branch, mine, stamp, names)
+        fenced = _fence_publication(repo, refs, branch, mine, before_head, mark, stamp, names)
         if fenced is not None:
             return fenced
         try:
@@ -3816,6 +3842,20 @@ def _index_fields(res: CasResult) -> dict:
     if not res.durable:
         out["index_durable"] = False
     return out
+
+
+def _retake_after_publish(repo: Repo, lock: _IndexLock) -> _IndexLock | str:
+    """The index lock again, for work that follows an index publication.
+
+    Publishing consumes git's lock — the lock file IS renamed into the new index — so a caller that
+    still has files to write takes it again straight away, and re-reads under it whatever it fences
+    on (another git may have held it in that instant). A lock that was never published is still
+    held and is returned as is; one busy past :data:`INDEX_LOCK_WAIT_S` is a reason, never a wait
+    that hangs the request.
+    """
+    if not lock.published:
+        return lock
+    return _acquire_index_lock(repo, INDEX_LOCK_WAIT_S)
 
 
 def _index_cas(
@@ -4301,6 +4341,153 @@ def git_commit_paths(
     return _guarded(repo, run)
 
 
+def _worktree_entries_raw(repo: Repo, names: list[str]) -> dict[str, tuple[str, str] | None]:
+    """`(mode, oid)` of each worktree file AS STORED ON DISK — hashed with no filters and no `-w`.
+
+    The binding check for SETTLE's worktree half. `_snapshot_for_index` applies clean filters,
+    because staging means that; this compares against the parent's blob, which is the bytes a
+    revert would have replaced, so it hashes the bytes themselves. Absent is ``None``; anything
+    that is not a regular file maps to a value no blob entry can equal.
+    """
+    out: dict[str, tuple[str, str] | None] = {}
+    regular: list[tuple[str, os.stat_result]] = []
+    for n in names:
+        try:
+            st = os.lstat(os.path.join(repo.toplevel, n))
+        except FileNotFoundError:
+            out[n] = None
+            continue
+        if not _stat.S_ISREG(st.st_mode):
+            out[n] = ("other", "")
+            continue
+        regular.append((n, st))
+    for i in range(0, len(regular), _BATCH):
+        chunk = regular[i : i + _BATCH]
+        oids = run_git_write(
+            repo, ["hash-object", "--no-filters", "--", *(n for n, _ in chunk)]
+        ).split()
+        if len(oids) != len(chunk):
+            raise GitError("git did not return one object id per path", status=500)
+        for (n, st), oid in zip(chunk, oids, strict=True):
+            out[n] = ("100755" if st.st_mode & 0o111 else "100644", oid)
+    return out
+
+
+def _settle_worktree(
+    repo: Repo,
+    changes: dict[str, tuple[tuple[str, str] | None, tuple[str, str] | None]],
+    index_before: dict[str, tuple[str, str] | None],
+    expect_branch: str | None = None,
+    expect_head: str | None = None,
+    left_alone: str | None = None,
+) -> dict:
+    """SETTLE's worktree half (#950): the files a revert could not write, brought up to the commit.
+
+    A file qualifies only when its index was ALREADY at the commit's entry before this settle and
+    the file on disk still holds the parent's version — the same rule `unsettled_worktree`
+    reports. A path whose index still held the parent too is a reversal staged on purpose, and its
+    worktree is left exactly as it is. Each qualifying file is re-hashed immediately before
+    replacement and goes through the displacing replacement, so every set of bytes it displaced
+    comes back as an object id.
+
+    Two fences are re-read immediately before any file is written, as review 4829 required of 2a's
+    writes: a checkout no longer on ``expect_branch`` gets nothing (its files belong to another
+    branch), and a path whose index entry is now :data:`UNMERGED` is left exactly as it is — a
+    conflict is never read as "at the commit's entry". With ``expect_head`` (SETTLE, holding
+    index.lock) a HEAD that moved or a merge / cherry-pick / revert that appeared leaves every file
+    alone too, and ``left_alone`` reports them pending without looking (the lock could not be
+    taken again).
+    """
+    regular = [
+        n
+        for n, (before, after) in sorted(changes.items())
+        if all(side is None or side[0] in ("100644", "100755") for side in (before, after))
+        and index_before.get(n) == after
+    ]
+    result: dict = {
+        "worktree": SETTLED,
+        "worktree_paths": [],
+        "worktree_left": [],
+        "worktree_reason": None,
+        "recoverable": {},
+    }
+    if not regular:
+        return result
+    if left_alone is not None:
+        result.update(worktree=PENDING, worktree_left=regular, worktree_reason=left_alone)
+        return result
+    try:
+        if expect_branch is not None and _head_branch(repo) != expect_branch:
+            result.update(
+                worktree=PENDING,
+                worktree_left=regular,
+                worktree_reason=(
+                    f"the checkout is no longer on `{expect_branch}`, so its files were left alone"
+                ),
+            )
+            return result
+        if expect_head is not None:
+            blocked = (
+                "the last commit changed before its files were written"
+                if _current_head(repo) != expect_head
+                else _unfinished_operation(repo)
+            )
+            if blocked:
+                result.update(
+                    worktree=PENDING,
+                    worktree_left=regular,
+                    worktree_reason=f"{blocked}, so the files were left alone",
+                )
+                return result
+        now = _worktree_entries_raw(repo, regular)
+        index_now = _index_entries(repo, regular)
+        for name in regular:
+            before, after = changes[name]
+            if index_now.get(name) == UNMERGED:
+                result["worktree_left"].append(name)
+                result["worktree_reason"] = result["worktree_reason"] or (
+                    f"{name!r} has an unresolved conflict, so the file was left exactly as it is"
+                )
+                continue
+            if index_now.get(name) != after:
+                result["worktree_left"].append(name)
+                result["worktree_reason"] = result["worktree_reason"] or (
+                    f"{name!r}'s index entry changed before restoration, so its file was left alone"
+                )
+                continue
+            if now.get(name) == ("other", "") and after is not None:
+                result["worktree_left"].append(name)
+                result["worktree_reason"] = result["worktree_reason"] or (
+                    f"{name!r} is not a regular file; inspect it before restoring "
+                    "the committed file"
+                )
+                continue
+            if now.get(name) != before or before == after:
+                continue  # not the parent's bytes: already settled, or someone's own work
+            # The list belongs to the result BEFORE any displacement. A later blob read can fail
+            # after the original name was removed; its id must still reach the caller.
+            saved = result["recoverable"].setdefault(name, [])
+            try:
+                if after is None:
+                    got = _remove_displacing(repo, name)
+                    if got:
+                        saved.append(got)
+                else:
+                    _restore_from_index(repo, name, after, saved)
+            except (GitError, FsError, OSError) as e:
+                result["worktree_left"].append(name)
+                result["worktree_reason"] = result["worktree_reason"] or str(e)
+                continue
+            result["worktree_paths"].append(name)
+    except Exception as e:  # noqa: BLE001 - the index may already have changed; retain its outcome
+        result["worktree_left"] = [n for n in regular if n not in result["worktree_paths"]]
+        result["worktree_reason"] = str(e)
+    result["recoverable"] = {k: v for k, v in result["recoverable"].items() if v}
+    if result["worktree_left"]:
+        result["worktree"] = PENDING
+    return result
+
+
 def git_settle(path: str | None, commit: object) -> dict:
     """SETTLE: bring the index up to the last commit for the paths that commit changed (#950).
 
@@ -4330,6 +4517,7 @@ def git_settle(path: str | None, commit: object) -> dict:
         held = _acquire_index_lock(repo, INDEX_LOCK_WAIT_S)
         if isinstance(held, str):
             raise FsError(f"{held}, so SETTLE changed nothing. Try again in a moment.", status=409)
+        current = held
         try:
             # And HEAD's and the branch's ref locks, which a `git reset --soft` needs and
             # index.lock does not stop (Hermes on #964, review 4847): held from the HEAD check
@@ -4370,20 +4558,55 @@ def git_settle(path: str | None, commit: object) -> dict:
                     ["diff-tree", "-r", "-z", "--no-renames", "--raw", base, tip, "--"],
                     require_complete=True,
                 )
+                changes = parse_raw_diff(blob)
+                index_before = _index_entries(repo, sorted(changes))
                 res = _index_cas(
                     repo,
-                    parse_raw_diff(blob),
+                    changes,
                     branch,
                     lock=held,
                     expect_head=tip,
                     fence_operations=True,
                 )
+                if res.reason and res.reason.endswith(CONFLICT_REASON):
+                    raise FsError(
+                        f"{res.reason}. Resolve the conflict in the session first.", status=409
+                    )
+                # Publishing the index consumes git's index.lock (the lock file IS the new index),
+                # so the worktree half takes it again before writing a file and re-reads the
+                # branch, HEAD, the operation state and UNMERGED under it. HEAD's and the branch's
+                # ref locks are NOT consumed by that rename: they stay held through the worktree
+                # half, so a `git reset --soft` or `symbolic-ref` cannot land while files are
+                # written.
+                try:
+                    again = _retake_after_publish(repo, held)
+                    if isinstance(again, str):
+                        worktree = _settle_worktree(
+                            repo,
+                            changes,
+                            index_before,
+                            branch,
+                            tip,
+                            left_alone=f"{again}, so the files were left alone",
+                        )
+                    else:
+                        current = again
+                        worktree = _settle_worktree(repo, changes, index_before, branch, tip)
+                except Exception as e:  # noqa: BLE001 - preserve an already-applied index result
+                    worktree = _settle_worktree(
+                        repo,
+                        changes,
+                        index_before,
+                        branch,
+                        tip,
+                        left_alone=f"worktree restoration could not start ({e}); inspect and retry",
+                    )
             finally:
                 refs.release()
         finally:
-            held.release()
-        if res.reason and res.reason.endswith(CONFLICT_REASON):
-            raise FsError(f"{res.reason}. Resolve the conflict in the session first.", status=409)
+            current.release()
+            if current is not held:
+                held.release()
         return _with_status(
             repo,
             {
@@ -4391,6 +4614,437 @@ def git_settle(path: str | None, commit: object) -> dict:
                 "sha": tip,
                 **_index_fields(res),
                 "paths": list(res.done),
+                **worktree,
+            },
+        )
+
+    return _guarded(repo, run)
+
+
+# --------------------------------------------------------------------------- revert a commit
+
+
+def _dirty_revert(n: int) -> str:
+    return (
+        f"{n} uncommitted change{'s' if n != 1 else ''} — commit or discard "
+        f"{'them' if n != 1 else 'it'} first, so the revert cannot land on work nobody committed"
+    )
+
+
+def _unrevertable(
+    changes: dict[str, tuple[tuple[str, str] | None, tuple[str, str] | None]],
+) -> tuple[str, str] | None:
+    """The first change a revert from the panel will not materialise, and why.
+
+    Materialising writes regular-file content through the displacing replacement, so a submodule
+    pointer, a symbolic link or a file-mode change is terminal work — refused before anything is
+    computed rather than half-applied after publication.
+    """
+    for name, (before, after) in sorted(changes.items()):
+        parent = name.rpartition("/")[0]
+        while parent:
+            if parent in changes:
+                return parent, "changes between a file and a directory"
+            parent = parent.rpartition("/")[0]
+        for side in (before, after):
+            if side is not None and side[0] == "160000":
+                return name, "is a submodule"
+            if side is not None and side[0] == "120000":
+                return name, "is a symbolic link"
+        if before is not None and after is not None and before[0] != after[0]:
+            return name, "changes a file mode"
+    return None
+
+
+def _remove_displacing(repo: Repo, name: str) -> str | None:
+    """Delete `name` the way a discard replaces one: displaced, stored as an object, then removed.
+
+    A revert that deletes a file never unlinks bytes it has not preserved. `_displace` renames the
+    file aside atomically and removes the aside copy only once `hash-object` has stored it, so the
+    returned id is the file's last content. ``None`` means nothing was at the name.
+    """
+    rel_dir = name.rsplit("/", 1)[0] + "/" if "/" in name else ""
+    dir_fd, leaf = _walk_to_parent(repo, name)
+    try:
+        return _displace(repo, dir_fd, leaf, rel_dir)
+    finally:
+        os.close(dir_fd)
+
+
+def _materialise_revert(
+    repo: Repo,
+    branch: str,
+    changes: dict[str, tuple[tuple[str, str] | None, tuple[str, str] | None]],
+    state: dict,
+    lock: _IndexLock,
+    expect_head: str,
+) -> None:
+    """Bring the index and the working tree up to a revert that is ALREADY published.
+
+    Writes into ``state`` as it goes — the index outcome, each file put back, each file left, every
+    displaced id (the list is registered before the write that fills it), and the lock currently
+    held — so the caller can report exactly what happened, and release the right lock, even when
+    this stops part-way on an error nobody anticipated.
+
+    The caller holds git's ``index.lock`` from before ``update-ref`` (as commit-paths does, Hermes
+    on #964, review 4833). The index moves through :func:`_index_cas` under that lock, bound to
+    ``branch`` and to the revert commit, with the operation state re-read before it is published.
+    Publishing consumes the lock, so it is taken again before any file is written; under it the
+    branch, HEAD, the operation state and each path's index entry are re-read. A file is restored
+    only while its entry still equals the revert's entry; newer staging makes it ineligible.
+    """
+    names = sorted(changes)
+    try:
+        res = _index_cas(
+            repo, changes, branch, lock=lock, expect_head=expect_head, fence_operations=True
+        )
+    except (GitError, FsError, OSError) as e:
+        res = CasResult([], names, f"the index could not be updated ({e})")
+    state["index"], state["index_done"] = res, True
+    again = _retake_after_publish(repo, lock)
+    if isinstance(again, str):
+        state["worktree_left"] = list(names)
+        state["worktree_reason"] = f"{again}, so the working tree was left alone"
+        return
+    state["lock"] = again
+    blocked = (
+        f"the checkout is no longer on `{branch}`"
+        if _head_branch(repo) != branch
+        else "the last commit changed after the revert was made"
+        if _current_head(repo) != expect_head
+        else _unfinished_operation(repo)
+    )
+    if blocked:
+        state["worktree_left"] = list(names)
+        state["worktree_reason"] = f"{blocked}, so its working tree was left alone"
+        return
+    try:
+        now = _snapshot_for_index(repo, names)
+        index_now = _index_entries(repo, names)
+    except (GitError, FsError, OSError) as e:
+        state["worktree_left"] = list(names)
+        state["worktree_reason"] = f"the working tree could not be read ({e})"
+        return
+    for name in names:
+        before, after = changes[name]
+        if index_now.get(name) == UNMERGED:
+            state["worktree_left"].append(name)
+            state["worktree_reason"] = state["worktree_reason"] or (
+                f"{name!r} has an unresolved conflict, so the file was left exactly as it is"
+            )
+            continue
+        if index_now.get(name) != after:
+            state["worktree_left"].append(name)
+            state["worktree_reason"] = state["worktree_reason"] or (
+                f"{name!r}'s index entry changed before restoration, so its file was left alone"
+            )
+            continue
+        if now.get(name) != before:
+            # Changed after the clean check — it is someone's work now, not the commit's.
+            state["worktree_left"].append(name)
+            continue
+        saved = state["recoverable"].setdefault(name, [])
+        try:
+            if after is None:
+                got = _remove_displacing(repo, name)
+                if got:
+                    saved.append(got)
+            else:
+                _restore_from_index(repo, name, after, saved)
+        except (GitError, FsError, OSError) as e:
+            state["worktree_left"].append(name)
+            state["worktree_reason"] = state["worktree_reason"] or str(e)
+            continue
+        state["worktree_done"].append(name)
+
+
+def git_revert(
+    path: str | None, commit: object, head: object = None, branch: object = None
+) -> dict:
+    """REVERT A COMMIT (#950): a new commit undoing `commit`, on the `head` the panel showed.
+
+    Not `git revert`, so there is no `--abort` to trust and no half-applied merge state:
+
+    1. **Preconditions.** `commit` is one of the branch's recent first-parent commits (the window
+       RECENT COMMITS lists), has exactly one parent, and changes only regular files. The working
+       tree is clean — re-checked under the lock, like `switch`.
+    2. **Compute** in the sanitized gitdir (:func:`gitpanel.revert_tree`): no ref, index or
+       worktree write, so a conflict is a 409 with nothing to undo.
+    3. **Publish** by compare-and-swap: `commit-tree -p <head>` then `update-ref <branch> <new>
+       <head>`. HEAD having moved since the operator looked is a 409 and nothing is published.
+    4. **Materialise** each changed path: the index through :func:`_index_cas`, the worktree only
+       where the file still holds HEAD's pre-revert content. A path someone changed after the clean
+       check is LEFT as they left it and reported in ``worktree_left``. Every set of bytes a
+       replacement or deletion displaces comes back as an object id — including a write that lands
+       between that check and the displacing rename, which is preserved rather than left in place.
+
+    From step 3 on the commit exists, so a failure is a reported ``pending`` state, never an
+    exception that would hide its SHA. Hashing the worktree for step 4 applies the repository's
+    clean filter, the same stated residual as staging.
+    """
+    if not isinstance(commit, str) or not _SHA.match(commit):
+        raise FsError("commit must be one of the recent commits, as a full SHA", status=422)
+    seen_head = _expect_head(head)
+    if not seen_head:
+        raise FsError("head must be the commit the panel showed", status=422)
+    if (
+        not isinstance(branch, str)
+        or not branch.startswith(_HEADS)
+        or any(ord(c) < 32 or ord(c) == 127 for c in branch)
+    ):
+        raise FsError("branch must be the full refs/heads/ name the panel confirmed", status=422)
+    try:
+        branch.encode("utf-8")
+    except UnicodeEncodeError:
+        raise FsError("the confirmed branch must be valid UTF-8", status=422) from None
+    seen_branch = branch[len(_HEADS) :]
+    repo = resolve_repo(path)
+    try:
+        run_git_write(repo, ["check-ref-format", branch])
+    except GitError:
+        raise FsError("the confirmed branch is not a valid full branch ref", status=422) from None
+    detached = (
+        "HEAD is detached — create a branch here before reverting, or the revert will not be "
+        "reachable from one"
+    )
+    if not _head_branch(repo):
+        raise FsError(detached, status=409)
+    clean, n = _is_clean(repo)
+    if not clean:
+        raise FsError(_dirty_revert(n), status=409)
+
+    def run() -> dict:
+        fresh_clean, fresh_n = _is_clean_now(repo)
+        if not fresh_clean:
+            raise FsError(_dirty_revert(fresh_n), status=409)
+        # A clean tree is not a finished operation: an empty merge stopped with --no-commit leaves
+        # MERGE_HEAD and no change at all, and a single-parent revert published over it drops the
+        # merge. Read fresh, never from the cached status.
+        blocked = _unfinished_operation(repo)
+        if blocked:
+            raise FsError(
+                f"{blocked}, so nothing was reverted — finish it in the session first", status=409
+            )
+        branch = _head_branch(repo)
+        if not branch:
+            raise FsError(detached, status=409)
+        if branch != seen_branch:
+            raise FsError(
+                f"this checkout switched branch after `{seen_branch}` was confirmed, so nothing "
+                "was reverted. Refresh and look again.",
+                status=409,
+            )
+        try:
+            before_head = run_git_write(
+                repo, ["rev-parse", "--verify", f"refs/heads/{branch}"]
+            ).strip()
+        except GitError:
+            before_head = ""
+        if before_head != seen_head:
+            raise FsError(
+                f"`{branch}` moved after the panel showed it, so nothing was reverted. Refresh — "
+                "the new commit is probably the agent's — and look again.",
+                status=409,
+            )
+        listed = run_git_write(
+            repo, ["rev-list", "--first-parent", f"--max-count={LOG_LIMIT}", before_head, "--"]
+        ).split()
+        if commit not in listed:
+            raise FsError(
+                "that commit is not one of this branch's recent commits, so the panel will not "
+                "revert it — revert it in the session's terminal",
+                status=409,
+            )
+        parents = run_git_write(repo, ["rev-list", "--parents", "-n", "1", commit]).split()[1:]
+        if len(parents) > 1:
+            raise FsError(
+                "that commit is a merge — choosing which side to revert is terminal work",
+                status=409,
+            )
+        if not parents:
+            raise FsError(
+                "that is the branch's first commit — reverting it would delete every file it added",
+                status=409,
+            )
+        parent = parents[0]
+        shape = parse_raw_diff(
+            run_git_bytes(
+                repo,
+                ["diff-tree", "-r", "-z", "--no-renames", "--raw", parent, commit, "--"],
+                require_complete=True,
+            )
+        )
+        odd = _unrevertable(shape)
+        if odd:
+            raise FsError(
+                f"{odd[0]!r} {odd[1]} — the panel reverts regular files only, so revert this "
+                "commit in the session's terminal",
+                status=409,
+            )
+        tree, conflicts = revert_tree(repo, commit, before_head)
+        if tree is None:
+            shown = ", ".join(conflicts[:5]) + (" …" if len(conflicts) > 5 else "")
+            raise FsError(
+                f"reverting that commit conflicts with what came after it ({shown}), so nothing "
+                "was changed — revert it in the session's terminal",
+                status=409,
+            )
+        changes = parse_raw_diff(
+            run_git_bytes(
+                repo,
+                ["diff-tree", "-r", "-z", "--no-renames", "--raw", before_head, tree, "--"],
+                require_complete=True,
+            )
+        )
+        if not changes:
+            raise FsError(
+                "that commit's changes are already undone on this branch, so there is nothing to "
+                "revert",
+                status=409,
+            )
+        odd = _unrevertable(changes)
+        if odd:
+            raise FsError(
+                f"{odd[0]!r} {odd[1]} — revert this commit in the session's terminal",
+                status=409,
+            )
+        raw = run_git_bytes(repo, ["cat-file", "commit", commit], require_complete=True)
+        body = raw.split(b"\n\n", 1)[1] if b"\n\n" in raw else b""
+        lines = body.decode("utf-8", "replace").strip().splitlines()
+        subject = lines[0][:LOG_TEXT_MAX] if lines else commit[:7]
+        message = _check_message(f'Revert "{subject}"\n\nThis reverts commit {commit}.\n')
+        mine = _commit_tree(repo, tree, before_head, message)
+        # The critical section, as in commit-paths (Hermes on #964, reviews 4829 and 4833). A
+        # last-moment read followed by `update-ref` is check-then-act: a `git switch` or a
+        # conflicting merge in that gap still published, and an ordinary `git commit` right after
+        # publication recorded the pre-revert index as a newer commit that undid the revert. So
+        # this process takes git's own index.lock first and keeps it through the checks, the
+        # publication and the materialisation: every git writer that needs the index is refused
+        # for the window instead of racing it. What the lock cannot stop (a ref-only HEAD move, the
+        # MERGE_HEAD a refused merge may still write) is re-read under it before each write.
+        held = _acquire_index_lock(repo, INDEX_LOCK_WAIT_S)
+        if isinstance(held, str):
+            raise FsError(f"{held}, so nothing was reverted. Try again in a moment.", status=409)
+        names = sorted(changes)
+        state: dict = {
+            "index": None,
+            "index_done": False,
+            "worktree_done": [],
+            "worktree_left": [],
+            "worktree_reason": None,
+            "recoverable": {},
+            "lock": held,
+            "refs": None,
+        }
+        try:
+            if _head_branch(repo) != branch:
+                raise FsError(
+                    f"this checkout switched away from `{branch}` while the revert was being "
+                    "written, so nothing was recorded. Refresh and look again.",
+                    status=409,
+                )
+            try:
+                now = run_git_write(repo, ["rev-parse", "--verify", f"refs/heads/{branch}"]).strip()
+            except GitError:
+                now = ""
+            if now != before_head:
+                raise FsError(
+                    f"`{branch}` moved while the revert was being written, so nothing was recorded "
+                    "on it. Refresh and look again.",
+                    status=409,
+                )
+            blocked = _unfinished_operation(repo)
+            if blocked:
+                raise FsError(
+                    f"{blocked}, so nothing was reverted — finish it in the session first",
+                    status=409,
+                )
+            fresh_clean, fresh_n = _is_clean_now(repo)
+            if not fresh_clean:
+                raise FsError(_dirty_revert(fresh_n), status=409)
+            # The same evidence contract as COMMIT PATHS: identify THIS publication in the
+            # reflogs, and refuse configurations that cannot record where it landed.
+            mark = _head_reflog_mark(repo)
+            if not _reflogs_enabled(repo):
+                raise FsError(
+                    "this repository has `core.logAllRefUpdates` turned off, so the panel cannot "
+                    "verify where the revert lands — nothing was reverted. Turn it on and retry.",
+                    status=409,
+                )
+            stamp = f"battlelab revert {os.urandom(12).hex()}"
+            try:
+                run_git_write(
+                    repo, ["update-ref", "-m", stamp, f"refs/heads/{branch}", mine, before_head]
+                )
+            except GitError:
+                raise FsError(
+                    f"`{branch}` moved while the revert was being written, so nothing was recorded "
+                    "on it. Refresh and look again.",
+                    status=409,
+                ) from None
+            # From here the commit EXISTS. Everything below reports; nothing below raises — not a
+            # failure the materialisation expects, and not one it does not.
+            both = "the index and the working tree were left alone"
+            refs = _RefLocks()
+            state["refs"] = refs
+            try:
+                # Reuse COMMIT PATHS' evidence and ref locks. The caller retains both locks
+                # through index AND worktree settlement; no post-publication outcome rewinds refs.
+                fenced = _fence_publication(
+                    repo, refs, branch, mine, before_head, mark, stamp, names
+                )
+                if fenced is not None:
+                    left_alone = f"{fenced.reason} The working tree was left alone."
+                else:
+                    try:
+                        tip_now = run_git_write(
+                            repo, ["rev-parse", "--verify", f"refs/heads/{branch}"]
+                        ).strip()
+                    except GitError:
+                        tip_now = ""
+                    left_alone = (
+                        f"`{branch}` moved after the revert was published, so {both}"
+                        if tip_now != mine
+                        else None
+                    )
+                if left_alone:
+                    state["index"], state["index_done"] = CasResult([], names, left_alone), True
+                    state["worktree_left"] = list(names)
+                    state["worktree_reason"] = left_alone
+                else:
+                    _materialise_revert(repo, branch, changes, state, held, mine)
+            except Exception as e:  # noqa: BLE001 - the commit exists; report it, never hide its SHA
+                reason = f"the revert stopped after its commit was made ({e})"
+                if not state["index_done"]:
+                    state["index"] = CasResult([], names, reason)
+                for name in names:
+                    if name not in state["worktree_done"] and name not in state["worktree_left"]:
+                        state["worktree_left"].append(name)
+                state["worktree_reason"] = state["worktree_reason"] or reason
+        finally:
+            # Each lock is released exactly once: a second release of an unpublished lock would
+            # unlink whatever index.lock another git has created since. The ref locks first.
+            if state["refs"] is not None:
+                state["refs"].release()
+            current = state["lock"]
+            current.release()
+            if current is not held:
+                held.release()
+        return _with_status(
+            repo,
+            {
+                "commit": mine[:7],
+                "sha": mine,
+                "branch": branch,
+                "reverted_commit": commit,
+                "paths": names,
+                **_index_fields(state["index"]),
+                "worktree": PENDING
+                if (state["worktree_left"] or state["worktree_reason"])
+                else SETTLED,
+                "worktree_left": state["worktree_left"],
+                "worktree_reason": state["worktree_reason"],
+                "recoverable": {k: v for k, v in state["recoverable"].items() if v},
             },
         )
 
@@ -4702,6 +5356,7 @@ __all__ = [
     "git_commit",
     "git_commit_paths",
     "git_discard",
+    "git_revert",
     "git_settle",
     "parse_raw_diff",
     "git_fetch",

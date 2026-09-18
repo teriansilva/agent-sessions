@@ -16,6 +16,8 @@ import { ApiError, api } from "../../lib/api";
 import type {
   GitBranches,
   GitEntry,
+  GitLog,
+  GitLogCommit,
   GitPushTarget,
   GitStatus,
   GitWriteResult,
@@ -26,6 +28,9 @@ import {
   fingerprintsFor,
   gitOps,
   pendingState,
+  revertCommitSummary,
+  revertReason,
+  worktreePendingState,
   rowActionsFor,
   type CommitMode,
 } from "./gitOps";
@@ -73,6 +78,17 @@ function recoverySentence(r: GitWriteResult): string {
     : "";
 }
 
+/** Compact age for a commit row, as the mockup has it ("12m", "2h", "3d"): the row is narrow and the
+ *  subject is what should get the width. The full time rides on the title. */
+function shortAgo(epoch: number): string {
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - epoch));
+  if (s < 60) return "now";
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h`;
+  if (s < 86400 * 30) return `${Math.floor(s / 86400)}d`;
+  return new Date(epoch * 1000).toISOString().slice(0, 10);
+}
+
 type ConfirmState =
   | {
       kind: "discard";
@@ -92,6 +108,15 @@ type ConfirmState =
       expect: Record<string, string>;
       /** The commit the dialog named — the server refuses if HEAD has moved since. */
       head: string;
+      trigger: HTMLElement | null;
+    }
+  | {
+      kind: "revert-commit";
+      root: string;
+      commit: GitLogCommit;
+      /** The tip the dialog named — the server refuses if the branch has moved since. */
+      head: string;
+      branch: string;
       trigger: HTMLElement | null;
     }
   | {
@@ -262,6 +287,68 @@ export function GitTab({
   }, [root, repo, branch, opTick, remoteChoice]);
 
   const branches = repo && branchesRes?.root === root ? branchesRes.v : null;
+
+  // RECENT COMMITS (#950): collapsed by default, and read only while open — the 15s status poll
+  // should not drag a log read along with it. Root-tagged, like every other side-load here.
+  const [logOpenState, setLogOpenState] = useState<{ root: string; open: boolean }>({
+    root,
+    open: false,
+  });
+  const logOpen = logOpenState.root === root && logOpenState.open;
+  const [logRes, setLogRes] = useState<{
+    root: string;
+    head: string | null;
+    branch: string | null;
+    v: GitLog | null;
+    error: string | null;
+  } | null>(null);
+  const [logRetry, setLogRetry] = useState(0);
+  const headSha = status?.head ?? null;
+  useEffect(() => {
+    if (!repo || !logOpen) return;
+    let live = true;
+    const ctl = new AbortController();
+    const load = async () => {
+      try {
+        // An old in-flight read can finish after a write or a checkout switch. Never paint it as
+        // this checkout's history. A second read crosses the server's mutation epoch; an external
+        // writer can still be ahead of status, in which case offer a refresh rather than stale rows.
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const v = await api.gitLog(root, { signal: ctl.signal });
+          if (!live) return;
+          if (v.head === headSha && v.branch === branch) {
+            setLogRes({ root, head: headSha, branch, v, error: null });
+            return;
+          }
+        }
+        setLogRes({
+          root,
+          head: headSha,
+          branch,
+          v: null,
+          error: "History no longer matches this branch and commit. Refresh to load it again.",
+        });
+      } catch (e: unknown) {
+        if (!live || (e instanceof DOMException && e.name === "AbortError")) return;
+        setLogRes({
+          root,
+          head: headSha,
+          branch,
+          v: null,
+          error: e instanceof ApiError ? e.message : "Could not list the recent commits.",
+        });
+      }
+    };
+    void load();
+    return () => {
+      live = false;
+      ctl.abort();
+    };
+  }, [root, repo, logOpen, headSha, branch, opTick, logRetry]);
+  const log =
+    repo && logRes?.root === root && logRes.head === headSha && logRes.branch === branch
+      ? logRes
+      : null;
   const push = repo && pushRes?.root === root ? pushRes.v : null;
 
   /** One place where a write is run, because every write shares the same four obligations:
@@ -360,6 +447,8 @@ export function GitTab({
   const writesLocked = busyAny || loading;
   const pending = pendingState(status);
   const unsettled = pending.kind === "pending" ? pending.paths : [];
+  const worktreePending = worktreePendingState(status);
+  const unsettledWorktree = worktreePending.kind === "pending" ? worktreePending.paths : [];
   const head = status?.head ?? null;
 
   /** The `fp` of each named row, as the panel last rendered it. */
@@ -511,12 +600,31 @@ export function GitTab({
 
   const total = status.entries.length;
   const repoName = (status.repo ?? "").split("/").filter(Boolean).pop() ?? status.repo;
+  // The tree-level refusal (dirty, detached, conflicted) is the same for every commit, so it is
+  // written ONCE above the list, as the mockup has it; per-commit reasons ride on each control.
+  const logCommits = log?.v?.commits ?? [];
+  const logHead = log?.v?.head ?? null;
+  const treeRevertReason = logCommits.length
+    ? revertReason(status, { ...logCommits[0], parents: 1 })
+    : null;
+
   const commitLabel =
     mode === "staged"
       ? "COMMIT"
       : mode === "selected"
         ? `COMMIT ${plan.count} SELECTED`
         : `COMMIT ALL ${plan.count}`;
+
+  /** REVERT on the branch and HEAD named by the confirmation. Incomplete restoration can mean
+   *  concurrent edits or a partial failure; report recovery ids without claiming files stayed put. */
+  const doRevertCommit = (commit: GitLogCommit, tip: string, confirmedBranch: string) => {
+    setConfirmState(null);
+    void run(
+      "revert-commit",
+      () => api.gitRevert(root, commit.sha, tip, `refs/heads/${confirmedBranch}`),
+      (r: GitWriteResult) => `${revertCommitSummary(commit.short, r)}${recoverySentence(r)}`,
+    ).then(() => document.querySelector<HTMLElement>("[data-branch-trigger]")?.focus());
+  };
 
   /** The actions a row's ⋯ menu offers — exactly the inline set, in the same order. */
   const opsFor = (e: GitEntry): RowOp[] => {
@@ -651,23 +759,53 @@ export function GitTab({
           </div>
         )}
 
+        {/* Not WORKING TREE PENDING: the server could not compare the files (too many, or too
+            large, to hash on a status read). Say so rather than claim nothing is behind. Shown
+            only when the index notice above is not already saying the same thing. */}
+        {worktreePending.kind === "unknown" && pending.kind !== "unknown" && head && (
+          <div className={styles.state} role="status" data-git-worktree-unknown="">
+            <span className={styles.stateTag}>Git // Working tree state unknown</span>
+            The panel could not check whether files the last commit ({head.slice(0, 7)}) changed
+            still hold their earlier version on disk — there were too many, or they were too large,
+            to compare. It cannot say whether any is behind; the session&apos;s terminal can.
+          </div>
+        )}
+
         {/* INDEX PENDING (#950). Derived from the repository, not remembered, so it survives a
             reload — and for the same reason it cannot tell an unfinished panel commit from a
             reversal staged on purpose. It says both, and SETTLE is offered, never applied. */}
-        {unsettled.length > 0 && head && (
+        {(unsettled.length > 0 || unsettledWorktree.length > 0) && head && (
           <div
             className={`${styles.state} ${styles.stateWarn}`}
             role="status"
             data-git-pending=""
           >
-            <span className={styles.stateTag}>Git // Index pending</span>
-            The last commit ({head.slice(0, 7)}) changed {unsettled.join(", ")}, but the index still
-            holds{" "}
-            {unsettled.length === 1
-              ? "its previous version — so it reads as a staged change"
-              : "their previous versions — so they read as staged changes"}{" "}
-            that would undo that commit. That is what an unfinished commit looks like, and also what
-            a reversal staged on purpose looks like.
+            <span className={styles.stateTag}>
+              Git // {unsettled.length > 0 ? "Index pending" : "Working tree pending"}
+            </span>
+            {unsettled.length > 0 && (
+              <>
+                The last commit ({head.slice(0, 7)}) changed {unsettled.join(", ")}, but the index
+                still holds{" "}
+                {unsettled.length === 1
+                  ? "its previous version — so it reads as a staged change"
+                  : "their previous versions — so they read as staged changes"}{" "}
+                that would undo that commit. That is what an unfinished commit looks like, and also
+                what a reversal staged on purpose looks like.{" "}
+              </>
+            )}
+            {unsettledWorktree.length > 0 && (
+              // The worktree half (#950 2b): only a revert that could not write a file produces
+              // this, and the file on disk still being the pre-revert version reads as an unstaged
+              // change that undoes it. SETTLE writes the committed version, bound to those bytes.
+              <span data-git-pending-worktree="">
+                In the working tree, {unsettledWorktree.join(", ")}{" "}
+                {unsettledWorktree.length === 1 ? "still has its" : "still have their"} version from
+                before the last commit ({head.slice(0, 7)}), which reads as an unstaged change that
+                undoes it. SETTLE writes the committed version and keeps the old bytes as a git
+                object.
+              </span>
+            )}
             <div className={styles.ctrlRow}>
               <button
                 type="button"
@@ -676,13 +814,22 @@ export function GitTab({
                 disabled={writesLocked}
                 title="Bring the index up to the last commit for these paths"
                 onClick={() =>
-                  void run("settle", () => api.gitSettle(root, head), (r: GitWriteResult) =>
-                    r.index_durable === false
-                      ? `The index was updated, but writing it to disk could not be confirmed${r.index_reason ? ` (${r.index_reason})` : ""} — refresh to check.`
-                      : r.index === "pending"
-                        ? `Settled the rest; ${(r.index_left ?? []).join(", ")} changed after the commit and stay as staged.`
-                        : "The index now matches the last commit.",
-                  )
+                  void run("settle", () => api.gitSettle(root, head), (r: GitWriteResult) => {
+                    const index =
+                      r.index_durable === false
+                        ? `The index was updated, but writing it to disk could not be confirmed${r.index_reason ? ` (${r.index_reason})` : ""} — refresh to check.`
+                        : r.index === "pending"
+                          ? `Settled the rest; ${(r.index_left ?? []).join(", ")} changed after the commit and stay as staged.`
+                          : "The index now matches the last commit.";
+                    const wrote = r.worktree_paths?.length
+                      ? ` Wrote the committed ${r.worktree_paths.join(", ")}.`
+                      : "";
+                    const left =
+                      r.worktree === "pending"
+                        ? ` ${(r.worktree_left ?? []).join(", ")} could not be written${r.worktree_reason ? ` (${r.worktree_reason})` : ""}.`
+                        : "";
+                    return `${index}${wrote}${left}${recoverySentence(r)}`;
+                  })
                 }
               >
                 {busy === "settle" ? "SETTLING…" : "SETTLE"}
@@ -916,6 +1063,101 @@ export function GitTab({
             This working tree has more changes than the panel lists.
           </div>
         )}
+
+        {/* RECENT COMMITS (#950). A revert is a NEW commit on top — history is never rewritten —
+            and it needs a clean tree, so on a dirty one every REVERT is disabled with that reason. */}
+        <div className={styles.logSection} data-git-log="">
+          <div className={styles.groupHead}>
+            <button
+              type="button"
+              className={styles.logToggle}
+              aria-expanded={logOpen}
+              data-git-log-toggle=""
+              onClick={() => setLogOpenState({ root, open: !logOpen })}
+            >
+              <span className="hud-tag">Recent commits</span>
+              <ChevronDown
+                size={12}
+                aria-hidden="true"
+                className={logOpen ? styles.logCaretOpen : undefined}
+              />
+            </button>
+          </div>
+          {logOpen && (
+            <>
+              {log?.error && (
+                <div className={`${styles.state} ${styles.stateBad}`} role="alert">
+                  <span className={styles.stateTag}>Git // Log unavailable</span>
+                  {log.error}
+                  <button
+                    type="button"
+                    className={styles.retry}
+                    aria-label="Refresh recent commits"
+                    onClick={() => {
+                      onRetry();
+                      setLogRetry((v) => v + 1);
+                    }}
+                  >
+                    Refresh
+                  </button>
+                </div>
+              )}
+              {!log && (
+                <div className={styles.skeleton} style={{ width: "50%" }} role="status" aria-label="Loading recent commits" />
+              )}
+              {log?.v && logCommits.length === 0 && (
+                <div className={styles.logHint}>Nothing has been committed on this branch yet.</div>
+              )}
+              {treeRevertReason && (
+                <div className={styles.logHint} data-log-hint="">
+                  {treeRevertReason}
+                </div>
+              )}
+              {logCommits.map((c) => {
+                const reason = revertReason(status, c);
+                return (
+                  <div key={c.sha} className={styles.logRow} data-commit-row={c.sha}>
+                    <span className={styles.logSha}>{c.short}</span>
+                    <span className={styles.logSubject} title={c.subject}>
+                      {c.subject}
+                    </span>
+                    <span
+                      className={styles.logWhen}
+                      title={c.time ? new Date(c.time * 1000).toLocaleString() : undefined}
+                    >
+                      {c.time ? shortAgo(c.time) : ""}
+                      {c.pushed === false && (
+                        <span className={styles.logUnpushed}> · not pushed</span>
+                      )}
+                    </span>
+                    <button
+                      type="button"
+                      className={styles.groupBtn}
+                      data-git-op="revert-commit"
+                      data-commit={c.sha}
+                      disabled={writesLocked || reason !== null || !logHead || !status.branch}
+                      title={reason ?? `Create a new commit that undoes ${c.short}`}
+                      aria-label={`Revert ${c.short}: ${c.subject}`}
+                      onClick={(ev) => {
+                        if (!logHead || !status.branch) return;
+                        setConfirmState({
+                          kind: "revert-commit",
+                          root,
+                          commit: c,
+                          head: logHead,
+                          branch: status.branch,
+                          trigger: ev.currentTarget,
+                        });
+                      }}
+                    >
+                      Revert
+                    </button>
+                  </div>
+                );
+              })}
+            </>
+          )}
+        </div>
       </div>
 
       {/* Pinned foot: committing is a deliberate trip to a fixed place, not a floating control. */}
@@ -1178,6 +1420,21 @@ export function GitTab({
           <code>{confirm.head.slice(0, 7)}</code>) in <strong>{repoName ?? "this repository"}</strong>
           , docked into session <code>{sessionKey}</code> — both the staged and the unstaged change.
           Every replaced version is kept as a git object and listed after.
+        </ConfirmDialog>
+      )}
+      {confirm?.kind === "revert-commit" && (
+        <ConfirmDialog
+          label="Revert commit"
+          tag="Revert // New commit"
+          goLabel="Revert"
+          dataName="revert-commit"
+          returnFocusTo={confirm.trigger}
+          onCancel={() => setConfirmState(null)}
+          onConfirm={() => doRevertCommit(confirm.commit, confirm.head, confirm.branch)}
+        >
+          Create a <strong>new commit</strong> on <code>{confirm.branch}</code> that undoes{" "}
+          <code>{confirm.commit.short}</code> “{confirm.commit.subject}”. History is not rewritten
+          and nothing is pushed.
         </ConfirmDialog>
       )}
       {confirm?.kind === "unsettled-commit" && (
