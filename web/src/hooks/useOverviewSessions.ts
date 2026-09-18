@@ -103,17 +103,25 @@ export function useOverviewSessions(): OverviewSessions {
       const acc: Session[] = [];
       let offset = 0;
       let partial = false;
+      // One server walk for the whole sequence (#1007 Phase 3): page 1 asks for a pin and every
+      // later page passes back the newest token, so a mutation or TTL expiry between pages cannot
+      // force a second cold walk. It pins the walk only; the server re-applies scope per page.
+      let snapshot = "new";
       try {
         for (let page = 0; page < MAX_PAGES; page++) {
           const res = await api.sessions(
-            { limit: PAGE, offset, archived: false },
+            { limit: PAGE, offset, archived: false, snapshot },
             { signal },
           );
           // Abandoned mid-sequence. Normally the request above rejected on the abort, but a page
           // can still RESOLVE after it — the response had already arrived, or a transport could
           // not cancel in time. Drop it with everything collected so far and ask for nothing
           // more: a partial array is not a smaller map, it is a map that lost sessions.
+          // (Stopping the REQUESTS is all a browser can do here; the server runs its walk in a
+          // worker thread and finishes regardless.) The token is adopted only after this check,
+          // so an abandoned sequence cannot carry its pin into whatever runs next.
           if (signal.aborted) return;
+          if (res.snapshot) snapshot = res.snapshot;
           acc.push(...res.sessions);
           if (res.next_offset == null) break;
           offset = res.next_offset;

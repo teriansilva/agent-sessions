@@ -622,6 +622,9 @@ export interface SessionsPage {
   };
   /** A `mission` filter was requested but the mission store could not be read (#948). */
   mission_filter_unavailable?: boolean;
+  /** The pinned scan to pass on the NEXT page (#1007 Phase 3). Present only when the request sent
+   *  `snapshot`, and it may differ from what was sent (an expired pin is replaced, never an error). */
+  snapshot?: string;
 }
 
 /** The mission that holds a session, as stamped on session rows (#948). */
@@ -990,6 +993,9 @@ export interface SessionsQuery {
   engine?: string;
   /** A mission id, or `none` for sessions no mission holds (#948). */
   mission?: string;
+  /** Pin one server scan across a paging sequence (#1007 Phase 3): `new` on the first page, then
+   *  the `snapshot` the previous page returned. Omitted (the sidebar), nothing is pinned. */
+  snapshot?: string;
 }
 
 /** Seed-generation mode (#597): "quick" builds the tail locally; "ai" (Phase 2) asks the

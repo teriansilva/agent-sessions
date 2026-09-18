@@ -302,6 +302,7 @@ export function sessionsUrl(q: SessionsQuery = {}): string {
   if (q.project) p.set("project", q.project);
   if (q.engine) p.set("engine", q.engine);
   if (q.mission) p.set("mission", q.mission);
+  if (q.snapshot) p.set("snapshot", q.snapshot);
   return `/api/sessions?${p.toString()}`;
 }
 

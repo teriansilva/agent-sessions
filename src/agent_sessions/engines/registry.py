@@ -9,8 +9,10 @@ native shape before any dispatch. See the package ``__init__`` docstring for the
 from __future__ import annotations
 
 import logging
+import secrets
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -273,6 +275,75 @@ def scan_all_cached() -> list[Session]:
         return gen.seq >= coord.valid_from_seq
 
     return _obtain(coord, completed_ok=warm, running_ok=current)
+
+
+# ONE walk per paging sequence (#1007 Phase 3). The map pages the whole set in up to 20 requests,
+# and a mutation that lands between two of them calls ``invalidate_scan_cache()``, so the next page
+# paid a SECOND cold walk — measured 6.82 s for the sequence instead of 3.46 s. A sequence may
+# therefore PIN the walk its first page used: page 1 asks for ``snapshot=new`` and gets back an
+# opaque token, and later pages pass it back to be served that same walk.
+#
+# What is pinned is the WALK and nothing else. It is a performance cache, never an authorization
+# cache (#991): every request still reloads metadata, projects and prefs and re-applies the full
+# membership scope — roots, ``folder_exclusions``, archived state, visibility — to the pinned rows,
+# so a pin can never decide what a request may see. It does NOT freeze ordering either: a rename,
+# favourite or archive between pages reorders the per-request sort, and that is accepted.
+#
+# The token is ``secrets.token_urlsafe``: it carries no scope, names no session and grants nothing.
+# Anything that is not a live token — ``new``, garbage, an expired or evicted token, a token minted
+# under another home — takes the normal ``scan_all_cached()`` path and mints a fresh one. It never
+# errors and never answers empty. Callers that pass no token (the sidebar, the single-row lookup,
+# the terminal's authorization walk) never read or populate this store.
+#
+# Bounded twice, so no client can grow it or keep an entry alive:
+# * LIFETIME — a fixed 60 s from mint, never extended by use. The walk is paid BEFORE the mint, so
+#   the window only has to cover the remaining round trips: at most 19 pages of 200 rows, which it
+#   allows about 3 s each (server work per page is sub-millisecond; the rest is transfer). A
+#   sequence that outlives it falls back to a normal scan and a new token — exactly the pre-pin
+#   cost, never an error. The walk it serves is at most the 10 s scan TTL older than the mint.
+# * COUNT — at most 8 live tokens; minting the ninth evicts the oldest. Tokens minted from the same
+#   walk share one list rather than copying it, so the memory held is at most 8 walks and in
+#   practice one.
+_SNAPSHOT_TTL_S = 60.0
+_SNAPSHOT_MAX = 8
+
+
+@dataclass(frozen=True, eq=False)
+class _Pin:
+    home: str
+    sessions: list[Session]
+    minted: float
+
+
+_pins: OrderedDict[str, _Pin] = OrderedDict()
+_pins_lock = threading.Lock()
+
+
+def scan_all_pinned(token: str) -> tuple[list[Session], str]:
+    """The walk ``token`` pinned, with ``token`` — or, for anything that is not a live token for
+    this home, a normal ``scan_all_cached()`` result with a NEWLY minted token (#1007 Phase 3).
+
+    Only the disk walk is reused. The caller must re-apply every scope check to these rows on every
+    request; see the block comment above for why this can never become an authorization cache."""
+    from .. import engines as _pkg
+
+    home = str(Path.home())
+    with _pins_lock:
+        now = time.monotonic()
+        for stale in [k for k, p in _pins.items() if now - p.minted >= _SNAPSHOT_TTL_S]:
+            del _pins[stale]
+        pin = _pins.get(token)
+        if pin is not None and pin.home == home:
+            return pin.sessions, token
+
+    # Not a live pin: the ordinary cached read (never under the pin lock — it may walk).
+    sessions = _pkg.scan_all_cached()
+    fresh = secrets.token_urlsafe(16)
+    with _pins_lock:
+        _pins[fresh] = _Pin(home=home, sessions=sessions, minted=time.monotonic())
+        while len(_pins) > _SNAPSHOT_MAX:
+            _pins.popitem(last=False)
+    return sessions, fresh
 
 
 def scan_all_since(arrival: float) -> list[Session]:

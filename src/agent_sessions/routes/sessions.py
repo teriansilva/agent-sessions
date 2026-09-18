@@ -337,6 +337,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         project: str | None = Query(None),
         engine: str | None = Query(None),
         mission: str | None = Query(None),
+        snapshot: str | None = Query(None),
     ) -> JSONResponse:
         # Flat, paginated, newest-first. Favorited (sticky) rows are a GLOBAL pin (#520): the sort
         # runs over the whole filtered set before the window is sliced, so a favorite floats to the
@@ -355,6 +356,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 project=project,
                 engine=engine,
                 mission=mission,
+                snapshot=snapshot,
             )
 
         # #652 measurement probe: time the whole request-serving pipeline (cached scan +
@@ -372,6 +374,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         project: str | None,
         engine: str | None,
         mission: str | None = None,
+        snapshot: str | None = None,
     ) -> dict:
         meta_index = metadata.load()
         # opencode new-session alias (#127): the live row is the real ``ses_…`` from
@@ -390,7 +393,19 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # Short-TTL scan snapshot (#561 Phase 3): a keystroke burst + the 15 s poll + pagination
         # reuse one disk walk instead of re-reading 900+ JSONLs each time. Only the walk is cached;
         # rows below are built from fresh metadata / webterm state, so live signals stay fresh.
-        sessions = list(engines.scan_all_cached())
+        #
+        # A paging sequence may pin its walk instead (#1007 Phase 3): `snapshot` is `new` on its
+        # first page and the returned token after that, so an invalidation between pages cannot
+        # force a second cold walk. The pin replaces ONLY this line. Everything below — metadata,
+        # projects, `_scope_filter()`, mission stamps, filters, sort — still runs on every request,
+        # which is what keeps the pin a performance cache and never an authorization one (#991).
+        # No `snapshot` (the sidebar) → the unchanged path, and no token in the response.
+        pinned: dict[str, str] = {}
+        if snapshot is None:
+            sessions = list(engines.scan_all_cached())
+        else:
+            walk, pinned["snapshot"] = engines.scan_all_pinned(snapshot)
+            sessions = list(walk)
         # One-shot legacy migration (#361): per-session `project_alias` renames become
         # project entities adopting that cwd. Idempotence is a flag inside the store
         # (checked under its lock), so this is a cheap read once it has run.
@@ -501,6 +516,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 "total": 0,
                 "facets": facets,
                 "mission_filter_unavailable": True,
+                **pinned,
             }
 
         def _keep(r: dict) -> bool:
@@ -552,6 +568,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             "next_offset": next_offset,
             "total": len(rows),
             "facets": facets,
+            **pinned,
         }
 
     def _session_row_sync(key: str) -> dict | None:
