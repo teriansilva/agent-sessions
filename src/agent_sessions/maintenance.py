@@ -1,7 +1,7 @@
 """Settings → Maintenance (#993): prune BattleLab's own leftovers, and archive old missions.
 
-Increment 1 of 3 — the manual cache prune and bulk mission archival. Compaction of ``opencode.db``
-(increment 2) and the opt-in schedule (increment 3) are deliberately NOT here.
+Manual cache prune and bulk mission archival share their runner with ``opencode_compact``
+(increment 2). The opt-in schedule (increment 3) is not enabled here.
 
 **Scope is BattleLab's own caches, never engine history** (operator decision 1 on #993). Every
 category is a fixed name, and every path is derived here from the app's own stores — the client
@@ -101,7 +101,8 @@ class Runner:
             return None
         return {"job": self._job, "started_at": self._started_at}
 
-    async def run(self, job: str, factory: Callable[[], Awaitable[Any]]) -> Any:
+    def start(self, job: str, factory: Callable[[], Awaitable[Any]]) -> asyncio.Future:
+        """Claim synchronously and return the owned task (also used by 202/polling jobs)."""
         if self._job is not None:
             raise MaintenanceBusy(self.busy_info())
         self._job = job
@@ -112,6 +113,10 @@ class Runner:
             self._release()
             raise
         task.add_done_callback(self._on_done)
+        return task
+
+    async def run(self, job: str, factory: Callable[[], Awaitable[Any]]) -> Any:
+        task = self.start(job, factory)
         # Shielded: cancelling the caller (a client that went away) must not cancel the job, and
         # the slot stays claimed until `_on_done` runs.
         return await asyncio.shield(task)

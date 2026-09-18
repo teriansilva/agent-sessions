@@ -687,6 +687,7 @@ async def _conclude(mission_id: str, out, *, engine: str, cwd: str, plan_id: str
             "outcome": "refused",
             "reason": reason,
             "session_key": None,
+            **({"refusal": out.refusal} if getattr(out, "refusal", "") else {}),
         }
 
     if not out.ok:

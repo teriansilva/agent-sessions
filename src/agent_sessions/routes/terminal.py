@@ -3,6 +3,10 @@ self-owned ws terminal (attach / resume / new-session), single-writer policy, th
 server-owned SessionStream handoff, and per-tab claim/demote. Moved verbatim from
 ``main.create_app``.
 
+OpenCode LAUNCH/NEW takes shared maintenance admission (#1040) before building the spawn;
+compaction refuses it with retryable 4502. ATTACH does not create an engine. The non-inherited
+admission is forwarded through both serving paths and released after actual process creation.
+
 Two attach models live here, selected by ``owner.takeover_enabled()`` (#293,
 default OFF):
 - **flag OFF** — the original #184 path: in-memory ``SessionRegistry`` claim, a
@@ -39,6 +43,7 @@ from .. import (
     fsbrowse,
     handoff,
     missions,
+    opencode_admission,
     owner,
     perfstats,
     prefs,
@@ -254,6 +259,7 @@ async def _serve_takeover(
     label: str,
     accept_at: float | None = None,
     seed_key: str | None = None,
+    maintenance_admission: opencode_admission.Admission | None = None,
 ) -> None:
     """Single-active-viewer attach (#293) with the read-only fallback (#434). Claims the
     runtime-dir owner file. A non-owner is NOT inert: it streams the session **read-only**
@@ -309,6 +315,7 @@ async def _serve_takeover(
             have=have,
             read_only_gate=read_only_gate,
             seed_key=seed_key,
+            **({"maintenance_admission": maintenance_admission} if maintenance_admission else {}),
         )
     finally:
         if guard is not None:
@@ -418,7 +425,13 @@ def register(
         # launches a mint-its-own-id placeholder; runs concurrently with the PTY bridge to
         # discover the engine's real id, persist the alias, and converge the client URL.
         reconcile_task = None
+        maintenance_admission = None
         try:
+            if action == sessions.LAUNCH:
+                try:
+                    maintenance_admission = await opencode_admission.for_launch(prov.engine_id)
+                except opencode_admission.Unavailable:
+                    return await reject(4502)
             if action == sessions.ATTACH:
                 # A live dtach session already exists → attach regardless of new/resume.
                 # dtach -A attaches (ignoring the cmd), so a fresh session survives a
@@ -726,6 +739,11 @@ def register(
                     label=label,
                     accept_at=accept_at,
                     seed_key=seed_key,
+                    **(
+                        {"maintenance_admission": maintenance_admission}
+                        if maintenance_admission
+                        else {}
+                    ),
                 )
                 return
             # ---- #184 path (flag OFF): in-memory claim + read-only secondary stream ----
@@ -778,6 +796,11 @@ def register(
                     have=have,
                     read_only_gate=read_only_gate,
                     seed_key=seed_key,
+                    **(
+                        {"maintenance_admission": maintenance_admission}
+                        if maintenance_admission
+                        else {}
+                    ),
                 )
             finally:
                 if demote_task is not None:
@@ -790,6 +813,9 @@ def register(
                 with contextlib.suppress(Exception):
                     await registry.on_detach(prov.engine_id, phys_native, viewer_id=ws)
         finally:
+            # Early rejection never reaches webterm's handoff; release its admission here.
+            if maintenance_admission is not None:
+                maintenance_admission.release()
             # Backstop bookkeeping (#631): if this connection launched a fresh master, record
             # how it ended. A master still alive (a normal detach) or one that ran past the
             # instant-exit window resets the key; a master gone within the window is an instant

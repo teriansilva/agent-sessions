@@ -50,6 +50,8 @@ vi.mock("../lib/api", async () => {
       scrollbackInfo: vi.fn(),
       clearScrollback: vi.fn(),
       // #993: the Maintenance page's Prune + Archive old missions cards.
+      compactInfo: vi.fn(),
+      compact: vi.fn(),
       pruneInfo: vi.fn(),
       prune: vi.fn(),
       archiveOldMissionsInfo: vi.fn(),
@@ -170,6 +172,15 @@ const flushFetches = () =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  sessionStorage.clear();
+  vi.mocked(api.compactInfo).mockResolvedValue({
+    compact: {
+      available: false, db_bytes: null, wal_bytes: null, reclaimable_bytes: null,
+      holders: null, disk: null,
+      blockers: [{ code: "missing", detail: "No OpenCode database exists on this host." }],
+    },
+    job: null, runner: null,
+  });
   vi.mocked(api.version).mockResolvedValue({ version: "1.2.3" });
   vi.mocked(api.config).mockResolvedValue({
     csrf: "t",
@@ -2239,7 +2250,7 @@ test("Prune: a dry run landing during confirmation cannot submit unknown content
   // selection to the measured category so the action unblocks while that GET is still in flight.
   expect(await screen.findByText("couldn’t measure")).toBeInTheDocument();
   const prune = screen.getByRole("heading", { name: "Prune" }).closest("section")!;
-  await userEvent.click(within(prune).getByRole("button", { name: /refresh/i }));
+  await userEvent.click(within(prune).getByRole("button", { name: "Refresh the cache measurements" }));
   await userEvent.click(screen.getByRole("checkbox", { name: /stale terminal sockets/i }));
   await userEvent.click(screen.getByRole("checkbox", { name: /archived sessions’ scrollback/i }));
   await userEvent.click(within(prune).getByRole("button", { name: /prune selected \(1\)/i }));
@@ -2287,7 +2298,7 @@ test("Prune: a busy runner recovers to enabled once the job ends, without remoun
   const prune = screen.getByRole("heading", { name: "Prune" }).closest("section")!;
   expect(within(prune).getByRole("button", { name: /prune selected/i })).toBeDisabled();
   // Refresh is always available while busy — the card recovers in place.
-  await userEvent.click(within(prune).getByRole("button", { name: /refresh/i }));
+  await userEvent.click(within(prune).getByRole("button", { name: "Refresh the cache measurements" }));
   await waitFor(() =>
     expect(within(prune).getByRole("button", { name: /prune selected \(1\)/i })).toBeEnabled(),
   );
@@ -2308,7 +2319,7 @@ test("Prune: nothing to prune disables the action; a failed dry run offers Retry
     await screen.findByText(/couldn’t measure the caches \(dry run failed\)/i),
   ).toBeInTheDocument();
   const prune = screen.getByRole("heading", { name: "Prune" }).closest("section")!;
-  await userEvent.click(within(prune).getByRole("button", { name: /refresh/i }));
+  await userEvent.click(within(prune).getByRole("button", { name: "Refresh the cache measurements" }));
   expect(await screen.findByText("Nothing to prune right now.")).toBeInTheDocument();
   expect(
     screen.getByRole("button", { name: /prune selected \(1\)/i }),

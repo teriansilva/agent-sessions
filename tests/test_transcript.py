@@ -347,7 +347,11 @@ def _opencode_db(path, session_id, messages):
     conn.close()
 
 
-def test_opencode_adapter_reads_messages_and_parts(tmp_path):
+def test_opencode_adapter_reads_messages_and_parts(tmp_path, monkeypatch):
+    # This case exercises the explicit home argument, including a different missing home.
+    # The suite's default DB override intentionally wins over home, so opt out here; every
+    # read still receives a disposable path below, never the operator's default home.
+    monkeypatch.delenv("AGENT_SESSIONS_OPENCODE_DB", raising=False)
     assert T.adapter_for("opencode") is not None
     db = tmp_path / ".local" / "share" / "opencode" / "opencode.db"
     db.parent.mkdir(parents=True)

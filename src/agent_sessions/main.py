@@ -354,6 +354,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         try:
             yield
         finally:
+            # Interrupt compaction, then drain its actual SQLite worker before its task/runner
+            # or launch-admission lock can be released.
+            await _app.state.opencode_compaction.shutdown()
             for task in (
                 reaper_task,
                 review_task,

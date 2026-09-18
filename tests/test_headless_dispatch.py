@@ -1265,3 +1265,62 @@ async def test_CANCELLATION_abandons_the_probe_OFF_the_event_loop(env, prov, reg
         "abandonment ran on the event loop, where its lock acquisition and its kill/wait block "
         "every other task for the length of a spawn"
     )
+
+
+@pytest.mark.anyio
+async def test_opencode_maintenance_refusal_precedes_auth_and_real_spawn(
+    env, prov, reg, monkeypatch
+):
+    from agent_sessions import opencode_admission
+
+    prov.engine_id = "opencode"
+    # A capable OpenCode provider must pass the existing capability fence before reaching ours.
+    monkeypatch.setattr(headless_dispatch.engines, "get", lambda _: prov)
+    spawned = _stub_spawn(monkeypatch)
+    monkeypatch.setattr(
+        headless_dispatch.engine_auth, "check", lambda *a, **k: pytest.fail("auth ran")
+    )
+    with opencode_admission.acquire(exclusive=True):
+        out = await headless_dispatch.dispatch(
+            registry=reg, engine="opencode", cwd=str(env), brief="test"
+        )
+    assert out.refusal == "maintenance" and not out.launched
+    assert "retry" in out.reason and not spawned
+
+
+@pytest.mark.anyio
+async def test_opencode_admission_covers_cancelled_auth_worker_until_exit(
+    env, prov, reg, monkeypatch
+):
+    import threading
+
+    from agent_sessions import opencode_admission
+
+    entered, finish = threading.Event(), threading.Event()
+    prov.engine_id = "opencode"
+    monkeypatch.setattr(headless_dispatch.engines, "get", lambda _: prov)
+
+    def probe(*args, **kwargs):
+        entered.set()
+        assert finish.wait(10)
+        return headless_dispatch.engine_auth.UNAUTHENTICATED, "test"
+
+    monkeypatch.setattr(headless_dispatch.engine_auth, "check", probe)
+    _stub_spawn(monkeypatch)
+    task = asyncio.create_task(
+        headless_dispatch.dispatch(registry=reg, engine="opencode", cwd=str(env), brief="test")
+    )
+    try:
+        assert await asyncio.to_thread(entered.wait, 10)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert opencode_admission.acquire(exclusive=True) is None
+    finally:
+        finish.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    with opencode_admission.acquire(exclusive=True):
+        pass

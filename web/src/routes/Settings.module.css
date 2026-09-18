@@ -1993,3 +1993,30 @@
   text-transform: none;
   color: var(--text-muted);
 }
+
+/* OpenCode compaction shares the Prune card; figures wrap as whole label/value pairs. */
+.databaseSection {
+  margin-top: 20px;
+  border-top: 1px solid var(--border);
+}
+.databaseStats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin: 10px 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+}
+.databaseStats > div {
+  display: flex;
+  gap: 8px;
+}
+.databaseStats dt {
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+.databaseStats dd {
+  margin: 0;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}

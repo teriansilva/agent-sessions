@@ -41,6 +41,13 @@ its own first-run, onboarding or re-auth screen, in its own config, with its own
 expired login parks the same way — there is no cross-engine signal for "blocked on a modal". The
 one thing every engine *does* have is a store, which is why the evidence is written against that.
 
+## OpenCode maintenance admission (#1040)
+
+An OpenCode dispatch takes shared non-inherited admission before auth probes or process creation,
+retains it through actual child handoff, and drains abandoned workers before releasing it. A
+compaction holding exclusive admission produces a retryable `maintenance` refusal. Executor
+Futures are retained directly so cancellation of Tasks during shutdown cannot conceal a live thread.
+
 ## What this module does not do
 
 It does not re-implement the launcher (`ptybridge.launch_argv(detached=True)`), the seed injector
@@ -62,6 +69,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import logging
 import os
 import subprocess
@@ -70,12 +78,14 @@ import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import partial
 
 from . import (
     engine_auth,
     engines,
     handoff,
     launch_binding,
+    opencode_admission,
     ptybridge,
     scopedspawn,
     session_input,
@@ -122,6 +132,7 @@ class Dispatch:
     started: bool = False
     briefed: bool = False
     reason: str = ""
+    refusal: str = ""
     events: list[str] = field(default_factory=list)
     #: WHAT WAS TYPED (#966), from the seed store's claim/ack record once the launch is over:
     #: `not_attempted`, `zero_write`, `partial`, `delivered` or `unknown` (see
@@ -621,6 +632,7 @@ async def dispatch(
     # the descriptor under it and leaves the probe unreaped.
     auth_task: asyncio.Future | None = None
     auth_probe = engine_auth.Probe()
+    maintenance_admission: opencode_admission.Admission | None = None
     # BOUND BEFORE THE TRY, because the `finally` reads it (#904 review 8). It used to be
     # declared partway down the block, so anything that raised before that line — an engine whose
     # launch binary is not an absolute path, a handle the seed store refuses — reached the
@@ -645,6 +657,11 @@ async def dispatch(
             await asyncio.to_thread(late.wait)
 
     try:
+        try:
+            maintenance_admission = await opencode_admission.for_launch(engine)
+        except opencode_admission.Unavailable as e:
+            out.reason, out.refusal = str(e), "maintenance"
+            return out
         # The brief goes into the ONE seed store, so delivery redeems it through the same
         # atomic claim/ack every other seed uses — exactly-once across a retry or a second
         # attempt, without this module knowing how that is done.
@@ -765,18 +782,20 @@ async def dispatch(
             # THE PROVIDER'S OWN PREFLIGHT (#989), under exactly the same ownership: this worker,
             # this probe (so `abandon` reaches whatever it spawns), and this gate — the launch
             # fence around each spawn and never across a read or a wait (#921).
-            auth_task = asyncio.ensure_future(
-                asyncio.to_thread(
-                    lambda: prov.unattended_preflight(
-                        cwd=spawn_cwd, probe=auth_probe, gate=_probe_gate
-                    )
-                )
+            auth_task = asyncio.get_running_loop().run_in_executor(
+                None,
+                contextvars.copy_context().run,
+                partial(
+                    prov.unattended_preflight, cwd=spawn_cwd, probe=auth_probe, gate=_probe_gate
+                ),
             )
         else:
-            auth_task = asyncio.ensure_future(
-                asyncio.to_thread(
+            auth_task = asyncio.get_running_loop().run_in_executor(
+                None,
+                contextvars.copy_context().run,
+                partial(
                     engine_auth.check, probe_bin, cwd=spawn_cwd, probe=auth_probe, gate=_probe_gate
-                )
+                ),
             )
         try:
             # SHIELDED, and joined in the `finally` — the idiom the spawn below uses, for the
@@ -940,7 +959,9 @@ async def dispatch(
             # `finally` joins it before it touches the lock or the descriptor. Every path out of
             # this frame therefore leaves the thread finished, and a spawn that won the race is
             # covered by the same teardown as any other failed launch.
-            spawn = asyncio.ensure_future(asyncio.to_thread(_fenced_spawn))
+            spawn = asyncio.get_running_loop().run_in_executor(
+                None, contextvars.copy_context().run, _fenced_spawn
+            )
             proc, refused = await asyncio.wait_for(asyncio.shield(spawn), timeout=SPAWN_TIMEOUT_S)
             if proc is None:
                 out.reason = refused
@@ -971,6 +992,9 @@ async def dispatch(
         if not sock.exists():
             out.reason = "the master never created its socket"
             return out
+        if maintenance_admission is not None:
+            maintenance_admission.release()
+            maintenance_admission = None
         out.launched = True
         out.events.append("launched")
         # The lock now belongs to the master. `transfer()`, never `release()` — `LOCK_UN` frees it
@@ -1045,6 +1069,25 @@ async def dispatch(
             out.reason = f"the dispatch failed ({type(e).__name__})"
             return out
     finally:
+        # Maintenance admission must cover every worker that can still create OpenCode,
+        # including auth probes. Repeated cancellation cannot shorten their actual lifetime.
+        if maintenance_admission is not None:
+            abandoned.set()
+            pending = []
+            if auth_task is not None:
+                pending.extend(
+                    [
+                        asyncio.get_running_loop().run_in_executor(None, auth_probe.abandon),
+                        auth_task,
+                    ]
+                )
+            if spawn is not None:
+                pending.append(spawn)
+            for task in pending:
+                while not task.done():
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await asyncio.shield(task)
+            maintenance_admission.release()
         # FIRST, RECLAIM THE SPAWN WORKER (#904 review 8, finding 2). Nothing below may run while
         # a thread might still be inside `_popen` with these descriptors: closing `dirfd` would
         # hand the child a recycled fd, and releasing the lock would let the next attempt start a

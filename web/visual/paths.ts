@@ -99,6 +99,15 @@ export const VISUAL_PATHS: VisualPath[] = [
   },
   {
     group: "authed",
+    path: "/settings/maintenance",
+    name: "settings-maintenance",
+    description:
+      "Maintenance — cache pruning, mission archival and observed-idle OpenCode compaction",
+    requireAuth: "admin",
+    waitFor: { selector: '[aria-label="OpenCode database"]', timeoutMs: 8000 },
+  },
+  {
+    group: "authed",
     path: "/overview",
     name: "overview",
     description:

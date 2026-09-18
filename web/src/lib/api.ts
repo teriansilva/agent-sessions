@@ -63,6 +63,48 @@ import type {
 import { clearSent } from "./sentHistory";
 import { announceActionResolved } from "./actionEvents";
 
+/** OpenCode maintenance keeps unknown measurements distinct from zero. */
+export interface CompactMeasurement {
+  available: boolean;
+  db_bytes: number | null;
+  wal_bytes: number | null;
+  reclaimable_bytes: number | null;
+  holders: { pids: number[]; unknown: boolean } | null;
+  disk: {
+    shared_filesystem: boolean;
+    database_required: number;
+    database_free: number;
+    temp_required: number;
+    temp_free: number;
+  } | null;
+  blockers: { code: string; detail: string }[];
+}
+export interface CompactJob {
+  id: string;
+  state:
+    | "checking"
+    | "vacuum"
+    | "checkpoint"
+    | "done"
+    | "refused"
+    | "interrupted"
+    | "failed";
+  started_at: number;
+  finished_at: number | null;
+  result: {
+    vacuum: "done" | "rolled_back" | "not_started" | "unknown";
+    checkpoint: "done" | "deferred" | "failed" | "not_started";
+    checkpoint_result: number[] | null;
+    bytes_freed: number | null;
+    blockers: { code: string; detail: string }[];
+  } | null;
+}
+export interface CompactInfo {
+  compact: CompactMeasurement;
+  job: CompactJob | null;
+  runner: { job: string; started_at: number | null } | null;
+}
+
 export class ApiError extends Error {
   readonly status: number;
   /** The parsed response body, when the server sent one.
@@ -1029,9 +1071,20 @@ export const api = {
         scope,
       },
     ),
-  // Settings → Maintenance (#993). Dry runs are plain GETs; the two mutations are CSRF-guarded
+  // Settings → Maintenance (#993). Dry runs are plain GETs; mutations are CSRF-guarded
   // and share one server-side runner, so a submission while any maintenance job runs is a 409
   // (`ApiError.status`) whose body names the running job — refused, not queued.
+  /** Poll a known job, or discover the latest. Unknown/replaced/restarted ids return 404. */
+  compactInfo: (jobId?: string) =>
+    getJson<CompactInfo>(
+      `/api/maintenance/compact${jobId ? `?job_id=${encodeURIComponent(jobId)}` : ""}`,
+    ),
+  compact: () =>
+    mutateJson<Pick<CompactInfo, "job" | "runner">>(
+      "POST",
+      "/api/maintenance/compact",
+      { confirm: true },
+    ),
   /** What a cache prune would remove now, per category, plus the runner's busy state. */
   pruneInfo: () =>
     getJson<{

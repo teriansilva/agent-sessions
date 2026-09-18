@@ -2233,3 +2233,72 @@ def test_ws_gemini_connects_accepted_before_a_walk_share_that_walk(
     assert second_in_dispatch.is_set() and walk_done.is_set(), "the connects never interleaved"
     assert codes == [4500, 4500], codes
     assert walks["n"] == 1, f"{walks['n']} walks for two connects accepted before the first walk"
+
+
+def test_opencode_launch_refused_4502_during_compaction(fake_jsonl, opencode_db, auth_cfg):
+    from agent_sessions import opencode_admission, scanner
+
+    cwd = next(iter(scanner.pickable_projects()))
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    with opencode_admission.acquire(exclusive=True):
+        assert _close_code(c, f"/ws/term/{_OC_PLACEHOLDER}?new=1&cwd={cwd}", headers) == 4502
+        assert _close_code(c, "/ws/term/opencode:ses_aaaaaaaaaaaaaaaaaaaaaaaa", headers) == 4502
+
+
+def test_early_opencode_launch_rejection_releases_admission(
+    fake_jsonl, opencode_db, auth_cfg, monkeypatch
+):
+    from agent_sessions import engines, opencode_admission, scanner
+    from agent_sessions.engines import opencode
+
+    monkeypatch.setattr(opencode.discover, "resolve", lambda _: None)
+    monkeypatch.setattr(engines.base, "OPENCODE_BIN", "bare-bin")
+    cwd = next(iter(scanner.pickable_projects()))
+    c = _client(auth_cfg)
+    assert (
+        _close_code(c, f"/ws/term/{_OC_PLACEHOLDER}?new=1&cwd={cwd}", _login_headers(c, auth_cfg))
+        == 4500
+    )
+    with opencode_admission.acquire(exclusive=True):
+        pass
+
+
+def test_webterm_spawn_timeout_drains_before_admission_and_pty_release(tmp_path, monkeypatch):
+    from agent_sessions import opencode_admission
+
+    async def main():
+        entered, finish = asyncio.Event(), asyncio.Event()
+        codes = []
+        guard = await opencode_admission.for_launch("opencode")
+        fd = guard.fd
+
+        async def spawn(*argv, **kwargs):
+            assert fd not in kwargs["pass_fds"]
+            entered.set()
+            await finish.wait()
+            # The PTY must still be open when a delayed creation actually consumes it.
+            import os
+
+            os.fstat(kwargs["stdin"])
+            raise OSError("test-owned creation failed")
+
+        class WS:
+            async def close(self, code):
+                codes.append(code)
+
+        monkeypatch.setattr(webterm.asyncio, "create_subprocess_exec", spawn)
+        monkeypatch.setattr(webterm, "SPAWN_TIMEOUT_S", 0.01)
+        task = asyncio.create_task(
+            webterm.run(WS(), ["/test/opencode"], cwd=str(tmp_path), maintenance_admission=guard)
+        )
+        await entered.wait()
+        await asyncio.sleep(0.03)
+        assert not task.done() and opencode_admission.acquire(exclusive=True) is None
+        finish.set()
+        await task
+        assert codes == [4502]
+        with opencode_admission.acquire(exclusive=True):
+            pass
+
+    asyncio.run(main())

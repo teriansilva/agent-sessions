@@ -37,7 +37,7 @@ import threading
 import time  # noqa: F401 — kept so `webterm.time` stays patchable by tests
 from concurrent.futures import ThreadPoolExecutor
 
-from . import perfstats, scrollback, session_input, sessionlock, tty_health
+from . import opencode_admission, perfstats, scrollback, session_input, sessionlock, tty_health
 from .scrollback import (  # noqa: F401 — re-exported so `webterm.<name>` stays the public surface
     _ATTACH_REPLAY_GRACE_S,
     _BUFFERS,
@@ -508,6 +508,7 @@ async def run(
     read_only_gate: asyncio.Event | None = None,
     stop_event: asyncio.Event | None = None,
     seed_key: str | None = None,
+    maintenance_admission: opencode_admission.Admission | None = None,
 ) -> None:
     """Attach ``ws`` to the PTY of ``argv`` (a built dtach create-or-attach command).
 
@@ -520,6 +521,9 @@ async def run(
     single-writer lock; its fd is passed to the spawned process so the long-lived
     ``dtach`` master inherits it and holds the flock for the master's lifetime. We
     only borrow the fd here — the caller owns closing/transferring the lock.
+
+    ``maintenance_admission`` is a separate non-inherited OpenCode launch guard (#1040).
+    Process creation is shielded and drained on timeout/cancellation before that guard releases.
 
     ``buf_key`` is the physical runtime key (dtach/lock/scrollback ring). ``transcript_key``
     is the logical session key for saved transcript replay; alias-backed Codex sessions need
@@ -551,24 +555,30 @@ async def run(
     env = dict(os.environ)
     env.setdefault("TERM", "xterm-256color")
     env.setdefault("COLORTERM", "truecolor")
-    try:
-        proc = await asyncio.wait_for(
-            asyncio.create_subprocess_exec(
-                *argv,
-                stdin=slave,
-                stdout=slave,
-                stderr=slave,
-                cwd=cwd,
-                env=env,
-                start_new_session=True,  # own session → the slave becomes the controlling tty
-                close_fds=True,
-                # Hand the single-writer lock fd to the dtach master it forks, so the flock
-                # lives exactly as long as the running agent (survives an app restart). dtach
-                # never closes inherited fds it doesn't manage. pass_fds forces inheritance.
-                pass_fds=(lock.fd,) if lock is not None else (),
-            ),
-            timeout=SPAWN_TIMEOUT_S,
+
+    def create():
+        return asyncio.create_subprocess_exec(
+            *argv,
+            stdin=slave,
+            stdout=slave,
+            stderr=slave,
+            cwd=cwd,
+            env=env,
+            start_new_session=True,  # own session → the slave becomes the controlling tty
+            close_fds=True,
+            # Hand the single-writer lock fd to the dtach master it forks, so the flock
+            # lives exactly as long as the running agent (survives an app restart). dtach
+            # never closes inherited fds it doesn't manage. pass_fds forces inheritance.
+            pass_fds=(lock.fd,) if lock is not None else (),
         )
+
+    try:
+        if maintenance_admission is None:
+            proc = await asyncio.wait_for(create(), timeout=SPAWN_TIMEOUT_S)
+        else:
+            proc = await opencode_admission.spawn(
+                create, maintenance_admission, timeout=SPAWN_TIMEOUT_S
+            )
     except (TimeoutError, OSError):
         # Transient start failure (EAGAIN at the cgroup task ceiling, spawn stall under
         # memory pressure). 4502 = retryable: the client backs off and reconnects, instead
@@ -578,6 +588,10 @@ async def run(
         with contextlib.suppress(Exception):
             await ws.close(code=4502)
         return
+    except asyncio.CancelledError:
+        os.close(master)
+        os.close(slave)
+        raise
     os.close(slave)  # parent keeps only the master end
     loop = asyncio.get_event_loop()
     # Every writer to this master is serialized (#701 round 4 P1): pump_in and the seed

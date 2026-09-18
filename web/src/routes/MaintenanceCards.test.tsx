@@ -1,8 +1,8 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
-import { api } from "../lib/api";
-import { ArchiveMissionsCard, PruneCard } from "./MaintenanceCards";
+import { api, ApiError } from "../lib/api";
+import { ArchiveMissionsCard, CompactDatabase, PruneCard } from "./MaintenanceCards";
 
 /** Settings → Maintenance, the Prune card's one safety rule (#993, reviews 4903/4915/4919):
  *  **an unmeasured category is never submitted as zero.** `{items: 0}` is a count; a failed,
@@ -14,6 +14,8 @@ vi.mock("../lib/api", async () => {
   return {
     ...actual,
     api: {
+      compactInfo: vi.fn(),
+      compact: vi.fn(),
       pruneInfo: vi.fn(),
       prune: vi.fn(),
       archiveOldMissionsInfo: vi.fn(),
@@ -39,6 +41,8 @@ const ERRORED = { items: 0, bytes: 0, error: "the runtime dir could not be read"
 
 beforeEach(() => {
   vi.clearAllMocks();
+  sessionStorage.clear();
+  vi.mocked(api.compactInfo).mockRejectedValue(new Error("no database"));
   vi.mocked(api.prune).mockResolvedValue({
     removed: 0,
     bytes_freed: 0,
@@ -194,4 +198,214 @@ test("the missions card treats a 200 dry run missing its counts the same way", a
   await userEvent.click(button);
   expect(screen.queryByRole("button", { name: /Confirm mission archive/ })).toBeNull();
   expect(api.archiveOldMissions).not.toHaveBeenCalled();
+});
+
+function compactInfo(): Awaited<ReturnType<typeof api.compactInfo>> {
+  return {
+    compact: {
+      available: true,
+      db_bytes: 8 * 1024 ** 3,
+      wal_bytes: 0,
+      reclaimable_bytes: 2 * 1024 ** 3,
+      holders: { pids: [], unknown: false },
+      blockers: [],
+      disk: {
+        shared_filesystem: true,
+        database_required: 24 * 1024 ** 3,
+        database_free: 100 * 1024 ** 3,
+        temp_required: 0,
+        temp_free: 100 * 1024 ** 3,
+      },
+    },
+    job: null,
+    runner: null,
+  };
+}
+
+function compactJob(state: "vacuum" | "done" = "vacuum") {
+  return {
+    id: "job-one",
+    state,
+    started_at: 1,
+    finished_at: state === "done" ? 2 : null,
+    result:
+      state === "done"
+        ? {
+            vacuum: "done" as const,
+            checkpoint: "deferred" as const,
+            checkpoint_result: [1, 20, 10],
+            bytes_freed: 1024,
+            blockers: [],
+          }
+        : null,
+  };
+}
+
+test("compaction shows all blockers and refuses unknown measurements", async () => {
+  const r = compactInfo();
+  r.compact.available = false;
+  r.compact.holders = { pids: [14], unknown: true };
+  r.compact.disk!.database_free = 0;
+  r.compact.disk!.temp_free = 0;
+  r.compact.blockers = [
+    { code: "held", detail: "A process holds the database." },
+    { code: "unknown", detail: "Other processes could not be inspected." },
+    { code: "space", detail: "Not enough disk space." },
+  ];
+  vi.mocked(api.compactInfo).mockResolvedValue(r);
+  render(<CompactDatabase />);
+  for (const b of r.compact.blockers)
+    expect(await screen.findByText(b.detail)).toBeVisible();
+  expect(
+    screen.getByRole("button", { name: "Compact database" }),
+  ).toBeDisabled();
+  expect(api.compact).not.toHaveBeenCalled();
+});
+
+test("compaction requires confirmation and polls its own job to the separate checkpoint outcome", async () => {
+  vi.mocked(api.compactInfo).mockResolvedValue(compactInfo());
+  vi.mocked(api.compact).mockResolvedValue({
+    job: compactJob(),
+    runner: { job: "opencode_compact", started_at: 1 },
+  });
+  render(<CompactDatabase />);
+  await userEvent.click(
+    await screen.findByRole("button", { name: "Compact database" }),
+  );
+  expect(api.compact).not.toHaveBeenCalled();
+  vi.mocked(api.compactInfo).mockResolvedValue({
+    ...compactInfo(),
+    job: compactJob("done"),
+  });
+  await userEvent.click(
+    screen.getByRole("button", { name: "Confirm compaction" }),
+  );
+  expect(api.compact).toHaveBeenCalledTimes(1);
+  expect(await screen.findByText(/Compaction completed/)).toBeVisible();
+  expect(screen.getByText(/WAL checkpoint deferred/)).toBeVisible();
+  expect(api.compactInfo).toHaveBeenLastCalledWith("job-one");
+});
+
+test("a lost POST response requires refresh without resubmission", async () => {
+  vi.mocked(api.compactInfo).mockResolvedValue(compactInfo());
+  vi.mocked(api.compact).mockRejectedValue(new Error("connection lost"));
+  render(<CompactDatabase />);
+  await userEvent.click(
+    await screen.findByRole("button", { name: "Compact database" }),
+  );
+  await userEvent.click(
+    screen.getByRole("button", { name: "Confirm compaction" }),
+  );
+  expect(
+    await screen.findByText(/Couldn’t confirm whether compaction started/),
+  ).toBeVisible();
+  expect(
+    screen.getByRole("button", { name: "Compact database" }),
+  ).toBeDisabled();
+  vi.mocked(api.compactInfo).mockResolvedValue({
+    ...compactInfo(),
+    job: compactJob("done"),
+  });
+  await userEvent.click(
+    screen.getByRole("button", { name: "Refresh the database status" }),
+  );
+  expect(await screen.findByText(/Compaction completed/)).toBeVisible();
+  expect(api.compact).toHaveBeenCalledTimes(1);
+});
+
+test.each(["before", "during"])(
+  "a status request started %s submission cannot clear a later uncertain outcome",
+  async (when) => {
+    type Status = Awaited<ReturnType<typeof api.compactInfo>>;
+    let resolveStatus!: (value: Status) => void;
+    const heldStatus = new Promise<Status>((resolve) => {
+      resolveStatus = resolve;
+    });
+    let rejectPost!: (error: Error) => void;
+    const heldPost = new Promise<Awaited<ReturnType<typeof api.compact>>>((_, reject) => {
+      rejectPost = reject;
+    });
+    vi.mocked(api.compactInfo).mockResolvedValue(compactInfo());
+    vi.mocked(api.compact).mockReturnValueOnce(heldPost);
+    render(<CompactDatabase />);
+    const start = () => screen.getByRole("button", { name: "Compact database" });
+    await waitFor(() => expect(start()).toBeEnabled());
+    const refresh = () =>
+      userEvent.click(
+        screen.getByRole("button", { name: "Refresh the database status" }),
+      );
+    vi.mocked(api.compactInfo).mockReturnValueOnce(heldStatus);
+    if (when === "before") await refresh();
+    await userEvent.click(start());
+    await userEvent.click(
+      screen.getByRole("button", { name: "Confirm compaction" }),
+    );
+    if (when === "during") await refresh();
+    expect(api.compactInfo).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      rejectPost(new Error("response lost"));
+    });
+    const uncertainty = /Couldn’t confirm whether compaction started/;
+    expect(screen.getByText(uncertainty)).toBeVisible();
+    expect(start()).toBeDisabled();
+
+    // This snapshot predates the uncertain outcome even though it arrives afterward.
+    await act(async () => {
+      resolveStatus(compactInfo());
+    });
+    expect(screen.getByText(uncertainty)).toBeVisible();
+    expect(start()).toBeDisabled();
+    expect(api.compact).toHaveBeenCalledTimes(1);
+
+    vi.mocked(api.compactInfo).mockResolvedValueOnce({
+      ...compactInfo(),
+      job: compactJob("done"),
+    });
+    await refresh();
+    expect(await screen.findByText(/Compaction completed/)).toBeVisible();
+    expect(screen.queryByText(uncertainty)).not.toBeInTheDocument();
+    expect(start()).toBeEnabled();
+    expect(api.compact).toHaveBeenCalledTimes(1);
+  },
+);
+
+test("a replaced job remains explicitly unavailable across remount, never another job's result", async () => {
+  sessionStorage.setItem("tr-maintenance-compact-job", "job-old");
+  vi.mocked(api.compactInfo).mockRejectedValue(
+    new ApiError(404, "unavailable"),
+  );
+  render(<CompactDatabase />);
+  expect(
+    await screen.findByText(
+      /previous compaction result is no longer available/,
+    ),
+  ).toBeVisible();
+  expect(api.compactInfo).toHaveBeenCalledWith("job-old");
+  expect(
+    screen.getByRole("button", { name: "Compact database" }),
+  ).toBeDisabled();
+  vi.mocked(api.compactInfo).mockResolvedValue({
+    ...compactInfo(),
+    job: compactJob("done"),
+  });
+  await userEvent.click(
+    screen.getByRole("button", { name: "Refresh the database status" }),
+  );
+  expect(await screen.findByText(/Compaction completed/)).toBeVisible();
+  expect(
+    screen.getByText(/previous compaction result is no longer available/),
+  ).toBeVisible();
+});
+
+test("malformed compaction data never crashes Settings or enables a mutation", async () => {
+  vi.mocked(api.compactInfo).mockResolvedValue(
+    {} as Awaited<ReturnType<typeof api.compactInfo>>,
+  );
+  render(<CompactDatabase />);
+  expect(
+    await screen.findByText(/Couldn’t refresh the database status/),
+  ).toBeVisible();
+  expect(
+    screen.getByRole("button", { name: "Compact database" }),
+  ).toBeDisabled();
 });

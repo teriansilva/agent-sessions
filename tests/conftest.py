@@ -122,6 +122,17 @@ def _isolate_prefs(tmp_path, monkeypatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_opencode_db(tmp_path, monkeypatch) -> None:
+    """Maintenance now measures this store too; no test may open the operator's database.
+
+    The explicit opencode_db fixture overrides this with its populated disposable store.
+    """
+    monkeypatch.setenv(
+        "AGENT_SESSIONS_OPENCODE_DB", str(tmp_path / ".local/share/opencode/opencode.db")
+    )
+
+
+@pytest.fixture(autouse=True)
 def _isolate_lock_dir(tmp_path, monkeypatch) -> None:
     """Point the shared lock directory (#910) — the per-session `dtach` locks AND the cross-process
     authorization fence (`authfence.hold`, a `flock` on `locks/authorization.lock`) — at a per-test

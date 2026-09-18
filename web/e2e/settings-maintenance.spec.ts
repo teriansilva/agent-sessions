@@ -14,6 +14,25 @@ const PRUNE_INFO = {
   },
   runner: null,
 };
+const COMPACT_INFO = {
+  compact: {
+    available: true,
+    db_bytes: 12 * 1024 ** 3,
+    wal_bytes: 0,
+    reclaimable_bytes: 3 * 1024 ** 3,
+    holders: { pids: [], unknown: false },
+    blockers: [] as { code: string; detail: string }[],
+    disk: {
+      shared_filesystem: true,
+      database_required: 36 * 1024 ** 3,
+      database_free: 246 * 1024 ** 3,
+      temp_required: 0,
+      temp_free: 246 * 1024 ** 3,
+    },
+  },
+  job: null,
+  runner: null,
+};
 const MISSIONS_INFO = {
   eligible: 9,
   sessions: 23,
@@ -23,6 +42,7 @@ const MISSIONS_INFO = {
 };
 
 async function baseMocks(page: Page) {
+  await page.route("**/api/maintenance/compact**", (r) => r.fulfill({ json: COMPACT_INFO }));
   await page.route("**/api/config", (r) =>
     r.fulfill({
       json: {
@@ -203,7 +223,7 @@ test("a failed dry run shows an error with Retry, and nothing runs (#993)", asyn
   await expect(page.getByText(/couldn’t measure the caches \(dry run failed\)/i)).toBeVisible();
   await expect(page.getByText(/couldn’t count missions \(dry run failed\)/i)).toBeVisible();
   const prune = card(page, "Prune");
-  const refresh = prune.getByRole("button", { name: /refresh/i });
+  const refresh = prune.getByRole("button", { name: "Refresh the cache measurements" });
   const box = await refresh.boundingBox();
   expect(box).not.toBeNull();
   expect(box!.height).toBeGreaterThanOrEqual(44);
@@ -322,4 +342,238 @@ test("a category that could not be measured is never submitted as zero (#993)", 
   await prune.getByRole("button", { name: /confirm prune/i }).click();
   await expect(page.getByText(/removed 312 items/i)).toBeVisible();
   expect(prunedWith).toEqual({ categories: ["archived_scrollback"] });
+});
+
+for (const theme of ["dark", "light"]) {
+  test(`OpenCode compaction confirmation, polling and checkpoint outcome (${theme})`, async ({
+    page,
+  }, testInfo) => {
+    await maintenanceMocks(page);
+    let posted = 0;
+    let polls = 0;
+    const job = {
+      id: "compact-browser-job",
+      state: "vacuum",
+      started_at: 1_790_000_000,
+      finished_at: null,
+      result: null,
+    };
+    await page.route("**/api/maintenance/compact**", (r) => {
+      if (r.request().method() === "POST") {
+        posted += 1;
+        expect(r.request().postDataJSON()).toEqual({ confirm: true });
+        return r.fulfill({
+          status: 202,
+          json: { job, runner: { job: "opencode_compact", started_at: 1 } },
+        });
+      }
+      if (!posted) return r.fulfill({ json: COMPACT_INFO });
+      expect(new URL(r.request().url()).searchParams.get("job_id")).toBe(
+        job.id,
+      );
+      polls += 1;
+      return r.fulfill({
+        json:
+          polls < 2
+            ? {
+                ...COMPACT_INFO,
+                job,
+                runner: { job: "opencode_compact", started_at: 1 },
+              }
+            : {
+                ...COMPACT_INFO,
+                job: {
+                  ...job,
+                  state: "done",
+                  finished_at: 1_790_000_030,
+                  result: {
+                    vacuum: "done",
+                    checkpoint: "deferred",
+                    checkpoint_result: [1, 20, 10],
+                    bytes_freed: 3 * 1024 ** 3,
+                    blockers: [],
+                  },
+                },
+              },
+      });
+    });
+    await page.goto(settingsPath("maintenance"));
+    await page.evaluate(
+      (t) => document.documentElement.setAttribute("data-theme", t),
+      theme,
+    );
+    const database = page.locator('[aria-label="OpenCode database"]');
+    await expect(
+      database.getByRole("button", { name: "Compact database" }),
+    ).toBeEnabled();
+    await expectHitArea(database, /Compact database/);
+    await expectHitArea(database, /Refresh the database status/);
+    await database.scrollIntoViewIfNeeded();
+    const box = await database.boundingBox();
+    expect(box!.x).toBeGreaterThanOrEqual(0);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+    await page.screenshot({
+      path: testInfo.outputPath(`compact-ready-${theme}.png`),
+      fullPage: true,
+    });
+    await database.getByRole("button", { name: "Compact database" }).click();
+    expect(posted).toBe(0);
+    await expect(
+      database.getByText(
+        /launches from BattleLab will be unavailable until it finishes/,
+      ),
+    ).toBeVisible();
+    await expectHitArea(database, /Confirm compaction/);
+    await expectHitArea(database, /^Cancel$/);
+    await database.getByRole("button", { name: "Confirm compaction" }).scrollIntoViewIfNeeded();
+    await page.screenshot({
+      path: testInfo.outputPath(`compact-confirm-${theme}.png`),
+      fullPage: true,
+    });
+    await database.getByRole("button", { name: "Confirm compaction" }).click();
+    await expect(
+      database.getByRole("button", { name: "Compacting…", exact: true }),
+    ).toBeDisabled();
+    await expect(
+      database.getByText(/Compaction completed.*3\.0 GB reclaimed/),
+    ).toBeVisible();
+    await expect(
+      database.getByText(
+        /WAL checkpoint deferred.*later successful truncating checkpoint/,
+      ),
+    ).toBeVisible();
+    expect(posted).toBe(1);
+    await page.screenshot({
+      path: testInfo.outputPath(`compact-done-${theme}.png`),
+      fullPage: true,
+    });
+  });
+}
+
+test("a pre-submission refresh cannot reconcile a lost compaction response", async ({
+  page,
+}) => {
+  await maintenanceMocks(page);
+  let gets = 0;
+  let posts = 0;
+  let releaseStatus!: () => void;
+  const heldStatus = new Promise<void>((resolve) => {
+    releaseStatus = resolve;
+  });
+  await page.route("**/api/maintenance/compact**", async (route) => {
+    if (route.request().method() === "POST") {
+      posts += 1;
+      return route.abort("failed");
+    }
+    gets += 1;
+    const requestNumber = gets;
+    if (requestNumber === 2) await heldStatus;
+    return route.fulfill({
+      json: requestNumber <= 2 ? COMPACT_INFO : {
+        ...COMPACT_INFO,
+        job: {
+          id: "reconciled-job",
+          state: "done",
+          started_at: 1,
+          finished_at: 2,
+          result: {
+            vacuum: "done", checkpoint: "done", bytes_freed: 1024, blockers: [],
+          },
+        },
+      },
+    });
+  });
+  await page.goto(settingsPath("maintenance"));
+  const database = page.locator('[aria-label="OpenCode database"]');
+  const start = database.getByRole("button", {
+    name: "Compact database", exact: true,
+  });
+  await expect(start).toBeEnabled();
+  const refresh = database.getByRole("button", { name: "Refresh the database status" });
+  await refresh.click();
+  await expect.poll(() => gets).toBe(2);
+  await start.click();
+  await database.getByRole("button", { name: "Confirm compaction" }).click();
+  const warning = database.getByText(/Couldn’t confirm whether compaction started/);
+  await expect(warning).toBeVisible();
+  await expect(start).toBeDisabled();
+
+  const oldResponse = page.waitForResponse(
+    (r) => r.url().includes("/api/maintenance/compact") && r.request().method() === "GET",
+  );
+  releaseStatus();
+  await (await oldResponse).finished();
+  // Let the response handler and React paint before checking that its stale snapshot lost.
+  await page.evaluate(() =>
+    new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    ),
+  );
+  await expect(warning).toBeVisible();
+  await expect(start).toBeDisabled();
+  expect(posts).toBe(1);
+  await refresh.click();
+  await expect(database.getByText(/Compaction completed/)).toBeVisible();
+  await expect(warning).not.toBeVisible();
+  await expect(start).toBeEnabled();
+  expect(posts).toBe(1);
+});
+
+test("compaction presents every blocker and recovers after refresh", async ({
+  page,
+}, testInfo) => {
+  await maintenanceMocks(page);
+  let blocked = true;
+  await page.route("**/api/maintenance/compact**", (r) =>
+    r.fulfill({
+      json: blocked
+        ? {
+            ...COMPACT_INFO,
+            compact: {
+              ...COMPACT_INFO.compact,
+              available: false,
+              holders: { pids: [17], unknown: true },
+              disk: { ...COMPACT_INFO.compact.disk, database_free: 0, temp_free: 0 },
+              blockers: [
+                { code: "held", detail: "A process holds the database." },
+                {
+                  code: "holders_unknown",
+                  detail:
+                    "Some processes could not be inspected; idle state is unknown.",
+                },
+                {
+                  code: "database_space",
+                  detail:
+                    "There is not enough free space on the database filesystem.",
+                },
+              ],
+            },
+          }
+        : COMPACT_INFO,
+    }),
+  );
+  await page.goto(settingsPath("maintenance"));
+  const database = page.locator('[aria-label="OpenCode database"]');
+  await expect(
+    database.getByText("A process holds the database."),
+  ).toBeVisible();
+  await expect(
+    database.getByText(/Some processes could not be inspected/),
+  ).toBeVisible();
+  await expect(database.getByText(/not enough free space/)).toBeVisible();
+  await expect(
+    database.getByRole("button", { name: "Compact database" }),
+  ).toBeDisabled();
+  await database.scrollIntoViewIfNeeded();
+  await page.screenshot({
+    path: testInfo.outputPath("compact-blockers.png"),
+    fullPage: true,
+  });
+  blocked = false;
+  await database
+    .getByRole("button", { name: "Refresh the database status" })
+    .click();
+  await expect(
+    database.getByRole("button", { name: "Compact database" }),
+  ).toBeEnabled();
 });

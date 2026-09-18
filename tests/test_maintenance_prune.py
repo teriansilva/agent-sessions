@@ -1066,7 +1066,8 @@ def test_archived_scrollback_through_the_routes(auth_cfg, fake_jsonl):
     assert body["categories"]["archived_scrollback"]["items"] == 1
     assert body["categories"]["archived_scrollback"]["bytes"] > 0
     assert body["runner"] is None
-    assert "compact" not in body and "schedule" not in body  # increments 2 and 3
+    assert body["compact"]["available"] is False
+    assert "schedule" not in body  # increment 3
 
     r = c.post("/api/maintenance/prune", json={"categories": ["archived_scrollback"]}, headers=hdr)
     assert r.status_code == 200

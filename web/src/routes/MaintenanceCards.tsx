@@ -1,9 +1,9 @@
 import { Archive, RefreshCw, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
-import { api, ApiError } from "../lib/api";
+import { useEffect, useRef, useState } from "react";
+import { api, ApiError, type CompactInfo, type CompactJob } from "../lib/api";
 import styles from "./Settings.module.css";
 
-/** Settings → Maintenance (#993, increment 1): "Archive old missions" and "Prune".
+/** Settings → Maintenance (#993): archive missions, prune caches, and compact the OpenCode database.
  *
  *  Both cards show a dry run before anything runs, confirm in place naming the side effects, and
  *  report skips and failures on their own lines rather than folding them into a success. The
@@ -574,6 +574,341 @@ export function PruneCard() {
         <p className={styles.hint}>Nothing to prune right now.</p>
       )}
       {result && <ResultLines lines={result} />}
+      <CompactDatabase />
     </section>
+  );
+}
+
+const COMPACT_JOB_KEY = "tr-maintenance-compact-job";
+function rememberedJob(): string | undefined {
+  try {
+    return sessionStorage.getItem(COMPACT_JOB_KEY) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+function rememberJob(id?: string) {
+  try {
+    if (id) sessionStorage.setItem(COMPACT_JOB_KEY, id);
+    else sessionStorage.removeItem(COMPACT_JOB_KEY);
+  } catch {
+    /* Storage is optional; identity still lives in this mounted card. */
+  }
+}
+const jobRunning = (job: CompactJob | null) =>
+  !!job && ["checking", "vacuum", "checkpoint"].includes(job.state);
+const measuredBytes = (n: number | null) =>
+  n === null ? "unknown" : compactBytes(n);
+
+function measuredNumber(n: unknown): n is number | null {
+  return n === null || (typeof n === "number" && Number.isFinite(n) && n >= 0);
+}
+function usableCompactJob(job: CompactJob | null): boolean {
+  return (
+    job === null ||
+    (!!job &&
+      typeof job.id === "string" &&
+      !!job.id &&
+      typeof job.state === "string" &&
+      typeof job.started_at === "number" &&
+      Number.isFinite(job.started_at) &&
+      (job.result === null ||
+        (typeof job.result?.vacuum === "string" &&
+          typeof job.result?.checkpoint === "string" &&
+          measuredNumber(job.result?.bytes_freed) &&
+          Array.isArray(job.result?.blockers) &&
+          job.result.blockers.every((b) => typeof b?.detail === "string"))))
+  );
+}
+function usableCompactInfo(r: CompactInfo): boolean {
+  const c = r?.compact;
+  return (
+    !!c &&
+    typeof c.available === "boolean" &&
+    measuredNumber(c.db_bytes) &&
+    measuredNumber(c.wal_bytes) &&
+    measuredNumber(c.reclaimable_bytes) &&
+    Array.isArray(c.blockers) &&
+    c.blockers.every((b) => typeof b?.detail === "string") &&
+    (c.holders === null ||
+      (Array.isArray(c.holders?.pids) &&
+        typeof c.holders?.unknown === "boolean")) &&
+    (c.disk === null ||
+      [
+        c.disk?.database_required,
+        c.disk?.database_free,
+        c.disk?.temp_required,
+        c.disk?.temp_free,
+      ].every((n) => typeof n === "number" && Number.isFinite(n) && n >= 0)) &&
+    (r.runner === null || typeof r.runner?.job === "string") &&
+    usableCompactJob(r.job)
+  );
+}
+
+/** The server retains one job until its replacement/restart. Pin the displayed id across
+ *  navigation and polling; 404 is an explicit lost result, never a different job's success.
+ *  A lost POST response is uncertain and must be refreshed, never automatically resubmitted.
+ *  Only a GET started after that outcome may reconcile it; older responses cannot clear it. */
+export function CompactDatabase() {
+  const [info, setInfo] = useState<CompactInfo | null>(null);
+  const [job, setJob] = useState<CompactJob | null>(null);
+  const wanted = useRef(rememberedJob());
+  const statusEpoch = useRef(0);
+  const [reload, setReload] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [uncertain, setUncertain] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const epoch = statusEpoch.current;
+    const stale = () => cancelled || epoch !== statusEpoch.current;
+    api
+      .compactInfo(wanted.current)
+      .then((r) => {
+        if (stale()) return;
+        if (!usableCompactInfo(r))
+          throw new Error("Incomplete database measurement");
+        setInfo(r);
+        setJob(r.job);
+        if (r.job) {
+          wanted.current = r.job.id;
+          rememberJob(r.job.id);
+        }
+        setError(null);
+        setUncertain(false);
+      })
+      .catch((e: unknown) => {
+        if (stale()) return;
+        setInfo(null);
+        setConfirming(false);
+        if (e instanceof ApiError && e.status === 404) {
+          setNotice(
+            "The previous compaction result is no longer available: the server restarted or a newer job replaced it. Refresh to view the latest job.",
+          );
+          setJob(null);
+          wanted.current = undefined;
+          rememberJob();
+        }
+        setError(
+          "Couldn’t refresh the database status. Refresh before trying again; a running job continues on the server.",
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [reload]);
+
+  const running = jobRunning(job);
+  const runner = info?.runner;
+  useEffect(() => {
+    if (!running && !runner) return;
+    const t = setInterval(() => setReload((n) => n + 1), BUSY_POLL_MS);
+    return () => clearInterval(t);
+  }, [running, runner]);
+
+  const c = info?.compact;
+  const canStart =
+    !!c &&
+    c.available &&
+    c.blockers.length === 0 &&
+    c.reclaimable_bytes !== null &&
+    c.reclaimable_bytes > 0 &&
+    c.db_bytes !== null &&
+    c.wal_bytes !== null &&
+    c.disk !== null &&
+    c.holders !== null &&
+    !c.holders.unknown &&
+    c.holders.pids.length === 0 &&
+    !runner &&
+    !running &&
+    !submitting &&
+    !error &&
+    !uncertain;
+  const confirmOpen = confirming && canStart;
+
+  const submit = async () => {
+    if (!canStart) return;
+    // Synchronous: a GET already in flight must not overwrite the submission's state.
+    statusEpoch.current += 1;
+    setSubmitting(true);
+    setConfirming(false);
+    setNotice(null);
+    try {
+      const r = await api.compact();
+      if (!r.job?.id || !usableCompactJob(r.job))
+        throw new Error("Missing compaction job");
+      wanted.current = r.job.id;
+      rememberJob(r.job.id);
+      setJob(r.job);
+      setInfo(null);
+      setReload((n) => n + 1);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) {
+        setNotice(
+          "Compaction was refused. Refreshing the current blockers and maintenance job.",
+        );
+        wanted.current = undefined;
+        rememberJob();
+        setInfo(null);
+        setReload((n) => n + 1);
+      } else {
+        setUncertain(true);
+        setError(
+          "Couldn’t confirm whether compaction started. Refresh to check its status before trying again.",
+        );
+      }
+    } finally {
+      // Also retire requests started while the POST was pending. In particular, none can
+      // clear an uncertain result; reconciliation needs a request begun after this point.
+      statusEpoch.current += 1;
+      setSubmitting(false);
+    }
+  };
+
+  const result = job?.result;
+  const lines: ResultLine[] = [];
+  if (running)
+    lines.push({
+      tone: "attention",
+      text: `${job?.state === "checkpoint" ? "Finishing the WAL checkpoint" : job?.state === "checking" ? "Checking database availability" : "Compacting the database"}… BattleLab’s OpenCode launches are unavailable; retry when maintenance finishes.`,
+    });
+  if (result?.vacuum === "done") {
+    lines.push({
+      tone: "up",
+      text: `Compaction completed. ${result.bytes_freed === null ? "Reclaimed space could not be measured." : `${compactBytes(result.bytes_freed)} reclaimed.`}`,
+    });
+    if (result.checkpoint === "done")
+      lines.push({ tone: "up", text: "WAL checkpoint completed." });
+    if (result.checkpoint === "deferred" || result.checkpoint === "failed")
+      lines.push({
+        tone: "attention",
+        text: `WAL checkpoint ${result.checkpoint}. Compaction remains complete; the WAL may shrink after a later successful truncating checkpoint.`,
+      });
+  } else if (result?.vacuum === "rolled_back") {
+    lines.push({
+      tone: "down",
+      text: "Compaction stopped and rolled back. This compaction made no database changes.",
+    });
+  } else if (result) {
+    lines.push({
+      tone: "attention",
+      text:
+        result.vacuum === "not_started"
+          ? "Compaction did not start."
+          : "The compaction outcome is unknown.",
+    });
+  }
+  for (const b of result?.blockers ?? [])
+    lines.push({ tone: "attention", text: b.detail });
+
+  return (
+    <div className={styles.databaseSection} aria-label="OpenCode database">
+      <h3 className={styles.subhead}>OpenCode database</h3>
+      <dl className={styles.databaseStats}>
+        <div>
+          <dt>Size</dt>
+          <dd>{c ? measuredBytes(c.db_bytes) : "…"}</dd>
+        </div>
+        <div>
+          <dt>WAL</dt>
+          <dd>{c ? measuredBytes(c.wal_bytes) : "…"}</dd>
+        </div>
+        <div>
+          <dt>Reclaimable</dt>
+          <dd>{c ? measuredBytes(c.reclaimable_bytes) : "…"}</dd>
+        </div>
+        <div>
+          <dt>Holders</dt>
+          <dd>
+            {!c
+              ? "…"
+              : !c.holders || c.holders.unknown
+                ? "unknown"
+                : c.holders.pids.length}
+          </dd>
+        </div>
+      </dl>
+      {c && c.blockers.length > 0 && (
+        <ResultLines
+          lines={c.blockers.map((b) => ({ tone: "attention", text: b.detail }))}
+        />
+      )}
+      {c?.disk && (
+        <p className={styles.hint}>
+          Disk needed: {compactBytes(c.disk.database_required)} on the database
+          filesystem ({compactBytes(c.disk.database_free)} available).
+          {c.disk.shared_filesystem
+            ? " Includes SQLite’s temporary space on the same filesystem."
+            : ` Temporary filesystem: ${compactBytes(c.disk.temp_required)} needed (${compactBytes(c.disk.temp_free)} available).`}
+        </p>
+      )}
+      <p className={styles.hint}>
+        Reclaims pages freed by OpenCode; session history is kept. While
+        compacting, BattleLab won’t start OpenCode sessions. OpenCode started
+        outside BattleLab may report “database busy”; SQLite keeps the file
+        consistent.
+      </p>
+      {confirmOpen ? (
+        <div>
+          <p className={styles.confirmText}>
+            Compact the OpenCode database ({compactBytes(c.reclaimable_bytes!)}{" "}
+            reclaimable)?
+          </p>
+          <p className={styles.hint}>
+            Availability and disk space are checked again before compaction.
+            OpenCode launches from BattleLab will be unavailable until it
+            finishes.
+          </p>
+          <div className={styles.confirmRow}>
+            <button
+              type="button"
+              className={`${styles.danger} ${styles.actionBtn}`}
+              onClick={() => void submit()}
+            >
+              Confirm compaction
+            </button>
+            <button
+              type="button"
+              className={`${styles.secBtnGhost} ${styles.actionBtn}`}
+              onClick={() => setConfirming(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className={styles.cleanupRow}>
+          <button
+            type="button"
+            className={`${styles.secBtnGhost} ${styles.actionBtn}`}
+            disabled={!canStart}
+            onClick={() => setConfirming(true)}
+          >
+            {submitting
+              ? "Starting compaction…"
+              : running
+                ? "Compacting…"
+                : "Compact database"}
+          </button>
+          <RefreshButton
+            label="Refresh the database status"
+            onClick={() => setReload((n) => n + 1)}
+          />
+        </div>
+      )}
+      {notice && <ResultLines lines={[{ tone: "attention", text: notice }]} />}
+      {error && <ResultLines lines={[{ tone: "down", text: error }]} />}
+      {runner && !running && <ResultLines lines={[busyLine(runner.job)]} />}
+      {job && (
+        <p className={styles.hint}>
+          Compaction job {job.id.slice(0, 8)} ·{" "}
+          {new Date(job.started_at * 1000).toLocaleString()}
+        </p>
+      )}
+      {lines.length > 0 && <ResultLines lines={lines} />}
+    </div>
   );
 }
