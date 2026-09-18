@@ -95,8 +95,11 @@ from . import privatedir, procgroup, ptybridge
 from .files import FsError, contained_path
 from .fsbrowse import home_root
 from .gitpanel import (
+    EMPTY_TREE,
+    GIT_MAX_INDEX_BYTES,
     GitError,
     Repo,
+    _copy_nofollow,
     bump_epoch,
     discover_repo,
     git_bin,
@@ -380,6 +383,7 @@ def run_git_write(
     ssh_command: str | None = None,
     allow_protocol: str | None = None,
     stdin: bytes | None = None,
+    index_file: str | None = None,
 ) -> str:
     """Run one write command with a literal argv list, bounded output, and a reaped child.
 
@@ -395,6 +399,7 @@ def run_git_write(
         ssh_command=ssh_command,
         allow_protocol=allow_protocol,
         stdin=stdin,
+        index_file=index_file,
     ).decode("utf-8", "replace")
 
 
@@ -413,6 +418,7 @@ def run_git_bytes(
     ssh_command: str | None = None,
     allow_protocol: str | None = None,
     stdin: bytes | None = None,
+    index_file: str | None = None,
 ) -> bytes:
     """The same run, returning stdout as BYTES.
 
@@ -436,6 +442,10 @@ def run_git_bytes(
         # Narrowed to the scheme that was ADMITTED, so a `url.insteadOf` rewrite to any other
         # transport cannot connect even though it rewrote the pinned string.
         **({"GIT_ALLOW_PROTOCOL": allow_protocol} if allow_protocol else {}),
+        # A PRIVATE index (#950): commit-paths builds its tree in one and settlement stages its
+        # rewrite in one, so neither touches the real index until the one rename that publishes
+        # it. Always an absolute path this module created inside the gitdir.
+        **({"GIT_INDEX_FILE": index_file} if index_file else {}),
     }
     return _run_argv(
         argv, env, repo.toplevel, timeout, stdin=stdin, require_complete=require_complete
@@ -677,11 +687,24 @@ def validate_paths(repo: Repo, raw: object, *, staged: bool | None = None) -> li
 
     fresh = git_status(repo.toplevel)
     known: set[str] = set()
+    lossy: set[str] = set()
     for entry in fresh.get("entries", []):
+        names = [entry["path"], *([entry["orig_path"]] if entry.get("orig_path") else [])]
+        if entry.get("undecodable"):
+            # Shown with U+FFFD because git's name is not UTF-8. Whatever the row is called here
+            # may equally be a real file of that name, so it is never a write target (Hermes on
+            # #964, review 4833: SETTLE staged a commit's blob into the other file).
+            lossy.update(names)
         if staged is None or (entry.get("kind") == "staged") == staged:
-            known.add(entry["path"])
-            if entry.get("orig_path"):
-                known.add(entry["orig_path"])
+            known.update(names)
+    ambiguous = [p for p in wanted if p in lossy]
+    if ambiguous:
+        raise FsError(
+            f"git names {ambiguous[0]!r} in bytes that are not UTF-8, so the panel cannot tell it "
+            "from another file of the same spelling. Nothing was changed — use this session's "
+            "terminal.",
+            status=409,
+        )
     missing = [p for p in wanted if p not in known]
     if missing:
         raise FsError(
@@ -705,18 +728,76 @@ def resolve_repo(path: str | None) -> Repo:
     return repo
 
 
-def _head_branch(repo: Repo) -> str | None:
-    """The current branch, or ``None`` when HEAD is detached — a state, never an exception.
+_HEADS = "refs/heads/"
 
-    ``symbolic-ref`` *exits non-zero* on a detached HEAD even with ``--quiet``, so the obvious
-    version turns "you are not on a branch" into a generic ``git failed`` 400 and every caller
-    that wanted to answer 409 with the real reason loses it.
-    """
+
+def _head_targets(repo: Repo) -> tuple[bytes, bytes] | None:
+    """HEAD's IMMEDIATE target and the ref it finally resolves to, as git's own bytes, or ``None``
+    when HEAD is detached. The two differ only when HEAD reaches its branch through another
+    symbolic ref (``HEAD → refs/heads/alias → refs/heads/main``)."""
     try:
-        out = run_git_write(repo, ["symbolic-ref", "--quiet", "--short", "HEAD"]).strip()
+        immediate = run_git_bytes(repo, ["symbolic-ref", "--quiet", "--no-recurse", "HEAD"])
+        resolved = run_git_bytes(repo, ["symbolic-ref", "--quiet", "HEAD"])
     except GitError:
         return None
+    return immediate.strip(), resolved.strip()
+
+
+def _ref_display(raw: bytes) -> str:
+    """A ref name for a MESSAGE only — never an identity, since it may not be UTF-8."""
+    return raw.decode("utf-8", "replace")
+
+
+def _head_ref(repo: Repo) -> str | None:
+    """The FULL ref HEAD names (``refs/heads/main``), or ``None`` when HEAD is detached.
+
+    ``symbolic-ref`` *exits non-zero* on a detached HEAD even with ``--quiet``, so that is a state
+    here, never a generic ``git failed``. A name that is not UTF-8 is a 409: decoded with
+    ``replace`` it can be ANOTHER branch's name, and the name is a write target (Hermes on #964,
+    review 4833).
+
+    Never ``--short``: that is a display abbreviation, not an identity. With a tag named ``main``
+    it answers ``heads/main``, and every ref and lock derived from it was wrong — SETTLE locked
+    ``refs/heads/heads/main.lock`` while the real branch stayed writable (review 4856).
+
+    HEAD must name its branch DIRECTLY. With ``HEAD → refs/heads/alias → refs/heads/main`` the
+    panel locked HEAD and ``main`` but not ``alias``, and ``git symbolic-ref refs/heads/alias
+    refs/heads/side`` in the middle of SETTLE exited 0 with every lock held: SETTLE installed
+    ``main``'s commit while HEAD resolved to ``side`` (review 4863). A chain is refused, not locked:
+    with ``HEAD.lock`` and the branch's lock held none can be introduced — measured, git 2.43
+    refuses ``symbolic-ref HEAD <other>`` on HEAD.lock and ``symbolic-ref refs/heads/main <other>``
+    on main's lock — so refusing one that already exists closes it.
+    """
+    targets = _head_targets(repo)
+    if targets is None:
+        return None
+    immediate, resolved = targets
+    if immediate != resolved:
+        raise FsError(
+            f"HEAD reaches `{_ref_display(resolved)}` through another symbolic ref "
+            f"(`{_ref_display(immediate)}`), so the panel cannot tell which branch a write would "
+            "move. Nothing was changed — use this session's terminal.",
+            status=409,
+        )
+    try:
+        out = resolved.decode("utf-8")
+    except UnicodeDecodeError:
+        raise FsError(
+            "the current branch's name is not valid UTF-8, so the panel cannot name it without "
+            "risking another branch. Nothing was changed — use this session's terminal.",
+            status=409,
+        ) from None
     return out or None
+
+
+def _head_branch(repo: Repo) -> str | None:
+    """The current branch's name under ``refs/heads/``, or ``None`` when HEAD is detached or names
+    anything else. Derived from :func:`_head_ref`, so ``refs/heads/<name>`` built from it is always
+    the ref HEAD really names."""
+    ref = _head_ref(repo)
+    if not ref or not ref.startswith(_HEADS) or len(ref) == len(_HEADS):
+        return None
+    return ref[len(_HEADS) :]
 
 
 def _is_clean(repo: Repo) -> tuple[bool, int]:
@@ -2178,18 +2259,47 @@ def _parse_ls(
     return found
 
 
-def _index_entries(repo: Repo, names: list[str]) -> dict[str, tuple[str, str] | None]:
-    """`(mode, oid)` at stage 0 of the index for each name, or None where the index has no such
-    path. One `ls-files` per batch rather than per path."""
+#: How :func:`_index_entries` reports a path that carries conflict stages (1-3). No real
+#: ``(mode, oid)`` can equal it, so a compare-and-swap can never mistake a conflict for an absent
+#: entry — it did: SETTLE read an add/add conflict as "absent, as in the parent", installed the
+#: commit's blob and silently dropped every unmerged stage (Hermes on #964, review 4829).
+UNMERGED: tuple[str, str] = ("unmerged", "")
+#: The tail of the reason :func:`_index_cas` gives when a path it would move is unmerged.
+CONFLICT_REASON = "has an unresolved conflict, so the index was left exactly as it is"
+
+
+def _unmerged_in(out: str, wanted: set[str]) -> set[str]:
+    """Paths in `ls-files --stage -z` output that carry a conflict stage."""
+    hit: set[str] = set()
+    for record in out.split("\0"):
+        meta, _, path = record.partition("\t")
+        bits = meta.split()
+        if path in wanted and len(bits) > 2 and bits[2] != "0":
+            hit.add(path)
+    return hit
+
+
+def _index_entries(
+    repo: Repo, names: list[str], index_file: str | None = None
+) -> dict[str, tuple[str, str] | None]:
+    """`(mode, oid)` at stage 0 of the index for each name, :data:`UNMERGED` where the path is in
+    conflict, or None where the index has no such path. One `ls-files` per batch rather than per
+    path. `index_file` reads a private index."""
     found: dict[str, tuple[str, str]] = {}
+    conflicted: set[str] = set()
     for i in range(0, len(names), _BATCH):
         chunk = names[i : i + _BATCH]
-        out = run_git_write(repo, ["ls-files", "--stage", "-z", "--", *chunk])
+        out = run_git_write(
+            repo, ["ls-files", "--stage", "-z", "--", *chunk], index_file=index_file
+        )
         found.update(_parse_ls(out, 1, set(chunk), stage_at=2))
-    return {n: found.get(n) for n in names}
+        conflicted.update(_unmerged_in(out, set(chunk)))
+    return {n: UNMERGED if n in conflicted else found.get(n) for n in names}
 
 
-def _restore_from_index(repo: Repo, name: str, entry: tuple[str, str] | None) -> list[str]:
+def _restore_from_index(
+    repo: Repo, name: str, entry: tuple[str, str] | None, saved: list[str] | None = None
+) -> list[str]:
     """Put the index's content at `name`, preserving every set of bytes displaced on the way.
 
     The loop is the point, and it is what the earlier "hash it, then `git restore` over it"
@@ -2200,7 +2310,17 @@ def _restore_from_index(repo: Repo, name: str, entry: tuple[str, str] | None) ->
     So the invariant holds all the way through: every distinct set of bytes that occupied this
     name during the operation is in the object database and is returned to the caller, and the
     content that finally lands is content this function created itself.
+
+    ``saved`` is appended to as each version is displaced, so a caller that passes its own list
+    still holds every id when this raises part-way — REVERT FILE returned only an exception after
+    it had already moved files aside (Hermes on #964, review 4829).
     """
+    if entry == UNMERGED:
+        raise FsError(
+            f"{name!r} has an unresolved conflict, so there is no single version to restore. "
+            "Resolve it in this session's terminal.",
+            status=409,
+        )
     if entry is None:
         raise FsError(
             f"{name!r} is not in the index, so there is nothing to restore it from. Handle it in "
@@ -2223,7 +2343,7 @@ def _restore_from_index(repo: Repo, name: str, entry: tuple[str, str] | None) ->
     )
     rel_dir = name.rsplit("/", 1)[0] + "/" if "/" in name else ""
     dir_fd, leaf = _walk_to_parent(repo, name)
-    saved: list[str] = []
+    saved = [] if saved is None else saved
     try:
         for _ in range(REPLACE_ATTEMPTS):
             got = _displace(repo, dir_fd, leaf, rel_dir)
@@ -2342,22 +2462,27 @@ def _snapshot_for_index(repo: Repo, names: list[str]) -> dict[str, tuple[str, st
     )
 
 
-def _head_entries(repo: Repo, names: list[str]) -> dict[str, tuple[str, str] | None]:
+def _head_entries(
+    repo: Repo, names: list[str], rev: str = "HEAD"
+) -> dict[str, tuple[str, str] | None]:
     """`(mode, oid)` in the HEAD commit for each name, or None where HEAD does not carry it.
 
     One `ls-tree` per batch rather than per path: unstaging 200 files measured 0.66s when each
     name cost its own git process, and the objects being immutable is what makes unstaging safe —
-    not the number of round trips used to find them.
+    not the number of round trips used to find them. `rev` pins a resolved commit, for callers
+    that must act on the commit the operator was shown rather than on wherever HEAD is now.
     """
     found: dict[str, tuple[str, str]] = {}
     for i in range(0, len(names), _BATCH):
         chunk = names[i : i + _BATCH]
-        out = run_git_write(repo, ["ls-tree", "-z", "--full-name", "HEAD", "--", *chunk])
+        out = run_git_write(repo, ["ls-tree", "-z", "--full-name", rev, "--", *chunk])
         found.update(_parse_ls(out, 2, set(chunk)))
     return {n: found.get(n) for n in names}
 
 
-def _install_index_entries(repo: Repo, entries: dict[str, tuple[str, str] | None]) -> None:
+def _install_index_entries(
+    repo: Repo, entries: dict[str, tuple[str, str] | None], index_file: str | None = None
+) -> None:
     """Set (or clear) index entries from object ids, never from the worktree.
 
     `--cacheinfo` repeats, and the path rides as an argv element — which is why this is not the
@@ -2377,12 +2502,12 @@ def _install_index_entries(repo: Repo, entries: dict[str, tuple[str, str] | None
         (gitlinks, ["add", "--"]),
     ):
         for i in range(0, len(group), _BATCH):
-            run_git_write(repo, [*args, *group[i : i + _BATCH]])
+            run_git_write(repo, [*args, *group[i : i + _BATCH]], index_file=index_file)
     for i in range(0, len(sets), _BATCH):
         flags: list[str] = []
         for n, e in sets[i : i + _BATCH]:
             flags += ["--cacheinfo", f"{e[0]},{e[1]},{n}"]
-        run_git_write(repo, ["update-index", "--add", *flags])
+        run_git_write(repo, ["update-index", "--add", *flags], index_file=index_file)
 
 
 def git_stage(
@@ -2476,7 +2601,7 @@ def _expect_map(expect: object, names: list[str], verb: str) -> dict[str, str]:
     return out
 
 
-def verify_rows(repo: Repo, expect: dict[str, str], verb: str) -> dict:
+def verify_rows(repo: Repo, expect: dict[str, str], verb: str, *, renames: bool = False) -> dict:
     """Re-read the rows INSIDE the lock and refuse if any changed since the operator saw it.
 
     This is the half a lock cannot provide. The panel's lock serialises the panel against itself,
@@ -2492,9 +2617,17 @@ def verify_rows(repo: Repo, expect: dict[str, str], verb: str) -> dict:
     against. Verifying against it would compare the operator's fingerprint with the very read the
     operator was shown and pass every time — a check that cannot fail. Measured: a plain
     `git_status` returned an unchanged fingerprint across an edit that had definitely landed.
+
+    ``renames``: a staged rename is ONE row (``path`` with ``orig_path``), and a commit of it has to
+    name both sides, so the old name is bound through that row — it carries the same fingerprint
+    the request carries for the new name.
     """
     fresh = _fresh_status(repo)
     now = {e.get("path"): e.get("fp") for e in fresh.get("entries", [])}
+    if renames:
+        for e in fresh.get("entries", []):
+            if e.get("kind") == "staged" and e.get("orig_path"):
+                now.setdefault(e["orig_path"], now.get(e["path"]))
     for name, fp in expect.items():
         cur = now.get(name)
         if cur is None:
@@ -2530,8 +2663,146 @@ def verify_scalar(repo: Repo, expect: object, field: str, what: str) -> dict:
     return fresh
 
 
-def git_discard(path: str | None, paths: object, expect: object = None) -> dict:
+def _discard_failure(e: FsError | GitError, saved: dict[str, list[str]]) -> FsError:
+    """The refusal for a discard that stopped part-way, carrying every id it already displaced.
+
+    A multi-path discard that fails partway has ALREADY preserved and replaced the paths before
+    this one. Letting the exception through as-is would report the failure and drop those object
+    ids on the floor — the operator would be told the discard failed while some of their files had
+    in fact been replaced, with the only copies unreferenced and unnamed. The ids ride along in the
+    message.
+    """
+    done = "; ".join(f"{k}: {', '.join(v)}" for k, v in saved.items() if v)
+    tail = (
+        f" Paths already discarded, recoverable with `git cat-file -p <id>` — {done}."
+        if done
+        else ""
+    )
+    return FsError(f"{e}{tail}", status=getattr(e, "status", 409))
+
+
+def _revert_file_locked(
+    repo: Repo,
+    names: list[str],
+    entries: dict[str, tuple[str, str] | None],
+    seen_head: str,
+    branch: str | None,
+    lock: _IndexLock,
+) -> dict:
+    """REVERT FILE's two halves, with index.lock, HEAD.lock and the branch's ref lock held.
+
+    Everything that decides WHICH checkout and commit this is is re-read under the locks, before
+    anything is displaced: the branch HEAD names, HEAD itself (the commit the panel showed), and
+    the staged entries the operator confirmed. A change to any is a 409 with nothing touched. From
+    the first displacement on, a failure is a partial result with every id (review 4829), and the
+    index half settles through :func:`_index_cas` with the held lock, the branch and HEAD bound.
+    Publishing the index consumes ``lock``; the caller releases it exactly once.
+    """
+    if _head_branch(repo) != branch:
+        raise FsError(
+            "this checkout switched branch after the panel showed it, so nothing was reverted. "
+            "Refresh and look again.",
+            status=409,
+        )
+    tip = _current_head(repo)
+    if not tip:
+        raise FsError(
+            "nothing has been committed yet, so there is no last commit to revert to", status=409
+        )
+    if tip != seen_head:
+        raise FsError(
+            "the last commit changed after the panel showed it, so nothing was reverted. "
+            "Refresh and look again.",
+            status=409,
+        )
+    if _index_entries(repo, names) != entries:
+        raise FsError(
+            "the staged version of a file changed while the panel was checking, so nothing was "
+            "reverted — a revert now would replace content you were not shown. Refresh and try "
+            "again.",
+            status=409,
+        )
+    targets = _head_entries(repo, names, rev=tip)
+    absent = [n for n in names if targets[n] is None]
+    if absent:
+        raise FsError(
+            f"{absent[0]!r} is not in the last commit — it was added since, so reverting "
+            "it would delete it. Unstage it instead, or remove it in the session.",
+            status=409,
+        )
+    # THE REPLACEMENT — see git_discard: displace, then create with O_EXCL, every version an id.
+    saved: dict[str, list[str]] = {}
+    restored: list[str] = []
+    for n in names:
+        saved[n] = []
+        try:
+            _restore_from_index(repo, n, targets[n], saved[n])
+            restored.append(n)
+        except (FsError, GitError) as e:
+            if restored or any(saved.values()):
+                # Files were already moved aside: that is a partial result to REPORT, with every
+                # id, never an exception that drops them (Hermes on #964, review 4829).
+                return {
+                    "discarded": restored,
+                    "reverted": [],
+                    "recoverable": {k: v for k, v in saved.items() if v},
+                    "staged_recoverable": {},
+                    "worktree": PENDING,
+                    "worktree_left": [k for k in names if k not in restored],
+                    "worktree_reason": str(e),
+                    "index": PENDING,
+                    "index_left": names,
+                    "index_reason": "the index was not changed, because putting a file "
+                    "back failed first",
+                }
+            raise _discard_failure(e, saved) from None
+    # The index half: from the entry verified above to the commit's entry, and only where it still
+    # holds the verified one. The worktree is already done, so a failure here is a pending index,
+    # never an exception that hides the ids above.
+    changes = {n: (entries[n], targets[n]) for n in names}
+    try:
+        res = _index_cas(repo, changes, branch, lock=lock, expect_head=tip)
+    except (GitError, FsError, OSError) as e:
+        res = CasResult([], names, f"the index could not be updated ({e})")
+    applied = list(res.done)
+    # Every applied name, durable or not: once the index was renamed into place the staged
+    # version IS displaced, and its id is the only way back to it (Hermes on #964, 4833).
+    staged_recoverable = {
+        n: entries[n][1]
+        for n in applied
+        if entries[n] is not None and entries[n] != targets[n] and entries[n][1]
+    }
+    return {
+        "discarded": names,
+        "reverted": applied,
+        "recoverable": saved,
+        "staged_recoverable": staged_recoverable,
+        "worktree": SETTLED,
+        "worktree_left": [],
+        "worktree_reason": None,
+        **_index_fields(res),
+    }
+
+
+def git_discard(
+    path: str | None,
+    paths: object,
+    expect: object = None,
+    source: object = None,
+    head: object = None,
+) -> dict:
     """Throw away worktree changes to tracked files. The only destructive operation here.
+
+    ``source`` says what to put back (#950). ``"index"`` (the default, and the only behaviour
+    before #950) restores the worktree from the index and leaves a staged change staged.
+    ``"head"`` is REVERT FILE: the worktree AND the index entry go back to the last commit — bound
+    to the commit the operator was shown (``head``), refused for a path that commit does not
+    carry (reverting a newly added file would delete it), and the index half goes through
+    :func:`_index_cas`, so a stage that lands meanwhile is left as staged rather than overwritten.
+    Both halves run with ``index.lock``, ``HEAD.lock`` and the branch's ref lock held, and the
+    branch, HEAD and the staged entries are re-read under them before anything is displaced, so a
+    ``switch`` or ``reset`` cannot turn it into a revert of a different checkout (review 4847).
+    The staged blob being replaced is an object already, and its id rides back as recoverable.
 
     Two boundaries, both deliberate:
 
@@ -2550,8 +2821,15 @@ def git_discard(path: str | None, paths: object, expect: object = None) -> dict:
     The replacement itself never reads a file before overwriting it; see ``_restore_from_index``
     for why that is what makes the returned pre-image complete rather than merely likely.
     """
+    if source is None:
+        source = "index"
+    if source not in ("index", "head"):
+        raise FsError('from must be "index" or "head"', status=422)
+    from_head = source == "head"
+    seen_head = _expect_head(head) if from_head else ""
     repo = resolve_repo(path)
-    names = validate_paths(repo, paths, staged=False)
+    # Revert-file acts on staged rows too; discard-from-index keeps its original reach.
+    names = validate_paths(repo, paths, staged=None if from_head else False)
     want = _expect_map(expect, names, "discard")
 
     def run() -> dict:
@@ -2585,6 +2863,36 @@ def git_discard(path: str | None, paths: object, expect: object = None) -> dict:
                 "delete it. Remove it in the session if that is what you mean.",
                 status=409,
             )
+        if from_head:
+            unmerged = {e["path"] for e in fresh.get("entries", []) if e.get("kind") == "unmerged"}
+            if any(n in unmerged for n in names):
+                raise FsError("resolve the conflict in the session before reverting", status=409)
+            branch = _head_branch(repo)
+            # REVERT FILE writes the last commit's version into THIS checkout — its worktree and
+            # its index — so it holds the three locks every git writer that could change which
+            # checkout or commit that is must take: index.lock (`switch`, `commit`, `add`) and
+            # HEAD's and the branch's ref locks (`reset --soft`, `update-ref`, `symbolic-ref`).
+            # Checking HEAD once and then restoring let an ordinary `git switch side` in between
+            # have main's version written into side's worktree and index, reported settled
+            # (Hermes on #964, review 4847).
+            held = _acquire_index_lock(repo, INDEX_LOCK_WAIT_S)
+            if isinstance(held, str):
+                raise FsError(
+                    f"{held}, so nothing was reverted. Try again in a moment.", status=409
+                )
+            try:
+                refs = _acquire_ref_locks(repo, branch, INDEX_LOCK_WAIT_S)
+                if isinstance(refs, str):
+                    raise FsError(
+                        f"{refs}, so nothing was reverted. Try again in a moment.", status=409
+                    )
+                try:
+                    result = _revert_file_locked(repo, names, entries, seen_head, branch, held)
+                finally:
+                    refs.release()
+            finally:
+                held.release()
+            return _with_status(repo, result)
         # THE REPLACEMENT, which cannot lose a byte it never saw.
         #
         # This used to hash each file and then run `git restore` over it, with a comment saying
@@ -2600,23 +2908,12 @@ def git_discard(path: str | None, paths: object, expect: object = None) -> dict:
         # version that ever occupied the name comes back as an object id.
         saved: dict[str, list[str]] = {}
         for n in names:
+            saved[n] = []
             try:
-                saved[n] = _restore_from_index(repo, n, entries[n])
+                _restore_from_index(repo, n, entries[n], saved[n])
             except (FsError, GitError) as e:
-                # A multi-path discard that fails partway has ALREADY preserved and replaced the
-                # paths before this one. Letting the exception through as-is would report the
-                # failure and drop those object ids on the floor — the operator would be told the
-                # discard failed while some of their files had in fact been replaced, with the
-                # only copies unreferenced and unnamed. The ids ride along in the message.
-                done = "; ".join(f"{k}: {', '.join(v)}" for k, v in saved.items() if v)
-                tail = (
-                    f" Paths already discarded, recoverable with "
-                    f"`git cat-file -p <id>` — {done}."
-                    if done
-                    else ""
-                )
-                raise FsError(f"{e}{tail}", status=getattr(e, "status", 409)) from None
-        return {"discarded": names, "recoverable": saved, "status": _fresh_status(repo)}
+                raise _discard_failure(e, saved) from None
+        return _with_status(repo, {"discarded": names, "recoverable": saved})
 
     return _guarded(repo, run)
 
@@ -2755,10 +3052,1310 @@ def git_commit(path: str | None, message: object, expect: object = None) -> dict
         head = mine[:7]
         return {
             "commit": head,
+            "sha": mine,
             "branch": branch,
             "files": len(staged),
             "status": _fresh_status(repo),
         }
+
+    return _guarded(repo, run)
+
+
+# --------------------------------------------------------------------------- commit selected (#950)
+
+#: The two answers settlement gives. Deliberately NOT `settled: bool` — pull and push already use
+#: that key for "the worktree caught up with the moved ref", a different fact.
+SETTLED = "settled"
+PENDING = "pending"
+
+_SHA = re.compile(r"\A[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
+
+#: Every private index this module writes gets a non-split index, whatever the repository says:
+#: a split index would scatter `sharedindex.*` files that the rename-into-place cannot carry.
+_PRIVATE_INDEX = ["-c", "core.splitIndex=false"]
+
+
+def _check_message(message: object) -> str:
+    if not isinstance(message, str) or not message.strip():
+        raise FsError("a commit message is required", status=422)
+    if "\x00" in message:
+        raise FsError("a commit message must not contain NUL", status=422)
+    try:
+        encoded = message.encode("utf-8")
+    except UnicodeEncodeError:
+        raise FsError("a commit message must be valid text", status=422) from None
+    # Bytes, not characters: the message travels on stdin, which is bounded in bytes.
+    if len(encoded) > MAX_MESSAGE:
+        raise FsError(f"that commit message is too long (max {MAX_MESSAGE} bytes)", status=422)
+    return message
+
+
+def _expect_head(head: object) -> str:
+    """The commit the panel showed, as a full SHA — or "" for a branch with no commit yet."""
+    if head is None or head == "":
+        return ""
+    if not isinstance(head, str) or not _SHA.match(head):
+        raise FsError("head must be the commit the panel showed", status=422)
+    return head
+
+
+def _current_head(repo: Repo) -> str:
+    """The commit HEAD resolves to, or "" on an unborn branch."""
+    try:
+        return run_git_write(repo, ["rev-parse", "--verify", "--quiet", "HEAD"]).strip()
+    except GitError:
+        return ""
+
+
+#: The state files git leaves in the gitdir while an operation waits on the operator.
+_IN_PROGRESS = (
+    ("MERGE_HEAD", "a merge"),
+    ("CHERRY_PICK_HEAD", "a cherry-pick"),
+    ("REVERT_HEAD", "a revert"),
+)
+
+
+def _unfinished_operation(repo: Repo) -> str | None:
+    """Why the repository cannot take a commit or a settlement right now, or None.
+
+    Read FRESH — the state files, and ``ls-files -u`` — never from the cached status: the early
+    ``_has_unmerged`` refusal runs outside the lock, and a merge that conflicted after it let a
+    path commit publish a single-parent commit over MERGE_HEAD (Hermes on #964, review 4829).
+    """
+    for leaf, what in _IN_PROGRESS:
+        if os.path.lexists(os.path.join(repo.gitdir, leaf)):
+            return f"{what} is in progress in this repository"
+    if run_git_write(repo, ["ls-files", "-u", "-z"]).strip("\0"):
+        return "this repository has unresolved conflicts"
+    return None
+
+
+def _with_status(repo: Repo, result: dict) -> dict:
+    """Attach a fresh status to a write that has ALREADY happened — or say why it could not.
+
+    The write stands whatever the read does. Letting a failed status read raise turned a published
+    commit into an error response with no SHA (Hermes on #964, review 4829), so a failure lands in
+    ``status_error`` and ``status`` is simply absent.
+    """
+    try:
+        result["status"] = _fresh_status(repo)
+    except Exception as e:  # noqa: BLE001 - reporting, not handling: the write already happened
+        result["status_error"] = f"the panel could not re-read the repository ({e})"
+    return result
+
+
+def _write_all_fd(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        n = os.write(fd, view)
+        view = view[n:]
+
+
+#: How long a write waits for git's own ``index.lock`` before refusing. git holds it for the length
+#: of one command, so a short wait absorbs an agent's ``git add`` without making the operator wait
+#: on a lock that is stuck.
+INDEX_LOCK_WAIT_S = 2.0
+
+
+class _IndexLock:
+    """git's ``index.lock``, created by THIS process with ``O_EXCL`` — exactly as git creates it.
+
+    While it exists, every git writer that needs the index (``commit``, ``switch``, ``add``, a
+    fast-forward ``merge``) fails with its ordinary lock error instead of racing — measured on git
+    2.43. It ends either by :meth:`publish` renaming a rewritten index over the real one
+    (``published``) or by :meth:`release` unlinking it.
+
+    **Bound to a directory descriptor, never to a path** (Hermes on #964, review 4863), like
+    :class:`_RefLocks`. Holding only a pathname, an idempotent SETTLE whose ``.git`` was renamed
+    and replaced by a symlink after the compare-and-set released by path: it deleted an unrelated
+    ``index.lock`` outside the filesystem root and left its own behind. The git directory is opened
+    once and kept; the lock is created, renamed and removed relative to that descriptor, and removed
+    only while the name is still the inode this process created — never a lock another process made.
+    """
+
+    NAME = "index.lock"
+
+    def __init__(self, dir_fd: int, fd: int, ident: tuple[int, int]) -> None:
+        self.dir_fd = dir_fd
+        self.fd = fd
+        self.ident = ident
+        self.published = False
+
+    def _still_ours(self) -> bool:
+        if self.dir_fd < 0:
+            return False
+        try:
+            st = os.stat(self.NAME, dir_fd=self.dir_fd, follow_symlinks=False)
+        except OSError:
+            return False
+        return (st.st_dev, st.st_ino) == self.ident
+
+    def publish(self, data: bytes) -> None:
+        """Write the rewritten index into the lock and rename it over ``index`` — inside the
+        directory the lock was created in. Consumes the lock."""
+        _write_all_fd(self.fd, data)
+        os.fsync(self.fd)
+        os.close(self.fd)
+        self.fd = -1
+        if not self._still_ours():
+            raise OSError("the index lock is no longer the file this process created")
+        os.rename(self.NAME, "index", src_dir_fd=self.dir_fd, dst_dir_fd=self.dir_fd)
+        self.published = True
+
+    def sync_dir(self) -> None:
+        """Flush the directory the index was published in."""
+        os.fsync(self.dir_fd)
+
+    def release(self) -> None:
+        if self.fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(self.fd)
+            self.fd = -1
+        if not self.published and self._still_ours():
+            with contextlib.suppress(OSError):
+                os.unlink(self.NAME, dir_fd=self.dir_fd)
+        if self.dir_fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(self.dir_fd)
+            self.dir_fd = -1
+
+
+def _acquire_index_lock(repo: Repo, wait_s: float = 0.0) -> _IndexLock | str:
+    """Create ``index.lock`` in the repository's git directory — through a descriptor for that
+    directory, opened once and kept — waiting up to ``wait_s`` for another git; or say why not.
+
+    The directory is opened by its resolved path with ``O_NOFOLLOW`` after that path is checked to
+    be inside the filesystem root, and must be the same inode the repository's own gitdir path
+    names, so a ``.git`` swapped before this call is refused rather than locked.
+    """
+    real = os.path.realpath(repo.gitdir)
+    root = home_root()
+    if real != root and not real.startswith(root + os.sep):
+        return "the index could not be locked safely (the git directory is outside the root)"
+    try:
+        dfd = os.open(real, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError as e:
+        return f"the index could not be locked ({e.strerror})"
+    try:
+        held, seen = os.fstat(dfd), os.stat(repo.gitdir)
+    except OSError as e:
+        os.close(dfd)
+        return f"the index could not be locked ({e.strerror})"
+    if (held.st_dev, held.st_ino) != (seen.st_dev, seen.st_ino):
+        os.close(dfd)
+        return "the index could not be locked safely (the git directory changed)"
+    deadline = time.monotonic() + wait_s
+    while True:
+        try:
+            fd = os.open(
+                _IndexLock.NAME,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o644,
+                dir_fd=dfd,
+            )
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                os.close(dfd)
+                return "git is busy in this repository right now (its index is locked)"
+            time.sleep(0.05)
+            continue
+        except OSError as e:
+            os.close(dfd)
+            return f"the index could not be locked ({e.strerror})"
+        st = os.fstat(fd)
+        return _IndexLock(dfd, fd, (st.st_dev, st.st_ino))
+
+
+class _RefLocks:
+    """git's own ``HEAD.lock`` and ``refs/heads/<branch>.lock``, created by THIS process with
+    ``O_EXCL`` — exactly as git creates them before it moves either ref.
+
+    ``index.lock`` does not stop a writer that changes only refs: ``git reset --soft``,
+    ``update-ref`` and ``symbolic-ref`` never take it, and a soft reset landing after settlement's
+    HEAD check received the superseded commit's entries (Hermes on #964, review 4847). While these
+    locks exist git refuses all three — measured on git 2.43: ``reset --soft`` fails with "cannot
+    lock ref 'HEAD'" on either lock, ``symbolic-ref`` and ``switch`` on ``HEAD.lock``, and even an
+    ``update-ref`` of the branch HEAD points at needs ``HEAD.lock`` (for HEAD's reflog), which is
+    why commit-paths can only take them after its own ``update-ref``.
+
+    HEAD's lock is per worktree (``repo.gitdir``); the branch's lives in the shared git directory
+    (``repo.common()``, the validated ``commondir``), which is where git looks for it from a linked
+    worktree.
+
+    **Bound to directory descriptors, never to paths** (review 4856). ``O_NOFOLLOW`` covers only the
+    last component: a symlinked ``refs/heads/topic`` made lock creation land outside the filesystem
+    root, and swapping that parent between acquire and release made a path-based ``unlink`` delete
+    an unrelated ``main.lock`` elsewhere and leave this process's own lock behind. So every
+    directory on the way is opened ``O_DIRECTORY | O_NOFOLLOW`` relative to its parent's
+    descriptor (a symlinked ancestor is refused), each lock is created relative to its held
+    directory, and :meth:`release` removes a name through that same descriptor only while it is
+    still the inode this process created — released exactly once, never a lock another process made.
+    """
+
+    def __init__(self) -> None:
+        #: (directory fd, name, lock fd, (st_dev, st_ino)) for every lock this process created.
+        self.held: list[tuple[int, str, int, tuple[int, int]]] = []
+        #: (parent fd, name) for every directory this process created, deepest first.
+        self.made_dirs: list[tuple[int, str]] = []
+        #: Every directory descriptor opened on the way; closed last, after the names are gone.
+        self.dir_fds: list[int] = []
+
+    def release(self) -> None:
+        held, self.held = self.held, []
+        for dir_fd, name, fd, ident in reversed(held):
+            with contextlib.suppress(OSError):
+                st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                if (st.st_dev, st.st_ino) == ident:
+                    os.unlink(name, dir_fd=dir_fd)
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        made, self.made_dirs = self.made_dirs, []
+        for parent_fd, name in made:  # one git has put a ref into since is not empty, and stays
+            with contextlib.suppress(OSError):
+                os.rmdir(name, dir_fd=parent_fd)
+        fds, self.dir_fds = self.dir_fds, []
+        for fd in reversed(fds):
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+
+_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+
+def _ref_dir(locks: _RefLocks, start: str, parts: list[str], what: str) -> int | str:
+    """A descriptor for ``start/parts…``, opened one component at a time without following a
+    symlink, creating a missing directory (recorded for release); or say why not."""
+    try:
+        cur = os.open(start, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    except OSError as e:
+        return f"{what} could not be locked ({e.strerror})"
+    locks.dir_fds.append(cur)
+    for name in parts:
+        try:
+            nxt = os.open(name, _DIR_FLAGS, dir_fd=cur)
+        except FileNotFoundError:
+            # A packed-only branch `a/b` has no loose `refs/heads/a/` to hold its lock yet.
+            try:
+                os.mkdir(name, 0o777, dir_fd=cur)
+            except FileExistsError:
+                pass  # created meanwhile: opened, and so checked, just below
+            except OSError as e:
+                return f"{what} could not be locked ({e.strerror})"
+            else:
+                locks.made_dirs.insert(0, (cur, name))
+            try:
+                nxt = os.open(name, _DIR_FLAGS, dir_fd=cur)
+            except OSError:
+                return (
+                    f"{what} could not be locked safely (a ref directory is not a plain directory)"
+                )
+        except OSError:
+            # ELOOP / ENOTDIR: a symlink or a file where a ref directory should be.
+            return f"{what} could not be locked safely (a ref directory is not a plain directory)"
+        locks.dir_fds.append(nxt)
+        cur = nxt
+    return cur
+
+
+def _take_ref_lock(
+    locks: _RefLocks, dir_fd: int, name: str, what: str, deadline: float
+) -> str | None:
+    """Create ``name`` in ``dir_fd`` with ``O_EXCL``, waiting until ``deadline``; or say why not."""
+    while True:
+        try:
+            fd = os.open(
+                name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o644,
+                dir_fd=dir_fd,
+            )
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                return f"git is busy in this repository right now ({what} is locked)"
+            time.sleep(0.05)
+            continue
+        except OSError as e:
+            return f"{what} could not be locked ({e.strerror})"
+        st = os.fstat(fd)
+        locks.held.append((dir_fd, name, fd, (st.st_dev, st.st_ino)))
+        return None
+
+
+def _lock_head(repo: Repo, locks: _RefLocks, wait_s: float = 0.0) -> str | None:
+    """Add this worktree's ``HEAD.lock`` to ``locks``; or say why not (nothing new is held then)."""
+    d = _ref_dir(locks, repo.gitdir, [], "HEAD")
+    if isinstance(d, str):
+        return d
+    return _take_ref_lock(locks, d, "HEAD.lock", "HEAD", time.monotonic() + wait_s)
+
+
+def _lock_branch(repo: Repo, locks: _RefLocks, branch: str, wait_s: float = 0.0) -> str | None:
+    """Add ``refs/heads/<branch>.lock`` (shared git dir) to ``locks``; or say why not."""
+    parts = branch.split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        return "the branch name cannot be locked safely"
+    what = f"`{branch}`"
+    d = _ref_dir(locks, repo.common(), ["refs", "heads", *parts[:-1]], what)
+    if isinstance(d, str):
+        return d
+    return _take_ref_lock(locks, d, parts[-1] + ".lock", what, time.monotonic() + wait_s)
+
+
+def _acquire_ref_locks(repo: Repo, branch: str | None, wait_s: float = 0.0) -> _RefLocks | str:
+    """Lock HEAD and, when HEAD names one, its branch — waiting up to ``wait_s`` for another git to
+    finish; or say why not. Nothing is left held when a reason is returned."""
+    locks = _RefLocks()
+    why = _lock_head(repo, locks, wait_s)
+    if why is None and branch:
+        why = _lock_branch(repo, locks, branch, wait_s)
+    if why is not None:
+        locks.release()
+        return why
+    return locks
+
+
+#: How much of HEAD's reflog appended during one publication is read. A publication appends one
+#: line; anything past this is not evidence about it.
+_REFLOG_TAIL_MAX = 64 * 1024
+
+
+def _open_head_reflog(repo: Repo) -> int | None:
+    """A read descriptor for this worktree's ``logs/HEAD``, opened without following a symlink, or
+    ``None`` when there is none."""
+    try:
+        dfd = os.open(os.path.realpath(repo.gitdir), os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    except OSError:
+        return None
+    fd = None
+    try:
+        ldir = os.open("logs", _DIR_FLAGS, dir_fd=dfd)
+        try:
+            fd = os.open("HEAD", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=ldir)
+        finally:
+            os.close(ldir)
+    except OSError:
+        fd = None
+    finally:
+        os.close(dfd)
+    if fd is not None and not _stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        return None
+    return fd
+
+
+def _reflogs_enabled(repo: Repo) -> bool:
+    """Whether this repository records reflogs at all — ``core.logAllRefUpdates``.
+
+    Asked of git, never inferred from whether ``logs/HEAD`` exists: a repository that has not had a
+    ref update yet has no reflog file, and reading that as "disabled" refused the FIRST commit in
+    every new repository (measured — two root-commit regressions). ``--get`` exits non-zero when the
+    key is unset, and unset means git's own default, which is true for the non-bare checkouts this
+    panel works in; only an explicit false turns it off (measured, git 2.43: a fresh ``git init``
+    writes ``true``, and with false set no ``logs/HEAD`` ever appears).
+    """
+    try:
+        raw = run_git_write(repo, ["config", "--bool", "--get", "core.logAllRefUpdates"]).strip()
+    except GitError:
+        return True
+    return raw != "false"
+
+
+def _head_reflog_mark(repo: Repo) -> int | None:
+    """How many bytes this worktree's HEAD reflog holds right now, or ``None`` when it has none."""
+    fd = _open_head_reflog(repo)
+    if fd is None:
+        return None
+    try:
+        return os.fstat(fd).st_size
+    finally:
+        os.close(fd)
+
+
+def _published_through_head(
+    repo: Repo, mine: str, before_head: str, mark: int | None, stamp: str
+) -> bool:
+    """Whether THIS publication went through HEAD: an entry appended to HEAD's reflog since
+    ``mark`` (taken just before the panel's own ``update-ref``) records ``before_head → mine``
+    under ``stamp``, the reflog message unique to this request.
+
+    git appends to HEAD's reflog when it updates the branch HEAD names, and not when HEAD names
+    another ref (measured, git 2.43): after a `symbolic-ref HEAD refs/heads/side` that landed BEFORE
+    the publication the entry is absent, after one that landed AFTER it is present (review 4856).
+
+    Only entries appended during this publication are evidence. Searching the last 50 entries for
+    the OID misread a same-OID retry — commit W, reset it away and make it again in the same second
+    and ``commit-tree`` returns the same W, so the FIRST attempt's entry was taken for the second's
+    and a move before publication was misclassified as a move afterwards (review 4863). The mark
+    alone is not enough either: another process can publish that same W through the branch, reset
+    it away and move HEAD — all after the mark, before the panel's ``update-ref`` — and its
+    ``before → W`` entry read as the panel's (review 4868). So the entry must also be logged under
+    ``stamp``, which git copies verbatim from ``update-ref -m`` (measured) and nothing else writes.
+    Read with ``HEAD.lock`` held, so nothing else is appended meanwhile. No HEAD reflog, or one
+    rewritten since the mark, means the order cannot be told, and this says ``False``. The caller
+    reports the publication with the index left pending; it never rewinds the published commit.
+    """
+    fd = _open_head_reflog(repo)
+    if fd is None:
+        return False
+    try:
+        size = os.fstat(fd).st_size
+        start = mark or 0
+        if size < start:
+            return False
+        tail = os.pread(fd, min(size - start, _REFLOG_TAIL_MAX), start)
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+    old = (before_head or "0" * len(mine)).encode("ascii")
+    new = mine.encode("ascii")
+    logged_as = stamp.encode("utf-8")
+    for line in tail.split(b"\n"):
+        entry, _, logged = line.partition(b"\t")
+        bits = entry.split(b" ", 2)
+        if len(bits) >= 2 and bits[0] == old and bits[1] == new and logged == logged_as:
+            return True
+    return False
+
+
+def _symref_target(repo: Repo, ref: str) -> bytes | None:
+    """The ref ``ref`` finally resolves to when it is a SYMBOLIC ref, as git's own bytes, or
+    ``None`` when it is an ordinary ref or absent. ``symbolic-ref --quiet`` exits non-zero for a
+    ref that is not symbolic, so — as in :func:`_head_targets` — a failed read is "not symbolic"."""
+    try:
+        target = run_git_bytes(repo, ["symbolic-ref", "--quiet", ref]).strip()
+    except GitError:
+        return None
+    return target or None
+
+
+def _reflog_has_message(repo: Repo, ref: bytes, stamp: str) -> bool | None:
+    """Whether one of the newest 64 entries of ``ref``'s reflog is logged under exactly ``stamp``;
+    ``None`` when that cannot be told — a name that is not UTF-8 or not under ``refs/``, a ref with
+    no reflog (``reflog show`` prints nothing for one, so existence is asked first), a failed read.
+    """
+    try:
+        name = ref.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    if not name.startswith("refs/"):
+        return None
+    try:
+        run_git_bytes(repo, ["reflog", "exists", name])
+        logged = run_git_bytes(repo, ["reflog", "show", "--format=%gs", "-n", "64", name, "--"])
+    except GitError:
+        return None
+    return stamp.encode("utf-8") in logged.split(b"\n")
+
+
+def _withdraw_publication(
+    repo: Repo,
+    branch: str,
+    mine: str,
+    now: bytes | None,
+    names: list[str],
+) -> CasResult:
+    """The checkout moved to another ref in the instant before commit-paths' own ``update-ref``
+    (:func:`_published_through_head` is False). **Nothing is rewound**: the commit is reported where
+    git wrote it, with its SHA, and the index is left alone.
+
+    It used to put ``refs/heads/<branch>`` back by compare-and-swap and refuse (review 4856), and
+    that rollback was kept here when :func:`_fence_branch_conversion` gave its up, on the argument
+    that this ref is the one this process itself published to. **That argument was wrong, and was
+    reproduced wrong through public COMMIT PATHS** (review 4920): a process converting
+    ``refs/heads/<branch>`` into a symbolic ref *between* the pre-read and the rollback had its new
+    symbolic ref REPLACED by the direct rollback, which exited 0 because the OID compare-and-swap
+    still resolved through the conversion — and the request reported a clean withdrawal. Having
+    published to a ref does not make a later writer's ref relationship ours to overwrite.
+
+    Nothing closes that window: git's own ``update-ref`` needs the ref's lock, so it cannot be held
+    across the write; an unlocked pre-read only narrows the gap; and writing the ref by hand under
+    its lock appends no reflog entry (measured: one entry before, one after). So this path follows
+    the same policy as the fence — decline the compensation rather than write a ref whose identity
+    cannot be bound through the mutation (the operator's option B, review 4893).
+
+    The cost is stated in the reason the caller returns: a commit published to a branch the checkout
+    had already left stays on that branch. Moving it back is the operator's call, in the session,
+    where the ref relationship another process built is visible.
+    """
+    if now is None:
+        where = "a detached HEAD"
+    elif now.startswith(_HEADS.encode("ascii")):
+        where = f"`{_ref_display(now[len(_HEADS):])}`"
+    else:
+        where = f"`{_ref_display(now)}`"
+    return CasResult(
+        [],
+        names,
+        f"this checkout moved to {where} just as the commit was published, so git wrote it to "
+        f"`{branch}` and it was left there rather than withdrawn: a rollback is an `update-ref` "
+        f"whose ref identity this process cannot bind, and another process turning `{branch}` into "
+        f"a symbolic ref between the check and that command had its ref replaced by it. The commit "
+        f"is {mine} on `{branch}` — `git log -1 {mine[:7]}` shows what it holds. Undoing it is a "
+        f"ref move: do it in the session, after `git status` has shown you what is staged or "
+        f"modified but not in any commit, and after confirming `{branch}` still points at this "
+        "commit. The index was left alone.",
+    )
+
+
+def _fence_branch_conversion(
+    repo: Repo, branch: str, mine: str, stamp: str, names: list[str]
+) -> CasResult | None:
+    """``None`` while ``refs/heads/<branch>`` is an ordinary ref. Otherwise another process turned
+    it into a symbolic ref around commit-paths' own ``update-ref`` (Hermes on #964, review 4868).
+
+    ``index.lock`` does not stop `git symbolic-ref refs/heads/main refs/heads/side`, and on git 2.43
+    no form of ``update-ref`` refuses a branch converted in the instant before it without following
+    or overwriting it (measured: the plain update follows the conversion and advances ``side``;
+    ``--no-deref``, plain or as ``option no-deref`` in a ``--stdin`` transaction, replaces the other
+    process's symbolic ref with the commit and exits 0). So the publication follows, and this reads
+    where it went. git logs the ``update-ref -m`` message in the reflog of the ref it finally wrote
+    (measured), and ``stamp`` is unique to this request, so ``stamp`` in the TARGET's reflog means
+    the update went through the conversion. The branch's own reflog carries it either way, and
+    HEAD's too when HEAD names the branch, so neither is evidence here.
+
+    **Nothing is rewound here, by the operator's decision** (Hermes on #964, review 4893 finding 1,
+    option B). The previous code put the target back with an ``update-ref --no-deref`` compare-and-
+    swap, which writes to a ref THIS process never published to. An OID compare-and-swap is not a
+    ref-type identity: another writer converting that target in the instant before the rollback had
+    its symbolic ref **replaced** by a direct one, and the response still called it a clean
+    withdrawal (measured). No lock closes that window either — git's own ``update-ref`` needs the
+    target's lock, so it cannot be held across the write, and an unlocked pre-read only narrows the
+    gap. Writing the ref by hand under its lock would close it, but a hand-written update appends no
+    reflog entry (measured: 1 entry before, 1 after), and that record was judged worth more than the
+    compensation.
+
+    So every outcome is REPORTED and the commit is left where git put it:
+
+    - Written through the conversion: the commit stands on the target, named in the reason with its
+      SHA, and the index is left alone. Moving the target back is the operator's call, in the
+      session, where the ref relationship the other process built is visible.
+    - Not there: the branch was converted after the commit landed on it. The commit stands.
+    - Cannot be told (the target keeps no reflog, or its name is not UTF-8): nothing is rewound.
+
+    Called with ``HEAD.lock`` held and BEFORE HEAD is judged — a converted branch makes HEAD
+    resolve elsewhere too, which is not a checkout that moved, and HEAD's reflog carries ``stamp``
+    for it — and again once the branch's own lock is held, after which a conversion is refused
+    (measured).
+    """
+    target = _symref_target(repo, f"refs/heads/{branch}")
+    if target is None:
+        return None
+    there = f"`{_ref_display(target)}`"
+    landed = _reflog_has_message(repo, target, stamp)
+    if landed is None:
+        return CasResult(
+            [],
+            names,
+            f"`{branch}` was turned into a symbolic ref to {there} just as the commit was "
+            f"published, and {there} keeps no reflog to say whether the commit was written there, "
+            f"so nothing was rewound and the index was left alone. The commit is {mine}.",
+        )
+    if not landed:
+        return CasResult(
+            [],
+            names,
+            f"`{branch}` was turned into a symbolic ref to {there} after the commit was published, "
+            "so the index was left alone",
+        )
+    return CasResult(
+        [],
+        names,
+        f"`{branch}` was turned into a symbolic ref to {there} just before the commit was "
+        f"published, so git wrote the commit to {there} instead. It was left there rather than "
+        f"withdrawn: rewinding {there} would mean writing to a ref this checkout never published "
+        f"to, and another process may have changed it again since. The commit is {mine} — move "
+        f"{there} yourself in the session if that is not what you want. The index was left alone.",
+    )
+
+
+def _settle_after_publication(
+    repo: Repo,
+    held: _IndexLock,
+    branch: str,
+    mine: str,
+    before_head: str,
+    mark: int | None,
+    stamp: str,
+    changes: dict[str, tuple[tuple[str, str] | None, tuple[str, str] | None]],
+) -> CasResult:
+    """commit-paths after its own ``update-ref``, with ``index.lock`` still held: fence the
+    publication against a branch turned into a symbolic ref and a checkout that moved, then settle
+    the index.
+
+    ``index.lock`` does not stop a writer that moves only refs, so HEAD's and the branch's own ref
+    locks are held from the HEAD check through the index rename (review 4847); they can only be
+    taken now, since the panel's ``update-ref`` needs both. A branch another process turned into a
+    symbolic ref is judged first, by :func:`_fence_branch_conversion`, and again once the branch's
+    lock is held (review 4868). HEAD is compared by git's own bytes and must name the branch
+    directly: anything else is a moved checkout, and HEAD's reflog since ``mark``, read for an entry
+    logged under this request's ``stamp``, says whether it moved after publication or before. Either
+    way the commit stands: once ``update-ref`` has succeeded nothing here turns it back into a
+    refusal, and every outcome is a result carrying the SHA (reviews 4863, 4920).
+    """
+    names = list(changes)
+    refs = _RefLocks()
+    try:
+        why = _lock_head(repo, refs, INDEX_LOCK_WAIT_S)
+        if why is not None:
+            return CasResult([], names, f"{why}, so the index was left alone")
+        fenced = _fence_branch_conversion(repo, branch, mine, stamp, names)
+        if fenced is not None:
+            return fenced
+        expected = (_HEADS + branch).encode("utf-8")
+        targets = _head_targets(repo)
+        if targets is None or not (targets[0] == targets[1] == expected):
+            if _published_through_head(repo, mine, before_head, mark, stamp):
+                # HEAD named the branch when `update-ref` ran and moved only afterwards: the commit
+                # was made on the checkout the operator saw, so it stands and the moved checkout's
+                # index is left for SETTLE.
+                return CasResult(
+                    [],
+                    names,
+                    f"the checkout is no longer on `{branch}`, so its index was left alone",
+                )
+            # It moved BEFORE the publication. Nothing is rewound (review 4920): the commit is
+            # reported on the branch git wrote it to, with its SHA, and the index is left alone.
+            now = None if targets is None else targets[0]
+            return _withdraw_publication(repo, branch, mine, now, names)
+        why = _lock_branch(repo, refs, branch, INDEX_LOCK_WAIT_S)
+        if why is not None:
+            return CasResult([], names, f"{why}, so the index was left alone")
+        # Converted between the fence above and this lock; with the branch's lock held, a
+        # `symbolic-ref` of the branch is refused from here on (measured, git 2.43).
+        fenced = _fence_branch_conversion(repo, branch, mine, stamp, names)
+        if fenced is not None:
+            return fenced
+        try:
+            return _index_cas(
+                repo, changes, branch, lock=held, expect_head=mine, fence_operations=True
+            )
+        except (GitError, FsError, OSError) as e:
+            return CasResult([], names, f"the index could not be updated ({e})")
+    finally:
+        refs.release()
+
+
+class CasResult(tuple):
+    """What :func:`_index_cas` did: unpacks as ``(done, left, reason)``, plus ``durable``.
+
+    ``durable`` is False only when the rewritten index was ALREADY renamed into place but the
+    directory holding it could not be flushed to disk. The names in ``done`` then really are at
+    their new entries — reporting them as not applied dropped the staged version REVERT FILE had
+    displaced (Hermes on #964, review 4833) — and ``reason`` says the durability is unconfirmed.
+    """
+
+    durable: bool
+
+    def __new__(
+        cls, done: list[str], left: list[str], reason: str | None, durable: bool = True
+    ) -> CasResult:
+        self = super().__new__(cls, (done, left, reason))
+        self.durable = durable
+        return self
+
+    @property
+    def done(self) -> list[str]:
+        return self[0]
+
+    @property
+    def left(self) -> list[str]:
+        return self[1]
+
+    @property
+    def reason(self) -> str | None:
+        return self[2]
+
+
+def _index_fields(res: CasResult) -> dict:
+    """The index half of a write's response. ``index_durable`` appears only when it is False."""
+    out: dict = {
+        # A durability-uncertain rewrite still APPLIED its names: pending only for what was left,
+        # or for a reason that means nothing was attempted.
+        "index": PENDING if (res.left or (res.reason and res.durable)) else SETTLED,
+        "index_left": list(res.left),
+        "index_reason": res.reason,
+    }
+    if not res.durable:
+        out["index_durable"] = False
+    return out
+
+
+def _index_cas(
+    repo: Repo,
+    changes: dict[str, tuple[tuple[str, str] | None, tuple[str, str] | None]],
+    expect_branch: str | None = None,
+    *,
+    lock: _IndexLock | None = None,
+    expect_head: str | None = None,
+    fence_operations: bool = False,
+) -> CasResult:
+    """Move index entries from an expected `(mode, oid)` to a new one — under git's own lock.
+
+    ``changes`` maps a path to ``(expected, new)``; ``None`` means "absent from the index". The
+    result unpacks as ``(done, left, reason)``: ``done`` are paths now at their new entry
+    (including ones that already were), ``left`` are paths whose entry is neither the expected nor
+    the new value — staged by someone else meanwhile, and therefore left exactly as they are — and
+    ``reason`` is set when nothing could be attempted at all (the index is busy, or split), or when
+    the rewrite landed but could not be confirmed on disk (``durable`` False).
+
+    Why this shape rather than `update-index` on the real index:
+
+    * The panel's repository lock is process-local and the session agent never takes it, so a
+      read-then-update against the real index is check-then-use against the writer most likely to
+      be active. **git's lockfile protocol is the one lock every git process honours**: holding
+      ``index.lock`` (created ``O_EXCL``, as git does) makes a concurrent ``git add`` fail with its
+      ordinary lock error instead of racing, and it makes our compare and our write one step.
+    * The rewrite is staged in a PRIVATE copy (``GIT_INDEX_FILE``, mtime kept so racy-git
+      detection still works) and published by writing that copy into the lock and renaming it
+      over the index — exactly how git itself replaces an index.
+    * A split index (``sharedindex.*``) is refused rather than handled: copying the small index
+      without its shared part would publish a broken one.
+
+    ``lock`` is a lock the CALLER already holds — commit-paths, SETTLE and REVERT FILE take it
+    before their final checks and keep it through settlement, so no git writer that needs the index
+    can land in between (Hermes on #964, review 4833). Without one, this takes and releases its
+    own. The ``expect_branch`` / ``expect_head`` checks below are only as good as the ref locks the
+    caller holds with it (:func:`_acquire_ref_locks`, review 4847): index.lock alone does not stop
+    ``git reset --soft``.
+    """
+    names = list(changes)
+    if not names:
+        return CasResult([], [], None)
+    held = lock
+    if held is None:
+        got = _acquire_index_lock(repo)
+        if isinstance(got, str):
+            return CasResult([], names, got)
+        held = got
+    try:
+        return _index_cas_locked(repo, changes, held, expect_branch, expect_head, fence_operations)
+    finally:
+        if lock is None:
+            held.release()
+
+
+def _index_cas_locked(
+    repo: Repo,
+    changes: dict[str, tuple[tuple[str, str] | None, tuple[str, str] | None]],
+    lock: _IndexLock,
+    expect_branch: str | None,
+    expect_head: str | None,
+    fence_operations: bool,
+) -> CasResult:
+    """The compare-and-swap itself, with ``lock`` held. Publishing consumes the lock.
+
+    Refuses the whole move — nothing written — for a path in conflict (:data:`UNMERGED`), a
+    checkout no longer on ``expect_branch``, a HEAD that is no longer ``expect_head`` (an operation
+    made for one commit must not settle the index of a later one), and, with ``fence_operations``,
+    a merge / cherry-pick / revert that appeared. That last one is re-read immediately before the
+    rename because ``index.lock`` does NOT stop it: measured on git 2.43, a conflicting ``git
+    merge`` run while the lock is held fails with "Unable to write index" but has already written
+    MERGE_HEAD.
+    """
+    names = list(changes)
+    gitdir = repo.gitdir
+    try:
+        if any(n.startswith("sharedindex.") for n in os.listdir(gitdir)):
+            return CasResult(
+                [], names, "this repository uses a split index, which the panel does not rewrite"
+            )
+    except OSError as e:
+        return CasResult([], names, f"the index could not be inspected ({e.strerror})")
+    if expect_branch is not None and _head_branch(repo) != expect_branch:
+        return CasResult(
+            [],
+            names,
+            f"the checkout is no longer on `{expect_branch}`, so its index was left alone",
+        )
+    if expect_head is not None and _current_head(repo) != expect_head:
+        return CasResult(
+            [],
+            names,
+            "the last commit changed before the index was updated, so the index was left alone",
+        )
+    scratch_dir = ""
+    try:
+        scratch_dir = tempfile.mkdtemp(prefix=".battlelab-index-", dir=gitdir)
+        scratch = os.path.join(scratch_dir, "index")
+        real = os.path.join(gitdir, "index")
+        if os.path.lexists(real) and not _copy_nofollow(
+            real, scratch, GIT_MAX_INDEX_BYTES, keep_mtime=True
+        ):
+            return CasResult([], names, "the index could not be read")
+        current = _index_entries(repo, names, index_file=scratch)
+        conflicted = [n for n in names if current.get(n) == UNMERGED]
+        if conflicted:
+            return CasResult([], names, f"{conflicted[0]!r} {CONFLICT_REASON}")
+        done = [n for n in names if current.get(n) in (changes[n][0], changes[n][1])]
+        left = [n for n in names if n not in done]
+        todo = {
+            n: changes[n][1]
+            for n in done
+            if current.get(n) == changes[n][0] and changes[n][0] != changes[n][1]
+        }
+        if not todo:
+            return CasResult(done, left, None)
+        if any(e is not None and e[0] == "160000" and not e[1] for e in todo.values()):
+            return CasResult([], names, "a submodule entry cannot be settled from the panel")
+        _install_index_entries(repo, todo, index_file=scratch)
+        if fence_operations:
+            blocked = _unfinished_operation(repo)
+            if blocked:
+                return CasResult([], names, f"{blocked}, so the index was left alone")
+        with open(scratch, "rb") as src:
+            data = src.read()
+        # Written into the lock and renamed over `index` inside the directory the lock was created
+        # in — never through a path, which a swapped `.git` leads elsewhere (review 4863).
+        lock.publish(data)
+        # From here the new index IS the index. A failure to flush its directory changes nothing
+        # about which entries it holds, so it is reported, never turned into "not applied".
+        try:
+            lock.sync_dir()
+        except OSError as e:
+            return CasResult(
+                done,
+                left,
+                "the index was updated, but it could not be confirmed on disk "
+                f"({e.strerror or e}) — a crash before the next write could undo it",
+                durable=False,
+            )
+        return CasResult(done, left, None)
+    finally:
+        if scratch_dir:
+            shutil.rmtree(scratch_dir, ignore_errors=True)
+
+
+def parse_raw_diff(blob: bytes) -> dict[str, tuple[tuple[str, str] | None, tuple[str, str] | None]]:
+    """`diff-tree -r -z --raw --no-renames` output as `{path: (before, after)}`.
+
+    Paths are decoded STRICTLY. Every key here is a write target, and ``replace`` turned
+    ``bad\\xff`` into the name of a real file ``bad\\ufffd``: SETTLE staged a commit's blob into
+    that other file and reported settled (Hermes on #964, review 4833). A path that is not UTF-8
+    is a 409 before anything is written.
+    """
+    fields = blob.split(b"\x00")
+    out: dict[str, tuple[tuple[str, str] | None, tuple[str, str] | None]] = {}
+    i = 0
+    while i < len(fields):
+        meta = fields[i]
+        i += 1
+        if not meta.startswith(b":") or i >= len(fields):
+            continue
+        try:
+            path = fields[i].decode("utf-8")
+        except UnicodeDecodeError:
+            raise FsError(
+                "a path this commit changed is not valid UTF-8, so the panel cannot name it "
+                "without risking a different file. Nothing was changed — use this session's "
+                "terminal.",
+                status=409,
+            ) from None
+        i += 1
+        bits = meta[1:].decode("ascii", "replace").split()
+        if len(bits) < 5:
+            continue
+        mode_a, mode_b, oid_a, oid_b = bits[0], bits[1], bits[2], bits[3]
+        out[path] = (
+            None if mode_a == "000000" else (mode_a, oid_a),
+            None if mode_b == "000000" else (mode_b, oid_b),
+        )
+    return out
+
+
+def _commit_tree(repo: Repo, tree: str, parent: str, message: str) -> str:
+    try:
+        return run_git_write(
+            repo,
+            ["commit-tree", tree, *(["-p", parent] if parent else [])],
+            stdin=message.encode("utf-8"),
+        ).strip()
+    except GitError as e:
+        text = str(e)
+        if "Please tell me who you are" in text or "empty ident" in text:
+            raise GitError(
+                "git has no identity configured on this host, so it will not record an author. "
+                "Set user.name and user.email in the session, then commit again.",
+                status=409,
+            ) from None
+        raise
+
+
+def git_commit_paths(
+    path: str | None,
+    message: object,
+    paths: object,
+    expect: object = None,
+    head: object = None,
+) -> dict:
+    """Commit exactly the selected paths as they are NOW, leaving the rest of the index alone.
+
+    COMMIT SELECTED and COMMIT ALL (#950) — the panel sends the rows the operator ticked (ALL is
+    simply every staged and changed row). A path is committed as its worktree content, bound to the
+    row fingerprints the operator was shown (``expect``) and to the commit they were shown
+    (``head``).
+
+    The commit is BUILT beside the real index: a private index is seeded from HEAD, the verified
+    blobs for the selected paths are installed into it (hashed first, so an edit landing mid-request
+    is never committed unseen), and `write-tree` → `commit-tree` → `update-ref <branch> <new>
+    <head>` publishes it — the last step a compare-and-swap, so an agent commit in between is a 409
+    and nothing is published.
+
+    **Refused before anything is published** (Hermes on #964, review 4829): a path whose index
+    entry is neither HEAD's nor the entry this commit records (staged, then edited again) — a
+    settlement that failed from there would leave a pending state the status read cannot derive;
+    a staged rename sent without its old name, which a HEAD-seeded tree would commit as a copy;
+    unmerged entries or a merge / cherry-pick / revert in progress; and a checkout that switched
+    away from the branch, re-read immediately before ``update-ref``.
+
+    **One critical section with git itself** (reviews 4833 and 4847): ``index.lock`` from the final
+    checks through ``update-ref`` and settlement, and — once ``update-ref`` has returned, since it
+    needs them itself — HEAD's and the branch's ref locks from settlement's HEAD check through the
+    index rename, so neither an index writer nor a ref-only writer (``reset --soft``) lands inside.
+
+    **Publishing the commit and updating the real index are two writes**, and the response says
+    which finished. Settlement (:func:`_index_cas`) moves each selected path's index entry to the
+    committed blob only where it still holds the entry read before publication. ``index: "pending"``
+    means the commit exists but some entries were not moved — they now read as staged reversals
+    of it, which the status reports as ``unsettled`` until SETTLE (:func:`git_settle`) or the
+    operator's own staging resolves them.
+    """
+    message = _check_message(message)
+    seen_head = _expect_head(head)
+    repo = resolve_repo(path)
+    names = validate_paths(repo, paths, staged=None)
+    want = _expect_map(expect, names, "commit")
+    if _has_unmerged(repo):
+        raise FsError("resolve the conflict in the session before committing", status=409)
+    if not _head_branch(repo):
+        raise FsError(
+            "HEAD is detached — create a branch here before committing, or the commit will not "
+            "be reachable from one",
+            status=409,
+        )
+
+    def run() -> dict:
+        st = verify_rows(repo, want, "commit", renames=True)
+        if st.get("truncated"):
+            raise FsError(
+                "this repository has too many changes for the panel to list, so it cannot show "
+                "you what a commit would contain. Commit in this session's terminal instead.",
+                status=409,
+            )
+        blocked = _unfinished_operation(repo)
+        if blocked:
+            raise FsError(
+                f"{blocked}, so nothing was committed — finish it in the session first",
+                status=409,
+            )
+        branch = _head_branch(repo)
+        if not branch:
+            raise FsError(
+                "HEAD is detached — create a branch here before committing, or the commit will "
+                "not be reachable from one",
+                status=409,
+            )
+        try:
+            before_head = run_git_write(
+                repo, ["rev-parse", "--verify", f"refs/heads/{branch}"]
+            ).strip()
+        except GitError:
+            before_head = ""
+        if before_head != seen_head:
+            raise FsError(
+                f"`{branch}` moved after the panel showed it, so nothing was committed. Refresh — "
+                "the new commit is probably the agent's — and commit again.",
+                status=409,
+            )
+        # A staged rename is one row with two names. Committing only the new one from a
+        # HEAD-seeded tree keeps the old one too: a copy, reported as settled.
+        renamed = {
+            e["path"]: e["orig_path"]
+            for e in st.get("entries", [])
+            if e.get("kind") == "staged" and e.get("orig_path")
+        }
+        lone = next((n for n in names if n in renamed and renamed[n] not in names), None)
+        if lone:
+            raise FsError(
+                f"{lone!r} is staged as a rename of {renamed[lone]!r}; commit both names together, "
+                "or the old name would stay in the commit. Nothing was committed.",
+                status=409,
+            )
+        pre_index = _index_entries(repo, names)
+        snapshot = _snapshot_for_index(repo, names)
+        # Bind the hashed bytes to the rows the operator confirmed: an edit that landed while the
+        # snapshot was taken changes a row fingerprint and refuses here, before anything is built.
+        verify_rows(repo, want, "commit", renames=True)
+        if any(e is not None and e[0] == "160000" for e in snapshot.values()):
+            raise FsError(
+                "a selected path is a submodule, which the panel does not commit — commit it in "
+                "this session's terminal",
+                status=409,
+            )
+        head_of = (
+            _head_entries(repo, names, rev=before_head) if before_head else dict.fromkeys(names)
+        )
+        for n in names:
+            if pre_index[n] == UNMERGED:
+                raise FsError(
+                    f"{n!r} has an unresolved conflict — resolve it in the session before "
+                    "committing",
+                    status=409,
+                )
+            # A settlement can only ever be left pending in a state the status read can SEE: the
+            # index still holding the parent's entry. An entry that is neither the parent's nor
+            # the one being committed would make a failed settlement invisible, so it is refused.
+            if pre_index[n] not in (head_of[n], snapshot[n]):
+                raise FsError(
+                    f"{n!r} has a staged version that is neither the last commit's nor the file as "
+                    "it is now, so nothing was committed. Stage it (or commit what is staged) "
+                    "first, then commit again.",
+                    status=409,
+                )
+        scratch_dir = tempfile.mkdtemp(prefix=".battlelab-commit-", dir=repo.gitdir)
+        try:
+            private = os.path.join(scratch_dir, "index")
+            if before_head:
+                run_git_write(
+                    repo,
+                    ["read-tree", before_head],
+                    index_file=private,
+                    extra_config=_PRIVATE_INDEX,
+                )
+            _install_index_entries(repo, snapshot, index_file=private)
+            tree = run_git_write(
+                repo, ["write-tree"], index_file=private, extra_config=_PRIVATE_INDEX
+            ).strip()
+        finally:
+            shutil.rmtree(scratch_dir, ignore_errors=True)
+        head_tree = (
+            run_git_write(repo, ["rev-parse", "--verify", f"{before_head}^{{tree}}"]).strip()
+            if before_head
+            else EMPTY_TREE
+        )
+        if tree == head_tree:
+            raise FsError(
+                "the selected files already match the last commit, so there is nothing to commit",
+                status=409,
+            )
+        mine = _commit_tree(repo, tree, before_head, message)
+        # The critical section (Hermes on #964, reviews 4829 and 4833). A last-moment read of the
+        # branch and the operation state, followed by `update-ref`, is check-then-act: a `git
+        # switch` or a conflicting merge in that gap still published, and an ordinary `git commit`
+        # right after publication was then settled over. So THIS process takes git's own
+        # index.lock first and keeps it through the checks, the publication and the settlement:
+        # every git writer that needs the index is refused for the whole window instead of racing
+        # it. What the lock cannot stop (a conflicting merge still writes MERGE_HEAD, measured) is
+        # re-read under it immediately before the index is published, and leaves `pending`.
+        held = _acquire_index_lock(repo, INDEX_LOCK_WAIT_S)
+        if isinstance(held, str):
+            raise FsError(f"{held}, so nothing was committed. Try again in a moment.", status=409)
+        try:
+            if _head_branch(repo) != branch:
+                raise FsError(
+                    f"this checkout switched away from `{branch}` while the commit was being "
+                    "written, so nothing was recorded. Refresh and commit again.",
+                    status=409,
+                )
+            try:
+                now = run_git_write(repo, ["rev-parse", "--verify", f"refs/heads/{branch}"]).strip()
+            except GitError:
+                now = ""
+            if now != before_head:
+                raise FsError(
+                    f"`{branch}` moved while the commit was being written, so nothing was recorded "
+                    "on it. Refresh and commit again.",
+                    status=409,
+                )
+            blocked = _unfinished_operation(repo)
+            if blocked:
+                raise FsError(
+                    f"{blocked}, so nothing was committed — finish it in the session first",
+                    status=409,
+                )
+            # Where HEAD's reflog ends right now: only what THIS publication appends after it is
+            # evidence of whether HEAD still named the branch when `update-ref` ran (review 4863),
+            # and only an entry logged under this request's own message — an identical commit
+            # published through the branch, reset away and HEAD moved, all after the mark, logs
+            # the same `before → mine` (review 4868). git copies the message into every reflog the
+            # update writes, which is also how a branch another process turned into a symbolic ref
+            # is told apart: the stamp lands in the reflog of the ref git finally wrote.
+            mark = _head_reflog_mark(repo)
+            # Reflogs off, no publication (Hermes on #964, review 4893 finding 2, by the operator's
+            # decision). The reflog is the ONLY evidence that says whether this publication went
+            # through HEAD or through a branch another process converted underneath it; without one,
+            # a commit redirected onto the wrong branch stands there permanently and the panel
+            # cannot even tell the operator that it happened. Refusing before `update-ref` means
+            # that configuration writes nothing at all, rather than publishing and then reporting
+            # uncertainty. Keyed on the CONFIG, not on `mark`: an unborn branch has no reflog file
+            # yet and refusing on that rejected every repository's first commit.
+            if not _reflogs_enabled(repo):
+                raise FsError(
+                    "this repository has `core.logAllRefUpdates` turned off, so git records no "
+                    "reflog and the panel cannot tell which ref a commit lands on if another "
+                    "process moves the branch as it is published — nothing was committed. Turn it "
+                    "on and commit again.",
+                    status=409,
+                )
+            stamp = f"battlelab commit-paths {os.urandom(12).hex()}"
+            try:
+                run_git_write(
+                    repo, ["update-ref", "-m", stamp, f"refs/heads/{branch}", mine, before_head]
+                )
+            except GitError:
+                raise FsError(
+                    f"`{branch}` moved while the commit was being written, so nothing was recorded "
+                    "on it. Refresh and commit again.",
+                    status=409,
+                ) from None
+            # From here the commit EXISTS. Settlement failing is a reported state, never an
+            # exception that would hide the SHA of a commit that was, in fact, made — and so is a
+            # failed status read (`_with_status`).
+            #
+            # index.lock does not stop a writer that moves only refs: a `git reset --soft` after
+            # settlement's HEAD check received the superseded commit's entries (Hermes on #964,
+            # review 4847). So HEAD's and the branch's own ref locks are held from that check
+            # through the index rename. They can only be taken now — our `update-ref` needs both —
+            # and whatever moved HEAD in between is what `expect_head` refuses under them.
+            #
+            # index.lock does not stop `git symbolic-ref HEAD refs/heads/side` either, and the
+            # panel cannot hold HEAD.lock across its own publication (measured, git 2.43: every
+            # form of `update-ref` of the branch HEAD names needs HEAD.lock; `symref-verify` does
+            # not exist yet). So HEAD.lock is taken first, HEAD re-read under it, and a checkout
+            # that moved to another ref just before `update-ref` leaves the publication reported
+            # with its SHA and the index pending, without compensation (review 4920).
+            #
+            # Every step after publication — the HEAD read and its lock, the reflog, the settlement
+            # — runs inside `_settle_after_publication`; no outcome becomes a refusal.
+            # A strict HEAD read outside this handler answered 409 "Nothing was changed" without
+            # the SHA while the branch had advanced (review 4863).
+            try:
+                res = _settle_after_publication(
+                    repo,
+                    held,
+                    branch,
+                    mine,
+                    before_head,
+                    mark,
+                    stamp,
+                    {n: (pre_index[n], snapshot[n]) for n in names},
+                )
+            except Exception as e:  # noqa: BLE001 - the commit exists: report it, never hide its SHA
+                res = CasResult(
+                    [],
+                    names,
+                    "the commit was made, but this checkout could not be checked again afterwards "
+                    f"({e}), so the index was left alone",
+                )
+        finally:
+            held.release()
+        return _with_status(
+            repo,
+            {
+                "commit": mine[:7],
+                "sha": mine,
+                "branch": branch,
+                "files": len(names),
+                "paths": names,
+                **_index_fields(res),
+            },
+        )
+
+    return _guarded(repo, run)
+
+
+def git_settle(path: str | None, commit: object) -> dict:
+    """SETTLE: bring the index up to the last commit for the paths that commit changed (#950).
+
+    Offered by the panel, never applied automatically — a reversal staged ON PURPOSE reads exactly
+    like a pending settlement, and only the operator knows which it is. ``commit`` must still be
+    HEAD, and HEAD must have at most one parent: this panel only ever publishes single-parent
+    commits, so a merge at HEAD was made elsewhere and has nothing of the panel's to settle.
+
+    Each changed path moves from the parent's entry to the commit's entry only where the index
+    still holds the parent's — so a retry is idempotent, and newer staging is never consumed.
+
+    Refused while the repository is mid-operation or has unmerged entries, and when a path to move
+    is in conflict: SETTLE once resolved an add/add conflict by installing the commit's blob over
+    it, with MERGE_HEAD still present (Hermes on #964, review 4829). ``index.lock``, ``HEAD.lock``
+    and the branch's ref lock are all held from before HEAD is validated through the index rename
+    (reviews 4833 and 4847); a lock another git holds past the wait is a 409 with nothing written.
+    """
+    if not isinstance(commit, str) or not _SHA.match(commit):
+        raise FsError("commit must be the commit to settle, as a full SHA", status=422)
+    repo = resolve_repo(path)
+
+    def run() -> dict:
+        branch = _head_branch(repo)
+        # Held from before HEAD is validated until the index is published, for the reason
+        # commit-paths holds it: a `git switch` between validating HEAD and the swap put the
+        # commit's entries into another branch's index (Hermes on #964, review 4833).
+        held = _acquire_index_lock(repo, INDEX_LOCK_WAIT_S)
+        if isinstance(held, str):
+            raise FsError(f"{held}, so SETTLE changed nothing. Try again in a moment.", status=409)
+        try:
+            # And HEAD's and the branch's ref locks, which a `git reset --soft` needs and
+            # index.lock does not stop (Hermes on #964, review 4847): held from the HEAD check
+            # below through the index rename, so the commit validated is the one settled.
+            refs = _acquire_ref_locks(repo, branch, INDEX_LOCK_WAIT_S)
+            if isinstance(refs, str):
+                raise FsError(
+                    f"{refs}, so SETTLE changed nothing. Try again in a moment.", status=409
+                )
+            try:
+                if _head_branch(repo) != branch:
+                    raise FsError(
+                        "this checkout switched branch, so SETTLE changed nothing. Refresh and "
+                        "look again.",
+                        status=409,
+                    )
+                blocked = _unfinished_operation(repo)
+                if blocked:
+                    raise FsError(
+                        f"{blocked}, so SETTLE changed nothing — finish it in the session first",
+                        status=409,
+                    )
+                tip = _current_head(repo)
+                if tip != commit:
+                    raise FsError(
+                        "the last commit is no longer the one being settled, so nothing was "
+                        "changed. Refresh and look again.",
+                        status=409,
+                    )
+                parents = run_git_write(repo, ["rev-list", "--parents", "-n", "1", tip]).split()[1:]
+                if len(parents) > 1:
+                    raise FsError(
+                        "the last commit is a merge, which the panel does not settle", status=409
+                    )
+                base = parents[0] if parents else EMPTY_TREE
+                blob = run_git_bytes(
+                    repo,
+                    ["diff-tree", "-r", "-z", "--no-renames", "--raw", base, tip, "--"],
+                    require_complete=True,
+                )
+                res = _index_cas(
+                    repo,
+                    parse_raw_diff(blob),
+                    branch,
+                    lock=held,
+                    expect_head=tip,
+                    fence_operations=True,
+                )
+            finally:
+                refs.release()
+        finally:
+            held.release()
+        if res.reason and res.reason.endswith(CONFLICT_REASON):
+            raise FsError(f"{res.reason}. Resolve the conflict in the session first.", status=409)
+        return _with_status(
+            repo,
+            {
+                "commit": tip[:7],
+                "sha": tip,
+                **_index_fields(res),
+                "paths": list(res.done),
+            },
+        )
 
     return _guarded(repo, run)
 
@@ -3062,9 +4659,14 @@ __all__ = [
     "NET_TIMEOUT_S",
     "check_ref_format",
     "destination_digest",
+    "PENDING",
+    "SETTLED",
     "git_branch_delete",
     "git_commit",
+    "git_commit_paths",
     "git_discard",
+    "git_settle",
+    "parse_raw_diff",
     "git_fetch",
     "git_pull",
     "git_push",

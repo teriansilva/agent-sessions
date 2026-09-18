@@ -1616,3 +1616,149 @@
 .confirmDanger {
   border-color: var(--git-del-fg);
 }
+
+/* ------------------------------------------------------------------ commit selected (#950) */
+
+/* A path's commit selection. Per path, so a staged+unstaged path shows the same tick in both
+   groups. The native checkbox keeps its semantics and keyboard behaviour; only size and accent
+   change. */
+.rowCheck {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  min-height: 24px;
+  margin-left: 4px;
+}
+/* The real input covers the whole target, invisible: every tap and click lands ON it (so the
+   44px coarse target is the input itself), while the square below is what gets drawn — the native
+   box brings its own radius and chrome, which the design system does not have. */
+.rowCheck input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.rowCheck input:disabled {
+  cursor: not-allowed;
+}
+.checkBox {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-2);
+  color: var(--on-accent);
+  pointer-events: none;
+}
+.checkBox svg {
+  visibility: hidden;
+}
+.rowCheck:hover .checkBox {
+  border-color: var(--text-2);
+}
+.rowCheck input:checked + .checkBox {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+.rowCheck input:checked + .checkBox svg {
+  visibility: visible;
+}
+.rowCheck input:focus-visible + .checkBox {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.rowCheck input:disabled + .checkBox {
+  opacity: 0.45;
+}
+/* In a git row the filename is the thing being chosen, so the directory hint gives up its width
+   first — with the checkbox and three row actions on a phone, the name was left with 7 characters. */
+[data-git-row] .rowName {
+  flex: 1 1 auto;
+}
+[data-git-row] .rowNote {
+  flex: 0 1000 auto;
+  min-width: 0;
+}
+/* STAGED / SELECTED / ALL spans the foot, one choice in three equal parts. */
+.commitModes {
+  display: flex;
+  width: 100%;
+  margin-bottom: 6px;
+}
+.commitModes .segBtn {
+  flex: 1;
+  font-variant-numeric: tabular-nums;
+}
+.commitModes .segBtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+@media (pointer: coarse) {
+  .rowCheck {
+    width: 44px;
+    min-height: 44px;
+    margin-left: 0;
+  }
+  .checkBox {
+    width: 18px;
+    height: 18px;
+  }
+}
+
+/* ------------------------------------------------------------------ row actions on touch (#950) */
+
+/* On a fine pointer a git row's glyphs sit inline, as before; the wrapper takes no box of its own
+   so they stay flex children of the row. On a coarse pointer they collapse into ONE ⋯ menu: with a
+   44px checkbox and up to four 44px glyphs, a 390px row left the filename seven characters. */
+.rowInline {
+  display: contents;
+}
+.rowMenuTrigger {
+  display: none;
+}
+/* A destructive item keeps the deletion colour a destructive glyph has inline. */
+.headMenuItemBad:hover:not(:disabled),
+.headMenuItemBad:focus-visible {
+  color: var(--git-del-fg);
+}
+[data-row-menu] .headMenuItem:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+@media (pointer: coarse) {
+  [data-git-row] .rowInline {
+    display: none;
+  }
+  .rowMenuTrigger {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    min-height: 44px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--text-2);
+    cursor: pointer;
+  }
+  .rowMenuTrigger:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: -1px;
+  }
+  .rowMenuTrigger[aria-expanded="true"] {
+    color: var(--text-1);
+    background: var(--row-hover);
+  }
+}

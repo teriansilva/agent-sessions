@@ -149,7 +149,7 @@ async function mockApp(page: Page, opts: Opts = {}) {
     await r.fulfill({ json: opts.push ?? PUSH_TARGET });
   });
   // Every write answers with a post-write status, which is what the panel settles from.
-  for (const op of ["stage", "discard", "commit", "push", "fetch", "pull", "switch"]) {
+  for (const op of ["stage", "discard", "commit", "commit-paths", "settle", "push", "fetch", "pull", "switch"]) {
     await page.route(`**/api/git/${op}`, (r) => {
       opts.onWrite?.(r.request().url());
       r.fulfill({ json: { status: CLEAN, discarded: ["web/src/GitTab.tsx"], files: 1 } });
@@ -165,6 +165,18 @@ async function openGit(page: Page, opts: Opts = {}) {
   await expect(page.locator("[data-file-panel]")).toBeVisible();
   await page.getByRole("tab", { name: /Git/ }).click();
   await expect(page.locator("[data-git-tab]")).toBeVisible();
+}
+
+/** A row action, the way the operator reaches it: the inline glyph on a fine pointer, the row's
+ *  single ⋯ menu on a coarse one (#950), where the glyphs are hidden so the filename keeps width. */
+async function rowOp(page: Page, path: string, op: string) {
+  const trigger = page.locator(`[data-row-menu-trigger='${path}']`).first();
+  if (await trigger.isVisible()) {
+    await trigger.click();
+    await page.locator(`[data-row-menu] [data-git-op='${op}']`).click();
+  } else {
+    await page.locator(`[data-git-row='${path}'] [data-git-op='${op}']`).first().click();
+  }
 }
 
 /** WCAG relative-luminance contrast between two computed `rgb()` strings. */
@@ -499,7 +511,7 @@ test("switching branch from the menu posts a switch and settles from the server"
 
 test("discard confirms, naming the repository and the docked session", async ({ page }) => {
   await openGit(page);
-  await page.locator("[data-git-row='web/src/GitTab.tsx'] [data-git-op='discard']").click();
+  await rowOp(page, "web/src/GitTab.tsx", "discard");
   const dialog = page.locator("[data-discard-confirm]");
   await expect(dialog).toBeVisible();
   await expect(dialog).toContainText("proj");
@@ -509,17 +521,23 @@ test("discard confirms, naming the repository and the docked session", async ({ 
 
 test("Escape cancels a discard and returns focus to the control that opened it", async ({
   page,
+  isMobile,
 }) => {
   const writes: string[] = [];
   await openGit(page, { onWrite: (u) => writes.push(u) });
-  await page.locator("[data-git-row='web/src/GitTab.tsx'] [data-git-op='discard']").click();
+  await rowOp(page, "web/src/GitTab.tsx", "discard");
   await expect(page.locator("[data-discard-confirm]")).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.locator("[data-discard-confirm]")).toHaveCount(0);
   expect(writes.filter((u) => u.endsWith("/discard"))).toHaveLength(0);
-  expect(await page.evaluate(() => document.activeElement?.getAttribute("data-git-op"))).toBe(
-    "discard",
-  );
+  // The control that opened it: the glyph inline, or the row's ⋯ trigger on a coarse pointer.
+  expect(
+    await page.evaluate(() => {
+      const a = document.activeElement;
+      if (a?.hasAttribute("data-row-menu-trigger")) return "row-menu";
+      return a?.getAttribute("data-git-op") ?? null;
+    }),
+  ).toBe(isMobile ? "row-menu" : "discard");
 });
 
 test("an untracked row offers no discard control at all", async ({ page }) => {
@@ -600,29 +618,157 @@ test("a dirty tree blocks a switch, and the menu says so rather than carrying wo
 test.describe("coarse pointer", () => {
   test.skip(({ isMobile }) => !isMobile, "target geometry only matters on touch");
 
-  test("the discard glyph is reachable at its BOUNDARY, not just at its centre", async ({
+  test("a row's ⋯ trigger is reachable at its BOUNDARY, not just at its centre", async ({
     page,
   }) => {
     await openGit(page);
-    const glyph = page.locator("[data-git-row='web/src/GitTab.tsx'] [data-git-op='discard']");
-    const box = (await glyph.boundingBox())!;
+    const trigger = page.locator("[data-row-menu-trigger='web/src/GitTab.tsx']");
+    const box = (await trigger.boundingBox())!;
     expect(box.width).toBeGreaterThanOrEqual(44);
     expect(box.height).toBeGreaterThanOrEqual(44);
     // The assertion that actually matters: TAP the top-left inset of the declared target and
-    // require the discard dialog — a 44px box can measure fine while the tap routes to the row
-    // underneath it, which is the failure #782 recorded and a box measurement cannot catch.
+    // require the menu — a 44px box can measure fine while the tap routes to the row underneath
+    // it, which is the failure #782 recorded and a box measurement cannot catch.
     await page.touchscreen.tap(box.x + 3, box.y + 3);
-    await expect(page.locator("[data-discard-confirm]")).toBeVisible();
+    await expect(page.locator("[data-row-menu]")).toBeVisible();
     // And the row's own viewer must NOT have opened instead.
     await expect(page.locator("[data-file-viewer]")).toHaveCount(0);
   });
 
-  test("the bottom-right inset of the discard glyph hits the same control", async ({ page }) => {
+  test("the bottom-right inset of the ⋯ trigger hits the same control", async ({ page }) => {
     await openGit(page);
-    const glyph = page.locator("[data-git-row='web/src/GitTab.tsx'] [data-git-op='discard']");
-    const box = (await glyph.boundingBox())!;
+    const trigger = page.locator("[data-row-menu-trigger='web/src/GitTab.tsx']");
+    const box = (await trigger.boundingBox())!;
     await page.touchscreen.tap(box.x + box.width - 3, box.y + box.height - 3);
+    await expect(page.locator("[data-row-menu]")).toBeVisible();
+  });
+
+  test("a row's actions live in one ⋯ menu, so the filename keeps its width at 390px (#950)", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await openGit(page);
+    const row = page.locator("[data-git-row='web/src/GitTab.tsx']");
+    await expect(row.locator("[data-git-op='discard']")).toBeHidden();
+    await expect(row.locator("[data-send-path]")).toBeHidden();
+    const truncated = await row
+      .locator("[class*='rowName']")
+      .evaluate((el) => el.scrollWidth > el.clientWidth);
+    expect(truncated, "the filename is cut off").toBe(false);
+
+    await page.locator("[data-row-menu-trigger='web/src/GitTab.tsx']").tap();
+    const menu = page.locator("[data-row-menu]");
+    const item = menu.locator("[data-git-op='discard']");
+    const ib = (await item.boundingBox())!;
+    expect(ib.height).toBeGreaterThanOrEqual(44);
+    const mb = (await menu.boundingBox())!;
+    expect(mb.x).toBeGreaterThanOrEqual(0);
+    expect(mb.x + mb.width).toBeLessThanOrEqual(391);
+    expect(mb.y + mb.height).toBeLessThanOrEqual(845);
+    await item.tap();
     await expect(page.locator("[data-discard-confirm]")).toBeVisible();
+  });
+
+  test("an untracked row's ⋯ menu offers staging and no discard", async ({ page }) => {
+    await openGit(page);
+    await page.locator("[data-row-menu-trigger='notes/new.md']").tap();
+    const menu = page.locator("[data-row-menu]");
+    await expect(menu.locator("[data-git-op='stage']")).toHaveCount(1);
+    await expect(menu.locator("[data-git-op='discard']")).toHaveCount(0);
+  });
+
+  test("Escape on a row's ⋯ menu closes the menu, not the panel (#950)", async ({ page }) => {
+    await openGit(page);
+    const trigger = page.locator("[data-row-menu-trigger='web/src/GitTab.tsx']");
+    await trigger.tap();
+    await expect(page.locator("[data-row-menu]")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.locator("[data-row-menu]")).toHaveCount(0);
+    // The sheet's own Escape handler runs first (capture phase, registered earlier), so unless it
+    // stands down for this menu the whole panel goes with it.
+    await expect(page.locator("[data-file-panel]")).toBeVisible();
+    await expect(trigger).toBeFocused();
+  });
+
+  test("Escape on the revert confirmation closes the dialog, not the panel (#950)", async ({
+    page,
+  }) => {
+    await openGit(page, { status: SELECTABLE });
+    await rowOp(page, "src/files.py", "revert");
+    await expect(page.locator("[data-revert-confirm]")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.locator("[data-revert-confirm]")).toHaveCount(0);
+    await expect(page.locator("[data-file-panel]")).toBeVisible();
+  });
+
+  test("a REVERT FILE that put back only some files says which, why, and how to recover (#950)", async ({
+    page,
+  }) => {
+    await openGit(page, { status: SELECTABLE });
+    // Registered after openGit, so it answers this revert instead of the generic write mock. A
+    // partial result (review 4829): nothing was put back, the version moved aside is recoverable,
+    // and the status read after the write failed too.
+    await page.route("**/api/git/discard", (r) =>
+      r.fulfill({
+        json: {
+          discarded: [],
+          reverted: [],
+          recoverable: { "src/files.py": ["1111111111111111111111111111111111111111"] },
+          staged_recoverable: {},
+          worktree: "pending",
+          worktree_left: ["src/files.py"],
+          worktree_reason: "the file changed while it was being put back",
+          index: "pending",
+          index_left: ["src/files.py"],
+          index_reason: "the index was not changed, because putting a file back failed first",
+          status_error: "the panel could not re-read the repository",
+        },
+      }),
+    );
+    await rowOp(page, "src/files.py", "revert");
+    await page.locator("[data-revert-confirm]").getByRole("button", { name: "Revert file" }).click();
+    const notice = page.locator("[data-git-notice]");
+    // Not "left as it was": a restore that did not finish may have left the path missing (4833).
+    await expect(notice).toContainText("Restoring src/files.py did not finish");
+    await expect(notice).toContainText("may be missing or changed");
+    await expect(notice).not.toContainText("left as it was");
+    await expect(notice).toContainText("the file changed while it was being put back");
+    await expect(notice).toContainText("1111111");
+    await expect(notice).not.toContainText("Reverted");
+    // No status came back: the rows the panel already had stay, rather than an empty repository.
+    await expect(page.locator("[data-git-row='src/files.py']").first()).toBeVisible();
+  });
+
+  test("a REVERT FILE whose index write could not be confirmed on disk says so, with the staged id (#950)", async ({
+    page,
+  }) => {
+    await openGit(page, { status: SELECTABLE });
+    // Review 4833: the index was replaced, then syncing it failed. That is neither "not updated"
+    // nor a plain success, and the displaced staged version must still be named.
+    await page.route("**/api/git/discard", (r) =>
+      r.fulfill({
+        json: {
+          discarded: ["src/files.py"],
+          reverted: ["src/files.py"],
+          recoverable: { "src/files.py": ["1111111111111111111111111111111111111111"] },
+          staged_recoverable: { "src/files.py": "2222222222222222222222222222222222222222" },
+          worktree: "settled",
+          worktree_left: [],
+          worktree_reason: null,
+          index: "settled",
+          index_left: [],
+          index_reason: "the index directory could not be synced",
+          index_durable: false,
+        },
+      }),
+    );
+    await rowOp(page, "src/files.py", "revert");
+    await page.locator("[data-revert-confirm]").getByRole("button", { name: "Revert file" }).click();
+    const notice = page.locator("[data-git-notice]");
+    await expect(notice).toContainText("could not be confirmed");
+    await expect(notice).toContainText("the index directory could not be synced");
+    await expect(notice).toContainText("2222222");
+    await expect(notice).not.toContainText("stay as staged");
   });
 
   test("nothing scrolls horizontally at 360px", async ({ page }) => {
@@ -665,7 +811,8 @@ for (const theme of ["dark", "light"] as const) {
 
     // A status letter is a one-character signal; it is paired with a title, but it still has to
     // be legible on both grounds rather than only on the one the palette was tuned against.
-    const letter = page.locator("[data-git-row='web/src/GitTab.tsx'] span").first();
+    // Anchored on the letter's own label: the row's first span is the commit checkbox now (#950).
+    const letter = page.locator("[data-git-row='web/src/GitTab.tsx'] [aria-label='modified']").first();
     const lfg = await letter.evaluate((el) => getComputedStyle(el).color);
     const lbg = await groundOf(page, "[data-git-row='web/src/GitTab.tsx']");
     expect(contrast(lfg, lbg)).toBeGreaterThanOrEqual(3);
@@ -849,7 +996,7 @@ test("the discard confirmation CONTAINS Tab at both boundaries", async ({ page }
   // behind a still-visible destructive confirmation. Escape and focus-return do not cover this:
   // containment is a separate property and needs its own cycle at both ends.
   await openGit(page);
-  await page.locator("[data-git-row='web/src/GitTab.tsx'] [data-git-op='discard']").click();
+  await rowOp(page, "web/src/GitTab.tsx", "discard");
   const dialog = page.locator("[data-discard-confirm]");
   await expect(dialog).toBeVisible();
 
@@ -873,7 +1020,7 @@ test("focus returns to the discard control after CONFIRMING, not only after canc
   page,
 }) => {
   await openGit(page);
-  await page.locator("[data-git-row='web/src/GitTab.tsx'] [data-git-op='discard']").click();
+  await rowOp(page, "web/src/GitTab.tsx", "discard");
   await expect(page.locator("[data-discard-confirm]")).toBeVisible();
   await page.locator("[data-discard-go]").click();
   await expect(page.locator("[data-discard-confirm]")).toHaveCount(0);
@@ -892,4 +1039,169 @@ test("focus returns to the discard control after CONFIRMING, not only after canc
       { timeout: 15_000 },
     )
     .toBe("panel");
+});
+
+// ---------------------------------------------------------------- #950: commit selected, settle
+
+const HEAD950 = "c".repeat(40);
+const SELECTABLE = {
+  ...DIRTY,
+  head: HEAD950,
+  staged_fp: "staged-fp",
+  dirty_fp: "dirty-fp",
+  unsettled: [],
+  entries: [
+    entry({ path: "src/files.py", index: "M", worktree: ".", kind: "staged", fp: "fp-files" }),
+    entry({ path: "web/src/GitTab.tsx", fp: "fp-gittab" }),
+    entry({ path: "notes/new.md", index: "?", worktree: "?", kind: "untracked", oid: null, fp: "fp-notes" }),
+  ],
+};
+
+test("COMMIT SELECTED posts exactly the ticked paths, their fingerprints and the head", async ({ page }) => {
+  await openGit(page, { status: SELECTABLE });
+  const bodies: Record<string, unknown>[] = [];
+  await page.route("**/api/git/commit-paths", (r) => {
+    bodies.push(r.request().postDataJSON());
+    r.fulfill({ json: { status: CLEAN, commit: "abc1234", files: 1, index: "settled" } });
+  });
+  await page.locator("[data-git-select='web/src/GitTab.tsx']").check();
+  await page.locator("[data-commit-mode='selected']").click();
+  await page.locator("[data-git-message]").fill("only the tab");
+  await page.locator("[data-git-op='commit']").click();
+  await expect.poll(() => bodies.length).toBe(1);
+  expect(bodies[0]).toMatchObject({
+    path: CWD,
+    message: "only the tab",
+    paths: ["web/src/GitTab.tsx"],
+    expect: { "web/src/GitTab.tsx": "fp-gittab" },
+    head: HEAD950,
+  });
+  await expect(page.locator("[data-git-notice]")).toContainText("abc1234");
+});
+
+test("INDEX PENDING offers SETTLE, which posts the commit the panel showed", async ({ page }) => {
+  await openGit(page, { status: { ...SELECTABLE, unsettled: ["src/files.py"] } });
+  const bodies: Record<string, unknown>[] = [];
+  await page.route("**/api/git/settle", (r) => {
+    bodies.push(r.request().postDataJSON());
+    r.fulfill({ json: { status: CLEAN, index: "settled" } });
+  });
+  const banner = page.locator("[data-git-pending]");
+  await expect(banner).toContainText("src/files.py");
+  await expect(banner).toContainText("on purpose");
+  await page.locator("[data-git-op='settle']").click();
+  await expect.poll(() => bodies.length).toBe(1);
+  expect(bodies[0]).toMatchObject({ path: CWD, commit: HEAD950 });
+});
+
+test("an unknown pending state asks before a STAGED commit, and sends nothing until confirmed (#950)", async ({
+  page,
+}) => {
+  // `unsettled: null` is the server saying it COULD NOT check — not that nothing is pending.
+  await openGit(page, { status: { ...SELECTABLE, unsettled: null } });
+  const bodies: unknown[] = [];
+  await page.route("**/api/git/commit", (r) => {
+    bodies.push(r.request().postDataJSON());
+    r.fulfill({ json: { status: CLEAN, commit: "abc1234", files: 1 } });
+  });
+  // Unknown is not INDEX PENDING: nothing claims the index holds the last commit's parent.
+  await expect(page.locator("[data-git-pending]")).toHaveCount(0);
+  await page.locator("[data-git-message]").fill("staged only");
+  await page.locator("[data-git-op='commit']").click();
+  const dialog = page.locator("[data-unsettled-unknown-confirm]");
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText("could not");
+  expect(bodies).toHaveLength(0);
+  // Escape closes the question, not the panel (the shared `data-git-confirm` marker), and sends nothing.
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator("[data-file-panel]")).toBeVisible();
+  expect(bodies).toHaveLength(0);
+  await page.locator("[data-git-op='commit']").click();
+  await page.locator("[data-unsettled-unknown-go]").click();
+  await expect.poll(() => bodies.length).toBe(1);
+});
+
+const RENAMED = {
+  ...SELECTABLE,
+  entries: [
+    entry({
+      path: "src/new_name.py",
+      orig_path: "src/old_name.py",
+      index: "R",
+      worktree: ".",
+      kind: "staged",
+      fp: "fp-rename",
+    }),
+    entry({ path: "web/src/GitTab.tsx", fp: "fp-gittab" }),
+  ],
+};
+
+for (const mode of ["selected", "all"] as const) {
+  test(`COMMIT ${mode.toUpperCase()} of a staged rename posts both names, bound to the rename row (#950)`, async ({
+    page,
+  }) => {
+    await openGit(page, { status: RENAMED });
+    const bodies: { paths: string[]; expect: Record<string, string> }[] = [];
+    await page.route("**/api/git/commit-paths", (r) => {
+      bodies.push(r.request().postDataJSON());
+      r.fulfill({ json: { status: CLEAN, commit: "abc1234", files: 1, index: "settled" } });
+    });
+    if (mode === "selected") await page.locator("[data-git-select='src/new_name.py']").check();
+    await page.locator(`[data-commit-mode='${mode}']`).click();
+    // One file to the operator, two names to git: the count stays per row.
+    await expect(page.locator("[data-git-op='commit']")).toContainText(
+      mode === "selected" ? "COMMIT 1 SELECTED" : "COMMIT ALL 2",
+    );
+    await page.locator("[data-git-message]").fill("rename");
+    await page.locator("[data-git-op='commit']").click();
+    await expect.poll(() => bodies.length).toBe(1);
+    expect([...bodies[0].paths].sort()).toEqual(
+      mode === "selected"
+        ? ["src/new_name.py", "src/old_name.py"]
+        : ["src/new_name.py", "src/old_name.py", "web/src/GitTab.tsx"],
+    );
+    expect(bodies[0].expect).toMatchObject({
+      "src/new_name.py": "fp-rename",
+      "src/old_name.py": "fp-rename",
+    });
+  });
+}
+
+test("the commit modes are one radio group: arrow keys move the choice and the focus (#950)", async ({
+  page,
+}) => {
+  await openGit(page, { status: SELECTABLE });
+  const radio = (m: string) => page.locator(`[data-commit-mode='${m}']`);
+  // One Tab stop for the group: only the chosen mode is in the tab order.
+  await expect(radio("staged")).toHaveAttribute("tabindex", "0");
+  await expect(radio("selected")).toHaveAttribute("tabindex", "-1");
+  await radio("staged").focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(radio("selected")).toHaveAttribute("aria-checked", "true");
+  await expect(radio("selected")).toBeFocused();
+  await page.keyboard.press("End");
+  await expect(radio("all")).toHaveAttribute("aria-checked", "true");
+  await expect(radio("all")).toBeFocused();
+  await page.keyboard.press("ArrowDown"); // wraps to the first
+  await expect(radio("staged")).toHaveAttribute("aria-checked", "true");
+  await page.keyboard.press("ArrowLeft"); // and back round to the last
+  await expect(radio("all")).toHaveAttribute("aria-checked", "true");
+  await page.keyboard.press("Home");
+  await expect(radio("staged")).toHaveAttribute("aria-checked", "true");
+  await expect(radio("staged")).toBeFocused();
+});
+
+test.describe("coarse pointer (#950)", () => {
+  test.skip(({ isMobile }) => !isMobile, "target geometry only matters on touch");
+
+  test("a row's commit checkbox is a real 44px target, reachable at its edge", async ({ page }) => {
+    await openGit(page, { status: SELECTABLE });
+    const box = (await page.locator("[data-git-row='web/src/GitTab.tsx'] label").first().boundingBox())!;
+    expect(box.width).toBeGreaterThanOrEqual(44);
+    expect(box.height).toBeGreaterThanOrEqual(44);
+    await page.touchscreen.tap(box.x + 3, box.y + 3);
+    await expect(page.locator("[data-git-select='web/src/GitTab.tsx']")).toBeChecked();
+    await expect(page.locator("[data-file-viewer]")).toHaveCount(0); // not the row's viewer
+  });
 });

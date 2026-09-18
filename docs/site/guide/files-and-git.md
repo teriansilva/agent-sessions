@@ -149,8 +149,9 @@ grouped into **conflicts**, **staged**, **changes** and **untracked**. Selecting
 a unified diff with both old and new line-number gutters, or the file's current contents when a
 diff does not apply.
 
-It can also act — fetch, pull, switch and manage branches, stage, discard, commit and push; each is
-described under [Git operations](#git-operations) below. Each refuses rather than forces — a
+It can also act — fetch, pull, switch and manage branches, stage, discard, revert a staged file,
+commit (staged, selected or all) and push; each is described under [Git operations](#git-operations)
+below. Each refuses rather than forces — a
 diverged branch, a dirty tree, a missing upstream or an unresolved conflict is a stated refusal
 with the next step, never a flag applied for you.
 
@@ -260,10 +261,23 @@ git's object database, and the result lists their ids: recover any of them with
 It is refused for an untracked file — git has no copy to put back, so "discard" would be a plain
 delete — and when the file, or its staged version, changed after you were shown it.
 
+### Revert a staged file
+
+The revert control on a staged row puts that file back to the last commit — index and working tree
+together. The versions it replaces are kept as git objects and their ids are listed afterwards
+(`git cat-file -p <id>` shows one). A file the last commit does not have is refused: reverting it
+would delete it. While it works it holds git's index, HEAD and branch locks, and checks again under
+them that the checkout, the last commit and the staged version are still the ones you were shown —
+so a `switch` or `reset` the session runs at that moment is refused by git, and if something moved
+just before, nothing is reverted. If putting a file back fails part-way, the result still lists
+every version already moved aside, names the files not yet put back, and leaves the index
+unchanged.
+
 ### Commit
 
-Type a message in the box at the foot of the tab and press **COMMIT**. It commits exactly the staged
-set the panel showed; if anything was staged or unstaged since, it is refused, so a file the agent
+Type a message in the box at the foot of the tab and press **COMMIT**. With **Staged** chosen (see
+[What a commit is made of](#what-a-commit-is-made-of)) it commits exactly the staged set the panel
+showed; if anything was staged or unstaged since, it is refused, so a file the agent
 staged cannot ride along unseen. The author is the git identity configured on the host — with none,
 the commit is refused and asks you to set `user.name` and `user.email` in the session.
 
@@ -277,6 +291,65 @@ works. A commit is also refused when:
 - the branch moved while the commit was being written.
 
 A message can be up to 16,384 characters.
+
+### What a commit is made of
+
+The switch above the commit message picks one of three:
+
+- **Staged** — the index as it stands, exactly as `git commit` would.
+- **Selected** — only the paths you ticked, as they are *now*, including any unstaged change to
+  them. The rest of the index is left alone, so something you staged earlier stays staged.
+- **All** — every staged and changed path. An untracked file joins only if you ticked it, so a
+  stray build artefact is never committed because nobody unticked it.
+
+Selected and All commit against the rows you were shown: if a ticked file changes, someone commits,
+the checkout switches branch, or a merge or conflict appears between the panel's last refresh and
+your click, the commit is refused and nothing is written. While it writes the commit and updates
+the index, the panel holds git's own index lock — and, while it brings the index up to the new
+commit, git's locks on HEAD and the branch too — so a git command the session runs in that moment
+(`commit`, `switch`, `add`, `reset`) fails with git's usual "index.lock exists" or "cannot lock ref"
+error instead of racing it — run it again afterwards. If another git is holding the index lock for
+more than a moment, the commit is refused and nothing is written; if HEAD or the branch is locked
+just after the commit is made, the commit stands and the index is left pending. If the checkout was
+pointed at another branch in the instant *before* the commit was written, the commit is **left where
+git wrote it** rather than taken back: the panel tells you which branch holds it and names the
+commit, and the index is left alone. The same goes for a branch that was itself turned into a
+symbolic ref to another branch in that instant — git writes the commit to the branch it points at,
+and that branch keeps it. Undoing either is yours to do in the session, where you can see the
+branches involved. The panel will not move a branch it cannot prove is still the same ref it
+checked a moment earlier, because doing so has been shown to overwrite another program's branch.
+Branches that share a name with a tag, and branch folders that are
+symbolic links, are handled by the branch's full name and refused rather than followed. A
+checkout whose HEAD reaches its branch through another symbolic ref is refused before anything is
+written. Once the commit is made, nothing that happens afterwards turns it into a refusal that
+hides it: if the checkout cannot be checked again, the commit stands and the index is left pending.
+
+Two more refusals, both so your index can never end up disagreeing with a commit in a way the panel
+cannot show you:
+
+- **A file with a staged version *and* a different change on top** — stage it first (or commit
+  Staged), then commit it.
+- **Half of a staged rename** — a rename is committed with both its old and new name, never as a
+  copy.
+- **A file or branch whose name is not valid UTF-8** — git can hold such names, but the panel cannot
+  tell one from a different file or branch that looks the same, so it never writes to them. Use the
+  session's terminal.
+
+### Index pending
+
+A Selected or All commit happens in two steps: the commit, then bringing your real index up to it.
+If the second step cannot finish — git is busy, a file was staged again in between, or the checkout
+switched to another branch, the branch moved on, or a merge started — the commit still exists, and
+the tab shows **INDEX PENDING** for the paths the index has not caught up on. SETTLE refuses while a
+merge or a conflict is in progress, and holds git's index, HEAD and branch locks while it works,
+so a `reset` or `switch` cannot slip in between its check and its write. If
+the index was updated but could not be confirmed as written to disk, the result says so; the
+update itself stands.
+Until then those paths read as staged changes that would undo the commit.
+
+That state looks exactly like a reversal you staged on purpose, so the panel never settles it for
+you. **SETTLE** brings the index up to the last commit for those paths and leaves anything staged
+after it alone. A Staged commit made while the banner is showing asks first, naming the paths.
 
 ### Push
 
@@ -300,5 +373,5 @@ If the remote accepted the push but the local bookkeeping afterwards did not fin
 so plainly: the remote has the commit, and pushing again is safe but unnecessary.
 
 ::: info Verified against
-Commit `8b1c66b` — `src/agent_sessions/files.py § FILES_MAX_ENTRIES, FILES_SCAN_BUDGET_MS, FILES_MAX_READ, capabilities`; `src/agent_sessions/fileedit.py § MAX_EDIT_BYTES, recovery_dir, resolve_pending, read_file, refuse_recovery_store`; `src/agent_sessions/filewrite.py § MAX_FILE_BYTES, MAX_BATCH_FILES, MAX_BATCH_BYTES, BATCH_IDLE_TTL_S, MAX_LIVE_BATCHES, MAX_LIVE_BATCHES_TOTAL, MAX_DEPTH, MAX_COMPONENT, FILE_MODE, _REPLACE_MAX, validate_relpath, refuse_git_metadata, open_destination`; `src/agent_sessions/gitpanel.py § GIT_MAX_ENTRIES, GIT_TIMEOUT_S, GIT_MAX_STDOUT, DIFF_MAX_*`; `src/agent_sessions/gitwrite.py § NET_TIMEOUT_S, LOCAL_TIMEOUT_S, GIT_ALLOW_PROTOCOL, MAX_PATHS, MAX_MESSAGE, git_fetch, git_pull, git_switch, git_branch_delete, git_stage, git_discard, git_commit, resolve_push, push_target, git_push`; `web/src/components/files/{UploadControl,UploadQueue,uploadPlan,GitTab,BranchMenu,gitOps}`.
+Commit `8b1c66b` — `src/agent_sessions/files.py § FILES_MAX_ENTRIES, FILES_SCAN_BUDGET_MS, FILES_MAX_READ, capabilities`; `src/agent_sessions/fileedit.py § MAX_EDIT_BYTES, recovery_dir, resolve_pending, read_file, refuse_recovery_store`; `src/agent_sessions/filewrite.py § MAX_FILE_BYTES, MAX_BATCH_FILES, MAX_BATCH_BYTES, BATCH_IDLE_TTL_S, MAX_LIVE_BATCHES, MAX_LIVE_BATCHES_TOTAL, MAX_DEPTH, MAX_COMPONENT, FILE_MODE, _REPLACE_MAX, validate_relpath, refuse_git_metadata, open_destination`; `src/agent_sessions/gitpanel.py § GIT_MAX_ENTRIES, GIT_TIMEOUT_S, GIT_MAX_STDOUT, DIFF_MAX_*`; `src/agent_sessions/gitwrite.py § NET_TIMEOUT_S, LOCAL_TIMEOUT_S, GIT_ALLOW_PROTOCOL, MAX_PATHS, MAX_MESSAGE, git_fetch, git_pull, git_switch, git_branch_delete, git_stage, git_discard, git_commit, git_commit_paths, git_settle, resolve_push, push_target, git_push`; `web/src/components/files/{UploadControl,UploadQueue,uploadPlan,GitTab,BranchMenu,gitOps}`.
 :::

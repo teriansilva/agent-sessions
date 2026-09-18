@@ -216,10 +216,14 @@ export function FilePanel({
       // handlers are capture-phase on `document`, so registration order wins and this one is
       // registered first. Caught by the mobile e2e, invisible to jsdom. The list is a UNION —
       // the two features landed on separate branches and each added its own overlays.
+      //
+      // The GIT tab's confirmations are named by ONE shared marker, not one entry per dialog:
+      // #950 added revert and unsettled-commit confirmations plus the touch row menu, and a
+      // per-dialog list missed all three — Escape in any of them closed the panel.
       if (
         document.querySelector(
           "[data-file-viewer], [data-upload-menu], [data-collision-prompt], " +
-            "[data-branch-menu], [data-discard-confirm]",
+            "[data-branch-menu], [data-row-menu], [data-git-confirm]",
         )
       )
         return;

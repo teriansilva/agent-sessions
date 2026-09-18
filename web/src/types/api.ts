@@ -1125,11 +1125,21 @@ export interface GitEntry {
   oid: string | null;
   /** Rename/copy source, when the record carried one. */
   orig_path?: string;
+  /** #950 review 4833: git reported this path (or its rename source) as bytes that are not
+   *  UTF-8. The name shown is lossy, so two different files can look alike — the server refuses
+   *  to write to it, and the panel offers nothing to write with. */
+  undecodable?: boolean;
   /** What this row IS, not what it is called — see `entry_fingerprint` server-side. The panel
    *  echoes it back on a write so the operation acts on the bytes that were displayed; the
    *  session agent shares this worktree and never takes the panel's lock, so binding to the
    *  pathname alone meant "act on whatever is there when the command runs". */
   fp: string;
+  /** #950: both sides' object ids and modes, as porcelain v2 reports them. Whether an index entry
+   *  still holds the last commit's PARENT version is a `(mode, oid)` question. */
+  oid_head?: string;
+  oid_index?: string;
+  mode_head?: string;
+  mode_index?: string;
 }
 
 /** GET /api/git/status (#784). `repo: null` is a normal 200 — "not a repository" is a state.
@@ -1148,6 +1158,13 @@ export interface GitStatus {
   staged_fp: string;
   /** The set of paths making the tree dirty — the precondition `switch` refuses on. */
   dirty_fp: string;
+  /** #950: the commit HEAD is on (null on a branch with no commit yet) — what a write that must act
+   *  on "the commit the operator was shown" sends back. */
+  head?: string | null;
+  /** #950: paths the last commit changed whose index entry still holds the parent's version —
+   *  i.e. staged reversals of it. An unfinished panel commit and a reversal staged on purpose look
+   *  identical, so this is reported, never acted on. `null` = could not be determined. */
+  unsettled?: string[] | null;
 }
 
 /** POST /api/files/upload/batch (#807): a server-side reservation minted from an immutable
@@ -1239,10 +1256,12 @@ export interface GitWriteResult {
    *  is safe and idempotent, which is a different action from retrying a failed operation. */
   settled?: boolean;
   settle_error?: string | null;
-  /** Null when the post-write status read itself failed. The operation still happened — this
-   *  says only that the panel could not re-read the repository afterwards, so the caller must
-   *  KEEP the status it already had rather than adopting an absence as the new truth. */
-  status: GitStatus | null;
+  /** Null or absent when the post-write status read itself failed. The operation still happened —
+   *  this says only that the panel could not re-read the repository afterwards, so the caller must
+   *  KEEP the status it already had rather than adopting an absence as the new truth. #950 writes
+   *  (`commit-paths`, `settle`, `discard`) omit it and say why in `status_error`. */
+  status?: GitStatus | null;
+  status_error?: string;
   /** Present on the operations that have something specific to report. */
   branch?: string;
   remote?: string;
@@ -1256,6 +1275,26 @@ export interface GitWriteResult {
   created?: boolean;
   staged?: boolean;
   upstream?: string;
+  /** #950 `commit-paths` / `settle` / revert-file: the full commit SHA. */
+  sha?: string;
+  /** #950: whether the real index caught up with the write. `pending` means the commit (or the
+   *  worktree revert) happened and some index entries were left — see `index_left`. Deliberately
+   *  not `settled`, which pull and push already use for a different fact. */
+  index?: "settled" | "pending";
+  index_left?: string[];
+  index_reason?: string | null;
+  /** #950: present, as `false`, only when the index write LANDED but syncing it to disk could not be
+   *  confirmed (review 4833). Neither "not updated" nor a plain success: say so, with `index_reason`. */
+  index_durable?: boolean;
+  /** #950 revert-file: whether every file was put back. `pending` is a PARTIAL result, not an
+   *  error: `discarded` lists what was put back, `worktree_left` what was not, and `recoverable`
+   *  still carries every version already moved aside (review 4829). */
+  worktree?: "settled" | "pending";
+  worktree_left?: string[];
+  worktree_reason?: string | null;
+  /** #950 revert-file: the staged blob each path had before, recoverable with `git cat-file -p`. */
+  staged_recoverable?: Record<string, string>;
+  reverted?: string[];
 }
 
 // ---------------------------------------------------------------------------------------------

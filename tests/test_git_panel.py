@@ -299,8 +299,14 @@ def test_only_read_only_subcommands_are_invoked(repo, monkeypatch):
     gitpanel.git_diff(str(repo / "a.txt"), staged=False)
 
     subcommands = {a[0] for a in seen}
-    assert subcommands <= {"rev-parse", "status", "cat-file"}, subcommands
+    # `diff-tree` joined this set in #950, deliberately and narrowly: the status's `unsettled`
+    # field lists the paths the last commit changed. It runs with `--raw` only — modes and object
+    # ids, no content diff — so there is nothing for a textconv, external-diff or filter driver to
+    # act on, and it runs on the sanitized gitdir, which defines none. `diff` itself stays out.
+    assert subcommands <= {"rev-parse", "status", "cat-file", "diff-tree"}, subcommands
     assert "diff" not in subcommands
+    diff_tree_calls = [a for a in seen if a[0] == "diff-tree"]
+    assert all("--raw" in a and "-p" not in a and "--patch" not in a for a in diff_tree_calls)
 
 
 # --------------------------------------------------------------------------- diff fidelity

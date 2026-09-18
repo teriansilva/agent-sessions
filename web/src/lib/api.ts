@@ -658,11 +658,17 @@ export const api = {
     path: string,
     paths: string[],
     expect?: Record<string, string>,
+    /** #950: "head" is REVERT FILE — index and worktree back to `head`. Default restores from the
+     *  index, as before. */
+    from?: "index" | "head",
+    head?: string,
   ) =>
     mutateJson<GitWriteResult>("POST", "/api/git/discard", {
       path,
       paths,
       expect,
+      from,
+      head,
     }),
   /** `expect` is the whole staged SET (`staged_fp`), not the listed rows: `git commit` records
    *  the index, so a file staged after the panel read it would otherwise ride along unseen. */
@@ -672,6 +678,26 @@ export const api = {
       message,
       expect,
     }),
+  /** COMMIT SELECTED / ALL (#950): exactly `paths` as they are now, bound to their row
+   *  fingerprints and to the commit the panel showed. The rest of the index is left alone. */
+  gitCommitPaths: (
+    path: string,
+    message: string,
+    paths: string[],
+    expect: Record<string, string>,
+    head: string,
+  ) =>
+    mutateJson<GitWriteResult>("POST", "/api/git/commit-paths", {
+      path,
+      message,
+      paths,
+      expect,
+      head,
+    }),
+  /** SETTLE (#950): bring the index up to `commit` (which must still be HEAD) where it still holds
+   *  the parent's entries. Idempotent; never consumes newer staging. */
+  gitSettle: (path: string, commit: string) =>
+    mutateJson<GitWriteResult>("POST", "/api/git/settle", { path, commit }),
   /** Current branch to a server-resolved target; never --force, never a client refspec. */
   gitPush: (path: string, remote?: string, expect?: string) =>
     // `expect` is the target the panel DISPLAYED. The server refuses if it has since resolved

@@ -37,8 +37,9 @@ writes to the repository" structural: a status refresh writes to the copy.
 
 **``git diff`` is not invoked at all.** A unified diff is assembled here instead, from
 ``cat-file`` blobs (objects as stored, no conversion) and the descriptor-verified worktree bytes
-phase 1 already provides. Git is used for exactly three subcommands: ``rev-parse``, ``status``,
-``cat-file``.
+phase 1 already provides. Git is used for exactly four subcommands: ``rev-parse``, ``status``,
+``cat-file``, and ``diff-tree --raw`` (#950) — which lists the last commit's changed paths as modes
+and object ids only, produces no content diff, and so gives no driver anything to run.
 
 **The ceiling is not the metadata boundary.** ``GIT_CEILING_DIRECTORIES`` bounds how far git walks
 *upward*; it says nothing about where a ``.git`` file it finds *points*. A worktree under the root
@@ -797,6 +798,7 @@ def _parse_porcelain_v2(blob: bytes, root: str = "") -> dict:
     are length-delimited here instead, and a rename's two paths arrive as two NUL-separated fields.
     """
     branch: str | None = None
+    head_oid: str | None = None
     upstream: str | None = None
     ahead: int | None = None
     behind: int | None = None
@@ -810,10 +812,25 @@ def _parse_porcelain_v2(blob: bytes, root: str = "") -> dict:
         i += 1
         if not rec:
             continue
-        text = rec.decode("utf-8", errors="replace")
+        # A path is bytes to git. Decoding with `replace` is right for DISPLAY and wrong for
+        # IDENTITY: `bad\xff` and a real file named `bad\ufffd` then read as the same row, and a
+        # write aimed at one lands on the other (Hermes on #964, review 4833). Such a row is marked
+        # `undecodable`, and `gitwrite.validate_paths` refuses to act on its name.
+        try:
+            text = rec.decode("utf-8")
+            lossy = False
+        except UnicodeDecodeError:
+            text = rec.decode("utf-8", errors="replace")
+            lossy = True
         if text.startswith("# branch.head "):
             head = text[len("# branch.head ") :]
             branch = None if head == "(detached)" else head
+            continue
+        if text.startswith("# branch.oid "):
+            # The commit HEAD is on — what a write that must act on "the commit the operator was
+            # shown" binds to (#950). `(initial)` is a branch with no commit yet.
+            oid = text[len("# branch.oid ") :].strip()
+            head_oid = None if oid == "(initial)" else oid
             continue
         if text.startswith("# branch.upstream "):
             upstream = text[len("# branch.upstream ") :]
@@ -832,6 +849,7 @@ def _parse_porcelain_v2(blob: bytes, root: str = "") -> dict:
             truncated = True
             continue
 
+        start = len(entries)
         kind = text[0]
         if kind == "?":
             entries.append(
@@ -843,16 +861,21 @@ def _parse_porcelain_v2(blob: bytes, root: str = "") -> dict:
             if len(parts) < 9:
                 continue
             xy, oid_head, oid_index, path = parts[1], parts[6], parts[7], parts[8]
-            entries.extend(_split_xy(path, xy, oid_head, oid_index))
+            entries.extend(_split_xy(path, xy, oid_head, oid_index, parts[3], parts[4]))
         elif kind == "2":
             # 2 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <score> <path>\0<orig>
             parts = text.split(" ", 9)
             if len(parts) < 10:
                 continue
             xy, oid_head, oid_index, path = parts[1], parts[6], parts[7], parts[9]
-            orig = fields[i].decode("utf-8", errors="replace") if i < len(fields) else ""
+            orig_raw = fields[i] if i < len(fields) else b""
+            try:
+                orig = orig_raw.decode("utf-8")
+            except UnicodeDecodeError:
+                orig = orig_raw.decode("utf-8", errors="replace")
+                lossy = True
             i += 1
-            for e in _split_xy(path, xy, oid_head, oid_index):
+            for e in _split_xy(path, xy, oid_head, oid_index, parts[3], parts[4]):
                 e["orig_path"] = orig
                 entries.append(e)
         elif kind == "u":
@@ -875,6 +898,9 @@ def _parse_porcelain_v2(blob: bytes, root: str = "") -> dict:
                     "oid_theirs": parts[9],
                 }
             )
+        if lossy:
+            for e in entries[start:]:
+                e["undecodable"] = True
     for e in entries:
         # The root travels with the entry only long enough to fingerprint it; it is not part of
         # the payload the client sees.
@@ -883,6 +909,7 @@ def _parse_porcelain_v2(blob: bytes, root: str = "") -> dict:
         e.pop("_root", None)
     return {
         "branch": branch,
+        "head": head_oid,
         "upstream": upstream,
         "ahead": ahead,
         "behind": behind,
@@ -949,7 +976,14 @@ def dirty_fingerprint(entries: list[dict]) -> str:
     return hashlib.sha256("\x00".join(dirty).encode()).hexdigest()[:16]
 
 
-def _split_xy(path: str, xy: str, oid_head: str, oid_index: str) -> list[dict]:
+def _split_xy(
+    path: str,
+    xy: str,
+    oid_head: str,
+    oid_index: str,
+    mode_head: str = "",
+    mode_index: str = "",
+) -> list[dict]:
     """One porcelain record can mean two rows.
 
     ``MM`` is a staged edit *and* a later unstaged one. That is real git state, so it renders in
@@ -959,8 +993,14 @@ def _split_xy(path: str, xy: str, oid_head: str, oid_index: str) -> list[dict]:
     x, y = xy[0], xy[1]
     # BOTH oids ride BOTH rows. Carrying only one made every staged diff compare HEAD with itself
     # — the index side was read from a key nothing ever wrote — so staged rows came back empty
-    # while `git diff --cached` showed real changes.
-    oids = {"oid_head": oid_head, "oid_index": oid_index}
+    # while `git diff --cached` showed real changes. The modes ride too (#950): whether an index
+    # entry still holds the last commit's PARENT version is a `(mode, oid)` question.
+    oids = {
+        "oid_head": oid_head,
+        "oid_index": oid_index,
+        "mode_head": mode_head,
+        "mode_index": mode_index,
+    }
     if x != ".":
         out.append(
             {"path": path, "index": x, "worktree": ".", "kind": "staged", "oid": oid_head, **oids}
@@ -1087,6 +1127,8 @@ def git_status(path: str | None, min_epoch: int | None = None) -> dict:
             "behind": None,
             "entries": [],
             "truncated": False,
+            "head": None,
+            "unsettled": [],
         }
 
     def produce() -> dict:
@@ -1103,9 +1145,90 @@ def git_status(path: str | None, min_epoch: int | None = None) -> dict:
             # name was read straight from HEAD and is still known.
             parsed["branch"] = parsed["branch"] or branch
             parsed["repo"] = repo.toplevel
+            parsed["unsettled"] = _unsettled(repo, gitdir, parsed.get("head"), parsed["entries"])
             return parsed
 
     return _single_flight(repo.toplevel, produce, min_epoch=min_epoch)
+
+
+def _unsettled(repo: Repo, gitdir: str, head: str | None, entries: list[dict]) -> list[str] | None:
+    """Paths the last commit changed whose index entry still holds the commit's PARENT version.
+
+    Such a path reads as a staged change that would REVERT the last commit — which is what a
+    commit whose index settlement is still pending looks like (#950), and also what a reversal
+    staged on purpose looks like. The two cannot be told apart from repository state, which is why
+    the panel reports this rather than acting on it.
+
+    Read on the sanitized gitdir like everything else on this path. `cat-file` reads the commit's
+    parent lines; `diff-tree --raw` lists changed paths as modes and object ids only — it produces
+    no content diff, so no textconv, external diff or filter driver has anything to run, and the
+    sanitized gitdir defines none anyway. A merge at HEAD reports nothing (the panel never makes
+    one); a root commit compares against the empty tree. ``None`` means "could not be determined"
+    (for example a commit too large for the output budget), never "nothing unsettled".
+    """
+    if not head:
+        return []
+    try:
+        raw_commit = _run_git(
+            home_root(), ["cat-file", "commit", head], cwd=repo.toplevel, gitdir=gitdir
+        )
+    except GitError:
+        return None
+    header = raw_commit.decode("utf-8", "replace").split("\n\n", 1)[0]
+    parents = [
+        ln[len("parent ") :].strip() for ln in header.splitlines() if ln.startswith("parent ")
+    ]
+    if len(parents) > 1:
+        return []
+    base = parents[0] if parents else EMPTY_TREE
+    try:
+        blob = _run_git(
+            home_root(),
+            ["diff-tree", "-r", "-z", "--no-renames", "--raw", base, head, "--"],
+            cwd=repo.toplevel,
+            gitdir=gitdir,
+        )
+    except GitError:
+        return None
+    # What the index holds, for every path the index differs from HEAD on. A path absent from this
+    # map is at HEAD's entry, i.e. settled.
+    index_of: dict[str, tuple[str, str] | None] = {}
+    for e in entries:
+        if e.get("kind") != "staged":
+            continue
+        if e.get("orig_path"):
+            index_of[e["orig_path"]] = None  # a staged rename: the old name left the index
+        if e.get("index") == "D" or e.get("mode_index") in ("", "000000"):
+            index_of[e["path"]] = None
+        else:
+            index_of[e["path"]] = (e.get("mode_index") or "", e.get("oid_index") or "")
+    out: list[str] = []
+    for chunk_path, (before, _after) in _parse_raw(blob).items():
+        if chunk_path in index_of and index_of[chunk_path] == before:
+            out.append(chunk_path)
+    return sorted(out)
+
+
+def _parse_raw(blob: bytes) -> dict[str, tuple[tuple[str, str] | None, tuple[str, str] | None]]:
+    """`diff-tree -r -z --raw --no-renames` as `{path: (before, after)}` — mirrored in gitwrite."""
+    fields = blob.split(b"\x00")
+    out: dict[str, tuple[tuple[str, str] | None, tuple[str, str] | None]] = {}
+    i = 0
+    while i < len(fields):
+        meta = fields[i]
+        i += 1
+        if not meta.startswith(b":") or i >= len(fields):
+            continue
+        path = fields[i].decode("utf-8", "replace")
+        i += 1
+        bits = meta[1:].decode("ascii", "replace").split()
+        if len(bits) < 5:
+            continue
+        out[path] = (
+            None if bits[0] == "000000" else (bits[0], bits[2]),
+            None if bits[1] == "000000" else (bits[1], bits[3]),
+        )
+    return out
 
 
 def git_branches(path: str | None) -> dict:

@@ -2,11 +2,14 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { createPortal } from "react-dom";
 import {
   ArrowDownToLine,
+  Check,
   ChevronDown,
   GitBranch,
   Minus,
+  MoreHorizontal,
   Plus,
   RotateCcw,
+  Undo2,
   Upload,
 } from "lucide-react";
 import { ApiError, api } from "../../lib/api";
@@ -15,9 +18,18 @@ import type {
   GitEntry,
   GitPushTarget,
   GitStatus,
+  GitWriteResult,
 } from "../../types/api";
 import { BranchMenu } from "./BranchMenu";
-import { gitOps, rowActionsFor } from "./gitOps";
+import {
+  commitPlan,
+  fingerprintsFor,
+  gitOps,
+  pendingState,
+  rowActionsFor,
+  type CommitMode,
+} from "./gitOps";
+import { RowMenu, type RowOp } from "./RowMenu";
 import { SendPath } from "./SendPath";
 import styles from "./filePanel.module.css";
 
@@ -27,6 +39,12 @@ const GROUPS: { kind: GitEntry["kind"]; label: string }[] = [
   { kind: "staged", label: "Staged" },
   { kind: "changed", label: "Changes" },
   { kind: "untracked", label: "Untracked" },
+];
+
+const MODES: { mode: CommitMode; label: string }[] = [
+  { mode: "staged", label: "Staged" },
+  { mode: "selected", label: "Selected" },
+  { mode: "all", label: "All" },
 ];
 
 /** Status letters reuse the app's existing STATUS vocabulary rather than inventing a palette, and
@@ -43,6 +61,57 @@ function letterFor(e: GitEntry): { ch: string; cls: string; label: string } {
     return { ch, cls: styles.gitMod, label: "renamed" };
   return { ch, cls: styles.gitMod, label: "modified" };
 }
+
+/** The recoverable object ids a discard or revert returned, as one sentence the operator can use. */
+function recoverySentence(r: GitWriteResult): string {
+  const ids = [
+    ...Object.values(r.recoverable ?? {}).flat(),
+    ...Object.values(r.staged_recoverable ?? {}),
+  ];
+  return ids.length
+    ? ` Previous contents: ${ids.map((o) => o.slice(0, 12)).join(", ")} — recover with \`git cat-file -p <id>\`.`
+    : "";
+}
+
+type ConfirmState =
+  | {
+      kind: "discard";
+      root: string;
+      paths: string[];
+      /** The fingerprints as they were WHEN THE DIALOG OPENED — an immutable snapshot, not a
+       *  lookup done at Confirm time. Recomputing from the latest `status` meant a poll landing
+       *  while the dialog was open would bless the NEW bytes: the operator reads one description
+       *  and confirms another. The dialog is a promise about what it showed. */
+      expect: Record<string, string>;
+      trigger: HTMLElement | null;
+    }
+  | {
+      kind: "revert";
+      root: string;
+      paths: string[];
+      expect: Record<string, string>;
+      /** The commit the dialog named — the server refuses if HEAD has moved since. */
+      head: string;
+      trigger: HTMLElement | null;
+    }
+  | {
+      kind: "unsettled-commit";
+      root: string;
+      /** The paths whose staged content would revert the last commit. */
+      paths: string[];
+      message: string;
+      stagedFp: string;
+      trigger: HTMLElement | null;
+    }
+  | {
+      /** The server could not check for unsettled paths, so a STAGED commit asks rather than
+       *  assuming there are none. */
+      kind: "unknown-pending-commit";
+      root: string;
+      message: string;
+      stagedFp: string;
+      trigger: HTMLElement | null;
+    };
 
 export function GitTab({
   root,
@@ -99,9 +168,17 @@ export function GitTab({
     el: HTMLElement | null;
     rect: { top: number; bottom: number; left: number; width: number };
   } | null>(null);
-  // Root-tagged, all three. A discard confirmation that survives a root change is a data-loss
-  // path: it stores paths, `doDiscard` uses the CURRENT root, and a same-named path in the new
-  // repository gets destroyed instead. The commit draft and the remote choice belong to their
+  // One row's ⋯ menu on a coarse pointer (#950). Root-tagged like everything else here, and it
+  // closes by derivation when its row leaves the status (see `rowMenu` below).
+  const [rowMenuState, setRowMenuState] = useState<{
+    root: string;
+    entry: GitEntry;
+    el: HTMLElement;
+    rect: { top: number; bottom: number; left: number; right: number };
+  } | null>(null);
+  // Root-tagged, all of them. A confirmation that survives a root change is a data-loss path: it
+  // stores paths, the write uses the CURRENT root, and a same-named path in the new repository
+  // gets destroyed instead. The commit draft, the selection and the mode belong to their
   // repository for the same reason, if less dangerously.
   const [msgState, setMsgState] = useState<{ root: string; text: string }>({ root, text: "" });
   const message = msgState.root === root ? msgState.text : "";
@@ -109,17 +186,37 @@ export function GitTab({
     (text: string) => setMsgState({ root, text }),
     [root],
   );
-  const [confirmState, setConfirmState] = useState<{
-    root: string;
-    paths: string[];
-    /** The fingerprints as they were WHEN THE DIALOG OPENED — an immutable snapshot, not a
-     *  lookup done at Confirm time. Recomputing from the latest `status` meant a poll landing
-     *  while the dialog was open would bless the NEW bytes: the operator reads one description
-     *  and confirms another. The dialog is a promise about what it showed. */
-    expect: Record<string, string>;
-    trigger: HTMLElement | null;
-  } | null>(null);
+  const [selState, setSelState] = useState<{ root: string; paths: string[] }>({
+    root,
+    paths: [],
+  });
+  const selected = new Set(selState.root === root ? selState.paths : []);
+  const toggleSelected = useCallback(
+    (path: string) =>
+      setSelState((prev) => {
+        const current = prev.root === root ? prev.paths : [];
+        return {
+          root,
+          paths: current.includes(path) ? current.filter((p) => p !== path) : [...current, path],
+        };
+      }),
+    [root],
+  );
+  const [modeState, setModeState] = useState<{ root: string; mode: CommitMode }>({
+    root,
+    mode: "staged",
+  });
+  const mode: CommitMode = modeState.root === root ? modeState.mode : "staged";
+  const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
   const confirm = confirmState && confirmState.root === root ? confirmState : null;
+  const rowMenu =
+    rowMenuState &&
+    rowMenuState.root === root &&
+    status?.entries.some(
+      (x) => x.kind === rowMenuState.entry.kind && x.path === rowMenuState.entry.path,
+    )
+      ? rowMenuState
+      : null;
   const repo = status?.repo ?? null;
   const branch = status?.branch ?? null;
   // Bumped after every successful write so the two read-only side-loads (branches, push target)
@@ -205,7 +302,7 @@ export function GitTab({
   const run = useCallback(
     async (
       id: string,
-      fn: () => Promise<{ status: GitStatus | null }>,
+      fn: () => Promise<{ status?: GitStatus | null }>,
       report?: (r: never) => string,
     ) => {
       const startedAt = root;
@@ -249,6 +346,7 @@ export function GitTab({
   );
 
   const ops = gitOps(status, push);
+  const plan = commitPlan(status, mode, selected);
   const busyAny = busy !== null;
   // A refresh bumps the tick, and until the new status lands these rows describe a state the
   // server may already have moved past. They stay VISIBLE — blanking the panel on every poll
@@ -260,14 +358,14 @@ export function GitTab({
   // the agent does not take the panel's lock, so the gap is reachable with no concurrent panel
   // use at all.
   const writesLocked = busyAny || loading;
+  const pending = pendingState(status);
+  const unsettled = pending.kind === "pending" ? pending.paths : [];
+  const head = status?.head ?? null;
 
   /** The `fp` of each named row, as the panel last rendered it. */
   const fpsFor = useCallback(
     (paths: string[]) => {
-      const want = new Set(paths);
-      const out: Record<string, string> = {};
-      for (const e of status?.entries ?? []) if (want.has(e.path) && e.fp) out[e.path] = e.fp;
-      return out;
+      return fingerprintsFor(status?.entries ?? [], paths);
     },
     [status],
   );
@@ -278,16 +376,11 @@ export function GitTab({
       void run(
         "discard",
         () => api.gitDiscard(root, paths, expect),
-        (r: { discarded?: string[]; recoverable?: Record<string, string[]> }) => {
+        (r: GitWriteResult) => {
           const n = r.discarded?.length ?? paths.length;
           // The oids are the whole reason this is safe to press, and the panel used to keep them
           // to itself — the confirmation said the work was recoverable and then never said HOW.
-          // One id per line is enough to paste into `git cat-file -p`.
-          const ids = Object.values(r.recoverable ?? {}).flat();
-          const how = ids.length
-            ? ` Previous contents: ${ids.map((o) => o.slice(0, 12)).join(", ")} — recover with \`git cat-file -p <id>\`.`
-            : "";
-          return `Discarded ${n} change${n === 1 ? "" : "s"}.${how}`;
+          return `Discarded ${n} change${n === 1 ? "" : "s"}.${recoverySentence(r)}`;
         },
       ).then(() => {
         // AFTER the write settles, not at unmount. The dialog's own cleanup does restore focus,
@@ -298,7 +391,83 @@ export function GitTab({
         document.querySelector<HTMLElement>("[data-branch-trigger]")?.focus();
       });
     },
-    [root, run],
+    [root, run, setConfirmState],
+  );
+
+  const doRevert = useCallback(
+    (paths: string[], expect: Record<string, string>, commit: string) => {
+      setConfirmState(null);
+      void run(
+        "revert",
+        () => api.gitDiscard(root, paths, expect, "head", commit),
+        (r: GitWriteResult) => {
+          if (r.worktree === "pending") {
+            // A PARTIAL result (reviews 4829, 4833): restoring stopped part-way. A path in
+            // `worktree_left` did not finish being restored — it may be missing or hold something
+            // else — so say that plainly with how to recover, never "left as it was".
+            const back = r.discarded ?? [];
+            const left = r.worktree_left ?? [];
+            return `Put back ${back.length ? back.join(", ") : "none"} of ${paths.join(", ")}. Restoring ${left.join(", ")} did not finish${r.worktree_reason ? ` (${r.worktree_reason})` : ""}: ${left.length === 1 ? "it" : "they"} may be missing or changed on disk — check before editing. The index was not changed.${recoverySentence(r)}`;
+          }
+          const base = `Reverted ${paths.join(", ")} to the last commit.${recoverySentence(r)}`;
+          if (r.index_durable === false)
+            return `${base} The index was updated, but writing it to disk could not be confirmed${r.index_reason ? ` (${r.index_reason})` : ""} — refresh to check.`;
+          return r.index === "pending"
+            ? `${base} The index was not updated for ${(r.index_left ?? []).join(", ")}${r.index_reason ? ` (${r.index_reason})` : ""} — they stay as staged.`
+            : base;
+        },
+      ).then(() => document.querySelector<HTMLElement>("[data-branch-trigger]")?.focus());
+    },
+    [root, run, setConfirmState],
+  );
+
+  const clearDraft = useCallback((startedAt: string) => {
+    // Cleared for the root the commit BELONGED to. Clearing unconditionally wiped the current
+    // root's draft when a late commit from a previous one landed.
+    setMsgState((prev) => (prev.root === startedAt ? { root: startedAt, text: "" } : prev));
+  }, []);
+
+  const doCommitStaged = useCallback(
+    (text: string, stagedFp: string) => {
+      setConfirmState(null);
+      void run(
+        "commit",
+        async () => {
+          const startedAt = root;
+          const r = await api.gitCommit(startedAt, text, stagedFp);
+          clearDraft(startedAt);
+          return r;
+        },
+        (r: GitWriteResult) =>
+          `Committed ${r.files ?? 0} file${r.files === 1 ? "" : "s"} as ${r.commit ?? "HEAD"}.`,
+      );
+    },
+    [clearDraft, root, run, setConfirmState],
+  );
+
+  const doCommitPaths = useCallback(
+    (text: string, paths: string[], expect: Record<string, string>, commit: string) => {
+      void run(
+        "commit",
+        async () => {
+          const startedAt = root;
+          const r = await api.gitCommitPaths(startedAt, text, paths, expect, commit);
+          clearDraft(startedAt);
+          setSelState((prev) => (prev.root === startedAt ? { root: startedAt, paths: [] } : prev));
+          return r;
+        },
+        (r: GitWriteResult) => {
+          const made = `Committed ${r.files ?? paths.length} file${(r.files ?? paths.length) === 1 ? "" : "s"} as ${r.commit ?? "HEAD"}.`;
+          // The commit EXISTS either way; what the operator needs next depends on this half.
+          if (r.index_durable === false)
+            return `${made} The index was updated, but writing it to disk could not be confirmed${r.index_reason ? ` (${r.index_reason})` : ""} — refresh to check.`;
+          return r.index === "pending"
+            ? `${made} The index could not be brought up to it for ${(r.index_left ?? []).join(", ")}${r.index_reason ? ` (${r.index_reason})` : ""} — see INDEX PENDING.`
+            : made;
+        },
+      );
+    },
+    [clearDraft, root, run],
   );
 
   if (loading && !status) {
@@ -342,6 +511,38 @@ export function GitTab({
 
   const total = status.entries.length;
   const repoName = (status.repo ?? "").split("/").filter(Boolean).pop() ?? status.repo;
+  const commitLabel =
+    mode === "staged"
+      ? "COMMIT"
+      : mode === "selected"
+        ? `COMMIT ${plan.count} SELECTED`
+        : `COMMIT ALL ${plan.count}`;
+
+  /** The actions a row's ⋯ menu offers — exactly the inline set, in the same order. */
+  const opsFor = (e: GitEntry): RowOp[] => {
+    const a = rowActionsFor(e);
+    const out: RowOp[] = [];
+    if (a.stage) out.push("stage");
+    if (a.unstage) out.push("unstage");
+    if (a.revert && head) out.push("revert");
+    if (a.discard) out.push("discard");
+    if (onSendPath && status?.repo) out.push("send");
+    return out;
+  };
+  /** A menu pick does what the inline glyph does. The confirmations take the ⋯ trigger as the
+   *  control that opened them, so focus returns to the row rather than to a menu that is gone. */
+  const pickRowOp = (e: GitEntry, el: HTMLElement, op: RowOp) => {
+    setRowMenuState(null);
+    if (op === "stage" || op === "unstage") {
+      void run("stage", () => api.gitStage(root, [e.path], op === "stage", fpsFor([e.path])));
+    } else if (op === "revert" && head) {
+      setConfirmState({ kind: "revert", root, paths: [e.path], expect: fpsFor([e.path]), head, trigger: el });
+    } else if (op === "discard") {
+      setConfirmState({ kind: "discard", root, paths: [e.path], expect: fpsFor([e.path]), trigger: el });
+    } else if (op === "send" && onSendPath && status?.repo) {
+      onSendPath(`${status.repo.replace(/\/$/, "")}/${e.path}`);
+    }
+  };
 
   return (
     <>
@@ -441,6 +642,55 @@ export function GitTab({
           </div>
         )}
 
+        {/* Not INDEX PENDING: the server could not tell whether it is (review 4829). */}
+        {pending.kind === "unknown" && head && (
+          <div className={styles.state} role="status" data-git-pending-unknown="">
+            <span className={styles.stateTag}>Git // Index state unknown</span>
+            The panel could not check whether the last commit ({head.slice(0, 7)}) is fully settled in
+            the index, so a STAGED commit asks first. The next refresh checks again.
+          </div>
+        )}
+
+        {/* INDEX PENDING (#950). Derived from the repository, not remembered, so it survives a
+            reload — and for the same reason it cannot tell an unfinished panel commit from a
+            reversal staged on purpose. It says both, and SETTLE is offered, never applied. */}
+        {unsettled.length > 0 && head && (
+          <div
+            className={`${styles.state} ${styles.stateWarn}`}
+            role="status"
+            data-git-pending=""
+          >
+            <span className={styles.stateTag}>Git // Index pending</span>
+            The last commit ({head.slice(0, 7)}) changed {unsettled.join(", ")}, but the index still
+            holds{" "}
+            {unsettled.length === 1
+              ? "its previous version — so it reads as a staged change"
+              : "their previous versions — so they read as staged changes"}{" "}
+            that would undo that commit. That is what an unfinished commit looks like, and also what
+            a reversal staged on purpose looks like.
+            <div className={styles.ctrlRow}>
+              <button
+                type="button"
+                className={`${styles.ctrlBtn} ${styles.ctrlPrimary}`}
+                data-git-op="settle"
+                disabled={writesLocked}
+                title="Bring the index up to the last commit for these paths"
+                onClick={() =>
+                  void run("settle", () => api.gitSettle(root, head), (r: GitWriteResult) =>
+                    r.index_durable === false
+                      ? `The index was updated, but writing it to disk could not be confirmed${r.index_reason ? ` (${r.index_reason})` : ""} — refresh to check.`
+                      : r.index === "pending"
+                        ? `Settled the rest; ${(r.index_left ?? []).join(", ")} changed after the commit and stay as staged.`
+                        : "The index now matches the last commit.",
+                  )
+                }
+              >
+                {busy === "settle" ? "SETTLING…" : "SETTLE"}
+              </button>
+            </div>
+          </div>
+        )}
+
         {ops.conflictCount > 0 && (
           <div className={`${styles.state} ${styles.stateWarn}`}>
             <span className={styles.stateTag}>Git // Conflicts</span>
@@ -504,6 +754,7 @@ export function GitTab({
                 const name = e.path.split("/").pop() || e.path;
                 const dir = e.path.slice(0, e.path.length - name.length).replace(/\/$/, "");
                 const acts = rowActionsFor(e);
+                const menuOps = opsFor(e);
                 return (
                   // Container + sibling controls, never a button inside a button (#792).
                   <div
@@ -512,6 +763,23 @@ export function GitTab({
                     data-kind={e.kind}
                     className={styles.row}
                   >
+                    {e.kind !== "unmerged" && (
+                      // Per PATH, not per row: a path with a staged and an unstaged change shows
+                      // one ticked state in both groups, because it commits as one file.
+                      <label className={styles.rowCheck} title={`Select ${e.path} to commit`}>
+                        <input
+                          type="checkbox"
+                          checked={selected.has(e.path)}
+                          disabled={writesLocked}
+                          onChange={() => toggleSelected(e.path)}
+                          aria-label={`Select ${e.path}`}
+                          data-git-select={e.path}
+                        />
+                        <span className={styles.checkBox} aria-hidden="true">
+                          <Check size={10} strokeWidth={3} />
+                        </span>
+                      </label>
+                    )}
                     <button
                       type="button"
                       className={styles.rowMain}
@@ -526,6 +794,7 @@ export function GitTab({
                       <span className={styles.rowName}>{name}</span>
                       {dir && <span className={styles.rowNote}>{dir}</span>}
                     </button>
+                    <span className={styles.rowInline}>
                     {acts.stage && (
                       <button
                         type="button"
@@ -552,6 +821,28 @@ export function GitTab({
                         <Minus size={13} aria-hidden="true" />
                       </button>
                     )}
+                    {acts.revert && head && (
+                      <button
+                        type="button"
+                        className={`${styles.rowAct} ${styles.rowActBad}`}
+                        data-git-op="revert"
+                        disabled={writesLocked}
+                        title={`Revert ${e.path} to the last commit`}
+                        aria-label={`Revert ${e.path} to the last commit`}
+                        onClick={(ev) =>
+                          setConfirmState({
+                            kind: "revert",
+                            root,
+                            paths: [e.path],
+                            expect: fpsFor([e.path]),
+                            head,
+                            trigger: ev.currentTarget,
+                          })
+                        }
+                      >
+                        <Undo2 size={13} aria-hidden="true" />
+                      </button>
+                    )}
                     {acts.discard && (
                       <button
                         type="button"
@@ -562,6 +853,7 @@ export function GitTab({
                         aria-label={`Discard changes to ${e.path}`}
                         onClick={(ev) =>
                           setConfirmState({
+                            kind: "discard",
                             root,
                             paths: [e.path],
                             expect: fpsFor([e.path]),
@@ -581,6 +873,36 @@ export function GitTab({
                         onSendPath={onSendPath}
                       />
                     )}
+                    </span>
+                    {menuOps.length > 0 && (
+                      <button
+                        type="button"
+                        className={styles.rowMenuTrigger}
+                        data-row-menu-trigger={e.path}
+                        aria-haspopup="menu"
+                        aria-expanded={
+                          rowMenu?.entry.kind === e.kind && rowMenu.entry.path === e.path
+                        }
+                        aria-label={`Actions for ${e.path}`}
+                        title={`Actions for ${e.path}`}
+                        onClick={(ev) => {
+                          const el = ev.currentTarget;
+                          const r = el.getBoundingClientRect();
+                          setRowMenuState((o) =>
+                            o && o.root === root && o.entry.kind === e.kind && o.entry.path === e.path
+                              ? null
+                              : {
+                                  root,
+                                  entry: e,
+                                  el,
+                                  rect: { top: r.top, bottom: r.bottom, left: r.left, right: r.right },
+                                },
+                          );
+                        }}
+                      >
+                        <MoreHorizontal size={14} aria-hidden="true" />
+                      </button>
+                    )}
                   </div>
                 );
               })}
@@ -598,18 +920,66 @@ export function GitTab({
 
       {/* Pinned foot: committing is a deliberate trip to a fixed place, not a floating control. */}
       <div className={styles.gitFoot}>
+        {/* What the commit is made OF (#950). A radio group, so the three read as one choice. */}
+        <div
+          className={`${styles.seg} ${styles.commitModes}`}
+          role="radiogroup"
+          aria-label="What to commit"
+          onKeyDown={(ev) => {
+            // A radio group is one Tab stop; the arrows (and Home/End) move the choice AND focus.
+            const order = MODES.map((x) => x.mode);
+            const at = order.indexOf(mode);
+            const next =
+              ev.key === "ArrowRight" || ev.key === "ArrowDown"
+                ? order[(at + 1) % order.length]
+                : ev.key === "ArrowLeft" || ev.key === "ArrowUp"
+                  ? order[(at - 1 + order.length) % order.length]
+                  : ev.key === "Home"
+                    ? order[0]
+                    : ev.key === "End"
+                      ? order[order.length - 1]
+                      : null;
+            if (!next || writesLocked) return;
+            ev.preventDefault();
+            setModeState({ root, mode: next });
+            ev.currentTarget.querySelector<HTMLElement>(`[data-commit-mode='${next}']`)?.focus();
+          }}
+        >
+          {MODES.map(({ mode: m, label }) => {
+            const p = commitPlan(status, m, selected);
+            return (
+              <button
+                key={m}
+                type="button"
+                role="radio"
+                aria-checked={mode === m}
+                tabIndex={mode === m ? 0 : -1}
+                className={`${styles.segBtn} ${mode === m ? styles.segBtnOn : ""}`}
+                data-commit-mode={m}
+                disabled={writesLocked}
+                title={p.reason ?? `Commit ${label.toLowerCase()} (${p.count})`}
+                onClick={() => setModeState({ root, mode: m })}
+              >
+                {label} {p.count}
+              </button>
+            );
+          })}
+        </div>
         <textarea
           className={styles.commitBox}
           data-git-message=""
           rows={2}
           value={message}
           placeholder={
-            ops.canCommit
-              ? `Commit ${ops.stagedCount} staged file${ops.stagedCount === 1 ? "" : "s"}…`
-              : (ops.commitReason ?? "Nothing is staged.")
+            plan.reason ??
+            (mode === "staged"
+              ? `Commit ${plan.count} staged file${plan.count === 1 ? "" : "s"}…`
+              : mode === "selected"
+                ? `Commit ${plan.count} selected file${plan.count === 1 ? "" : "s"} as they are now…`
+                : `Commit all ${plan.count} changed file${plan.count === 1 ? "" : "s"}…`)
           }
           aria-label="Commit message"
-          disabled={writesLocked || !ops.canCommit}
+          disabled={writesLocked || plan.reason !== null}
           onChange={(e) => setMessage(e.target.value)}
         />
         <div className={styles.ctrlRow}>
@@ -617,25 +987,48 @@ export function GitTab({
             type="button"
             className={`${styles.ctrlBtn} ${styles.ctrlPrimary}`}
             data-git-op="commit"
-            disabled={writesLocked || !ops.canCommit || !message.trim()}
-            title={ops.commitReason ?? "Commit the staged changes"}
-            onClick={() =>
-              void run(
-                "commit",
-                async () => {
-                  const startedAt = root;
-                  const r = await api.gitCommit(startedAt, message.trim(), status.staged_fp);
-                  // Cleared for the root the commit BELONGED to. Clearing unconditionally wiped
-                  // the current root's draft when a late commit from a previous one landed.
-                  setMsgState((prev) => (prev.root === startedAt ? { root: startedAt, text: "" } : prev));
-                  return r;
-                },
-                (r: { commit?: string; files?: number }) =>
-                  `Committed ${r.files ?? 0} file${r.files === 1 ? "" : "s"} as ${r.commit ?? "HEAD"}.`,
-              )
+            disabled={writesLocked || plan.reason !== null || !message.trim()}
+            title={
+              plan.reason ??
+              (mode === "staged"
+                ? "Commit the staged changes"
+                : mode === "selected"
+                  ? "Commit exactly the ticked files, leaving the rest of the index alone"
+                  : "Commit every staged and changed file")
             }
+            onClick={(ev) => {
+              const text = message.trim();
+              if (mode === "staged") {
+                if (pending.kind === "unknown") {
+                  setConfirmState({
+                    kind: "unknown-pending-commit",
+                    root,
+                    message: text,
+                    stagedFp: status.staged_fp,
+                    trigger: ev.currentTarget,
+                  });
+                  return;
+                }
+                // A STAGED commit with unsettled paths would record the reversal of the last
+                // commit. That may be intended — so the panel asks, listing them, and never blocks.
+                if (unsettled.length > 0) {
+                  setConfirmState({
+                    kind: "unsettled-commit",
+                    root,
+                    paths: unsettled,
+                    message: text,
+                    stagedFp: status.staged_fp,
+                    trigger: ev.currentTarget,
+                  });
+                  return;
+                }
+                doCommitStaged(text, status.staged_fp);
+                return;
+              }
+              doCommitPaths(text, plan.paths, fpsFor(plan.paths), head ?? "");
+            }}
           >
-            {busy === "commit" ? "COMMITTING…" : "COMMIT"}
+            {busy === "commit" ? "COMMITTING…" : commitLabel}
           </button>
           <button
             type="button"
@@ -736,53 +1129,139 @@ export function GitTab({
         />
       )}
 
-      {confirm && (
-        <DiscardConfirm
-          paths={confirm.paths}
-          repo={repoName ?? "this repository"}
-          branch={status.branch}
-          sessionKey={sessionKey}
+      {rowMenu && (
+        <RowMenu
+          path={rowMenu.entry.path}
+          ops={opsFor(rowMenu.entry)}
+          busy={writesLocked}
+          anchor={rowMenu.el}
+          rect={rowMenu.rect}
+          onClose={() => setRowMenuState(null)}
+          onPick={(op) => pickRowOp(rowMenu.entry, rowMenu.el, op)}
+        />
+      )}
+
+      {confirm?.kind === "discard" && (
+        <ConfirmDialog
+          label="Discard changes"
+          // Not "cannot be undone" any more: the bytes being replaced are written to git's object
+          // database first and their id comes back with the response, so a late edit is
+          // recoverable. Saying otherwise would be scarier than the truth AND less useful — the
+          // operator needs to know the id exists to be able to use it.
+          tag="Discard // Recoverable by object id"
+          goLabel="Discard"
+          danger
+          dataName="discard"
           returnFocusTo={confirm.trigger}
           onCancel={() => setConfirmState(null)}
           onConfirm={() => doDiscard(confirm.paths, confirm.expect)}
-        />
+        >
+          Throw away {confirm.paths.length} uncommitted change
+          {confirm.paths.length === 1 ? "" : "s"} in <strong>{repoName ?? "this repository"}</strong>
+          {status.branch ? ` on ${status.branch}` : ""}, docked into session <code>{sessionKey}</code>.
+          {confirm.paths.length === 1 ? ` The file is ${confirm.paths[0]}.` : ""} git has no copy of
+          this work — it is gone.
+        </ConfirmDialog>
+      )}
+      {confirm?.kind === "revert" && (
+        <ConfirmDialog
+          label="Revert file"
+          tag="Revert // To the last commit"
+          goLabel="Revert file"
+          danger
+          dataName="revert"
+          returnFocusTo={confirm.trigger}
+          onCancel={() => setConfirmState(null)}
+          onConfirm={() => doRevert(confirm.paths, confirm.expect, confirm.head)}
+        >
+          Put <strong>{confirm.paths.join(", ")}</strong> back to the last commit (
+          <code>{confirm.head.slice(0, 7)}</code>) in <strong>{repoName ?? "this repository"}</strong>
+          , docked into session <code>{sessionKey}</code> — both the staged and the unstaged change.
+          Every replaced version is kept as a git object and listed after.
+        </ConfirmDialog>
+      )}
+      {confirm?.kind === "unsettled-commit" && (
+        <ConfirmDialog
+          label="Commit staged reversals"
+          tag="Commit // Undoes part of the last commit"
+          goLabel="Commit anyway"
+          dataName="unsettled"
+          returnFocusTo={confirm.trigger}
+          onCancel={() => setConfirmState(null)}
+          onConfirm={() => doCommitStaged(confirm.message, confirm.stagedFp)}
+        >
+          The staged {confirm.paths.length === 1 ? "version" : "versions"} of{" "}
+          <strong>{confirm.paths.join(", ")}</strong>{" "}
+          {confirm.paths.length === 1 ? "is the one" : "are the ones"} from before the last commit, so
+          committing the index now records {confirm.paths.length === 1 ? "its" : "their"} reversal. If that is not what
+          you meant, cancel and use SETTLE instead.
+        </ConfirmDialog>
+      )}
+      {confirm?.kind === "unknown-pending-commit" && (
+        <ConfirmDialog
+          label="Commit with the index state unknown"
+          tag="Commit // Index state not checked"
+          goLabel="Commit anyway"
+          dataName="unsettled-unknown"
+          returnFocusTo={confirm.trigger}
+          onCancel={() => setConfirmState(null)}
+          onConfirm={() => doCommitStaged(confirm.message, confirm.stagedFp)}
+        >
+          The panel could not check whether the last commit
+          {head ? (
+            <>
+              {" "}
+              (<code>{head.slice(0, 7)}</code>)
+            </>
+          ) : null}{" "}
+          is fully settled in the index, so it cannot tell whether committing the staged changes now
+          would record a reversal of part of it. Cancel to let the next refresh check again, or
+          commit anyway.
+        </ConfirmDialog>
       )}
     </>
   );
 }
 
-/** The one confirmation this feature has (#806).
+/** The tab's confirmations (#806, generalised in #950): discard, revert file, and a staged commit
+ *  that would undo part of the last commit.
  *
  *  Branch deletion does not confirm because it *cannot* be destructive — the server runs
- *  `git branch -d`, which refuses an unmerged branch. Discard can be, so it names the repository,
- *  the branch, the file count, and the session the panel is docked into: a panel is attached to
- *  one session, and throwing away that session's uncommitted work from a tab you opened somewhere
- *  else is exactly the mistake worth spelling out.
+ *  `git branch -d`, which refuses an unmerged branch. These can be, so each names what it acts on,
+ *  and the destructive ones name the session the panel is docked into: a panel is attached to one
+ *  session, and throwing away that session's work from a tab opened elsewhere is exactly the
+ *  mistake worth spelling out.
+ *
+ *  `data-<dataName>-confirm` / `data-<dataName>-go` are the hooks the browser tests use.
  */
-function DiscardConfirm({
-  paths,
-  repo,
-  branch,
-  sessionKey,
+function ConfirmDialog({
+  label,
+  tag,
+  goLabel,
+  danger = false,
+  dataName,
   returnFocusTo,
   onCancel,
   onConfirm,
+  children,
 }: {
-  paths: string[];
-  repo: string;
-  branch: string | null;
-  sessionKey: string;
+  label: string;
+  tag: string;
+  goLabel: string;
+  danger?: boolean;
+  dataName: string;
   /** The control that opened this. Focus goes back to it on EVERY close path. */
   returnFocusTo: HTMLElement | null;
   onCancel: () => void;
   onConfirm: () => void;
+  children: React.ReactNode;
 }) {
   const ref = useRef<HTMLButtonElement>(null);
   const box = useRef<HTMLDivElement>(null);
   useEffect(() => {
     // `aria-modal` while Tab walks out to the page behind is a false claim — and here it is a
     // dangerous one: FilePanel disables its own trap while this is open, so a keyboard user could
-    // reach the tree, change the root, and confirm a discard against a different repository.
+    // reach the tree, change the root, and confirm against a different repository.
     ref.current?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -814,7 +1293,7 @@ function DiscardConfirm({
       document.removeEventListener("keydown", onKey, true);
       // Restored on UNMOUNT, which is the only moment that works for both paths: doing it in the
       // click handler set focus and then React tore the portal down and blurred it again. On
-      // confirm the row usually goes with the discard, so the branch trigger — which always
+      // confirm the row usually goes with the write, so the branch trigger — which always
       // exists — is the fallback that keeps a keyboard user inside the panel instead of on <body>.
       if (returnFocusTo && document.contains(returnFocusTo)) {
         returnFocusTo.focus();
@@ -829,42 +1308,35 @@ function DiscardConfirm({
       <button
         type="button"
         className={styles.confirmScrim}
-        aria-label="Cancel discarding"
+        aria-label={`Cancel: ${label}`}
         onClick={onCancel}
       />
       <div
         ref={box}
-        className={`${styles.confirm} ${styles.confirmDanger}`}
+        className={`${styles.confirm} ${danger ? styles.confirmDanger : ""}`}
         role="alertdialog"
         aria-modal="true"
-        aria-label="Discard changes"
-        data-discard-confirm=""
+        aria-label={label}
+        // `data-git-confirm` is the ONE marker FilePanel stands its sheet trap down for, so a new
+        // confirmation cannot be missed from a hand-kept list (#950 added two and was).
+        data-git-confirm=""
+        {...{ [`data-${dataName}-confirm`]: "" }}
       >
         <div className={styles.confirmHead}>
-          {/* Not "cannot be undone" any more: the bytes being replaced are written to git's
-              object database first and their id comes back with the response, so a late edit is
-              recoverable. Saying otherwise would be scarier than the truth AND less useful —
-              the operator needs to know the id exists to be able to use it. */}
-          <span className="hud-tag">Discard // Recoverable by object id</span>
+          <span className="hud-tag">{tag}</span>
         </div>
-        <p className={styles.confirmBody}>
-          Throw away {paths.length} uncommitted change{paths.length === 1 ? "" : "s"} in{" "}
-          <strong>{repo}</strong>
-          {branch ? ` on ${branch}` : ""}, docked into session <code>{sessionKey}</code>.
-          {paths.length === 1 ? ` The file is ${paths[0]}.` : ""} git has no copy of this work — it
-          is gone.
-        </p>
+        <p className={styles.confirmBody}>{children}</p>
         <div className={styles.confirmRow}>
           <button ref={ref} type="button" className={styles.ctrlBtn} onClick={onCancel}>
             Cancel
           </button>
           <button
             type="button"
-            className={`${styles.ctrlBtn} ${styles.ctrlBad}`}
-            data-discard-go=""
+            className={`${styles.ctrlBtn} ${danger ? styles.ctrlBad : styles.ctrlPrimary}`}
+            {...{ [`data-${dataName}-go`]: "" }}
             onClick={onConfirm}
           >
-            Discard
+            {goLabel}
           </button>
         </div>
       </div>

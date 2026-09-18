@@ -428,7 +428,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         # The one destructive route. Every path must appear in a status the server re-reads
         # inside the call, so a tampered request cannot widen the blast radius past the
         # confirmation the operator actually saw.
-        return await _write(request, gitwrite.git_discard, "paths", "expect")
+        # `from` (#950): "index" (the default) restores the worktree from the index; "head" is
+        # REVERT FILE — index and worktree back to the commit named by `head`.
+        return await _write(request, gitwrite.git_discard, "paths", "expect", "from", "head")
 
     @app.post("/api/git/commit")
     async def git_commit(
@@ -437,6 +439,25 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         # No amend, no --no-verify (hooks are already neutralized), author from the operator's
         # own git identity.
         return await _write(request, gitwrite.git_commit, "message", "expect")
+
+    @app.post("/api/git/commit-paths")
+    async def git_commit_paths(
+        request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        # COMMIT SELECTED / ALL (#950): exactly these paths as they are now, bound to the rows
+        # (`expect`) and the commit (`head`) the operator was shown. The response always carries
+        # the SHA once the commit exists, with `index: "settled"|"pending"`.
+        return await _write(
+            request, gitwrite.git_commit_paths, "message", "paths", "expect", "head"
+        )
+
+    @app.post("/api/git/settle")
+    async def git_settle(
+        request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        # SETTLE (#950): only where the index still holds the parent's entry, so it is idempotent
+        # and never consumes newer staging. Offered by the panel, never applied automatically.
+        return await _write(request, gitwrite.git_settle, "commit")
 
     @app.post("/api/git/push")
     async def git_push(

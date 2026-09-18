@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { GitEntry, GitPushTarget, GitStatus } from "../../types/api";
-import { gitOps, rowActionsFor } from "./gitOps";
+import { commitPlan, fingerprintsFor, gitOps, pendingState, rowActionsFor } from "./gitOps";
 
 function entry(over: Partial<GitEntry> = {}): GitEntry {
   return { path: "a.txt", index: ".", worktree: "M", kind: "changed", oid: null, ...over };
@@ -116,11 +116,12 @@ describe("row actions (#806)", () => {
       stage: false,
       unstage: true,
       discard: false,
+      revert: true,
     });
   });
 
   it("offers stage and discard on a tracked worktree change", () => {
-    expect(rowActionsFor(entry())).toEqual({ stage: true, unstage: false, discard: true });
+    expect(rowActionsFor(entry())).toEqual({ stage: true, unstage: false, discard: true, revert: false });
   });
 
   it("offers nothing on a conflicted row — resolution happens in the session", () => {
@@ -128,6 +129,7 @@ describe("row actions (#806)", () => {
       stage: false,
       unstage: false,
       discard: false,
+      revert: false,
     });
   });
 });
@@ -180,5 +182,137 @@ describe("a truncated status cannot be committed (#806, review round 6)", () => 
     );
     expect(o.canCommit).toBe(true);
     expect(o.commitReason).toBeNull();
+  });
+});
+
+describe("commit modes (#950)", () => {
+  const rows = [
+    entry({ path: "a.txt", kind: "changed" }),
+    entry({ path: "b.txt", kind: "staged", index: "M" }),
+    entry({ path: "b.txt", kind: "changed" }), // a staged AND unstaged change: one path
+    entry({ path: "c.txt", kind: "untracked", worktree: "?" }),
+    entry({ path: "d.txt", kind: "unmerged" }),
+  ];
+
+  it("STAGED counts staged rows and sends no paths", () => {
+    const p = commitPlan(status({ entries: rows.slice(0, 4) }), "staged", new Set());
+    expect(p).toEqual({ paths: [], count: 1, reason: null });
+  });
+
+  it("SELECTED sends exactly the ticked paths, once each, never a conflicted one", () => {
+    const p = commitPlan(status({ entries: rows.slice(0, 4) }), "selected", new Set(["b.txt", "c.txt"]));
+    expect(p.paths).toEqual(["b.txt", "c.txt"]);
+    expect(p.reason).toBeNull();
+    expect(commitPlan(status({ entries: rows.slice(0, 4) }), "selected", new Set()).reason).toMatch(/Tick/);
+  });
+
+  it("ALL is every staged and changed path, plus an untracked one only when ticked", () => {
+    const s = status({ entries: rows.slice(0, 4) });
+    expect(commitPlan(s, "all", new Set()).paths).toEqual(["a.txt", "b.txt"]);
+    expect(commitPlan(s, "all", new Set(["c.txt"])).paths).toEqual(["a.txt", "b.txt", "c.txt"]);
+  });
+
+  it("every mode shares the conflict, detached and truncated refusals", () => {
+    for (const mode of ["staged", "selected", "all"] as const) {
+      expect(commitPlan(status({ entries: rows }), mode, new Set(["a.txt"])).reason).toMatch(/conflict/);
+      expect(commitPlan(status({ branch: null, entries: rows.slice(0, 1) }), mode, new Set(["a.txt"])).reason).toMatch(/detached/);
+      expect(commitPlan(status({ truncated: true, entries: rows.slice(0, 1) }), mode, new Set(["a.txt"])).reason).toMatch(/terminal/);
+    }
+  });
+
+  it("offers REVERT on a staged row only", () => {
+    expect(rowActionsFor(entry({ kind: "staged", index: "M" })).revert).toBe(true);
+    expect(rowActionsFor(entry()).revert).toBe(false);
+    expect(rowActionsFor(entry({ kind: "untracked" })).revert).toBe(false);
+  });
+});
+
+describe("a staged rename commits both of its names (#950, review 4829)", () => {
+  const renamed = entry({
+    path: "src/new.py",
+    orig_path: "src/old.py",
+    index: "R",
+    worktree: ".",
+    kind: "staged",
+    fp: "fp-r",
+  });
+  const other = entry({ path: "a.txt", kind: "changed", fp: "fp-a" });
+
+  it("SELECTED sends the new AND the old name when the rename row is ticked, counted as one file", () => {
+    const p = commitPlan(status({ entries: [renamed, other] }), "selected", new Set(["src/new.py"]));
+    expect(p.paths).toEqual(["src/new.py", "src/old.py"]);
+    expect(p.count).toBe(1);
+  });
+
+  it("ALL sends both names as well, and still counts rows", () => {
+    const p = commitPlan(status({ entries: [renamed, other] }), "all", new Set());
+    expect([...p.paths].sort()).toEqual(["a.txt", "src/new.py", "src/old.py"]);
+    expect(p.count).toBe(2);
+  });
+
+  it("never sends a name no ticked row carries", () => {
+    expect(commitPlan(status({ entries: [renamed, other] }), "selected", new Set(["a.txt"])).paths).toEqual(["a.txt"]);
+  });
+
+  it("a copy leaves its source alone: only a rename moves the old name", () => {
+    const copy = { ...renamed, index: "C" };
+    expect(commitPlan(status({ entries: [copy] }), "selected", new Set(["src/new.py"])).paths).toEqual(["src/new.py"]);
+  });
+
+  it("binds both names to the rename row's fingerprint", () => {
+    expect(fingerprintsFor([renamed, other], ["src/new.py", "src/old.py"])).toEqual({
+      "src/new.py": "fp-r",
+      "src/old.py": "fp-r",
+    });
+    expect(fingerprintsFor([renamed, other], ["a.txt"])).toEqual({ "a.txt": "fp-a" });
+  });
+});
+
+describe("pending state (#950, review 4829)", () => {
+  const HEAD = "c".repeat(40);
+
+  it("null means the server could not check — unknown, never none", () => {
+    expect(pendingState(status({ head: HEAD, unsettled: null }))).toEqual({ kind: "unknown" });
+  });
+
+  it("a list is pending; an empty or absent list is none", () => {
+    expect(pendingState(status({ head: HEAD, unsettled: ["a.txt"] }))).toEqual({
+      kind: "pending",
+      paths: ["a.txt"],
+    });
+    expect(pendingState(status({ head: HEAD, unsettled: [] }))).toEqual({ kind: "none" });
+    expect(pendingState(status({ head: HEAD }))).toEqual({ kind: "none" });
+  });
+
+  it("with no commit yet there is no last commit to be pending on", () => {
+    expect(pendingState(status({ head: null, unsettled: null }))).toEqual({ kind: "none" });
+    expect(pendingState(null)).toEqual({ kind: "none" });
+  });
+});
+
+describe("a file name that is not UTF-8 is never a write target (#950, review 4833)", () => {
+  const odd = entry({ path: "bad\uFFFD", kind: "changed", fp: "fp-odd", undecodable: true });
+  const fine = entry({ path: "a.txt", kind: "changed", fp: "fp-a" });
+
+  it("offers no row action", () => {
+    expect(rowActionsFor(odd)).toEqual({ stage: false, unstage: false, discard: false, revert: false });
+    expect(rowActionsFor({ ...odd, kind: "staged" })).toEqual({
+      stage: false,
+      unstage: false,
+      discard: false,
+      revert: false,
+    });
+  });
+
+  it("SELECTED never sends it, even when ticked", () => {
+    const p = commitPlan(status({ entries: [odd, fine] }), "selected", new Set(["bad\uFFFD", "a.txt"]));
+    expect(p.paths).toEqual(["a.txt"]);
+    expect(p.count).toBe(1);
+  });
+
+  it("ALL refuses rather than quietly leaving it out", () => {
+    const p = commitPlan(status({ entries: [odd, fine] }), "all", new Set());
+    expect(p.paths).toEqual(["a.txt"]);
+    expect(p.reason).toMatch(/not valid UTF-8/);
   });
 });
