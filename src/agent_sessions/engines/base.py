@@ -17,6 +17,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+# Checked enumeration for maintenance (#993) lives in the leaf module `agent_sessions.checked_scan`
+# so `scanner.py` can use it without importing the engines package, which would be circular
+# (`engines/__init__` → `registry` → `scanner`). Re-exported here because providers already hold
+# `base`.
+from ..checked_scan import checked_rows, scandir_checked  # noqa: F401
+
 # --- native-id patterns ---------------------------------------------------------------------
 
 _CLAUDE_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")

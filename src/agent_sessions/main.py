@@ -69,6 +69,7 @@ from .routes import files as files_routes
 from .routes import handoff as handoff_routes
 from .routes import history as history_routes
 from .routes import link as link_routes
+from .routes import maintenance as maintenance_routes
 from .routes import missions as missions_routes
 from .routes import prompts as prompts_routes
 from .routes import pulse as pulse_routes
@@ -545,6 +546,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     # routes/scrollback.py. Both register here, before the ws handler + SPA catch-all.
     sessions_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry)
     scrollback_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
+    # Settings → Maintenance (#993): cache prune + bulk mission archival. Registered BEFORE
+    # missions_routes so `/api/missions/archive-older` is matched ahead of `/api/missions/{id}`.
+    maintenance_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
 
     # Paged transcript history for scroll-up lazy-load (#348 Phase 3). GET-only (no CSRF
     # surface); additive — the ws attach payload + delta-resume contract are untouched.

@@ -152,12 +152,35 @@ def _walk_session_dirs(home: Path | None = None) -> dict[str, Path]:
     return out
 
 
-def _meta(session_dir: Path) -> tuple[str, str, float, float] | None:
+def _meta_checked(session_dir: Path) -> tuple[str, str, float, float] | None:
+    """:func:`_meta`, but RAISING when ``state.json`` cannot be READ.
+
+    `_meta` swallows `OSError` into `None`, which a measurement authorising deletion cannot tell
+    apart from "this session has no usable working dir" — so an unreadable store counted as
+    nothing to remove (review 4915/4919, finding 4).
+
+    **One read, and that is the fix.** The first cut of this probed the file here and then called
+    `_meta`, which OPENED IT AGAIN through its own fail-soft `except OSError`. A file that answers
+    the probe and then fails the authoritative read — a failing disk, a revoked network mount, an
+    unlucky moment — came back as `None` with no problem reported, i.e. a structurally valid zero
+    that authorises deleting contents nobody counted (review 4951, P2). The read that produces the
+    row is now the only read there is.
+    """
+    return _meta(session_dir, checked=True)
+
+
+def _meta(session_dir: Path, *, checked: bool = False) -> tuple[str, str, float, float] | None:
     """``(work_dir, title, updated_at, created_at)`` from one session's ``state.json``.
 
     Returns ``None`` when the session has no usable working dir: cwd is both the launch dir and
     the open-path allowlist key, so a session we can't place yields **no row** rather than a bogus
     empty-cwd one (the rule codex/gemini/antigravity already follow).
+
+    ``checked`` selects the failure policy, never the parse: fail-soft ``None`` for the sidebar,
+    RAISE for a measurement that authorises deletion. Absence is not a failure under either — a
+    missing ``state.json`` is a session we cannot place. A malformed one also stays ``None``: it
+    read fine, and "this record does not decode" is a listability question, not an unreadable
+    store.
 
     Two ``state.json`` schemas are read here and BOTH exist in a live store (#1030) — v1
     (kimi ≤0.42) and v2 (kimi 0.43.1+, which renamed the working-dir field and switched the
@@ -176,10 +199,17 @@ def _meta(session_dir: Path) -> tuple[str, str, float, float] | None:
     """
     state_path = session_dir / "state.json"
     try:
-        with state_path.open(encoding="utf-8", errors="replace") as fh:
-            state = json.load(fh)
+        raw = state_path.read_bytes()
         st = state_path.stat()
-    except (OSError, json.JSONDecodeError):
+    except FileNotFoundError:
+        return None
+    except OSError:
+        if checked:
+            raise
+        return None
+    try:
+        state = json.loads(raw.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError:
         return None
     if not isinstance(state, dict):
         return None
@@ -275,10 +305,38 @@ class KimiProvider:
                 out.append(row)
         return out
 
-    def _row(self, sid: str, session_dir: Path) -> Session | None:
+    def scan_checked(self) -> tuple[list[Session], list[str]]:
+        """``scan()``'s rows, plus a line for each session dir that could not be READ (#993).
+
+        BOTH halves of ``scan``'s union are fail-soft: ``_index_rows`` treats an unreadable index
+        as an empty mapping, and ``_walk_session_dirs`` swallows ``OSError`` per bucket — so an
+        unreadable store answers "no kimi sessions", which must never be what authorises a
+        deletion. The checked walk raises on a bucket it cannot list and names a session dir it
+        cannot read, while keeping every session that read cleanly. The walk alone is the ground
+        truth for what exists on disk, so the index is deliberately not consulted here.
+        """
+        dirs: dict[str, Path] = {}
+        for bucket in base.scandir_checked(base._kimi_dir() / "sessions"):
+            if not bucket.is_dir(follow_symlinks=False):
+                continue
+            for entry in base.scandir_checked(Path(bucket.path)):
+                if base._KIMI_SESSION_RE.match(entry.name):
+                    dirs[entry.name] = Path(entry.path)
+        paths = [dirs[sid] for sid in sorted(dirs)]
+        return base.checked_rows(
+            paths,
+            lambda p: self._row(p.name, p, read=_meta_checked),
+            engine_id=self.engine_id,
+        )
+
+    def _row(self, sid: str, session_dir: Path, *, read=_meta) -> Session | None:
         """One row from one session dir's ``state.json`` (v1 or v2), or ``None`` when it has no
-        usable working dir. Shared by ``scan`` and ``lookup`` (#991)."""
-        meta = _meta(session_dir)
+        usable working dir. Shared by ``scan`` and ``lookup`` (#991).
+
+        ``read`` is the reader: fail-soft :func:`_meta` for display, :func:`_meta_checked` for
+        maintenance. Injecting it keeps ONE row builder, so the two paths cannot disagree about
+        what a record means — they differ only in how a failed read is reported."""
+        meta = read(session_dir)
         if meta is None:
             return None
         work, title, updated, created = meta

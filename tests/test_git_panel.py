@@ -9,8 +9,10 @@ touched.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
+import struct
 import subprocess
 import threading
 import time
@@ -837,18 +839,48 @@ def test_a_same_second_edit_is_still_seen_a_second_later(repo):
     The three tests that flaked in CI all share the same-size shape this asserts; the mechanism
     is a real panel defect, so this is a correctness regression rather than test hygiene.
     """
-    # Same LENGTH as the committed content, so size cannot betray the change — and written
-    # immediately after the `repo` fixture's commit, so it lands in the same whole second.
-    (repo / "a.txt").write_text("one\nTWO\n")
-    assert int((repo / "a.txt").stat().st_mtime) == int((repo / ".git" / "index").stat().st_mtime)
-
-    # Cross the one-second boundary: this is what a loaded CI run does for free between the
-    # fixture and the assertion, and it is the only thing that separates green from red.
-    time.sleep(1.2)
+    # Establish a racy entry directly instead of relying on the commit and edit sharing a
+    # wall-clock second (#1034). Keep the original blob, but cache the edited file's stat so
+    # neither ctime nor size independently exposes the edit. The source index and file share
+    # an old mtime; a newly copied index is always newer, without a real-time sleep.
+    _git(repo, "update-index", "--no-split-index", "--index-version=2")
+    path = repo / "a.txt"
+    index = repo / ".git" / "index"
+    path.write_text("one\nTWO\n")
+    stamp = 1_600_000_000_000_000_000
+    os.utime(path, ns=(stamp, stamp))
+    st = path.stat()
+    data = bytearray(index.read_bytes())
+    assert struct.unpack_from("!4sII", data) == (b"DIRC", 2, 1)
+    cached_mode = struct.unpack_from("!10I", data, 12)[6]  # Git's canonical 0644/0755 mode
+    # Git's documented index entry begins with ten 32-bit stat fields after its 12-byte header:
+    # https://git-scm.com/docs/index-format . The object id and pathname remain unchanged.
+    stat_fields = (
+        *divmod(st.st_ctime_ns, 1_000_000_000),
+        *divmod(st.st_mtime_ns, 1_000_000_000),
+        st.st_dev,
+        st.st_ino,
+        cached_mode,
+        st.st_uid,
+        st.st_gid,
+        st.st_size,
+    )
+    struct.pack_into("!10I", data, 12, *(value & 0xFFFFFFFF for value in stat_fields))
+    algorithm = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", "--show-object-format"], text=True
+    ).strip()
+    checksum = hashlib.new(algorithm)
+    checksum.update(data[: -checksum.digest_size])
+    data[-checksum.digest_size :] = checksum.digest()
+    index.write_bytes(data)
+    os.utime(index, ns=(stamp, stamp))
+    assert index.stat().st_mtime_ns == path.stat().st_mtime_ns == stamp
     gitpanel.reset_flights_for_test()
 
-    d = gitpanel.git_diff(str(repo / "a.txt"), staged=False)
+    assert [entry["path"] for entry in gitpanel.git_status(str(repo))["entries"]] == ["a.txt"]
+    d = gitpanel.git_diff(str(path), staged=False)
     assert d["added"] == 1 and d["removed"] == 1, d
+    assert "-two" in d["diff"] and "+TWO" in d["diff"]
 
 
 def test_untracked_offers_no_diff(repo):

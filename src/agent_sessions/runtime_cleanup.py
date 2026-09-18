@@ -116,15 +116,33 @@ async def cleanup_runtime(
         owner.clear_owner(engine, phys_native)
 
     # Stale-socket unlink under the single-writer lock (split-brain guard, 2026-06-12 prod
-    # wedge): acquirable ⇒ no live master/launcher generation ⇒ the sock is a stale leftover,
-    # safe to remove; held ⇒ a NEW generation owns the path — leave its socket alone.
+    # wedge) — shared with Settings → Maintenance's prune (#993) so the guard exists once.
     with contextlib.suppress(Exception):
-        lk = sessionlock.acquire(phys_key)
-        if lk is not None:
-            try:
-                with contextlib.suppress(OSError):
-                    ptybridge.socket_path(engine, phys_native).unlink()
-            finally:
-                lk.release()
+        unlink_stale_socket(engine, phys_native, phys_key)
 
     return outcome
+
+
+def unlink_stale_socket(engine: str, phys_native: str, phys_key: str) -> bool:
+    """Remove a session's socket file **only if its single-writer lock is acquirable**.
+
+    Acquirable ⇒ no live master/launcher generation holds the key ⇒ the sock is a stale leftover,
+    safe to remove. Held ⇒ a NEW generation owns the path — leave its socket alone, or we orphan a
+    fresh master and 4409-loop forever (the 2026-06-12 prod wedge).
+
+    Returns ``True`` iff a file was removed; ``False`` when the lock is held or there was nothing
+    to remove. Any other ``OSError`` (lock dir or unlink) propagates — ``cleanup_runtime``
+    suppresses it as best-effort teardown, while the maintenance prune reports it as a failure.
+    Addressed by the PHYSICAL key and native id, like every other runtime resource.
+    """
+    lk = sessionlock.acquire(phys_key)
+    if lk is None:
+        return False
+    try:
+        try:
+            ptybridge.socket_path(engine, phys_native).unlink()
+        except FileNotFoundError:
+            return False
+        return True
+    finally:
+        lk.release()

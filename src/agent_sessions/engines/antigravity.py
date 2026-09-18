@@ -136,6 +136,37 @@ def _db_cwd(db_path: Path) -> str:
     return _file_uri_path(bytes(row[0]))
 
 
+def _db_cwd_checked(db_path: Path) -> str:
+    """:func:`_db_cwd`, but RAISING when the conversation db cannot be READ.
+
+    `_db_cwd` swallows `sqlite3.Error` into `""`, which makes `_row` drop the row — identical to
+    "this conversation has no usable cwd", so a locked or unreadable db counted as nothing to
+    remove (review 4915/4919, finding 4).
+    """
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        row = con.execute("SELECT data FROM trajectory_metadata_blob WHERE id = 'main'").fetchone()
+    finally:
+        con.close()
+    if not row or not isinstance(row[0], bytes | bytearray):
+        return ""
+    return _file_uri_path(bytes(row[0]))
+
+
+def _cwd_by_id_checked(root: Path) -> dict[str, str]:
+    """:func:`_cwd_by_id`, but RAISING when the cwd cache cannot be read or parsed. Absence stays a
+    real empty — the cache is a fast path, and every row falls back to the db blob."""
+    path = root / "cache" / "last_conversations.json"
+    try:
+        text = path.read_text()
+    except FileNotFoundError:
+        return {}
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        return {}
+    return {v: k for k, v in data.items() if isinstance(k, str) and isinstance(v, str)}
+
+
 def _cwd_by_id(root: Path) -> dict[str, str]:
     """uuid → cwd from agy's ``cache/last_conversations.json`` (a cwd → latest-uuid map, reversed).
     Only the most-recent conversation per cwd appears there, so it's a robust JSON fast-path;
@@ -167,19 +198,38 @@ class AntigravityProvider:
     def is_present(self) -> bool:
         return base._antigravity_dir().is_dir() or shutil.which("agy") is not None
 
-    def _row(self, root: Path, db: Path, cache_cwd: dict[str, str]) -> Session | None:
+    def _row(
+        self,
+        root: Path,
+        db: Path,
+        cache_cwd: dict[str, str],
+        *,
+        read=_db_cwd,
+        checked: bool = False,
+    ) -> Session | None:
         """One row from one conversation db, or ``None`` if it is not listable. Shared by ``scan``
-        and ``lookup`` (#991)."""
+        and ``lookup`` (#991).
+
+        ``read`` is the cwd reader: fail-soft :func:`_db_cwd` for display, :func:`_db_cwd_checked`
+        for maintenance. One row builder, two failure policies.
+
+        ``checked`` covers the OTHER authoritative read in this builder — the db's own ``stat``,
+        which decides whether the row exists at all and swallowed its failure into a missing row
+        (review 4951, P2). The transcript reads below are deliberately NOT covered: they fill
+        ``first_user_message`` and the created-at fallback, so a failure there degrades a field on
+        a row that still exists, and can never make a conversation look absent."""
         native_id = db.stem
         if not self.id_pattern.match(native_id):
             return None
         try:
             st = db.stat()
         except OSError:
+            if checked:
+                raise
             return None
         # cwd is the launch dir + open-path allowlist key. No usable cwd -> skip the row
         # (fail-soft, like gemini's unmapped-project skip), never a bogus empty-cwd entry.
-        cwd = cache_cwd.get(native_id) or _db_cwd(db)
+        cwd = cache_cwd.get(native_id) or read(db)
         if not cwd:
             return None
         return Session(
@@ -208,6 +258,27 @@ class AntigravityProvider:
             if row is not None:
                 out.append(row)
         return out
+
+    def scan_checked(self) -> tuple[list[Session], list[str]]:
+        """``scan()``'s rows, plus a line for each conversation db that could not be READ (#993).
+
+        ``glob`` above swallows a permission error on ``conversations/`` and yields nothing, which
+        is indistinguishable from having no conversations — the answer that must never authorise a
+        deletion. The checked walk raises on that directory and names an unreadable db, keeping
+        every db that read cleanly.
+        """
+        root = base._antigravity_dir()
+        paths = [
+            Path(e.path)
+            for e in base.scandir_checked(root / "conversations")
+            if e.is_file(follow_symlinks=False) and e.name.endswith(".db")
+        ]
+        cache_cwd = _cwd_by_id_checked(root)
+        return base.checked_rows(
+            sorted(paths),
+            lambda db: self._row(root, db, cache_cwd, read=_db_cwd_checked, checked=True),
+            engine_id=self.engine_id,
+        )
 
     def lookup(self, native_id: str) -> Session | None:
         """This one conversation, read fresh (#991), or ``None``: its own ``<uuid>.db`` plus the

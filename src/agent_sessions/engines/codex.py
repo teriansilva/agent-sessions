@@ -95,7 +95,7 @@ class CodexProvider:
     def is_present(self) -> bool:
         return base._codex_sessions_dir().is_dir() or shutil.which("codex") is not None
 
-    def _meta(self, path: Path) -> tuple[str, str] | None:
+    def _meta(self, path: Path, *, checked: bool = False) -> tuple[str, str] | None:
         """``(cwd, first_user_message)`` from one rollout file. Single pass, best-effort.
 
         The prompt comes from the first ``user_message`` EVENT payload — the record codex
@@ -146,24 +146,34 @@ class CodexProvider:
                     if cwd and first_user:
                         break
         except OSError:
+            # `checked` selects the failure policy, never the parse: a rollout a measurement
+            # cannot READ must be named rather than counted as "not a listable session"
+            # (review 4951, P2). Malformed lines are skipped under both, as above.
+            if checked:
+                raise
             return None
         # cwd is the one required field: it's the launch dir + the open-path
         # allowlist key. A rollout with no usable cwd (corrupt-only, or not a real
         # session) yields no row rather than a bogus empty-cwd session.
         return (cwd, first_user or fallback) if cwd else None
 
-    def _row_from_path(self, path: Path) -> Session | None:
+    def _row_from_path(self, path: Path, *, checked: bool = False) -> Session | None:
         """One row from one rollout file, or ``None`` if it is not a listable session. Shared by
-        ``scan`` and ``lookup`` (#991) so both apply the same filters (subagents, no cwd)."""
+        ``scan`` and ``lookup`` (#991) so both apply the same filters (subagents, no cwd).
+
+        ``checked`` propagates a failed READ — the rollout itself and its ``stat`` — instead of
+        turning it into a missing row (review 4951, P2)."""
         m = _CODEX_ROLLOUT_RE.search(path.name)
         if not m:
             return None
-        meta = self._meta(path)
+        meta = self._meta(path, checked=checked)
         if meta is None:
             return None
         try:
             st = path.stat()
         except OSError:
+            if checked:
+                raise
             return None
         cwd, first_user = meta
         return Session(
@@ -188,6 +198,25 @@ class CodexProvider:
             if row is not None:
                 out.append(row)
         return out
+
+    def scan_checked(self) -> tuple[list[Session], list[str]]:
+        """``scan()``'s rows, plus a line for each rollout that could not be READ (#993).
+
+        ``rglob`` above swallows a permission error on any directory in the tree and simply yields
+        fewer files, which a measurement that authorises deletion would read as "nothing archived".
+        The checked walk raises on an unreadable directory and names an unreadable file, while
+        keeping every rollout that read cleanly.
+        """
+        paths = [
+            Path(e.path)
+            for e in base.scandir_checked(base._codex_sessions_dir(), recurse=True)
+            if e.is_file(follow_symlinks=False) and _CODEX_ROLLOUT_RE.search(e.name)
+        ]
+        return base.checked_rows(
+            sorted(paths),
+            lambda p: self._row_from_path(p, checked=True),
+            engine_id=self.engine_id,
+        )
 
     def lookup(self, native_id: str) -> Session | None:
         """This one session, read fresh (#991), or ``None``.

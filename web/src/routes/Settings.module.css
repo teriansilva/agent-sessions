@@ -691,6 +691,98 @@
   padding: 7px 9px;
   font: inherit;
 }
+/* Settings → Maintenance: Prune + Archive old missions (#993). Every new action button is a
+   ≥44px hit area (the per-component pattern — there is no shared button primitive). */
+.actionBtn {
+  min-height: 44px;
+}
+.subhead {
+  margin: 14px 0 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.pruneList {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  border-top: 1px solid var(--border);
+}
+.pruneRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 2px 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.pruneLabel {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 44px;
+  flex: 1 1 260px;
+  min-width: 0;
+  cursor: pointer;
+}
+.pruneLabel input {
+  margin-top: 3px;
+}
+.pruneText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.pruneName {
+  color: var(--text);
+  font-size: 13px;
+}
+.pruneHint {
+  color: var(--text-3);
+  font-size: 11.5px;
+}
+.pruneCount {
+  padding-left: 24px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.confirmText {
+  margin: 10px 0 4px;
+  color: var(--text);
+  font-size: 13px;
+}
+.inlineHint {
+  font-size: 12px;
+  color: var(--text-3);
+}
+.resultList {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.resultLine {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+.resultLine > :global(.hud-led) {
+  display: inline-block;
+  flex: none;
+  transform: translateY(-1px);
+}
 /* Default-project picker (#357 Phase 2) — same field language as the other inputs. */
 .defaultProject {
   width: 100%;

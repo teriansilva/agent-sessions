@@ -56,6 +56,7 @@ import { OrchestratorSettings } from "./OrchestratorSettings";
 import { PromptsSettings } from "./PromptsSettings";
 import { PulseSettings } from "./PulseSettings";
 import { ProjectsManagerCard } from "./ProjectsManager";
+import { ArchiveMissionsCard, PruneCard } from "./MaintenanceCards";
 import { RenameProjectModal } from "./RenameProjectModal";
 import { ACCENT_PRESETS, normalizeAccent } from "../theme/accent";
 import { useAccent } from "../theme/accentStore";
@@ -2940,7 +2941,9 @@ export function Settings() {
         {section === "maintenance" && (
           <>
             <CleanupCard />
+            <ArchiveMissionsCard />
             <ScrollbackCacheCard />
+            <PruneCard />
           </>
         )}
 

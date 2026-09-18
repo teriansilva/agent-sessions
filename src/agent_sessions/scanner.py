@@ -245,7 +245,7 @@ def _decode_cwd(dirname: str) -> str:
     return "/" + dirname[1:].replace("-", "/")
 
 
-def _read_session_meta(jsonl_path: Path) -> tuple[str | None, str, bool]:
+def _read_session_meta(jsonl_path: Path, *, checked: bool = False) -> tuple[str | None, str, bool]:
     """Single pass over a JSONL: return ``(real_cwd_or_None, first_user_message, headless)``.
 
     ``headless`` is True for a **headless one-shot** — a transcript whose user records carry
@@ -296,16 +296,20 @@ def _read_session_meta(jsonl_path: Path) -> tuple[str | None, str, bool]:
                 if cwd is not None and first_msg:
                     break
     except OSError:
+        if checked:
+            raise
         return None, "", False
     return cwd, first_msg, False
 
 
-def session_from_jsonl(jsonl: Path, *, archived: bool) -> Session | None:
+def session_from_jsonl(jsonl: Path, *, archived: bool, checked: bool = False) -> Session | None:
     """One Claude session row from one transcript file, or ``None`` when the file is not a session
     (a non-UUID name, an unreadable file, a headless ``claude -p`` one-shot).
 
     The single per-file builder behind both :func:`scan` and :func:`lookup` (#991), so a single-key
     read can never disagree with the walk about what a row contains or which files are sessions.
+    Maintenance's ``checked`` path propagates read/stat failures so they cannot silently omit a
+    row or bypass the headless-session filter. Optional timestamp enrichment remains fail-soft.
     """
     uuid = jsonl.stem
     if not _UUID_RE.match(uuid):
@@ -313,8 +317,10 @@ def session_from_jsonl(jsonl: Path, *, archived: bool) -> Session | None:
     try:
         st = jsonl.stat()
     except OSError:
+        if checked:
+            raise
         return None
-    real_cwd, first_msg, headless = _read_session_meta(jsonl)
+    real_cwd, first_msg, headless = _read_session_meta(jsonl, checked=checked)
     if headless:
         return None
     return Session(
@@ -340,6 +346,41 @@ def _walk(root: Path, archived: bool) -> Iterable[Session]:
                 yield row
 
 
+def _walk_checked(root: Path, archived: bool) -> tuple[list[Session], list[str]]:
+    """``_walk``'s rows, plus a line per transcript that could not be READ (#993).
+
+    **Additive — ``_walk`` above is untouched.** The sidebar's walk stays fail-soft per file (a
+    repo invariant), and routing the two through one implementation is exactly what hid every
+    healthy session behind one bad record in review 4898. This is the counterpart maintenance
+    uses, because both of ``_walk``'s layers hide failure: ``iterdir``/``glob`` swallow a
+    permission error on a project directory and yield nothing, and ``session_from_jsonl`` turns an
+    unreadable transcript into ``None`` — indistinguishable from "not a session".
+    """
+    # Imported here rather than at module scope: `checked_scan` is a leaf module (no app imports),
+    # so either would be safe, and this keeps the scanner's import block untouched.
+    from .checked_scan import checked_rows, scandir_checked
+
+    # EXACTLY `_walk`'s membership: immediate project children of `root`, then the `*.jsonl`
+    # entries directly inside each one. Recursing admitted transcripts at arbitrary depth, so a
+    # nested backup under `projects-archive/<project>/backup/<uuid>.jsonl` counted as ARCHIVED in
+    # the checked path while the display path saw only the live copy — and the prune then deleted
+    # an active session's scrollback (review 4915/4919, finding 3). No `is_file` filter either:
+    # `glob("*.jsonl")` matches directories too, and the builder is what rejects them, so filtering
+    # here would diverge from the display walk in the other direction.
+    paths: list[Path] = []
+    for project in scandir_checked(root):
+        if not project.is_dir(follow_symlinks=False):
+            continue
+        for entry in scandir_checked(Path(project.path)):
+            if entry.name.endswith(".jsonl"):
+                paths.append(Path(entry.path))
+    return checked_rows(
+        sorted(paths),
+        lambda p: session_from_jsonl(p, archived=archived, checked=True),
+        engine_id="claude",
+    )
+
+
 def scan(home: Path | None = None) -> list[Session]:
     """Return every Claude Code session on disk, live + archived.
 
@@ -354,6 +395,20 @@ def scan(home: Path | None = None) -> list[Session]:
     archived_uuids = {s.uuid for s in archive}
     live = [s for s in live if s.uuid not in archived_uuids]
     return live + archive
+
+
+def scan_checked(home: Path | None = None) -> tuple[list[Session], list[str]]:
+    """``scan()``'s rows across both trees, plus the transcripts that could not be READ (#993).
+
+    Same archived-wins resolution as ``scan``; only the enumeration and the per-file read are
+    checked rather than fail-soft.
+    """
+    home = home or Path.home()
+    live, live_problems = _walk_checked(home / ".claude" / "projects", archived=False)
+    archive, archive_problems = _walk_checked(home / ".claude" / "projects-archive", archived=True)
+    archived_uuids = {s.uuid for s in archive}
+    live = [s for s in live if s.uuid not in archived_uuids]
+    return live + archive, live_problems + archive_problems
 
 
 def _lookup_in(root: Path, uuid: str, *, archived: bool) -> Session | None:

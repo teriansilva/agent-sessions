@@ -11317,6 +11317,79 @@ def pending_unarchives(*, path: Path | None = None) -> list[str]:
         con.close()
 
 
+def archive_roster_preview(mission_id: str, *, path: Path | None = None) -> list[str]:
+    """The sessions a NEW :func:`begin_archive` would tear down — its rules, not the last one's.
+
+    :func:`sessions_governed_by_archive` answers a different question (what the archive that
+    already ran governs) and excludes rows a previous attempt left ``skipped``. ``begin_archive``
+    **clears those skips and re-evaluates them**, so a preview built on that helper can promise
+    "0 sessions, 0 live terminals" and then archive a session and stop its terminal — the
+    lifecycle Hermes reproduced on PR #1000 (archive A while B holds its session → unarchive A
+    without its sessions → finish B → bulk-archive A).
+
+    So this mirrors exactly the two predicates ``begin_archive`` applies when it builds the
+    pending set: the whole roster except what the operator DETACHED, minus whatever another
+    mission still actively holds (those are marked ``skipped`` and left to that mission).
+    Read-only.
+    """
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        rows = con.execute(
+            "SELECT session_key FROM mission_sessions "
+            "WHERE mission_id=? AND COALESCE(release_reason,'closed') != 'detached' "
+            "AND session_key NOT IN ("
+            "  SELECT session_key FROM mission_sessions "
+            "  WHERE removed_at IS NULL AND mission_id != ?) "
+            "ORDER BY added_at ASC",
+            (mission_id, mission_id),
+        ).fetchall()
+        return [r["session_key"] for r in rows]
+    finally:
+        con.close()
+
+
+def archive_candidates(
+    older_than_s: float, *, now: float | None = None, path: Path | None = None
+) -> list[dict]:
+    """Missions Settings → Maintenance may offer to archive in bulk (#993), oldest first.
+
+    Terminal state only, not archived and not mid-archive, and last closed (or, failing that,
+    updated) more than ``older_than_s`` ago. Each row carries ``unresolved`` — an in-progress
+    turn, which ``begin_archive`` will refuse — so a dry run can say so before anything runs.
+    Read-only; the archive itself still goes through ``begin_archive``'s own fences.
+    """
+    cutoff = (time.time() if now is None else now) - older_than_s
+    states = sorted(TERMINAL_STATES)
+    con = _ready(path)
+    try:
+        rows = con.execute(
+            "SELECT id, state, COALESCE(closed_at, updated_at) AS ended_at FROM missions "  # noqa: S608 — placeholders only
+            "WHERE archived_at IS NULL AND archiving_at IS NULL "
+            f"AND state IN ({', '.join('?' for _ in states)}) "
+            "AND COALESCE(closed_at, updated_at) < ? "
+            "ORDER BY ended_at ASC",
+            (*states, cutoff),
+        ).fetchall()
+        unresolved = {
+            r["mission_id"]
+            for r in con.execute(
+                "SELECT DISTINCT mission_id FROM mission_turns WHERE state='in_progress'"
+            ).fetchall()
+        }
+    finally:
+        con.close()
+    return [
+        {
+            "id": r["id"],
+            "state": r["state"],
+            "ended_at": r["ended_at"],
+            "unresolved": r["id"] in unresolved,
+        }
+        for r in rows
+    ]
+
+
 def pending_archives(*, path: Path | None = None) -> list[str]:
     """Missions whose archive began and never finished — the boot reconciliation worklist."""
     con = _ready(path)

@@ -368,6 +368,14 @@ def archive_override_under_lock(key: str, path: Path | None = None) -> str:
             body = fh.read()
     except OSError:
         return "unreadable"
+    return _state_from_body(body, key)
+
+
+def _state_from_body(body: str, key: str) -> str:
+    """``unset``/``active``/``archived``/``unreadable`` for ``key`` from the sidecar's raw bytes.
+
+    Shared by every reader that takes the lock, so they cannot drift in how they read one.
+    """
     if not body.strip():
         # Zero bytes UNDER THE LOCK is not a write in progress — a writer would still be holding
         # it — so this is a genuinely empty file, which is what `touch` leaves behind.
@@ -386,6 +394,19 @@ def archive_override_under_lock(key: str, path: Path | None = None) -> str:
     # archived" there let a sidecar-only archived session with a surviving live writer be adopted
     # into a running mission. Absence is still a real answer, because a sidecar that has never
     # been told about a session is not asserting anything about it.
+    return archive_state_of_row(raw, key)
+
+
+def archive_state_of_row(raw: dict, key: str) -> str:
+    """``unset``/``active``/``archived``/``unreadable`` for one key of already-parsed sidecar JSON.
+
+    The archive-relevant shape check, kept **separate from the display decoder** and applied to the
+    RAW row. ``_index_from_raw`` is fail-soft by design — it drops a row that is not an object and
+    turns a non-boolean ``archived`` into ``None`` — and both of those reach a destructive caller as
+    "nobody recorded an override", which then defers to the engine's own flag. For an unarchived
+    opencode session that flag still says archived, so a DAMAGED override became permission to
+    delete (Hermes on PR #1000, review 4898). Damage is not absence.
+    """
     if key not in raw:
         return "unset"  # no row at all: read, and silent about this session
     row = raw[key]
@@ -394,9 +415,141 @@ def archive_override_under_lock(key: str, path: Path | None = None) -> str:
     if "archived" not in row:
         return "unset"  # a row with no override recorded, which is the ordinary shape
     flag = row["archived"]
+    if flag is None:
+        # `null` is how the app itself records "no override": `patch()` persists the whole
+        # `SessionMeta`, whose `archived` is `None` for any session merely renamed, coloured or
+        # reviewed. Treating it as damage swept 146 of 919 rows on the author's own sidecar into
+        # fail-closed and flooded every preview with problems. Absent key and explicit null are
+        # the same statement — nobody has said anything about this session.
+        return "unset"
     if not isinstance(flag, bool):
         return "unreadable"  # a value nobody can interpret is not "not archived"
     return "archived" if flag else "active"
+
+
+class MetadataUnreadable(RuntimeError):
+    """The sidecar EXISTS but what it says could not be established — it would not open, did not
+    parse, or is not an object.
+
+    Distinct from an ABSENT sidecar, which is a real answer ("nothing is overridden"). Raised only
+    by :func:`load_checked`, for callers whose decision is destructive; every display surface keeps
+    the fail-soft readers.
+    """
+
+
+@contextmanager
+def archive_state_held(*keys: str, path: Path | None = None):
+    """Yield the archive state for ``keys`` **while still holding** the sidecar's exclusive lock.
+
+    :func:`archive_override_under_lock` answers and then lets go, which is enough to *check* and
+    not enough to *act*: an archive or unarchive can commit in the gap between the answer and the
+    deletion it authorises (Hermes on PR #1000, review 4898). Every writer goes through ``patch()``
+    under this same flock, so a caller that deletes inside this block sees any transition that has
+    already committed and blocks any that has not.
+
+    **Several keys, in precedence order, because a session has more than one identity.** The
+    override for an aliased OpenCode session is written under the LOGICAL (real) id by
+    ``unarchive``, while the scrollback mirror is keyed by the PHYSICAL id — so a fence that knew
+    only the physical key read `unset` and deleted an active session's cache (review 4915/4919,
+    finding 1). The first key with an explicit state wins, matching discovery's own
+    `overrides.get(logical) or overrides.get(physical)` precedence; `unreadable` is explicit and
+    therefore blocks.
+
+    **The lock is taken even when the sidecar does not exist yet.** Yielding `unset` on absence
+    without locking left first-creation unfenced: a natively-archived session legitimately reaches
+    that branch before BattleLab has ever written a sidecar, and another thread could create the
+    file and commit an unarchive inside the yielded block (finding 2). ``_exclusive`` creates the
+    file, so a prune may leave an empty ``metadata.json`` on a fresh install — a far better trade
+    than a race, and an empty sidecar reads as `unset` exactly as absence did.
+
+    Hold it for one session and one act. Holding it across a whole sweep would stall every archive,
+    unarchive and rename in the app for the length of that sweep.
+
+    The lock is entered manually rather than with ``with``, so that an ``OSError`` raised by the
+    CALLER's body can never be mistaken for a failure to read the sidecar.
+    """
+    path = path or _default_path()
+    cm = _exclusive(path)
+    try:
+        fh = cm.__enter__()
+    except OSError:
+        yield "unreadable"
+        return
+    try:
+        try:
+            body = fh.read()
+        except OSError:
+            state = "unreadable"
+        else:
+            state = "unset"
+            for key in keys:
+                candidate = _state_from_body(body, key)
+                if candidate != "unset":
+                    state = candidate  # first explicit answer wins; `unreadable` is explicit
+                    break
+        yield state
+    finally:
+        cm.__exit__(None, None, None)
+
+
+def load_checked(
+    path: Path | None = None,
+) -> tuple[dict[str, SessionMeta], dict[str, str], dict[str, str]]:
+    """``(index, aliases, overrides)`` from ONE locked read, raising :class:`MetadataUnreadable`
+    rather than answering "nothing is overridden" for a sidecar it could not read.
+
+    ``overrides`` maps key → ``unset``/``active``/``archived``/``unreadable``, computed from the
+    RAW rows by :func:`archive_state_of_row`. It exists because ``index`` is built by the display
+    decoder, which is fail-soft about exactly the shapes that matter here: it drops a row that is
+    not an object and turns a non-boolean ``archived`` into ``None``, both of which read downstream
+    as "no override" and defer to the engine's own flag. A destructive caller must use
+    ``overrides``; ``index`` remains for display-shaped callers.
+
+    ``load()`` / ``load_aliases()`` collapse missing, corrupt and mid-write-empty into ``{}``. That
+    is right for the list surfaces — a sidecar should never take the sidebar down — and wrong
+    wherever the answer authorizes something irreversible (#896 reviews 16/17/28/29 drew the same
+    line for the ADOPT gate; this is the same line for #993's prune).
+
+    Two properties it does NOT share with ``load()``, both load-bearing:
+
+    * it reads **under the exclusive flock every writer takes**, because ``patch()`` truncates in
+      place before it serializes — so a lock-free reader has a window where the file exists and is
+      ZERO BYTES, and reads "no overrides" while an override is being written;
+    * it returns the session index and the alias map **together**, from that one read, so the two
+      halves of an eligibility decision cannot come from different moments.
+
+    An absent sidecar still returns empties: nothing has been overridden, which is knowable.
+    """
+    path = path or _default_path()
+    # `_exclusive` touches the file into existence, so ask FIRST — a read-only preview must not
+    # create the operator's sidecar as a side effect.
+    if not path.exists():
+        return {}, {}, {}
+    try:
+        with _exclusive(path) as fh:
+            body = fh.read()
+    except OSError as e:
+        raise MetadataUnreadable(f"{type(e).__name__}: {e.strerror or e}") from e
+    if not body.strip():
+        # Zero bytes UNDER THE LOCK is not a write in progress — a writer would still hold it.
+        return {}, {}, {}
+    try:
+        raw = json.loads(body)
+    except json.JSONDecodeError as e:
+        raise MetadataUnreadable(f"the sidecar did not parse ({e})") from e
+    if not isinstance(raw, dict):
+        raise MetadataUnreadable("the sidecar is not an object")
+    raw, _ = _normalize_keys(raw)
+    overrides = {key: archive_state_of_row(raw, key) for key in raw if key != _ALIAS_KEY}
+    return _index_from_raw(raw, normalized=True), _aliases_from_raw(raw), overrides
+
+
+def _aliases_from_raw(raw: dict) -> dict[str, str]:
+    """The well-formed ``str → str`` entries of the reserved alias section, or ``{}``."""
+    aliases = raw.get(_ALIAS_KEY)
+    if not isinstance(aliases, dict):
+        return {}
+    return {k: v for k, v in aliases.items() if isinstance(k, str) and isinstance(v, str)}
 
 
 def load(path: Path | None = None) -> dict[str, SessionMeta]:
@@ -405,7 +558,14 @@ def load(path: Path | None = None) -> dict[str, SessionMeta]:
     raw = _load_raw(path)
     if not raw:
         return {}
-    raw, _ = _normalize_keys(raw)
+    return _index_from_raw(raw)
+
+
+def _index_from_raw(raw: dict, *, normalized: bool = False) -> dict[str, SessionMeta]:
+    """Build the session index from already-parsed sidecar JSON. Shared by ``load`` and
+    ``load_checked`` so the two can never drift in how a row is interpreted."""
+    if not normalized:
+        raw, _ = _normalize_keys(raw)
     out: dict[str, SessionMeta] = {}
     for key, val in raw.items():
         if key == _ALIAS_KEY:
@@ -619,11 +779,7 @@ def load_aliases(path: Path | None = None) -> dict[str, str]:
     path = path or _default_path()
     # Shares the #652 L2 parse cache with ``load`` — within one list request the second call is a
     # cache hit, so the sidecar is parsed once, not twice.
-    raw = _load_raw(path)
-    aliases = raw.get(_ALIAS_KEY)
-    if not isinstance(aliases, dict):
-        return {}
-    return {k: v for k, v in aliases.items() if isinstance(k, str) and isinstance(v, str)}
+    return _aliases_from_raw(_load_raw(path))
 
 
 def set_alias(placeholder_key: str, real_key: str) -> None:

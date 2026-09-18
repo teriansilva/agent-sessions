@@ -634,36 +634,148 @@ def _all_cached_keys() -> set[str]:
     return keys
 
 
-def clear_scrollback(keys: Iterable[str] | None = None) -> dict[str, int]:
+def clear_scrollback(keys: Iterable[str] | None = None) -> dict:
     """Delete persisted scrollback files (mirror + every sidecar) and drop the matching
     in-memory rings/state (so a cleared session isn't re-served from memory or replayed).
     ``keys=None`` clears the whole cache; otherwise only the given engine-qualified keys.
-    Returns ``{removed, bytes_freed}`` (``removed`` counts keys with at least one artifact
-    deleted)."""
+
+    Returns ``{removed, bytes_freed, failed}``. ``removed`` counts keys with at least one artifact
+    deleted, and **``bytes_freed`` counts a mirror only after its unlink actually landed** —
+    counting the size first reported bytes as reclaimed for a file that is still on disk.
+    ``failed`` names each key whose deletion raised (``{key, reason}``), because a caller that
+    reports an outcome to the operator (Settings → Maintenance, #993) cannot otherwise tell
+    "nothing was there" from "could not delete"; an absent file is not a failure.
+
+    Still best-effort for the callers that want it: nothing raises, and one key's failure never
+    stops the rest."""
     key_list = sorted(_all_cached_keys()) if keys is None else list(keys)
     removed = 0
     freed = 0
+    failed: list[dict[str, str]] = []
     for key in key_list:
         cleared = False
+        problem = ""
         # The byte mirror first (it carries the freed-bytes count); then the width + private-
         # mode sidecars travel with it (#348/#397): a stale `.cols` would fake a continuation,
         # a stale `.modes` would replay mouse/paste state for an intentionally-cleared session.
+        mirror = _scrollback_path(key)
         try:
-            freed += _scrollback_path(key).stat().st_size
-            _scrollback_path(key).unlink()
-            cleared = True
+            size = mirror.stat().st_size
         except OSError:
+            size = 0
+        try:
+            mirror.unlink()
+        except FileNotFoundError:
             pass  # mirror absent (e.g. already reset by `_reset_ring`) — sidecars may remain
+        except OSError as e:
+            problem = f"{type(e).__name__}: {e.strerror or e}"
+        else:
+            freed += size
+            cleared = True
         for sidecar in (_cols_path(key), _modes_path(key), _ready_path(key)):
             try:
                 sidecar.unlink()
                 cleared = True
-            except OSError:
+            except FileNotFoundError:
                 pass
+            except OSError as e:
+                problem = problem or f"{type(e).__name__}: {e.strerror or e}"
+        if problem:
+            failed.append({"key": key, "reason": problem})
         if cleared:
             removed += 1
         _drop_buffer(key)  # in-memory ring + mode/sanitizer carry + VT mirror
-    return {"removed": removed, "bytes_freed": freed}
+    return {"removed": removed, "bytes_freed": freed, "failed": failed}
+
+
+def archived_keys() -> list[str]:
+    """Physical scrollback keys for every currently-archived session, across engines (#206).
+
+    Mirrors the session row's effective-archived + alias resolution so the keys line up with what
+    was persisted (the ring/disk is keyed by the PHYSICAL id). Shared by the Scrollback cache route
+    and Settings → Maintenance's prune (#993), so "archived" means one thing in both.
+
+    Blocking — it walks every provider's store; call it off the event loop.
+
+    Fail-soft: an engine whose store could not be read simply contributes no keys. A caller that
+    must not read that as "nothing is archived" uses :func:`archived_keys_checked`.
+    """
+    pairs, _problems = archived_keys_checked()
+    return [physical for _logical, physical in pairs]
+
+
+def archived_keys_checked() -> tuple[list[tuple[str, str]], list[str]]:
+    """``(keys, problems)`` — :func:`archived_keys`, plus one line per engine whose store could
+    not be READ.
+
+    Discovery goes through the providers' fail-soft scans, where a corrupt ``opencode.db`` yields
+    no opencode rows rather than taking down the Claude list. For the Scrollback card that is the
+    right trade; for Settings → Maintenance (#993) it is not, because "this engine has no archived
+    sessions" and "this engine's store would not open" arrive as the same empty list and only one
+    of them means there is nothing to remove.
+    """
+    from . import engines, metadata
+
+    # This is a DESTRUCTIVE eligibility boundary, so the sidecar is read CHECKED and under the lock
+    # every writer takes. `load()`/`load_aliases()` collapse missing, corrupt and mid-write-empty
+    # into `{}` — right for the list surfaces and catastrophic here, because opencode's unarchive
+    # records an explicit `archived: false` override WITHOUT clearing the native DB flag
+    # (`OpenCodeProvider.unarchive`). Lose that override to a failed read and an ACTIVE session
+    # reverts to the engine's "archived", making its scrollback deletable (Hermes on PR #1000,
+    # review 4894). If archive state cannot be established, NOTHING is eligible — fail closed.
+    try:
+        _index, aliases, overrides = metadata.load_checked()
+    except metadata.MetadataUnreadable as e:
+        return [], [f"the metadata sidecar could not be read ({e}); no archive state is knowable"]
+    # Rows and the evidence that they are complete come from ONE pass — a separate health probe
+    # could vouch for a different moment than the rows it is vouching for.
+    sessions, store_problems = engines.scan_all_checked()
+    # Those lines already name their engine and what failed (`registry.scan_all_checked`, and each
+    # provider's own `checked_rows`), so they travel VERBATIM. Wrapping them a second time rendered
+    # as "shell: … could not be read (PermissionError): its session store could not be read".
+    problems = list(store_problems)
+    # BOTH identities travel together. Eligibility is decided on the logical id (that is where an
+    # OpenCode unarchive writes its override) while the cache is keyed by the physical id — so
+    # returning only the physical key left the final fence unable to see the very override that
+    # makes a session active (review 4915/4919, finding 1).
+    keys: list[tuple[str, str]] = []
+    for s in sessions:
+        key = engines.session_key(s)
+        phys = engines.physical_key(key, aliases)
+        # The OVERRIDE decides, read from the raw row rather than through the display decoder: a
+        # row that is not an object, or an `archived` that is not a boolean, is DAMAGE — and damage
+        # is not "nobody recorded anything" (review 4898). Only `unset` defers to the engine's own
+        # flag, which is the case where the sidecar genuinely has nothing to say.
+        state = overrides.get(key) or overrides.get(phys) or "unset"
+        if state == "unreadable":
+            problems.append(f"{key}: its archive state could not be established")
+            continue
+        if state == "archived" or (state == "unset" and s.archived):
+            keys.append((key, phys))
+    return keys, problems
+
+
+def cache_stats_for(keys: Iterable[str]) -> dict:
+    """``{items, bytes, unreadable}`` of the persisted byte mirrors for ``keys`` — a dry run of
+    ``clear_scrollback(keys)``'s mirror half (read-only).
+
+    An ABSENT mirror is simply not counted; one whose ``stat()`` FAILED is named in ``unreadable``
+    rather than dropped. A caller measuring what it is about to delete (#993) cannot otherwise
+    tell an empty cache from one it could not read — and the delete still removes the files the
+    measurement silently omitted.
+    """
+    items = 0
+    total = 0
+    unreadable: list[str] = []
+    for key in keys:
+        try:
+            total += _scrollback_path(key).stat().st_size
+            items += 1
+        except FileNotFoundError:
+            pass  # genuinely absent — not a failure
+        except OSError as e:
+            unreadable.append(f"{key}: {type(e).__name__}: {e.strerror or e}")
+    return {"items": items, "bytes": total, "unreadable": unreadable}
 
 
 def _drop_buffer(key: str) -> None:

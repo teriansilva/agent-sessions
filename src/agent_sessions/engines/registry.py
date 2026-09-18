@@ -103,11 +103,58 @@ def orchestrator_input_engines() -> set[str]:
 
 
 def scan_all() -> list[Session]:
-    """Every session from every present provider, merged."""
+    """Every session from every PRESENT provider, merged — the ordinary listing.
+
+    **Deliberately independent of** :func:`scan_all_checked`, and it must stay that way. The
+    display path is fail-soft per provider and per record by design (a repo invariant, not a
+    preference): one unreadable store or one malformed record must never take the sidebar down.
+    Routing this through the checked scan to share one code path did exactly that — a single
+    corrupt ``shell`` record hid every healthy shell session from ordinary listings (Hermes on
+    PR #1000, review 4898). Maintenance strictness belongs only on the maintenance path.
+    """
     out: list[Session] = []
     for p in present_providers():
         out.extend(p.scan())
     return out
+
+
+def scan_all_checked() -> tuple[list[Session], list[str]]:
+    """``(sessions, problems)`` — the rows AND the evidence that they are COMPLETE, from ONE pass.
+
+    Both must come from the same pass. Asking a separate probe afterwards lets a store that failed
+    the first read and recovered before the second answer "empty, and nothing went wrong": the rows
+    and their completeness would then describe different moments (Hermes on PR #1000, review 4894).
+
+    **Presence is not consulted for a provider that can report its own read failures.**
+    ``is_present()`` is itself a READ — opencode's needs a launchable CLI or a readable DB — so a
+    corrupt store answers "absent", and a presence filter would quietly turn *unreadable* into
+    *nothing to see*. A provider exposing ``scan_checked()`` is therefore always asked: its own
+    scan already separates an absent store (legitimately empty) from an unreadable one (raises).
+    Providers without one stay presence-gated and fail-soft per record, though a wholly unreadable
+    store still raises out of ``scan()`` and is recorded here.
+    """
+    rows: list[Session] = []
+    problems: list[str] = []
+    for p in _PROVIDERS:
+        checked = getattr(p, "scan_checked", None)
+        if checked is None and not p.is_present():
+            continue
+        try:
+            if checked is not None:
+                # `(rows, problems)`: a provider keeps every record that read cleanly and names the
+                # ones that did not, so one bad file costs only itself (review 4898, finding 4).
+                got, trouble = checked()
+                rows.extend(got)
+                problems.extend(trouble)
+            else:
+                rows.extend(p.scan())
+        except Exception as e:  # noqa: BLE001 — one unreadable store must not blank the others
+            # A store whose ROOT could not be listed raises out of the checked scan; there are no
+            # partial rows to keep in that case, only the fact that we could not look.
+            problems.append(
+                f"{p.engine_id}: its session store could not be read ({type(e).__name__})"
+            )
+    return rows, problems
 
 
 # Short-lived scan-snapshot cache (#561). A single `/api/sessions` request re-walks the whole

@@ -60,8 +60,14 @@ class OpenCodeProvider:
         must not confuse "read failed" with "empty" (the new-session baseline snapshot) use
         this directly; ``_query`` wraps it fail-soft for scan / is_present."""
         db = base._opencode_db()
-        if not os.path.exists(db):
-            return []
+        try:
+            os.stat(db)
+        except FileNotFoundError:
+            return []  # a genuinely absent DB is a valid empty — fresh opencode, no sessions yet
+        # Anything else is a FAILURE, not an absence: `os.path.exists` answers False for a
+        # directory it cannot traverse, so an existing DB under an inaccessible ancestor was
+        # classified as "no sessions" (review 4915/4919, finding 4). `_query` and `scan_checked`
+        # both widen their handlers accordingly, so the sidebar stays fail-soft.
         cols = ", ".join(OPENCODE_SCHEMA)
         con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.5)
         try:
@@ -77,7 +83,7 @@ class OpenCodeProvider:
         # down the Claude list. (The baseline snapshot can't use this — see _query_rows.)
         try:
             return self._query_rows()
-        except sqlite3.Error:
+        except (sqlite3.Error, OSError):
             return []
 
     def _db_readable(self) -> bool:
@@ -129,7 +135,26 @@ class OpenCodeProvider:
         )
 
     def scan(self) -> list[Session]:
-        rows = (self._row(record) for record in self._query())
+        return self._build(self._query())
+
+    def scan_checked(self) -> tuple[list[Session], list[str]]:
+        """``scan()``'s rows, plus a line if the DB could not be READ (#993).
+
+        A genuinely absent ``opencode.db`` is a valid empty — fresh opencode, no sessions yet — so
+        it yields no problem. A locked, corrupt or schema-drifted one is a failure that ``_query``
+        would have swallowed into "no sessions", which is the answer that must never authorise a
+        deletion. The sidebar keeps the fail-soft ``scan()``.
+        """
+        try:
+            rows = self._query_rows()
+        except (sqlite3.Error, OSError) as e:
+            return [], [f"{self.engine_id}: its database could not be read ({type(e).__name__})"]
+        return self._build(rows), []
+
+    def _build(self, records) -> list[Session]:
+        """Listable rows from raw ``OPENCODE_SCHEMA`` records — the tail both scans share, built
+        on ``_row`` (#991) so a record becomes a ``Session`` in exactly one place."""
+        rows = (self._row(record) for record in records)
         return [row for row in rows if row is not None]
 
     def lookup(self, native_id: str) -> Session | None:

@@ -37,6 +37,12 @@ class ClaudeProvider:
         # if a future scanner ever yields more than one engine.
         return [s for s in scanner.scan() if s.engine == self.engine_id]
 
+    def scan_checked(self) -> tuple[list[Session], list[str]]:
+        """``scan()``'s rows plus unreadable-transcript problems, through the scanner's checked
+        walk (#993). The fail-soft ``scan`` above is untouched — the sidebar keeps it."""
+        rows, problems = scanner.scan_checked()
+        return [s for s in rows if s.engine == self.engine_id], problems
+
     def lookup(self, native_id: str) -> Session | None:
         """This one session, read fresh (#991) — exactly the row ``scan`` would return for it,
         through the scanner's own per-file builder, or ``None``."""

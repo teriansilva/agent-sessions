@@ -49,6 +49,11 @@ vi.mock("../lib/api", async () => {
       folders: vi.fn(),
       scrollbackInfo: vi.fn(),
       clearScrollback: vi.fn(),
+      // #993: the Maintenance page's Prune + Archive old missions cards.
+      pruneInfo: vi.fn(),
+      prune: vi.fn(),
+      archiveOldMissionsInfo: vi.fn(),
+      archiveOldMissions: vi.fn(),
       sessions: vi.fn(),
       aiReviewModels: vi.fn(),
       reviewExclude: vi.fn(),
@@ -252,6 +257,21 @@ beforeEach(() => {
     removed: 0,
     bytes_freed: 0,
   });
+  // Maintenance (#993): nothing to prune and no eligible missions by default.
+  vi.mocked(api.pruneInfo).mockResolvedValue({
+    categories: {
+      stale_sockets: { items: 0, bytes: 0 },
+      archived_scrollback: { items: 0, bytes: 0 },
+    },
+    runner: null,
+  });
+  vi.mocked(api.archiveOldMissionsInfo).mockResolvedValue({
+    eligible: 0,
+    sessions: 0,
+    live_sessions: 0,
+    unresolved: [],
+    runner: null,
+  });
   // AI Review tab (#356): no sessions excluded, model listing unsupported by default.
   vi.mocked(api.sessions).mockResolvedValue({
     sessions: [],
@@ -377,7 +397,10 @@ test.each([
   ["updates", ["Updates"]],
   ["analytics", ["Usage analytics"]],
   ["system", ["Host"]],
-  ["maintenance", ["Archive old sessions", "Scrollback cache"]],
+  [
+    "maintenance",
+    ["Archive old sessions", "Archive old missions", "Scrollback cache", "Prune"],
+  ],
   ["about", ["Support", "About"]],
 ])("section %s renders its cards: %s", async (section, headings) => {
   renderSettings("dark", "#ffb000", `/settings/${section}`);
@@ -2066,6 +2089,230 @@ test("Scrollback cache: clear archived passes the archived scope (#206)", async 
     screen.getByRole("button", { name: /confirm clear archived/i }),
   );
   expect(api.clearScrollback).toHaveBeenCalledWith("archived");
+});
+
+// ---- Maintenance: Archive old missions + Prune (#993) ----
+
+test("Archive old missions: the confirm names the side effects, then reports skips and failures (#993)", async () => {
+  vi.mocked(api.archiveOldMissionsInfo).mockResolvedValue({
+    eligible: 9,
+    sessions: 23,
+    live_sessions: 5,
+    unresolved: ["m1"],
+    runner: null,
+  });
+  vi.mocked(api.archiveOldMissions).mockResolvedValue({
+    archived: 8,
+    sessions_archived: 22,
+    terminals_stopped: 5,
+    skipped: [{ mission_id: "m1", reason: "unresolved turn" }],
+    failed: [{ mission_id: "m2", session_key: "claude:abc", reason: "background agent" }],
+  });
+  renderSettings("dark", "#ffb000", "/settings/maintenance");
+  await userEvent.click(
+    await screen.findByRole("button", { name: /archive old missions \(9\)/i }),
+  );
+  expect(api.archiveOldMissions).not.toHaveBeenCalled();
+  expect(
+    screen.getByText(/5 live terminals will be stopped; transcripts are kept/i),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByText(/1 mission with an unresolved turn will be skipped/i),
+  ).toBeInTheDocument();
+  await userEvent.click(
+    screen.getByRole("button", { name: /confirm mission archive/i }),
+  );
+  expect(api.archiveOldMissions).toHaveBeenCalledWith(30);
+  expect(
+    await screen.findByText(/archived 8 missions and 22 of their sessions; stopped 5 live terminals/i),
+  ).toBeInTheDocument();
+  expect(screen.getByText(/skipped mission m1: unresolved turn/i)).toBeInTheDocument();
+  expect(
+    screen.getByText(/session claude:abc was not archived \(mission m2 is archived\)/i),
+  ).toBeInTheDocument();
+});
+
+test("Archive old missions: a busy runner is refused with retry copy (#993)", async () => {
+  const { ApiError } = await vi.importActual<typeof import("../lib/api")>("../lib/api");
+  vi.mocked(api.archiveOldMissionsInfo).mockResolvedValue({
+    eligible: 2,
+    sessions: 2,
+    live_sessions: 0,
+    unresolved: [],
+    runner: null,
+  });
+  vi.mocked(api.archiveOldMissions).mockRejectedValue(
+    new ApiError(409, "busy", { busy: { job: "prune", started_at: 1 } }),
+  );
+  renderSettings("dark", "#ffb000", "/settings/maintenance");
+  await userEvent.click(
+    await screen.findByRole("button", { name: /archive old missions \(2\)/i }),
+  );
+  await userEvent.click(
+    screen.getByRole("button", { name: /confirm mission archive/i }),
+  );
+  expect(
+    await screen.findByText(/running \(prune\) — unavailable; retry when maintenance finishes/i),
+  ).toBeInTheDocument();
+});
+
+test("Prune: dry-run counts render and the confirm names what is removed (#993)", async () => {
+  vi.mocked(api.pruneInfo).mockResolvedValue({
+    categories: {
+      stale_sockets: { items: 159, bytes: 38912 },
+      archived_scrollback: { items: 312, bytes: 188743680 },
+    },
+    runner: null,
+  });
+  vi.mocked(api.prune).mockResolvedValue({
+    removed: 157,
+    bytes_freed: 38400,
+    skipped: [{ category: "stale_sockets", reason: "a live session holds its lock", count: 2 }],
+    failed: [],
+    failed_total: 0,
+  });
+  renderSettings("dark", "#ffb000", "/settings/maintenance");
+  expect(await screen.findByText("159 · 38 KB")).toBeInTheDocument();
+  await userEvent.click(
+    screen.getByRole("button", { name: /prune selected \(1\)/i }),
+  );
+  expect(api.prune).not.toHaveBeenCalled();
+  expect(screen.getByText(/permanently remove 159 items/i)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: /confirm prune/i }));
+  expect(api.prune).toHaveBeenCalledWith(["stale_sockets"]);
+  expect(await screen.findByText(/removed 157 items/i)).toBeInTheDocument();
+  expect(
+    screen.getByText(/skipped 2 \(stale terminal sockets\): a live session holds its lock/i),
+  ).toBeInTheDocument();
+});
+
+test("Prune: a category that could not be measured blocks the run until it is deselected (#993)", async () => {
+  vi.mocked(api.pruneInfo).mockResolvedValue({
+    categories: {
+      stale_sockets: { items: 0, bytes: 0, error: "OSError" },
+      archived_scrollback: { items: 312, bytes: 188743680 },
+    },
+    runner: null,
+  });
+  vi.mocked(api.prune).mockResolvedValue({
+    removed: 312,
+    bytes_freed: 188743680,
+    skipped: [],
+    failed: [],
+    failed_total: 0,
+  });
+  renderSettings("dark", "#ffb000", "/settings/maintenance");
+  // The unmeasured category is selected by default, so the action is blocked rather than
+  // submitting contents nobody counted.
+  expect(await screen.findByText("couldn’t measure")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /prune selected/i })).toBeDisabled();
+  expect(
+    screen.getByText(/couldn’t be measured.*deselect it or refresh/i),
+  ).toBeInTheDocument();
+  // Deselecting it, and selecting the measured one, unblocks exactly what was counted.
+  await userEvent.click(screen.getByRole("checkbox", { name: /stale terminal sockets/i }));
+  await userEvent.click(screen.getByRole("checkbox", { name: /archived sessions’ scrollback/i }));
+  await userEvent.click(screen.getByRole("button", { name: /prune selected \(1\)/i }));
+  await userEvent.click(screen.getByRole("button", { name: /confirm prune/i }));
+  expect(api.prune).toHaveBeenCalledWith(["archived_scrollback"]);
+});
+
+test("Prune: a dry run landing during confirmation cannot submit unknown contents (#993)", async () => {
+  let landRefresh: (v: Awaited<ReturnType<typeof api.pruneInfo>>) => void = () => {};
+  vi.mocked(api.pruneInfo)
+    .mockResolvedValueOnce({
+      categories: {
+        stale_sockets: { items: 0, bytes: 0, error: "OSError" },
+        archived_scrollback: { items: 312, bytes: 188743680 },
+      },
+      runner: null,
+    })
+    .mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          landRefresh = resolve;
+        }),
+    );
+  renderSettings("dark", "#ffb000", "/settings/maintenance");
+
+  // A Refresh is offered because one category could not be measured. Start it, then move the
+  // selection to the measured category so the action unblocks while that GET is still in flight.
+  expect(await screen.findByText("couldn’t measure")).toBeInTheDocument();
+  const prune = screen.getByRole("heading", { name: "Prune" }).closest("section")!;
+  await userEvent.click(within(prune).getByRole("button", { name: /refresh/i }));
+  await userEvent.click(screen.getByRole("checkbox", { name: /stale terminal sockets/i }));
+  await userEvent.click(screen.getByRole("checkbox", { name: /archived sessions’ scrollback/i }));
+  await userEvent.click(within(prune).getByRole("button", { name: /prune selected \(1\)/i }));
+  expect(screen.getByText(/permanently remove 312 items/i)).toBeInTheDocument();
+
+  // The held dry run now lands, and it says the SELECTED category is unknown.
+  landRefresh({
+    categories: {
+      stale_sockets: { items: 0, bytes: 0 },
+      archived_scrollback: { items: 0, bytes: 0, error: "PermissionError" },
+    },
+    runner: null,
+  });
+
+  // The confirmation must not survive that, and nothing may be submitted on its strength.
+  await waitFor(() =>
+    expect(screen.queryByRole("button", { name: /confirm prune/i })).not.toBeInTheDocument(),
+  );
+  expect(screen.queryByText(/permanently remove 0 items/i)).not.toBeInTheDocument();
+  expect(api.prune).not.toHaveBeenCalled();
+  expect(within(prune).getByRole("button", { name: /prune selected/i })).toBeDisabled();
+  expect(screen.getByText(/couldn’t be measured.*deselect it or refresh/i)).toBeInTheDocument();
+});
+
+test("Prune: a busy runner recovers to enabled once the job ends, without remounting (#993)", async () => {
+  vi.mocked(api.pruneInfo)
+    .mockResolvedValueOnce({
+      categories: {
+        stale_sockets: { items: 159, bytes: 38912 },
+        archived_scrollback: { items: 0, bytes: 0 },
+      },
+      runner: { job: "missions", started_at: 1 },
+    })
+    .mockResolvedValue({
+      categories: {
+        stale_sockets: { items: 159, bytes: 38912 },
+        archived_scrollback: { items: 0, bytes: 0 },
+      },
+      runner: null,
+    });
+  renderSettings("dark", "#ffb000", "/settings/maintenance");
+  expect(
+    await screen.findByText(/running \(missions\) — unavailable; retry when maintenance finishes/i),
+  ).toBeInTheDocument();
+  const prune = screen.getByRole("heading", { name: "Prune" }).closest("section")!;
+  expect(within(prune).getByRole("button", { name: /prune selected/i })).toBeDisabled();
+  // Refresh is always available while busy — the card recovers in place.
+  await userEvent.click(within(prune).getByRole("button", { name: /refresh/i }));
+  await waitFor(() =>
+    expect(within(prune).getByRole("button", { name: /prune selected \(1\)/i })).toBeEnabled(),
+  );
+});
+
+test("Prune: nothing to prune disables the action; a failed dry run offers Retry (#993)", async () => {
+  vi.mocked(api.pruneInfo)
+    .mockRejectedValueOnce(new Error("boom"))
+    .mockResolvedValue({
+      categories: {
+        stale_sockets: { items: 0, bytes: 0 },
+        archived_scrollback: { items: 0, bytes: 0 },
+      },
+      runner: null,
+    });
+  renderSettings("dark", "#ffb000", "/settings/maintenance");
+  expect(
+    await screen.findByText(/couldn’t measure the caches \(dry run failed\)/i),
+  ).toBeInTheDocument();
+  const prune = screen.getByRole("heading", { name: "Prune" }).closest("section")!;
+  await userEvent.click(within(prune).getByRole("button", { name: /refresh/i }));
+  expect(await screen.findByText("Nothing to prune right now.")).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: /prune selected \(1\)/i }),
+  ).toBeDisabled();
 });
 
 // ---- session list order (#506) ----

@@ -1021,6 +1021,45 @@ export const api = {
         scope,
       },
     ),
+  // Settings → Maintenance (#993). Dry runs are plain GETs; the two mutations are CSRF-guarded
+  // and share one server-side runner, so a submission while any maintenance job runs is a 409
+  // (`ApiError.status`) whose body names the running job — refused, not queued.
+  /** What a cache prune would remove now, per category, plus the runner's busy state. */
+  pruneInfo: () =>
+    getJson<{
+      categories: Record<
+        "stale_sockets" | "archived_scrollback",
+        { items: number; bytes: number; error?: string }
+      >;
+      runner: { job: string; started_at: number | null } | null;
+    }>("/api/maintenance/prune"),
+  /** Remove the selected cache categories. Session history is never touched. */
+  prune: (categories: ("stale_sockets" | "archived_scrollback")[]) =>
+    mutateJson<{
+      removed: number;
+      bytes_freed: number;
+      skipped: { category: string; reason: string; count: number }[];
+      failed: { category: string; item: string; reason: string }[];
+      failed_total: number;
+    }>("POST", "/api/maintenance/prune", { categories }),
+  /** What "Archive old missions" would do for missions older than `days`. */
+  archiveOldMissionsInfo: (days: number) =>
+    getJson<{
+      eligible: number;
+      sessions: number;
+      live_sessions: number;
+      unresolved: string[];
+      runner: { job: string; started_at: number | null } | null;
+    }>(`/api/missions/archive-older?older_than_days=${encodeURIComponent(String(days))}`),
+  /** Archive every finished mission older than `days` — never abandons a live one. */
+  archiveOldMissions: (days: number) =>
+    mutateJson<{
+      archived: number;
+      sessions_archived: number;
+      terminals_stopped: number;
+      skipped: { mission_id: string; reason: string }[];
+      failed: { mission_id: string; session_key: string | null; reason: string }[];
+    }>("POST", "/api/missions/archive-older", { older_than_days: days }),
   // -------------------------------------------------------------------------------------------
   // Missions (#846 / #862). Every route is `logged_in`; the mutating ones are CSRF-guarded.
   // -------------------------------------------------------------------------------------------

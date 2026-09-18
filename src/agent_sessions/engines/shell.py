@@ -86,14 +86,31 @@ class ShellProvider:
         with contextlib.suppress(OSError):
             path.unlink()
 
-    def _row_from_path(self, path: Path) -> Session | None:
+    def _row_from_path(self, path: Path, *, checked: bool = False) -> Session | None:
         """One row from one record file, or ``None`` — fail-soft per record: a bad file drops its
-        row, never the whole list. Shared by ``scan`` and ``lookup`` (#991)."""
+        row, never the whole list. Shared by ``scan`` and ``lookup`` (#991).
+
+        ``checked`` splits the two failures this used to catch together: a record that cannot be
+        READ propagates, so a measurement authorising deletion names it instead of counting it as
+        absent (review 4951, P2), while a record that reads and does not DECODE stays a dropped
+        row under both policies — that is a listability fact, not an unreadable store."""
         try:
-            rec = json.loads(path.read_text(encoding="utf-8"))
+            raw = path.read_text(encoding="utf-8")
             st = path.stat()
-        except (OSError, json.JSONDecodeError):
+        except OSError:
+            if checked:
+                raise
             return None
+        try:
+            rec = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        return self._row_from_record(rec, st)
+
+    def _row_from_record(self, rec, st) -> Session | None:
+        """One row from an ALREADY-READ record + stat, or ``None`` when the record is not LISTABLE
+        (its shape is wrong). No I/O here on purpose: classifying a read *failure* belongs to the
+        caller, which is what lets ``scan_checked`` treat one as unreadable rather than absent."""
         if not isinstance(rec, dict):
             return None
         sid, cwd = rec.get("id"), rec.get("cwd")
@@ -129,6 +146,26 @@ class ShellProvider:
             if row is not None:
                 out.append(row)
         return out
+
+    def scan_checked(self) -> tuple[list[Session], list[str]]:
+        """``scan()``'s rows, plus a line for each record that could not be READ (#993).
+
+        Partial by design: a record that fails to read costs only itself. "This shell session has
+        no record" and "its record would not open" must not arrive as the same empty answer when
+        something is about to be deleted — but nor may one bad record hide the healthy ones
+        (review 4898). An absent store is legitimately empty; a shape-invalid record was read fine
+        and is simply not listable, so it is skipped exactly as ``scan`` skips it.
+        """
+        paths = [
+            Path(e.path)
+            for e in base.scandir_checked(base._shell_dir())
+            if e.name.endswith(".json") and e.is_file(follow_symlinks=False)
+        ]
+        return base.checked_rows(
+            sorted(paths),
+            lambda p: self._row_from_path(p, checked=True),
+            engine_id=self.engine_id,
+        )
 
     def lookup(self, native_id: str) -> Session | None:
         """This one shell session's record, read fresh (#991), or ``None``. ``on_new_session``
