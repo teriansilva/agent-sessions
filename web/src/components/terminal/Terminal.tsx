@@ -36,6 +36,7 @@ import { getBrowserFp, getTabId } from "../../lib/browserFp";
 import { getDeviceLabel } from "../../lib/deviceLabel";
 import { HistoryLoader, type HistoryState } from "../../lib/historyLoader";
 import { PagesBuffer, foldWipe } from "../../lib/pagesBuffer";
+import { createScrollEraseStripper } from "../../lib/scrollErase";
 import {
   imageFilesFromAsyncClipboard,
   imageFilesFromData,
@@ -633,49 +634,11 @@ export function Terminal({
     let streamBuf = ""; // everything the socket delivered, decoded — the rewrite source
     const rewriteQueue: Uint8Array[] = []; // live chunks held back while a rewrite is in flight
     let attachReplayOpen = true;
-    let codexEraseCarry = new Uint8Array(0);
-    const SCROLLBACK_ERASE = new Uint8Array([0x1b, 0x5b, 0x33, 0x4a]); // CSI 3J
-    const stripCodexLiveScrollbackErase = (b: Uint8Array) => {
-      if (engine !== "codex" || attachReplayOpen) {
-        codexEraseCarry = new Uint8Array(0);
-        return b;
-      }
-      let src = b;
-      const hadCarry = codexEraseCarry.length > 0;
-      if (codexEraseCarry.length) {
-        src = new Uint8Array(codexEraseCarry.length + b.length);
-        src.set(codexEraseCarry, 0);
-        src.set(b, codexEraseCarry.length);
-        codexEraseCarry = new Uint8Array(0);
-      }
-      const out: number[] = [];
-      for (let i = 0; i < src.length;) {
-        const remaining = src.length - i;
-        const full =
-          remaining >= SCROLLBACK_ERASE.length &&
-          SCROLLBACK_ERASE.every((v, j) => src[i + j] === v);
-        if (full) {
-          i += SCROLLBACK_ERASE.length;
-          continue;
-        }
-        const partial =
-          remaining < SCROLLBACK_ERASE.length &&
-          SCROLLBACK_ERASE.slice(0, remaining).every(
-            (v, j) => src[i + j] === v,
-          );
-        if (partial) {
-          codexEraseCarry = src.slice(i);
-          break;
-        }
-        out.push(src[i]);
-        i++;
-      }
-      return !hadCarry &&
-        out.length === src.length &&
-        codexEraseCarry.length === 0
-        ? b
-        : new Uint8Array(out);
-    };
+    // Live-stream wipe strip (#600 codex, #1038 kimi) — lib-extracted with its across-chunk
+    // carry. The server applies the identical filter to the dtach stream before ring/mirror/ws;
+    // this copy protects the post-`seq` stream (and the rewrite replay below) even on sessions
+    // whose ring predates the server fix. Attach replays keep their wipes (pre-attach junk).
+    const stripLiveScrollbackErase = createScrollEraseStripper();
     // Blank-attach repaint backstop (#349 follow-up, operator report): some idle
     // sessions paint fragments or nothing on selection — the server-side nudge can be
     // coalesced/missed, and only a REAL geometry change reliably makes winch-repaint
@@ -1147,7 +1110,11 @@ export function Terminal({
           attachBytes += b.byteLength; // repaint-backstop signal: did this attach paint anything?
           sawOutput = true;
           if (!inputReadyRef.current) bootGate.note(b); // #533/#607/#616: fresh-launch compose gate
-          const displayBytes = stripCodexLiveScrollbackErase(b);
+          const displayBytes = stripLiveScrollbackErase.strip(
+            engine,
+            !attachReplayOpen,
+            b,
+          );
           if (!displayBytes.byteLength) return;
           recordOutput(displayBytes); // feed the lazy-load rewrite buffer (#348 Phase 3)
           if (rewriting)
@@ -1197,7 +1164,7 @@ export function Terminal({
         onHist: (cursor) => loader.seed(cursor),
         onSeq: () => {
           attachReplayOpen = false;
-          codexEraseCarry = new Uint8Array(0);
+          stripLiveScrollbackErase.reset();
         },
         onRole: (r, h) => {
           setRole(r);

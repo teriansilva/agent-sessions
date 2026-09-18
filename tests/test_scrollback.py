@@ -35,6 +35,56 @@ def test_non_codex_live_output_keeps_clear_scrollback():
     assert scrollback.sanitize_live_output("claude:abc", data) == data
 
 
+def test_kimi_live_output_drops_app_clear_scrollback():
+    """#1038: kimi's own repaint emits the same CSI 3J wipe codex does — verified 95× in a live
+    session's ring. The server strip must treat it identically."""
+    data = b"\x1b[?2026h\x1b[2J\x1b[H\x1b[3Jkimi frame\x1b[?2026l"
+    expected = b"\x1b[?2026h\x1b[2J\x1b[Hkimi frame\x1b[?2026l"
+    assert scrollback.sanitize_live_output("kimi:abc", data) == expected
+
+
+def test_kimi_live_output_drops_wipe_at_every_split_point():
+    """The wipe can straddle a pty-read boundary at ANY byte offset — the carry must reassemble
+    it and only the complete wipe is ever dropped (the authored ESC[2J ESC[H clear passes)."""
+    whole = b"\x1b[2J\x1b[H\x1b[3Jframe"
+    expected = b"\x1b[2J\x1b[Hframe"
+    wipe_end = whole.index(b"J") + 1  # last byte of the 3J sequence
+    for cut in range(wipe_end + 1):  # every boundary inside or at the end of the wipe
+        key = f"kimi:split{cut}"
+        emitted_before = scrollback.sanitize_live_output(key, whole[:cut])
+        emitted_after = scrollback.sanitize_live_output(key, whole[cut:])
+        assert emitted_before + emitted_after == expected, f"split at {cut}"
+
+
+def test_kimi_live_output_carry_survives_nonmatching_continuation():
+    """A partial `ESC[3` carried across reads that turns out NOT to be a wipe must be emitted
+    verbatim — the strip only ever drops complete wipe sequences."""
+    key = "kimi:partial"
+    assert scrollback.sanitize_live_output(key, b"frame \x1b[3") == b"frame "
+    assert scrollback.sanitize_live_output(key, b"Xjunk") == b"\x1b[3Xjunk"
+    assert scrollback.sanitize_live_output(key, b"\x1b[3Jmore") == b"more"
+
+
+def test_sanitize_carry_is_isolated_per_session():
+    """Two wipe-repaint sessions interleaved read-by-read must not share a carry."""
+    a, b = "kimi:one", "kimi:two"
+    assert scrollback.sanitize_live_output(a, b"\x1b[2J\x1b[H\x1b[") == b"\x1b[2J\x1b[H"
+    assert scrollback.sanitize_live_output(b, b"\x1b[2J\x1b[H\x1b[") == b"\x1b[2J\x1b[H"
+    assert scrollback.sanitize_live_output(b, b"3Jsecond") == b"second"
+    assert scrollback.sanitize_live_output(a, b"3Jfirst") == b"first"
+
+
+def test_kimi_drop_buffer_resets_sanitize_carry():
+    """Teardown (`_drop_buffer`) must drop the carry too, or a stale partial wipe would eat the
+    first bytes of a relaunched session under a recycled key."""
+    key = "kimi:drop"
+    assert scrollback.sanitize_live_output(key, b"\x1b[3") == b""
+    scrollback._drop_buffer(key)
+    # Without the reset, this would combine with the dropped "\x1b[3" into a full wipe and
+    # swallow the bytes; with it, the read passes through untouched (the partial is gone).
+    assert scrollback.sanitize_live_output(key, b"3Jnot-a-wipe") == b"3Jnot-a-wipe"
+
+
 def test_note_cols_persists_and_survives_restart():
     key = "claude:cols-persist"
     scrollback.note_cols(key, 132)
