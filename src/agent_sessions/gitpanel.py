@@ -963,11 +963,28 @@ def _worktree_stat(root: str, path: str) -> str:
 
 
 def staged_fingerprint(entries: list[dict]) -> str:
-    """The whole staged set, because that is what a commit actually records."""
-    staged = sorted(
-        entry_fingerprint(e) for e in entries if e.get("index") not in (".", "?", None, "")
+    """The reviewed index delta, including blob and mode identities, independent of worktree."""
+    # A staged row's legacy `oid` names HEAD, not the index. Re-hashing entry_fingerprint
+    # therefore missed a same-path restage once `_root` was removed (#979). Bind the actual
+    # index blob/mode and rename source explicitly; unstaged worktree edits are not committed.
+    fields = (
+        "path",
+        "orig_path",
+        "index",
+        "oid_head",
+        "oid_index",
+        "mode_head",
+        "mode_index",
+        "oid_base",
+        "oid_ours",
+        "oid_theirs",
     )
-    return hashlib.sha256("\x00".join(staged).encode()).hexdigest()[:16]
+    staged = sorted(
+        "\x00".join(str(e.get(k) or "") for k in fields)
+        for e in entries
+        if e.get("index") not in (".", "?", None, "")
+    )
+    return hashlib.sha256("\x00".join(staged).encode("utf-8", "surrogateescape")).hexdigest()[:16]
 
 
 def dirty_fingerprint(entries: list[dict]) -> str:

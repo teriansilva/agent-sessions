@@ -290,6 +290,13 @@ works. A commit is also refused when:
   never showed you — commit in the terminal instead;
 - the branch moved while the commit was being written.
 
+A Staged commit holds Git's index lock from the final verification until the commit is recorded.
+A concurrent `git add` gets Git's usual lock error; retry it after the commit finishes. If another
+Git command already holds that lock, the panel refuses without committing. The commit is built
+from a private copy of the verified index, so unstaged worktree edits stay out of it. The reported
+file count comes from the recorded changes (a rename counts once). If the status refresh fails
+afterward, the panel still returns the commit ID and the refresh error.
+
 A message can be up to 16,384 characters.
 
 ### What a commit is made of

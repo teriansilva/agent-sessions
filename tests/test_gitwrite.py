@@ -2438,16 +2438,10 @@ def test_discard_preserves_the_bytes_it_replaces(repo):
 
 
 def test_a_stage_landing_MID_COMMIT_is_not_in_the_commit(repo, monkeypatch):
-    """The commit records the tree that was VERIFIED, so an unreviewed file cannot get in.
+    """A late stage after tree creation is refused while the real index lock remains held.
 
-    `git commit` writes whatever the index holds when it runs, so the old shape had to let the
-    race happen and undo it afterwards — commit, compare trees, `reset --soft` on a mismatch. That
-    worked, but it meant the defence was a rollback, and a rollback is only as good as its own
-    correctness (it ate a concurrent commit twice during review).
-
-    Building the object from the verified tree removes the race instead of compensating for it:
-    `commit-tree` is handed the exact tree, so a stage landing at the boundary changes the INDEX
-    and not the commit — which is what it should do, and it shows up as a staged row afterwards.
+    The pre-write-tree window is covered separately by test_git_staged_commit.py; this test
+    covers the rest of the publication window instead of claiming to prove both.
     """
     (repo / "a.txt").write_text("reviewed\n")
     _git(repo, "add", "a.txt")
@@ -2460,7 +2454,10 @@ def test_a_stage_landing_MID_COMMIT_is_not_in_the_commit(repo, monkeypatch):
         if args and args[0] == "write-tree" and not fired:
             fired.append(1)
             (repo / "sneaked.txt").write_text("never reviewed\n")
-            subprocess.run(["git", "-C", str(repo), "add", "sneaked.txt"], check=True)
+            attempt = subprocess.run(
+                ["git", "-C", str(repo), "add", "sneaked.txt"], capture_output=True, text=True
+            )
+            assert attempt.returncode != 0 and "index.lock" in attempt.stderr
         return out
 
     monkeypatch.setattr(gitwrite, "run_git_write", stage_extra_at_the_boundary)
@@ -2474,11 +2471,12 @@ def test_a_stage_landing_MID_COMMIT_is_not_in_the_commit(repo, monkeypatch):
     ).stdout.split()
     assert files == ["a.txt"], f"the commit carries files nobody reviewed: {files}"
     assert out["commit"], "no commit was reported"
-    # And the late stage is not lost — it is simply still staged, where it belongs.
+    # The refused stage leaves the new worktree bytes intact, without changing the index.
     still = subprocess.run(
         ["git", "-C", str(repo), "diff", "--cached", "--name-only"], capture_output=True, text=True
     ).stdout.split()
-    assert "sneaked.txt" in still, "the late stage was discarded instead of left staged"
+    assert "sneaked.txt" not in still
+    assert (repo / "sneaked.txt").read_text() == "never reviewed\n"
 
 
 def test_a_commit_landing_MID_COMMIT_is_never_overwritten(repo, monkeypatch):
@@ -2499,9 +2497,11 @@ def test_a_commit_landing_MID_COMMIT_is_never_overwritten(repo, monkeypatch):
         out = real(r, args, **kw)
         if args and args[0] == "commit-tree" and not fired:
             fired.append(1)
-            (repo / "theirs.txt").write_text("someone else's work\n")
-            subprocess.run(["git", "-C", str(repo), "add", "theirs.txt"], check=True)
-            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "THEIR COMMIT"], check=True)
+            # A ref-only writer bypasses index.lock, so the publication CAS still matters.
+            parent = real(r, ["rev-parse", "HEAD"]).strip()
+            tree = real(r, ["rev-parse", "HEAD^{tree}"]).strip()
+            theirs = real(r, ["commit-tree", tree, "-p", parent], stdin=b"THEIR COMMIT").strip()
+            _git(repo, "update-ref", "HEAD", theirs, parent)
         return out
 
     monkeypatch.setattr(gitwrite, "run_git_write", commit_at_the_boundary)

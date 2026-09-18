@@ -2922,6 +2922,29 @@ def git_discard(
 MAX_MESSAGE = 16 * 1024
 
 
+def _staged_commit_paths(repo: Repo, parent_tree: str, tree: str) -> list[str]:
+    """Names in a candidate tree's delta; each rename contributes its destination once."""
+    data = run_git_bytes(
+        repo,
+        ["diff-tree", "-r", "-z", "--name-status", "-M", parent_tree, tree, "--"],
+        require_complete=True,
+    )
+    parts = data.split(b"\0")
+    paths = []
+    i = 0
+    try:
+        while i < len(parts) - 1:
+            kind = parts[i]
+            i += 1
+            if kind.startswith((b"R", b"C")):
+                i += 1  # source name; the destination identifies this one change
+            paths.append(parts[i].decode("utf-8", "strict"))
+            i += 1
+    except (IndexError, UnicodeDecodeError):
+        raise FsError("the staged commit's paths could not be read safely", status=409) from None
+    return paths
+
+
 def git_commit(path: str | None, message: object, expect: object = None) -> dict:
     """Commit what is staged. No amend, no force, no hook.
 
@@ -2952,8 +2975,9 @@ def git_commit(path: str | None, message: object, expect: object = None) -> dict
             status=409,
         )
 
-    def run() -> dict:
-        # Every precondition below reads the index INSIDE the lock and, where the operator was
+    def locked(private: str) -> dict:
+        # Git's own index.lock is already held here, including while the fingerprint is checked.
+        # Every precondition below reads that locked index and, where the operator was
         # shown something, checks it still holds. `git commit` records the whole index, so a file
         # the session agent staged between the panel's read and this call used to ride along
         # unseen — and the response still reported the old count. `staged_fp` is the whole staged
@@ -3002,8 +3026,9 @@ def git_commit(path: str | None, message: object, expect: object = None) -> dict
         # gap put an unreviewed file into the commit, and a switch in the gap put the commit on a
         # different branch while this call went on reporting the original name.
         #
-        # Building the object directly removes both. `commit-tree` takes the exact tree that was
-        # verified and the exact parent this branch was on; `update-ref` then moves THAT branch,
+        # The verified index is copied while index.lock excludes other Git writers. Building
+        # from that private copy avoids write-tree taking our real lock itself. `commit-tree`
+        # takes its tree and the exact parent; `update-ref` then moves THAT branch,
         # by name, only if it is still where it was. HEAD is a symref, so it follows on its own
         # when it points here — and when it does not, this commits to the branch the operator
         # chose rather than to wherever they wandered.
@@ -3012,7 +3037,13 @@ def git_commit(path: str | None, message: object, expect: object = None) -> dict
         # `gpg.program=/bin/false`, `git commit` dies trying to execute it; `commit-tree` ignores
         # the key entirely. The old `--no-gpg-sign` flag was defending against something this
         # shape simply does not do.
-        want_tree = run_git_write(repo, ["write-tree"]).strip()
+        if not _copy_nofollow(
+            os.path.join(repo.gitdir, "index"), private, GIT_MAX_INDEX_BYTES, keep_mtime=True
+        ):
+            raise FsError("the staged index could not be read safely", status=409)
+        want_tree = run_git_write(
+            repo, ["write-tree"], index_file=private, extra_config=_PRIVATE_INDEX
+        ).strip()
         head_tree = (
             run_git_write(repo, ["rev-parse", "--verify", f"{before_head}^{{tree}}"]).strip()
             if before_head
@@ -3024,23 +3055,10 @@ def git_commit(path: str | None, message: object, expect: object = None) -> dict
                 "look again.",
                 status=409,
             )
-        try:
-            mine = run_git_write(
-                repo,
-                # No `-p` on an unborn branch: a root commit has no parent, and an empty one
-                # would be a revision git cannot resolve.
-                ["commit-tree", want_tree, *(["-p", before_head] if before_head else [])],
-                stdin=message.encode("utf-8"),
-            ).strip()
-        except GitError as e:
-            text = str(e)
-            if "Please tell me who you are" in text or "empty ident" in text:
-                raise GitError(
-                    "git has no identity configured on this host, so it will not record an "
-                    "author. Set user.name and user.email in the session, then commit again.",
-                    status=409,
-                ) from None
-            raise
+        # Extract the immutable tree delta BEFORE publication: a failed read must not conceal
+        # a successful commit, and renames count once rather than as two index rows.
+        paths = _staged_commit_paths(repo, head_tree or EMPTY_TREE, want_tree)
+        mine = _commit_tree(repo, want_tree, before_head, message)
         try:
             run_git_write(repo, ["update-ref", f"refs/heads/{branch}", mine, before_head])
         except GitError:
@@ -3049,14 +3067,33 @@ def git_commit(path: str | None, message: object, expect: object = None) -> dict
                 "on it. Refresh and commit again.",
                 status=409,
             ) from None
-        head = mine[:7]
-        return {
-            "commit": head,
-            "sha": mine,
-            "branch": branch,
-            "files": len(staged),
-            "status": _fresh_status(repo),
-        }
+        return _with_status(
+            repo,
+            {
+                "commit": mine[:7],
+                "sha": mine,
+                "branch": branch,
+                "files": len(paths),
+                "paths": paths,
+            },
+        )
+
+    def run() -> dict:
+        held = _acquire_index_lock(repo, INDEX_LOCK_WAIT_S)
+        if isinstance(held, str):
+            raise FsError(held, status=409)
+        scratch = ""
+        try:
+            scratch = tempfile.mkdtemp(prefix=".battlelab-staged-", dir=repo.gitdir)
+            return locked(os.path.join(scratch, "index"))
+        except OSError as e:
+            raise FsError(
+                f"the staged index could not be copied ({e.strerror})", status=409
+            ) from None
+        finally:
+            if scratch:
+                shutil.rmtree(scratch, ignore_errors=True)
+            held.release()
 
     return _guarded(repo, run)
 
