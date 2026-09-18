@@ -2245,3 +2245,269 @@ def test_prepare_rejects_a_non_boolean_source_ref_instead_of_coercing_it(
         not in _prepare(c, csrf, auth_cfg, include_source_ref=False).json()["preview"]
     )
     assert "- transcript:" in _prepare(c, csrf, auth_cfg, include_source_ref=True).json()["preview"]
+
+
+# ---- the handoff considers the source session's project (#1033) --------------------------------
+#
+# The handoff used to copy the source's RAW cwd and never look at the session's project. For a
+# session ADOPTED into a project (#361/#520/#448 semantics) those are different things: the raw
+# cwd can be anywhere (e.g. ~ — the operator's "default directory"), while the session displays
+# under the adopted entity. The target must launch in the project's default_folder in that case,
+# and keep the raw cwd whenever it genuinely sits inside the project.
+
+_FOLDER_SESSION = "33333333-3333-3333-3333-333333333333"  # fake_jsonl's /tmp/other session
+
+
+def _seed_claude_session(tmp_home, cwd: str, uuid: str, text: str) -> str:
+    """A Claude-shaped JSONL whose scan row reports ``cwd`` (the dir-name encoding the
+    fixture uses: each ``/`` becomes ``-``). Returns the engine-qualified key."""
+    d = tmp_home / ".claude" / "projects" / ("-" + cwd.strip("/").replace("/", "-"))
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{uuid}.jsonl").write_text(
+        f'{{"type":"user","cwd":"{cwd}","message":{{"content":"{text}"}}}}\n'
+    )
+    return f"claude:{uuid}"
+
+
+def _project_in(tmp_home, name: str = "Battlelab"):
+    """A project entity owning ``$HOME/claude/repo-b`` (a real dir, so the ws launch gate
+    accepts it via the ~/claude picker branch). Returns ``(entity, folder)``."""
+    from agent_sessions import projects
+
+    folder = tmp_home / "claude" / "repo-b"
+    folder.mkdir(parents=True, exist_ok=True)
+    return projects.create(name, folders=[str(folder)], default_folder=str(folder)), folder
+
+
+def _commit_prepared(c, csrf, cfg, **prepare_over) -> dict:
+    r = _prepare(c, csrf, cfg, **prepare_over)
+    assert r.status_code == 200, r.text
+    return c.post(
+        "/api/handoff", json={"handle": r.json()["handle"]}, headers=_hdr(csrf, cfg)
+    ).json()
+
+
+def test_handoff_launches_the_target_in_the_source_project_folder(
+    auth_cfg, fake_jsonl, monkeypatch, tmp_home
+):
+    """THE #1033 repro: a session adopted into a project while its raw cwd is elsewhere
+    (the operator's ~). The target launches in the PROJECT's default folder, not the raw
+    cwd — red on the old code, which returned the raw cwd verbatim."""
+    _present_all(monkeypatch)
+    p, folder = _project_in(tmp_home)
+    metadata.patch(f"claude:{_FOLDER_SESSION}", project_id=p.id)
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    res = _commit_prepared(c, csrf, auth_cfg, source_id=f"claude:{_FOLDER_SESSION}")
+    assert res["cwd"] == str(folder)
+
+
+def test_handoff_keeps_the_cwd_when_the_source_sits_inside_its_project(
+    auth_cfg, fake_jsonl, monkeypatch, tmp_home
+):
+    _present_all(monkeypatch)
+    p, folder = _project_in(tmp_home)
+    key = _seed_claude_session(
+        tmp_home, str(folder), "aaaaaaa1-1111-4111-8111-111111111111", "inside the project"
+    )
+    metadata.patch(key, project_id=p.id)
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    res = _commit_prepared(c, csrf, auth_cfg, source_id=key)
+    assert res["cwd"] == str(folder)
+    # The seed's workdir line agrees with the launch cwd.
+    assert f"- workdir: {folder}" in _prepare(c, csrf, auth_cfg, source_id=key).json()["preview"]
+
+
+def test_handoff_keeps_the_cwd_for_a_boundary_prefix_source(
+    auth_cfg, fake_jsonl, monkeypatch, tmp_home
+):
+    """No explicit adoption — the cwd merely sits inside the project's folder (the
+    boundary-aware match). Same answer: the cwd is genuinely inside the project, keep it."""
+    _present_all(monkeypatch)
+    _p, folder = _project_in(tmp_home)
+    key = _seed_claude_session(
+        tmp_home, str(folder) + "/sub", "aaaaaaa2-1111-4111-8111-111111111111", "boundary prefix"
+    )
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    res = _commit_prepared(c, csrf, auth_cfg, source_id=key)
+    assert res["cwd"] == str(folder) + "/sub"
+
+
+def test_handoff_refuses_a_folderless_source_project(auth_cfg, fake_jsonl, monkeypatch, tmp_home):
+    """A folderless legacy project has no default_folder by design (`_from_raw`); new-session
+    already refuses to launch into one. The handoff refuses too — a clear 422 asking the
+    operator to set the project's default folder — never a silent launch into the raw cwd."""
+    from agent_sessions import projects
+
+    _present_all(monkeypatch)
+    p = projects.create("Legacy Folderless")
+    assert p.default_folder == "" and not p.folders
+    metadata.patch(f"claude:{_FOLDER_SESSION}", project_id=p.id)
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = _prepare(c, csrf, auth_cfg, source_id=f"claude:{_FOLDER_SESSION}")
+    assert r.status_code == 422, r.text
+    assert "Legacy Folderless" in r.json()["detail"]
+    assert "default folder" in r.json()["detail"]
+
+
+def test_handoff_dangling_project_id_keeps_the_raw_cwd(auth_cfg, fake_jsonl, monkeypatch):
+    """A deleted project leaves a dangling sidecar id; `projects.resolve` falls back to the
+    folder ref and the handoff behaves exactly like the no-project case."""
+    _present_all(monkeypatch)
+    metadata.patch(f"claude:{_FOLDER_SESSION}", project_id="p-00000000")
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    res = _commit_prepared(c, csrf, auth_cfg, source_id=f"claude:{_FOLDER_SESSION}")
+    assert res["cwd"] == "/tmp/other"
+
+
+def test_handoff_ai_degrade_uses_the_decided_cwd(auth_cfg, fake_jsonl, monkeypatch, tmp_home):
+    """The AI→Quick degradation builds its fallback from the SAME decided cwd — the
+    degrade must not silently resurrect the raw cwd."""
+    from agent_sessions import review
+
+    _present_all(monkeypatch)
+    p, folder = _project_in(tmp_home)
+    metadata.patch(f"claude:{_FOLDER_SESSION}", project_id=p.id)
+
+    async def _boom(messages, *, model=None):
+        raise review.NotConfiguredError("AI review endpoint is not configured")
+
+    monkeypatch.setattr(review, "complete_json", _boom)
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = _prepare(c, csrf, auth_cfg, source_id=f"claude:{_FOLDER_SESSION}", mode="ai")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["meta"]["degraded"] is True
+    assert f"- workdir: {folder}" in body["preview"]
+    res = c.post("/api/handoff", json={"handle": body["handle"]}, headers=_hdr(csrf, auth_cfg))
+    assert res.json()["cwd"] == str(folder)
+
+
+def test_prepare_refuses_an_excluded_source_even_without_roots(auth_cfg, fake_jsonl, monkeypatch):
+    """The prepare scope gate carried the old conditional `roots and not in_scope(...)` shape
+    (#867 round 4 fixed the same shape in terminal.py; this route kept it): with roots empty
+    the guard skipped the exclusion check entirely. Exclusions bind either way."""
+    from agent_sessions import prefs
+
+    _present_all(monkeypatch)
+    prefs.set_folder_exclusions(["/tmp"])
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = _prepare(c, csrf, auth_cfg, source_id=f"claude:{_FOLDER_SESSION}")
+    assert r.status_code == 404, r.text
+
+
+def _ws_launch_fixture(monkeypatch):
+    """The shared stubbing of the existing seed-redeem test: the bridge is captured (argv +
+    ALL kwargs, so the cwd is assertable), the master dies instantly, and the launch argv is
+    counted — the count is the SPAWN count (`ptybridge.launch_argv` is called only on a
+    LAUNCH; an ATTACH builds the engine's resume argv, a different function)."""
+    from agent_sessions import ptybridge, relaunch, sessions, webterm
+    from agent_sessions.routes import terminal as terminal_routes
+
+    captured: dict = {"spawns": 0, "runs": []}
+
+    async def fake_run(ws, argv, **kwargs):
+        captured["runs"].append({"argv": list(argv), **kwargs})
+        captured["seed_key"] = kwargs.get("seed_key")
+        for t in list(terminal_routes._HANDOFF_WATCHES):
+            with contextlib.suppress(Exception):
+                await t
+        await ws.send_text("WATCH-DONE")
+
+    def counting_launch_argv(*, engine, session_id, launch_argv):
+        captured["spawns"] += 1
+        return ["/bin/true"]
+
+    monkeypatch.setattr(webterm, "run", fake_run)
+    monkeypatch.setattr(sessions, "open_action", lambda e, n: (sessions.LAUNCH, None))
+    monkeypatch.setattr(relaunch, "blocked", lambda key: False)
+    monkeypatch.setattr(relaunch, "note_exit", lambda *a, **k: None)
+    monkeypatch.setattr(relaunch, "_INSTANT_EXIT_S", 0.05)
+    monkeypatch.setattr(ptybridge, "session_exists", lambda e, n: False)
+    monkeypatch.setattr(ptybridge, "launch_argv", counting_launch_argv)
+    return captured
+
+
+def _ws_connect(c, auth_cfg, key, query):
+    cookie = c.cookies.get("agent_sessions")
+    headers = {"Origin": auth_cfg.origin, "Cookie": f"agent_sessions={cookie}"}
+    return c.websocket_connect(f"/ws/term/{key}?{query}", headers=headers)
+
+
+def _await_watch_done(ws):
+    for _ in range(10):
+        if ws.receive_text() == "WATCH-DONE":
+            return
+    raise AssertionError("WATCH-DONE never arrived")
+
+
+def test_ws_handoff_launches_in_the_decided_cwd_pinned_id_model(
+    auth_cfg, fake_jsonl, monkeypatch, tmp_home
+):
+    """The committed handoff's ws launch puts the DECIDED cwd (the project's default folder,
+    not the adopted source's raw cwd) on the bridge — and a reconnect never spawns a second
+    master (fresh is one-shot)."""
+    from agent_sessions import engines as engines_mod
+
+    _present_all(monkeypatch)
+    monkeypatch.setattr(engines_mod.base, "CLAUDE_BIN", "/bin/true")
+    captured = _ws_launch_fixture(monkeypatch)
+    p, folder = _project_in(tmp_home)
+    metadata.patch(f"claude:{_FOLDER_SESSION}", project_id=p.id)
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    res = _commit_prepared(
+        c, csrf, auth_cfg, source_id=f"claude:{_FOLDER_SESSION}", target_engine="claude"
+    )
+    key, cwd = res["id"], res["cwd"]
+    with _ws_connect(c, auth_cfg, key, f"new=1&cwd={cwd}") as ws:
+        _await_watch_done(ws)
+    assert captured["runs"][0]["cwd"] == str(folder)  # the bridge got the PROJECT folder
+    assert captured["runs"][0]["seed_key"] == key
+    # Reconnect WITHOUT new=1: an attach, never a second master.
+    from agent_sessions import sessions as sessions_mod
+
+    monkeypatch.setattr(sessions_mod, "open_action", lambda e, n: (sessions_mod.ATTACH, None))
+    with _ws_connect(c, auth_cfg, key, "have=0") as ws:
+        ws.receive_text()  # any frame; the attach path runs the bridge too
+    assert captured["spawns"] == 1
+
+
+def test_ws_handoff_launches_in_the_decided_cwd_mint_own_id_model(
+    auth_cfg, fake_jsonl, monkeypatch, tmp_home
+):
+    """Same decision for a mint-own-id engine (kimi): the ws launches under the
+    placeholder with the decided cwd on the bridge; the store read failing (no kimi
+    state under the tmp home) skips reconciliation, so the placeholder serves — and the
+    spawn count stays one across a reconnect."""
+    from agent_sessions import engines as engines_mod
+    from agent_sessions import sessions as sessions_mod
+
+    _present_all(monkeypatch)
+    monkeypatch.setattr(engines_mod.base, "KIMI_BIN", "/bin/true")
+    captured = _ws_launch_fixture(monkeypatch)
+    p, folder = _project_in(tmp_home)
+    metadata.patch(f"claude:{_FOLDER_SESSION}", project_id=p.id)
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    res = _commit_prepared(
+        c, csrf, auth_cfg, source_id=f"claude:{_FOLDER_SESSION}", target_engine="kimi"
+    )
+    key, cwd = res["id"], res["cwd"]
+    assert key.startswith("kimi:new-")
+    with _ws_connect(c, auth_cfg, key, f"new=1&cwd={cwd}") as ws:
+        _await_watch_done(ws)
+    assert captured["runs"][0]["cwd"] == str(folder)
+    # Reconnect while the master is alive: the client RESENDS new=1 on a placeholder (it
+    # keeps fresh until convergence, Terminal.tsx), and the live-master answer is ATTACH —
+    # never a second master. (A placeholder without new=1 is refused by design, #127.)
+    monkeypatch.setattr(sessions_mod, "open_action", lambda e, n: (sessions_mod.ATTACH, None))
+    with _ws_connect(c, auth_cfg, key, f"new=1&cwd={cwd}") as ws:
+        ws.receive_text()
+    assert captured["spawns"] == 1

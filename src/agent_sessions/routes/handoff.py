@@ -4,8 +4,11 @@ Two-step prepare / commit so the modal can preview (and cancel) without side eff
 
 - ``POST /api/handoff/prepare`` — validates the source session (same identity gate +
   root/visibility scope as the resume path, BEFORE any transcript read) and the target
-  engine's seed-start capability, builds the seed in the requested ``mode`` (``quick`` or
-  Phase 2's ``ai``), and returns ``{handle, preview, meta}``. Nothing is spawned; an
+  engine's seed-start capability, decides the target's launch cwd from the source
+  session's PROJECT (#1033: an adopted session whose raw cwd sits outside the project
+  launches the target in the project's default folder; otherwise the raw cwd rides),
+  builds the seed in the requested ``mode`` (``quick`` or Phase 2's ``ai``), and returns
+  ``{handle, preview, meta}``. Nothing is spawned; an
   abandoned handle just expires. An ``ai`` request whose endpoint is unconfigured or
   failing DEGRADES to ``quick`` — ``meta.degraded`` + ``meta.notice`` say so, and the
   modal surfaces it, rather than the handoff failing outright (issue #597 Phase 2).
@@ -26,7 +29,7 @@ import asyncio
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from .. import discover, engines, handoff, prefs, project_dirs, review
+from .. import discover, engines, handoff, metadata, prefs, project_dirs, projects, review
 
 _MODES = {"quick", "ai"}  # "ai" (Phase 2) degrades to "quick" when the endpoint is absent
 
@@ -77,16 +80,46 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
             raise HTTPException(status_code=422, detail=f"target engine unavailable: {reason}")
         # Source must be a scanned, in-scope session — the resume path's scope rule
         # (#465/#467): a scoped-out session is not readable through handoff either.
+        # UNCONDITIONAL (#1033, the #867-round-4 shape): in_scope checks exclusions FIRST
+        # and only then falls through on empty roots, so the old `roots and …` guard let an
+        # explicitly excluded session through whenever no roots were configured.
         sessions_all = await asyncio.to_thread(engines.scan_all)
         match = next(
             (s for s in sessions_all if s.engine == prov.engine_id and s.uuid == native), None
         )
         roots = project_dirs.effective_roots()
         exclusions = prefs.get_folder_exclusions()
-        if match is None or (
-            roots and not project_dirs.in_scope(match.cwd, roots=roots, exclusions=exclusions)
+        if match is None or not project_dirs.in_scope(
+            match.cwd, roots=roots, exclusions=exclusions
         ):
             raise HTTPException(status_code=404, detail="unknown session")
+        # The source session's PROJECT decides the target's launch cwd (#1033): an adopted
+        # session's raw cwd can be anywhere (e.g. ~ — the operator's default directory) while
+        # the session displays under the adopted project. When the raw cwd sits inside the
+        # project's folders the handoff keeps it; when it doesn't, the target launches in the
+        # project's default folder (#448). Folderless legacy projects have no default folder
+        # by design (`_from_raw`); new-session refuses to launch into one and so does the
+        # handoff — a clear 422 asking for the default, never a silent fallback. Display
+        # parity needs no sidecar write: the default folder is one of the entity's adopted
+        # folders, so the target's row boundary-matches back to the same project.
+        src_key = await asyncio.to_thread(metadata.resolve_key, source_key)
+        src_meta = await asyncio.to_thread(metadata.get, src_key)
+        project_index = await asyncio.to_thread(projects.load)
+        ref = projects.resolve(
+            match.cwd, src_meta.project_id, project_index, alias=src_meta.project_alias
+        )
+        cwd = match.cwd
+        ent = project_index.get(ref.id) if ref.kind == "project" else None
+        if ent is not None and projects.owning_project(match.cwd, {ent.id: ent}) is None:
+            if not ent.default_folder:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f'the source session\'s project "{ent.name}" has no default folder '
+                        "configured — set one for the project before handing off"
+                    ),
+                ) from None
+            cwd = ent.default_folder
         # Transcript read: for a reconciled mint-own-id source the history lives under the
         # REAL id (#611) — resolve through the alias map like every transcript consumer.
         logical = engines.logical_key(source_key)
@@ -97,7 +130,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
                 prov.engine_id,
                 logical_native,
                 title=match.first_user_message,
-                cwd=match.cwd,
+                cwd=cwd,
                 include_source_ref=include_source_ref,
             )
 
@@ -113,7 +146,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
                         prov.engine_id,
                         logical_native,
                         title=match.first_user_message,
-                        cwd=match.cwd,
+                        cwd=cwd,
                         include_source_ref=include_source_ref,
                     )
                 except (review.ReviewError, handoff.HandoffError) as e:
@@ -134,9 +167,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
                 seed, meta = await asyncio.to_thread(_quick)
         except handoff.HandoffError as e:
             raise HTTPException(status_code=e.status, detail=e.detail) from None
-        handle = handoff.create_handle(
-            source_key, target_engine, str(meta["mode"]), seed, cwd=match.cwd
-        )
+        handle = handoff.create_handle(source_key, target_engine, str(meta["mode"]), seed, cwd=cwd)
         return JSONResponse({"handle": handle, "preview": seed, "meta": meta})
 
     @app.post("/api/handoff")
