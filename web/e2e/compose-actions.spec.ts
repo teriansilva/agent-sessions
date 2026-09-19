@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-// #500: the compose bar is a single row — one collapsible key group (↑ ↓ ↵ tab 📎 ✕) that overflows
+// #500: the compose bar is a single row — one collapsible key group (↑ ↓ ← → ↵ tab 📎 ✕) that overflows
 // into ONE "…" menu when narrow, then the mic, then Send (always last). No second (kebab) menu; no
 // esc / copy / interrupt chips. Real-browser test on desktop + mobile.
 

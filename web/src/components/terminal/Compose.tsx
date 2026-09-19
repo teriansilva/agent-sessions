@@ -1,5 +1,7 @@
 import {
   ArrowDown,
+  ArrowLeft,
+  ArrowRight,
   ArrowRightToLine,
   ArrowUp,
   Bookmark,
@@ -1530,8 +1532,9 @@ export const Compose = forwardRef<
   // state, no feature flag (#483). Re-read each render so a test stub installed on `window` is seen.
   const speechSupported = !!getSpeechRecognition();
 
-  // The single collapsible group (#487), in order: up, down, return, esc, tab, attach, and — when
-  // open — collapse. Everything else (mic, Send) sits inline to the right; no second menu.
+  // The single collapsible group (#487), in order: up, down, left, right, return, esc, tab,
+  // attach, and — when open — collapse. Everything else (mic, Send) sits inline to the right;
+  // no second menu.
   const keyActions: KeyAction[] = [
     {
       id: "up",
@@ -1546,6 +1549,20 @@ export const Compose = forwardRef<
       title: "Down",
       icon: <ArrowDown size={16} />,
       run: () => rawInput(KEYSEQ.down),
+    },
+    {
+      id: "left",
+      aria: "Left",
+      title: "Left",
+      icon: <ArrowLeft size={16} />,
+      run: () => rawInput(KEYSEQ.left),
+    },
+    {
+      id: "right",
+      aria: "Right",
+      title: "Right",
+      icon: <ArrowRight size={16} />,
+      run: () => rawInput(KEYSEQ.right),
     },
     {
       id: "enter",

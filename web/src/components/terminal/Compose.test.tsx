@@ -1058,10 +1058,14 @@ test("the nav-key chips send their control sequence to the PTY (#487/#500)", asy
   renderCompose();
   await user.click(screen.getByRole("button", { name: "Up" }));
   await user.click(screen.getByRole("button", { name: "Down" }));
+  await user.click(screen.getByRole("button", { name: "Left" }));
+  await user.click(screen.getByRole("button", { name: "Right" }));
   await user.click(screen.getByRole("button", { name: "Return" }));
   await user.click(screen.getByRole("button", { name: "Tab" }));
   expect(sendInput).toHaveBeenCalledWith(KEYSEQ.up);
   expect(sendInput).toHaveBeenCalledWith(KEYSEQ.down);
+  expect(sendInput).toHaveBeenCalledWith(KEYSEQ.left);
+  expect(sendInput).toHaveBeenCalledWith(KEYSEQ.right);
   expect(sendInput).toHaveBeenCalledWith(KEYSEQ.enter);
   expect(sendInput).toHaveBeenCalledWith(KEYSEQ.tab);
 });
@@ -1077,8 +1081,10 @@ test("the single-row bar has no second (kebab) menu and no copy / interrupt chip
   expect(
     screen.queryByRole("button", { name: /copy/i }),
   ).not.toBeInTheDocument();
-  // The chips are the nav group (up/down/return/esc/tab) + attach + close, then the inline Send.
+  // The chips are the nav group (up/down/left/right/return/esc/tab) + attach + close, then the inline Send.
   expect(screen.getByRole("button", { name: "Up" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Left" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Right" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Escape" })).toBeInTheDocument(); // esc re-added (#503)
   expect(
     screen.getByRole("button", { name: /attach file/i }),
