@@ -678,6 +678,17 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # GET /api/folders (the SPA is the only consumer and moved with it). Archived
         # entities are hidden by default; Settings opts in via ?include_archived=1.
         include_archived = request.query_params.get("include_archived") == "1"
+
+        # OFF THE EVENT LOOP, AND OFF THE UNCACHED WALK (#1048). This route used to run the whole
+        # of the body below inline in the coroutine, over `engines.scan_all()` — so opening
+        # Settings -> Projects paid a guaranteed cold walk (measured 3.7 s on the author's install)
+        # AND blocked every terminal WebSocket for its duration. `/api/sessions` has used
+        # `to_thread` + the TTL snapshot since #678; this is the same treatment, not a new pattern.
+        return JSONResponse(await asyncio.to_thread(_projects_payload, include_archived))
+
+    def _projects_payload(include_archived: bool) -> dict:
+        """`/api/projects`'s body, as one blocking function. Only ever called through
+        ``asyncio.to_thread`` — see the note at its call site."""
         project_index = projects.load()
         meta_index = metadata.load()
         aliases = metadata.load_aliases()
@@ -688,7 +699,10 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # → the Settings badge overstated a project by ~100×.
         keep = _scope_filter()
         counts: dict[str, int] = {}
-        for s in engines.scan_all():
+        # `scan_all_cached`, not `scan_all`: the count is a READ, so it may ride the same TTL
+        # snapshot the sidebar does. The scope filter still runs per request over those rows, so
+        # this stays a performance cache and never an authorization cache (#991/#1007 Phase 3).
+        for s in engines.scan_all_cached():
             key = engines.session_key(s)
             phys = engines.physical_key(key, aliases)
             m = meta_index.get(key) or meta_index.get(phys) or metadata.SessionMeta()
@@ -703,7 +717,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             for p in sorted(project_index.values(), key=lambda p: (p.name.casefold(), p.id))
             if include_archived or not p.archived
         ]
-        return JSONResponse({"projects": out})
+        return {"projects": out}
 
     @app.post("/api/projects")
     async def create_project(
@@ -988,26 +1002,34 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # only folders under a root (+ each root's fresh sub-dirs) are discoverable, minus the
         # manual exclusion list. Empty roots ⇒ today's unscoped behaviour. The `?visible=1` /
         # mode filtering below still applies AFTER the scope.
-        roots = project_dirs.effective_roots()
-        exclusions = prefs.get_folder_exclusions()
-        all_pickable = scanner.pickable_projects(
-            sessions=engines.scan_all(), roots=roots, exclusions=exclusions
-        )
-        mode = prefs.get_projects_mode()
-        if request.query_params.get("visible") == "1":
-            hidden = set(prefs.get_projects_hidden())
-            included = set(prefs.get_projects_included())
-            folders = [
-                c
-                for c in all_pickable
-                if prefs.project_visible(c, mode=mode, hidden=hidden, included=included)
-            ]
-        elif mode == "included":
-            folders = list(all_pickable)
-        else:
-            hidden = set(prefs.get_projects_hidden())
-            folders = [c for c in all_pickable if c not in hidden]
-        return JSONResponse({"folders": [{"cwd": c, "label": c} for c in folders]})
+        #
+        # Off the loop and on the TTL snapshot, for the same reason as `/api/projects` above
+        # (#1048): the new-session picker must not stall every live terminal while it walks.
+        visible_only = request.query_params.get("visible") == "1"
+
+        def _build() -> dict:
+            roots = project_dirs.effective_roots()
+            exclusions = prefs.get_folder_exclusions()
+            all_pickable = scanner.pickable_projects(
+                sessions=engines.scan_all_cached(), roots=roots, exclusions=exclusions
+            )
+            mode = prefs.get_projects_mode()
+            if visible_only:
+                hidden = set(prefs.get_projects_hidden())
+                included = set(prefs.get_projects_included())
+                folders = [
+                    c
+                    for c in all_pickable
+                    if prefs.project_visible(c, mode=mode, hidden=hidden, included=included)
+                ]
+            elif mode == "included":
+                folders = list(all_pickable)
+            else:
+                hidden = set(prefs.get_projects_hidden())
+                folders = [c for c in all_pickable if c not in hidden]
+            return {"folders": [{"cwd": c, "label": c} for c in folders]}
+
+        return JSONResponse(await asyncio.to_thread(_build))
 
     @app.post("/api/folders/mkdir")
     async def make_project_dir(

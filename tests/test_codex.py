@@ -467,3 +467,138 @@ def test_codex_reconcile_ignores_subagent_spawned_in_window(codex_root):
     _write_records(codex_root, _U1, [_session_meta(_U1, "/work"), _user_event("hi")])
     _write_subagent(codex_root, _SUB, _U1, "/work")
     assert prov.reconcile_new_session("/work", snap) == _U1
+
+
+# --- the first-user scan bound (#1048) ------------------------------------------------------
+
+
+def _write_long_rollout(root, *, uuid, cwd, fallback, late_user_message, filler):
+    """A rollout whose only ``user_message`` EVENT sits past ``filler`` records.
+
+    Shaped from the real store: codex writes ``session_meta`` first (carrying ``cwd``), and on the
+    24 of 170 rollouts here that carry no ``user_message`` at all, the old loop ran to EOF because
+    the ``role:"user"`` fallback never breaks it.
+    """
+    d = root / "2026/05/15"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / f"rollout-2026-05-15T15-33-57-{uuid}.jsonl"
+    lines = [
+        {"timestamp": "t", "type": "session_meta", "payload": {"id": uuid, "cwd": cwd}},
+        {
+            "timestamp": "t",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": fallback}],
+            },
+        },
+    ]
+    lines += [
+        {"timestamp": "t", "type": "event_msg", "payload": {"type": "token_count", "n": i}}
+        for i in range(filler)
+    ]
+    lines.append(
+        {
+            "timestamp": "t",
+            "type": "event_msg",
+            "payload": {"type": "user_message", "message": late_user_message},
+        }
+    )
+    f.write_text("\n".join(json.dumps(x) for x in lines) + "\n")
+    return f
+
+
+@pytest.fixture
+def small_bound(monkeypatch):
+    """Drive the bound at a size a test can build.
+
+    The fixture patches the constant rather than sizing the fixture FROM it: a test that writes
+    ``FIRST_USER_SCAN_RECORDS + 50`` records is a test that tries to allocate a billion dicts the
+    moment somebody mutates that constant upward — which is exactly what a mutation check does.
+    The shipped value is asserted separately, below.
+    """
+    monkeypatch.setattr(engines.codex, "FIRST_USER_SCAN_RECORDS", 20)
+    return 20
+
+
+def test_first_user_search_stops_at_the_bound_and_keeps_the_fallback(codex_root, small_bound):
+    """RED before #1048: the loop read to EOF and titled the session with the far-away
+    ``user_message``. A 77 MB rollout paid that on every single walk."""
+    uuid = "019e2ba1-1590-7003-8e4a-51ab62cec96e"
+    _write_long_rollout(
+        codex_root,
+        uuid=uuid,
+        cwd="/home/u/proj",
+        fallback="the early fallback turn",
+        late_user_message="a user_message far past the bound",
+        filler=small_bound + 50,
+    )
+    (row,) = engines.CodexProvider().scan()
+    assert row.first_user_message == "the early fallback turn"
+
+
+def test_a_user_message_within_the_bound_still_wins_over_the_fallback(codex_root, small_bound):
+    """The bound must not change which turn is preferred — only how far the search goes. On the
+    real store every first ``user_message`` landed by record 11."""
+    uuid = "019e2ba1-1590-7003-8e4a-51ab62cec96f"
+    _write_long_rollout(
+        codex_root,
+        uuid=uuid,
+        cwd="/home/u/proj",
+        fallback="the early fallback turn",
+        late_user_message="the real first prompt",
+        filler=5,
+    )
+    (row,) = engines.CodexProvider().scan()
+    assert row.first_user_message == "the real first prompt"
+
+
+def test_the_bound_does_not_read_past_itself(codex_root, small_bound, monkeypatch):
+    """Behaviour is one thing; the COST is the point of #1048. Count the lines actually consumed."""
+    uuid = "019e2ba1-1590-7003-8e4a-51ab62cec970"
+    path = _write_long_rollout(
+        codex_root,
+        uuid=uuid,
+        cwd="/home/u/proj",
+        fallback="the early fallback turn",
+        late_user_message="never reached",
+        filler=small_bound * 4,
+    )
+    consumed = 0
+    real_open = type(path).open
+
+    def counting_open(self, *a, **kw):
+        fh = real_open(self, *a, **kw)
+        if self != path:
+            return fh
+
+        class _Counting:
+            def __enter__(inner):
+                fh.__enter__()
+                return inner
+
+            def __exit__(inner, *exc):
+                return fh.__exit__(*exc)
+
+            def __iter__(inner):
+                nonlocal consumed
+                for line in fh:
+                    consumed += 1
+                    yield line
+
+        return _Counting()
+
+    monkeypatch.setattr(type(path), "open", counting_open)
+    engines.CodexProvider()._meta(path)
+    assert consumed <= small_bound + 2
+
+
+def test_the_shipped_bound_is_sane():
+    """The constant itself, since every test above drives a patched one.
+
+    Floor: the real store's latest first ``user_message`` was record 11 across 146 rollouts, so
+    anything below ~64 would start changing titles. Ceiling: the whole point is that the read is
+    BOUNDED — a value large enough to reach EOF on a 77 MB rollout is the bug again.
+    """
+    assert 64 <= engines.codex.FIRST_USER_SCAN_RECORDS <= 10_000

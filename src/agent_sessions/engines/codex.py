@@ -8,10 +8,26 @@ import shutil
 from pathlib import Path
 
 from .. import metadata as _metadata
+from .. import scancache
 from ..scanner import Session, derive_created_at
 from . import base
 
 # rollout-<iso-ts>-<uuid>.jsonl  →  capture the trailing uuid
+#: How far into a rollout ``_meta`` will look for the first real ``user_message`` (#1048).
+#:
+#: Measured across all 170 rollouts on the author's install: of the 146 that contain a
+#: ``user_message`` at all, the **latest** one appeared at record 11 (p50 = 10, max = 11) — codex
+#: writes ``session_meta`` first and the operator's turn immediately after. The other 24 contain
+#: none, and those were read **cover to cover on every walk**: 77 MB, 50 MB, 32 MB files parsed in
+#: full to conclude "no title here", because the ``role:"user"`` fallback below never breaks the
+#: loop. That was 2,256 ms of a 2,433 ms codex scan.
+#:
+#: 512 is ~47x the observed maximum, so it cannot plausibly change any title on a real rollout,
+#: and it turns the pathological case from "the whole file" into a bounded read. The fallback is
+#: unchanged: it is still accepted when the scan ends without a ``user_message`` event — the only
+#: difference is that the scan can now end at the bound as well as at EOF.
+FIRST_USER_SCAN_RECORDS = 512
+
 _CODEX_ROLLOUT_RE = re.compile(
     r"rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$"
 )
@@ -113,12 +129,14 @@ class CodexProvider:
         call site to drift.
         """
         cwd = first_user = fallback = ""
+        scanned = 0
         try:
             with path.open(encoding="utf-8", errors="replace") as fh:
                 for line in fh:
                     line = line.strip()
                     if not line:
                         continue
+                    scanned += 1
                     try:
                         record = json.loads(line)
                     except json.JSONDecodeError:
@@ -144,6 +162,11 @@ class CodexProvider:
                         if text and not is_injected_context(text):
                             fallback = text
                     if cwd and first_user:
+                        break
+                    # A rollout with no ``user_message`` event used to be read to EOF (#1048). The
+                    # `cwd` is on record 0 and a real first turn is within 11, so past the bound
+                    # there is nothing left to find — only bytes to parse.
+                    if scanned >= FIRST_USER_SCAN_RECORDS:
                         break
         except OSError:
             # `checked` selects the failure policy, never the parse: a rollout a measurement
@@ -194,7 +217,13 @@ class CodexProvider:
         except OSError:
             return out
         for path in files:
-            row = self._row_from_path(path)
+            # Memoised per file (#1048): a rollout whose identity is unchanged cannot produce a
+            # different row. `scan_checked` below stays off the memo — it preserves read failures.
+            row = scancache.memoized(
+                "codex",
+                path,
+                lambda p=path: self._row_from_path(p),
+            )
             if row is not None:
                 out.append(row)
         return out

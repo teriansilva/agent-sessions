@@ -112,9 +112,16 @@ def scan_all() -> list[Session]:
     corrupt ``shell`` record hid every healthy shell session from ordinary listings (Hermes on
     PR #1000, review 4898). Maintenance strictness belongs only on the maintenance path.
     """
+    from .. import perfstats
+
     out: list[Session] = []
-    for p in present_providers():
-        out.extend(p.scan())
+    # One sample per PROVIDER as well as one for the whole walk (#1048): "the scan is slow" is not
+    # actionable, "codex is 2.4 s of a 3.7 s walk" is. Recording is best-effort by construction and
+    # never raises into the walk.
+    with perfstats.timed("scan_all_ms"):
+        for p in present_providers():
+            with perfstats.timed(f"scan_{p.engine_id}_ms"):
+                out.extend(p.scan())
     return out
 
 

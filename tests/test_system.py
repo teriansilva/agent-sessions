@@ -164,8 +164,15 @@ def test_perf_reset_query_clears_after_returning(auth_cfg):
     first = c.get("/api/perf", params={"reset": 1})
     assert first.status_code == 200
     assert first.json()["attach_prep_ms"]["count"] == 1
-    # Second read is empty — the window was cleared.
-    assert c.get("/api/perf").json() == {}
+    # Second read carries no timing window — it was cleared. `scan_memo` (#1048) rides along on
+    # every response and is NOT a timing window, so it is excluded by name rather than by the
+    # body happening to be empty: a reader that asserted `== {}` was asserting "no other key has
+    # ever been added to this endpoint", which is not the property this test is about.
+    second = c.get("/api/perf").json()
+    assert {k: v for k, v in second.items() if k != "scan_memo"} == {}
+    # …and the memo's own counters are reset by the same `?reset=1`, so a before/after run
+    # measures a cold walk rather than inheriting the previous run's hits.
+    assert second["scan_memo"] == {"entries": 0, "hits": 0, "misses": 0}
 
 
 def test_perf_api_sessions_probe_fires_on_real_request(auth_cfg, fake_jsonl):

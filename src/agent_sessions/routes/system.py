@@ -25,6 +25,7 @@ from .. import (
     prefs,
     project_dirs,
     ptybridge,
+    scancache,
     scopedspawn,
     session_input,
     sysinfo,
@@ -249,8 +250,15 @@ def register(
         # `?reset=1` returns the current window THEN clears it, so a before/after run is
         # reset → exercise → snapshot. GET (read + optional in-memory clear), so no CSRF.
         snap = perfstats.snapshot()
+        # The walk memo's hit rate (#1048) rides along, because a `scan_all_ms` that looks healthy
+        # says nothing about WHY — a cold walk and a fully memoised one are the same number with a
+        # different denominator. Fail-soft: a measurement must not be able to fail the route.
+        with contextlib.suppress(Exception):
+            snap = {**snap, "scan_memo": scancache.stats()}
         if reset:
             perfstats.reset()
+            with contextlib.suppress(Exception):
+                scancache.clear()
         return JSONResponse(snap)
 
     @app.get("/api/system")
@@ -376,7 +384,21 @@ def register(
             onboarded_val = True
         else:
             try:
-                onboarded_val = any(True for _ in engines.scan_all())
+                # OFF THE LOOP (#1048). The defect is that a full store walk ran in the
+                # coroutine every terminal WebSocket shares; that is what moves.
+                #
+                # It stays on the UNCACHED `scan_all`, deliberately, unlike the two routes #1048
+                # also moves. This asks a different question — "does this install have ANY
+                # session at all" — on a path only a prefs-less install reaches (the installer has
+                # owned the `onboarded` pref since #675, so the explicit branch above is the normal
+                # one). Joining the shared snapshot would let this probe WARM the walk that
+                # `/api/sessions`'s paging pin is minted from, which is a change to #1007 Phase 3's
+                # walk accounting for no benefit on a first-run-only path. Measured: routing it
+                # through `scan_all_cached` turns 11 of `test_scan_snapshot.py`'s walk-count
+                # assertions red, because an unrelated request now supplies the walk.
+                onboarded_val = await asyncio.to_thread(
+                    lambda: any(True for _ in engines.scan_all())
+                )
             except Exception:
                 onboarded_val = True
         # Usage analytics (#1009): an operator fetched the config, so today's report starts if one

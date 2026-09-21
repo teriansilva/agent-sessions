@@ -289,14 +289,22 @@ def _isolate_scan_cache() -> None:
     re-walk (identical to pre-#561 behaviour); the dedicated cache tests opt back in with an
     explicit ``set_scan_cache_ttl``. Cleared on the way in and out so no snapshot leaks across
     tests (distinct ``$HOME``s already isolate the key, but a shared 0-key entry could otherwise
-    survive a test that raised the TTL)."""
-    from agent_sessions import engines
+    survive a test that raised the TTL).
+
+    The per-file walk memo (#1048) is cleared alongside it, for the same reason and one more: it is
+    keyed on ``(path, dev, ino, size, mtime_ns)``, and a test that writes a transcript, reads it,
+    and rewrites it inside one filesystem timestamp tick would otherwise be served the first
+    version. Production cannot hit that — an agent's writes are not nanosecond-adjacent — but a
+    test's are, so the fixture removes the question rather than relying on clock resolution."""
+    from agent_sessions import engines, scancache
 
     engines.set_scan_cache_ttl(0.0)
     engines.invalidate_scan_cache()
+    scancache.clear()
     yield
     engines.set_scan_cache_ttl(0.0)
     engines.invalidate_scan_cache()
+    scancache.clear()
 
 
 @pytest.fixture

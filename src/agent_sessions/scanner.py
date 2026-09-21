@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from . import project_dirs
+from . import project_dirs, scancache
 from .metadata import title_candidate
 
 # Session UUIDs that Claude Code writes are RFC4122-shaped.
@@ -335,13 +335,28 @@ def session_from_jsonl(jsonl: Path, *, archived: bool, checked: bool = False) ->
 
 
 def _walk(root: Path, archived: bool) -> Iterable[Session]:
+    """The display walk: fail-soft per file, and memoised per file (#1048).
+
+    ``session_from_jsonl`` is pure with respect to the transcript's bytes, so a file whose identity
+    is unchanged cannot yield a different row — see ``scancache``. The namespace carries
+    ``archived`` because it is an input to the row that the path alone does not determine for a
+    caller reading the same tree twice.
+
+    ``_walk_checked`` deliberately does NOT go through the memo: it preserves read failures, and a
+    fail-soft ``None`` cached here must never satisfy a measurement that authorises deletion.
+    """
     if not root.is_dir():
         return
     for project_dir in root.iterdir():
         if not project_dir.is_dir():
             continue
         for jsonl in project_dir.glob("*.jsonl"):
-            row = session_from_jsonl(jsonl, archived=archived)
+            row = scancache.memoized(
+                f"claude:{'archived' if archived else 'live'}",
+                jsonl,
+                # Bound by default argument, not closure capture: the loop rebinds `jsonl`.
+                lambda path=jsonl: session_from_jsonl(path, archived=archived),
+            )
             if row is not None:
                 yield row
 
