@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
+import agent_sessions.engines.codex as cdx
 from agent_sessions import engines, metadata
 
 
@@ -602,3 +604,308 @@ def test_the_shipped_bound_is_sane():
     BOUNDED — a value large enough to reach EOF on a 77 MB rollout is the bug again.
     """
     assert 64 <= engines.codex.FIRST_USER_SCAN_RECORDS <= 10_000
+
+
+# --- the SHAPE rule for injected context (#1051) --------------------------------------------
+
+_RECOMMENDED_PLUGINS = (
+    "<recommended_plugins>\n"
+    "Here is a list of plugins that are available.\n"
+    "</recommended_plugins>\n"
+    "<environment_context>\n  <cwd>/work</cwd>\n</environment_context>"
+)
+_TURN_ABORTED = "<turn_aborted>\nThe previous turn was interrupted.\n</turn_aborted>"
+
+# The REAL shape on the author's install, and the one the first cut of this fix did not handle:
+# the transcript adapter joins a record's content blocks into one string, so tagged blocks and the
+# markdown `# AGENTS.md instructions` preamble arrive INTERLEAVED. A rule that accepts only tagged
+# blocks stops dead at the preamble in the middle and leaves all 16 affected transcripts unfiltered
+# — which is exactly what the live store showed before this case was added.
+_INTERLEAVED = (
+    "<recommended_plugins>\nAirtable (airtable@openai-curated-remote)\n</recommended_plugins> "
+    "# AGENTS.md instructions for /home/u/proj\n\n<INSTRUCTIONS>\nmap\n</INSTRUCTIONS> "
+    "<environment_context>\n  <cwd>/work</cwd>\n</environment_context>"
+)
+
+
+@pytest.mark.parametrize(
+    ("text", "injected", "why"),
+    [
+        # The two markers that leaked. `<recommended_plugins>` is the one measured on 18 of 69
+        # sessions here; it is emitted AHEAD of `<environment_context>`, so a prefix match on the
+        # leading marker alone never saw it.
+        (_RECOMMENDED_PLUGINS, True, "recommended_plugins ahead of environment_context"),
+        # `<turn_aborted>` carries no known marker anywhere in it — the case that rules out a
+        # "contains a known marker" rule and forces the shape rule.
+        (_TURN_ABORTED, True, "no known marker present at all"),
+        (_INTERLEAVED, True, "tagged blocks interleaved with the markdown preamble"),
+        # The preamble LAST, with nothing after it — order does not matter.
+        (
+            "<turn_aborted>x</turn_aborted> # AGENTS.md instructions for /home/u/proj\n"
+            "<INSTRUCTIONS>\nmap\n</INSTRUCTIONS>",
+            True,
+            "the preamble closing the text",
+        ),
+        # The bare header form (5 of 172 preambles in the corpus carry no `for <path>`).
+        (
+            "# AGENTS.md instructions\n\n<INSTRUCTIONS>\nmap\n</INSTRUCTIONS>",
+            True,
+            "the bare AGENTS.md header",
+        ),
+        # Everything recognised before must stay recognised.
+        ("<environment_context>\n  <cwd>/x</cwd>\n</environment_context>", True, "old marker"),
+        ("<user_instructions>\ndo what AGENTS.md says\n</user_instructions>", True, "old marker"),
+        (_AGENTS_MD, True, "the >=0.142.5 preamble"),
+        # …and no human turn may start being swallowed.
+        ("<foo>bar</foo> why does this fail?", False, "prose survives the blocks"),
+        ("why does <foo>bar</foo> fail?", False, "prose before the block"),
+        ("<html><body>hi</body></html> please review", False, "prose after nested blocks"),
+        ("just a normal prompt", False, "no tags at all"),
+        ("<unclosed> a thought", False, "an unclosed tag is not a block"),
+        ("2 < 3 and 4 > 1", False, "angle brackets that are not tags"),
+        ("", False, "empty is not injected"),
+        ("   \n ", False, "whitespace is not injected"),
+        # Tag-shaped operator input (review 72390): a closed set of codex's own blocks, never
+        # "any tag", so none of these is machine context.
+        (
+            "<task>Refactor auth</task>\n<constraints>no new deps</constraints>",
+            False,
+            "a tag-structured prompt",
+        ),
+        ("<div>\n<p>why is this red?</p>\n</div>", False, "pasted HTML"),
+        ("<b>fix it</b>", False, "a single formatted instruction"),
+        ("<image name=[Image #1]> </image>", False, "an image-only turn"),
+        # A known block next to an unknown one is still operator-authored somewhere.
+        (
+            "<environment_context>x</environment_context>\n<task>do it</task>",
+            False,
+            "a known block does not launder an unknown one",
+        ),
+        ("<environment_context>x", False, "an unclosed known block"),
+        ("<environment_context attr>x</environment_context>", False, "an opener with extras"),
+        # The AGENTS.md header words in PROSE are not the preamble (review 72390, finding 4).
+        (
+            "<a>x</a> # AGENTS.md instructions are wrong, rewrite them",
+            False,
+            "the header words after an unknown tag",
+        ),
+        (
+            "# AGENTS.md instructions are wrong, rewrite them",
+            False,
+            "the header words as a sentence",
+        ),
+        (
+            "# AGENTS.md instructions are wrong, use these:\n<INSTRUCTIONS>x</INSTRUCTIONS>",
+            False,
+            "a prose header line directly above a closed body",
+        ),
+        (
+            "# AGENTS.md instructions for /p\nplease rewrite them\n<INSTRUCTIONS>x</INSTRUCTIONS>",
+            False,
+            "prose between the header and the body",
+        ),
+        (
+            "# AGENTS.md instructions for /p\n\n<INSTRUCTIONS>x",
+            False,
+            "an unclosed INSTRUCTIONS body",
+        ),
+        ("# AGENTS.md instructions for /p", False, "a header with no body"),
+        (
+            _AGENTS_MD + "\n\nand now please rewrite them",
+            False,
+            "prose after a real preamble",
+        ),
+    ],
+)
+def test_injected_context_shape_table(text, injected, why):
+    assert cdx.is_injected_context(text) is injected, why
+
+
+def test_a_recommended_plugins_preamble_is_no_longer_the_sidebar_title(codex_root):
+    """RED before #1051: measured on the live store, 16 of 69 codex sessions opened with this
+    block, and at least one carried it as its title."""
+    _write_records(
+        codex_root,
+        _U1,
+        [
+            _session_meta(_U1, "/work"),
+            _user_item(_RECOMMENDED_PLUGINS),
+            _user_item("the real prompt"),
+        ],
+    )
+    assert _scan_one(_U1).first_user_message == "the real prompt"
+
+
+def test_a_turn_aborted_block_is_no_longer_the_sidebar_title(codex_root):
+    _write_records(
+        codex_root,
+        _U1,
+        [
+            _session_meta(_U1, "/work"),
+            _user_item(_TURN_ABORTED),
+            _user_item("the real prompt"),
+        ],
+    )
+    assert _scan_one(_U1).first_user_message == "the real prompt"
+
+
+def test_a_rollout_of_nothing_but_machine_blocks_has_no_title_rather_than_a_fake_one(codex_root):
+    """The row still EXISTS — `cwd` is the required field — it simply has no title. Dropping the
+    session would be a worse answer than an untitled one."""
+    _write_records(
+        codex_root,
+        _U1,
+        [
+            _session_meta(_U1, "/work"),
+            _user_item(_RECOMMENDED_PLUGINS),
+            _user_item(_TURN_ABORTED),
+        ],
+    )
+    row = _scan_one(_U1)
+    assert row is not None
+    assert row.cwd == "/work"
+    assert row.first_user_message == ""
+
+
+def test_the_transcript_adapter_drops_it_too_from_the_same_predicate(codex_root):
+    """The predicate is shared with `transcript._codex_turns_from_records` deliberately, so the
+    AI-review / recap input and the sidebar title can never disagree about what is machine text.
+    This is the half that #1051's `bind_by_nonce` blocker (#1050) depends on."""
+    from agent_sessions import transcript
+
+    _write_records(
+        codex_root,
+        _U1,
+        [
+            _session_meta(_U1, "/work"),
+            _user_item(_RECOMMENDED_PLUGINS),
+            _user_item(_TURN_ABORTED),
+            _user_item("the real prompt"),
+        ],
+    )
+    adapter = transcript.adapter_for("codex")
+    turns = adapter(_U1, Path.home()) or []
+    user_texts = [t.text for t in turns if t.kind == "text" and t.role == "user"]
+    assert user_texts == ["the real prompt"]
+
+
+def test_the_interleaved_preamble_is_no_longer_the_first_transcript_turn(codex_root):
+    """The half that matters for the AI review, the recap and #1050's nonce binding.
+
+    Measured on the live store: 16 of 69 codex sessions had this as their first surviving user
+    turn, and the first cut of this fix left every one of them unfiltered because it only
+    understood tagged blocks.
+    """
+    from agent_sessions import transcript
+
+    _write_records(
+        codex_root,
+        _U1,
+        [
+            _session_meta(_U1, "/work"),
+            _user_item(_INTERLEAVED),
+            _user_item("the real prompt"),
+        ],
+    )
+    adapter = transcript.adapter_for("codex")
+    turns = adapter(_U1, Path.home()) or []
+    assert [t.text for t in turns if t.kind == "text" and t.role == "user"] == ["the real prompt"]
+
+
+def test_the_shape_scan_classifies_a_large_block():
+    """Tens-of-kilobytes payloads: a big known block classifies, and the same block with its
+    closing tag cut off refuses. This checks the answer, not the running time — see the next test
+    for that."""
+    big = "<recommended_plugins>\n" + ("plugin line\n" * 20_000) + "</recommended_plugins>"
+    assert cdx.is_injected_context(big) is True
+    assert cdx.is_injected_context(big[: -len("</recommended_plugins>")]) is False
+
+
+_N = 100_000
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # 100k complete sections and ONE stray character at the end: the scan must walk every
+        # section before it can refuse. Anything that re-scans from the start, re-slices the rest
+        # of the string per section, or backtracks is quadratic here.
+        "<turn_aborted></turn_aborted>" * _N + "x",
+        "<turn_aborted></turn_aborted>\n" * _N,
+        # 100k AGENTS.md preambles back to back, then prose.
+        ("# AGENTS.md instructions for /p\n<INSTRUCTIONS></INSTRUCTIONS>\n" * _N) + "hi",
+        # A regex-backtracking classic: an opener followed by a flood of near-miss closers.
+        "<environment_context>" + "</environment_contex" * _N,
+        "<" * 1_000_000,
+    ],
+    ids=["sections-then-stray", "sections-only", "preambles-then-prose", "near-miss", "lt-flood"],
+)
+def test_the_shape_scan_is_linear_on_pathological_input(text):
+    """Measured: the linear scan takes <= 0.3 s on the slowest of these; a mutant that re-slices
+    the remaining string per section (``s = s[end:]``) takes ~12 s at this size and grows 4x per
+    doubling. A 5 s bound leaves the real scan >15x headroom for a loaded CI runner and still
+    fails the quadratic one."""
+    import time
+
+    t0 = time.perf_counter()
+    cdx.is_injected_context(text)
+    assert time.perf_counter() - t0 < 5.0
+
+
+# --- the user_message path keeps the pre-#1051 rule (review 72390, finding 2) ----------------
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "<task>Refactor auth</task>\n<constraints>no new deps</constraints>",
+        "<b>fix it</b>",
+        # Even text made ONLY of codex's own block names: a user_message is what the operator
+        # typed (none of 3,501 in the corpus is machine context), so it is never shape-filtered.
+        "<turn_aborted>why did you stop?</turn_aborted>",
+        "<recommended_plugins>which ones?</recommended_plugins>",
+    ],
+)
+def test_a_user_message_event_is_never_shape_filtered(codex_root, prompt):
+    _write_records(
+        codex_root,
+        _U1,
+        [_session_meta(_U1, "/work"), _user_event(prompt), _user_event("a later prompt")],
+    )
+    assert _scan_one(_U1).first_user_message == prompt
+
+
+def test_the_user_message_path_keeps_its_prefix_rule(codex_root):
+    """Unchanged from main: a user_message opening with an old marker is still skipped there."""
+    _write_records(
+        codex_root,
+        _U1,
+        [
+            _session_meta(_U1, "/work"),
+            _user_event("<environment_context>\n  <cwd>/x</cwd>\n</environment_context>"),
+            _user_event("the real prompt"),
+        ],
+    )
+    assert _scan_one(_U1).first_user_message == "the real prompt"
+
+
+def test_a_tag_shaped_operator_turn_stays_in_the_transcript(codex_root):
+    """The cost review 72390 named: a false positive drops the turn from what the AI review,
+    recap and pulse read, not just from the title."""
+    from agent_sessions import transcript
+
+    _write_records(
+        codex_root,
+        _U1,
+        [
+            _session_meta(_U1, "/work"),
+            _user_item(_RECOMMENDED_PLUGINS),
+            _user_item("<task>Refactor auth</task>\n<constraints>no new deps</constraints>"),
+            _user_item("<image name=[Image #1]> </image>"),
+        ],
+    )
+    turns = transcript.adapter_for("codex")(_U1, Path.home()) or []
+    assert [t.text for t in turns if t.kind == "text" and t.role == "user"] == [
+        "<task>Refactor auth</task>\n<constraints>no new deps</constraints>",
+        "<image name=[Image #1]> </image>",
+    ]

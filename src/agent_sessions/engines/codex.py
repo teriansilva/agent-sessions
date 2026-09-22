@@ -34,18 +34,135 @@ _CODEX_ROLLOUT_RE = re.compile(
 
 # Machine-context markers (#670): codex injects context as plain ``role:"user"``
 # response_items — ``<environment_context>`` / ``<user_instructions>`` (observed ≤ 0.128)
-# and the ``# AGENTS.md instructions for <cwd>`` preamble (≥ 0.142.5). ONE predicate,
-# shared with ``transcript._codex_turns_from_records``, so a future marker can never be
-# filtered from titles while still polluting the AI-review / recap input (or vice versa).
+# and the ``# AGENTS.md instructions for <cwd>`` preamble (≥ 0.142.5). This prefix rule is now
+# only the ``user_message`` path's (see :func:`_is_injected_user_message`); response_items go
+# through :func:`is_injected_context`, which is shared with
+# ``transcript._codex_turns_from_records`` so a marker can never be filtered from titles while
+# still polluting the AI-review / recap input (or vice versa).
 _INJECTED_CONTEXT_PREFIXES = (
     "<environment_context",
     "<user_instructions",
     "# AGENTS.md instructions",
 )
 
+#: Every tagged block codex is KNOWN to inject as a ``role:"user"`` response_item (#1051).
+#:
+#: Enumerated from every rollout on the author's install (170 rollouts, 5.6 GB, read-only): the
+#: blocks that open a ``response_item`` user message are exactly ``environment_context`` (807),
+#: the ``# AGENTS.md instructions`` preamble (172, always followed by one ``<INSTRUCTIONS>``
+#: block), ``recommended_plugins`` (45) and ``turn_aborted`` (6). ``user_instructions`` is kept
+#: from #670 (codex ≤ 0.128). Nothing else occurs.
+#:
+#: A closed list on purpose. A rule that accepted ANY tag name hid ``<task>…</task>``,
+#: ``<div><p>…</p></div>``, ``<b>fix it</b>`` and an image-only ``<image …> </image>`` turn —
+#: operator input, dropped from the transcript the AI review, recap and pulse read. A new codex
+#: tag costs one line here; a false positive silently loses what the operator said.
+_MACHINE_CONTEXT_TAGS = frozenset(
+    {"environment_context", "user_instructions", "recommended_plugins", "turn_aborted"}
+)
+
+#: The AGENTS.md preamble, as codex writes it: this header line (bare, or ``… for <path>``), then
+#: whitespace, then ONE ``<INSTRUCTIONS>…</INSTRUCTIONS>`` block. Measured: 167 carry ``for``, 5
+#: are bare, all 172 continue into exactly one ``<INSTRUCTIONS>`` block.
+_AGENTS_MD_HEADER = "# AGENTS.md instructions"
+_AGENTS_MD_BODY_OPEN = "<INSTRUCTIONS>"
+_AGENTS_MD_BODY_CLOSE = "</INSTRUCTIONS>"
+
+
+def _skip_space(s: str, i: int) -> int:
+    n = len(s)
+    while i < n and s[i].isspace():
+        i += 1
+    return i
+
+
+def _known_tag_block_end(s: str, i: int) -> int:
+    """End index of a known machine block opening at ``s[i]``, or -1."""
+    for name in _MACHINE_CONTEXT_TAGS:
+        opener = f"<{name}>"
+        if s.startswith(opener, i):
+            close = f"</{name}>"
+            end = s.find(close, i + len(opener))
+            return -1 if end < 0 else end + len(close)
+    return -1
+
+
+def _agents_md_block_end(s: str, i: int) -> int:
+    """End index of an AGENTS.md preamble opening at ``s[i]``, or -1.
+
+    Prose that merely starts with the header words — ``# AGENTS.md instructions are wrong`` — is
+    not the preamble: the header must be the WHOLE line (optionally ``… for <path>``), and the
+    next non-blank text must be the ``<INSTRUCTIONS>`` block, closed.
+    """
+    if not s.startswith(_AGENTS_MD_HEADER, i):
+        return -1
+    eol = s.find("\n", i)
+    if eol < 0:
+        return -1
+    rest = s[i + len(_AGENTS_MD_HEADER) : eol].rstrip()
+    if rest and not (rest.startswith(" for ") and rest[5:].strip()):
+        return -1
+    j = _skip_space(s, eol)
+    if not s.startswith(_AGENTS_MD_BODY_OPEN, j):
+        return -1
+    end = s.find(_AGENTS_MD_BODY_CLOSE, j + len(_AGENTS_MD_BODY_OPEN))
+    return -1 if end < 0 else end + len(_AGENTS_MD_BODY_CLOSE)
+
+
+def _is_only_machine_sections(text: str) -> bool:
+    """True when ``text`` is NOTHING BUT known machine-context blocks and whitespace (#1051).
+
+    The old prefix list is ordering-sensitive by construction — it only sees whichever marker
+    codex puts first — and codex has reordered this block twice. Measured on the author's install:
+    a newer CLI emits ``<recommended_plugins>`` *ahead of* ``<environment_context>`` (45 records),
+    and ``<turn_aborted>`` (6 records) contains no old marker at all. So the check is
+    order-independent: every section must be one of :data:`_MACHINE_CONTEXT_TAGS` or the
+    AGENTS.md preamble, in any order, and the real payloads interleave them — the transcript
+    adapter joins a record's content blocks into one string, giving ``<recommended_plugins>…
+    </recommended_plugins> # AGENTS.md instructions … <INSTRUCTIONS>…</INSTRUCTIONS>
+    <environment_context>…</environment_context>``.
+
+    Anything else anywhere — prose, an unknown tag, an unclosed known tag — makes it a human turn.
+
+    A linear scan, not a regex: these payloads run to tens of kilobytes and a backtracking pattern
+    over them is the cost #1048 removed. Each step either jumps past a closed block or returns, so
+    no character is scanned for a closing tag twice.
+
+    **Cost of a false positive** — it is not just a title. ``is_injected_context`` also filters
+    ``transcript._codex_turns_from_records``, so a turn this accepts disappears from the transcript
+    viewer, the AI review input (``review.gather_input``), the recap, pulse chat and handoff. That
+    is why the tag set is closed rather than "any tag-shaped block". A human turn is lost only if
+    it is made SOLELY of these exact codex blocks.
+    """
+    s = text.strip()
+    if not s:
+        return False
+    i, n = 0, len(s)
+    while i < n:
+        end = _known_tag_block_end(s, i) if s[i] == "<" else _agents_md_block_end(s, i)
+        if end < 0:
+            return False
+        i = _skip_space(s, end)
+    return True
+
 
 def is_injected_context(text: str) -> bool:
-    """True when a codex user-message text is injected machine context, not a human prompt."""
+    """True when a codex ``role:"user"`` response_item text is injected machine context.
+
+    Shared by the title fallback and ``transcript._codex_turns_from_records``. See
+    :func:`_is_only_machine_sections` for the rule and what a false positive costs.
+    """
+    return _is_only_machine_sections(text)
+
+
+def _is_injected_user_message(text: str) -> bool:
+    """The ``user_message`` event path's rule — the pre-#1051 prefix match, unchanged.
+
+    ``user_message`` events are what the operator typed: of 3,501 in the author's corpus, none is
+    machine context under any rule; codex delivers its context only as response_items. Giving this
+    path the broader shape rule could only ever hide real input and silently promote a later
+    prompt to the title, so it keeps the rule it always had.
+    """
     return text.startswith(_INJECTED_CONTEXT_PREFIXES)
 
 
@@ -155,7 +272,7 @@ class CodexProvider:
                         cwd = str(payload["cwd"])
                     if not first_user and payload.get("type") == "user_message":
                         text = _codex_text(payload.get("message"))
-                        if text and not is_injected_context(text):
+                        if text and not _is_injected_user_message(text):
                             first_user = text
                     elif not fallback and payload.get("role") == "user":
                         text = _codex_text(payload.get("content"))

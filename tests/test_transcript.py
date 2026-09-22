@@ -242,7 +242,9 @@ def _codex_msg(role, text):
 def test_codex_parser_decodes_messages_calls_and_output():
     recs = [
         {"type": "session_meta", "payload": {}},  # ignored
-        _codex_msg("user", "<environment_context>\n  <cwd>/x</cwd>"),  # machine preamble → skipped
+        # Machine preamble → skipped. Closed, as codex writes it (807 of 807 in the corpus): since
+        # #1051 a block counts only when it is complete, so an unclosed opener is not recognised.
+        _codex_msg("user", "<environment_context>\n  <cwd>/x</cwd>\n</environment_context>"),
         _codex_msg("user", "do the thing"),
         {"type": "response_item", "payload": {"type": "reasoning", "summary": "secret"}},  # hidden
         {
