@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api } from "../../lib/api";
 import { bracketedPaste, KEYSEQ } from "../../lib/termKeys";
 import { appendSent, readSent } from "../../lib/sentHistory";
-import { Compose, DICTATION_FINALIZE_MS, DICTATION_IDLE_STOP_MS, type ComposeHandle } from "./Compose";
+import { CLEAR_DELAY_MS, Compose, DICTATION_FINALIZE_MS, DICTATION_IDLE_STOP_MS, type ComposeHandle } from "./Compose";
 
 vi.mock("../../lib/api", () => ({
   api: {
@@ -1116,20 +1116,49 @@ test("the attach chip lives in the key group and triggers the file input (#487/#
   expect(clicked).toHaveBeenCalledOnce();
 });
 
-test("Send clears the line, bracketed-pastes the message, then submits a DEFERRED Enter (#180)", async () => {
+test("Send clears the line, bracketed-pastes the message, then submits a DEFERRED Enter — three frames, three TASKS (#180/#1062)", async () => {
   const user = userEvent.setup();
   renderCompose();
   await user.type(screen.getByRole("textbox"), "hello world");
   await user.click(screen.getByRole("button", { name: /^send/i }));
-  // Clear + paste go out synchronously; the Enter is deferred to a later frame so the agent
-  // can't read the trailing ``\r`` as still inside the bracketed-paste buffer (the "press Enter
-  // twice" bug). Three discrete WS frames, never paste-end + \r in one packet.
-  expect(sendInput).toHaveBeenNthCalledWith(1, KEYSEQ.ctrla + KEYSEQ.ctrlk);
+  // Each write lands in its own task, so no two of them can reach the agent in ONE pty read:
+  // paste-end + \r together leaves the prompt typed but unsubmitted (#180), and clear + paste
+  // together leaves an image-carrying paste pending so the first Enter finalises it (#1062).
+  // The gap itself is asserted with a real clock in web/e2e/compose-clear-gap.spec.ts; what this
+  // pins is the ORDER and that nothing is bundled.
+  await waitFor(() => expect(sendInput).toHaveBeenCalledTimes(3));
+  expect(sendInput.mock.calls.map((c) => c[0])).toEqual([
+    KEYSEQ.ctrla + KEYSEQ.ctrlk,
+    bracketedPaste("hello world"),
+    KEYSEQ.enter,
+  ]);
+});
+
+test("the paste waits a full CLEAR_DELAY_MS after the clear — the two never reach the agent in one read (#1062)", async () => {
+  // The defect this fixes: written back-to-back, the clear and the paste arrive in ONE pty read,
+  // and claude 2.1.278 then holds a paste carrying an image path pending — the first Enter
+  // finalises that paste instead of submitting the turn, so the operator presses Enter twice.
+  // Measured against a live claude PTY (submission read from its own transcript store): 0ms fails
+  // 3/3 at BOTH a 120ms and a 1500ms Enter delay, so a longer Enter wait does not fix it;
+  // 16/40/80ms all submit on the first Enter. Fake timers, so the boundary is exact rather than
+  // a wall-clock guess on a loaded runner. This pins the CLIENT spacing only; keeping the two in
+  // separate PTY writes end to end, past server-side coalescing, is #1070.
+  const user = userEvent.setup();
+  renderCompose();
+  await user.type(screen.getByRole("textbox"), "hello world");
+  vi.useFakeTimers();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /^send/i }));
+  });
+  expect(sendInput.mock.calls.map((c) => c[0])).toEqual([KEYSEQ.ctrla + KEYSEQ.ctrlk]);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(CLEAR_DELAY_MS - 1);
+  });
+  expect(sendInput).toHaveBeenCalledTimes(1); // one tick short: still nothing but the clear
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1);
+  });
   expect(sendInput).toHaveBeenNthCalledWith(2, bracketedPaste("hello world"));
-  expect(sendInput).toHaveBeenCalledTimes(2); // Enter not sent yet
-  await waitFor(() =>
-    expect(sendInput).toHaveBeenNthCalledWith(3, KEYSEQ.enter),
-  );
 });
 
 test("does NOT submit a bare Enter when the paste wasn't delivered — no empty turn (#287)", async () => {
@@ -1152,21 +1181,20 @@ test("re-sends clear+paste on the new socket before Enter if a reconnect split t
   // The paste went to socket A, then a reconnect → the deferred Enter would hit socket B which never
   // got the paste. Detect the socket-id change and re-send clear+paste on B before submitting.
   const user = userEvent.setup();
-  // Compose reads connEpoch() once in deliver() and again inside the DEFERRED Enter — so a counter
-  // makes the reconnect land in that gap by construction. Flipping a variable after `await click()`
-  // instead assumed the 60ms Enter timer had not fired yet, which is only true on an idle machine:
-  // on the loaded shared runner it had, and this test failed with "called 2 times, but got 3".
+  // A delivery reads connEpoch four times: after the clear, at the paste boundary, to capture the
+  // paste-time epoch, and inside the deferred Enter. A counter that flips on the FOURTH read puts the
+  // reconnect in the paste→Enter gap by construction. Flipping a variable after `await click()`
+  // instead assumed the deferred timers had not fired yet, which is only true on an idle machine:
+  // on the loaded shared runner they had, and this test failed with "called 2 times, but got 3".
   let epochReads = 0;
-  renderCompose(() => (++epochReads === 1 ? 1 : 2));
+  renderCompose(() => (++epochReads <= 3 ? 1 : 2));
   await user.type(screen.getByRole("textbox"), "hello world");
   await user.click(screen.getByRole("button", { name: /^send/i }));
-  // clear + paste reached socket A first, whatever the scheduler did with the deferred Enter.
-  expect(sendInput.mock.calls.slice(0, 2).map((c) => c[0])).toEqual([
-    KEYSEQ.ctrla + KEYSEQ.ctrlk,
-    bracketedPaste("hello world"),
-  ]);
   await waitFor(() => expect(sendInput).toHaveBeenCalledWith(KEYSEQ.enter));
-  // The deferred batch re-sent clear+paste (on B) AND then the Enter — 5 calls total, Enter last.
+  // clear + paste reached socket A first; the restart re-sent clear+paste (on B) AND then the
+  // Enter — 5 calls total, Enter last. The full sequence pins the first two frames too, so there
+  // is no intermediate count check (a waitFor on exactly 2 calls could miss that window on a loaded
+  // runner, since the restart follows within one Enter delay).
   const calls = sendInput.mock.calls.map((c) => c[0]);
   expect(calls).toEqual([
     KEYSEQ.ctrla + KEYSEQ.ctrlk,
@@ -1189,10 +1217,10 @@ test("a SECOND reconnect during the deferred retry still never submits an empty 
     }
     return true;
   });
-  // As above: the reconnect is keyed to connEpoch's SECOND read (inside the deferred Enter), not to
+  // As above: the reconnect is keyed to connEpoch's FOURTH read (inside the deferred Enter), not to
   // wall-clock ordering, so a slow runner can't let the Enter slip through before the epoch flips.
   let epochReads = 0;
-  renderCompose(() => (++epochReads === 1 ? 1 : 2));
+  renderCompose(() => (++epochReads <= 3 ? 1 : 2));
   const ta = screen.getByRole("textbox");
   await user.type(ta, "hello world");
   await user.click(screen.getByRole("button", { name: /^send/i }));
@@ -1200,6 +1228,49 @@ test("a SECOND reconnect during the deferred retry still never submits an empty 
     expect((ta as HTMLTextAreaElement).value).toBe("hello world"),
   ); // text restored
   expect(sendInput).not.toHaveBeenCalledWith(KEYSEQ.enter);
+});
+
+test("a reconnect in the clear→paste gap restarts the attempt FROM THE CLEAR, on the fresh socket (#1062)", async () => {
+  // #1062 opened a gap the frames never had before: the clear goes to socket A and the paste would
+  // land on socket B, which never got the clear — so the paste could append to whatever was left on
+  // B's prompt line. Restarting the whole attempt is what keeps the clear's guarantee; it is safe
+  // because an attempt BEGINS with the clear and therefore cannot double the text.
+  const user = userEvent.setup();
+  // Flip on the SECOND read — the paste boundary — so the reconnect lands in the new gap by
+  // construction rather than by wall-clock luck.
+  let epochReads = 0;
+  renderCompose(() => (++epochReads === 1 ? 1 : 2));
+  await user.type(screen.getByRole("textbox"), "hello world");
+  await user.click(screen.getByRole("button", { name: /^send/i }));
+  await waitFor(() => expect(sendInput).toHaveBeenCalledWith(KEYSEQ.enter));
+  // The abandoned attempt contributed its clear and NOTHING else: no paste ever reached socket A,
+  // so nothing can be doubled, and B is cleared again before its paste.
+  expect(sendInput.mock.calls.map((c) => c[0])).toEqual([
+    KEYSEQ.ctrla + KEYSEQ.ctrlk,
+    KEYSEQ.ctrla + KEYSEQ.ctrlk,
+    bracketedPaste("hello world"),
+    KEYSEQ.enter,
+  ]);
+});
+
+test("restarts are BOUNDED — a socket that keeps reconnecting aborts with the draft intact, never an empty turn (#1062/#287)", async () => {
+  // The restart path must not become a retry loop against a flapping socket. One restart, then the
+  // same guarantee as every other abort: no bare Enter (that is the empty-turn bug), text kept.
+  const user = userEvent.setup();
+  let epochReads = 0;
+  renderCompose(() => ++epochReads); // every read sees a different socket — a permanent flap
+  const ta = screen.getByRole("textbox");
+  await user.type(ta, "hello world");
+  await user.click(screen.getByRole("button", { name: /^send/i }));
+  await waitFor(() => expect(screen.getByText(/not sent/i)).toBeInTheDocument());
+  expect(sendInput).not.toHaveBeenCalledWith(KEYSEQ.enter);
+  expect(sendInput).not.toHaveBeenCalledWith(bracketedPaste("hello world"));
+  // Exactly two attempts were started — the original and its one restart — not a loop.
+  expect(sendInput.mock.calls.map((c) => c[0])).toEqual([
+    KEYSEQ.ctrla + KEYSEQ.ctrlk,
+    KEYSEQ.ctrla + KEYSEQ.ctrlk,
+  ]);
+  expect((ta as HTMLTextAreaElement).value).toBe("hello world");
 });
 
 test("a content send whose deferred Enter never delivers preserves + re-saves the draft (#477)", async () => {
@@ -1232,9 +1303,11 @@ test("Enter sends, Shift+Enter inserts a newline", async () => {
   await user.type(ta, "line1{Shift>}{Enter}{/Shift}line2");
   expect(sendInput).not.toHaveBeenCalled(); // shift+enter = newline, not send
   await user.type(ta, "{Enter}");
-  expect(sendInput).toHaveBeenCalledWith(
-    expect.stringContaining(bracketedPaste("line1\nline2")),
-  );
+  await waitFor(() =>
+    expect(sendInput).toHaveBeenCalledWith(
+      expect.stringContaining(bracketedPaste("line1\nline2")),
+    ),
+  ); // the paste is its own task now (#1062)
 });
 
 test("Send with image attachment writes Enter as its own DEFERRED frame after the paste (#180/#197)", async () => {
@@ -1263,15 +1336,17 @@ test("Send with image attachment writes Enter as its own DEFERRED frame after th
   sendInput.mockClear();
   await user.click(screen.getByRole("button", { name: /^send/i }));
 
-  // The clear + paste frames go out synchronously; the Enter does NOT — it's
-  // deferred so the agent finishes ingesting the image path first (#197).
+  // Three frames, three tasks: the clear goes out alone (#1062 — bundled with the paste it
+  // leaves an image-carrying paste pending, and the first Enter finalises that instead of
+  // submitting), then the paste, then the Enter deferred past the agent's image ingestion (#197).
   expect(sendInput).toHaveBeenNthCalledWith(1, KEYSEQ.ctrla + KEYSEQ.ctrlk);
-  expect(sendInput).toHaveBeenNthCalledWith(
-    2,
-    bracketedPaste("look at this /uploads/shot.png"),
+  expect(sendInput).toHaveBeenCalledTimes(1); // neither the paste nor the Enter is in this task
+  await waitFor(() =>
+    expect(sendInput).toHaveBeenNthCalledWith(
+      2,
+      bracketedPaste("look at this /uploads/shot.png"),
+    ),
   );
-  expect(sendInput).toHaveBeenCalledTimes(2); // Enter not sent yet
-  // …it arrives shortly after as its own discrete frame.
   await waitFor(() =>
     expect(sendInput).toHaveBeenNthCalledWith(3, KEYSEQ.enter),
   );
@@ -1423,13 +1498,15 @@ test("ready-before-send (synchronous true) keeps the delivery sequence unchanged
   );
   await user.type(screen.getByRole("textbox"), "hello world");
   await user.click(screen.getByRole("button", { name: /^send/i }));
-  // Identical to the ungated path: clear + paste synchronously, Enter deferred (#180).
+  // Identical to the ungated path: the clear synchronously, then the paste and the Enter each
+  // in their own later task (#180/#1062).
   expect(sendInput).toHaveBeenNthCalledWith(1, KEYSEQ.ctrla + KEYSEQ.ctrlk);
-  expect(sendInput).toHaveBeenNthCalledWith(2, bracketedPaste("hello world"));
-  expect(sendInput).toHaveBeenCalledTimes(2);
-  await waitFor(() =>
-    expect(sendInput).toHaveBeenNthCalledWith(3, KEYSEQ.enter),
-  );
+  await waitFor(() => expect(sendInput).toHaveBeenCalledTimes(3));
+  expect(sendInput.mock.calls.map((c) => c[0])).toEqual([
+    KEYSEQ.ctrla + KEYSEQ.ctrlk,
+    bracketedPaste("hello world"),
+    KEYSEQ.enter,
+  ]);
 });
 
 test("readiness timeout never sends, keeps the text, and says why (#533)", async () => {
@@ -1987,7 +2064,13 @@ test("the Return chip rides the send fence: pressed inside a template's paste→
   fireEvent.click(screen.getByRole("button", { name: /^return$/i }));
   // Unfixed: the chip's Enter went straight to the pty as the THIRD frame, submitting the paste
   // early and leaving the transaction's own Enter to submit an empty turn.
-  expect(sendInput).toHaveBeenCalledTimes(2);
+  // Only the CLEAR has gone out — the paste is its own task now (#1062), and the intervening
+  // input is held by the fence from the clear onward, not just from the paste.
+  expect(sendInput).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(CLEAR_DELAY_MS);
+  });
+  expect(sendInput).toHaveBeenCalledTimes(2); // + the paste
   await act(async () => {
     await vi.advanceTimersByTimeAsync(119);
   });
@@ -2076,7 +2159,13 @@ test("a key-bar Up inside a template's paste→Enter window is held until that E
     fireEvent.click(within(dialog).getByRole("button", { name: /^send pr review checklist$/i }));
   });
   fireEvent.click(screen.getByRole("button", { name: /^up$/i }));
-  expect(sendInput).toHaveBeenCalledTimes(2); // unfixed: Up went out as the third frame
+  // Only the CLEAR has gone out — the paste is its own task now (#1062), and the intervening
+  // input is held by the fence from the clear onward, not just from the paste.
+  expect(sendInput).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(CLEAR_DELAY_MS);
+  });
+  expect(sendInput).toHaveBeenCalledTimes(2); // + the paste
   await act(async () => {
     await vi.advanceTimersByTimeAsync(119);
   });
@@ -2109,7 +2198,13 @@ test("a keystroke typed into the terminal is HELD only inside the delivery windo
   });
   // Inside the window: held.
   expect(ref.current!.deferInput("y")).toBe(true);
-  expect(sendInput).toHaveBeenCalledTimes(2);
+  // Only the CLEAR has gone out — the paste is its own task now (#1062), and the intervening
+  // input is held by the fence from the clear onward, not just from the paste.
+  expect(sendInput).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(CLEAR_DELAY_MS);
+  });
+  expect(sendInput).toHaveBeenCalledTimes(2); // + the paste
   await act(async () => {
     await vi.advanceTimersByTimeAsync(119);
   });

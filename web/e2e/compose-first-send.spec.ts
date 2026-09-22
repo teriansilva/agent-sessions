@@ -145,6 +145,12 @@ test("first compose Send into a fresh session waits for the agent's first paint 
 
   // Paint settled → the held message delivers: clear, paste, then the deferred Enter (#180
   // sequencing preserved).
+  // Readiness releases the delivery, and the CLEAR goes out ALONE: the paste follows a
+  // CLEAR_DELAY_MS later so the two can never land in one pty read (#1062).
+  await expect
+    .poll(async () => page.evaluate(() => window.__sentInput.slice()))
+    .toEqual(["\x01\x0b"]);
+  await page.clock.runFor(100); // > CLEAR_DELAY_MS (80)
   await expect
     .poll(async () => page.evaluate(() => window.__sentInput.join("")))
     .toContain("\x1b[200~hello from the compose gate\x1b[201~");
@@ -229,6 +235,12 @@ test("fresh Codex send waits for boot output to go quiet before using fallback r
   expect(await page.evaluate(() => window.__sentInput.slice())).toEqual([]);
   await page.clock.runFor(800);
 
+  // Readiness releases the delivery, and the CLEAR goes out ALONE: the paste follows a
+  // CLEAR_DELAY_MS later so the two can never land in one pty read (#1062).
+  await expect
+    .poll(async () => page.evaluate(() => window.__sentInput.slice()))
+    .toEqual(["\x01\x0b"]);
+  await page.clock.runFor(100); // > CLEAR_DELAY_MS (80)
   await expect
     .poll(async () => page.evaluate(() => window.__sentInput.join("")))
     .toContain("\x1b[200~do the first codex task\x1b[201~");

@@ -68,6 +68,19 @@ export interface Attachment {
 const ENTER_DELAY_MS = 60;
 const ENTER_DELAY_AFTER_ATTACHMENT_MS = 120;
 
+/** Gap between the line-clear and the bracketed paste. The two must not arrive in one PTY read:
+ *  claude 2.1.278 then holds a paste that carries an image path pending, and the first Enter
+ *  finalises it instead of submitting (#1062). Measured against a live claude PTY, submission confirmed
+ *  from its own transcript store — 0ms: 3/3 needed a second Enter (at BOTH 120ms and 1500ms Enter
+ *  delays, so the Enter delay is not what decides it); 16ms, 40ms and 80ms: submitted on the first.
+ *  The floor is below 16ms because what matters is that the writes fall in different reads, not
+ *  that the agent gets time — 80ms is margin for a loaded host coalescing two frames into one
+ *  server turn, and it is still imperceptible.
+ *  This spacing makes separate reads very likely but does not guarantee them end to end: the
+ *  server's `pump_in` (webterm.py) writes each frame as it arrives, so an event-loop stall past
+ *  80ms or relay coalescing can re-join the two. Separating the writes server-side is #1070. */
+export const CLEAR_DELAY_MS = 80;
+
 /** Fresh-launch readiness hold (#533): how long a first Send waits for the booting agent's
  *  input to come live before giving up (keeping the draft + surfacing "not sent"). Generous —
  *  a loaded host has been observed taking ~10s to first paint. */
@@ -1207,32 +1220,22 @@ export const Compose = forwardRef<
         // (#226) A same-tick text send still raced on slower/mobile links — you had to press Enter
         // twice. So ALWAYS defer the Enter into a later task: text uses ENTER_DELAY_MS, attachments
         // the longer ENTER_DELAY_AFTER_ATTACHMENT_MS.
+        // (#1062) The CLEAR has the same boundary problem: a clear landing in the same PTY read as a
+        // paste that carries an image path leaves the paste pending on claude 2.1.278, and no Enter
+        // delay helps. It gets its own task too — see CLEAR_DELAY_MS. The client spacing makes
+        // separate reads very likely, not certain; the server-side guarantee is #1070.
         const enterDelay =
           savedAttachments.length > 0
             ? ENTER_DELAY_AFTER_ATTACHMENT_MS
             : ENTER_DELAY_MS;
-        // Clear the prompt line, then bracketed-paste the message. If the socket is mid-reconnect the
-        // paste WON'T deliver (`sendInput` returns false) — do NOT fire a bare Enter later, or it
-        // submits an EMPTY turn (#287). Keep the text so the user can resend, and say why.
-        sendInput(KEYSEQ.ctrla + KEYSEQ.ctrlk);
-        if (!sendInput(bracketedPaste(msg))) {
-          abortNotDelivered(); // socket mid-reconnect → not sent; never fire a bare Enter
-          return;
-        }
         // The Enter is deferred so the agent reads it as a discrete keystroke AFTER the paste-end
-        // marker (#180/#226). But a reconnect can land in that gap: the paste went to the now-dead
-        // socket while the Enter would hit a FRESH socket that never received it → empty turn. Gate on
-        // the socket id: if it changed, re-send clear+paste on the new socket first (the clear
-        // prevents any doubling) — and if THAT re-paste also fails (a second reconnect), abort
-        // instead of submitting empty.
-        const epoch = connEpoch?.();
-        setTimeout(() => {
+        // marker (#180/#226). A reconnect can land in ANY gap: a frame written to the now-dead
+        // socket is not on the fresh one, so a bare Enter there would submit an EMPTY turn (#287).
+        // Every step therefore gates on the socket id and restarts the attempt when it moved.
+        const submitEnter = (epoch: number | undefined) => {
           if (epoch !== undefined && connEpoch?.() !== epoch) {
-            sendInput(KEYSEQ.ctrla + KEYSEQ.ctrlk);
-            if (!sendInput(bracketedPaste(msg))) {
-              abortNotDelivered();
-              return;
-            }
+            redeliver();
+            return;
           }
           // #477/#287: the turn is only actually submitted once this Enter reaches the socket. If it
           // doesn't deliver, the message was NOT sent — restore + re-persist the draft (abort) rather
@@ -1267,7 +1270,47 @@ export const Compose = forwardRef<
             }
           }
           settle("delivered");
-        }, enterDelay);
+        };
+        // One attempt = clear → CLEAR_DELAY_MS → paste → enterDelay → Enter, each write in its own
+        // task. The clear→paste gap is load-bearing and is NOT a slow-link allowance: measured on
+        // claude 2.1.278, a clear landing in the SAME PTY read as a paste that carries an image
+        // path leaves that paste pending, and the first Enter finalises it instead of submitting —
+        // the "I had to press Enter twice" bug. No Enter delay fixes it (1500ms behaves exactly
+        // like 120ms, 3/3); spacing the clear off the paste does (3/3). Same shape as #180's split
+        // of the trailing \r, applied to the boundary that was never split.
+        let restarts = 1;
+        const attempt = () => {
+          // Clear the prompt line (Ctrl-A, Ctrl-K) so leftover console input can't mix in.
+          sendInput(KEYSEQ.ctrla + KEYSEQ.ctrlk);
+          const epoch = connEpoch?.();
+          setTimeout(() => {
+            if (epoch !== undefined && connEpoch?.() !== epoch) {
+              redeliver();
+              return;
+            }
+            // If the socket is mid-reconnect the paste WON'T deliver (`sendInput` returns false) —
+            // do NOT fire a bare Enter later. Keep the text so the user can resend, and say why.
+            if (!sendInput(bracketedPaste(msg))) {
+              abortNotDelivered();
+              return;
+            }
+            // Captured HERE, not inside the timer: read at Enter time it would be compared
+            // against itself and no reconnect could ever be detected.
+            const pasteEpoch = connEpoch?.();
+            setTimeout(() => submitEnter(pasteEpoch), enterDelay);
+          }, CLEAR_DELAY_MS);
+        };
+        // A reconnect restarts the attempt on the fresh socket — safe precisely because an attempt
+        // BEGINS with the clear, so a restart cannot double the text. Once only: a second reconnect
+        // aborts with the draft intact rather than risking an empty turn (#287).
+        const redeliver = () => {
+          if (restarts-- <= 0) {
+            abortNotDelivered();
+            return;
+          }
+          attempt();
+        };
+        attempt();
       };
       // Fresh-launch readiness hold (#533): input written into a still-booting agent is swallowed
       // (the composed text) or mis-submitted (the incident's first turn was the literal Ctrl-A of
@@ -1296,7 +1339,8 @@ export const Compose = forwardRef<
     });
 
   // ONE transaction at a time (Hermes on #908, round 2). A delivery is three frames spread over
-  // up to ENTER_DELAY_AFTER_ATTACHMENT_MS, and a second caller starting inside that window
+  // up to CLEAR_DELAY_MS + ENTER_DELAY_AFTER_ATTACHMENT_MS (twice that if a reconnect restarts
+  // the attempt), and a second caller starting inside that window
   // interleaves them: `clear, paste(A), clear, paste(B), Enter, Enter` submits B, erases A, then
   // submits an empty turn — while A still resolved `delivered` and bumped its usage. So every
   // entry point — the button, Enter in the box, the bare-Enter path, the picker's SEND — queues

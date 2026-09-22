@@ -78,13 +78,16 @@ diagnostic copy and remove it before collecting positive results.
 
 The Compose unit tests for a Return-chip, Up-key or terminal keystroke arriving
 between a template paste and its deferred Enter must hold that interval open.
-Awaiting two user-event clicks on a busy host can consume the real 120 ms window;
+Awaiting two user-event clicks on a busy host can consume the real delivery window;
 an assertion expecting only the clear and paste then sees all four frames.
 
 These three checks fill the real picker first, pause the test clock, and dispatch
-the send and intervening input through the component. At 119 ms only clear and
-paste may have arrived. At 120 ms the exact sequence must be clear, paste, Enter,
-then the held input. Usage accounting and the terminal input behavior outside the
+the send and intervening input through the component. Only the clear goes out
+synchronously; the paste follows after `CLEAR_DELAY_MS` (#1062), and each test
+advances that first. From there the boundary is `CLEAR_DELAY_MS` + 119/120 ms: at
+`CLEAR_DELAY_MS` + 119 ms only clear and paste may have arrived, and at
+`CLEAR_DELAY_MS` + 120 ms the exact sequence must be clear, paste, Enter, then the
+held input. Usage accounting and the terminal input behavior outside the
 window remain asserted. The shared cleanup restores real timers after each test.
 
 Run them from `web/`:
