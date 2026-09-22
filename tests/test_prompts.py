@@ -85,7 +85,9 @@ def test_registry_covers_every_system_prompt():
 # the hash in the same commit; one that changes by accident (a reflow, a "small" reword while
 # moving code) fails here instead of silently altering what every session is asked for.
 EXPECTED_DEFAULT_SHA = {
-    "mission_objectives": "2a449277a3f428f4",
+    # #1061 P2: a selection may carry `probe_args` — only `repo`/`branch`, only on a template marked
+    # [may set: repo, branch], only a value that appears word for word in the instruction.
+    "mission_objectives": "3fa24983383d22e4",
     "mission_question": "047f41d72b0e206b",
     "tail_review": "96d2b5fe33d5acee",
     "session_recap": "7438fbcf5328734f",

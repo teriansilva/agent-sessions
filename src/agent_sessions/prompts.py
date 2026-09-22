@@ -169,14 +169,19 @@ You are given the instruction and a NUMBERED LIST of objective templates the ope
 has written. Choose which of them this mission needs, in the order they should be done.
 
 Reply with JSON only:
-{"objectives": [{"template_index": <int>, "gate": <bool>, "title": "<optional, adapted>"}],
+{"objectives": [{"template_index": <int>, "gate": <bool>, "title": "<optional, adapted>",
+                 "probe_args": {"repo": "<optional>", "branch": "<optional>"}}],
  "notes": [{"title": "<something worth tracking that no template covers>"}],
  "drop": ["<key of an objective already on the mission that no longer applies>"]}
 
 Rules:
 - `template_index` is an index into the list you were given. Never invent one.
-- You may adapt a template's `title` to this instruction. You may NOT choose what it checks:
-  there is no field for that, and any you add is ignored and the row is refused.
+- You may adapt a template's `title` to this instruction. You may NOT choose what kind of check
+  it is: there is no field for that, and any you add is ignored and the row is refused.
+- A template marked [may set: repo, branch] may carry `probe_args` with `repo` and/or `branch` —
+  ONLY a value that appears word for word in the instruction, as one token. Never invent or
+  complete one; if the instruction names no branch or repository, leave `probe_args` out. You may
+  select the same template once per branch the instruction names. Any other value refuses the row.
 - Anything worth tracking that no template covers goes in `notes`. A note is a reminder only —
   it checks nothing and gates nothing.
 - `gate` means the mission is not done until this holds. Use it for outcomes, not for steps.

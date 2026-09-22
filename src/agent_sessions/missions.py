@@ -96,6 +96,49 @@ OBJECTIVE_TITLE_MAX = 200
 #: direction would have been filled from it (#983).
 OBSERVED_MAX = 2000
 OBJECTIVE_KEY_MAX = 64
+#: A mission that DECLINED a checklist (#1061) — the third state of `playbook_id`, beside absent
+#: (the operator's default) and a playbook id. The leading colon cannot occur in a playbook id
+#: (`prefs._PLAYBOOK_ID_RE`), so it can never collide with a real one, and "you declined" stays a
+#: different fact from "what you chose is gone" (`unknown_playbook`).
+PLAYBOOK_DECLINED = ":none"
+#: How a template's SECOND and later uses on one mission are keyed (#1061): `merged--2`. A double
+#: hyphen, because a single one is ordinary in playbook keys — a playbook may define both
+#: `merged` and `merged-2`, and a minted `merged-2` would then be indistinguishable from the real
+#: one when the panel resets a row's direction to its template. Playbook writes refuse `--` in an
+#: objective key.
+MINTED_KEY_SEP = "--"
+_MINTED_RE = re.compile(r"^(?P<base>.+)--(?P<n>[2-9]|[1-9][0-9]+)$")
+
+
+def minted_key(base: str, n: int) -> str:
+    """The key for the n-th (n ≥ 2) use of template `base` on one mission; fits the key limit."""
+    return f"{base[: OBJECTIVE_KEY_MAX - 5]}{MINTED_KEY_SEP}{n}"
+
+
+def template_for_key(templates: dict[str, dict], key: str) -> dict | None:
+    """The playbook template an objective row came from — its own key, or the base of a minted one.
+
+    Exact match first, so a real template key always wins. A minted key resolves to the template it
+    was minted from; one whose base was truncated to fit resolves only when exactly one template
+    key starts with that base. Anything else is `None` — no guessing about which template it meant.
+    """
+    t = templates.get(key)
+    if t is not None:
+        return t
+    m = _MINTED_RE.match(key)
+    if not m:
+        return None
+    base = m["base"]
+    if base in templates:
+        return templates[base]
+    if len(base) == OBJECTIVE_KEY_MAX - 5:
+        hits = [v for k, v in templates.items() if k.startswith(base)]
+        if len(hits) == 1:
+            return hits[0]
+    return None
+
+
+_PLAYBOOK_REF_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 PROBE_ARGS_MAX = 2000
 #: Bound on one `GET /api/missions/{id}` timeline page.
 EVENTS_PAGE_MAX = 200
@@ -2636,6 +2679,16 @@ def create_mission(
     text = _cap(instruction, INSTRUCTION_MAX)
     if not text:
         raise MissionError("instruction is required", status=422)
+    # THREE SHAPES, validated in the store so every caller gets it (#1061): absent ⇒ the operator's
+    # default; `PLAYBOOK_DECLINED` ⇒ no checklist for this mission; otherwise a well-formed playbook
+    # id. Whether that id still EXISTS is decided when templates resolve, deliberately — a playbook
+    # can be deleted after the mission is created, and that is recorded as `unknown_playbook`.
+    if playbook_id is not None and playbook_id != "":
+        if not isinstance(playbook_id, str) or not (
+            playbook_id == PLAYBOOK_DECLINED
+            or (len(playbook_id) <= 200 and _PLAYBOOK_REF_RE.match(playbook_id))
+        ):
+            raise MissionError('playbook_id must be a playbook id or ":none"', status=422)
     ts = time.time() if now is None else now
     mission_id = new_id()
     with _write_lock:
@@ -6672,9 +6725,9 @@ def playbook_binding(mission_id: str, *, path: Path | None = None) -> str:
 def templates_for_mission(mission_id: str, *, path: Path | None = None) -> tuple[str, list[dict]]:
     """`(status, templates)` — the objective templates in play for this mission (#883).
 
-    `status` is one of `"ok"` / `"no_default"` / `"unknown_playbook"`, and the caller records the
-    last one so the operator can see WHICH id went missing rather than wondering why a mission
-    got no objectives.
+    `status` is one of `"ok"` / `"no_default"` / `"unknown_playbook"` / `"declined"`. The caller
+    records every non-`ok` one — naming the id for `unknown_playbook`, so the operator can see
+    WHICH playbook went missing rather than wondering why a mission got no objectives.
 
     **The two failure modes are deliberately different**, and collapsing them is how probes get
     armed for a mission nobody chose them for:
@@ -6697,6 +6750,10 @@ def templates_for_mission(mission_id: str, *, path: Path | None = None) -> tuple
     block = prefs.get_mission_playbooks()
     by_id = {p["id"]: p for p in block["playbooks"]}
     wanted = str(row.get("playbook_id") or "")
+    if wanted == PLAYBOOK_DECLINED:
+        # DECLINED for this mission (#1061) — not missing, not the default: the operator said no
+        # checklist. No templates, so the model can add notes and nothing that checks or gates.
+        return ("declined", [])
     if wanted:
         pb = by_id.get(wanted)
         return ("ok", list(pb["objectives"])) if pb else ("unknown_playbook", [])
@@ -9072,7 +9129,9 @@ def _op_reset_direction(
     than guessed at.
     """
     key, probe = _direction_target(con, mission_id, op, source)
-    t = templates.get(key)
+    # A row fitted to a branch carries a MINTED key (#1061); its template is the one it was minted
+    # from, and the probe check below still refuses one that now checks something different.
+    t = template_for_key(templates, key)
     if t is None:
         raise MissionError(
             f"the mission's playbook has no objective {key} to reset the direction from",

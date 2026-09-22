@@ -2253,6 +2253,11 @@ def _check_objective(obj: object, *, strict: bool) -> dict | None:
         if strict:
             raise PlaybookError(f"objective key may not start with {_m.NOTE_KEY_PREFIX!r}")
         return None
+    if strict and _m.MINTED_KEY_SEP in key:
+        # Reserved for the keys a template's repeated use is minted under (#1061), so a minted row
+        # can always be traced back to its template. Refused on WRITE only: a playbook stored before
+        # this rule keeps working, and the resolver prefers an exact key, so it still resolves.
+        raise PlaybookError(f"objective key may not contain {_m.MINTED_KEY_SEP!r}")
     if not isinstance(title, str) or not title.strip() or len(title) > PLAYBOOK_TITLE_MAX:
         if strict:
             raise PlaybookError(f"bad objective title for {key!r}")

@@ -176,7 +176,10 @@ ACTION_NAMES: frozenset[str] = frozenset(name for name, _ in ACTIONS)
 #: So the card renders THIS beside the label. It is not model-authored, it cannot be, and it is
 #: keyed on the action the server will actually run.
 CONSEQUENCE: dict[str, str] = {
-    "note_answer": "Records your answer. Nothing else changes.",
+    # SAYS THAT IT WILL ASK AGAIN (#1061 Phase 4). "Nothing else changes" was literally true and
+    # still a trap: the objective stays exactly as unsettled as before, so the supervisor raises the
+    # same question as a new episode, and an operator who chose "keep working on it" met it again.
+    "note_answer": "Records your answer. Nothing else changes, so this may be asked again.",
     "waive_objective": "Marks this objective NOT REQUIRED. The mission can finish without it.",
     "stand_down_objective": "Stops following up on this objective. It stays unmet.",
     "close_mission": "Proposes that the mission is finished. You still confirm.",

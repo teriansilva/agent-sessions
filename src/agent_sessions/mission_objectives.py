@@ -3,17 +3,28 @@
 **The model may choose WHICH objective, never WHAT IT DOES.** That sentence is the whole module.
 
 `http_status` and `http_revision` make a request, so if model output could reach a URL, then
-untrusted text — the instruction, an issue body, a transcript the planner read — could choose an
-address the server fetches on a schedule. Server-side request forgery with a cadence attached.
+untrusted text — an issue body, a transcript the planner read — could choose an address the server
+fetches on a schedule. Server-side request forgery with a cadence attached.
 
 The answer is not to validate a model-authored URL; an allowlist of hosts is a blocklist problem
 in disguise, and every round of it is another "did we think of this scheme / redirect / rebind".
-The answer is that **there is no code path from model text to a probe target at all**:
+The answer is that **there is no code path from model text to a request target at all**:
 
 * the model receives a NUMBERED LIST of templates and returns indices into it;
-* `probe` and `probe_args` are read from the selected template and are refused as model input;
+* `probe` is read from the selected template and refused as model input, and an HTTP probe's
+  arguments — its `url` — are never model input either;
 * anything with no template becomes a NOTE — no probe, never a gate;
-* so the only way a new probe target can exist is a human typing it into a playbook.
+* so the only way a new request target can exist is a human typing it into a playbook.
+
+**One bounded exception, and exactly one (#1061):** a selection may fill `repo` or `branch` on a
+forge or git probe — the arguments that let "it is merged" name WHICH branch. They are not request
+targets: forge probes resolve against the configured forge, git probes against the mission's own
+checkout. And a value is accepted only if the OPERATOR wrote it: it must be a whole token of the
+mission's instruction, may not overwrite a key the template sets, and still passes
+`missions.validate_probe_args`. The instruction arrives only through the authenticated create route,
+so it is the operator's text — including text they chose to paste from an issue. The residual case,
+a token planted in pasted text, can at most aim a forge probe at another branch or repository ON THE
+CONFIGURED FORGE; it can never name a host.
 
 That is what makes the acceptance test assertable on the HTTP client rather than on a stored
 row: there is nothing to fail open.
@@ -46,13 +57,60 @@ def _render_templates(templates: list[dict]) -> str:
     if not templates:
         return "(no templates are configured for this mission)"
     return "\n".join(
-        f"{i}. {t['title']}" + ("" if t["probe"] == "none" else f"  [checks: {t['probe']}]")
+        f"{i}. {t['title']}"
+        + ("" if t["probe"] == "none" else f"  [checks: {t['probe']}]")
+        # Which templates may be fitted to a repo/branch the instruction names (#1061). The model
+        # is told the KIND of argument, never shown an operator-authored value.
+        + ("  [may set: repo, branch]" if t["probe"] in PARAMETERISABLE else "")
         for i, t in enumerate(templates)
     )
 
 
-def _rows_from_reply(obj: dict, templates: list[dict]) -> tuple[list[dict], int]:
+#: The probes a selection may PARAMETERISE (#1061), and the only arguments it may set. Forge and git
+#: probes address a repository and a branch on the configured forge / the mission's own checkout.
+#: The HTTP probes are deliberately absent: their `url` is a request target, and a model-written
+#: target is exactly the SSRF surface the playbook boundary exists to prevent — those stay
+#: operator-authored in the playbook.
+PARAMETERISABLE: frozenset[str] = frozenset(
+    {"git_local", "forge_pr", "forge_checks", "forge_review", "forge_merged", "forge_run"}
+)
+PARAM_KEYS: frozenset[str] = frozenset({"repo", "branch"})
+PARAM_VALUE_MAX = 200
+_PROSE_WRAP_CHARS = "\"'`()[]{}<>,.;:!?"
+
+
+def _operator_authored(value: object, instruction: str) -> str | None:
+    """`value` if the operator wrote it — a single token that occurs verbatim in the instruction.
+
+    The model proposes objectives from the instruction text alone; it has no forge access, so any
+    branch or repository it names that the instruction does not is a guess. A value the operator
+    typed is a target the operator authored. Whitespace is refused so a phrase ("merge and") can
+    never pass for a target merely because it occurs in prose, and the match is a whole token.
+    """
+    if not isinstance(value, str):
+        return None
+    v = value.strip()
+    if not v or len(v) > PARAM_VALUE_MAX or any(c.isspace() for c in v):
+        return None
+    # A WHOLE TOKEN, never a substring: `devopsagent/alph` occurs inside `devopsagent/alpha`, and a
+    # prefix of what the operator typed is not what they typed. Tokens are split on whitespace and
+    # shed the punctuation prose wraps them in (quotes, backticks, brackets, a trailing comma).
+    tokens = {t.strip(_PROSE_WRAP_CHARS) for t in instruction.split()}
+    return v if v in tokens else None
+
+
+def _rows_from_reply(
+    obj: dict,
+    templates: list[dict],
+    *,
+    instruction: str = "",
+    stats: dict | None = None,
+) -> tuple[list[dict], int]:
     """`(rows, dropped)` — the objective rows to write, and how many selections were refused.
+
+    ``stats``, when given, is filled with ``{"parameterised": n}`` — how many rows carry
+    model-supplied `probe_args` — which is one of the facts that decides whether the mission asks
+    the operator to confirm its checklist before it runs (#1061 Phase 3).
 
     Every refusal is a DROP, never a repair. A selection carries no title of its own beyond an
     optional adapted one, so an invalid `template_index` cannot become a note: there would be
@@ -61,7 +119,9 @@ def _rows_from_reply(obj: dict, templates: list[dict]) -> tuple[list[dict], int]
     """
     rows: list[dict] = []
     dropped = 0
-    seen: set[int] = set()
+    seen: set[tuple] = set()
+    used_keys: set[str] = set()
+    parameterised = 0
 
     # CONTAINERS ARE CHECKED, not assumed. `{"objectives": {...}}` is a perfectly plausible thing
     # for a model to emit, and slicing a dict raises `TypeError` — a parse failure escaping as a
@@ -94,7 +154,7 @@ def _rows_from_reply(obj: dict, templates: list[dict]) -> tuple[list[dict], int]
         # It is also the stronger SSRF answer: a selection that tried to author a target produces
         # NOTHING rather than a sanitised objective, which is what the prompt already promised
         # ("any you add is ignored and the row is refused").
-        if set(item) - {"template_index", "gate", "title"}:
+        if set(item) - {"template_index", "gate", "title", "probe_args"}:
             dropped += 1
             continue
         # An ACTUAL boolean or nothing. `bool("true")`/`bool(1)`/`bool({})` are all coercions,
@@ -104,12 +164,45 @@ def _rows_from_reply(obj: dict, templates: list[dict]) -> tuple[list[dict], int]
         if "gate" in item and not isinstance(item["gate"], bool):
             dropped += 1
             continue
-        if idx in seen:
-            # A repeated selection means the same objective twice, which is a benign restatement
-            # rather than an incoherent plan. Deduplicated, not counted as a refusal.
-            continue
-        seen.add(idx)
         t = templates[idx]
+        # PARAMETERS (#1061 Phase 2), under three rules, each a DROP when broken — never a repair:
+        # only a parameterisable probe, only `repo`/`branch`, and only values the operator typed.
+        # A key the operator's template already sets is theirs; the model may fill gaps, never
+        # overwrite. Whatever survives still goes through the one shared validator.
+        model_args: dict[str, str] = {}
+        if "probe_args" in item:
+            raw = item["probe_args"]
+            base = t.get("probe_args") or {}
+            ok = (
+                isinstance(raw, dict)
+                and bool(raw)
+                and t["probe"] in PARAMETERISABLE
+                and not (set(raw) - PARAM_KEYS)
+                and not (set(raw) & set(base))
+            )
+            if ok:
+                for k, v in raw.items():
+                    authored = _operator_authored(v, instruction)
+                    if authored is None:
+                        ok = False
+                        break
+                    model_args[k] = authored
+            if ok:
+                try:
+                    missions.validate_probe_args(t["probe"], {**base, **model_args})
+                except missions.MissionError:
+                    ok = False
+            if not ok:
+                dropped += 1
+                continue
+        sig = (idx, tuple(sorted(model_args.items())))
+        if sig in seen:
+            # A repeated selection means the same objective twice, which is a benign restatement
+            # rather than an incoherent plan. Deduplicated, not counted as a refusal. With
+            # parameters the identity is (template, arguments): the same template for two branches
+            # is two objectives, not one said twice.
+            continue
+        seen.add(sig)
         # A PRESENT title must be the contract's shape. `title: 7` was being repaired into the
         # template's own title, which produces an executable row from a reply that did not match
         # the contract — the same "degrade into a different meaning" the gate rule forbids.
@@ -117,15 +210,30 @@ def _rows_from_reply(obj: dict, templates: list[dict]) -> tuple[list[dict], int]
             dropped += 1
             continue
         title = item.get("title")
+        # A MINTED KEY for a template's second and later use (#1061): keys are unique per mission,
+        # and `merged` for two branches must be two rows. `missions.minted_key` keeps the template's
+        # key as the prefix (so it never enters the reserved note namespace) and uses a separator
+        # playbook keys cannot contain, so the panel can always find the row's template again.
+        key = t["key"]
+        if key in used_keys:
+            n = 2
+            while missions.minted_key(t["key"], n) in used_keys:
+                n += 1
+            key = missions.minted_key(t["key"], n)
+        used_keys.add(key)
+        if model_args:
+            parameterised += 1
         row = {
-            "key": t["key"],
+            "key": key,
             # The model may ADAPT the title and nothing else. Everything below comes from the
             # template, which the operator wrote.
             "title": (
                 title[:TITLE_MAX] if isinstance(title, str) and title.strip() else t["title"]
             ),
             "probe": t["probe"],
-            "probe_args": t.get("probe_args"),
+            "probe_args": ({**(t.get("probe_args") or {}), **model_args} or None)
+            if model_args
+            else t.get("probe_args"),
             # By here `gate` is absent or a real bool — a non-bool dropped the whole row above.
             "gate": item.get("gate") is True and t["probe"] != "none",
             "source": "playbook",
@@ -163,6 +271,8 @@ def _rows_from_reply(obj: dict, templates: list[dict]) -> tuple[list[dict], int]
                 "source": "model",
             }
         )
+    if stats is not None:
+        stats["parameterised"] = parameterised
     return rows, dropped
 
 
@@ -195,7 +305,11 @@ async def propose(mission_id: str) -> dict:
                 mission_id,
                 "objective",
                 text=(
-                    f"no objective templates: {status}"
+                    # A declined checklist is the operator's choice, said as one (#1061) — not
+                    # "no objective templates: declined (:none)", which reads as a fault.
+                    "checklist declined for this mission — objectives are notes only"
+                    if status == "declined"
+                    else f"no objective templates: {status}"
                     + (f" ({row.get('playbook_id')})" if row.get("playbook_id") else "")
                 ),
             )
@@ -213,7 +327,13 @@ async def propose(mission_id: str) -> dict:
             },
         ]
     )
-    rows, dropped = _rows_from_reply(obj if isinstance(obj, dict) else {}, templates)
+    stats: dict = {}
+    rows, dropped = _rows_from_reply(
+        obj if isinstance(obj, dict) else {},
+        templates,
+        instruction=str(row.get("instruction") or ""),
+        stats=stats,
+    )
     if not rows:
         return {"objectives": [], "dropped": dropped, "templates": status}
     try:
@@ -259,7 +379,14 @@ async def propose(mission_id: str) -> dict:
                     ),
                 )
             )
-    return {"objectives": written, "dropped": dropped, "templates": status}
+    return {
+        "objectives": written,
+        "dropped": dropped,
+        "templates": status,
+        # How many rows carry model-supplied arguments — with `dropped` and whether anything gates,
+        # the facts that decide whether the operator is asked to confirm the set (#1061 Phase 3).
+        "parameterised": stats.get("parameterised", 0),
+    }
 
 
 async def propose_for_new_mission(mission_id: str) -> dict:
