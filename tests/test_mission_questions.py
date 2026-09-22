@@ -863,12 +863,12 @@ def test_close_mission_is_NOT_OFFERED_while_a_required_objective_is_unmet(store)
 
     Red against a list that is the same whatever the mission's gates say.
     """
-    offered = mq.offered_actions(unmet_required=1)
+    offered = mq.offered_actions(settled=False)
     names = [n for n, _ in offered]
     assert "close_mission" not in names
     assert "note_answer" in names and "waive_objective" in names
     # …and it IS offered where it would do something, so the action is gated rather than deleted.
-    assert "close_mission" in [n for n, _ in mq.offered_actions(unmet_required=0)]
+    assert "close_mission" in [n for n, _ in mq.offered_actions(settled=True)]
 
 
 def test_an_INDEX_resolves_against_the_list_the_model_was_actually_SHOWN(store):
@@ -876,7 +876,7 @@ def test_an_INDEX_resolves_against_the_list_the_model_was_actually_SHOWN(store):
     different meanings, so resolving against `ACTIONS` while showing a subset would hand the
     operator an action nobody offered — the "an index is not an identity" failure with the server
     picking the identity."""
-    offered = mq.offered_actions(unmet_required=1)
+    offered = mq.offered_actions(settled=False)
     rendered = mq.render_actions(offered)
     # The rendering and the resolution agree, whatever the list is.
     assert "close_mission" not in rendered
@@ -1093,9 +1093,7 @@ def test_a_gate_whose_OBSERVATION_went_red_neither_offers_nor_applies_close_miss
     assert missions.unmet_gate_count(rows) == 1
 
     # 1. It is not OFFERED …
-    assert "close_mission" not in [
-        n for n, _ in mq.offered_actions(missions.unmet_gate_count(rows))
-    ]
+    assert "close_mission" not in [n for n, _ in mq.offered_actions_for(rows)]
     # 2. … and if one were answered anyway, it does not propose.
     # Asked about an UNSETTLED objective — a settled one gets no question at all (finding 3).
     missions.patch_objectives(

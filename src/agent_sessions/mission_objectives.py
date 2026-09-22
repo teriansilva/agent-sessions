@@ -236,6 +236,29 @@ async def propose(mission_id: str) -> dict:
                 )
             )
         return {"objectives": [], "dropped": dropped, "templates": "stale"}
+    # NOTHING HERE GATES — said once, where the operator will look for it (#1063).
+    #
+    # A checklist of notes checks nothing and blocks nothing, so the mission can never confirm
+    # itself finished; completion becomes the operator's to press. That used to be invisible,
+    # and the surfaces that should have said so said the opposite — "every gate is met", over an
+    # empty gate set. The row sits beside the `no objective templates: …` one this function
+    # already writes, at the same moment and for the same reason: an unusual checklist should
+    # explain itself rather than be discovered later.
+    #
+    # Written HERE rather than in the sweep, so it appears exactly once per instantiation
+    # instead of once per pass, and needs no dedupe state to stay that way.
+    if written and not any(o.get("gate") for o in written):
+        with contextlib.suppress(Exception):
+            await missions.run_admitted(
+                lambda: missions.append_event(
+                    mission_id,
+                    "objective",
+                    text=(
+                        "nothing on this checklist gates completion — this mission cannot "
+                        "confirm itself finished; close it yourself when you are satisfied"
+                    ),
+                )
+            )
     return {"objectives": written, "dropped": dropped, "templates": status}
 
 

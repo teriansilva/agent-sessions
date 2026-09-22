@@ -5024,8 +5024,17 @@ ANSWER_ACTIONS: frozenset[str] = frozenset(
 )
 
 
-def unmet_gate_count(rows) -> int:
-    """How many required objectives are NOT satisfied, observation and all (#900 rev 5, f.4).
+def gate_tally(rows) -> tuple[int, int]:
+    """``(gates, unmet)`` — how many objectives are REQUIRED, and how many are not satisfied.
+
+    Both halves of one question, counted in one pass, because answering only the second half is
+    how a mission came to declare itself finished having checked nothing (#1063). `unmet == 0` is
+    good news only when `gates > 0`; over an EMPTY gate set it is vacuously true, and a mission
+    created with no playbook gets exactly that — the notes-only objective set, every row
+    `probe: "none"` and `gate: 0`. Four surfaces read the unmet count alone and all four then
+    said "every gate is met" about a mission whose objectives were all pending.
+
+    The unmet half is unchanged, and the reasoning it was written with still holds:
 
     `state == 'met'` is the stored SETTLEMENT; `observation_supports` asks whether the latest look
     still backs it — checks go red when the head advances, a deploy is rolled back, an approval
@@ -5034,23 +5043,57 @@ def unmet_gate_count(rows) -> int:
     done, while `close_mission` was offered and, when answered, carried the mission into review.
     A waiver is exempt — the operator said it was not required, and that does not go stale.
 
-    One function so the three callers cannot drift, which is how they drifted in the first place.
+    Rows arrive as `sqlite3.Row` from the store and as plain dicts from the assessment, so both
+    shapes are read here rather than at each call site.
     """
-    n = 0
+    gates = 0
+    unmet = 0
     for r in rows:
         if not int((r["gate"] if not isinstance(r, dict) else r.get("gate")) or 0):
             continue
+        gates += 1
         state = str((r["state"] if not isinstance(r, dict) else r.get("state")) or "")
         if state == "waived":
             continue
         if state != "met":
-            n += 1
+            unmet += 1
             continue
         raw = r["observed"] if not isinstance(r, dict) else r.get("observed")
         obs = _loads(raw) if isinstance(raw, str) else raw
         if not observation_supports({"observed": obs}):
-            n += 1
-    return n
+            unmet += 1
+    return gates, unmet
+
+
+def unmet_gate_count(rows) -> int:
+    """How many required objectives are NOT satisfied, observation and all (#900 rev 5, f.4).
+
+    The second half of :func:`gate_tally`, kept as its own name because callers that only ask
+    "how many are outstanding?" read better for it — and because a count of unmet gates is what
+    the operator is shown. **It is not the completion question**: use :func:`gates_settled` for
+    that, or an empty gate set answers `0` and reads as success (#1063).
+
+    One function so the callers cannot drift, which is how they drifted in the first place.
+    """
+    return gate_tally(rows)[1]
+
+
+def gates_settled(rows) -> bool:
+    """Is this objective set SATISFIED — at least one gate, and none of them unmet?
+
+    The completion predicate, in one place, because there are four sites that ask it and they
+    have now drifted twice. `propose_completion` commits a state change on it, `assess()`
+    publishes it as `likely_done` (which the board's "looks finished" notice and the supervisor's
+    proposal branch both read), `close_mission` applies it, and `offered_actions` decides whether
+    to put that option on the card at all.
+
+    **A mission with nothing checkable is not finished — it is unmeasured**, and those are
+    different facts. Its completion is the operator's to press; nothing here can propose it.
+    A waived gate still counts as a gate: the operator said it was not required, which is not the
+    same as there being nothing to require.
+    """
+    gates, unmet = gate_tally(rows)
+    return gates > 0 and unmet == 0
 
 
 def _apply_answer_con(
@@ -5119,9 +5162,20 @@ def _apply_answer_con(
             "SELECT * FROM mission_objectives WHERE mission_id=? ORDER BY ord ASC",
             (mission_id,),
         ).fetchall()
-        unmet = unmet_gate_count(rows)
+        gates, unmet = gate_tally(rows)
         if not rows:
             return "not proposed — this mission has no objectives, so it is unmeasured", False
+        if not gates:
+            # NOTHING TO CHECK IS NOT DONE (#1063). `unmet` is `0` here for the same reason it is
+            # `0` on a finished mission, so counting it alone let this answer carry a mission
+            # whose objectives were all pending into review. `offered_actions` no longer puts the
+            # option on the card, and this is the half that holds if a question minted before the
+            # fix is answered afterwards.
+            return (
+                "not proposed — nothing on this mission is checkable, so it cannot be "
+                "confirmed finished; close it yourself when you are satisfied",
+                False,
+            )
         if unmet:
             # The operator's answer is still RECORDED — they said what they think — and the
             # effect honestly did not happen.
@@ -6446,16 +6500,15 @@ def propose_completion(
             #
             # A WAIVER is exempt. The operator said the objective was not required, and that
             # decision does not go stale when a probe cannot look.
-            unmet = 0
-            for o in parsed:
-                if not o.get("gate"):
-                    continue
-                state = str(o.get("state") or "")
-                if state == "waived":
-                    continue
-                if state != "met" or not observation_supports(o):
-                    unmet += 1
-            if unmet:
+            #
+            # AND THE GATE SET MUST NOT BE EMPTY (#1063). Counting only unmet gates answers `0`
+            # for a mission that has none — a notes-only set, which is what instantiation
+            # produces with no playbook — so this transaction committed `running -> review` with
+            # `why: "every gate is met"` on missions that had checked nothing, seconds after
+            # dispatch, while every objective was pending. `gates_settled` asks both halves; the
+            # guard above still refuses a mission with no objectives at all, because "unmeasured"
+            # and "nothing required" are different facts and both must refuse.
+            if not gates_settled(parsed):
                 con.execute("ROLLBACK")
                 return False
             cur = con.execute(

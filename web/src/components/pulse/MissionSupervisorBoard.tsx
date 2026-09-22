@@ -168,6 +168,11 @@ export function MissionSupervisorNotices({
           with. Adopt one, or close the mission.
         </div>
       ) : null}
+      {/* NOTHING TO CHECK IS NOT PROGRESS (#1063). The fallback below reads `unmet_gates`, and
+          `0` is what a mission with no gates reports for the same reason a finished one does —
+          so a checklist that gates nothing rendered as silence here while `likely_done` (which
+          counted the same way) congratulated it above. The server now sends the gate count, and
+          the two cases are told apart rather than sharing a number. */}
       {supervisor.likely_done ? (
         <div
           className={styles.supProposal}
@@ -180,6 +185,11 @@ export function MissionSupervisorNotices({
         <div className={styles.supGates} data-testid="supervisor-unmet-gates">
           {supervisor.unmet_gates} unmet{" "}
           {supervisor.unmet_gates === 1 ? "gate" : "gates"}
+        </div>
+      ) : supervisor.gates === 0 && supervisor.objectives.length > 0 ? (
+        <div className={styles.supGates} data-testid="supervisor-no-gates">
+          Nothing on this checklist gates completion, so this mission cannot
+          confirm itself finished — the call is yours.
         </div>
       ) : null}
     </div>

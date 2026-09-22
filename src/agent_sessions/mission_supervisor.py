@@ -357,6 +357,10 @@ def assess(mission_id: str, *, now: float | None = None, path=None) -> dict:
     except Exception:  # noqa: BLE001
         held = None
     out: list[dict] = []
+    # BOTH HALVES (#1063). `unmet_gates == 0` is also true of a mission with no gates at all, so
+    # the board cannot tell "every gate passed" from "there was never anything to pass" unless
+    # the gate count travels beside it.
+    out_gates = 0
     unmet_gates = 0
     # ONE READ FOR THE WHOLE MISSION, outside the per-objective loop.
     try:
@@ -378,6 +382,8 @@ def assess(mission_id: str, *, now: float | None = None, path=None) -> dict:
         #
         # A waiver is exempt: the operator said it was not required, which does not go stale.
         current = _observation_supports(o) if state == "met" else True
+        if gate:
+            out_gates += 1
         if gate and (not met or not current):
             unmet_gates += 1
         episode, stood_down, question_seq = missions.objective_hold(mission_id, key, path=path)
@@ -452,8 +458,16 @@ def assess(mission_id: str, *, now: float | None = None, path=None) -> dict:
         "objectives": out,
         # `likely_done` is a PROPOSAL, never a close: nothing here marks anything met, and a
         # mission with no objectives is not "done" — it is unmeasured, which is a different fact.
-        "likely_done": bool(rows) and unmet_gates == 0,
+        # THROUGH THE STORE'S OWN PREDICATE (#1063), never re-spelled here. `bool(rows) and
+        # unmet_gates == 0` was true of a notes-only mission — nothing gates, so nothing is
+        # unmet — and this one field drives two surfaces: the board's "Every gate is met — this
+        # mission looks finished" notice, and `run_pass`'s completion branch. Both congratulated
+        # missions that had checked nothing. `gates_settled` requires a gate to exist.
+        "likely_done": missions.gates_settled(rows),
         "unmet_gates": unmet_gates,
+        # The DISCRIMINATOR the board needs to word itself honestly: `0 unmet` reads the same
+        # whether every gate passed or none exists, and only one of those is progress.
+        "gates": out_gates,
         "held_sessions": held,
         # Not "idle" and not "stalled": those are claims about an agent. This is a claim about
         # the MISSION — there is no agent for it to be either. And it is a CLAIM, so it is made
@@ -1316,17 +1330,59 @@ def _render_completion(rows: list[dict]) -> tuple[str, dict]:
         }
         for r in rows
     ]
+    # COUNTED FROM THE ROWS THE STORE READ, not from the summary above: `gate_tally` needs
+    # `observed` to decide whether a settlement still holds, and the projection drops it.
+    gates, unmet = missions.gate_tally(rows)
+    outstanding = sum(1 for o in objectives if not o["gate"] and _settled_by(o) == "pending")
     meta = {
         "source": "supervisor",
         "proposal": True,
+        # THE SAME NUMBERS THE HEADING IS BUILT FROM (#1063), so a surface rendering this artifact
+        # never re-derives them and never disagrees with the sentence beside them.
+        "gates": gates,
+        "unmet_gates": unmet,
+        "outstanding_goals": outstanding,
         "objectives": [{**o, "settled_by": _settled_by(o)} for o in objectives],
     }
-    return _completion_text(objectives), meta
+    return _completion_text(objectives, gates=gates, unmet=unmet, outstanding=outstanding), meta
 
 
-def _completion_text(objectives: list[dict]) -> str:
-    """The proposal, as the operator reads it in the timeline."""
-    lines = ["Every gate is met. This looks finished — nothing has been closed."]
+def _completion_text(objectives: list[dict], *, gates: int, unmet: int, outstanding: int) -> str:
+    """The proposal, as the operator reads it in the timeline.
+
+    **The first line is DERIVED (#1063).** It used to be a constant — `"Every gate is met. This
+    looks finished"` was emitted before the function had looked at anything — so a mission with
+    no gates at all was congratulated above a list of its own objectives, every one of them
+    printed `pending`. A heading that cannot disagree with its list is not a heading, it is a
+    decoration, and the operator reads it as the verdict.
+
+    So it says what was actually checked, and it never claims more than that: `waived` gates are
+    already distinguished from observed ones per row by `_settled_by`, and non-gating goals still
+    outstanding are named rather than folded silently into "finished".
+    """
+    if gates == 0:
+        # Unreachable through `propose_completion`, which refuses an empty gate set before it
+        # renders anything. Kept honest anyway: this function must not be able to produce the
+        # sentence that caused #1063 if a later caller forgets.
+        head = (
+            "Nothing on this mission gates completion, so it cannot be confirmed finished — "
+            "close it yourself when you are satisfied."
+        )
+    elif unmet:
+        head = (
+            f"{unmet} of {gates} gate{'' if gates == 1 else 's'} "
+            f"{'is' if unmet == 1 else 'are'} still unmet — this is not finished."
+        )
+    else:
+        checked = f"{gates} gate{'' if gates == 1 else 's'}"
+        head = f"Every gate is met ({checked}). This looks finished — nothing has been closed."
+        if outstanding:
+            head += (
+                f" {outstanding} goal{'' if outstanding == 1 else 's'} "
+                f"{'is' if outstanding == 1 else 'are'} still open; "
+                "they do not gate completion."
+            )
+    lines = [head]
     for o in objectives:
         mark = "gate" if o.get("gate") else "goal"
         lines.append(f"- [{mark}] {o.get('title') or o.get('key')}: {_settled_by(o)}")

@@ -1507,6 +1507,11 @@ export interface MissionSupervisor {
    *  objectives, which is unmeasured rather than done. */
   likely_done: boolean;
   unmet_gates: number;
+  /** How many objectives GATE completion. `unmet_gates: 0` reads the same whether every gate
+   *  passed or there was never one to pass, and only one of those is progress — so the board
+   *  cannot word itself honestly without this (#1063). Optional: a client may be rendering a
+   *  response from a server that predates it. */
+  gates?: number;
   /** How many sessions the mission currently holds, and the discriminator derived from it.
    *
    *  `no_session` is NOT "idle" and NOT "stalled" — those are claims about an agent. This is a

@@ -253,6 +253,56 @@ test("unmet gates are counted, and singular/plural is not a lie", () => {
   );
 });
 
+test("a checklist that gates NOTHING says so, rather than rendering as silence (#1063)", () => {
+  // `unmet_gates: 0` is what a mission with no gates reports, for the same reason a finished one
+  // does. The board's two branches both keyed on that number, so a notes-only mission fell
+  // through to `null` — nothing at all — while `likely_done` (counted the same way) congratulated
+  // it above. The gate COUNT is what tells the two apart.
+  render(
+    <MissionSupervisorBoard
+      supervisor={sup([obj({ gate: false }), obj({ key: "k2", gate: false })], {
+        likely_done: false,
+        unmet_gates: 0,
+        gates: 0,
+      })}
+    />,
+  );
+  expect(screen.getByTestId("supervisor-no-gates").textContent).toContain(
+    "cannot confirm itself finished",
+  );
+  // …and it is NOT the finished notice, which is the thing this replaces.
+  expect(screen.queryByTestId("supervisor-likely-done")).toBeNull();
+});
+
+test("a mission whose gates all passed still gets the finished notice, not the no-gates one", () => {
+  render(
+    <MissionSupervisorBoard
+      supervisor={sup([obj({ gate: true, met: true, state: "met" })], {
+        likely_done: true,
+        unmet_gates: 0,
+        gates: 1,
+      })}
+    />,
+  );
+  expect(screen.getByTestId("supervisor-likely-done")).toBeTruthy();
+  expect(screen.queryByTestId("supervisor-no-gates")).toBeNull();
+});
+
+test("a server that does not send the gate count renders exactly as before (#1063)", () => {
+  // `gates` is optional on the wire, so an older response must not start claiming a mission
+  // gates nothing — absent is UNKNOWN, and unknown says nothing.
+  render(
+    <MissionSupervisorBoard
+      supervisor={sup([obj({ gate: false })], {
+        likely_done: false,
+        unmet_gates: 0,
+      })}
+    />,
+  );
+  expect(screen.queryByTestId("supervisor-no-gates")).toBeNull();
+  expect(screen.queryByTestId("supervisor-likely-done")).toBeNull();
+});
+
 test("an UNREADABLE ledger is UNKNOWN, never SPENT (#888 review, finding 11)", () => {
   // The server reports `remaining: 0` here because no budget can be justified from a file it could
   // not open — so a classifier reading the NUMBER calls it SPENT while the sentence beside it says

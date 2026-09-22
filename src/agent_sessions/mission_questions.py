@@ -193,7 +193,20 @@ assert set(CONSEQUENCE) == ACTION_NAMES, (
 )
 
 
-def offered_actions(unmet_required: int) -> tuple[tuple[str, str], ...]:
+def offered_actions_for(rows) -> tuple[tuple[str, str], ...]:
+    """:func:`offered_actions`, asked about a real objective set — the production entry point.
+
+    The rule itself is NOT here: `missions.gates_settled` owns it, and this is the one place the
+    question path asks. Splitting it this way is deliberate (#1063) — `offered_actions` maps a
+    settled/not-settled answer to a list and decides nothing, so there is no second copy of the
+    completion rule to drift from the one the transaction commits on.
+    """
+    from . import missions
+
+    return offered_actions(settled=missions.gates_settled(rows))
+
+
+def offered_actions(*, settled: bool) -> tuple[tuple[str, str], ...]:
     """The subset of :data:`ACTIONS` this question may actually produce (#900 review 4, finding 4).
 
     **An option that cannot do what its consequence says is worse than one option fewer.** The
@@ -212,8 +225,15 @@ def offered_actions(unmet_required: int) -> tuple[tuple[str, str], ...]:
     Applicability lives HERE, in the server-built list, rather than in a filter over what the
     model returned: the model picks an INDEX into this list, so an action that is not in it
     cannot be selected at all.
+
+    **`settled`, never an unmet COUNT (#1063).** The paragraph above reasons that a question is
+    only ever generated with a gate unmet — true of every mission that HAS gates, and false of
+    one that has none, whose unmet count is `0` from the moment it is created. So a notes-only
+    mission was offered `close_mission`, and because the answer path counted the same way, the
+    operator could confirm it and finish a mission that had checked nothing. The parameter is now
+    the store's own predicate: an empty gate set is not settled.
     """
-    if unmet_required > 0:
+    if not settled:
         return tuple((n, d) for n, d in ACTIONS if n != "close_mission")
     return ACTIONS
 
@@ -400,8 +420,7 @@ async def ask(mission_id: str, objective_key: str, *, context: str = "", path=No
     # gate stored `met` whose latest observation had gone false exposed `close_mission`, and
     # answering it then hit `_apply_answer_con`'s check — which reads the observation — and
     # returned `not proposed`. Offered and impossible is the shape this whole finding is about.
-    unmet_required = missions.unmet_gate_count(objectives)
-    actions = offered_actions(unmet_required)
+    actions = offered_actions_for(objectives)
     try:
         async with aitasks.single_flight("mission-question", mission_id):
             obj = await review.complete_json(
