@@ -12,6 +12,9 @@ import pytest
 
 from agent_sessions import notifications, orchestrator, prefs
 
+# Every decision here has a surface: these tests pin other axes of the bell (#1057).
+pytestmark = pytest.mark.usefixtures("every_session_held")
+
 
 @pytest.fixture(autouse=True)
 def _isolate(tmp_path, monkeypatch):

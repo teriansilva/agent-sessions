@@ -13,7 +13,6 @@ import {
   COPIED,
   type ConsoleServer,
   NUDGE_TEMPLATE,
-  ORCH,
   PLAYBOOK_NOW,
   SAVE_REFUSAL,
   THREAD,
@@ -30,7 +29,6 @@ import {
   staleNudge,
 } from "./mission-directions";
 import { openMissionConversation, openMissionDetails } from "./mission-console";
-import { setupBench } from "./terminal/harness";
 
 /** Click a chip and wait for the caret to come back to the text, which it does on the next frame. */
 async function chip(field: Locator, name: string) {
@@ -268,35 +266,6 @@ test("D3 / B1: a proposed nudge shows exactly what it will type, its facts, and 
 
   await row.getByTestId("nudge-send").click();
   await expect.poll(() => server.approvals).toEqual(["act_nudge"]);
-});
-
-test("D3: the session's own pane shows the same Will type and sends through the approve route", async ({
-  page,
-}) => {
-  const UUID = "dddddddd-1111-2222-3333-444444444444";
-  const key = `claude:${UUID}`;
-  await setupBench(page, {
-    sessions: [{ engine: "claude", uuid: UUID, title: "Fix the flaky upload retry" }],
-  });
-  const approvals: string[] = [];
-  let pending = [nudgeAction({ session_id: key })];
-  await page.route(/\/api\/pulse\/orchestrator$/, (r) =>
-    r.fulfill({
-      json: { config: ORCH, pending, feed: [], expired_now: 0, delivering_verbs: ["continue"] },
-    }),
-  );
-  await page.route(/\/api\/pulse\/actions\/[^/]+\/approve$/, (r) => {
-    approvals.push(/actions\/([^/]+)\/approve/.exec(r.request().url())![1]);
-    pending = [];
-    return r.fulfill({ json: { ...nudgeAction({ session_id: key }), state: "delivered" } });
-  });
-  await page.goto(`/s/claude/${UUID}`);
-  const row = page.getByTestId("session-decisions").getByTestId("nudge-row");
-  await expect(row).toBeVisible();
-  expect(await row.getByTestId("nudge-text").evaluate((el) => el.textContent)).toBe(TYPED);
-  await expect(row.getByTestId("nudge-objective")).toHaveText("Checks are green on the PR");
-  await row.getByTestId("nudge-send").click();
-  await expect.poll(() => approvals).toEqual(["act_nudge"]);
 });
 
 test("D7 / B7: a nudge whose text is no longer true says not sendable, what it was going to type, why, and offers only Dismiss", async ({

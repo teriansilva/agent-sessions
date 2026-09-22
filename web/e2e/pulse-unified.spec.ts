@@ -7,7 +7,6 @@ import {
   missionRow,
   mockMissions,
 } from "./mission-console";
-import { setupBench } from "./terminal/harness";
 
 // #754 — the orchestrator queue merged into the session cards, plus project/agent filters.
 //
@@ -16,8 +15,8 @@ import { setupBench } from "./terminal/harness";
 // session twice, in two visual languages, with two different affordances.
 //
 // #948 P3 moved the surfaces again, and this file follows them rather than the old markup:
-//   - a decision for a session NO mission holds renders in that session's pane
-//     (`session-decisions`), since the "Sessions without a mission" view is gone;
+//   - a decision for a session NO mission holds renders NOWHERE (#1049): the pane's decision strip
+//     is gone, and the "Sessions without a mission" view went before it;
 //   - a decision for a session a mission HOLDS renders in that mission's thread, and settling it
 //     still goes through the route's local settlement + overview re-read (`Pulse.tsx`), which is
 //     what the #762 refresh-failure cases below were written against.
@@ -192,15 +191,6 @@ test.beforeEach(async ({ page }) => {
   );
 });
 
-/** The pane of the session no mission holds — where its decision renders since #948 P3. */
-async function openPane(page: Page) {
-  await setupBench(page, {
-    sessions: [{ engine: "claude", uuid: UUID, title: ACTION.title }],
-  });
-  await page.goto(`/s/claude/${UUID}`);
-  return page.getByTestId("session-decisions");
-}
-
 /** A mission holding `keys`, opened by its deep link — its thread is where their decisions render. */
 async function openMissionHolding(page: Page, keys: string[]) {
   await mockMissions(page, {
@@ -219,28 +209,6 @@ async function openMissionHolding(page: Page, keys: string[]) {
   await page.goto(`/mission?m=${MID}`);
   await expect(page.getByTestId("console-title")).toHaveText("Unify the queue");
 }
-
-test("a pending decision appears ONCE, in its session's pane, with its controls inside it", async ({
-  page,
-}) => {
-  const strip = await openPane(page);
-  await expect(strip).toHaveCount(1);
-
-  // The decision's own words appear exactly once on the page — the queue used to render the
-  // action a second time in its own list.
-  await expect(page.getByText(ACTION.rationale)).toHaveCount(1);
-  // …and the strip does not restate the session's identity: the pane already names it, which is
-  // why `ActionRow` renders embedded here, as it did inside the card.
-  await expect(strip).not.toContainText(ACTION.title);
-
-  // The controls are INSIDE that strip, not in a separate block.
-  const approve = page.getByRole("button", { name: /^approve$/i });
-  await expect(approve).toHaveCount(1);
-  const stripBox = (await strip.boundingBox())!;
-  const btnBox = (await approve.boundingBox())!;
-  expect(btnBox.y).toBeGreaterThan(stripBox.y);
-  expect(btnBox.y).toBeLessThan(stripBox.y + stripBox.height);
-});
 
 test("the manual pass lives in Settings and reports what the pass actually said (#929)", async ({
   page,
@@ -402,43 +370,6 @@ test("a settled action loses its controls even when the background refresh fails
   // itself does.
   await expect(page.getByText(ACTION.rationale)).toHaveCount(0);
   await expect(page.getByRole("button", { name: /^approve$/i })).toHaveCount(1);
-});
-
-test("a settled action loses its controls in the SESSION PANE too, even when the re-read fails", async ({
-  page,
-}) => {
-  // The same #762 guarantee on the surface an unheld session's decision moved to (#948 P3). The
-  // pane refreshes its decisions from `GET /api/pulse/orchestrator`; when that re-read fails after
-  // a successful approve, the settled action must not sit there offering Approve again.
-  let approved = false;
-  const SAME_SESSION = {
-    ...ACTION,
-    id: "act-3",
-    rationale: "a second question on the same session",
-    evidence: "none",
-    verb: "escalate",
-    state: "escalated",
-  };
-  await page.unroute(/\/api\/pulse\/orchestrator$/);
-  await page.route(/\/api\/pulse\/orchestrator$/, (r) =>
-    approved
-      ? r.fulfill({ status: 500, json: { detail: "boom" } })
-      : r.fulfill({ json: orchestrator([ACTION, SAME_SESSION]) }),
-  );
-  await page.route(/\/api\/pulse\/actions\/.*\/approve$/, async (r) => {
-    approved = true;
-    await r.fulfill({ json: { ...ACTION, state: "delivered" } });
-  });
-
-  const strip = await openPane(page);
-  await expect(strip.getByText(SAME_SESSION.rationale)).toBeVisible();
-  await strip.getByRole("button", { name: /^approve$/i }).click();
-
-  // The untouched decision proves the strip was not simply blanked…
-  await expect(strip.getByText(SAME_SESSION.rationale)).toBeVisible();
-  // …and the settled one is gone, anchored on its rationale rather than the relabelling button.
-  await expect(page.getByText(ACTION.rationale)).toHaveCount(0);
-  await expect(page.getByRole("button", { name: /^approve$/i })).toHaveCount(0);
 });
 
 test("a card that existed only for its action goes away with it", async ({

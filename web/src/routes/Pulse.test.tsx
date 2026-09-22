@@ -9,7 +9,9 @@
  *
  * #948 P3 changed the front door: entering the section selects NOTHING and shows the new-mission
  * page; a mission is opened from the rail. The "Sessions without a mission" view and its filters
- * are gone — a decision for a session no mission holds now renders in that session's own pane.
+ * are gone. A decision for a session no mission holds briefly rendered in that session's own pane
+ * (#948 P3); #1049 removed that strip, so such a decision now has no Approve surface at all — the
+ * bell lists it without counting it (#1057), and the operator reads and types in the session.
  * `ActionRow`'s own behaviour is covered in `components/pulse/Orchestrator.test.tsx` and is NOT
  * re-asserted here — this file checks that the console renders it in the right place.
  */
@@ -217,8 +219,9 @@ beforeEach(() => {
 //   "Sessions without a mission" view, which no longer exists anywhere under /mission. The
 //   outcome wording (#795) is still pinned on `actionOutcome` in `lib/orchestratorAction.test.ts`.
 // * "a decision on an untracked session is never dropped (#840)": the guarantee MOVED — such a
-//   decision now renders in the session's own pane (`session-decisions`), pinned in the browser by
-//   `e2e/session-decisions.spec.ts`, `e2e/orchestrator.spec.ts` and `e2e/pulse-unified.spec.ts`.
+//   decision has no operator surface at all since #1049 removed the session pane's decision strip:
+//   opening the pane is what invalidated the strip's own Approve. A MISSION-held decision still
+//   renders in its mission's thread, which is what `e2e/pulse-unified.spec.ts` now pins.
 // * the four #803 filter-chip cases ("unadopted cwds collapse into one Default chip", "selecting
 //   Default narrows UNTRACKED", "two entities sharing a name still get two chips", "a folder ref
 //   with no usable id still routes to Default"): they drove the untracked project select, which is

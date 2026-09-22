@@ -12,9 +12,8 @@
  */
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
-import { ORCH, SESSION, T, deferred, missionConsole } from "./mission-directions";
+import { SESSION, T, deferred, missionConsole } from "./mission-directions";
 import { openMissionConversation, openMissionDetails } from "./mission-console";
-import { setupBench } from "./terminal/harness";
 
 /** A line break and a doubled space, so a page that collapsed whitespace would fail. */
 const DRAFT_TEXT =
@@ -412,46 +411,6 @@ test("D5: the card never shows a sent-on-its-own state, even for a draft the ser
 });
 
 // --- the session's own pane ------------------------------------------------------------------------
-
-test("D5: the session's pane shows the draft dashed, with Send as written and Dismiss and no Edit", async ({
-  page,
-}) => {
-  const UUID = "dddddddd-1111-2222-3333-444444444444";
-  const key = `claude:${UUID}`;
-  await setupBench(page, {
-    sessions: [{ engine: "claude", uuid: UUID, title: "Fix the flaky upload retry" }],
-  });
-  const approvals: string[] = [];
-  let pending = [draftAction({ session_id: key })];
-  await page.route(/\/api\/pulse\/orchestrator$/, (r) =>
-    r.fulfill({
-      json: {
-        config: ORCH,
-        pending,
-        feed: [],
-        expired_now: 0,
-        delivering_verbs: ["answer", "choose", "continue", "draft_direction", "relay"],
-      },
-    }),
-  );
-  await page.route(/\/api\/pulse\/actions\/[^/]+\/approve$/, (r) => {
-    approvals.push(/actions\/([^/]+)\/approve/.exec(r.request().url())![1]);
-    pending = [];
-    return r.fulfill({ json: { ...draftAction({ session_id: key }), state: "delivered" } });
-  });
-  await page.goto(`/s/claude/${UUID}`);
-  const card = page.getByTestId("session-decisions").getByTestId("draft-card");
-  await expect(card).toBeVisible();
-  expect(await card.evaluate((el) => getComputedStyle(el).borderTopStyle)).toBe("dashed");
-  expect(await card.getByTestId("draft-text").evaluate((el) => el.textContent)).toBe(DRAFT_TEXT);
-  await expect(card.getByRole("button")).toHaveText(["Send as written", "Dismiss"]);
-  await expect(card.getByTestId("draft-hint")).toHaveText("Never sent on its own: it waits for your tap.");
-  await neverAutoSent(card);
-  await card.getByTestId("draft-send").click();
-  await expect.poll(() => approvals).toEqual(["act_draft"]);
-});
-
-// --- targets ---------------------------------------------------------------------------------------
 
 test("B2: on a phone the card's Send as written, Edit and Dismiss are at least 44px tall", async ({
   page,

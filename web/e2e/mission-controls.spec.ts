@@ -1364,7 +1364,7 @@ test("a FAILED archive leaves you on the mission whose error you were just hande
 
 // REMOVED IN #948 P3: "a decision started in UNTRACKED does not paint its refusal over a mission".
 // The Missions section no longer renders a decision for a session no mission holds — that view is
-// gone, and the decision lives in the session's own pane (`session-decisions`), which has no
+// gone, and since #1049 the session pane's strip is gone too, so a mission-less decision has no
 // mission to paint over. The fence for decisions a MISSION holds is still pinned above.
 
 test("a late CLOSE for a mission you left still re-reads the overview", async ({
@@ -2114,8 +2114,9 @@ test("THE #889 JOURNEY: create → objectives arrive → edit → adopt → BEGI
 });
 
 // REMOVED IN #948 P3: "a settled-action refusal from a PREVIOUS untracked visit stays gone". The
-// untracked view — the visit this fenced — no longer exists, and an unheld session's decision is
-// decided in its own pane (`session-decisions`).
+// untracked view — the visit this fenced — no longer exists. A decision on a session no mission
+// holds has no Approve surface at all since #1049 removed the pane's strip; the bell lists it
+// without counting it (#1057).
 
 test("an ARCHIVED mission leaves the Active rail even when the refresh that follows FAILS", async ({
   page,

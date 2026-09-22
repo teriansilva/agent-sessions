@@ -381,10 +381,17 @@ def _viewer_busy(phys_key: str, registry, *, operator_approval: bool = False) ->
     registry hiccup must not silently *enable* a write, so an error reads as busy.
 
     ``operator_approval`` (#969) drops ONLY the attached half. The rule keeps the orchestrator off
-    the keyboard while the operator is at it — but an explicit approval IS the operator, and since
-    #948 P3 it is tapped inside the session's own pane, which is itself an attached viewer, so
-    every one was refused. Recent output still refuses (typing echoes, so it covers someone
-    typing too), and an error still reads as busy.
+    the keyboard while the operator is at it — but an explicit approval IS the operator. The
+    attached pane is most often the operator's own: the mission console offers **Open session**
+    beside Approve, and the bell and push deep-link every decision to the session, so an operator
+    who looked before deciding leaves a viewer attached (the pane's own decision strip, #948 P3,
+    was removed in #1049). Refusing that tap as "someone else at the keyboard" would refuse the
+    operator for having read the screen. Recent output still refuses (typing echoes, so it covers
+    someone typing too), and an error still reads as busy.
+
+    This does NOT cover the screen half: a viewer attaching at another width makes the agent
+    repaint, and `screen_matches` then refuses the approval as stale. That is #973's, pinned as an
+    expected failure in `tests/test_console_approve_after_viewing.py`.
     """
     if registry is None:
         return False
@@ -801,8 +808,8 @@ def withdraw_undeliverable(path=None) -> list[str]:
       (`_master_confirmed_dead`). A missing writer alone is not death: attach and detach hand the
       writer over (`SessionRegistry.on_attach` stops the headless one before the pane registers
       its own), and a poll landing in that gap must not erase the decision the operator is
-      opening the pane to approve. Neither is a probe that timed out. Delivery stays fail-closed
-      through the gap without any help from here.
+      opening the pane to look at before approving. Neither is a probe that timed out. Delivery
+      stays fail-closed through the gap without any help from here.
     * **the screen moved** — `screen_matches`, the helper `check_precondition` uses, re-run on
       every read. There is deliberately no skip-replay shortcut: a sound one would have to track
       every input the renderer reads (ring bytes, width, height), and an unsound one keeps
@@ -839,9 +846,9 @@ def housekeep_pending(path=None) -> tuple[list[str], list[str]]:
     """Expire overdue actions, then withdraw undeliverable ones: ``(expired, withdrawn)``.
 
     ONE function for every place that retires waiting actions (#969) — the orchestrator state read
-    the pane strip polls, the mission cards' overlay, and the scheduled sweep. Each used to call
-    `expire_due` on its own, and a retirement rule added to only one of them would let two
-    surfaces disagree about whether a decision is still pending. Blocking.
+    (`GET /api/pulse/orchestrator`), the mission cards' overlay, and the scheduled sweep. Each
+    used to call `expire_due` on its own, and a retirement rule added to only one of them would
+    let two surfaces disagree about whether a decision is still pending. Blocking.
     """
     return ledger.expire_due(path=path), withdraw_undeliverable(path)
 

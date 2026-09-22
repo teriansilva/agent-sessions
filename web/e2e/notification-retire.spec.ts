@@ -1,6 +1,11 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
-import { setupBench } from "./terminal/harness";
+import {
+  MISSION,
+  missionList,
+  missionRow,
+  mockMissions,
+} from "./mission-console";
 
 /** The bell converges when an action is resolved (#800).
  *
@@ -12,16 +17,19 @@ import { setupBench } from "./terminal/harness";
  *    the closed badge never opens either one.
  *  * The convergence contract is deliberately asymmetric: the same tab updates immediately off
  *    a DOM event, other tabs wait for their next fetch. That is two browsing contexts, which
- *    jsdom does not have, so the "other tab must NOT jump" half was previously unasserted —
+ *    jsdom does not have, so the "other tab must NOT jump" half would otherwise be unasserted —
  *    and it is the half that would silently pass if someone "fixed" this with a global store.
  *
- *  WHERE THE ACTION IS RESOLVED (#948 P3): a decision for a session no mission holds used to be
- *  approved from its row under /mission. That view is gone, and the decision renders in the
- *  session's own pane (`session-decisions`) — which is also where the bell links. The bell
- *  assertions are unchanged.
+ *  WHERE THE ACTION IS RESOLVED: the mission console. The session pane's decision strip, where
+ *  these cases were driven from #948 P3 on, was removed in #1049; since then the console's
+ *  `ActionRow` is the only Approve, and it renders a decision for a session its mission HOLDS.
+ *  That is also the only kind of decision the server counts in the badge (#1057), so the fixture
+ *  is a held one. The bell assertions are unchanged.
  */
 
 const UUID = "abcabcab-0000-4000-8000-000000000800";
+const MID = `msn_${"0800".repeat(8)}`;
+const NOW = Math.floor(Date.now() / 1000);
 
 const CONFIG = {
   csrf: "x",
@@ -38,7 +46,7 @@ const ORCH_CONFIG = {
   confidence_min: 0.7,
   allowed_verbs: ["continue"],
   // The panel prints the enforced ceiling verbatim; omitting it throws inside render and the
-  // whole Pulse route lands in the chunk error boundary with no failed request to point at.
+  // whole route lands in the chunk error boundary with no failed request to point at.
   auto_verbs_ceiling: ["continue"],
   interval_minutes: 10,
   max_actions_per_pass: 4,
@@ -52,6 +60,9 @@ const ORCH_CONFIG = {
 const ACTION = {
   id: "act-1",
   state: "proposed",
+  projection: "actionable",
+  can_approve: true,
+  can_reject: true,
   verb: "continue",
   confidence: 0.9,
   rationale: "stopped mid-task",
@@ -60,8 +71,9 @@ const ACTION = {
   title: "finish the docs",
   project: "agent-sessions",
   project_id: "p1",
-  ts: Math.floor(Date.now() / 1000) - 60,
-  expires_at: Math.floor(Date.now() / 1000) + 1800,
+  evidence: "none",
+  ts: NOW - 60,
+  expires_at: NOW + 1800,
 };
 
 const NOTIFICATION = {
@@ -72,13 +84,32 @@ const NOTIFICATION = {
   engine: "claude",
   session_id: `claude:${UUID}`,
   action_id: "act-1",
-  ts: Math.floor(Date.now() / 1000) - 60,
+  ts: NOW - 60,
   read: false,
 };
 
+function card(open: boolean) {
+  return {
+    id: `claude:${UUID}`,
+    engine: "claude",
+    title: ACTION.title,
+    cwd: "/home/u/agent-sessions",
+    project: { kind: "project", id: "p1", name: "agent-sessions", color: "#ffb000" },
+    state: open ? "needs_you" : "idle",
+    live: false,
+    last_activity: NOW - 600,
+    last_mtime: NOW - 600,
+    intervention_required: false,
+    ai_summary: "",
+    synthesis: "",
+    mission_id: MID,
+    ...(open ? { pending_action: ACTION } : {}),
+  };
+}
+
 /** Wire one page against a server that retires the alert when the action is approved, with the
- *  session's pane mounted on the terminal bench. */
-async function mockApp(page: import("@playwright/test").Page, state: { open: boolean }) {
+ *  mission holding the session open in the console. */
+async function mockApp(page: Page, state: { open: boolean }) {
   await page.route("**/api/config", (r) => r.fulfill({ json: CONFIG }));
   await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
   await page.route("**/api/prefs", (r) => r.fulfill({ json: {} }));
@@ -86,11 +117,16 @@ async function mockApp(page: import("@playwright/test").Page, state: { open: boo
   await page.route("**/api/system", (r) => r.fulfill({ json: {} }));
   await page.route(/\/api\/folders(\?.*)?$/, (r) => r.fulfill({ json: { folders: [] } }));
   await page.route(/\/api\/projects($|\?)/, (r) => r.fulfill({ json: { projects: [] } }));
-  // The bench AFTER the app routes, so its session list (the one this pane is for) and its fake
-  // terminal server win.
-  await setupBench(page, {
-    sessions: [{ engine: "claude", uuid: UUID, title: ACTION.title }],
-  });
+  await page.route("**/api/sessions**", (r) =>
+    r.fulfill({
+      json: {
+        sessions: [],
+        next_offset: null,
+        total: 0,
+        facets: { projects: [], engines: [] },
+      },
+    }),
+  );
   // The bell reads this on mount, on open, and every 60s. Driven by shared `state` so BOTH
   // pages see the same server: retiring is a server-side fact, and the only thing the custom
   // event changes is WHEN a given tab notices it.
@@ -114,6 +150,33 @@ async function mockApp(page: import("@playwright/test").Page, state: { open: boo
       },
     }),
   );
+  await page.route(/\/api\/pulse$/, (r) =>
+    r.fulfill({
+      json: {
+        cache_version: 2,
+        generated_at: NOW,
+        window_days: 3,
+        scan_depth: "slow",
+        input_fingerprint: null,
+        synthesis_skipped: false,
+        banner: null,
+        cards: [card(state.open)],
+      },
+    }),
+  );
+  await mockMissions(page, {
+    missions: missionList([
+      missionRow({ id: MID, title: "Docs pass", session_keys: [ACTION.session_id] }),
+    ]),
+    mission: {
+      ...MISSION,
+      id: MID,
+      title: "Docs pass",
+      sessions: [{ session_key: ACTION.session_id, removed_at: null }],
+      events: [],
+      events_next_seq: null,
+    },
+  });
   // Approving settles the action AND retires its bell row — the server does both, which is
   // exactly why a tab that never re-fetches would keep showing a badge for neither.
   await page.route(/\/api\/pulse\/actions\/.*\/approve$/, (r) => {
@@ -122,20 +185,22 @@ async function mockApp(page: import("@playwright/test").Page, state: { open: boo
   });
 }
 
+async function openConsole(page: Page) {
+  await page.goto(`/mission?m=${MID}`);
+  await expect(page.getByTestId("console-title")).toHaveText("Docs pass");
+}
+
 test("resolving the last action empties the bell — badge and panel — in the same tab", async ({
   page,
 }) => {
   const state = { open: true };
   await mockApp(page, state);
-  await page.goto(`/s/claude/${UUID}`);
+  await openConsole(page);
 
   const bell = page.getByRole("button", { name: /^Notifications/ });
   await expect(bell).toHaveAttribute("aria-label", "Notifications, 1 unread");
 
-  await page
-    .getByTestId("session-decisions")
-    .getByRole("button", { name: /^approve$/i })
-    .click();
+  await page.getByRole("button", { name: /^approve$/i }).click();
 
   // The badge goes, without waiting out the 60s poll…
   await expect(bell).toHaveAttribute("aria-label", "Notifications");
@@ -158,16 +223,13 @@ test("another tab does not jump; it converges on its next fetch", async ({
   // only prove startup fetching, and would stay green with the interval deleted.
   await other.clock.install();
 
-  await page.goto(`/s/claude/${UUID}`);
-  await other.goto(`/s/claude/${UUID}`);
+  await openConsole(page);
+  await openConsole(other);
 
   const otherBell = other.getByRole("button", { name: /^Notifications/ });
   await expect(otherBell).toHaveAttribute("aria-label", "Notifications, 1 unread");
 
-  await page
-    .getByTestId("session-decisions")
-    .getByRole("button", { name: /^approve$/i })
-    .click();
+  await page.getByRole("button", { name: /^approve$/i }).click();
   await expect(
     page.getByRole("button", { name: /^Notifications/ }),
   ).toHaveAttribute("aria-label", "Notifications");

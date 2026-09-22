@@ -53,7 +53,6 @@ import { useSessionRow } from "../../app/useSessionRow";
 import { useIsMobile } from "../../lib/useIsMobile";
 import { isNewSessionPlaceholder, useSessionsStore } from "../../app/sessionsStore";
 import { AdoptToMissionModal } from "../sessions/AdoptToMissionModal";
-import { SessionDecisions } from "./SessionDecisions";
 import {
   TermSocket,
   type TermGateHolder,
@@ -1921,14 +1920,6 @@ export function Terminal({
           collapsed={isMobile}
         />
       </div>
-      {/* Mission control's pending decisions for THIS session (#948 P3) — where the bell already
-          links. Never for an unreconciled placeholder, which no action can name. */}
-      {!isNewSessionPlaceholder(actionKey) ? (
-        <SessionDecisions
-          sessionKey={actionKey}
-          reviewReason={row?.intervention_required ? row.intervention_reason : undefined}
-        />
-      ) : null}
       {adoptOpen && row && (
         <AdoptToMissionModal
           session={row}

@@ -516,7 +516,34 @@ def _row_projection(row: dict, states: dict[str, str] | None) -> dict:
     return ledger.project_for_operator(states.get(aid) if known else None, known=known)
 
 
-def _counts_toward_badge(row: dict, states: dict[str, str] | None) -> bool:
+def decision_surfaces() -> set[str] | None:
+    """The sessions whose pending decision has somewhere to be ACTED on, or ``None`` if that
+    cannot be established (#1057).
+
+    Since the session pane's decision strip was removed (#1049), the one surface that renders
+    Approve / Reject is the mission console, and it draws a decision exactly when the decision's
+    session is an OPEN member of the mission (`MissionBody.decisions`: card id in the mission's
+    un-removed session keys). This is that same membership, read by the same key, so the badge
+    and the console cannot disagree about which decisions have a home.
+
+    ``None`` is not "no surfaces": an unreadable membership store is an unestablishable answer,
+    and it resolves the way #852 rule 5 resolves every other one — counted as `uncertain`, never
+    silently dropped and never overstated as actionable.
+
+    Read WITHOUT the notifications lock held — see :func:`listing`.
+    """
+    try:
+        from . import missions
+
+        return set(missions.all_active_memberships())
+    except Exception:  # noqa: BLE001 — unreadable is its own answer, see above
+        log.debug("notifications: could not read mission membership", exc_info=True)
+        return None
+
+
+def _counts_toward_badge(
+    row: dict, states: dict[str, str] | None, surfaces: set[str] | None
+) -> bool:
     """Does this unread row still want the operator, **and can the operator do anything?**
     (#852 rule 5.)
 
@@ -539,21 +566,38 @@ def _counts_toward_badge(row: dict, states: dict[str, str] | None) -> bool:
     Informational rows are excluded for a different reason: they are not uncertain, they are
     **known not to be decisions**. Nothing about them can be approved or rejected, so no operator
     action could ever clear them.
+
+    **An actionable decision with no surface is not counted either (#1057).** The projection says
+    whether the LEDGER would still accept a decision; it cannot say whether any screen offers one.
+    Since #1049 only the mission console does, so a decision for a session no mission holds is
+    one the operator cannot clear by acting — rule 5's defect by a second cause. It stays in the
+    listing (the bell's Open link still takes the operator to the session, to read and type), it
+    is simply not a number that asks for a decision. The membership is the SAME fact the console
+    renders from (:func:`decision_surfaces`), not a parallel derivation, and nothing
+    model-authored enters it.
     """
     if row.get("escalation") is not True:
         return False  # a log entry, never a decision
     from . import orchestrator_ledger as ledger
 
-    return _row_projection(row, states)["projection"] == ledger.ACTIONABLE
+    if _row_projection(row, states)["projection"] != ledger.ACTIONABLE:
+        return False
+    return surfaces is not None and str(row.get("session_id") or "") in surfaces
 
 
-def _is_uncertain(row: dict, states: dict[str, str] | None) -> bool:
-    """An escalation whose state could not be established — counted, but never as actionable."""
+def _is_uncertain(row: dict, states: dict[str, str] | None, surfaces: set[str] | None) -> bool:
+    """An escalation whose state could not be established — counted, but never as actionable.
+
+    Either half can be unestablishable: the ledger state (`unknown`), or — for a decision the
+    ledger would still accept — whether any surface can act on it (membership unreadable)."""
     if row.get("escalation") is not True:
         return False
     from . import orchestrator_ledger as ledger
 
-    return _row_projection(row, states)["projection"] == ledger.UNKNOWN
+    projection = _row_projection(row, states)["projection"]
+    if projection == ledger.UNKNOWN:
+        return True
+    return projection == ledger.ACTIONABLE and surfaces is None
 
 
 def _terminal_settlements(rows: list[dict]) -> dict[str, float | None]:
@@ -679,6 +723,7 @@ def listing(path: Path | None = None) -> dict:
         )
         rows = _read(p)
     states = _action_states(rows)
+    surfaces = decision_surfaces()
     visible = sorted(
         (r for r in rows if not r.get("retired")), key=lambda r: -float(r.get("ts") or 0)
     )
@@ -686,11 +731,13 @@ def listing(path: Path | None = None) -> dict:
     # decisions that were already delivered, claimed or settled into the number, so the number
     # stopped meaning "things waiting on you" — and a badge the operator cannot clear by acting
     # is a badge they learn to ignore.
-    unread = sum(1 for r in visible if not r.get("read") and _counts_toward_badge(r, states))
+    unread = sum(
+        1 for r in visible if not r.get("read") and _counts_toward_badge(r, states, surfaces)
+    )
     # Rows the badge cannot count because their state is unestablishable. Reported separately so
     # the operator is told "something is outstanding and we cannot read it" rather than either
     # silence (which loses the decision) or an actionable count they cannot clear (rule 5).
-    uncertain = sum(1 for r in visible if not r.get("read") and _is_uncertain(r, states))
+    uncertain = sum(1 for r in visible if not r.get("read") and _is_uncertain(r, states, surfaces))
 
     # Every producer of a decision consumes the ONE projection (#852). A live bell row is a
     # producer as much as a Pulse card is, and returning it raw left the bell deriving its own

@@ -2,7 +2,6 @@ import { expect, test, type Page } from "@playwright/test";
 import { settingsPath } from "../src/routes/settingsTabs";
 
 import { mockMissions } from "./mission-console";
-import { setupBench } from "./terminal/harness";
 
 // Real-browser checks for Pulse orchestration (#726 Phases 1–2). Network is fully mocked —
 // the suite never talks to a backend or an AI endpoint.
@@ -13,13 +12,13 @@ import { setupBench } from "./terminal/harness";
 // nothing was written. A green unit test on a broken tap is exactly the failure mode the
 // workflow's UI rule exists to stop.
 //
-// WHERE THE CONTROLS RENDER (#948 P3): a decision for a session no mission holds used to ride that
-// session's row under /mission. That view is gone; the decision renders in the SESSION's own pane
-// (`session-decisions`, read from `GET /api/pulse/orchestrator`). The properties are unchanged.
+// WHERE THE CONTROLS RENDER (#1049): nowhere. A decision for a session no mission holds rode that
+// session's row under /mission until #948 P3, then the session pane's decision strip. The strip is
+// gone — opening the pane was what invalidated its own Approve — so a mission-less decision now has
+// no operator surface at all, and the tests that drove one through the pane went with it. What
+// remains here is the autonomy copy, which is asserted where the operator actually sets it.
 
-const NOW = Math.floor(Date.now() / 1000);
 
-const UUID = "aaaaaaaa-0000-4000-8000-000000000001";
 
 const ORCH_CONFIG = {
   enabled: true,
@@ -34,35 +33,6 @@ const ORCH_CONFIG = {
   notify: "escalations",
   configured: true,
   default_nudge_template: "Please continue.",
-};
-
-const CONTINUE_ACTION = {
-  id: "act-continue",
-  state: "proposed",
-  ts: NOW,
-  expires_at: NOW + 1800,
-  tier: "suggest",
-  session_id: `claude:${UUID}`,
-  engine: "claude",
-  title: "Kimi transcript adapter",
-  project: "agent-sessions",
-  project_id: "p1",
-  verb: "continue",
-  confidence: 0.86,
-  rationale:
-    "finished the adapter and stopped without running the tests it planned",
-  evidence: "screen",
-};
-
-const ESCALATE_ACTION = {
-  ...CONTINUE_ACTION,
-  id: "act-escalate",
-  state: "escalated",
-  title: "Relay session cap",
-  project: "battlelab-cloud",
-  verb: "escalate",
-  confidence: 0.34,
-  rationale: "asks which of two migration strategies to take — a design call",
 };
 
 test.beforeEach(async ({ page }) => {
@@ -153,86 +123,6 @@ function mockOrchestrator(page: Page, pending: unknown[], feed: unknown[] = []) 
   );
 }
 
-/** The session's own pane — where its pending decisions render since #948 P3. */
-async function openPane(page: Page) {
-  await setupBench(page, {
-    sessions: [{ engine: "claude", uuid: UUID, title: CONTINUE_ACTION.title }],
-  });
-  await page.goto(`/s/claude/${UUID}`);
-  return page.getByTestId("session-decisions");
-}
-
-test("approve delivers, and only a delivering verb offers the button", async ({
-  page,
-}) => {
-  // Both on the ONE session, so both rows are in the one strip this test reads.
-  await mockOrchestrator(page, [CONTINUE_ACTION, ESCALATE_ACTION]);
-  let approvedId: string | null = null;
-  await page.route(/\/api\/pulse\/actions\/.*\/approve$/, async (r) => {
-    approvedId = new URL(r.request().url()).pathname.split("/").at(-2) ?? null;
-    await r.fulfill({ json: { ...CONTINUE_ACTION, state: "delivered" } });
-  });
-
-  const strip = await openPane(page);
-  // Wait on both rows, so a count of one Approve cannot be one row that simply has not arrived.
-  await expect(strip.getByText(CONTINUE_ACTION.rationale)).toBeVisible();
-  await expect(strip.getByText(ESCALATE_ACTION.rationale)).toBeVisible();
-
-  // The escalation must NOT offer an approve button — it never reaches a session, and a
-  // button implying otherwise would be a lie about what the system does.
-  const approve = strip.getByRole("button", { name: /^approve$/i });
-  await expect(approve).toHaveCount(1);
-
-  await approve.click();
-  await expect.poll(() => approvedId).toBe("act-continue");
-});
-
-test("a stale 409 says nothing was sent, distinguishably from an error", async ({
-  page,
-}) => {
-  await mockOrchestrator(page, [CONTINUE_ACTION]);
-  await page.route(/\/api\/pulse\/actions\/.*\/approve$/, (r) =>
-    r.fulfill({
-      status: 409,
-      json: { detail: "the session's screen changed since this was proposed" },
-    }),
-  );
-
-  const strip = await openPane(page);
-  await strip.getByRole("button", { name: /^approve$/i }).click();
-  // Compare-and-execute refused: the operator must be able to tell "nothing happened" from
-  // "something broke", because the two call for completely different responses.
-  await expect(
-    page.getByText(/not sent — the session's screen changed/i),
-  ).toBeVisible();
-});
-
-test("evidence is pulled from the server on expand, not shipped with the proposal", async ({
-  page,
-}) => {
-  await mockOrchestrator(page, [CONTINUE_ACTION]);
-  let evidenceCalls = 0;
-  await page.route(/\/api\/pulse\/evidence\//, async (r) => {
-    evidenceCalls += 1;
-    await r.fulfill({
-      json: {
-        kind: "screen",
-        text: "✓ parser complete\n› (idle 11m)",
-        available: true,
-      },
-    });
-  });
-
-  const strip = await openPane(page);
-  await expect(strip.getByRole("button", { name: /^approve$/i })).toBeVisible();
-  // Nothing is fetched until the operator asks — the proposal carries a KIND, never content.
-  expect(evidenceCalls).toBe(0);
-
-  await strip.getByRole("button", { name: /show live screen/i }).click();
-  await expect(page.getByText(/parser complete/)).toBeVisible();
-  expect(evidenceCalls).toBe(1);
-});
-
 test("the autonomy copy says what YOLO can type, not just the tier — in Settings (#929, #983)", async ({
   page,
 }) => {
@@ -254,38 +144,4 @@ test("the autonomy copy says what YOLO can type, not just the tier — in Settin
   // control is what #929 is about.
   await page.goto("/mission");
   await expect(page.getByText(/acts on its own:/i)).toHaveCount(0);
-});
-
-test.describe("mobile", () => {
-  test("approve is a full-width 44px target and the page never scrolls sideways", async ({
-    page,
-  }) => {
-    await page.setViewportSize({ width: 390, height: 844 });
-    await mockOrchestrator(page, [CONTINUE_ACTION]);
-    await page.route(/\/api\/pulse\/actions\/.*\/approve$/, (r) =>
-      r.fulfill({ json: { ...CONTINUE_ACTION, state: "delivered" } }),
-    );
-
-    const strip = await openPane(page);
-    const approve = strip.getByRole("button", { name: /^approve$/i });
-    await expect(approve).toBeVisible();
-
-    // 44px is the touch-target floor from the repo's design guidance.
-    const box = await approve.boundingBox();
-    expect(box!.height).toBeGreaterThanOrEqual(44);
-
-    // The page must never scroll horizontally (#494) — long rationales and screen dumps wrap or
-    // scroll inside their own block.
-    const overflow = await page.evaluate(
-      () =>
-        document.documentElement.scrollWidth -
-        document.documentElement.clientWidth,
-    );
-    expect(overflow).toBeLessThanOrEqual(1);
-
-    await approve.click();
-    await expect(page.getByRole("button", { name: /^approve$/i })).toHaveCount(
-      0,
-    );
-  });
 });

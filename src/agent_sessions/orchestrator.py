@@ -769,6 +769,10 @@ def _persist(records: list[dict], *, gate=None) -> list[dict]:
     ledger.compact_if_needed()
 
     notify = str(prefs.get_orchestrator().get("notify") or "escalations")
+    # WHICH DECISIONS HAVE A SURFACE (#1057), read once per pass and only when there is something
+    # to announce. Since #1049 only the mission console can approve, so a push for an escalation
+    # on a session no mission holds would wake the operator for a decision no screen can take.
+    surfaces = notifications.decision_surfaces() if kept else None
     for rec in kept:
         # `escalated` IS the "I'm not sure, you look" state (see _decide). `all` also covers
         # actions taken autonomously, so a yolo operator still gets a record of what was done.
@@ -798,7 +802,19 @@ def _persist(records: list[dict], *, gate=None) -> list[dict]:
             # `None` means an equivalent alert is already sitting in the bell — the operator has
             # been told. Re-proposing is correct (the situation IS still unresolved); re-alerting
             # about it every TTL is not, and a push is the one channel that can wake someone.
-            if note is not None:
+            #
+            # A decision with NO surface still lands in the bell (visible, not counted — see
+            # `notifications._counts_toward_badge`) but is not pushed. `surfaces is None` (the
+            # membership store unreadable) fails toward announcing, the same way `add` treats every
+            # unprovable answer: a push that turns out unactionable costs a glance, a lost one can
+            # cost the decision.
+            no_surface = (
+                note is not None
+                and note.get("escalation") is True
+                and surfaces is not None
+                and str(note.get("session_id") or "") not in surfaces
+            )
+            if note is not None and not no_surface:
                 notifications.fanout(note)
     return kept
 

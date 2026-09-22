@@ -552,37 +552,3 @@
     text-transform: uppercase;
   }
 }
-
-/* Mission control's pending decisions for this session (#948 P3), under the header. Capped so a
- * burst of decisions cannot push the terminal off a short screen; the strip scrolls instead. */
-.decisions {
-  flex: none;
-  display: grid;
-  gap: 6px;
-  max-height: 40vh;
-  overflow-y: auto;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--line);
-  background: color-mix(in srgb, var(--bg-2) 40%, transparent);
-}
-.decisionsNote {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
-  color: var(--text-muted);
-}
-.decisionItem {
-  display: grid;
-  gap: 4px;
-}
-.decisionReason {
-  font-size: 13px;
-  color: var(--text-2);
-  overflow-wrap: anywhere;
-}
-.decisionState {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--text-3);
-}

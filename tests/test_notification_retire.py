@@ -25,6 +25,9 @@ import pytest
 from agent_sessions import notifications
 from agent_sessions import orchestrator_ledger as ledger
 
+# Every decision here has a surface: these tests pin other axes of the bell (#1057).
+pytestmark = pytest.mark.usefixtures("every_session_held")
+
 IDLE = 1_700_000_000.0
 
 

@@ -15,9 +15,6 @@ vi.mock("../../lib/api", () => ({
   // getDraft/saveDraft (#477): Compose loads its draft on mount now. Resolve to an empty
   // draft so the load is a no-op and these Terminal tests stay about the socket/terminal.
   api: {
-    // The session pane's decision strip reads this on mount (#948 P3).
-    orchestrator: vi.fn(() => Promise.resolve({ pending: [], feed: [], config: {}, expired_now: 0 })),
-
     upload: vi.fn(),
     getDraft: vi
       .fn()

@@ -1767,7 +1767,8 @@ def test_the_operator_pending_set_is_the_one_the_queue_uses(auth_cfg, fake_jsonl
 
 
 def test_the_pending_list_carries_the_operator_projection(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
-    """`pending` is what the session pane's decision strip renders controls from (#948 P3), so it
+    """`pending` is what a decision surface renders controls from (the session pane's strip from
+    #948 P3 until #1049 removed it; the mission console since), so it
     must carry the SAME projection `/api/pulse` merges onto a card (#959 review 4805, finding 1).
 
     Returned raw, every row fell through to `ActionRow`'s legacy state guess: a low-confidence
@@ -3051,8 +3052,9 @@ def test_969_an_explicit_approval_is_not_refused_by_the_viewer_it_was_tapped_in(
 ):  # noqa: ARG001
     """Through the real authenticated route and the real delivery path, into a real pty.
 
-    The decision strip lives INSIDE the session pane (#948 P3), and that pane is an attached
-    viewer — so `_viewer_busy` refused every approval tapped there as "a viewer is attached".
+    The decision strip lived INSIDE the session pane (#948 P3, removed in #1049), and that pane
+    is an attached viewer — so `_viewer_busy` refused every approval tapped there as "a viewer is
+    attached".
     """
     import threading
 

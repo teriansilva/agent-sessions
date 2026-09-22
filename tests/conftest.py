@@ -473,3 +473,25 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "real_agent" in item.keywords:
             item.add_marker(skip)
+
+
+class _EverySession(set):
+    """A membership set that contains every key — "some mission holds every session"."""
+
+    def __contains__(self, key: object) -> bool:
+        return True
+
+
+@pytest.fixture
+def every_session_held(monkeypatch) -> None:
+    """Give every decision a surface, for tests of OTHER axes of the bell (#1057).
+
+    Since #1049 a decision is only counted and pushed when a mission holds its session
+    (`notifications.decision_surfaces`). Tests written about the ledger projection, retirement,
+    dedupe or push plumbing predate that and use bare session ids; this keeps them testing what
+    they were written for. The surface rule itself is pinned in `test_decision_surfaces.py`,
+    which does NOT use this fixture.
+    """
+    from agent_sessions import notifications
+
+    monkeypatch.setattr(notifications, "decision_surfaces", lambda: _EverySession())

@@ -15,6 +15,9 @@ import pytest
 
 from agent_sessions import notifications
 
+# Every decision here has a surface: these tests pin other axes of the bell (#1057).
+pytestmark = pytest.mark.usefixtures("every_session_held")
+
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):

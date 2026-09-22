@@ -457,8 +457,11 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         """Cached state: config, pending actions, and the activity feed. NEVER runs a pass —
         same contract as `GET /api/pulse` (cache-only, instant)."""
         cfg = prefs.public_orchestrator()
-        # The read the session pane's decision strip polls: a proposal whose session moved on
-        # leaves here on the next poll, not at its TTL (#969). One helper for every retiring site.
+        # Retiring rides with the read: a proposal whose session moved on leaves here on the next
+        # poll, not at its TTL (#969). One helper for every retiring site. The session pane's
+        # decision strip used to be this route's polling consumer until #1049 removed it; the
+        # remaining consumer is `Orchestrator.tsx` (autonomy + health). The mission console's
+        # decision rows ride the cards of `GET /api/pulse` instead.
         expired, _withdrawn = await asyncio.to_thread(actuator.housekeep_pending)
         pending, feed = await asyncio.to_thread(_pending_and_feed)
         return JSONResponse(
@@ -485,14 +488,15 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         only looked right because the e2e helper defaulted `feed` to empty, which hid it.
         """
         live = orchestrator_ledger.live_actions()
-        # PROJECTED, the same merge `/api/pulse` applies to a card's `pending_action`. Since #948 P3
-        # this list is what the session pane's decision strip renders controls from, and a raw
+        # PROJECTED, the same merge `/api/pulse` applies to a card's `pending_action`. The session
+        # pane's strip was this list's control surface from #948 P3 until #1049 removed it; the
+        # projection still matters for every surface that renders one, because a raw
         # ledger row sent `ActionRow` to its legacy state guess: a low-confidence escalation with a
         # real `continue` verb offered Dismiss and no Approve, and an `approved` row offered an
         # Approve the server treats as a no-op (#959 review 4805, finding 1). The fields are derived
         # booleans on an authenticated read — which controls to offer, never what the action is.
         # …and a supervisor nudge's `render_status` / `objective_title` (#983 P2), through the same
-        # helper `_attach_pending` uses, so the pane's strip and the mission console agree.
+        # helper `_attach_pending` uses, so this list and the mission console's rows agree.
         cfg = _orchestrator_cfg()
         titles: dict[str, dict] = {}
         pending = [
@@ -568,9 +572,11 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         are two different moments, and `choose 1` into a screen that moved is exactly the
         failure this design exists to stop. A moved screen comes back `409 stale`.
 
-        This is the ONE place `operator_approval` is set (#969): every approval surface — the
-        session pane's strip, the mission console — posts here, and the operator's tap is what
-        lets an attached viewer (usually that very pane) not count as someone else typing.
+        This is the ONE place `operator_approval` is set (#969): every approval surface posts
+        here — since #1049 that is the mission console's `ActionRow` — and the operator's tap is
+        what lets an attached viewer (usually the pane the operator opened to look before
+        deciding) not count as someone else typing. It does not stop a repaint for a new width
+        from moving the screen and refusing the approval as stale; that is #973.
         """
         try:
             rec = await actuator.deliver(action_id, registry=registry, operator_approval=True)
