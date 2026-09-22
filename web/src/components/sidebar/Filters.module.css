@@ -4,6 +4,63 @@
   gap: 6px;
   padding: 0 12px 8px;
 }
+/* THE FOLD (#1069 follow-up). One header row: a chevron, the word, and what is in force. The
+ * summary turns accent when a filter is narrowing the list, so a folded block cannot hide one. */
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  padding: 0 2px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  text-align: left;
+}
+.toggle:hover {
+  color: var(--text);
+}
+.toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.toggle small {
+  margin-left: auto;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+.toggle small.summaryOn {
+  color: var(--accent);
+}
+.chev {
+  flex: none;
+  transition: transform 120ms ease;
+}
+.toggle[aria-expanded="true"] .chev {
+  transform: rotate(90deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .chev {
+    transition: none;
+  }
+}
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.body[hidden] {
+  display: none;
+}
+
 .search,
 .selects select {
   width: 100%;
@@ -83,6 +140,7 @@
  * hold every control at 44px at every width. Aligning the two sidebars must not shrink a touch
  * target, so BOTH get the floor wherever a finger is the pointer; desktop keeps these metrics. */
 @media (pointer: coarse), (max-width: 800px) {
+  .toggle,
   .search,
   .selects select,
   .clear,

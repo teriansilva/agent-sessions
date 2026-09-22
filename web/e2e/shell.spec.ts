@@ -77,55 +77,90 @@ test("the command topbar spans the top and the pane floats below it (#134/#211)"
   expect(pane!.y - (top!.y + top!.height)).toBeLessThan(24);
 });
 
-test("opens the fullscreen session map from the top bar at every width (#139/#211, #1058)", async ({
+test("opens the fullscreen session map from the Sessions sub-menu at every width (#139/#211, #1058, #1069)", async ({
   page,
 }) => {
   await page.goto("/");
-  // #1058: the map is a NAMED SECTION in the bar, not an unlabelled icon that collapses into the
-  // drawer below 640px — so there is no drawer hop on mobile any more. The drawer still lists it
-  // (with its label); that copy is asserted separately below.
-  await page
-    .locator(".hud-topbar")
-    .getByRole("link", { name: "Map", exact: true })
-    .click();
+  // #1069: the map is a sub-menu entry of Sessions, behind the chevron beside its label — at every
+  // width, so there is still no drawer hop on mobile. The drawer's nested copy is asserted below.
+  const bar = page.locator(".hud-topbar");
+  await expect(bar.getByRole("link", { name: "Map", exact: true })).toHaveCount(
+    0,
+  );
+  const chevron = bar.getByRole("button", { name: "Sessions menu" });
+  await chevron.click();
+  const menu = page.getByRole("menu", { name: "Sessions menu" });
+  await expect(menu.getByRole("menuitem")).toHaveText([
+    "Sessions",
+    "Sessions map",
+  ]);
+  // The panel is portalled out of the top bar's stacking context: a real click must LAND on it,
+  // not on the pane underneath (#752/#987). `click()` would fail if something else was on top.
+  await menu.getByRole("menuitem", { name: "Sessions map" }).click();
   await expect(page).toHaveURL(/\/overview$/);
   // The overview surface mounts (loading/empty/error state — never a blank route).
   await expect(page.locator(".tr-overview")).toBeVisible();
+  await expect(menu).toHaveCount(0);
+  // On the map the Sessions parent says "the page is under me", not "I am the page".
+  await expect(
+    bar.getByRole("link", { name: "Sessions", exact: true }),
+  ).toHaveAttribute("aria-current", "true");
 });
 
-test("on a phone the drawer names the same five sections the bar shows as icons (#1058)", async ({
+test("the Sessions label still goes straight to the sessions view; Escape closes its menu back onto the chevron (#1069)", async ({
+  page,
+}) => {
+  await page.goto("/ask");
+  const bar = page.locator(".hud-topbar");
+  // Ask leads the row.
+  await expect(bar.locator(".section-nav > *").first()).toContainText("Ask");
+  const chevron = bar.getByRole("button", { name: "Sessions menu" });
+  await chevron.click();
+  const menu = page.getByRole("menu", { name: "Sessions menu" });
+  await expect(menu).toBeVisible();
+  // Focus moved into the menu (its first item), and Escape hands it back to the trigger.
+  await expect(menu.getByRole("menuitem").first()).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(menu).toHaveCount(0);
+  await expect(chevron).toBeFocused();
+  // One click on the label — no menu in the way of the common case.
+  await bar.getByRole("link", { name: "Sessions", exact: true }).click();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(
+    bar.getByRole("link", { name: "Sessions", exact: true }),
+  ).toHaveAttribute("aria-current", "page");
+});
+
+test("on a phone the drawer carries no second copy of the sections, and its filters fold (#1069)", async ({
   page,
 }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "the drawer only exists ≤800px");
   await page.goto("/");
   await page.locator(".navToggle").click();
-  const drawer = page
-    .locator(".sidebar")
-    .getByRole("navigation", { name: "Sections" });
-  await expect(drawer.getByRole("link")).toHaveText([
-    "Sessions",
-    "Missions",
-    "Ask",
-    "Map",
-    "Templates",
-  ]);
+  const sidebar = page.locator("aside.sidebar");
+  await expect(sidebar).toBeVisible();
+  // The bar above already shows every section; the drawer used to repeat all of them.
+  await expect(sidebar.locator("a[data-section], a[data-subsection]")).toHaveCount(0);
+  await expect(sidebar.getByRole("navigation", { name: "Sections" })).toHaveCount(0);
 
-  // …and the names are RENDERED, not merely present. `toHaveText` reads `textContent`, which the
-  // bar's icon-only rule leaves intact while clipping the label to 1px — so the assertion above
-  // passed against a drawer showing five unlabelled boxes. Width is what distinguishes them.
-  for (const label of await drawer.locator(".section-nav-label").all()) {
-    const box = (await label.boundingBox())!;
-    expect(box.width, "a drawer section label is clipped").toBeGreaterThan(20);
-  }
-  // The BAR's copy, at this width, is the opposite — clipped, and that is deliberate.
-  const barLabel = page
-    .locator(".hud-topbar .section-nav .section-nav-label")
-    .first();
-  expect((await barLabel.boundingBox())!.width).toBeLessThan(4);
-  await drawer.getByRole("link", { name: "Map", exact: true }).click();
-  await expect(page).toHaveURL(/\/overview$/);
-  // Navigating closes the drawer — the shell's route effect, unchanged by #1058.
-  await expect(page.locator(".app.navOpen")).toHaveCount(0);
+  // The filter block folds behind one header and gives its height back to the list.
+  const toggle = sidebar.getByTestId("filters-toggle");
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  const search = sidebar.getByLabel("Search sessions");
+  await expect(search).toBeVisible();
+  const openBottom = (await toggle.evaluate((el) => el.parentElement!.getBoundingClientRect().bottom));
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(search).toBeHidden();
+  const foldedBottom = (await toggle.evaluate((el) => el.parentElement!.getBoundingClientRect().bottom));
+  // This fixture has one engine and no mission facet, so the block is search + project select +
+  // the Active/Archived row: three 44px rows plus gaps. A live install with more agents and
+  // missions gives back more.
+  expect(openBottom - foldedBottom).toBeGreaterThanOrEqual(3 * 44);
+  // …and the choice survives a reload on this device.
+  await page.reload();
+  await page.locator(".navToggle").click();
+  await expect(sidebar.getByTestId("filters-toggle")).toHaveAttribute("aria-expanded", "false");
 });
 
 test("layout snapshot (per-project: desktop + mobile viewports)", async ({

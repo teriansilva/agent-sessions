@@ -1,0 +1,29 @@
+/* ASK's chat column (#1069): only what the mission thread's primitives (`mission.module.css`
+ * `.threadCol` / `.pane` / `.event` / `.composerDock`) do not already say. */
+
+/* The page is the column: it fills the route's height so the dock sits on the bottom edge. */
+.col {
+  height: 100%;
+}
+
+/* One centred measure for the thread and the composer, so they line up — a chat's column. */
+.measure {
+  width: 100%;
+  max-width: 760px;
+  margin-inline: auto;
+}
+
+/* Before the first question the greeting sits in the middle of the empty thread. */
+.intro {
+  margin-block: auto;
+  padding-block: 24px;
+}
+
+/* The operator's own turn is set apart by the brand rule, the thread's one non-status accent. */
+.you {
+  border-left: 3px solid var(--accent);
+}
+
+.group {
+  margin-top: 10px;
+}

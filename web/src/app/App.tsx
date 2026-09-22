@@ -69,7 +69,10 @@ import { ASK_PATH, LEGACY_MISSION_PATH, MISSION_PATH } from "../lib/routes";
 import { SETTINGS_PATH } from "../routes/settingsTabs";
 import { OperatorMenu } from "../components/shell/OperatorMenu";
 import { SectionNav } from "../components/shell/SectionNav";
-import { activeSection } from "../components/shell/sections";
+import {
+  activeSection,
+  activeSubsection,
+} from "../components/shell/sections";
 
 // Lazy so @xyflow/react stays out of the main bundle until the overview is opened (#139).
 // Wrapped in lazyWithReload so a stale chunk after a deploy self-heals (#160).
@@ -247,6 +250,8 @@ function Layout() {
   /** Which of the five work sections the current route belongs to, `null` on Settings (#1058).
    *  One derivation, read by the top bar's nav and the drawer's copy of it. */
   const section = activeSection(location.pathname);
+  /** And which sub-menu entry, where the section has one — the map under Sessions (#1069). */
+  const subsection = activeSubsection(location.pathname);
   /** Published to the console through context. A ref callback, not an effect: it fires on
    *  commit with the element (and with `null` on unmount), which is exactly the lifetime the
    *  portal needs and avoids setting state from inside an effect. */
@@ -421,6 +426,7 @@ function Layout() {
           </span>
           <SectionNav
             active={section}
+            activeSub={subsection}
             sessionsPath={lastSessionPath}
             onNavigate={closeMobileDrawer}
           />
@@ -562,15 +568,9 @@ function Layout() {
               </>
             )}
           </header>
-          {/* On small screens the topbar actions collapse into here (behind the hamburger), and
-              the five sections get their NAMES back — the bar shows them icon-only at this width,
-              so this is where "which icon was Templates?" is answered (#1058). */}
-          <SectionNav
-            active={section}
-            sessionsPath={lastSessionPath}
-            onNavigate={closeMobileDrawer}
-            variant="drawer"
-          />
+          {/* On small screens the topbar actions collapse into here (behind the hamburger). The
+              drawer does NOT repeat the section nav: the bar above already shows every section,
+              and a second copy took a third of the drawer on a phone (#1069 follow-up). */}
           <div className="sidebar-actions">
             {/* Choosing the tour or What's new closes the drawer first; the overlay that opens then
                 takes focus a frame later, after the drawer has restored its trigger (#987). */}

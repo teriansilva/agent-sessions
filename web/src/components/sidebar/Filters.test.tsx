@@ -1,6 +1,8 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { expect, test, vi } from "vitest";
-import { FiltersBar } from "./Filters";
+import { beforeEach, expect, test, vi } from "vitest";
+import { FILTERS_OPEN_KEY, FiltersBar } from "./Filters";
+
+beforeEach(() => localStorage.clear());
 
 // The project facet lists project ENTITIES now (#445): the user's projects plus the synthetic
 // Default catch-all — never folder paths.
@@ -111,4 +113,35 @@ test("clear button appears only when a filter is active", () => {
     />,
   );
   expect(screen.getByLabelText("Clear filters")).toBeInTheDocument();
+});
+
+test("the filters fold behind one header, remember it per device, and say what is in force (#1069)", () => {
+  const { unmount } = render(
+    <FiltersBar
+      filters={{ ...base, q: "upload", archived: true }}
+      facets={facets}
+      onChange={noop}
+      onClear={noop}
+    />,
+  );
+  const toggle = screen.getByTestId("filters-toggle");
+  // Open by default, so nothing moves for an operator who never folds it.
+  expect(toggle).toHaveAttribute("aria-expanded", "true");
+  expect(screen.getByLabelText("Search sessions")).toBeVisible();
+  // The folded header still says a filter is narrowing the list.
+  expect(toggle).toHaveTextContent("Archived · 1 filter");
+  fireEvent.click(toggle);
+  expect(toggle).toHaveAttribute("aria-expanded", "false");
+  // Folded, not unmounted: a half-typed search survives.
+  expect(screen.getByLabelText("Search sessions")).not.toBeVisible();
+  expect(screen.getByLabelText("Search sessions")).toHaveValue("upload");
+  expect(localStorage.getItem(FILTERS_OPEN_KEY)).toBe("0");
+  unmount();
+  render(
+    <FiltersBar filters={base} facets={facets} onChange={noop} onClear={noop} />,
+  );
+  expect(screen.getByTestId("filters-toggle")).toHaveAttribute(
+    "aria-expanded",
+    "false",
+  );
 });

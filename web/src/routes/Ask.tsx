@@ -22,24 +22,29 @@ export default function Ask() {
 
   return (
     <div className={styles.page} data-testid="ask-page">
-      <div className={styles.inner}>
-        <div className={styles.kicker}>Ask // your work</div>
-        <h1 className={styles.h1}>Ask about your work</h1>
-        <p className={styles.sub}>
-          Find a session by what happened in it, or ask what you did and when.
-          Answers are read from the transcripts this install can already see.
-        </p>
-        {!configured ? (
-          <div className={styles.needsEndpoint} data-testid="ask-needs-endpoint">
-            Ask needs an AI endpoint — it has no local fallback. Set one up in{" "}
-            <Link to={settingsPath("ai-endpoint")}>
-              Settings → Endpoint &amp; model
-            </Link>
-            , then come back.
-          </div>
-        ) : null}
-        <AskConsole configured={configured} />
-      </div>
+      <AskConsole
+        configured={configured}
+        intro={
+          <>
+            <div className={styles.kicker}>Ask // your work</div>
+            <h1 className={styles.h1}>Ask about your work</h1>
+            <p className={styles.sub}>
+              Find a session or a mission by what happened in it, or ask what
+              you did and when. Answers are read from the transcripts and
+              missions this install can already see.
+            </p>
+            {!configured ? (
+              <div className={styles.needsEndpoint} data-testid="ask-needs-endpoint">
+                Ask needs an AI endpoint — it has no local fallback. Set one up in{" "}
+                <Link to={settingsPath("ai-endpoint")}>
+                  Settings → Endpoint &amp; model
+                </Link>
+                , then come back.
+              </div>
+            ) : null}
+          </>
+        }
+      />
     </div>
   );
 }

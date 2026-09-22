@@ -96,26 +96,28 @@ _PULSE_LINE = (
 )
 
 _ASK_CATALOG = (
-    "You help a developer find their past AI-coding sessions. You are given their "
-    "question (and possibly prior conversation turns) plus a catalog of sessions: id, "
-    "title, project, working-directory tail, a summary (which may be a short "
-    "chronological recap of what happened, one step per line), age in hours. Pick the "
-    "sessions that best answer the question, best match first, and answer in one short "
-    "sentence. Only use ids that appear in the catalog; return an empty matches list "
-    'when nothing fits. Reply with ONLY a JSON object: {"answer": "<one short sentence, '
-    'max 500 chars>", "matches": [{"id": "<catalog id>", "why": "<one line, max 140 '
-    'chars>"}]}.'
+    "You help a developer find their past AI-coding sessions and missions. You are given "
+    "their question (and possibly prior conversation turns) plus a catalog. Each entry has "
+    'a kind: a "session" (id, title, project, working-directory tail, a summary which may '
+    "be a short chronological recap of what happened, one step per line, age in hours) or "
+    'a "mission" (a multi-session piece of work: id, title, state, project, a summary of '
+    "its instruction or brief, age in hours). Pick the entries that best answer the "
+    "question, best match first, and answer in one short sentence. Only use ids that "
+    "appear in the catalog; return an empty matches list when nothing fits. Reply with "
+    'ONLY a JSON object: {"answer": "<one short sentence, max 500 chars>", "matches": '
+    '[{"id": "<catalog id>", "why": "<one line, max 140 chars>"}]}.'
 )
 
 _ASK_VERIFY = (
-    "You verify which of several candidate AI-coding sessions actually answer the "
-    "developer's question. You are given the question and, per candidate: id, title, the "
-    "catalog-stage reason, and an excerpt of the session's actual transcript. Confirm, "
-    "re-rank, or drop candidates based on what the transcripts really contain, best "
-    "match first, and refine the one-sentence answer. Only use ids from the candidate "
-    "list; return an empty matches list when none truly fit. Reply with ONLY a JSON "
-    'object: {"answer": "<one short sentence, max 500 chars>", "matches": [{"id": '
-    '"<candidate id>", "why": "<one line, max 140 chars>"}]}.'
+    "You verify which of several candidate AI-coding sessions and missions actually answer "
+    "the developer's question. You are given the question and, per candidate: id, kind, "
+    "title, the catalog-stage reason, and its content: for a session an excerpt of its "
+    "actual transcript, for a mission its instruction or brief. Confirm, re-rank, or drop "
+    "candidates based on what that content really says, best match first, and refine the "
+    "one-sentence answer. Only use ids from the candidate list; return an empty matches "
+    'list when none truly fit. Reply with ONLY a JSON object: {"answer": "<one short '
+    'sentence, max 500 chars>", "matches": [{"id": "<candidate id>", "why": "<one line, '
+    'max 140 chars>"}]}.'
 )
 
 _CHAT_ROUTE = (
@@ -370,7 +372,7 @@ REGISTRY: tuple[Prompt, ...] = (
         id="ask_catalog",
         group="Mission control",
         label="Ask — catalog",
-        description="Stage 1: picks candidate sessions out of the catalog.",
+        description="Stage 1: picks candidate sessions and missions out of the catalog.",
         contract='{"answer": str, "matches": [{"id": str, "why": str}]}',
         default=_ASK_CATALOG,
         max_chars=4000,
@@ -381,7 +383,7 @@ REGISTRY: tuple[Prompt, ...] = (
         id="ask_verify",
         group="Mission control",
         label="Ask — verify",
-        description="Stage 2: re-ranks those candidates against their real transcripts.",
+        description="Stage 2: re-ranks candidates against their transcripts or mission briefs.",
         contract='{"answer": str, "matches": [{"id": str, "why": str}]}',
         default=_ASK_VERIFY,
         max_chars=4000,

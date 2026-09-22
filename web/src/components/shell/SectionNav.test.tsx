@@ -5,11 +5,12 @@
  *  here" and is never an error. The cases below are the ones a prefix match gets wrong.
  */
 import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, test } from "vitest";
 
 import { SectionNav } from "./SectionNav";
-import { activeSection, SECTIONS } from "./sections";
+import { activeSection, activeSubsection, SECTIONS } from "./sections";
 
 describe("activeSection", () => {
   test.each([
@@ -20,7 +21,8 @@ describe("activeSection", () => {
     // render before it lands.
     ["/pulse", "mission"],
     ["/ask", "ask"],
-    ["/overview", "map"],
+    // The map is a view OF sessions since #1069: its parent section is Sessions.
+    ["/overview", "sessions"],
     ["/templates", "templates"],
     ["/templates/new", "templates"],
     ["/templates/tpl_1", "templates"],
@@ -37,6 +39,16 @@ describe("activeSection", () => {
     },
   );
 
+  test.each([
+    ["/", "sessions"],
+    ["/s/claude/abc-123", "sessions"],
+    ["/overview", "map"],
+    ["/ask", null],
+    ["/overviewer", null],
+  ])("sub-entry of %s → %s (#1069)", (path, expected) => {
+    expect(activeSubsection(path)).toBe(expected);
+  });
+
   test("a path that merely STARTS with a section's name is not that section", () => {
     // `/askew` and `/missionary` are not routes today, and a `startsWith` implementation would
     // claim them — which is how the highlight ends up on the wrong entry after someone adds a
@@ -50,34 +62,25 @@ describe("activeSection", () => {
 });
 
 describe("SectionNav", () => {
-  test("the bar and the drawer render the SAME five sections", () => {
-    // One list, two paints. The failure this prevents is a phone whose drawer names four of the
-    // five icons in the bar above it.
+  test("the bar names every section, Ask first; the map is only in the Sessions menu (#1069)", () => {
     render(
       <MemoryRouter>
         <SectionNav active="ask" sessionsPath="/" onNavigate={() => {}} />
-        <SectionNav
-          active="ask"
-          sessionsPath="/"
-          onNavigate={() => {}}
-          variant="drawer"
-        />
       </MemoryRouter>,
     );
-    const names = SECTIONS.map((s) => s.label);
-    for (const testid of ["section-nav", "section-nav-drawer"]) {
-      const nav = screen.getByTestId(testid);
-      expect(
-        within(nav)
-          .getAllByRole("link")
-          .map((a) => a.textContent),
-      ).toEqual(names);
-      // …and exactly one of them claims the page.
-      expect(nav.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
-      expect(
-        within(nav).getByRole("link", { name: "Ask" }),
-      ).toHaveAttribute("aria-current", "page");
-    }
+    const top = SECTIONS.map((s) => s.label);
+    expect(top).toEqual(["Ask", "Sessions", "Missions", "Templates"]);
+    const nav = screen.getByTestId("section-nav");
+    expect(
+      within(nav)
+        .getAllByRole("link")
+        .map((a) => a.textContent),
+    ).toEqual(top);
+    expect(nav.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
+    expect(within(nav).getByRole("link", { name: "Ask" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
   });
 
   test("Sessions points at the last session route, not always at the landing", () => {
@@ -98,6 +101,57 @@ describe("SectionNav", () => {
     );
   });
 
+  test("on the map, Sessions is current-in-set and the map entry is the page (#1069)", async () => {
+    // The Sessions link goes to the last SESSION, not the map, so it must not claim to be the
+    // page — only that the page lives under it. The map's own entry, in the menu and in the
+    // drawer, is the one that says "page".
+    render(
+      <MemoryRouter>
+        <SectionNav
+          active="sessions"
+          activeSub="map"
+          sessionsPath="/s/claude/abc"
+          onNavigate={() => {}}
+        />
+      </MemoryRouter>,
+    );
+    const bar = screen.getByTestId("section-nav");
+    expect(
+      within(bar).getByRole("link", { name: "Sessions" }),
+    ).toHaveAttribute("aria-current", "true");
+    await userEvent.click(
+      within(bar).getByRole("button", { name: "Sessions menu" }),
+    );
+    const menu = await screen.findByRole("menu", { name: "Sessions menu" });
+    expect(
+      within(menu).getByRole("menuitem", { name: "Sessions map" }),
+    ).toHaveAttribute("aria-current", "page");
+    expect(
+      within(menu).getByRole("menuitem", { name: "Sessions" }),
+    ).not.toHaveAttribute("aria-current");
+  });
+
+  test("choosing a sub-menu entry closes the menu AND the drawer (#1069)", async () => {
+    let navigated = 0;
+    render(
+      <MemoryRouter>
+        <SectionNav
+          active="ask"
+          sessionsPath="/"
+          onNavigate={() => navigated++}
+        />
+      </MemoryRouter>,
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Sessions menu" }),
+    );
+    await userEvent.click(
+      await screen.findByRole("menuitem", { name: "Sessions map" }),
+    );
+    expect(navigated).toBe(1);
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
   test("no section is highlighted when the route is none of them", () => {
     render(
       <MemoryRouter>
@@ -105,7 +159,7 @@ describe("SectionNav", () => {
       </MemoryRouter>,
     );
     expect(
-      screen.getByTestId("section-nav").querySelectorAll('[aria-current]'),
+      screen.getByTestId("section-nav").querySelectorAll("[aria-current]"),
     ).toHaveLength(0);
   });
 });

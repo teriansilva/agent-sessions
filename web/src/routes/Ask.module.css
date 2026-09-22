@@ -1,20 +1,18 @@
-/* ASK — the page chrome only (#1058). The composer box, the turn rows and the match rows belong to
- * the mission console's sheet and are used from there (see AskConsole.tsx), so this file holds the
- * page and nothing that is drawn twice. Same HUD vocabulary as Templates and Missions: near-black
+/* ASK — the page chrome only (#1058): its greeting. The composer box, the turn rows and the match
+ * rows belong to the mission console's sheet and are used from there (see AskConsole.tsx), so this
+ * file holds the page and nothing that is drawn twice. Same HUD vocabulary as Templates and Missions: near-black
  * ground, mono uppercase callsign, square chrome, no radius, no gradients. The terminal pane
  * already owns the page's hero frame, so nothing here adds one (docs/design.md §7). */
 
 .page {
+  /* The chat column inside (AskConsole) scrolls its own thread and docks its composer on the
+   * bottom edge (#1069), so the page itself never scrolls — it only gives the column a height. */
   height: 100%;
-  overflow-x: hidden;
-  overflow-y: auto;
-  padding: 18px 20px 32px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
   color: var(--text-1);
-}
-
-/* One measure for everything on the page: the composer, the answers and the note line up. */
-.inner {
-  max-width: 760px;
 }
 
 .kicker {

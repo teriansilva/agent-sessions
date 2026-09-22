@@ -94,8 +94,9 @@ EXPECTED_DEFAULT_SHA = {
     "handoff_brief": "6229dae66d00c62f",
     "auto_sort": "e7dcb9cc74f397aa",
     "pulse_session_line": "2c5ed998d9df3d00",
-    "ask_catalog": "1af18a4d8485da23",
-    "ask_verify": "4daddf0195a16d69",
+    # #1069: Ask covers missions too — both stages name the mission kind and its content.
+    "ask_catalog": "4a0cadec55d2678b",
+    "ask_verify": "2ea52d623aa35336",
     "orchestrator_pass": "5f8a224cfa4fbb82",
     "chat_route": "35bb285bc0ad1005",
     "chat_instruct": "eea6dcf1ca69e6f3",

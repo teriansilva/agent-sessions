@@ -88,16 +88,16 @@ test("the bell is in the topbar and never in the drawer's nav row", async ({
 
   if (testInfo.project.name === "mobile") {
     // The drawer's row is Help and Settings since #1058: Overview and Templates became named
-    // SECTIONS and moved to the nav, which the drawer lists separately above this row. The
-    // regression this test exists to stop is still the same one — a control appearing here that
-    // belongs in the bar.
+    // SECTIONS in the bar. The regression this test exists to stop is still the same one — a
+    // control appearing here that belongs in the bar.
     await page.getByRole("button", { name: /open session list/i }).click();
     const items = page.locator(".sidebar-actions").locator(":scope > *");
     await expect(items).toHaveCount(2);
-    // …and the five sections are named right above it, so nothing was lost by the move.
+    // …and since #1069 the drawer does not repeat the sections either: the bar above it names
+    // every one, so a second copy here was the same controls twice.
     await expect(
-      page.locator("aside.sidebar").getByRole("navigation", { name: "Sections" }).getByRole("link"),
-    ).toHaveCount(5);
+      page.locator("aside.sidebar").getByRole("navigation", { name: "Sections" }),
+    ).toHaveCount(0);
   }
 });
 

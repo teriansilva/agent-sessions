@@ -784,9 +784,9 @@ body.hud-static-grid {
   align-self: center;
   gap: 6px;
   margin-left: 4px;
-  /* FIVE sections since #1058. The row must never wrap the command bar into two lines, so the nav
-     is allowed to shrink (its entries drop their labels, then their padding) before anything else
-     in the bar does. */
+  /* FIVE sections since #1058; four plus a sub-menu chevron since #1069. The row must never wrap
+     the command bar into two lines, so the nav is allowed to shrink (its entries drop their
+     labels, then their padding) before anything else in the bar does. */
   min-width: 0;
 }
 .section-nav a {
@@ -805,7 +805,8 @@ body.hud-static-grid {
   letter-spacing: 0.1em;
   text-transform: uppercase;
 }
-.section-nav a[aria-current="page"] {
+.section-nav a[aria-current="page"],
+.section-nav a[aria-current="true"] {
   color: var(--on-accent);
   border-color: var(--accent);
   background: var(--accent);
@@ -815,41 +816,53 @@ body.hud-static-grid {
   outline-offset: -2px;
 }
 
-/* THE DRAWER'S COPY OF THE SECTIONS (#1058). The bar is icon-only at drawer widths, so this is
-   where the five names live on a phone — a labelled column above the action row, same list, same
-   component, same active state. Hidden on desktop, where the bar already says all five. */
-.section-nav-drawer {
-  display: none;
+/* A SECTION WITH A SUB-MENU (#1069) is its link plus a chevron, drawn as one box: the link gives
+   up its right border and the chevron closes the box. Both halves keep the 44px height — the
+   chevron is a target of its own, not a decoration on the link. */
+.section-nav-split {
+  display: flex;
+  flex: none;
 }
-@media (max-width: 800px) {
-  .section-nav-drawer {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    padding: 8px 8px 0;
-  }
-  .section-nav-drawer a {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    min-height: 44px;
-    padding: 0 10px;
-    border: 1px solid var(--line);
-    color: var(--text-2);
-    text-decoration: none;
-    font: 400 0.68rem var(--font-mono);
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-  }
-  .section-nav-drawer a[aria-current="page"] {
-    color: var(--on-accent);
-    border-color: var(--accent);
-    background: var(--accent);
-  }
-  .section-nav-drawer a:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: -2px;
-  }
+.section-nav .section-nav-split > a {
+  border-right: none;
+  /* THE SEAM GOES TO THE LINK. The row sits at a fractional x (the wordmark's width), and at the
+     shared edge hit-testing gave the link's last half-pixel to the chevron — the #946 hit-area
+     check caught it. Lifting the link settles the tie in its favour. */
+  position: relative;
+  z-index: 1;
+}
+.section-nav-chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  height: 100%;
+  width: 28px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-left-color: var(--line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.section-nav-chevron:hover {
+  color: var(--text);
+}
+.section-nav-chevron[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+.section-nav-chevron:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.section-nav-split.is-active .section-nav-chevron {
+  color: var(--on-accent);
+  border-color: var(--accent);
+  background: var(--accent);
+  /* The seam between the two halves, in the ink the fill already uses. */
+  box-shadow: inset 1px 0 0
+    color-mix(in srgb, var(--on-accent) 35%, transparent);
 }
 
 @media (max-width: 1100px) {
@@ -913,8 +926,8 @@ body.hud-static-grid {
    trade, so the entries keep their place and lose their text instead.
 
    The label is CLIPPED, never `display: none`: a link whose text is removed has no accessible
-   name, and five unnamed icons is precisely the row a screen-reader operator cannot use. The
-   drawer's `.section-nav-drawer` shows the same five names in full. */
+   name, and five unnamed icons is precisely the row a screen-reader operator cannot use. Each entry
+   also carries its name as a `title`. */
 @media (max-width: 800px) {
   .section-nav a {
     min-width: 0;
@@ -928,10 +941,10 @@ body.hud-static-grid {
   .section-nav a svg {
     display: block;
   }
-  /* SCOPED TO THE BAR. Unscoped, this also clipped the DRAWER's labels — which exist precisely so
-     the five names have a home on a phone, and the drawer then rendered five unlabelled boxes.
-     A `toHaveText` assertion cannot see that: the text is in the DOM, it is just 1px wide. The
-     drawer spec measures the label's rendered WIDTH for that reason. */
+  .section-nav-chevron {
+    width: 24px;
+  }
+  /* Scoped to the bar's own labels. */
   .section-nav .section-nav-label {
     position: absolute;
     width: 1px;
@@ -980,6 +993,9 @@ body.hud-static-grid {
   .section-nav a {
     width: 32px;
     padding-inline: 0;
+  }
+  .section-nav-chevron {
+    width: 20px;
   }
   .hud-topbar-actions {
     gap: 3px;

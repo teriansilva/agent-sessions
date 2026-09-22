@@ -28,16 +28,27 @@ server-side persistence (matching the repo's no-per-conversation-store ethos). T
 snippets go ONLY to the operator-configured AI endpoint, entirely server-side
 (``review.complete_json`` / ``gather_input`` — ``trust_env=False`` keeps the key off ambient
 proxies); the endpoint URL and key never reach the browser.
+
+Missions (#1069) are a second kind of catalog entry, keyed ``mission:<msn id>``: the operator's
+non-archived missions, read from the missions store on its own bounded pool. They carry their
+instruction/brief rather than a transcript, so Stage 2 verifies them against that text. A store
+that is busy, locked or broken degrades the ask to sessions only — it never fails it. Mission
+matches come back as ``mission_matches`` beside ``matches``, which stays session cards only, so
+every existing consumer of ``matches`` is untouched.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
+import sqlite3
 import time
 
-from . import engines, prompts, pulse, review
+from . import engines, missions, prompts, pulse, review
+
+log = logging.getLogger(__name__)
 
 # --- request bounds (#522, server-owned) ----------------------------------------------
 QUERY_MAX = 2_000
@@ -57,6 +68,12 @@ PROJECT_MAX = 40
 STAGE2_CANDIDATES = 5
 STAGE2_TAIL_CHARS = 4_000
 MATCHES_MAX = 8
+# Missions are operator-sized (tens, not thousands), but the slice is still bounded so a store
+# with an unusual number of live missions cannot grow the Stage-1 prompt without limit.
+MISSION_SLICE_MAX = 40
+STAGE2_MISSION_CANDIDATES = 3
+MISSION_SUMMARY_MAX = 500
+MISSION_PREFIX = "mission:"
 ANSWER_MAX = 600
 WHY_MAX = 160
 
@@ -83,6 +100,51 @@ def build_catalog(*, now: float | None = None, working_keys: set[str] | None = N
     return pulse.build_cards(window_days=None, now=now, working_keys=working_keys)
 
 
+def build_mission_catalog() -> list[dict]:
+    """The operator's non-archived missions as catalog entries, newest-updated first.
+
+    Runs on the missions store's pool (``missions.run_admitted``), never the default executor.
+    The entry's ``summary`` is the brief when there is one, else the instruction — both verbatim
+    operator text, so they are bounded here and never logged."""
+    # The store's own degraded read: a locked or corrupt DB is an empty list, never a raise.
+    rows = missions.safe_list_missions(archived=False, limit=missions.LIST_LIMIT_MAX)["missions"]
+    out: list[dict] = []
+    for m in rows:
+        mid = str(m.get("id") or "")
+        if not missions.MISSION_ID_RE.match(mid):
+            continue
+        text = str(m.get("brief") or "").strip() or str(m.get("instruction") or "").strip()
+        out.append(
+            {
+                "id": MISSION_PREFIX + mid,
+                "kind": "mission",
+                "mission_id": mid,
+                "title": str(m.get("title") or ""),
+                "state": str(m.get("state") or ""),
+                "project_id": str(m.get("project_id") or ""),
+                "cwd": str(m.get("cwd") or ""),
+                "_summary": text[:MISSION_SUMMARY_MAX],
+                "last_activity": float(m.get("updated_at") or m.get("created_at") or 0),
+            }
+        )
+    return out
+
+
+async def _mission_catalog() -> list[dict]:
+    """``build_mission_catalog``, fail-soft: a busy/locked/corrupt store costs the ask its
+    missions, never the answer about sessions. ``safe_list_missions`` already absorbs a broken
+    store; this also absorbs admission (``MissionsBusy``) and anything the builder raises."""
+    try:
+        return await missions.run_admitted(build_mission_catalog)
+    except (missions.MissionError, sqlite3.Error, OSError) as e:
+        log.info("ask: missions unavailable, answering from sessions only (%s)", type(e).__name__)
+        return []
+
+
+def _is_mission(entry: dict) -> bool:
+    return entry.get("kind") == "mission"
+
+
 def _card_haystack(card: dict) -> str:
     project = card.get("project") or {}
     return " ".join(
@@ -96,6 +158,9 @@ def _card_haystack(card: dict) -> str:
             card.get("_ai_recap"),
             card.get("cwd"),
             project.get("name"),
+            # Mission entries (#1069): their bounded instruction/brief and project id.
+            card.get("_summary"),
+            card.get("project_id"),
         )
         if v
     ).lower()
@@ -119,6 +184,19 @@ def _prefilter(catalog: list[dict], query: str, cap: int = CATALOG_SLICE_MAX) ->
     return slice_
 
 
+def _mission_entry(m: dict, now: float) -> dict:
+    """The trimmed view of one mission the model sees (#1069)."""
+    return {
+        "id": m["id"],
+        "kind": "mission",
+        "title": str(m.get("title") or "")[:TITLE_MAX],
+        "state": str(m.get("state") or ""),
+        "project": str(m.get("project_id") or "")[:PROJECT_MAX],
+        "summary": str(m.get("_summary") or "")[:MISSION_SUMMARY_MAX],
+        "age_hours": round((now - float(m.get("last_activity") or now)) / 3600, 1),
+    }
+
+
 def _catalog_entry(card: dict, now: float) -> dict:
     """The trimmed per-entry view the model sees — bounded fields only, never the internal
     keys.
@@ -135,6 +213,7 @@ def _catalog_entry(card: dict, now: float) -> dict:
     )
     return {
         "id": card["id"],
+        "kind": "session",
         "title": str(card.get("title") or "")[:TITLE_MAX],
         "project": str(project.get("name") or "")[:PROJECT_MAX],
         "cwd": str(card.get("cwd") or "")[-CWD_TAIL_CHARS:],
@@ -191,10 +270,14 @@ def _validate_matches(obj: dict, sent_ids: set[str]) -> tuple[str, list[tuple[st
             mid = item.get("id")
             if not isinstance(mid, str) or mid not in sent_ids or mid in seen:
                 continue
-            try:
-                engines.parse_key(mid)
-            except Exception:  # noqa: S112 — a bad-shape id is data, not an event to log
-                continue
+            if mid.startswith(MISSION_PREFIX):
+                if not missions.MISSION_ID_RE.match(mid[len(MISSION_PREFIX) :]):
+                    continue
+            else:
+                try:
+                    engines.parse_key(mid)
+                except Exception:  # noqa: S112 — a bad-shape id is data, not an event to log
+                    continue
             seen.add(mid)
             matches.append((mid, _clamp_line(item.get("why"), WHY_MAX)))
     return answer, matches
@@ -204,12 +287,27 @@ def _public_card(card: dict) -> dict:
     return {k: v for k, v in card.items() if not k.startswith("_")}
 
 
+def _public_mission(m: dict, why: str) -> dict:
+    """What the browser gets for a mission match: the bare mission id (the ``/mission?m=`` deep
+    link shape-checks exactly that), a few display fields, and why. Never the summary text."""
+    return {
+        "id": m["mission_id"],
+        "title": m.get("title") or "",
+        "state": m.get("state") or "",
+        "project_id": m.get("project_id") or "",
+        "why": why,
+    }
+
+
 def _result(
     answer: str, matches: list[tuple[str, str]], by_id: dict[str, dict], stage: str
 ) -> dict:
+    sessions = [(mid, why) for mid, why in matches if not _is_mission(by_id[mid])]
+    mission_hits = [(mid, why) for mid, why in matches if _is_mission(by_id[mid])]
     return {
         "answer": answer,
-        "matches": [{**_public_card(by_id[mid]), "why": why} for mid, why in matches],
+        "matches": [{**_public_card(by_id[mid]), "why": why} for mid, why in sessions],
+        "mission_matches": [_public_mission(by_id[mid], why) for mid, why in mission_hits],
         "stage": stage,
         "configured": True,
     }
@@ -225,9 +323,22 @@ async def _stage2_refine(
     refine call. Returns the refined ``(answer, matches)`` or ``None`` when Stage 2 could
     not run / failed entirely (caller keeps the Stage-1 result). Per-candidate gather
     failures (``ReviewError``: adapter-less engine, nothing to review) skip that candidate
-    only."""
+    only. A mission candidate (#1069) has no transcript; its content is its bounded
+    instruction/brief, already in hand."""
     candidates: list[dict] = []
-    for mid, why in matches[:STAGE2_CANDIDATES]:
+    session_picks = [(mid, why) for mid, why in matches if not _is_mission(by_id[mid])]
+    mission_picks = [(mid, why) for mid, why in matches if _is_mission(by_id[mid])]
+    for mid, why in mission_picks[:STAGE2_MISSION_CANDIDATES]:
+        candidates.append(
+            {
+                "id": mid,
+                "kind": "mission",
+                "title": str(by_id[mid].get("title") or "")[:TITLE_MAX],
+                "catalog_reason": why,
+                "mission_brief": str(by_id[mid].get("_summary") or ""),
+            }
+        )
+    for mid, why in session_picks[:STAGE2_CANDIDATES]:
         try:
             tail, _ = await asyncio.to_thread(review.gather_input, mid, STAGE2_TAIL_CHARS)
         except review.ReviewError:
@@ -235,6 +346,7 @@ async def _stage2_refine(
         candidates.append(
             {
                 "id": mid,
+                "kind": "session",
                 "title": str(by_id[mid].get("title") or "")[:TITLE_MAX],
                 "catalog_reason": why,
                 "transcript_tail": tail,
@@ -267,7 +379,8 @@ async def _stage2_refine(
 async def ask(query: str, history: object = None, *, working_keys: set[str] | None = None) -> dict:
     """One ask: catalog ranking, then transcript-tail confirmation for the top picks.
 
-    Returns ``{"answer", "matches": [PulseCard + "why", …], "stage", "configured": True}``
+    Returns ``{"answer", "matches": [PulseCard + "why", …], "mission_matches": [{id, title,
+    state, project_id, why}, …], "stage", "configured": True}``
     with ``stage`` ∈ ``empty`` (no catalog → 0 LLM calls) / ``catalog`` (Stage-1 only) /
     ``content`` (Stage-2 confirmed). Raises :class:`review.NotConfiguredError` when the
     endpoint isn't configured (route → 409) and :class:`review.ReviewError` when Stage 1
@@ -278,20 +391,27 @@ async def ask(query: str, history: object = None, *, working_keys: set[str] | No
     # `_require_config` is review's own gate — the single source of truth for "configured".
     review._require_config()
     turns = bound_history(history)
-    catalog = await asyncio.to_thread(build_catalog, working_keys=working_keys)
-    if not catalog:
+    catalog, mission_catalog = await asyncio.gather(
+        asyncio.to_thread(build_catalog, working_keys=working_keys), _mission_catalog()
+    )
+    if not catalog and not mission_catalog:
         return {
             "answer": "No sessions found yet — start one and ask again.",
             "matches": [],
+            "mission_matches": [],
             "stage": "empty",
             "configured": True,
         }
     now = time.time()
     slice_ = _prefilter(catalog, query)
-    by_id = {c["id"]: c for c in slice_}
+    mission_slice = _prefilter(mission_catalog, query, MISSION_SLICE_MAX)
+    by_id = {c["id"]: c for c in (*slice_, *mission_slice)}
     user = {
         "question": query,
-        "catalog": [_catalog_entry(c, now) for c in slice_],
+        "catalog": [
+            *(_mission_entry(m, now) for m in mission_slice),
+            *(_catalog_entry(c, now) for c in slice_),
+        ],
     }
     obj = await review.complete_json(
         [

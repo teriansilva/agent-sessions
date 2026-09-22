@@ -106,6 +106,61 @@ test("a matched session is named, explained and reachable (#522)", async () => {
   ).toHaveAttribute("href", "/s/claude/abc-123");
 });
 
+test("a matched mission is named, explained and opens the mission (#1069)", async () => {
+  const mid = "msn_" + "a".repeat(32);
+  vi.mocked(api.pulseAsk).mockResolvedValue({
+    answer: "The reconnect mission ran it.",
+    matches: [
+      { id: "claude:abc-123", title: "ws backoff", why: "did the work" },
+    ] as never,
+    mission_matches: [
+      {
+        id: mid,
+        title: "Stabilise terminal reconnects",
+        state: "done",
+        project_id: "",
+        why: "the instruction names it",
+      },
+    ],
+    stage: "content",
+    configured: true,
+  });
+  mount(<AskConsole configured />);
+  await userEvent.type(screen.getByTestId("composer-input"), "reconnect");
+  await userEvent.click(screen.getByTestId("composer-send"));
+  const row = await screen.findByTestId("ask-mission-match");
+  expect(within(row).getByText("the instruction names it")).toBeInTheDocument();
+  expect(
+    within(row).getByRole("link", {
+      name: "Open mission Stabilise terminal reconnects",
+    }),
+  ).toHaveAttribute("href", `/mission?m=${mid}`);
+  // Both groups are labelled, missions first, and the session keeps its own way in.
+  const turn = screen.getByTestId("ask-turn");
+  const heads = Array.from(turn.querySelectorAll("div"))
+    .map((d) => d.textContent)
+    .filter((t) => t === "Missions" || t === "Sessions");
+  expect(heads).toEqual(["Missions", "Sessions"]);
+  expect(
+    within(turn).getByRole("link", { name: "Jump into ws backoff" }),
+  ).toHaveAttribute("href", "/s/claude/abc-123");
+});
+
+test("a sessions-only answer has no group labels, as before #1069", async () => {
+  vi.mocked(api.pulseAsk).mockResolvedValue({
+    answer: "One session.",
+    matches: [{ id: "claude:abc-123", title: "t", why: "w" }] as never,
+    stage: "catalog",
+    configured: true,
+  });
+  mount(<AskConsole configured />);
+  await userEvent.type(screen.getByTestId("composer-input"), "q");
+  await userEvent.click(screen.getByTestId("composer-send"));
+  await screen.findByTestId("ask-match");
+  expect(screen.queryByText("Missions")).toBeNull();
+  expect(screen.queryByText("Sessions")).toBeNull();
+});
+
 test("a busy 409 surfaces the server's detail, not a generic error (#522)", async () => {
   // The detail IS the answer here — "a question is already running" tells the operator to wait,
   // where "that didn't work" tells them to retry, which is the wrong move.

@@ -577,9 +577,21 @@ export interface PulseAskMatch extends PulseCard {
  *  `content` = confirmed against transcript tails; `empty` = no sessions at all (no AI
  *  call was made). Errors: 409 unconfigured (`configured: false` in the body) or a
  *  question already running; 502 endpoint failure. */
+/** A mission an Ask answer is about (#1069). `id` is the bare mission id — what `missionLink`
+ *  takes. Server-built from the missions store; only `why` is model text. */
+export interface PulseAskMissionMatch {
+  id: string;
+  title: string;
+  state: string;
+  project_id: string;
+  why: string;
+}
+
 export interface PulseAskResult {
   answer: string;
   matches: PulseAskMatch[];
+  /** Missions the answer names (#1069). Optional: a server before #1069 does not send it. */
+  mission_matches?: PulseAskMissionMatch[];
   stage: "catalog" | "content" | "empty";
   configured: boolean;
 }

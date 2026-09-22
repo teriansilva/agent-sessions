@@ -1,5 +1,7 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 
+import { openMapFromNav } from "./mapNav";
+
 /** #1007 Phase 2 — leaving the map mid-sequence CANCELS it: the in-flight page is aborted at the
  *  network boundary, no further page is requested, nothing is committed, and no error is shown.
  *
@@ -150,17 +152,6 @@ const chips = (page: Page) => page.locator(".tr-overview .tr-ov-chip");
  *  desktop too. */
 const rows = (page: Page) =>
   page.locator('aside.sidebar .sidebarBody a[href^="/s/"]');
-/** MAP, from whichever nav is reachable right now (#1058).
- *
- *  There are two: the top bar's row and the drawer's labelled copy. When the mobile drawer is open
- *  it is a MODAL and the shell marks the header `inert` (#940), so the bar's copy resolves, looks
- *  visible, and can never be clicked. One selector picks the right one from the shell's own open
- *  state rather than from the project name, so desktop, 801px and a phone all take the same path. */
-const overviewLink = (page: Page) =>
-  page.locator(
-    '.app.navOpen aside.sidebar a[data-section="map"], .app:not(.navOpen) .hud-topbar a[data-section="map"]',
-  );
-
 /** Idempotent: the drawer only closes on NAVIGATION. */
 async function openDrawer(page: Page, project: string) {
   if (project !== "mobile") return;
@@ -178,7 +169,7 @@ async function toPane(page: Page, project: string, n: number) {
 
 async function toMap(page: Page, project: string) {
   await openDrawer(page, project);
-  await overviewLink(page).click();
+  await openMapFromNav(page);
   await expect(page).toHaveURL(/\/overview$/);
 }
 

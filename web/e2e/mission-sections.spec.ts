@@ -130,9 +130,14 @@ test("section buttons share the brand row and keep their own declared typography
       const size = parseFloat(getComputedStyle(document.documentElement).fontSize) * 0.68;
       return { family, size, spacing: size * 0.1 };
     });
-    // ALL FIVE since #1058 — the map and the template gallery came up out of the unlabelled icon
-    // cluster, and Ask is new. Asserting two of five would let the three that moved regress.
-    for (const name of ["Sessions", "Missions", "Ask", "Map", "Templates"]) {
+    // EVERY SECTION (#1058), in the #1069 order: Ask leads, and the map lives in the Sessions
+    // menu rather than the row. Asserting a subset would let the rest regress.
+    const chevron = nav.getByRole("button", { name: "Sessions menu" });
+    const cb = (await chevron.boundingBox())!;
+    expect(cb.height, `chevron height at ${width}`).toBe(44);
+    expect(Math.abs(cb.y + cb.height / 2 - (bb.y + bb.height / 2)), `chevron row at ${width}`).toBeLessThan(2);
+    await chevron.click({ trial: true });
+    for (const name of ["Ask", "Sessions", "Missions", "Templates"]) {
       const link = nav.getByRole("link", { name, exact: true });
       const b = (await link.boundingBox())!;
       expect(
@@ -206,6 +211,11 @@ test("ordinary buttons and section links glitch without losing hit areas (#946)"
     page.getByRole("button", { name: "Show full mission title" }),
     page.getByTestId("composer-send"),
     barLink(page, "Sessions"),
+    // The split control's other half (#1069): both halves keep their whole hit area, including
+    // the seam between them.
+    page
+      .locator(".hud-topbar")
+      .getByRole("button", { name: "Sessions menu" }),
     barLink(page, "Missions"),
   ];
   for (const control of controls) {
@@ -289,12 +299,14 @@ test("ambient and press feedback reach ordinary controls and respect reduced mot
   await expect(toggle).not.toHaveClass(/glitching/);
 
   const missions = barLink(page, "Missions");
-  // The next ambient selection must skip a disabled ordinary button in the real DOM.
+  // The next ambient selection must skip a disabled ordinary button in the real DOM. With
+  // `Math.random` pinned to 0 it takes the first candidate after the toggle — the first section in
+  // the row, which is Ask since #1069.
   await toggle.evaluate((el) => ((el as HTMLButtonElement).disabled = true));
   await page.clock.fastForward(7001);
   await expect(toggle).not.toHaveClass(/glitching/);
   await expect(
-    barLink(page, "Sessions"),
+    barLink(page, "Ask"),
   ).toHaveClass(/glitching/);
   await page.clock.fastForward(301);
   await toggle.evaluate((el) => ((el as HTMLButtonElement).disabled = false));

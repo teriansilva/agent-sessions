@@ -121,11 +121,12 @@ test("desktop: the single command-bar toggle collapses then re-expands the sideb
   expect(app).not.toHaveClass("collapsed");
 });
 
-test("the command topbar names all five work sections, in order (#1058)", async () => {
+test("the command topbar names every work section, Ask first, the map under Sessions (#1058, #1069)", async () => {
   // The map and the template gallery used to be unlabelled `.gear` icons in the action cluster,
-  // beside Help and Settings, which are not destinations. All five destinations are in the nav
-  // now — and the ORDER is asserted, because "it contains five links" would pass on a nav that
-  // shuffles itself on every render.
+  // beside Help and Settings, which are not destinations. Every destination is in the nav now —
+  // and the ORDER is asserted, because "it contains four links" would pass on a nav that
+  // shuffles itself on every render. Since #1069 Ask leads and the map is a Sessions sub-menu
+  // entry, so it is NOT a top-level link: the menu is closed here.
   const { container } = render(<App />);
   const topbar = container.querySelector(".hud-topbar") as HTMLElement;
   const nav = await within(topbar).findByRole("navigation", {
@@ -136,11 +137,23 @@ test("the command topbar names all five work sections, in order (#1058)", async 
       .getAllByRole("link")
       .map((a) => [a.textContent, a.getAttribute("href")]),
   ).toEqual([
+    ["Ask", "/ask"],
     ["Sessions", "/"],
     ["Missions", "/mission"],
-    ["Ask", "/ask"],
-    ["Map", "/overview"],
     ["Templates", "/templates"],
+  ]);
+  // The map is one click away behind the Sessions chevron.
+  await userEvent.click(
+    within(nav).getByRole("button", { name: "Sessions menu" }),
+  );
+  const menu = await screen.findByRole("menu", { name: "Sessions menu" });
+  expect(
+    within(menu)
+      .getAllByRole("menuitem")
+      .map((a) => [a.textContent, a.getAttribute("href")]),
+  ).toEqual([
+    ["Sessions", "/"],
+    ["Sessions map", "/overview"],
   ]);
   // …and the cluster beside them is actions ONLY. An `/overview` or `/templates` link outside the
   // nav would mean the old duplication came back.
@@ -269,7 +282,6 @@ test("sidebar: a failed order save snaps the toggle back to the server truth (#5
 // Default route in jsdom is "/", so all three of these are same-route no-ops on mount.
 test.each([
   ["New session", /new session/i],
-  ["Map", /^map$/i],
   ["Settings", /^settings$/i],
 ])(
   "mobile: tapping same-route %s closes the open drawer in one tap (#283)",

@@ -14,13 +14,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from dataclasses import dataclass
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from agent_sessions import aitasks, metadata, prefs, pulse_chat, review
+from agent_sessions import aitasks, metadata, missions, prefs, prompts, pulse_chat, review
 from agent_sessions.main import create_app
 
 SECRET = "sk-pulse-chat-test"  # noqa: S105 — test fixture value
@@ -325,6 +326,151 @@ def test_invented_and_duplicate_ids_are_dropped(configured_ai, monkeypatch):
     result = asyncio.run(pulse_chat.ask("which one?"))
     assert [m["id"] for m in result["matches"]] == [known]
     assert result["matches"][0]["why"] == "real"
+
+
+# ---- missions in the catalog (#1069) --------------------------------------------------
+
+
+def _mission(title: str, instruction: str) -> str:
+    """A real mission row in the per-test store (conftest isolates the DB)."""
+    return missions.create_mission(instruction, title=title)["id"]
+
+
+def test_missions_join_the_catalog_and_come_back_as_mission_matches(configured_ai, monkeypatch):
+    _setup(monkeypatch, _sessions(2))
+    mid = _mission("Stabilise terminal reconnects", "fix the websocket reconnect storm")
+    key = f"mission:{mid}"
+    session = f"claude:{_uuid(1)}"
+    calls: list = []
+    monkeypatch.setattr(
+        review,
+        "_TRANSPORT",
+        _seq_transport(
+            [
+                {
+                    "answer": "cat",
+                    "matches": [{"id": key, "why": "instruction"}, {"id": session, "why": "t"}],
+                },
+                {
+                    "answer": "The reconnect mission; p1 did the work.",
+                    "matches": [{"id": key, "why": "brief says so"}, {"id": session, "why": "x"}],
+                },
+            ],
+            calls,
+        ),
+    )
+    monkeypatch.setattr(review, "gather_input", lambda key, n: ("user: reconnect", "fp"))
+    result = asyncio.run(pulse_chat.ask("which mission fixed the websocket reconnect?"))
+
+    # Stage 1 saw the mission as its own kind, with its instruction as the summary.
+    stage1 = json.loads(calls[0]["messages"][-1]["content"])["catalog"]
+    (entry,) = [e for e in stage1 if e["id"] == key]
+    assert entry["kind"] == "mission"
+    assert entry["summary"] == "fix the websocket reconnect storm"
+    assert {e["kind"] for e in stage1} == {"mission", "session"}
+    # Stage 2 verified the mission against its text, not a transcript it does not have.
+    cands = json.loads(calls[1]["messages"][-1]["content"])["candidates"]
+    (mc,) = [c for c in cands if c["id"] == key]
+    assert mc["mission_brief"] == "fix the websocket reconnect storm"
+    assert "transcript_tail" not in mc
+
+    assert result["stage"] == "content"
+    # `matches` stays session cards only; missions ride beside them, keyed by the BARE id the
+    # `/mission?m=` deep link takes, and never carry the operator's instruction text.
+    assert [m["id"] for m in result["matches"]] == [session]
+    assert result["mission_matches"] == [
+        {
+            "id": mid,
+            "title": "Stabilise terminal reconnects",
+            "state": "draft",
+            "project_id": "",
+            "why": "brief says so",
+        }
+    ]
+
+
+def test_invented_or_misshapen_mission_ids_are_dropped(configured_ai, monkeypatch):
+    _setup(monkeypatch, [])
+    mid = _mission("Real one", "do the thing")
+    payload = {
+        "answer": "found",
+        "matches": [
+            {"id": "mission:msn_" + "f" * 32, "why": "invented"},
+            {"id": "mission:../../etc", "why": "junk"},
+            {"id": mid, "why": "bare id was never in the catalog"},
+            {"id": f"mission:{mid}", "why": "real"},
+        ],
+    }
+    calls: list = []
+    monkeypatch.setattr(review, "_TRANSPORT", _seq_transport([payload, payload], calls))
+    result = asyncio.run(pulse_chat.ask("which one?"))
+    assert [m["id"] for m in result["mission_matches"]] == [mid]
+    assert result["matches"] == []
+
+
+def test_missions_alone_are_not_an_empty_catalog(configured_ai, monkeypatch):
+    _setup(monkeypatch, [])
+    _mission("Only a mission", "something")
+    calls: list = []
+    monkeypatch.setattr(
+        review, "_TRANSPORT", _seq_transport([{"answer": "none", "matches": []}], calls)
+    )
+    result = asyncio.run(pulse_chat.ask("anything?"))
+    assert result["stage"] == "catalog"
+    assert len(calls) == 1
+
+
+def test_a_broken_missions_store_degrades_to_sessions_only(configured_ai, monkeypatch):
+    _setup(monkeypatch, _sessions(2))
+    _mission("Hidden by the failure", "x")
+
+    def boom():
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(pulse_chat, "build_mission_catalog", boom)
+    calls: list = []
+    monkeypatch.setattr(
+        review, "_TRANSPORT", _seq_transport([{"answer": "none", "matches": []}], calls)
+    )
+    result = asyncio.run(pulse_chat.ask("anything?"))
+    assert result["answer"] == "none"
+    assert result["mission_matches"] == []
+    stage1 = json.loads(calls[0]["messages"][-1]["content"])["catalog"]
+    assert stage1 and all(e["kind"] == "session" for e in stage1)
+
+
+def test_missions_matching_the_query_never_crowd_sessions_out_of_the_slice(
+    configured_ai, monkeypatch
+):
+    # Missions have their own sub-quota: sixty keyword-hit missions still leave every session
+    # in the Stage-1 catalog, and the missions themselves stop at MISSION_SLICE_MAX.
+    _setup(monkeypatch, _sessions(3))
+    for i in range(60):
+        _mission(f"websocket mission {i}", "websocket reconnect")
+    calls: list = []
+    monkeypatch.setattr(
+        review, "_TRANSPORT", _seq_transport([{"answer": "none", "matches": []}], calls)
+    )
+    asyncio.run(pulse_chat.ask("websocket"))
+    stage1 = json.loads(calls[0]["messages"][-1]["content"])["catalog"]
+    kinds = [e["kind"] for e in stage1]
+    assert kinds.count("mission") == pulse_chat.MISSION_SLICE_MAX
+    assert kinds.count("session") == 3
+
+
+def test_an_operator_prompt_that_never_mentions_missions_still_works(configured_ai, monkeypatch):
+    # An edited ask_catalog written before #1069 knows nothing about missions. The contract is
+    # unchanged, so a reply naming only sessions is a normal answer with no mission matches.
+    prompts.set_value("ask_catalog", "Find sessions. Reply with JSON {answer, matches}.")
+    _setup(monkeypatch, _sessions(2))
+    _mission("A mission", "x")
+    session = f"claude:{_uuid(0)}"
+    payload = {"answer": "p0", "matches": [{"id": session, "why": "w"}]}
+    monkeypatch.setattr(review, "_TRANSPORT", _seq_transport([payload, payload]))
+    monkeypatch.setattr(review, "gather_input", lambda key, n: ("tail", "fp"))
+    result = asyncio.run(pulse_chat.ask("which?"))
+    assert [m["id"] for m in result["matches"]] == [session]
+    assert result["mission_matches"] == []
 
 
 def test_malformed_model_output_raises_review_error(configured_ai, monkeypatch):

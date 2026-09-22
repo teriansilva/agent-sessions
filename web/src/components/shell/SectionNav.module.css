@@ -1,0 +1,54 @@
+/* A section's sub-menu in the top bar (#1069): the Help menu's panel (#987) — flat fill, hairline
+ * border, zero radius — with RowMenu's rows. Portalled into <body>, so it anchors itself. */
+
+.wrap {
+  position: relative;
+  display: inline-flex;
+  align-self: stretch;
+}
+
+.panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  /* Same layer as the bell's and the Help menu's portalled panels. */
+  z-index: 60;
+  min-width: 220px;
+  width: max-content;
+  max-width: min(320px, calc(100vw - 16px));
+  border: 1px solid var(--line-strong);
+  background: var(--bg-2);
+  padding: 4px 0;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+
+.items {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.items:focus-visible {
+  outline: none;
+}
+
+.item {
+  composes: item from "../sidebar/RowMenu.module.css";
+  min-height: 44px;
+  text-decoration: none;
+}
+
+/* The accent rule marks where you are; the fill stays the bar's. Scoped under `.items` so it
+ * outranks the composed RowMenu `border: none` regardless of stylesheet order. */
+.items .item {
+  border-left: 3px solid transparent;
+}
+
+.items .item[aria-current="page"] {
+  border-left-color: var(--accent);
+  color: var(--text);
+}
+
+.icon {
+  composes: itemIcon from "../sidebar/RowMenu.module.css";
+}

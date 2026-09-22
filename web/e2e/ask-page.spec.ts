@@ -11,6 +11,8 @@
  */
 import { expect, test, type Page } from "@playwright/test";
 
+import { openMapFromNav } from "./mapNav";
+
 const ANSWER = {
   answer: "Two sessions touched the upload retry.",
   matches: [
@@ -188,7 +190,7 @@ test("leaving and coming back starts clean — the answers really are transient"
 
   // In-app navigation, not a reload: the claim is about the PAGE's lifetime, and a reload would
   // prove something weaker (that nothing was persisted server-side).
-  await barNav(page).getByRole("link", { name: "Map", exact: true }).click();
+  await openMapFromNav(page);
   await expect(page).toHaveURL(/\/overview$/);
   await barNav(page).getByRole("link", { name: "Ask", exact: true }).click();
   await expect(page.getByTestId("ask-page")).toBeVisible();
@@ -223,4 +225,65 @@ test("the mission landing no longer offers ASK — there is no mode strip left",
   await expect(page.getByTestId("new-mission-form")).toBeVisible();
   await expect(page.getByTestId("composer-mode-ask")).toHaveCount(0);
   await expect(page.getByTestId("composer-mode-new")).toHaveCount(0);
+});
+
+/** #1069: Ask is laid out like the mission thread — a chat column. The composer is docked on the
+ *  bottom edge at every height, the greeting fills the empty thread and gives way to the
+ *  conversation, and the conversation grows UP from the composer rather than hanging from the top
+ *  with a void under it. Layout is exactly what jsdom cannot see, so it is measured here. */
+test("Ask is a chat column: composer docked at the bottom, the thread grows up to meet it (#1069)", async ({
+  page,
+}) => {
+  await mockShell(page);
+  const mid = "msn_" + "a".repeat(32);
+  await page.route("**/api/pulse/ask", (r) =>
+    r.fulfill({
+      json: {
+        ...ANSWER,
+        mission_matches: [
+          {
+            id: mid,
+            title: "Stabilise upload retries",
+            state: "done",
+            project_id: "",
+            why: "its instruction names the retry",
+          },
+        ],
+      },
+    }),
+  );
+  await page.goto("/ask");
+  const viewport = page.viewportSize()!;
+  const dock = page.getByTestId("ask-form");
+  const pane = page.getByTestId("ask-pane");
+
+  // Empty: the greeting is in the thread and the composer is already on the bottom edge.
+  await expect(page.getByRole("heading", { name: "Ask about your work" })).toBeVisible();
+  const dockBox = (await dock.boundingBox())!;
+  const paneBox = (await pane.boundingBox())!;
+  expect(dockBox.y).toBeGreaterThan(paneBox.y + paneBox.height - 2);
+  expect(dockBox.y + dockBox.height).toBeGreaterThan(viewport.height - 120);
+
+  await page.getByTestId("composer-input").fill("which mission fixed the upload retry?");
+  await page.getByTestId("composer-send").click();
+
+  // The conversation replaced the greeting, as "You" then "Answer" messages…
+  const turn = page.getByTestId("ask-turn");
+  await expect(turn.getByRole("article", { name: "You" })).toContainText("upload retry");
+  await expect(turn.getByRole("article", { name: "Answer" })).toContainText(
+    "Two sessions touched",
+  );
+  await expect(page.getByRole("heading", { name: "Ask about your work" })).toHaveCount(0);
+  // …the mission opens the mission, the session still jumps in…
+  await expect(
+    page.getByRole("link", { name: "Open mission Stabilise upload retries" }),
+  ).toHaveAttribute("href", `/mission?m=${mid}`);
+  await expect(
+    page.getByRole("link", { name: "Jump into fix flaky upload retry" }),
+  ).toBeVisible();
+  // …and a SHORT thread sits against the composer, not at the top of the column.
+  const threadBox = (await page.getByTestId("ask-turns").boundingBox())!;
+  const after = (await dock.boundingBox())!;
+  expect(after.y - (threadBox.y + threadBox.height)).toBeLessThan(60);
+  expect(Math.abs(after.y - dockBox.y)).toBeLessThan(2);
 });

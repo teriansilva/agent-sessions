@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { openMapFromNav } from "./mapNav";
+
 /** #1007 Phase 1, task 1 — PIN the sidebar's survive-navigation behaviour.
  *
  *  `SessionsProvider` is mounted above `RouterProvider` and `SessionList` renders inside `Layout`
@@ -117,19 +119,6 @@ async function mockApp(page: Page): Promise<Req[]> {
 const rows = (page: Page) =>
   page.locator('aside.sidebar .sidebarBody a[href^="/s/"]');
 
-/** The two `/overview` links (topbar + sidebar head) share an aria-label; whichever is on screen
- *  for this project is the one to press. */
-/** MAP, from whichever nav is reachable right now (#1058).
- *
- *  There are two: the top bar's row and the drawer's labelled copy. When the mobile drawer is open
- *  it is a MODAL and the shell marks the header `inert` (#940), so the bar's copy resolves, looks
- *  visible, and can never be clicked. One selector picks the right one from the shell's own open
- *  state rather than from the project name, so desktop, 801px and a phone all take the same path. */
-const overviewLink = (page: Page) =>
-  page.locator(
-    '.app.navOpen aside.sidebar a[data-section="map"], .app:not(.navOpen) .hud-topbar a[data-section="map"]',
-  );
-
 /** Mobile keeps the sidebar off-canvas; opening the drawer does NOT remount `SessionList`. */
 async function openDrawer(page: Page, project: string) {
   if (project !== "mobile") return;
@@ -164,7 +153,7 @@ test("the sidebar list survives /overview ⇄ /s/:engine/:id with no mount fetch
   const settled = sidebarReqs(reqs).length;
 
   // → /overview
-  await overviewLink(page).click();
+  await openMapFromNav(page);
   await expect(page).toHaveURL(/\/overview$/);
   await expect(page.locator(".tr-overview")).toBeVisible();
   await expect(rows(page)).toHaveCount(40);
@@ -177,7 +166,7 @@ test("the sidebar list survives /overview ⇄ /s/:engine/:id with no mount fetch
 
   // → back to /overview
   await openDrawer(page, project);
-  await overviewLink(page).click();
+  await openMapFromNav(page);
   await expect(page).toHaveURL(/\/overview$/);
   await expect(rows(page)).toHaveCount(40);
 
