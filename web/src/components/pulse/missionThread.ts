@@ -57,7 +57,27 @@ export type ThreadRow =
   /** A supervisor nudge that was not typed, with the server's reason (#983). `draft` marks an
    *  AI-drafted direction that was dismissed, replaced by an edit, or went stale (P3). */
   | { type: "held"; objectiveKey: string | null; reason: string; draft?: true }
+  /** A checklist change. The event carries no text — only `meta.ops`, one `{op, key}` per edit —
+   *  so it used to reach the generic row as the word "Objective" over an empty box. `counts` is one
+   *  entry per verb in first-seen order; keys are not printed, because a dropped objective's title
+   *  no longer exists to show. */
+  | { type: "checklist"; by: "plan" | "you" | "other"; counts: Array<[string, number]>; reopened: boolean }
+  /** A session joining or leaving the mission. Same history: `meta.adopted` / `meta.detached` only. */
+  | { type: "session"; change: "adopted" | "released"; role: string | null; sessionKey: string | null }
   | { type: "system"; label: string; text: string | null };
+
+/** How a checklist edit reads, per `op`. Only verbs the store writes; anything else is dropped rather
+ *  than printed raw. */
+const CHECKLIST_VERBS: Record<string, string> = {
+  add: "added",
+  drop: "dropped",
+  retitle: "renamed",
+  waive: "waived",
+  reorder: "reordered",
+  set_direction: "given a direction",
+  reset_direction: "direction reset",
+  clear_direction: "direction cleared",
+};
 
 function str(meta: Record<string, unknown> | null, key: string): string | null {
   const v = meta?.[key];
@@ -252,7 +272,42 @@ export function threadRow(e: MissionEvent): ThreadRow {
     };
   }
 
+  // A CHECKLIST CHANGE with nothing in its text (#1063's screenshot: an empty "Objective" box). An
+  // `objective` event that DOES carry text — "no objective templates: …", "nothing on this checklist
+  // gates completion …" — is a sentence the server wrote for a person, and keeps the generic row.
+  if (e.kind === "objective" && !text(e) && Array.isArray(meta?.ops)) {
+    const counts = new Map<string, number>();
+    for (const op of meta.ops) {
+      const kind = op && typeof op === "object" ? (op as Record<string, unknown>).op : null;
+      const verb = typeof kind === "string" ? CHECKLIST_VERBS[kind] : undefined;
+      if (verb) counts.set(verb, (counts.get(verb) ?? 0) + 1);
+    }
+    if (counts.size) {
+      const by = str(meta, "by");
+      return {
+        type: "checklist",
+        by: by === "instantiation" ? "plan" : by === "operator" ? "you" : "other",
+        counts: [...counts.entries()],
+        reopened: meta.reopened === true,
+      };
+    }
+  }
+
+  // A SESSION JOINING OR LEAVING, likewise text-less. A sub-agent spawn carries its own sentence and
+  // is left to the generic row.
+  if (e.kind === "session" && !text(e)) {
+    const sessionKey = e.session_key && isPersistableKey(e.session_key) ? e.session_key : null;
+    const role = str(meta, "adopted");
+    if (role) return { type: "session", change: "adopted", role, sessionKey };
+    if (meta?.detached === true) return { type: "session", change: "released", role: null, sessionKey };
+  }
+
   return { type: "system", label: humanise(e.kind), text: text(e) };
+}
+
+/** "2 added · 1 waived" — what a checklist row says after its "Checklist" tag. */
+export function checklistSummary(counts: Array<[string, number]>): string {
+  return counts.map(([verb, n]) => `${n} ${verb}`).join(" · ");
 }
 
 /** May this mission be started again? The DETAIL's answer, never an event's.

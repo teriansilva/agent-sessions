@@ -21,6 +21,7 @@ import {
   CircleAlert,
   CirclePause,
   FileText,
+  ListChecks,
   Pencil,
   RotateCw,
   Send,
@@ -40,6 +41,7 @@ import action from "../ui/actionButton.module.css";
 import styles from "./mission.module.css";
 import { missionDotClass, missionStateLabel } from "./missionState";
 import {
+  checklistSummary,
   latestFailedStartSeq,
   sessionRoute,
   threadRow,
@@ -563,11 +565,74 @@ export function MissionThreadEvent({
         />
       );
       break;
-    default:
+    case "checklist":
       body = (
+        <div
+          className={`${t.quiet} ${t.line}`}
+          role="group"
+          aria-label="Checklist changed"
+          data-testid="thread-checklist"
+        >
+          <ListChecks size={14} className={t.icon} aria-hidden="true" />
+          <span className={t.lineText}>
+            Checklist
+            <span className={t.sep}>·</span>
+            {checklistSummary(row.counts)}
+            {row.by !== "other" ? (
+              <>
+                <span className={t.sep}>·</span>
+                {row.by === "plan" ? "from the plan" : "by you"}
+              </>
+            ) : null}
+            {row.reopened ? (
+              <>
+                <span className={t.sep}>·</span>
+                reopened the mission
+              </>
+            ) : null}
+          </span>
+          <Time at={event.at} />
+        </div>
+      );
+      break;
+    case "session":
+      body = (
+        <div
+          className={`${t.quiet} ${t.line}`}
+          role="group"
+          aria-label={row.change === "adopted" ? "Session adopted" : "Session released"}
+          data-testid="thread-session"
+        >
+          <Terminal size={14} className={t.icon} aria-hidden="true" />
+          <span className={t.lineText}>
+            {row.change === "adopted"
+              ? `Session adopted${row.role ? ` as ${row.role}` : ""}`
+              : "Session released"}
+            {row.sessionKey ? (
+              <>
+                <span className={t.sep}>·</span>
+                <Link to={sessionRoute(row.sessionKey)} className={t.note}>
+                  {row.sessionKey}
+                </Link>
+              </>
+            ) : null}
+          </span>
+          <Time at={event.at} />
+        </div>
+      );
+      break;
+    default:
+      // NEVER AN EMPTY BOX. A kind this file does not know, carrying no text, is one quiet line with
+      // its name — the box it used to get held a label over nothing, which read as a rendering bug.
+      body = row.text ? (
         <div className={styles.event}>
           <div className={styles.eventHead}>{row.label}</div>
-          {row.text ? <div className={styles.eventText}>{row.text}</div> : null}
+          <div className={styles.eventText}>{row.text}</div>
+        </div>
+      ) : (
+        <div className={`${t.quiet} ${t.line}`} data-testid="thread-system-bare">
+          <span className={t.lineText}>{row.label}</span>
+          <Time at={event.at} />
         </div>
       );
   }

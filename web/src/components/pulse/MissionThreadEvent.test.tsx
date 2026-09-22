@@ -224,5 +224,9 @@ test("an unknown event kind renders a safe generic row", () => {
   };
   render(<Harness m={mission({ state: "running" })} events={[odd]} />);
   const row = screen.getByTestId("thread-event");
-  expect(row.textContent).toBe("Brand new kind");
+  // One bare line — its name and its time — rather than a box with a label over nothing (#1063).
+  // The time comes from `event.at`; nothing comes from `meta`.
+  expect(within(row).getByTestId("thread-system-bare").textContent).toMatch(/^Brand new kind/);
+  expect(row.textContent).not.toContain("do not print");
+  expect(row.textContent).not.toContain("secret");
 });

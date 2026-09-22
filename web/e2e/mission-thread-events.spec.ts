@@ -179,11 +179,45 @@ function questionEvents() {
   ];
 }
 
+/** A running notes-only mission, in the server's exact shapes (#1063). The checklist and adoption
+ *  events carry everything in `meta` and nothing in `text`, which is what drew them as an empty
+ *  "Objective" / "Session" box; the `probe` event stands in for any meta-only kind this file does not
+ *  know, which must still never be an empty box. */
+function checklistEvents() {
+  seq = 0;
+  return [
+    ev("operator_msg", "review all open bugs and bring them to a viable state", null),
+    ev("objective", "no objective templates: no_default", null),
+    ev("objective", "", {
+      by: "instantiation",
+      ops: [
+        { op: "add", key: "note_1", source: "model" },
+        { op: "add", key: "note_2", source: "model" },
+      ],
+      reopened: false,
+    }),
+    ev("state", "draft -> planned", { from: "draft", to: "planned", plan_id: "pln_9" }),
+    ev("state", "planned -> dispatching", { from: "planned", to: "dispatching" }),
+    ev("session", "", { adopted: "primary" }, T, KEY),
+    ev("state", `dispatching -> running: dispatched claude in /repo/alpha`, {
+      from: "dispatching",
+      to: "running",
+      detail: "dispatched claude in /repo/alpha",
+      session_key: KEY,
+    }),
+    ev("objective", "", { by: "operator", ops: [{ op: "waive", key: "note_2" }], reopened: false }),
+    ev("probe", "", { key: "note_1", secret: "never printed" }),
+    ev("session", "", { detached: true }, T, KEY),
+  ];
+}
+
 const TITLES: Record<string, string> = {
   msn_eligible: "Fix the open acme-app bugs",
   msn_delivered: "Ship the crop fix",
   msn_question: "Watch the upload retry",
+  msn_checklist: "Review all open acme-app bugs",
 };
+const RUNNING = new Set(["msn_question", "msn_checklist"]);
 
 type Stub = {
   posts: unknown[];
@@ -224,7 +258,7 @@ async function stub(page: Page, theme: "dark" | "light" = "dark"): Promise<Stub>
           id,
           title: TITLES[id],
           project_id: "p1",
-          state: id === "msn_question" ? "running" : "failed",
+          state: RUNNING.has(id) ? "running" : "failed",
         }),
       ),
     ),
@@ -241,6 +275,19 @@ async function stub(page: Page, theme: "dark" | "light" = "dark"): Promise<Stub>
       objectives_state: "done",
       events_next_seq: null,
     };
+    if (id === "msn_checklist") {
+      return r.fulfill({
+        json: {
+          ...base,
+          state: "running",
+          plan: null,
+          events: checklistEvents().reverse(),
+          retry_eligible: false,
+          seed_outcome: null,
+          retry_reason: null,
+        },
+      });
+    }
     if (id === "msn_question") {
       return r.fulfill({
         json: {
@@ -400,6 +447,47 @@ test("a state change is a from → to chip pair: no raw kind label and no empty 
   await expect(thread.getByRole("article")).toHaveCount(1);
   await expect(thread.getByRole("article")).toContainText("Fix the upload retry and open a PR");
   await expect(thread.getByRole("group", { name: /^State change: draft to planned/ })).toHaveCount(1);
+});
+
+test("a checklist or session change reads as a sentence, and no meta-only event is an empty box (#1063)", async ({
+  page,
+}) => {
+  await stub(page);
+  await open(page, "msn_checklist");
+
+  // Newest first: the operator's waiver, then the plan's two additions.
+  const checklist = page.getByTestId("thread-checklist");
+  await expect(checklist).toHaveCount(2);
+  await expect(checklist.nth(0)).toContainText(/Checklist\s*·\s*1 waived\s*·\s*by you/);
+  await expect(checklist.nth(1)).toContainText(/Checklist\s*·\s*2 added\s*·\s*from the plan/);
+
+  const sessions = page.getByTestId("thread-session");
+  await expect(sessions).toHaveCount(2);
+  await expect(sessions.nth(0)).toContainText("Session released");
+  await expect(sessions.nth(1)).toContainText("Session adopted as primary");
+  await expect(sessions.nth(1).getByRole("link", { name: KEY })).toHaveAttribute(
+    "href",
+    `/s/claude/${UUID}`,
+  );
+
+  // A sentence the server wrote for a person keeps its generic row, text and all.
+  await expect(page.getByTestId("pane")).toContainText("no objective templates: no_default");
+
+  // An unknown meta-only kind is one bare line with its name — never a box over nothing, and never
+  // its meta.
+  await expect(page.getByTestId("thread-system-bare")).toHaveText(/^Probe/);
+  await expect(page.getByTestId("pane")).not.toContainText(/never printed|note_1|note_2|[{}]/);
+
+  // THE OLD SYMPTOM, asserted directly: a row whose whole text is its humanised kind ("Objective",
+  // "Session") over a box with nothing in it. `emptyLeaves` alone would not catch that — the old
+  // generic row rendered no body element at all, so it had no empty leaf to find.
+  const bare = await page
+    .getByTestId("thread-event")
+    .evaluateAll((els) => els.map((el) => (el.textContent ?? "").trim()));
+  expect(bare.filter((txt) => /^(Objective|Session)$/.test(txt))).toEqual([]);
+  for (const row of await page.getByTestId("thread-event").all()) {
+    expect(await emptyLeaves(row)).toEqual([]);
+  }
 });
 
 test("a plan is one compact row with its brief behind Show brief; an edit names its fields; planning says what happened (#967)", async ({

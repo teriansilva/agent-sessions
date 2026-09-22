@@ -8,6 +8,7 @@ import type { Mission, MissionEvent } from "../../types/api";
 
 import {
   canStartAgain,
+  checklistSummary,
   isFailedStart,
   latestFailedStartSeq,
   sessionRoute,
@@ -299,6 +300,81 @@ describe("plans", () => {
       label,
       note,
     });
+  });
+});
+
+describe("checklist and session changes (#1063)", () => {
+  const ops = (...o: Array<[string, string]>) => o.map(([op, key]) => ({ op, key }));
+
+  test("a text-less objective event is a checklist row: counts per verb, first-seen order, who did it", () => {
+    const row = threadRow(
+      ev("objective", "", {
+        by: "instantiation",
+        ops: ops(["add", "note_1"], ["add", "note_2"], ["waive", "note_2"]),
+        reopened: false,
+      }),
+    );
+    expect(row).toEqual({
+      type: "checklist",
+      by: "plan",
+      counts: [
+        ["added", 2],
+        ["waived", 1],
+      ],
+      reopened: false,
+    });
+    expect(checklistSummary((row as { counts: Array<[string, number]> }).counts)).toBe(
+      "2 added · 1 waived",
+    );
+  });
+
+  test("the operator is 'you'; any other author is not named; a reopen is carried", () => {
+    expect(threadRow(ev("objective", null, { by: "operator", ops: ops(["drop", "k"]) }))).toMatchObject({
+      by: "you",
+      counts: [["dropped", 1]],
+    });
+    expect(
+      threadRow(ev("objective", null, { by: "supervisor", ops: ops(["add", "k"]), reopened: true })),
+    ).toMatchObject({ by: "other", reopened: true });
+  });
+
+  test("keys and unknown verbs never reach the row; nothing known leaves the generic row", () => {
+    const row = threadRow(ev("objective", null, { by: "operator", ops: ops(["explode", "secret_key"]) }));
+    expect(row).toEqual({ type: "system", label: "Objective", text: null });
+    const known = threadRow(ev("objective", null, { ops: ops(["add", "secret_key"]) }));
+    expect(JSON.stringify(known)).not.toContain("secret_key");
+  });
+
+  test("an objective event WITH text keeps its sentence — the server wrote it for a person", () => {
+    expect(threadRow(ev("objective", "no objective templates: no_default", null))).toEqual({
+      type: "system",
+      label: "Objective",
+      text: "no objective templates: no_default",
+    });
+  });
+
+  test("adopting and releasing a session are session rows; a spawn keeps its own sentence", () => {
+    const key = "claude:11111111-2222-3333-4444-555555555555";
+    expect(threadRow({ ...ev("session", "", { adopted: "primary" }), session_key: key })).toEqual({
+      type: "session",
+      change: "adopted",
+      role: "primary",
+      sessionKey: key,
+    });
+    expect(threadRow({ ...ev("session", null, { detached: true }), session_key: key })).toMatchObject({
+      type: "session",
+      change: "released",
+    });
+    expect(threadRow(ev("session", "a sub-agent is being started", { spawn: true }))).toMatchObject({
+      type: "system",
+      text: "a sub-agent is being started",
+    });
+  });
+
+  test("a session key that is not a real key is never made into a link", () => {
+    expect(
+      threadRow({ ...ev("session", "", { adopted: "primary" }), session_key: "not a key" }),
+    ).toMatchObject({ sessionKey: null });
   });
 });
 
