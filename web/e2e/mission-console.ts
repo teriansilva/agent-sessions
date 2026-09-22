@@ -33,6 +33,8 @@ export interface MissionMockOptions {
   mission?: unknown;
   objectives?: unknown;
   context?: unknown;
+  /** `GET /api/missions/{id}/now` — the live strip (#1064). */
+  now?: unknown;
 }
 
 /** Route every mission endpoint the console reads. Call BEFORE `page.goto`. */
@@ -74,6 +76,10 @@ export async function mockMissions(
   );
   await page.route("**/api/missions/*/objectives", (r) =>
     r.fulfill({ json: opts.objectives ?? { objectives: [] } }),
+  );
+  // The live strip (#1064). Registered after the catch-all, so it answers ahead of it.
+  await page.route("**/api/missions/*/now", (r) =>
+    r.fulfill({ json: opts.now ?? { sessions: [], checked_at: 1_700_000_000 } }),
   );
 }
 

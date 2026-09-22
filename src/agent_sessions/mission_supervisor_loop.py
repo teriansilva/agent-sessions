@@ -55,6 +55,10 @@ EARLY_READING_DELAY_S = 45.0
 #: model call per launch, and stops at the first attempt that produced a reading. Past the cap the
 #: mission is read at the next ordinary sweep, which is exactly today's behaviour.
 EARLY_READING_ATTEMPTS = 3
+#: How long a due early reading waits when the supervisor's single-flight is already held. Both
+#: acquisitions live inside this loop today, so this cannot fire now — it exists so a future second
+#: holder turns into a short wait rather than a zero-timeout spin (#1064 review).
+EARLY_CONTENTION_BACKOFF_S = 5.0
 
 #: Pending early readings: mission id -> (due, on the monotonic clock; attempts already made).
 #: IN MEMORY, deliberately. A restart loses a pending request and the mission is read at the next
@@ -94,6 +98,14 @@ def _poke() -> None:
     else:
         with contextlib.suppress(RuntimeError):
             loop.call_soon_threadsafe(ev.set)
+
+
+def defer_due(now: float, by: float = EARLY_CONTENTION_BACKOFF_S) -> None:
+    """Push every due early reading to `now + by`, keeping its attempt count — contention is not an
+    attempt, and the request is never dropped because someone else held the flight."""
+    for mid, (due, made) in list(_early.items()):
+        if due <= now:
+            _early[mid] = (now + by, made)
 
 
 def due_early(now: float) -> list[str]:
@@ -313,7 +325,9 @@ async def run(registry=None) -> None:
                     if any(v == "read" for v in early.values() if isinstance(v, str)):
                         log.info("mission supervisor: early readings %s", early)
                 except aitasks.AlreadyRunning:
-                    pass  # a sweep is running; the requests stay pending and are served next
+                    # Someone else holds the flight. Keep the requests and their attempt counts,
+                    # but WAIT: left due, the next iteration's timeout would be zero — a spin.
+                    defer_due(now)
                 except asyncio.CancelledError:
                     raise
                 except Exception:  # noqa: BLE001

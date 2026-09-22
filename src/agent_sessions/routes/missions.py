@@ -70,6 +70,7 @@ from .. import (
     mission_directions,
     mission_dispatch,
     mission_fence,
+    mission_now,
     mission_objectives,
     mission_plan,
     mission_questions,
@@ -85,6 +86,7 @@ from .. import (
     ptybridge,
     review,
     scopedspawn,
+    scrollback,
     session_input,
 )
 from . import files as files_routes
@@ -441,6 +443,42 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             )
         except missions.MissionError as e:
             return _fail(e)
+
+    @app.get("/api/missions/{mission_id}/now")
+    async def mission_now_route(mission_id: str, _user: str = Depends(logged_in)) -> JSONResponse:
+        """What each held session is doing right now — the strip above the thread (#1064).
+
+        Same gate as the mission detail: a logged-in operator and a valid mission id; an unknown
+        mission is a 404, never "holds no session". Returns DERIVED fields only — a status word,
+        seconds since visible output, the prompt class while waiting, the recap's age — never screen
+        text. No model call and no write: the output clock is in memory, the recap time is one store
+        read, and the screen is read only for a session that has gone quiet, cached briefly.
+        """
+        try:
+            facts = await missions.run_admitted(lambda: missions.now_facts(mission_id))
+        except missions.MissionError as e:
+            return _fail(e)
+        now = time.time()
+        out = []
+        for f in facts:
+            key = f["session_key"]
+            try:
+                phys = mission_fence.physical_of(key)
+            except Exception:  # noqa: BLE001 — an unresolvable binding is "nothing observed"
+                phys = key
+            last = scrollback.get_last_visible_output_at(phys)
+            cls = None
+            if last is not None and now - last >= mission_now.PROMPT_SETTLE_S:
+                cls = await asyncio.to_thread(mission_now.prompt_class_cached, phys)
+            out.append(
+                {
+                    "session_key": key,
+                    **mission_now.derive(
+                        now=now, last_output_at=last, prompt_class=cls, recap_at=f["recap_at"]
+                    ),
+                }
+            )
+        return JSONResponse({"sessions": out, "checked_at": now})
 
     @app.get("/api/missions/{mission_id}")
     async def get_mission_route(

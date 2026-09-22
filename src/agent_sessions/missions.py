@@ -6634,6 +6634,32 @@ def supervisor_checkpoint(mission_id: str, *, session_key: str, path: Path | Non
         con.close()
 
 
+def now_facts(mission_id: str, *, path: Path | None = None) -> list[dict]:
+    """`[{session_key, recap_at}]` for every session the mission holds — ONE read (#1064).
+
+    The stored half of the "right now" strip: which sessions, and when each one's latest recap was
+    written (the recap event's own `at`, joined through the checkpoint's `recap_seq`). Everything
+    else the strip shows is in-memory and never touches this store. Raises `MissionNotFound` for an
+    unknown mission, so the route can answer 404 rather than "holds no session".
+    """
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        if con.execute("SELECT 1 FROM missions WHERE id=?", (mission_id,)).fetchone() is None:
+            raise MissionNotFound(mission_id)
+        rows = con.execute(
+            "SELECT ms.session_key AS session_key, e.at AS recap_at FROM mission_sessions ms "
+            "LEFT JOIN mission_supervisor s "
+            "  ON s.mission_id = ms.mission_id AND s.session_key = ms.session_key "
+            "LEFT JOIN mission_events e ON e.mission_id = ms.mission_id AND e.seq = s.recap_seq "
+            "WHERE ms.mission_id = ? AND ms.removed_at IS NULL ORDER BY ms.added_at ASC",
+            (mission_id,),
+        ).fetchall()
+        return [{"session_key": r["session_key"], "recap_at": r["recap_at"]} for r in rows]
+    finally:
+        con.close()
+
+
 def advance_checkpoint(
     mission_id: str,
     *,

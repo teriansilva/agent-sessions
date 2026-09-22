@@ -32,6 +32,7 @@ import type {
   HistoryPage,
   Mission,
   MissionContext,
+  MissionNow,
   MissionList,
   MissionObjective,
   MissionPlan,
@@ -1167,6 +1168,10 @@ export const api = {
    *  own cwd, which is the property that makes it traversal-proof. */
   missionContext: (id: string) =>
     getJson<MissionContext>(`/api/missions/${encodeURIComponent(id)}/context`),
+
+  /** What each held session is doing right now (#1064): derived status only, no screen text. */
+  missionNow: (id: string) =>
+    getJson<MissionNow>(`/api/missions/${encodeURIComponent(id)}/now`),
 
   missionObjectives: (id: string) =>
     getJson<{ objectives: MissionObjective[] }>(

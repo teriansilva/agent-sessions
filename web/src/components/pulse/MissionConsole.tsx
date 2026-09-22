@@ -38,6 +38,8 @@ import { NewMissionForm } from "./NewMissionForm";
 import { MissionComposer } from "./MissionComposer";
 import { MissionQuestionCard } from "./MissionQuestionCard";
 import { MissionPlanCard } from "./MissionPlanCard";
+import { MissionNowStrip } from "./MissionNowStrip";
+import { LIVE_STATES } from "./missionNow";
 import { MissionHeaderActions } from "./MissionHeaderActions";
 import { useMissionStart } from "./useMissionStart";
 import { MissionThreadEvents } from "./MissionThreadEvent";
@@ -740,6 +742,9 @@ function MissionBody({
           <div
             className={`${styles.paneInner} ${styles.paneAtBottom}`}
           >
+            {d.mission && LIVE_STATES.has(d.mission.state) ? (
+              <MissionNowStrip missionId={missionId} />
+            ) : null}
             {decisions.map((a) => (
               <ActionRow
                 key={a.id}

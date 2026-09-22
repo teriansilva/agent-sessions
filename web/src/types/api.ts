@@ -1699,6 +1699,27 @@ export interface MissionSession {
   removed_at?: number | null;
 }
 
+/** What one held session is doing right now (#1064), from `GET /api/missions/{id}/now`. Derived
+ *  facts only — the server never sends screen text on this route. `unobserved` is NOT quiet: it
+ *  means this process has seen no output for the session, so it cannot say. */
+export type MissionNowStatus = "producing" | "at_prompt" | "quiet" | "unobserved";
+
+export interface MissionNowSession {
+  session_key: string;
+  status: MissionNowStatus;
+  seconds_since_output: number | null;
+  /** Set only while `at_prompt`: `choice` / `confirm` / `question`. */
+  prompt_class: string | null;
+  recap_age_s: number | null;
+  /** The last recap was written before the latest output, so it describes an earlier screen. */
+  recap_older_than_output: boolean;
+}
+
+export interface MissionNow {
+  sessions: MissionNowSession[];
+  checked_at: number;
+}
+
 export interface MissionList {
   missions: MissionListRow[];
   total: number;

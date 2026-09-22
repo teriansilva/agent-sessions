@@ -2349,3 +2349,77 @@
   flex: none;
   min-width: 0;
 }
+
+/* --- #1064 P2: the live strip above the thread ---------------------------------------------------
+ * Neutral by design. Green (`--status-up`) only for a session producing output right now; "at a
+ * prompt" is a solid neutral dot — the bell and the decision cards own asking for attention, so
+ * amber here would compete with them. Quiet is a hollow ring; not observed is `--status-unknown`. */
+.nowStrip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  padding: 8px 4px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.8rem;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.nowHead {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.nowList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  flex: 1 1 240px;
+  min-width: 0;
+}
+.nowRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  min-width: 0;
+}
+.nowDot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  align-self: center;
+  box-sizing: border-box;
+}
+.nowProducing {
+  background: var(--status-up);
+}
+.nowAtPrompt {
+  background: var(--text-2);
+}
+.nowQuiet {
+  background: transparent;
+  border: 1.5px solid var(--text-3);
+}
+.nowUnobserved {
+  background: var(--status-unknown);
+}
+.nowWho {
+  font-family: var(--font-mono);
+  color: var(--text-1);
+}
+.nowWhat {
+  color: var(--text-1);
+}
+.nowMuted {
+  color: var(--text-3);
+}
+.nowStale {
+  font-style: italic;
+}
