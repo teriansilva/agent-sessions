@@ -1138,3 +1138,37 @@ def test_an_ARCHIVE_keeps_the_binding_when_TERMINATION_RAISED(work, monkeypatch)
         missions.physical_key_of(real) == placeholder
     ), "a raised termination proved nothing, yet the mapping went"
     assert missions.physical_bindings() == [(real, placeholder)]
+
+
+# ---- #1064: the first reading does not wait a sweep ------------------------------------------
+
+
+def _record_early(monkeypatch):
+    from agent_sessions import mission_supervisor_loop
+
+    asked: list[str] = []
+    monkeypatch.setattr(
+        mission_supervisor_loop, "request_early_pass", lambda mid: asked.append(mid)
+    )
+    return asked
+
+
+def test_a_launch_that_ADOPTS_its_session_asks_for_an_early_reading(
+    work, prov, spawned, typed, torn_down, monkeypatch
+):
+    """Only the path where the mission now owns a running session — the one moment the operator is
+    most likely watching and the ordinary sweep could leave it silent for five minutes (#1064)."""
+    asked = _record_early(monkeypatch)
+    prov.on_type = lambda text: prov.sessions.__setitem__(OURS, text)
+    mid, claimed = _claimed(work)
+    out = asyncio.run(mission_dispatch.run(mid, claimed, registry=Reg()))
+    assert out["state"] == "running", out
+    assert asked == [mid]
+
+
+def test_a_launch_that_FAILS_asks_for_nothing(work, prov, spawned, typed, torn_down, monkeypatch):
+    asked = _record_early(monkeypatch)
+    mid, claimed = _claimed(work)
+    out = asyncio.run(mission_dispatch.run(mid, claimed, registry=Reg()))
+    assert out["state"] == "failed", out
+    assert asked == [], "a failed launch holds no session to read"

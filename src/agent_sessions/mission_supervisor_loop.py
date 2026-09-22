@@ -24,6 +24,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import time
 
 from . import aitasks, mission_supervisor, missions, prefs
 
@@ -39,6 +40,131 @@ INTERVAL_S = 300.0
 #: cursor over every eligible mission (see `sweep`), so a mission this sweep does not reach is
 #: reached by a later one; there is no prefix and nothing past a boundary.
 MISSIONS_PER_SWEEP = 25
+
+#: THE FIRST READING SHOULD NOT WAIT A SWEEP (#1064). A mission that has just gone `running` is the
+#: one the operator is most likely watching, and the ordinary cadence left it silent for up to
+#: `INTERVAL_S` — four minutes after dispatch it showed a plan row and a dispatch row and nothing
+#: about what its agent was doing. So the launch asks for ONE early reading, due this long after
+#: it lands: at dispatch the agent has only just been briefed, and a recap of a screen with
+#: nothing on it is a call spent on nothing.
+EARLY_READING_DELAY_S = 45.0
+
+#: How many attempts one launch's early reading gets. An attempt whose sessions were all skipped
+#: before the model — nothing changed yet, nothing to review — is re-armed at the same spacing; a
+#: skip costs no model call, so this bounds WAITING, not spend. The early path makes at most one
+#: model call per launch, and stops at the first attempt that produced a reading. Past the cap the
+#: mission is read at the next ordinary sweep, which is exactly today's behaviour.
+EARLY_READING_ATTEMPTS = 3
+
+#: Pending early readings: mission id -> (due, on the monotonic clock; attempts already made).
+#: IN MEMORY, deliberately. A restart loses a pending request and the mission is read at the next
+#: sweep — the behaviour before #1064 — so there is nothing to persist and nothing to recover.
+_early: dict[str, tuple[float, int]] = {}
+#: Set by `run()` so a request can wake a loop that would otherwise sleep the whole interval. `None`
+#: when no loop is running (tests, tooling), in which case a request is simply recorded.
+_wake: asyncio.Event | None = None
+_wake_loop: asyncio.AbstractEventLoop | None = None
+
+
+def request_early_pass(mission_id: str, *, now: float | None = None) -> None:
+    """Ask for this mission's first supervisor reading soon, rather than at the next sweep (#1064).
+
+    Called from the one place a launch becomes `running` with the mission owning its session
+    (`mission_dispatch._conclude`). Never raises and never blocks: it records a due time and wakes
+    the loop. A second request for the same mission restarts its schedule rather than stacking.
+    """
+    if not mission_id:
+        return
+    t = time.monotonic() if now is None else now
+    _early[mission_id] = (t + EARLY_READING_DELAY_S, 0)
+    _poke()
+
+
+def _poke() -> None:
+    """Wake `run()` so it recomputes when it next has work. Safe from any thread."""
+    ev, loop = _wake, _wake_loop
+    if ev is None or loop is None or loop.is_closed():
+        return
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        running = None
+    if running is loop:
+        ev.set()
+    else:
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(ev.set)
+
+
+def due_early(now: float) -> list[str]:
+    """The missions whose early reading is due at `now`, in a stable order."""
+    return sorted(m for m, (due, _) in _early.items() if due <= now)
+
+
+def next_early_due() -> float | None:
+    """When the next early reading falls due, or `None` when none is pending."""
+    return min((due for due, _ in _early.values()), default=None)
+
+
+def _produced_a_reading(res: dict | None) -> bool:
+    """Did this pass actually READ a session — the model ran, rather than being skipped first?"""
+    if not isinstance(res, dict):
+        return False
+    return any(
+        isinstance(r, dict) and not r.get("skipped_model") and r.get("assessment") is not None
+        for r in res.get("per_session") or []
+    )
+
+
+def _worth_retrying(res: dict | None) -> bool:
+    """Would another attempt shortly have a chance to read something?
+
+    Yes when every session was skipped for a reason that time can cure — the screen had not changed
+    yet, or there was nothing to review yet. No when the pass never reached a session (the mission
+    left `running`, holds no session, needs the operator) or the model is not configured at all:
+    retrying those only spends attempts the ordinary sweep will make anyway.
+    """
+    if not isinstance(res, dict) or res.get("skipped"):
+        return False
+    per = [r for r in res.get("per_session") or [] if isinstance(r, dict)]
+    if not per:
+        return False
+    for r in per:
+        why = str(r.get("skipped_model") or "")
+        if "no AI endpoint" in why:
+            return False
+    return True
+
+
+async def run_due_early(registry=None, *, now: float | None = None) -> dict:
+    """Run each due early reading once. Returns ``{mission_id: "read" | "re-armed" | "gave up"}``.
+
+    The caller holds the same single-flight a sweep does, so an early pass and a sweep never
+    overlap; and the same `_enabled()` gate applies — an operator who switched supervision off has
+    not asked for an early reading either, so pending requests are dropped rather than kept.
+    """
+    if not _enabled():
+        _early.clear()
+        return {"skipped": "disabled"}
+    t = time.monotonic() if now is None else now
+    report: dict[str, str] = {}
+    for mid in due_early(t):
+        _due, made = _early.pop(mid)
+        res: dict | None = None
+        try:
+            res = await mission_supervisor.run_pass(mid, registry=registry)
+        except Exception as e:  # noqa: BLE001 — one mission's early read must not stop the loop
+            log.warning("mission %s: early supervisor reading failed: %s", mid, e)
+        made += 1
+        if _produced_a_reading(res):
+            report[mid] = "read"
+        elif made < EARLY_READING_ATTEMPTS and _worth_retrying(res):
+            _early[mid] = (t + EARLY_READING_DELAY_S, made)
+            report[mid] = "re-armed"
+        else:
+            report[mid] = "gave up"
+    return report
+
 
 #: The states a mission must be in to be supervised. `review` is included because a mission
 #: proposed for completion can still be pushed back into motion by an operator edit, and dropping
@@ -162,28 +288,73 @@ async def run(registry=None) -> None:
         return
     # BOOT: a record whose write failed just before a restart is restored now, not a sweep later.
     await _reconcile_delivered()
+    global _wake, _wake_loop
+    _wake = asyncio.Event()
+    _wake_loop = asyncio.get_running_loop()
     failures = 0
-    while True:
-        await asyncio.sleep(INTERVAL_S * min(2**failures, 8))
-        try:
-            async with aitasks.single_flight("mission-supervisor", "sweep"):
-                report = await sweep(registry)
-        except aitasks.AlreadyRunning:
-            continue
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001
-            failures += 1
-            log.exception("mission supervisor sweep crashed")
-            continue
-        failures = 0
-        if report.get("swept"):
-            log.info(
-                "mission supervisor: swept %d, nudged %d, escalated %d",
-                report["swept"],
-                report["nudged"],
-                report["escalated"],
-            )
+    next_sweep = time.monotonic() + INTERVAL_S
+    try:
+        while True:
+            # WAKEABLE, not a flat sleep (#1064). The sweep cadence is exactly what it was — the
+            # timeout is still the next sweep, backoff included — but an early reading that falls
+            # due first is served when it is due, and a new request wakes the wait so it is seen.
+            # Cleared BEFORE the target is computed, so a request landing in between still wakes it.
+            _wake.clear()
+            pending = next_early_due()
+            target = next_sweep if pending is None else min(next_sweep, pending)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(_wake.wait(), max(0.0, target - time.monotonic()))
+            now = time.monotonic()
+
+            if due_early(now):
+                try:
+                    async with aitasks.single_flight("mission-supervisor", "sweep"):
+                        early = await run_due_early(registry, now=now)
+                    if any(v == "read" for v in early.values() if isinstance(v, str)):
+                        log.info("mission supervisor: early readings %s", early)
+                except aitasks.AlreadyRunning:
+                    pass  # a sweep is running; the requests stay pending and are served next
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001
+                    log.exception("mission supervisor early reading crashed")
+
+            if now < next_sweep:
+                continue
+            try:
+                async with aitasks.single_flight("mission-supervisor", "sweep"):
+                    report = await sweep(registry)
+            except aitasks.AlreadyRunning:
+                next_sweep = time.monotonic() + INTERVAL_S * min(2**failures, 8)
+                continue
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                failures += 1
+                log.exception("mission supervisor sweep crashed")
+                next_sweep = time.monotonic() + INTERVAL_S * min(2**failures, 8)
+                continue
+            failures = 0
+            next_sweep = time.monotonic() + INTERVAL_S
+            if report.get("swept"):
+                log.info(
+                    "mission supervisor: swept %d, nudged %d, escalated %d",
+                    report["swept"],
+                    report["nudged"],
+                    report["escalated"],
+                )
+    finally:
+        _wake = None
+        _wake_loop = None
 
 
-__all__ = ["INTERVAL_S", "MISSIONS_PER_SWEEP", "run", "sweep"]
+__all__ = [
+    "EARLY_READING_ATTEMPTS",
+    "EARLY_READING_DELAY_S",
+    "INTERVAL_S",
+    "MISSIONS_PER_SWEEP",
+    "request_early_pass",
+    "run",
+    "run_due_early",
+    "sweep",
+]

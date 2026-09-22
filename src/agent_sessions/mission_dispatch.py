@@ -886,6 +886,13 @@ async def _conclude(mission_id: str, out, *, engine: str, cwd: str, plan_id: str
                 adopted_key,
                 exc_info=True,
             )
+    # THE FIRST READING SHOULD NOT WAIT A SWEEP (#1064). The mission now owns a running session and
+    # is the one the operator is most likely watching; without this it stayed silent until the next
+    # five-minute sweep boundary. The request is in memory, never raises, and only changes WHEN the
+    # supervisor's existing pass runs — at most one extra model call per launch.
+    from . import mission_supervisor_loop
+
+    mission_supervisor_loop.request_early_pass(mission_id)
     return {
         "state": "running",
         "outcome": "started",
