@@ -1,13 +1,13 @@
 /** The Missions section's route, and the one deep link into a specific mission (#948).
  *
- *  ONE place, so the next rename is a one-line change. The `/pulse` → `/mission` rename touched 41
- *  files because the path was a literal everywhere a link or route was built; everything that
- *  links into the section imports it from here instead. `/pulse` stays only as the legacy redirect
- *  in `App.tsx`, which is the one place that must name the OLD path. */
-export const MISSION_PATH = "/mission";
+ *  The PATHS moved to `routes.ts` in #1058, where every top-level route now lives together — the
+ *  one-place rule this file stated first, applied to the whole set rather than to this section
+ *  alone. They are re-exported here so every existing `from "…/missionLink"` import keeps working:
+ *  one home for the values, two valid doors onto it.
+ */
+export { LEGACY_MISSION_PATH, MISSION_PATH } from "./routes";
 
-/** The pre-#948 path, still served as a permanent replace-redirect. */
-export const LEGACY_MISSION_PATH = "/pulse";
+import { MISSION_PATH } from "./routes";
 
 /** A link that opens the Missions section with `missionId` selected. The console shape-checks the
  *  id before it can select anything, and settles the URL back on `MISSION_PATH`. */

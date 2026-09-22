@@ -135,10 +135,15 @@ async function mockTemplates(page: Page, templates: Tpl[]) {
   return requests;
 }
 
-async function openGalleryFromTheShell(page: Page, isMobile: boolean) {
+async function openGalleryFromTheShell(page: Page) {
   await page.goto("/");
-  if (isMobile) await page.getByRole("button", { name: /open session list/i }).click();
-  await page.getByRole("link", { name: "Templates", exact: true }).click();
+  // #1058: all five sections ride the top bar at EVERY width — icon-only below 640px — so there
+  // is no drawer hop on mobile any more. Scoped to the bar's nav because the drawer renders the
+  // same five links, and on a phone with the drawer open both are in the accessibility tree.
+  await page
+    .getByRole("navigation", { name: "Main sections" })
+    .getByRole("link", { name: "Templates", exact: true })
+    .click();
   await expect(page).toHaveURL(/\/templates$/);
 }
 
@@ -146,15 +151,14 @@ test.beforeEach(async ({ page }) => {
   await mockShell(page);
 });
 
-test("the topbar gear opens the gallery; cards carry a thumbnail read back by the stored name, tags and a meta line", async ({
+test("the TEMPLATES section opens the gallery; cards carry a thumbnail read back by the stored name, tags and a meta line", async ({
   page,
-  isMobile,
 }) => {
   await mockTemplates(page, [
     tpl(),
     tpl({ id: "deploy", name: "Deploy watch", tags: ["ops"], images: [], fields: [], used_count: 0, last_used_at: null }),
   ]);
-  await openGalleryFromTheShell(page, !!isMobile);
+  await openGalleryFromTheShell(page);
 
   const list = page.getByRole("list", { name: "Templates" });
   await expect(list.getByRole("listitem")).toHaveCount(2);

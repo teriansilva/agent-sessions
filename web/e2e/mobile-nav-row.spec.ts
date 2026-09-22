@@ -1,7 +1,9 @@
 import { expect, test } from "@playwright/test";
 
-// #494: on mobile the drawer's Help / Overview / Templates / Settings actions must render as ONE
-// icon-only row (no text labels), not a stacked, labelled column — recovering vertical space.
+// #494: on mobile the drawer's action row must render as ONE icon-only row (no text labels), not a
+// stacked, labelled column — recovering vertical space. It was Help / Overview / Templates /
+// Settings; since #1058 Overview and Templates are named SECTIONS in the nav (listed, with labels,
+// directly above this row), so the row is Help / Settings — the actions that are not routes.
 // Real-browser layout test (jsdom can't model flex direction / box geometry).
 
 const CONFIG = {
@@ -39,17 +41,20 @@ test.describe("Mobile drawer nav — one icon-only row (#494)", () => {
     await page.getByRole("button", { name: /open session list/i }).click();
   });
 
-  test("Help/Overview/Templates/Settings share a single row, icon-only", async ({
+  test("Help/Settings share a single row, icon-only", async ({
     page,
   }) => {
     const actions = page.locator(".sidebar-actions");
     await expect(actions).toBeVisible();
 
+    // TWO since #1058: Overview and Templates became named sections in the nav (which the drawer
+    // lists above this row), leaving Help and Settings as the only actions that are not routes.
     const items = actions.locator(":scope > *");
-    await expect(items).toHaveCount(4);
+    const COUNT = 2;
+    await expect(items).toHaveCount(COUNT);
 
     const boxes = [];
-    for (let i = 0; i < 4; i++) boxes.push((await items.nth(i).boundingBox())!);
+    for (let i = 0; i < COUNT; i++) boxes.push((await items.nth(i).boundingBox())!);
 
     // One row: all four share the same top (within a couple px) and march left → right.
     for (const b of boxes)
@@ -57,14 +62,14 @@ test.describe("Mobile drawer nav — one icon-only row (#494)", () => {
     for (let i = 1; i < boxes.length; i++)
       expect(boxes[i].x).toBeGreaterThan(boxes[i - 1].x);
 
-    // The container is a single row tall — a stacked column of 4 would be ~200px.
+    // The container is a single row tall — a stacked column would be ~100px.
     expect((await actions.boundingBox())!.height).toBeLessThan(64);
 
     // Icon-only: an aria-label is the affordance, no visible text label remains. An item is either
     // the control itself or — for Help, which opens a menu since #987 — the anchor wrapper around
     // its trigger; the label belongs on the control, never on the wrapper (naming a generic element
     // is not allowed).
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < COUNT; i++) {
       const item = items.nth(i);
       expect((await item.innerText()).trim()).toBe("");
       const isControl = await item.evaluate((el) => el.matches("a, button"));

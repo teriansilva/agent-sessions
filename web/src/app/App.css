@@ -337,6 +337,14 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  /* THE CORNER IS THE CORNER AT EVERY WIDTH (#1058). It used to inherit its right alignment from
+     `.hud-telemetry { margin-left: auto }` sitting immediately before it — which is `display: none`
+     below 1100px, so between 641px and 1100px the cluster sat stranded in the middle of the bar
+     with empty space to its right. That was #750's bug, fixed then for ≤640px only. The operator
+     tile is the last thing in the row and is supposed to be against the edge, so it owns its own
+     alignment rather than borrowing a neighbour's. Above 1100px both carry `auto`, which puts the
+     telemetry right of the sections and the cluster right of the telemetry — unchanged to the eye. */
+  margin-left: auto;
 }
 /* Overview/Settings actions that live in the sidebar drawer on small screens (#211 review).
  * Hidden on wide screens (the topbar carries them); shown ≤640px where the topbar would
@@ -776,6 +784,10 @@ body.hud-static-grid {
   align-self: center;
   gap: 6px;
   margin-left: 4px;
+  /* FIVE sections since #1058. The row must never wrap the command bar into two lines, so the nav
+     is allowed to shrink (its entries drop their labels, then their padding) before anything else
+     in the bar does. */
+  min-width: 0;
 }
 .section-nav a {
   display: flex;
@@ -802,8 +814,56 @@ body.hud-static-grid {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
+
+/* THE DRAWER'S COPY OF THE SECTIONS (#1058). The bar is icon-only at drawer widths, so this is
+   where the five names live on a phone — a labelled column above the action row, same list, same
+   component, same active state. Hidden on desktop, where the bar already says all five. */
+.section-nav-drawer {
+  display: none;
+}
+@media (max-width: 800px) {
+  .section-nav-drawer {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 8px 0;
+  }
+  .section-nav-drawer a {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 44px;
+    padding: 0 10px;
+    border: 1px solid var(--line);
+    color: var(--text-2);
+    text-decoration: none;
+    font: 400 0.68rem var(--font-mono);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .section-nav-drawer a[aria-current="page"] {
+    color: var(--on-accent);
+    border-color: var(--accent);
+    background: var(--accent);
+  }
+  .section-nav-drawer a:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+}
+
 @media (max-width: 1100px) {
   .hud-telemetry {
+    display: none;
+  }
+  /* The bar carries five sections and four corner controls now. Below a full desktop the first
+     things to go are the decorations: the section ICONS (the label is the name) and the operator
+     tile's username (the panel repeats it in full the moment it opens). */
+  .section-nav a {
+    min-width: 64px;
+    gap: 0;
+  }
+  .section-nav a svg {
     display: none;
   }
 }
@@ -832,9 +892,6 @@ body.hud-static-grid {
   .section-nav a {
     padding: 0 8px;
   }
-  .section-nav svg {
-    display: none;
-  }
   .hud-topbar-actions {
     margin-left: 0;
     flex: none;
@@ -849,6 +906,56 @@ body.hud-static-grid {
   }
 }
 
+/* ICON-ONLY SECTIONS below the desktop line (#1058) — `≤800px`, the SAME breakpoint `useIsMobile`
+   and the off-canvas drawer already use, measured rather than chosen: five labelled entries need
+   ~364px and the row has ~257px to give them at 641px, so the labels have to go before the drawer
+   does. Burying a one-tap destination behind the hamburger to make room for a new one is the wrong
+   trade, so the entries keep their place and lose their text instead.
+
+   The label is CLIPPED, never `display: none`: a link whose text is removed has no accessible
+   name, and five unnamed icons is precisely the row a screen-reader operator cannot use. The
+   drawer's `.section-nav-drawer` shows the same five names in full. */
+@media (max-width: 800px) {
+  .section-nav a {
+    min-width: 0;
+    width: 40px;
+    /* The 44px coarse-pointer floor is NOT negotiable at the width where fingers are the input
+       device — the entries lose their labels and their padding, never their height. */
+    min-height: 44px;
+    padding: 0;
+    gap: 0;
+  }
+  .section-nav a svg {
+    display: block;
+  }
+  /* SCOPED TO THE BAR. Unscoped, this also clipped the DRAWER's labels — which exist precisely so
+     the five names have a home on a phone, and the drawer then rendered five unlabelled boxes.
+     A `toHaveText` assertion cannot see that: the text is in the DOM, it is just 1px wide. The
+     drawer spec measures the label's rendered WIDTH for that reason. */
+  .section-nav .section-nav-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
+}
+
+/* The wordmark is the last thing the row can afford at phone widths: the ◢ mark alone keeps the
+   brand present while the five sections, the bell and the operator tile take the space. */
+@media (max-width: 480px) {
+  .hud-brand .wm {
+    display: none;
+  }
+  .hud-brand {
+    gap: 0;
+  }
+}
+
 /* Keep the command row on one line on the narrowest supported screens. */
 @media (max-width: 380px) {
   .hud-topbar {
@@ -860,13 +967,21 @@ body.hud-static-grid {
     gap: 2px;
     letter-spacing: 0.04em;
   }
-  .hud-brand .mk {
-    display: none;
-  }
+  /* The ◢ mark STAYS at every width: the ≤480px rule above already dropped the wordmark, and
+     hiding the mark too (as this block used to) would leave no brand at all on the narrowest
+     phones. */
+  /* 320px is the narrowest supported screen and the one width where five entries do NOT fit at
+     40px: 5×40 + gaps needs 172px against the 170px between the wordmark and the corner, and the
+     overflow slid TEMPLATES under the notification bell — visible, clickable-looking and dead.
+     32px + 2px gaps is 168. The 44px hit-target floor is on the HEIGHT and is untouched. */
   .section-nav {
-    gap: 3px;
+    gap: 2px;
   }
   .section-nav a {
-    padding-inline: 5px;
+    width: 32px;
+    padding-inline: 0;
+  }
+  .hud-topbar-actions {
+    gap: 3px;
   }
 }

@@ -164,10 +164,7 @@ test.describe("the workspace's content is reachable at every width (#929, #948)"
       await expect(
         page.getByRole("heading", { name: "What should this mission achieve?" }),
       ).toBeVisible();
-      await expect(page.getByTestId("composer-mode-new")).toHaveAttribute(
-        "aria-pressed",
-        "true",
-      );
+      await expect(page.getByTestId("new-mission-form")).toBeVisible();
       await expect(page.getByTestId("new-mission-instruction")).toBeInViewport();
       // Nothing is selected, so there is no mission header and no details to disclose.
       await expect(page.getByTestId("console-title")).toHaveCount(0);
@@ -211,7 +208,7 @@ test("a fresh install leads with the composer (#929, #948)", async ({
   const heading = page.getByRole("heading", {
     name: "What should this mission achieve?",
   });
-  const composer = page.getByTestId("composer-mode-new");
+  const composer = page.getByTestId("new-mission-form");
   await expect(heading).toBeVisible();
   await expect(composer).toBeVisible();
   const [hb, cb] = [
@@ -243,7 +240,11 @@ test("a store failure is not read as 'you have no missions' (#929)", async ({
 /** The defects the first review of PR #930 found. Each is about WHEN a render happens relative to
  *  a request landing — a thing a DOM emulator with synchronous fakes cannot put in the wrong order. */
 test.describe("#930 review 1 — the console under a slow store", () => {
-  for (const mode of ["new mission", "ask"] as const) {
+  // ONE mode since #1058: the landing's ASK half became `/ask`, a route with no mission list to
+  // arrive underneath it, so the parameterised "ask" case has no list to survive. The defect was
+  // never about which mode was on screen — it was about the list's arrival remounting the composer
+  // — and the brief form is the composer that is still mounted there.
+  for (const mode of ["new mission"] as const) {
     test(`a ${mode} draft survives the empty mission list arriving (finding 1)`, async ({
       page,
     }) => {
@@ -261,10 +262,7 @@ test.describe("#930 review 1 — the console under a slow store", () => {
       });
 
       await page.goto("/mission");
-      if (mode === "ask") await page.getByTestId("composer-mode-ask").click();
-      const field = page.getByTestId(
-        mode === "ask" ? "composer-input" : "new-mission-instruction",
-      );
+      const field = page.getByTestId("new-mission-instruction");
       await field.waitFor();
       const draft = "what happened to the parser work";
       await field.fill(draft);

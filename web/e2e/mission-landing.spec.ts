@@ -270,11 +270,25 @@ test("no untracked-session surface anywhere in the section", async ({ page }, te
   await expect(page.locator("body")).not.toContainText("An unadopted session");
 });
 
-test("ASK stays reachable from the landing", async ({ page }) => {
+test("the landing is the brief form, and ASK has left for its own section (#1058)", async ({
+  page,
+}) => {
+  // It used to be "ASK stays reachable from the landing" — one press of a segmented control. Ask is
+  // `/ask` now, which is the whole point: a question about SESSIONS no longer lives behind the
+  // MISSIONS section. What has to stay true is that neither surface lost anything — the landing is
+  // the brief with no mode to pick, and Ask is one labelled entry away in the same top bar.
   await setup(page);
   await page.goto(MISSION_PATH);
-  await expect(page.getByTestId("composer-mode-new")).toHaveAttribute("aria-pressed", "true");
-  await page.getByTestId("composer-mode-ask").click();
+  await expect(page.getByTestId("new-mission-form")).toBeVisible();
+  await expect(page.getByTestId("composer-mode-new")).toHaveCount(0);
+  await expect(page.getByTestId("composer-mode-ask")).toHaveCount(0);
+
+  const ask = page
+    .locator(".hud-topbar")
+    .getByRole("navigation", { name: "Main sections" })
+    .getByRole("link", { name: "Ask", exact: true });
+  await expect(ask).toHaveAttribute("href", "/ask");
+  await ask.click();
   await expect(page.getByTestId("composer-input")).toBeVisible();
 });
 
@@ -320,9 +334,10 @@ test("the workspace type scale is the §4 one, not 0.66–0.84rem", async ({ pag
     });
 
   await page.goto(MISSION_PATH);
-  // The landing brief is the centrepiece: 16px. The mode control is 11px mono.
+  // The landing brief is the centrepiece: 16px. The footer's mono chrome is 11px — measured on the
+  // shortcut hint since #1058 retired the mode control that used to carry that value.
   expect((await type(page.getByTestId("new-mission-instruction")))[0]).toBe("16px");
-  expect((await type(page.getByTestId("composer-mode-new")))[0]).toBe("11px");
+  expect((await type(page.getByTestId("new-mission-hint")))[0]).toBe("11px");
 
   // A selected mission: title 16px/600, the thread composer at the 14px body size.
   await page.goto(missionLink(OTHER));

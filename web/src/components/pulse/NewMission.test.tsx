@@ -1,5 +1,9 @@
-import * as React from "react";
-/** NEW MISSION — the composer mode that makes the console able to start anything (#889).
+/** NEW MISSION — the form that makes the console able to start anything (#889).
+ *
+ *  It was a MODE of `Composer`, behind a `NEW MISSION | ASK` segmented control. #1058 moved Ask to
+ *  its own route, so the landing has one mode and this is a component rather than a branch — which
+ *  is why the controlled-mode harness these tests used to carry is gone and they render the form
+ *  directly. Every assertion below is unchanged in meaning.
  *
  *  Two properties matter here and both are asserted on the REQUEST, not on the rendering:
  *
@@ -19,24 +23,7 @@ import { beforeEach, expect, test, vi } from "vitest";
 
 import { ApiError, api } from "../../lib/api";
 
-import { Composer } from "./Composer";
-
-/** `Composer` no longer owns its own mode: the console does, so that "+ New mission" in the
- *  sidebar can switch a composer that has not mounted yet (#937 review 1, finding 2). These
- *  tests therefore supply the same controlled pair the console does, rather than asserting on
- *  state the component stopped holding. Behaviour under test is unchanged — the mode buttons
- *  still drive it, through the callback instead of through `useState`. */
-function ControlledComposer(
-  props: Omit<
-    React.ComponentProps<typeof Composer>,
-    "creating" | "onCreatingChange"
-  >,
-) {
-  const [creating, setCreating] = React.useState(false);
-  return (
-    <Composer {...props} creating={creating} onCreatingChange={setCreating} />
-  );
-}
+import { NewMissionForm } from "./NewMissionForm";
 
 vi.mock("../../lib/api", async () => {
   const actual =
@@ -44,7 +31,6 @@ vi.mock("../../lib/api", async () => {
   return {
     ...actual,
     api: {
-      pulseAsk: vi.fn(),
       projectEntities: vi.fn(),
       createMission: vi.fn(),
       // Present so that a component reaching for the WRONG picker is a visible call rather than
@@ -56,11 +42,7 @@ vi.mock("../../lib/api", async () => {
 
 function mount(onCreated = vi.fn()) {
   render(
-    <ControlledComposer
-      missionId="untracked"
-      configured
-      turns={[]}
-      onTurns={() => {}}
+    <NewMissionForm
       visit={() => 0}
       isVisitCurrent={() => true}
       onCreated={onCreated}
@@ -82,28 +64,20 @@ beforeEach(() => {
   vi.mocked(api.folders).mockReset();
 });
 
-test("the mode is reachable with NO AI endpoint — creating never needed a model", async () => {
-  render(
-    <ControlledComposer
-      missionId="untracked"
-      configured={false}
-      turns={[]}
-      onTurns={() => {}}
-      visit={() => 0}
-      isVisitCurrent={() => true}
-      onCreated={vi.fn()}
-    />,
-  );
-  await userEvent.click(screen.getByTestId("composer-mode-new"));
+test("it takes NO endpoint gate — creating a mission never needed a model", async () => {
+  // Ask genuinely needs an AI endpoint and disables itself without one; creating, adopting and
+  // objectives do not. The form therefore has no `configured` prop to gate on, which is what this
+  // asserts: rendering it with nothing configured anywhere still yields a usable brief. Before
+  // #1058 the same property was expressed as "the NEW MISSION mode is reachable with
+  // `configured={false}`"; the mode is gone, the property is not.
+  mount();
   expect(screen.getByTestId("new-mission-form")).toBeInTheDocument();
-  // The ASK half genuinely needs one and stays disabled; this half does not.
   expect(screen.getByTestId("new-mission-instruction")).toBeEnabled();
 });
 
 test("it posts the instruction and a project ENTITY id, and never a cwd", async () => {
   vi.mocked(api.createMission).mockResolvedValue({ id: "msn_9" } as never);
   const onCreated = mount();
-  await userEvent.click(screen.getByTestId("composer-mode-new"));
   await waitFor(() => expect(api.projectEntities).toHaveBeenCalled());
   // The entity list, not the folder list.
   expect(api.folders).not.toHaveBeenCalled();
@@ -136,7 +110,6 @@ test("a project is REQUIRED, and the form says why before it refuses", async () 
   // console has no way to assign one afterwards — so allowing it was a dead end the operator
   // could only discover from a refused BEGIN (#896 review 9, finding 2).
   mount();
-  await userEvent.click(screen.getByTestId("composer-mode-new"));
   await waitFor(() => expect(api.projectEntities).toHaveBeenCalled());
   await userEvent.type(screen.getByTestId("new-mission-instruction"), "x");
 
@@ -158,7 +131,6 @@ test("the server's own refusal reaches the operator, not a generic failure", asy
     new ApiError(422, "that project has no folder to work in"),
   );
   mount();
-  await userEvent.click(screen.getByTestId("composer-mode-new"));
   await userEvent.type(screen.getByTestId("new-mission-instruction"), "x");
   await userEvent.selectOptions(
     screen.getByTestId("new-mission-project"),
@@ -177,7 +149,6 @@ test("an UNREADABLE project list is not reported as an empty one", async () => {
   // they already have. Different causes, different fixes, different sentences.
   vi.mocked(api.projectEntities).mockRejectedValue(new Error("boom"));
   mount();
-  await userEvent.click(screen.getByTestId("composer-mode-new"));
   await waitFor(() =>
     expect(screen.getByTestId("new-mission-project")).toHaveTextContent(
       /could not be read/i,
@@ -199,7 +170,6 @@ test("an UNREADABLE project list is not reported as an empty one", async () => {
 test("an EMPTY project list points at where to add one", async () => {
   vi.mocked(api.projectEntities).mockResolvedValue({ projects: [] } as never);
   mount();
-  await userEvent.click(screen.getByTestId("composer-mode-new"));
   await userEvent.type(screen.getByTestId("new-mission-instruction"), "x");
   await waitFor(() =>
     expect(screen.getByTestId("new-mission-draft-note")).toHaveTextContent(
@@ -209,19 +179,13 @@ test("an EMPTY project list points at where to add one", async () => {
   expect(screen.getByTestId("new-mission-start")).toBeDisabled();
 });
 
-test("switching back to ASK abandons the draft instruction rather than sending it", async () => {
-  mount();
-  await userEvent.click(screen.getByTestId("composer-mode-new"));
-  await userEvent.type(
-    screen.getByTestId("new-mission-instruction"),
-    "half typed",
-  );
-  await userEvent.click(screen.getByTestId("composer-mode-ask"));
-  // A half-typed instruction must not become a question — the two modes hold separate state.
-  expect(screen.getByTestId("composer-input")).toHaveValue("");
-  expect(api.createMission).not.toHaveBeenCalled();
-  expect(api.pulseAsk).not.toHaveBeenCalled();
-});
+/* REMOVED WITH THE CONTROL IT GUARDED (#1058): "switching back to ASK abandons the draft
+   instruction rather than sending it". It asserted that the two modes of one box held separate
+   state, so a half-typed brief could not become a question. There is no shared box any more — the
+   brief lives here and the question lives on `/ask`, in a component this file does not import and
+   cannot reach — so the property is structural and there is nothing left to regress. Said here
+   rather than deleted silently, because a test that disappears in a refactor is exactly the thing
+   a reviewer should be able to account for. */
 
 test("a create begun in ACTIVE does not steal the selection into the ARCHIVED rail", async () => {
   // #896 review 10, finding 4. The fence was `isCurrent(missionId)`, and this form lives on the
@@ -253,11 +217,7 @@ test("a create begun in ACTIVE does not steal the selection into the ARCHIVED ra
         <button type="button" onClick={() => setScope("archived")}>
           show archived
         </button>
-        <ControlledComposer
-          missionId="untracked"
-          configured
-          turns={[]}
-          onTurns={() => {}}
+        <NewMissionForm
           // UNCHANGED ACROSS THE FLIP, exactly as the console's is: the sentinel is still the
           // view on screen.
           visit={() => visitRef.current}
@@ -269,7 +229,6 @@ test("a create begun in ACTIVE does not steal the selection into the ARCHIVED ra
   }
   render(<Host />);
 
-  await userEvent.click(screen.getByTestId("composer-mode-new"));
   await waitFor(() => expect(api.projectEntities).toHaveBeenCalled());
   await userEvent.type(
     screen.getByTestId("new-mission-instruction"),

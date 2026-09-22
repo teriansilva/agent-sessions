@@ -1,0 +1,36 @@
+/** Every top-level route path, in ONE place (#1058).
+ *
+ *  `missionLink.ts` already stated the rule and the reason: the `/pulse` → `/mission` rename touched
+ *  41 files because the path was a literal at every link site, every route declaration and every
+ *  e2e selector. #1058 promotes `/overview` and `/templates` out of the top bar's icon cluster into
+ *  the section nav and adds `/ask`, so the same paths are now named in more places again — the
+ *  moment to stop spelling them.
+ *
+ *  `MISSION_PATH` lives here too and `missionLink.ts` re-exports it, so nothing that already
+ *  imports it has to change: one home for the values, both import sites valid.
+ */
+
+/** The Sessions section's front door — the new-session landing. A session itself is
+ *  `/s/:engine/:id`, and the nav links to whichever of the two was last on screen. */
+export const SESSIONS_PATH = "/";
+
+/** The Missions section (#948). */
+export const MISSION_PATH = "/mission";
+
+/** The pre-#948 mission path, still served as a permanent replace-redirect. */
+export const LEGACY_MISSION_PATH = "/pulse";
+
+/** Ask — `find` / `history` over past work (#878), its own page since #1058. */
+export const ASK_PATH = "/ask";
+
+/** The session map (#208 / #424). Labelled MAP in the nav; the path is unchanged. */
+export const MAP_PATH = "/overview";
+
+/** The instruction-template gallery (#905). */
+export const TEMPLATES_PATH = "/templates";
+
+/** Settings is NOT here: `routes/settingsTabs.ts` already owns `SETTINGS_PATH` and `settingsPath()`
+ *  alongside the section list they index, and a second constant for the same path is the drift this
+ *  module exists to prevent. It is also not a section — it is an action in the corner cluster and an
+ *  item in the operator menu — so the nav never links it.
+ */

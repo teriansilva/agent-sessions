@@ -471,8 +471,11 @@
 .openSession {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  flex: none;
+  /* Pushed to the row's right edge — and still right-aligned on the line it wraps to. */
+  margin-left: auto;
   min-height: 44px;
-  margin-top: 6px;
   padding: 2px 10px;
   border: 1px solid var(--line-strong);
   background: transparent;
@@ -520,12 +523,30 @@
 }
 
 /* A matched session inside an Ask answer. Indented so it reads as evidence for the answer rather
- * than as a peer of it. */
+ * than as a peer of it.
+ *
+ * ONE ROW: the session and why it matched on the left, the way in on the right (#1058). The three
+ * were block siblings, so "Jump in" landed under the reason as a bordered box of its own — three
+ * stacked pieces where the operator reads one fact ("this session, because of that, open it").
+ * Both surfaces that draw a match row use this sheet, so the mission thread gets the same shape.
+ *
+ * It WRAPS rather than crushing the title: below roughly 230px of usable width the link drops to
+ * its own line and stays right-aligned, which is why `.openSession` keeps `margin-left: auto`
+ * instead of relying on the body being the only flexible child. */
 .matchRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
   min-width: 0;
   margin: 8px 0 0 10px;
   padding-left: 10px;
   border-left: 1px solid var(--line-strong);
+}
+/* The session and its reason, stacked, taking the room the link does not. */
+.matchBody {
+  flex: 1 1 220px;
+  min-width: 0;
 }
 
 /* ---- supervisor follow-through board (#885) -------------------------------

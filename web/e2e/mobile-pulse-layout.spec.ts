@@ -145,19 +145,27 @@ const openBell = async (page: Page) => {
   await page.getByRole("button", { name: /notifications/i }).click();
 };
 
-test("the bell sits at the right edge of the topbar, not stranded mid-bar", async ({
+test("the corner cluster sits at the right edge of the topbar, not stranded mid-bar", async ({
   page,
 }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "mobile layout");
   await page.goto("/");
   const vw = page.viewportSize()!.width;
-  const box = (await page
+  // Measured at 122px of dead space to the right before the fix, because the cluster was carried
+  // right only by `.hud-telemetry`'s auto margin — and the telemetry is display:none at this
+  // width. #1058 gave the cluster its own `margin-left: auto` so it no longer depends on a
+  // neighbour that may not be there, and added the operator tile as its LAST item.
+  const cluster = (await page.locator(".hud-topbar-actions").boundingBox())!;
+  expect(vw - (cluster.x + cluster.width)).toBeLessThanOrEqual(24);
+
+  // The bell is still in it, and the tile is still after the bell.
+  const bell = (await page
     .getByRole("button", { name: /notifications/i })
     .boundingBox())!;
-  // Measured at 122px of dead space to the right of the bell before the fix, because the
-  // cluster was carried right only by `.hud-telemetry`'s auto margin — and the telemetry is
-  // display:none at this width.
-  expect(vw - (box.x + box.width)).toBeLessThanOrEqual(24);
+  const tile = (await page.getByTestId("operator-menu").boundingBox())!;
+  expect(bell.x).toBeGreaterThanOrEqual(cluster.x - 0.5);
+  expect(tile.x).toBeGreaterThan(bell.x);
+  expect(tile.x + tile.width).toBeLessThanOrEqual(cluster.x + cluster.width + 0.5);
 });
 
 test("the notification panel opens fully on-screen as a right-hand drawer", async ({

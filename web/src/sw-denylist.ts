@@ -59,6 +59,15 @@ export const SPA_PATHS: string[] = [
   // The pre-#948 mission path. It is a client-side redirect, so it needs the SPA shell too.
   "/pulse",
   "/overview",
+  // #1058: Ask became a route of its own, and Templates was already one but had never been
+  // listed here — both are section-nav destinations an operator can bookmark and reload.
+  "/ask",
+  "/templates",
+  "/templates/new",
+  // …and an EXISTING template's editor URL, which is as bookmarkable as the gallery and answers
+  // the same navigate-fallback question (Hermes on #1058). The list is concrete paths by design,
+  // so the dynamic route needs its own example rather than being covered by `/templates/new`.
+  "/templates/tpl_abc123",
   "/settings",
   "/settings/ai-endpoint",
   // The pre-#956 AI tab. A client-side redirect now, so it needs the SPA shell too.

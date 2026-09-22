@@ -77,26 +77,55 @@ test("the command topbar spans the top and the pane floats below it (#134/#211)"
   expect(pane!.y - (top!.y + top!.height)).toBeLessThan(24);
 });
 
-test("opens the fullscreen session overview (topbar on desktop, drawer on mobile) (#139/#211)", async ({
+test("opens the fullscreen session map from the top bar at every width (#139/#211, #1058)", async ({
   page,
-}, testInfo) => {
+}) => {
   await page.goto("/");
-  if (testInfo.project.name === "mobile") {
-    // ≤640px the topbar actions collapse into the drawer — open it, then tap Overview there.
-    await page.locator(".navToggle").click();
-    await page
-      .locator(".sidebar")
-      .getByRole("link", { name: /open session overview/i })
-      .click();
-  } else {
-    await page
-      .locator(".hud-topbar")
-      .getByRole("link", { name: /open session overview/i })
-      .click();
-  }
+  // #1058: the map is a NAMED SECTION in the bar, not an unlabelled icon that collapses into the
+  // drawer below 640px — so there is no drawer hop on mobile any more. The drawer still lists it
+  // (with its label); that copy is asserted separately below.
+  await page
+    .locator(".hud-topbar")
+    .getByRole("link", { name: "Map", exact: true })
+    .click();
   await expect(page).toHaveURL(/\/overview$/);
   // The overview surface mounts (loading/empty/error state — never a blank route).
   await expect(page.locator(".tr-overview")).toBeVisible();
+});
+
+test("on a phone the drawer names the same five sections the bar shows as icons (#1058)", async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "the drawer only exists ≤800px");
+  await page.goto("/");
+  await page.locator(".navToggle").click();
+  const drawer = page
+    .locator(".sidebar")
+    .getByRole("navigation", { name: "Sections" });
+  await expect(drawer.getByRole("link")).toHaveText([
+    "Sessions",
+    "Missions",
+    "Ask",
+    "Map",
+    "Templates",
+  ]);
+
+  // …and the names are RENDERED, not merely present. `toHaveText` reads `textContent`, which the
+  // bar's icon-only rule leaves intact while clipping the label to 1px — so the assertion above
+  // passed against a drawer showing five unlabelled boxes. Width is what distinguishes them.
+  for (const label of await drawer.locator(".section-nav-label").all()) {
+    const box = (await label.boundingBox())!;
+    expect(box.width, "a drawer section label is clipped").toBeGreaterThan(20);
+  }
+  // The BAR's copy, at this width, is the opposite — clipped, and that is deliberate.
+  const barLabel = page
+    .locator(".hud-topbar .section-nav .section-nav-label")
+    .first();
+  expect((await barLabel.boundingBox())!.width).toBeLessThan(4);
+  await drawer.getByRole("link", { name: "Map", exact: true }).click();
+  await expect(page).toHaveURL(/\/overview$/);
+  // Navigating closes the drawer — the shell's route effect, unchanged by #1058.
+  await expect(page.locator(".app.navOpen")).toHaveCount(0);
 });
 
 test("layout snapshot (per-project: desktop + mobile viewports)", async ({

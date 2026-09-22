@@ -34,7 +34,7 @@ import { useSearchParams } from "react-router-dom";
 import { ActionRow } from "./ActionRow";
 import type { DraftEdit } from "./draftDirection";
 import { announceActionResolved } from "../../lib/actionEvents";
-import { Composer, type AskTurn } from "./Composer";
+import { NewMissionForm } from "./NewMissionForm";
 import { MissionComposer } from "./MissionComposer";
 import { MissionQuestionCard } from "./MissionQuestionCard";
 import { MissionPlanCard } from "./MissionPlanCard";
@@ -85,9 +85,11 @@ function dedupe(rows: MissionListRow[], have: MissionListRow[] = []) {
  *  is never used to select, so it can never become a request. */
 const MISSION_ID_RE = /^msn_[0-9a-f]{32}$/;
 
-/** What the console is showing when no mission is selected: the new-mission page (#948). Its Ask
- *  turns are filed under this id, since there is no mission to keep them in. A real mission id is
- *  `msn_…`, so it cannot collide. */
+/** What the console is showing when no mission is selected: the new-mission page (#948). A real
+ *  mission id is `msn_…`, so the sentinel cannot collide with one.
+ *
+ *  It used to carry the landing Ask's transient turns as well; Ask is `/ask` since #1058 and keeps
+ *  its own. What remains is `isCurrent`'s "nothing is selected" answer, below. */
 const LANDING_VIEW = "__landing__";
 
 
@@ -950,21 +952,20 @@ export function MissionConsole({
   const railSlot = useMissionRailSlot();
   const { el: railSlotEl, dismiss: dismissRail } = railSlot;
 
-  /** The composer's MODE, owned here rather than in the composer (#935, reshaped in #937
-   *  review 1) — see `Composer.creating`. The draft text, the pending send and the turn history
-   *  stay in the composer; only "which mode" needs to outlive a branch switch, because
-   *  "+ New mission" in the rail switches a composer that has not mounted yet.
+  /** Bumped by "+ New mission" so the brief takes focus — which it must not do on plain arrival.
+   *
+   *  The composer's MODE used to be lifted here too (#935, #937 review 1), because a
+   *  `NEW MISSION | ASK` strip meant "which mode" had to outlive the remount that "+ New mission"
+   *  causes. #1058 moved Ask to `/ask`, so the landing has exactly one mode and there is nothing
+   *  left to remember: the brief form IS the landing.
    *
    *  `startNewMission` dismisses whatever surface the rail lives in, so it closes over
    *  `dismissRail` — which is why the slot is read ABOVE this. Reading a `const` declared below
    *  it is a TDZ error, which the react-hooks lint catches and a browser would too. */
-  const [composerCreating, setComposerCreating] = useState(true);
-  /** Bumped by "+ New mission" so the brief takes focus — which it must not do on plain arrival. */
   const [focusKey, setFocusKey] = useState(0);
   const startNewMission = useCallback(() => {
     // Back to the front door (#948): with nothing selected the workspace IS the new-mission page.
     setSelected(null);
-    setComposerCreating(true);
     setFocusKey((n) => n + 1);
     // On a phone the rail IS the drawer; leaving it open hides the field the operator is about
     // to type into.
@@ -973,12 +974,6 @@ export function MissionConsole({
 
   const [note, setNote] = useState<string | null>(null);
   const [title, setTitle] = useState<string | null>(null);
-  /** Ask turns for the UNTRACKED view ONLY (#890). A mission's turns are durable and live in its
-   *  timeline; this view has no mission to keep them in, so its Ask stays transient and says so
-   *  on screen. Keyed by view rather than kept bare, because the sentinel is one of several
-   *  things the console can be showing. */
-  const [turns, setTurns] = useState<Record<string, AskTurn[]>>({});
-
   /** What is selected RIGHT NOW, for callbacks that resolve later. A ref rather than the state
    *  value because a captured boolean answers the question as it was when the request started,
    *  which is exactly the moment that does not matter. */
@@ -998,11 +993,10 @@ export function MissionConsole({
    *  Captured at SEND time and compared at RESOLUTION time. Both halves are load-bearing:
    *  capturing the ANSWER rather than the token is the bug this replaces. */
   const visitRef = useRef(0);
-  // `?? LANDING_VIEW` is load-bearing, not defensive. With nothing selected the console still
-  // renders a composer — the new-mission page, where Ask must work on a fresh install — and its
-  // `missionId` is the sentinel. Comparing against a null selection would make that composer
-  // never current, so every answer it received would be discarded as stale: the fence firing on
-  // the one surface it was never meant to guard.
+  // `?? LANDING_VIEW` answers "is this mission showing?" with a definite no when NOTHING is
+  // selected, rather than comparing against a null. It was load-bearing for the landing Ask, whose
+  // `missionId` was the sentinel; that composer is `/ask` since #1058, and the sentinel stays
+  // because a comparison against `null` is not the same statement.
   const isCurrent = useCallback(
     (id: string) => (shownRef.current ?? LANDING_VIEW) === id,
     [],
@@ -1656,12 +1650,6 @@ export function MissionConsole({
   );
 
 
-  const onTurns = useCallback(
-    (missionId: string, fn: (prev: AskTurn[]) => AskTurn[]) =>
-      setTurns((prev) => ({ ...prev, [missionId]: fn(prev[missionId] ?? []) })),
-    [],
-  );
-
   const select = useCallback(
     (id: string) => {
       setSelected(id);
@@ -1852,16 +1840,10 @@ export function MissionConsole({
           ) : (
             <MissionLanding
               composer={
-                <Composer
-                  missionId={LANDING_VIEW}
-                  configured={configured}
-                  turns={turns[LANDING_VIEW] ?? []}
-                  onTurns={onTurns}
+                <NewMissionForm
                   visit={visit}
                   isVisitCurrent={isVisitCurrent}
                   onCreated={onCreated}
-                  creating={composerCreating}
-                  onCreatingChange={setComposerCreating}
                   focusKey={focusKey}
                 />
               }

@@ -71,23 +71,33 @@ test("the bell is in the topbar and never in the drawer's nav row", async ({
 }, testInfo) => {
   await page.goto("/");
 
-  const bell = page.locator("[data-topbar-keep]");
+  // TWO kept controls since #1058: the bell and the operator tile. Both stay in the bar at every
+  // width — the corner has to keep answering "is anything waiting?" and "which account is this?"
+  // when the rest of the cluster rides the drawer.
+  const kept = page.locator("[data-topbar-keep]");
+  await expect(kept).toHaveCount(2);
+  const bell = page.locator('[data-topbar-keep]:has(button[aria-label*="Notifications"])');
   await expect(bell).toHaveCount(1);
   await expect(bell).toBeVisible();
 
-  // It sits inside the topbar, not the sidebar — at every width.
-  await expect(page.locator(".hud-topbar [data-topbar-keep]")).toHaveCount(1);
+  // They sit inside the topbar, not the sidebar — at every width.
+  await expect(page.locator(".hud-topbar [data-topbar-keep]")).toHaveCount(2);
   await expect(page.locator(".sidebar-actions [data-topbar-keep]")).toHaveCount(
     0,
   );
 
   if (testInfo.project.name === "mobile") {
-    // The drawer's row keeps exactly the four icons #494 pinned — the regression this
-    // test exists to stop is a fifth control appearing here.
+    // The drawer's row is Help and Settings since #1058: Overview and Templates became named
+    // SECTIONS and moved to the nav, which the drawer lists separately above this row. The
+    // regression this test exists to stop is still the same one — a control appearing here that
+    // belongs in the bar.
     await page.getByRole("button", { name: /open session list/i }).click();
     const items = page.locator(".sidebar-actions").locator(":scope > *");
-    // Help / Overview / Templates / Settings; Missions now has its own section (#944).
-    await expect(items).toHaveCount(4);
+    await expect(items).toHaveCount(2);
+    // …and the five sections are named right above it, so nothing was lost by the move.
+    await expect(
+      page.locator("aside.sidebar").getByRole("navigation", { name: "Sections" }).getByRole("link"),
+    ).toHaveCount(5);
   }
 });
 

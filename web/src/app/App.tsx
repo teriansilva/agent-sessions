@@ -1,9 +1,5 @@
 import {
-  BookMarked,
-  Crosshair,
-  TerminalSquare,
   Menu,
-  Network,
   PanelLeftClose,
   Settings as SettingsIcon,
 } from "lucide-react";
@@ -69,7 +65,11 @@ import {
   WIDTH_KEY,
   WIDTH_STEP,
 } from "./sidebarWidth";
-import { LEGACY_MISSION_PATH, MISSION_PATH } from "../lib/missionLink";
+import { ASK_PATH, LEGACY_MISSION_PATH, MISSION_PATH } from "../lib/routes";
+import { SETTINGS_PATH } from "../routes/settingsTabs";
+import { OperatorMenu } from "../components/shell/OperatorMenu";
+import { SectionNav } from "../components/shell/SectionNav";
+import { activeSection } from "../components/shell/sections";
 
 // Lazy so @xyflow/react stays out of the main bundle until the overview is opened (#139).
 // Wrapped in lazyWithReload so a stale chunk after a deploy self-heals (#160).
@@ -86,6 +86,8 @@ const TemplateEditor = lazyWithReload(
   () => import("../routes/TemplateEditor"),
   "template-editor",
 );
+// ASK — `find` / `history` over past work, its own section since #1058. Lazy like the others.
+const Ask = lazyWithReload(() => import("../routes/Ask"), "ask");
 
 const COLLAPSE_KEY = "tr-sidebar-collapsed";
 // Retired key for the old sidebar List ⇄ Map toggle (#139). The sidebar is now list-only and
@@ -242,6 +244,9 @@ function Layout() {
     location.pathname === MISSION_PATH ||
     location.pathname === LEGACY_MISSION_PATH;
   const railInSidebar = missionRoute;
+  /** Which of the five work sections the current route belongs to, `null` on Settings (#1058).
+   *  One derivation, read by the top bar's nav and the drawer's copy of it. */
+  const section = activeSection(location.pathname);
   /** Published to the console through context. A ref callback, not an effect: it fires on
    *  commit with the element (and with `null` on unmount), which is exactly the lifetime the
    *  portal needs and avoids setting state from inside an effect. */
@@ -408,26 +413,17 @@ function Layout() {
             <span className="mk" aria-hidden="true">
               ◢
             </span>
-            BATTLE<b>LAB</b>
+            {/* The wordmark is its own element so a phone can drop it and keep the ◢ mark: five
+                sections, the bell and the operator tile need the width (#1058). */}
+            <span className="wm">
+              BATTLE<b>LAB</b>
+            </span>
           </span>
-          <nav className="section-nav" aria-label="Main sections">
-            <Link
-              to={lastSessionPath}
-              aria-current={!missionRoute ? "page" : undefined}
-              onClick={closeMobileDrawer}
-            >
-              <TerminalSquare size={16} />
-              Sessions
-            </Link>
-            <Link
-              to={MISSION_PATH}
-              aria-current={missionRoute ? "page" : undefined}
-              onClick={closeMobileDrawer}
-            >
-              <Crosshair size={16} />
-              Missions
-            </Link>
-          </nav>
+          <SectionNav
+            active={section}
+            sessionsPath={lastSessionPath}
+            onNavigate={closeMobileDrawer}
+          />
           <span className="hud-telemetry">
             <SysClock />
             <MissionTimer />
@@ -440,23 +436,7 @@ function Layout() {
             />
             <NotificationBell />
             <Link
-              to="/overview"
-              className="gear"
-              aria-label="Open session overview"
-              onClick={closeMobileDrawer}
-            >
-              <Network size={18} />
-            </Link>
-            <Link
-              to="/templates"
-              className="gear"
-              aria-label="Templates"
-              onClick={closeMobileDrawer}
-            >
-              <BookMarked size={18} />
-            </Link>
-            <Link
-              to="/settings"
+              to={SETTINGS_PATH}
               state={{ returnTo: location.pathname }}
               className="gear"
               aria-label="Settings"
@@ -464,6 +444,18 @@ function Layout() {
             >
               <SettingsIcon size={18} />
             </Link>
+            {/* LAST, hard against the edge, and it KEEPS ITS PLACE on a phone (#1058): the bell
+                and the tile both carry `data-topbar-keep`, so the corner still answers "which
+                account, and is anything waiting?" once the rest of the cluster rides the drawer.
+                The attribute goes on a wrapper rather than inside `AnchoredMenu`, because which
+                shell surface a menu lives in is the shell's business, not the menu's. */}
+            <span className="operator-slot" data-topbar-keep="">
+              <OperatorMenu
+                username={config?.username}
+                authMode={config?.auth_mode}
+                onNavigate={closeMobileDrawer}
+              />
+            </span>
           </span>
         </header>
         {/* `role="dialog"` + `aria-modal` ONLY while this is the off-canvas drawer (#940). A
@@ -570,7 +562,15 @@ function Layout() {
               </>
             )}
           </header>
-          {/* On small screens the topbar actions collapse into here (behind the hamburger). */}
+          {/* On small screens the topbar actions collapse into here (behind the hamburger), and
+              the five sections get their NAMES back — the bar shows them icon-only at this width,
+              so this is where "which icon was Templates?" is answered (#1058). */}
+          <SectionNav
+            active={section}
+            sessionsPath={lastSessionPath}
+            onNavigate={closeMobileDrawer}
+            variant="drawer"
+          />
           <div className="sidebar-actions">
             {/* Choosing the tour or What's new closes the drawer first; the overlay that opens then
                 takes focus a frame later, after the drawer has restored its trigger (#987). */}
@@ -587,23 +587,7 @@ function Layout() {
               whatsNewLabel={helpWhatsNew}
             />
             <Link
-              to="/overview"
-              className="gear"
-              aria-label="Open session overview"
-              onClick={closeMobileDrawer}
-            >
-              <Network size={18} />
-            </Link>
-            <Link
-              to="/templates"
-              className="gear"
-              aria-label="Templates"
-              onClick={closeMobileDrawer}
-            >
-              <BookMarked size={18} />
-            </Link>
-            <Link
-              to="/settings"
+              to={SETTINGS_PATH}
               state={{ returnTo: location.pathname }}
               className="gear"
               aria-label="Settings"
@@ -694,6 +678,7 @@ function Layout() {
                   <Route path="/overview" element={<Overview />} />
                   <Route path={MISSION_PATH} element={<MissionControl />} />
                   <Route path={LEGACY_MISSION_PATH} element={<LegacyMissionRedirect />} />
+                  <Route path={ASK_PATH} element={<Ask />} />
                   <Route path="/templates" element={<Templates />} />
                   <Route path="/templates/new" element={<TemplateEditor />} />
                   <Route path="/templates/:id" element={<TemplateEditor />} />

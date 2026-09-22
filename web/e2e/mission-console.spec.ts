@@ -435,11 +435,8 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
       await expect(page.getByTestId("mission-landing")).toBeVisible();
       await expect(page.getByTestId("new-mission-project")).toBeVisible();
     },
-    async () => {
-      // …and its ASK mode, whose input only exists once switched to.
-      await page.getByTestId("composer-mode-ask").click();
-      await expect(page.getByTestId("composer-input")).toBeVisible();
-    },
+    // ASK was a mode of this composer and is a route of its own since #1058, so it is no longer
+    // one of the CONSOLE's surfaces. Its own 44px audit lives in `ask-page.spec.ts`.
     async () => {
       // The rail, in the shell's drawer. Measured only while it is reachable — see the sweep.
       await openMissionRail(page);
@@ -630,7 +627,6 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
     "mission-unarchive-record",
     "mission-unarchive-sessions",
     "objective-rename",
-    "composer-mode-new",
     // #896 review 15, finding 3. Each of these exists in exactly one lifecycle or objective
     // state, and the previous fixture rendered none of them: a running mission shows neither
     // BEGIN nor REOPEN, and a settled objective renders NOT REQUIRED and the reorder arrows
@@ -648,7 +644,6 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
     // #967 moved these: Template and the mode control into the composer box's footer, the plan button into
     // ⋯ as Plan again, and ⋯ itself became the shared 44×44 icon button.
     "new-mission-template",
-    "composer-mode-ask",
     "mission-overflow",
     "mission-replan",
   ]) {

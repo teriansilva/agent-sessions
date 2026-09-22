@@ -290,11 +290,9 @@ test("NEW MISSION posts the instruction and the project ENTITY id, and never a c
   await page.goto("/mission");
   await expect(page.getByTestId("mission-landing")).toBeVisible();
 
-  // The new-mission page opens IN new-mission mode (#948 P3): there is no mode to switch to first.
-  await expect(page.getByTestId("composer-mode-new")).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
+  // The new-mission page IS the brief form (#948 P3; #1058 removed the NEW MISSION | ASK strip,
+  // so there is no mode to be in — Ask is its own route).
+  await expect(page.getByTestId("new-mission-form")).toBeVisible();
   await page
     .getByTestId("new-mission-instruction")
     .fill("implement the probe runner");
@@ -644,7 +642,6 @@ test("creating from the ARCHIVED rail never issues an archived list request afte
   await expect.poll(() => scopes.at(-1)).toBe("archived");
   const before = scopes.length;
 
-  await page.getByTestId("composer-mode-new").click();
   await page.getByTestId("new-mission-instruction").fill("start it here");
   // A project is REQUIRED — a mission without one has no cwd and no way to acquire one from
   // this console, so START is withheld until one is chosen (#896 review 9, finding 2).
@@ -1016,16 +1013,15 @@ test("a CREATE that lands after switching to ASK refreshes the rail but does not
   // of its turns, so the create starts here and the operator then moves to a mission — the same
   // sequence this test was always about, entered from where the control actually is.
   await expect(page.getByTestId("mission-landing")).toBeVisible();
-  await page.getByTestId("composer-mode-new").click();
   await page
     .getByTestId("new-mission-instruction")
     .fill("start then change my mind");
   await page.getByTestId("new-mission-project").selectOption("p1");
   const before = lists.length;
   await page.getByTestId("new-mission-start").click();
-  // CANCEL is gone (#967): on the landing it only switched to ASK, which the segmented control does.
-  // Switching unmounts the form, and its `liveRef` fence is what withholds the focus below.
-  await page.getByTestId("composer-mode-ask").click();
+  // Selecting a mission unmounts the form, and its `liveRef` fence is what withholds the focus
+  // below. (Before #1058 this test switched to ASK to cause the unmount; the mode strip is gone,
+  // and selecting a mission is the unmount the operator actually performs.)
   await selectMission(page, "Bravo");
   await expectMissionSelected(page, "Bravo");
 
@@ -1596,7 +1592,6 @@ test("a SUPERSEDED list failure does not paint a store outage over newer rows", 
   await expect.poll(() => calls).toBe(1);
 
   // A create issues the authoritative refresh, which answers with real rows.
-  await page.getByTestId("composer-mode-new").click();
   await page.getByTestId("new-mission-instruction").fill("ship it");
   await page.getByTestId("new-mission-project").selectOption("p1");
   await page.getByTestId("new-mission-start").click();
@@ -2028,7 +2023,6 @@ test("THE #889 JOURNEY: create → objectives arrive → edit → adopt → BEGI
   await ready(page);
 
   // ── 1. CREATE ────────────────────────────────────────────────────────────────────────────
-  await page.getByTestId("composer-mode-new").click();
   await page.getByTestId("new-mission-instruction").fill("Wire the adapter");
   await page.getByTestId("new-mission-project").selectOption("p1");
   await page.getByTestId("new-mission-start").click();
@@ -3116,7 +3110,6 @@ test("a LATE mutation does not collapse the pages you opened while it was in fli
 
   // A CREATE, held open — its `onCreated` reload will be issued with a callback captured NOW.
   // Started on the new-mission page, which is what `/mission` opens on (#948 P3).
-  await page.getByTestId("composer-mode-new").click();
   await page.getByTestId("new-mission-instruction").fill("start something");
   await page.getByTestId("new-mission-project").selectOption("p1");
   await page.getByTestId("new-mission-start").click();
@@ -3336,7 +3329,6 @@ test("an OLDER refresh cannot erase the page you opened while it was in flight",
   await ready(page);
   await expect.poll(() => railRowCount(page), { timeout: 10_000 }).toBe(100);
 
-  await page.getByTestId("composer-mode-new").click();
   await page.getByTestId("new-mission-instruction").fill("start something");
   await page.getByTestId("new-mission-project").selectOption("p1");
   await page.getByTestId("new-mission-start").click();
@@ -3425,7 +3417,6 @@ test("an OLDER refresh cannot resurrect a row after a NEWER one failed", async (
   // A NEWER authoritative read, refused — `appliedGen` is untouched by it, which is the defect.
   // The create starts from the new-mission page, reached through the rail's own "+ New mission".
   await newMissionFromRail(page);
-  await page.getByTestId("composer-mode-new").click();
   await page.getByTestId("new-mission-instruction").fill("start something");
   await page.getByTestId("new-mission-project").selectOption("p1");
   await page.getByTestId("new-mission-start").click();

@@ -167,14 +167,16 @@ test("the start screen is ONE composer box: the brief on top, one footer row ins
   const form = page.getByTestId("new-mission-form");
   const input = page.getByTestId("new-mission-instruction");
   const foot = page.getByTestId("composer-foot");
-  const modeNew = page.getByTestId("composer-mode-new");
-  const modeAsk = page.getByTestId("composer-mode-ask");
   const project = page.getByTestId("new-mission-project");
   const template = page.getByTestId("new-mission-template");
   const start = page.getByTestId("new-mission-start");
 
-  // CANCEL is gone: on the landing it only switched to ASK, which the segmented control does.
+  // CANCEL is gone (#967), and so is the NEW MISSION | ASK strip it was replaced by: Ask is its
+  // own page since #1058, so the landing has one mode and the footer is [project][Template] …
+  // [Ctrl + Enter][Start mission].
   await expect(page.getByTestId("new-mission-cancel")).toHaveCount(0);
+  await expect(page.getByTestId("composer-mode-new")).toHaveCount(0);
+  await expect(page.getByTestId("composer-mode-ask")).toHaveCount(0);
 
   // The box: a 1px --line-strong edge on --bg-1, exactly as the tokens resolve here.
   const want = await page.evaluate(() => {
@@ -208,14 +210,14 @@ test("the start screen is ONE composer box: the brief on top, one footer row ins
   expect(ft.y + ft.height).toBeLessThanOrEqual(fb.y + fb.height + 0.5);
 
   // Every footer control lives in the footer, in the issue's order, at the 44px floor.
-  const controls = [modeNew, modeAsk, project, template, start];
+  const controls = [project, template, start];
   for (const c of controls) {
     expect(await c.evaluate((el) => !!el.closest('[data-testid="composer-foot"]'))).toBe(true);
     const b = await box(c);
     expect(b.height, "44px floor").toBeGreaterThanOrEqual(44);
   }
   const order = await page.evaluate(() =>
-    ["composer-mode-new", "composer-mode-ask", "new-mission-project", "new-mission-template", "new-mission-start"].map(
+    ["new-mission-project", "new-mission-template", "new-mission-start"].map(
       (id) => {
         const all = [...document.querySelectorAll("[data-testid]")];
         return all.findIndex((n) => n.getAttribute("data-testid") === id);
@@ -239,14 +241,13 @@ test("the start screen is ONE composer box: the brief on top, one footer row ins
     await expect(hint).toBeVisible();
     await expect(hint).toHaveText(/ctrl \+ enter/i);
     const hb = await box(hint);
-    expect(hb.x).toBeGreaterThan(boxes[3].x + boxes[3].width);
-    expect(hb.x + hb.width).toBeLessThanOrEqual(boxes[4].x);
+    // Between the last ghost control and Start, as before — the indices moved with the mode strip.
+    expect(hb.x).toBeGreaterThan(boxes[1].x + boxes[1].width);
+    expect(hb.x + hb.width).toBeLessThanOrEqual(boxes[2].x);
   } else {
-    // A PHONE wraps to [mode][project] / [Template][Start mission, full width].
-    const [n, a, p, t, s] = await Promise.all(controls.map((c) => box(c)));
+    // A PHONE wraps to [project] / [Template][Start mission, full width].
+    const [p, t, s] = await Promise.all(controls.map((c) => box(c)));
     const mid = (b: { y: number; height: number }) => b.y + b.height / 2;
-    expect(Math.abs(mid(n) - mid(p))).toBeLessThan(1.5);
-    expect(Math.abs(mid(a) - mid(p))).toBeLessThan(1.5);
     expect(Math.abs(mid(t) - mid(s))).toBeLessThan(1.5);
     expect(t.y).toBeGreaterThanOrEqual(p.y + p.height - 0.5);
     // Start takes the rest of its row: its right edge is the footer's content edge, as the project's is.
@@ -263,14 +264,16 @@ test("the start screen is ONE composer box: the brief on top, one footer row ins
   const fb2 = await box(form);
   expect(cb.y).toBeGreaterThanOrEqual(fb2.y + fb2.height - 0.5);
 
-  // ASK is the same box: the mode control and Send ride in its footer.
-  await modeAsk.click();
+  // ASK IS THE SAME BOX — on its own page now (#1058). The #967 contract is that the two surfaces
+  // draw ONE composer, so it is asserted there rather than dropped: the shortcut hint and Send ride
+  // inside the ask box exactly as the project picker and Start ride inside this one.
+  await page.goto("/ask");
   const ask = page.getByTestId("ask-form");
   await expect(ask).toBeVisible();
   const askBox = await box(ask);
-  for (const id of ["composer-mode-new", "composer-mode-ask", "composer-send"]) {
+  for (const id of ["composer-input", "composer-send"]) {
     const b = await box(page.getByTestId(id));
-    expect(b.y).toBeGreaterThanOrEqual(askBox.y);
+    expect(b.y).toBeGreaterThanOrEqual(askBox.y - 0.5);
     expect(b.y + b.height).toBeLessThanOrEqual(askBox.y + askBox.height + 0.5);
   }
   await page.screenshot({ path: `test-results/p1-start-screen-${info.project.name}.png` });
@@ -666,9 +669,9 @@ test("the mission Send IS the session Send — paper plane, label and all (#967)
   await page.getByTestId("composer-input").fill("status?");
   expect.soft(await sendLook(page.getByTestId("composer-send")), "mission thread Send").toEqual(ref);
 
-  // …and the landing's ASK Send.
-  await page.goto("/mission");
-  await page.getByTestId("composer-mode-ask").click();
+  // …and ASK's Send, on its own page since #1058. Same class, same icon, same label — the #967
+  // one-Send rule survives the move, which is the point of checking it here at all.
+  await page.goto("/ask");
   await page.getByTestId("composer-input").fill("which session was that?");
-  expect.soft(await sendLook(page.getByTestId("composer-send")), "landing ASK Send").toEqual(ref);
+  expect.soft(await sendLook(page.getByTestId("composer-send")), "ASK page Send").toEqual(ref);
 });

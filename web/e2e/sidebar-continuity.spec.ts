@@ -110,12 +110,25 @@ async function mockApp(page: Page): Promise<Req[]> {
   return reqs;
 }
 
-const rows = (page: Page) => page.locator('aside.sidebar a[href^="/s/"]');
+/** The session LIST's rows — scoped to `.sidebarBody` since #1058, because the drawer now also
+ *  carries the section nav, whose Sessions entry points at the last session route and so matches a
+ *  bare `a[href^="/s/"]`. A CSS locator does not skip `display: none`, so it counted that link on
+ *  desktop too. */
+const rows = (page: Page) =>
+  page.locator('aside.sidebar .sidebarBody a[href^="/s/"]');
 
 /** The two `/overview` links (topbar + sidebar head) share an aria-label; whichever is on screen
  *  for this project is the one to press. */
+/** MAP, from whichever nav is reachable right now (#1058).
+ *
+ *  There are two: the top bar's row and the drawer's labelled copy. When the mobile drawer is open
+ *  it is a MODAL and the shell marks the header `inert` (#940), so the bar's copy resolves, looks
+ *  visible, and can never be clicked. One selector picks the right one from the shell's own open
+ *  state rather than from the project name, so desktop, 801px and a phone all take the same path. */
 const overviewLink = (page: Page) =>
-  page.getByRole("link", { name: "Open session overview" }).filter({ visible: true }).first();
+  page.locator(
+    '.app.navOpen aside.sidebar a[data-section="map"], .app:not(.navOpen) .hud-topbar a[data-section="map"]',
+  );
 
 /** Mobile keeps the sidebar off-canvas; opening the drawer does NOT remount `SessionList`. */
 async function openDrawer(page: Page, project: string) {

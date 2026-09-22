@@ -7,6 +7,18 @@ import {
   openMissionRail,
 } from "./mission-console";
 
+/** THE TOP BAR'S nav, not "a link called Missions" (#1058).
+ *
+ *  The drawer renders the same five sections with the same names, so on a phone with the drawer
+ *  open an unscoped `getByRole` resolves to two elements and Playwright's strict mode refuses.
+ *  Scoping says which surface the assertion is about, which these tests always knew and used to
+ *  get for free from the drawer copy not existing. */
+const barLink = (page: Page, name: string) =>
+  page
+    .locator(".hud-topbar")
+    .getByRole("navigation", { name: "Main sections" })
+    .getByRole("link", { name, exact: true });
+
 /** Select a mission from the rail (#948 P3). Nothing is auto-selected any more — `/mission` opens on
  *  the new-mission page — so a test about a selected mission picks one itself, through the shell's
  *  drawer on a phone. Without a title it takes the first row. */
@@ -101,7 +113,7 @@ test("section buttons share the brand row and keep their own declared typography
     await page.setViewportSize({ width, height: 740 });
     const header = page.locator(".hud-topbar");
     const brand = page.locator(".hud-brand");
-    const nav = page.getByRole("navigation", { name: "Main sections" });
+    const nav = page.locator(".hud-topbar").getByRole("navigation", { name: "Main sections" });
     const hb = (await header.boundingBox())!;
     const bb = (await brand.boundingBox())!;
     expect(hb.height, `header at ${width}`).toBeLessThanOrEqual(52);
@@ -118,7 +130,9 @@ test("section buttons share the brand row and keep their own declared typography
       const size = parseFloat(getComputedStyle(document.documentElement).fontSize) * 0.68;
       return { family, size, spacing: size * 0.1 };
     });
-    for (const name of ["Sessions", "Missions"]) {
+    // ALL FIVE since #1058 — the map and the template gallery came up out of the unlabelled icon
+    // cluster, and Ask is new. Asserting two of five would let the three that moved regress.
+    for (const name of ["Sessions", "Missions", "Ask", "Map", "Templates"]) {
       const link = nav.getByRole("link", { name, exact: true });
       const b = (await link.boundingBox())!;
       expect(
@@ -144,12 +158,34 @@ test("section buttons share the brand row and keep their own declared typography
       expect(Math.abs(look.size - declared.size), `${name} size at ${width}`).toBeLessThan(0.01);
       expect(Math.abs(look.spacing - declared.spacing), `${name} tracking at ${width}`).toBeLessThan(0.01);
       expect([look.weight, look.minHeight, look.transform]).toEqual(["400", "44px", "uppercase"]);
+      // NOT OVERLAPPED BY THE CORNER (#1058). The nav is allowed to shrink, so a row that does not
+      // fit overflows its own box rather than the document — `scrollWidth` stays clean while the
+      // last entry slides UNDER the notification bell and stops being clickable. Measured against
+      // the corner cluster's left edge, which is the thing it collides with.
+      const cluster = (await page
+        .locator(".hud-topbar .hud-topbar-actions")
+        .boundingBox())!;
+      expect(b.x + b.width, `${name} clear of the corner at ${width}`).toBeLessThanOrEqual(
+        cluster.x,
+      );
       await link.click({ trial: true });
     }
     await page.locator(".hud-topbar > .navToggle").click({ trial: true });
-    await page
-      .locator(".hud-topbar [data-topbar-keep] button")
-      .click({ trial: true });
+    // EVERY kept control, not the first one (#1058 added the operator tile beside the bell). Both
+    // must stay reachable at every width — that is the whole point of `data-topbar-keep`.
+    const kept = page.locator(".hud-topbar [data-topbar-keep] button");
+    expect(await kept.count(), `kept controls at ${width}`).toBe(2);
+    for (let i = 0; i < 2; i++) {
+      const b = (await kept.nth(i).boundingBox())!;
+      expect(b.height, `kept ${i} height at ${width}`).toBeGreaterThanOrEqual(30);
+      expect(b.x + b.width, `kept ${i} right edge at ${width}`).toBeLessThanOrEqual(width);
+      await kept.nth(i).click({ trial: true });
+    }
+    // The operator tile is LAST in the corner — the user asked for the bell and the gear beside
+    // it, and "beside" is an order, not a set.
+    const bell = (await kept.nth(0).boundingBox())!;
+    const tile = (await kept.nth(1).boundingBox())!;
+    expect(tile.x, `tile after bell at ${width}`).toBeGreaterThan(bell.x);
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth),
     ).toBeLessThanOrEqual(width);
@@ -169,8 +205,8 @@ test("ordinary buttons and section links glitch without losing hit areas (#946)"
     page.locator(".hud-topbar > .navToggle"),
     page.getByRole("button", { name: "Show full mission title" }),
     page.getByTestId("composer-send"),
-    page.getByRole("link", { name: "Sessions", exact: true }),
-    page.getByRole("link", { name: "Missions", exact: true }),
+    barLink(page, "Sessions"),
+    barLink(page, "Missions"),
   ];
   for (const control of controls) {
     const result = await control.evaluate((el) => {
@@ -224,13 +260,13 @@ test("ordinary buttons and section links glitch without losing hit areas (#946)"
       }),
     ).toBe("none");
   }
-  await page.getByRole("link", { name: "Sessions", exact: true }).click();
+  await barLink(page, "Sessions").click();
   await expect(
-    page.getByRole("link", { name: "Sessions", exact: true }),
+    barLink(page, "Sessions"),
   ).toHaveAttribute("aria-current", "page");
-  await page.getByRole("link", { name: "Missions", exact: true }).click();
+  await barLink(page, "Missions").click();
   await expect(
-    page.getByRole("link", { name: "Missions", exact: true }),
+    barLink(page, "Missions"),
   ).toHaveAttribute("aria-current", "page");
 });
 
@@ -252,13 +288,13 @@ test("ambient and press feedback reach ordinary controls and respect reduced mot
   await page.clock.fastForward(301);
   await expect(toggle).not.toHaveClass(/glitching/);
 
-  const missions = page.getByRole("link", { name: "Missions", exact: true });
+  const missions = barLink(page, "Missions");
   // The next ambient selection must skip a disabled ordinary button in the real DOM.
   await toggle.evaluate((el) => ((el as HTMLButtonElement).disabled = true));
   await page.clock.fastForward(7001);
   await expect(toggle).not.toHaveClass(/glitching/);
   await expect(
-    page.getByRole("link", { name: "Sessions", exact: true }),
+    barLink(page, "Sessions"),
   ).toHaveClass(/glitching/);
   await page.clock.fastForward(301);
   await toggle.evaluate((el) => ((el as HTMLButtonElement).disabled = false));
@@ -351,17 +387,17 @@ test("sections restore mission search in both navigation directions", async ({
   await setupSections(page);
   await page.goto("/mission");
   await expect(
-    page.getByRole("link", { name: "Sessions", exact: true }),
+    barLink(page, "Sessions"),
   ).toBeVisible();
   await expect(
-    page.getByRole("link", { name: "Missions", exact: true }),
+    barLink(page, "Missions"),
   ).toHaveAttribute("aria-current", "page");
   await openMissionRail(page);
   await page.getByRole("searchbox", { name: "Search missions" }).fill("layout");
   await expect(page.getByTestId("rail-mission")).toHaveCount(1);
   if (await page.getByRole("dialog").count())
     await page.keyboard.press("Escape");
-  await page.getByRole("link", { name: "Sessions", exact: true }).click();
+  await barLink(page, "Sessions").click();
   const openSessions = page.getByRole("button", {
     name: "Open session list",
     exact: true,
@@ -388,10 +424,10 @@ test("sections restore mission search in both navigation directions", async ({
       includeHidden: true,
     }),
   ).toHaveValue("session query");
-  await page.getByRole("link", { name: "Missions", exact: true }).click();
+  await barLink(page, "Missions").click();
   await page.goBack();
   await expect(
-    page.getByRole("link", { name: "Sessions", exact: true }),
+    barLink(page, "Sessions"),
   ).toHaveAttribute("aria-current", "page");
   if (isMobile) {
     await openSessions.click();

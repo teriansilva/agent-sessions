@@ -685,14 +685,12 @@ test("the mission sidebar leads with its own primary action (#935)", async ({
   const inSidebar = await create.evaluate((el) => !!el.closest(".sidebar"));
   expect(inSidebar).toBe(true);
 
-  // It does not create anything on its own: it puts the composer into NEW MISSION and focuses
-  // the field where the brief is written. Asserting the mode WITHOUT the focus would pass for a
-  // button that leaves the operator hunting for the cursor.
+  // It does not create anything on its own: it returns to the landing — which IS the brief form
+  // since #1058 removed the NEW MISSION | ASK strip — and focuses the field where the brief is
+  // written. Asserting the form WITHOUT the focus would pass for a button that leaves the
+  // operator hunting for the cursor.
   await create.click();
-  await expect(page.getByTestId("composer-mode-new")).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
+  await expect(page.getByTestId("new-mission-form")).toBeVisible();
   await expect(page.getByTestId("new-mission-instruction")).toBeFocused();
 });
 

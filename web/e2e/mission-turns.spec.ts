@@ -348,9 +348,22 @@ test("the ANSWER's matched sessions are reachable from the timeline", async ({
   await expect(
     page.getByRole("link", { name: /jump into the ws reconnect fix/i }),
   ).toHaveAttribute("href", "/s/claude/aaa");
+
+  // ONE ROW HERE TOO (#1058). `.matchRow` is a single sheet drawn by both this thread and `/ask`,
+  // and the shape is the thing that is easy to change in one place and regress in the other. The
+  // text block and the way in sit side by side, on the same line, at a desktop width.
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.waitForTimeout(150);
+  const row = page.getByTestId("ask-match");
+  const [bb, jb] = await Promise.all([
+    row.locator("> div").first().boundingBox(),
+    row.getByRole("link").boundingBox(),
+  ]).then((b) => b.map((x) => x!));
+  expect(jb.x).toBeGreaterThanOrEqual(bb.x + bb.width);
+  expect(Math.abs(jb.y + jb.height / 2 - (bb.y + bb.height / 2))).toBeLessThan(2);
 });
 
-test("the landing's Ask stays transient and says why (#948: was the UNTRACKED view's)", async ({
+test("ASK stays transient and says why (#948: was the UNTRACKED view's; #1058: now /ask)", async ({
   page,
 }) => {
   // The console has exactly one composer whose turns are NOT durable: the one on the new-mission
@@ -361,12 +374,12 @@ test("the landing's Ask stays transient and says why (#948: was the UNTRACKED vi
   await page.route("**/api/pulse/ask", (r) =>
     r.fulfill({ json: { answer: "nothing tracked", matches: [] } }),
   );
-  await page.goto("/mission");
-  // Nothing selected on arrival: the landing, with no mission header.
-  await expect(page.getByTestId("mission-landing")).toBeVisible();
+  // ASK IS `/ask` SINCE #1058 — it was the landing's second mode. The claim is unchanged and is
+  // still worth making HERE, beside the mission thread's durable turns: those go to
+  // `POST /api/missions/{id}/message` and live in the timeline, these do not, and the operator is
+  // told which is which. Only the door moved.
+  await page.goto("/ask");
   await expect(page.getByTestId("console-title")).toHaveCount(0);
-  // The landing opens in NEW MISSION mode; Ask is one press away.
-  await page.getByTestId("composer-mode-ask").click();
   await page.getByTestId("composer-input").fill("anything?");
   await page.getByTestId("composer-send").click();
   await expect(page.getByTestId("ask-turns")).toContainText("nothing tracked");

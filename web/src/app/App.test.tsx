@@ -121,14 +121,52 @@ test("desktop: the single command-bar toggle collapses then re-expands the sideb
   expect(app).not.toHaveClass("collapsed");
 });
 
-test("the command topbar carries the overview entrypoint (#139/#211)", async () => {
+test("the command topbar names all five work sections, in order (#1058)", async () => {
+  // The map and the template gallery used to be unlabelled `.gear` icons in the action cluster,
+  // beside Help and Settings, which are not destinations. All five destinations are in the nav
+  // now — and the ORDER is asserted, because "it contains five links" would pass on a nav that
+  // shuffles itself on every render.
   const { container } = render(<App />);
-  await screen.findAllByRole("link", { name: /open session overview/i });
   const topbar = container.querySelector(".hud-topbar") as HTMLElement;
-  const link = within(topbar).getByRole("link", {
-    name: /open session overview/i,
+  const nav = await within(topbar).findByRole("navigation", {
+    name: "Main sections",
   });
-  expect(link).toHaveAttribute("href", "/overview");
+  expect(
+    within(nav)
+      .getAllByRole("link")
+      .map((a) => [a.textContent, a.getAttribute("href")]),
+  ).toEqual([
+    ["Sessions", "/"],
+    ["Missions", "/mission"],
+    ["Ask", "/ask"],
+    ["Map", "/overview"],
+    ["Templates", "/templates"],
+  ]);
+  // …and the cluster beside them is actions ONLY. An `/overview` or `/templates` link outside the
+  // nav would mean the old duplication came back.
+  const actions = topbar.querySelector(".hud-topbar-actions") as HTMLElement;
+  expect(actions.querySelector('a[href="/overview"]')).toBeNull();
+  expect(actions.querySelector('a[href="/templates"]')).toBeNull();
+  expect(
+    within(actions).getByRole("link", { name: "Settings" }),
+  ).toHaveAttribute("href", "/settings");
+});
+
+test("the section labels stay in the DOM, so an icon-only bar is still named (#1058)", async () => {
+  // At ≤640px `App.css` CLIPS the labels rather than removing them. A link whose text is gone has
+  // no accessible name, and five unnamed icons is the row a screen-reader operator cannot use.
+  // jsdom applies no media queries, so this asserts the invariant the CSS relies on: the name is
+  // the link's own text, never an `aria-label` that a future edit could let drift from it.
+  const { container } = render(<App />);
+  const nav = await within(
+    container.querySelector(".hud-topbar") as HTMLElement,
+  ).findByRole("navigation", { name: "Main sections" });
+  for (const a of within(nav).getAllByRole("link")) {
+    expect(a).not.toHaveAttribute("aria-label");
+    expect(a.querySelector(".section-nav-label")?.textContent).toBe(
+      a.textContent,
+    );
+  }
 });
 
 // #424 Phase 1: the sidebar is list-only — the old List ⇄ Map tablist is gone and `/overview`
@@ -231,7 +269,7 @@ test("sidebar: a failed order save snaps the toggle back to the server truth (#5
 // Default route in jsdom is "/", so all three of these are same-route no-ops on mount.
 test.each([
   ["New session", /new session/i],
-  ["Overview", /open session overview/i],
+  ["Map", /^map$/i],
   ["Settings", /^settings$/i],
 ])(
   "mobile: tapping same-route %s closes the open drawer in one tap (#283)",

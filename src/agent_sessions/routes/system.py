@@ -425,6 +425,12 @@ def register(
                 # "single-user" | "none" — lets the SPA hide login/logout UI when there
                 # is no login (#13 / #32 Phase 3).
                 "auth_mode": cfg.auth_mode,
+                # The operator's LOGIN NAME, for the corner tile (#1058). Not a credential — it is
+                # the name they type at the login form, and this route is already `logged_in`. The
+                # password hash, the secret key and the TOTP secret are not in this payload and are
+                # not being added: only the name. `None` under `auth_mode: "none"`, where there is
+                # no login and so no operator to name — the same rule the Sign out button follows.
+                "username": None if cfg.auth_mode == "none" else cfg.username,
                 # Server hostname (#503): shown in the SPA's footer classbar so an operator can see
                 # which machine a tab is pointed at. Cosmetic; the OS hostname, not a secret.
                 "hostname": socket.gethostname(),

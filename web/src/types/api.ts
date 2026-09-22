@@ -784,6 +784,11 @@ export interface AppConfig {
   /** Auth mode: "single-user" (cookie login) or "none" (no login — self-host on a
    * trusted network). Lets the SPA hide login/logout UI. Absent on older servers. */
   auth_mode?: "single-user" | "none" | string;
+  /** The operator's LOGIN NAME (#1058) — what the corner tile shows. Never a credential: the
+   *  password hash, the secret key and the 2FA secret are not serialised anywhere in this payload.
+   *  `null` under `auth_mode: "none"`, where there is no operator to name; absent on older
+   *  servers, which renders no tile rather than a made-up one. */
+  username?: string | null;
   /** Optional TOTP 2FA on/off (#116) — drives the Settings security section. Just the
    *  bit; the secret/recovery codes are never exposed here. Absent on older servers. */
   two_factor_enabled?: boolean;

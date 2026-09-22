@@ -47,6 +47,7 @@ export function AnchoredMenu({
   focus = "menu",
   portal = false,
   classes,
+  head,
   note,
   children,
 }: {
@@ -72,6 +73,9 @@ export function AnchoredMenu({
   portal?: boolean;
   /** Layout belongs to the caller: the mission header and the top bar anchor differently. */
   classes: { wrap: string; panel: string; items: string };
+  /** A block ABOVE the items — the operator menu's "who is signed in" header (#1058). Like `note`
+   *  it sits in the panel but OUTSIDE `role="menu"`, whose children may only be menu items. */
+  head?: ReactNode;
   /** A sentence under the items. It sits in the panel but OUTSIDE `role="menu"`, whose children
    *  may only be menu items. */
   note?: ReactNode;
@@ -168,6 +172,7 @@ export function AnchoredMenu({
       }
       onKeyDown={onKeyDown}
     >
+      {head}
       {/* The focus target on open when the caller asks for "menu", and the menu itself. */}
       <div
         ref={menuRef}

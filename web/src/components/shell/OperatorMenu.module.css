@@ -1,0 +1,120 @@
+/* The operator tile (#1058). The panel is the Help menu's (HelpMenu.module.css); what is here is
+ * the trigger and the identity header, which nothing else draws.
+ *
+ * Square, flat, hairline — `docs/design.md` §1. The accent at 20% is the tile's fill in BOTH themes,
+ * which is why it is a `color-mix` off `--accent` rather than a second colour: a custom accent
+ * cascades into it for free, and the initials stay on brand without touching a status hue. */
+
+.wrap {
+  /* The corner's last item, hard against the bar's right padding. */
+  margin-left: 2px;
+}
+/* The shell's `data-topbar-keep` slot around it (App.tsx) — a plain inline box, so the wrap's own
+ * `position: relative` and the flex row both behave as if the tile were a direct child. */
+:global(.operator-slot) {
+  display: inline-flex;
+}
+
+.tile {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  /* The bar is tight; the username must never push the row into a second line. */
+  max-width: 220px;
+  overflow: hidden;
+}
+.tile:hover {
+  color: var(--text);
+  border-color: var(--border);
+}
+.tile[aria-expanded="true"] {
+  border-color: var(--accent);
+}
+.tile:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.square {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 1;
+}
+
+.name {
+  padding: 0 10px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  border-left: 1px solid var(--line-strong);
+}
+
+/* --- the panel's identity header --------------------------------------------- */
+.who {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.whoName {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-1);
+  /* A long username wraps rather than widening the panel past its max. */
+  overflow-wrap: anywhere;
+}
+.whoSub {
+  margin-top: 3px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+}
+
+/* ICON-ONLY IN THE BAR below a full desktop (≤1100px, the same line where the telemetry and the
+ * section icons stand down in App.css): the square alone is the tile. The username may be REMOVED here rather than clipped, unlike the
+ * section labels — it is already `aria-hidden`, and the trigger's accessible name comes from
+ * `AnchoredMenu`'s `aria-label` ("Operator <name>"), which no width changes. The panel repeats the
+ * name in full the moment it opens. */
+@media (max-width: 1100px) {
+  .name {
+    display: none;
+  }
+}
+@media (max-width: 800px) {
+  .tile {
+    height: 34px;
+  }
+  .square {
+    width: 32px;
+    height: 32px;
+  }
+}
+
+/* The tile is NOT duplicated into the drawer, unlike `?` and the gear. It carries
+ * `data-topbar-keep`, so it stays in the bar at every width — a corner that stops saying who you
+ * are the moment the screen narrows is the corner that most needed to. */

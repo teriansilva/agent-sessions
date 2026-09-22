@@ -13,6 +13,7 @@ from unittest import mock
 
 from fastapi.testclient import TestClient
 
+from agent_sessions.auth import AuthConfig
 from agent_sessions.main import create_app
 from agent_sessions.routes import upload as upload_route
 
@@ -2704,3 +2705,51 @@ def test_session_lookup_throttles_the_miss_rewalk(auth_cfg, fake_jsonl, monkeypa
         sid = f"claude:9999999{n}-9999-4999-8999-999999999999"
         assert c.get(f"/api/sessions/{sid}").status_code == 404
     assert calls["n"] == 1, f"{calls['n']} forced scans for 4 misses — the throttle is not holding"
+
+
+# --- /api/config: the operator's login name (#1058) ----------------------------------------------
+
+
+def test_config_names_the_operator_and_carries_no_credential(auth_cfg, fake_jsonl):
+    """The corner tile needs a name; it must never get anything else.
+
+    The name is what the operator types at the login form, and this route is already
+    `logged_in`, so exposing it widens nothing. What WOULD widen something is a companion field
+    sneaking in beside it, so the credentials are asserted absent by value rather than by name:
+    a future serialiser that spells the hash `pw` or `secret` still fails here.
+    """
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    cfg = c.get("/api/config").json()
+    assert cfg["username"] == "marcus"
+    assert cfg["auth_mode"] == "single-user"
+
+    blob = json.dumps(cfg)
+    assert auth_cfg.password_hash not in blob
+    assert auth_cfg.secret_key not in blob
+    # …and the pbkdf2 marker cannot appear under ANY key name.
+    assert "pbkdf2_sha256$" not in blob
+
+
+def test_config_username_is_null_when_there_is_no_login(monkeypatch, tmp_path, fake_jsonl):
+    """`auth_mode: "none"` has no operator to name, and the tile must not invent one.
+
+    `AuthConfig` still carries a default username in that mode (the uid the auto-established
+    session is signed with), so the route has to decide rather than pass it through — otherwise
+    a no-login install would show a tile reading ADMIN, which claims a login it does not have.
+    """
+    monkeypatch.delenv("AGENT_SESSIONS_USERNAME", raising=False)
+    monkeypatch.delenv("AGENT_SESSIONS_PASSWORD_HASH", raising=False)
+    monkeypatch.setenv("AGENT_SESSIONS_AUTH_MODE", "none")
+    monkeypatch.setenv("AGENT_SESSIONS_SECRET_KEY", "x" * 64)
+    monkeypatch.setenv("AGENT_SESSIONS_ORIGIN", "https://your-domain.example")
+    monkeypatch.setenv("AGENT_SESSIONS_2FA_FILE", str(tmp_path / "2fa.json"))
+    cfg_none = AuthConfig.from_env()
+    # The default IS present on the config object — which is exactly why the route must not
+    # forward it blindly.
+    assert cfg_none.username == "admin"
+
+    c = _client(cfg_none)
+    body = c.get("/api/config").json()  # no login needed in this mode
+    assert body["auth_mode"] == "none"
+    assert body["username"] is None

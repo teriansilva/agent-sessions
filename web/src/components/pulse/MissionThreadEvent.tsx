@@ -98,8 +98,10 @@ function MessageRow({ event, who }: { event: MissionEvent; who: string }) {
       {text ? <div className={styles.eventText}>{text}</div> : null}
       {matches.map((m) => (
         <div key={m.id} className={styles.matchRow} data-testid="ask-match">
-          <div className={styles.eventText}>{m.title}</div>
-          {m.why ? <div className={styles.objReason}>{m.why}</div> : null}
+          <div className={styles.matchBody}>
+            <div className={styles.eventText}>{m.title}</div>
+            {m.why ? <div className={styles.objReason}>{m.why}</div> : null}
+          </div>
           <Link
             className={styles.openSession}
             to={sessionRoute(m.id)}
@@ -183,12 +185,21 @@ function FailureBlock({
             ) : null}
           </div>
           {!eligible && whyOpen ? (
-            <p id={reasonId} className={t.reason} data-testid="thread-retry-reason">
-              {actions.reason ?? "The server did not say why this start cannot be retried."}
+            <p
+              id={reasonId}
+              className={t.reason}
+              data-testid="thread-retry-reason"
+            >
+              {actions.reason ??
+                "The server did not say why this start cannot be retried."}
             </p>
           ) : null}
           {actions.error ? (
-            <p className={t.error} role="alert" data-testid="thread-start-again-error">
+            <p
+              className={t.error}
+              role="alert"
+              data-testid="thread-start-again-error"
+            >
               {actions.error}
             </p>
           ) : null}
@@ -212,7 +223,12 @@ function PlanRow({
   const [open, setOpen] = useState(false);
   const briefId = useId();
   return (
-    <div className={t.box} role="group" aria-label="Plan ready" data-testid="thread-plan">
+    <div
+      className={t.box}
+      role="group"
+      aria-label="Plan ready"
+      data-testid="thread-plan"
+    >
       <div className={t.line}>
         <FileText size={14} className={t.icon} aria-hidden="true" />
         <span className={t.lineText}>
@@ -232,7 +248,8 @@ function PlanRow({
           {objectiveCount !== null ? (
             <>
               <span className={t.sep}>·</span>
-              {objectiveCount} {objectiveCount === 1 ? "objective" : "objectives"}
+              {objectiveCount}{" "}
+              {objectiveCount === 1 ? "objective" : "objectives"}
             </>
           ) : null}
         </span>
@@ -305,7 +322,9 @@ function NudgedRow({
       className={t.box}
       role="group"
       aria-label={
-        auto ? `AI-written, sent automatically: ${objective}` : `Nudged: ${objective}`
+        auto
+          ? `AI-written, sent automatically: ${objective}`
+          : `Nudged: ${objective}`
       }
       data-testid="thread-nudged"
       data-source={row.source ?? ""}
@@ -363,12 +382,20 @@ function NudgedRow({
         ) : null}
       </div>
       {auto && autoOff?.error ? (
-        <p className={`${t.lineText} ${t.note}`} role="alert" data-testid="thread-turn-off-error">
+        <p
+          className={`${t.lineText} ${t.note}`}
+          role="alert"
+          data-testid="thread-turn-off-error"
+        >
           {autoOff.error}
         </p>
       ) : null}
       {open ? (
-        <pre id={textId} className={d.threadTyped} data-testid="thread-nudged-text">
+        <pre
+          id={textId}
+          className={d.threadTyped}
+          data-testid="thread-nudged-text"
+        >
           {row.text}
         </pre>
       ) : null}
@@ -510,7 +537,9 @@ export function MissionThreadEvent({
           data-outcome={row.outcome}
         >
           <span className={t.tag}>{row.label}</span>
-          {row.note ? <span className={`${t.lineText} ${t.note}`}>{row.note}</span> : null}
+          {row.note ? (
+            <span className={`${t.lineText} ${t.note}`}>{row.note}</span>
+          ) : null}
           <Time at={event.at} />
         </div>
       );
@@ -526,7 +555,13 @@ export function MissionThreadEvent({
       );
       break;
     case "held":
-      body = <HeldRow event={event} row={row} objective={objectiveTitle(row.objectiveKey)} />;
+      body = (
+        <HeldRow
+          event={event}
+          row={row}
+          objective={objectiveTitle(row.objectiveKey)}
+        />
+      );
       break;
     default:
       body = (
@@ -565,14 +600,19 @@ export function MissionThreadEvents({
   const latestFailure = latestFailedStartSeq(events);
   let latestPlan: number | null = null;
   for (const e of events)
-    if (e.kind === "plan" && (latestPlan === null || e.seq > latestPlan)) latestPlan = e.seq;
+    if (e.kind === "plan" && (latestPlan === null || e.seq > latestPlan))
+      latestPlan = e.seq;
   const actionable = mission?.state === "failed" && mission.archived_at == null;
   const count =
-    objectives && mission?.objectives_state !== "pending" ? objectives.length : null;
+    objectives && mission?.objectives_state !== "pending"
+      ? objectives.length
+      : null;
   // A nudge row names its objective by the title on screen, falling back to the key the server
   // recorded; an objective since removed still reads as something rather than as nothing.
   const objectiveTitle = (key: string | null) =>
-    (key ? objectives?.find((o) => o.key === key)?.title : null) || key || "an objective";
+    (key ? objectives?.find((o) => o.key === key)?.title : null) ||
+    key ||
+    "an objective";
   const projectName = (id: string) =>
     projectNames[id] ??
     mission?.plan?.project_options?.find((p) => p.id === id)?.name ??
