@@ -619,6 +619,10 @@ def parse_runtime_key(raw: str) -> tuple[base.EngineProvider, str]:
 #: provider method; the dispatcher only asks. A pinned-id engine keeps the existing path, where the
 #: id is known before the launch and is therefore bound at launch.
 LATE_ID_CAPABILITIES: tuple[str, ...] = (
+    # How THIS engine honours `bypass=False` with nobody watching (#1050). Required, not optional:
+    # a late-id engine whose permissions are config-side would otherwise launch with whatever its
+    # default is — opencode's is allow-all — while the dispatcher believed it had withheld bypass.
+    "unattended_launch",
     "unattended_preflight",
     "start_evidence",
     "bind_session",

@@ -329,8 +329,17 @@ async def _await_start_evidence(
 
 
 def _admission_key(engine: str, cwd: str) -> str:
-    """The flock name that serialises unattended late-id launches of one engine in one folder."""
-    return f"unattended-admit-{engine}-{uuid.uuid5(uuid.NAMESPACE_URL, 'file://' + cwd)}"
+    """The flock name that serialises unattended late-id launches of one engine in one folder.
+
+    Keyed on the RESOLVED folder (review comment 72377 finding 2): a symlinked checkout and its
+    target are one folder with one store, so two spellings of it must meet on one flock rather than
+    each admitting a launch the other's snapshot diff could then mistake for its own.
+    """
+    try:
+        folder = os.path.realpath(cwd)
+    except (OSError, ValueError):
+        folder = cwd
+    return f"unattended-admit-{engine}-{uuid.uuid5(uuid.NAMESPACE_URL, 'file://' + folder)}"
 
 
 async def _await_binding(
@@ -673,11 +682,25 @@ async def dispatch(
         )
         handoff.bind_target(handle, key)
 
+        # AN ENGINE WHOSE PERMISSIONS ARE CONFIG, NOT ARGV, SAYS HOW `bypass` IS HONOURED (#1050).
+        # opencode's `new_launch_argv` cannot express `bypass=False` — its default policy is
+        # allow-all — so a late-id engine declares `unattended_launch`, which returns the argv AND
+        # the environment that enforce it. A `ValueError` there means the enforcement could not be
+        # guaranteed, and nothing is spawned.
+        launch_env: dict[str, str] = {}
         try:
-            launch = prov.new_launch_argv(native, cwd=cwd, bypass=bypass)
+            unattended_launch = getattr(prov, "unattended_launch", None)
+            if unattended_launch is not None:
+                launch, launch_env = unattended_launch(
+                    native, cwd=cwd, bypass=bypass, env=dict(os.environ)
+                )
+            else:
+                launch = prov.new_launch_argv(native, cwd=cwd, bypass=bypass)
             argv = ptybridge.launch_argv(
                 engine=engine, session_id=native, launch_argv=launch, detached=True
             )
+        except ValueError as e:
+            raise DispatchError(str(e)) from None
         except ptybridge.PtyBridgeError as e:
             # NOTHING HAS BEEN SPAWNED, so this is a dispatch that did not happen rather than a
             # mission that failed (#904 review 2, finding 7) — the same shape the seed store's
@@ -702,6 +725,7 @@ async def dispatch(
         env = dict(os.environ)
         env.setdefault("TERM", "xterm-256color")
         env.setdefault("COLORTERM", "truecolor")
+        env.update(launch_env)
         # OWNERSHIP STARTS HERE, not at `transfer()` (#898 review 5, finding 2).
         #
         # The moment `create_subprocess_exec` is entered, the lock fd may already have been

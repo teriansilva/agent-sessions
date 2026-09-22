@@ -78,6 +78,9 @@ class FakeLate:
     def new_launch_argv(self, native, *, cwd, bypass):
         return ["/bin/true"]
 
+    def unattended_launch(self, native, *, cwd, bypass, env):
+        return self.new_launch_argv(native, cwd=cwd, bypass=bypass), {}
+
     def unattended_preflight(self, *, cwd, probe, gate):
         # A READ, which must not run under the global launch-policy fence (#921). Taking the fence
         # here from a worker thread succeeds only if nothing is holding it across this call.
@@ -682,13 +685,45 @@ def test_the_MISSION_picker_drops_an_incapable_late_id_engine_and_the_HANDOFF_pi
     assert handoff.seed_start_state(Late(), present=True) == (True, None)
 
 
-def test_every_REAL_late_id_engine_is_still_refused_with_the_capability_reason():
+#: Late-id engines whose start adapter has been MEASURED against the real CLI and implemented.
+#: Adding a name here is the deliberate edit this ratchet exists to force — #989's default-deny is
+#: only worth anything if an engine cannot drift into being dispatchable. opencode earned its place
+#: in #1050: its store writes no session row for 45 s with nothing typed (#916's deadlock, measured
+#: for this engine), so it is gated on the `creating instance` line in its own structured log.
+_MEASURED_LATE_ID = {"opencode"}
+
+
+def test_every_UNMEASURED_late_id_engine_is_still_refused_with_the_capability_reason():
     late = [p for p in engines.all_providers() if getattr(p, "new_session_reconciles", False)]
     assert {p.engine_id for p in late} >= {"codex", "opencode", "kimi", "antigravity"}
     for p in late:
         ok, why = engines.unattended_start_state(p)
+        if p.engine_id in _MEASURED_LATE_ID:
+            continue
         assert ok is False, f"{p.engine_id} became dispatchable without a measured adapter"
         assert "no unattended start check yet" in why
+
+
+def test_a_MEASURED_late_id_engine_is_dispatchable_and_declares_every_capability():
+    """The other half of the ratchet: a name in `_MEASURED_LATE_ID` must actually carry the
+    capabilities, so the set cannot be used to wave an engine through without implementing it."""
+    by_id = {p.engine_id: p for p in engines.all_providers()}
+    for engine_id in _MEASURED_LATE_ID:
+        prov = by_id[engine_id]
+        assert engines.unattended_start_state(prov) == (True, None), engine_id
+        for capability in engines.LATE_ID_CAPABILITIES:
+            assert callable(getattr(prov, capability, None)), f"{engine_id}.{capability}"
+
+
+def test_codex_specifically_is_still_refused():
+    """Named rather than left to the set above, because #1050 measured codex and REJECTED its only
+    startup artifact: `~/.codex/logs_2.sqlite` is a generic tracing table with a `process_uuid` but
+    no cwd, so it cannot tell a dispatch from the `codex exec` runs on this host. #1056 holds the
+    open question. If codex ever gains an adapter this test is the thing that has to be edited."""
+    prov = next(p for p in engines.all_providers() if p.engine_id == "codex")
+    ok, why = engines.unattended_start_state(prov)
+    assert ok is False
+    assert "start_evidence" in why
 
 
 def _columns(con, table: str) -> set[str]:
@@ -1138,6 +1173,71 @@ def test_an_ARCHIVE_keeps_the_binding_when_TERMINATION_RAISED(work, monkeypatch)
         missions.physical_key_of(real) == placeholder
     ), "a raised termination proved nothing, yet the mapping went"
     assert missions.physical_bindings() == [(real, placeholder)]
+
+
+# ---- the launch environment: how `bypass=False` is enforced (#1050, review comment 72377) ----
+
+
+@pytest.mark.anyio
+async def test_the_engines_unattended_launch_environment_reaches_the_spawn(
+    work, prov, monkeypatch, typed, torn_down
+):
+    """opencode's permissions are config, so `bypass=False` is enforced through the child's
+    ENVIRONMENT. An override the provider returns and the spawn never receives would leave the
+    agent on its allow-all default while the dispatcher believed it had withheld bypass."""
+    seen: dict = {}
+
+    class P:
+        returncode = 0
+
+        def wait(self):
+            return 0
+
+    def fake(argv, **kw):
+        seen["argv"], seen["env"] = list(argv), kw.get("env")
+        i = list(argv).index("-n") + 1
+        open(argv[i], "w").close()
+        return P()
+
+    monkeypatch.setattr(headless_dispatch, "_popen", fake)
+    asked: list[bool] = []
+
+    def unattended_launch(native, *, cwd, bypass, env):
+        asked.append(bypass)
+        return ["/bin/true"], {"BATTLELAB_TEST_POLICY": "ask"}
+
+    monkeypatch.setattr(prov, "unattended_launch", unattended_launch, raising=False)
+    prov.on_type = lambda text: prov.sessions.__setitem__(OURS, text)
+    out = await _dispatch(work)
+    assert out.ok, out.reason
+    assert asked == [False], "the dispatcher must hand the provider bypass=False by default"
+    assert seen["env"]["BATTLELAB_TEST_POLICY"] == "ask"
+
+
+@pytest.mark.anyio
+async def test_a_launch_whose_policy_cannot_be_enforced_spawns_NOTHING(
+    work, prov, spawned, typed, torn_down, monkeypatch
+):
+    def unattended_launch(native, *, cwd, bypass, env):
+        raise ValueError("the ask-only policy cannot be applied")
+
+    monkeypatch.setattr(prov, "unattended_launch", unattended_launch, raising=False)
+    with pytest.raises(headless_dispatch.DispatchError) as e:
+        await _dispatch(work)
+    assert "ask-only policy" in str(e.value)
+    assert spawned == []
+
+
+def test_the_admission_key_is_one_folder_however_it_is_spelled(tmp_path):
+    """A symlinked checkout and its target are one folder with one store; two spellings must meet
+    on one flock (review comment 72377 finding 2)."""
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    assert headless_dispatch._admission_key("opencode", str(link)) == (
+        headless_dispatch._admission_key("opencode", str(real))
+    )
 
 
 # ---- #1064: the first reading does not wait a sweep ------------------------------------------

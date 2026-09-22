@@ -65,8 +65,11 @@ def _first_user_text(engine: str, native: str, home: Path) -> str | None:
     """The first user text turn of one session, or None when it has none yet.
 
     Raises when the engine has no transcript adapter, or when its adapter cannot read the session.
+    The STRICT reader is used where the engine has one: its ordinary adapter is fail-soft and
+    returns ``[]`` for a store it could not read, which would read here as "no turn yet" and turn
+    an unreadable candidate into a pending one (review comment 72377 finding 3).
     """
-    adapter = transcript.adapter_for(engine)
+    adapter = transcript.strict_adapter_for(engine)
     if adapter is None:
         raise LookupError(f"{engine} registers no transcript adapter")
     for turn in adapter(native, home) or []:

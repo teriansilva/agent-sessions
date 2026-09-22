@@ -262,6 +262,29 @@ def _classify(text: str) -> str | None:
     return None
 
 
+def run_probe(
+    argv: list[str],
+    *,
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+    probe: Probe | None = None,
+    gate=None,
+) -> tuple[bool, str]:
+    """``(completed, combined_output)`` for one bounded, contained probe — the public door onto
+    :func:`_run` (#1050).
+
+    A provider's own ``unattended_preflight`` spawns a real vendor process and therefore needs
+    every guarantee this module already makes: a literal argv (never a command string, so the
+    shell-free gate in ``CLAUDE.md`` still holds), ``stdin`` closed so it cannot sit waiting,
+    the process group captured AT SPAWN, and ``gate`` entered around the spawn alone and never
+    across the wait (#921). Re-implementing those per engine is how one of them ends up missing.
+
+    Callers must keep this module's other rule too: ``detail`` never carries probe output
+    verbatim — only which branch was taken — so a diagnostic cannot leak a token.
+    """
+    return _run(argv, cwd, dict(env if env is not None else os.environ), probe or Probe(), gate)
+
+
 def check(
     binary: str,
     *,

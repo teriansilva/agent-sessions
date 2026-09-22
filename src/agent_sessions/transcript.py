@@ -332,6 +332,25 @@ def adapter_for(engine_id: str) -> TranscriptAdapter | None:
     return _ADAPTERS.get(engine_id)
 
 
+# A STRICT reader is the same read with one difference: it RAISES where the adapter above degrades
+# to ``[]``. The adapters are fail-soft on purpose — a locked or corrupt store must never take down
+# the sidebar, a review or a history view — but a caller deciding "which session did this launch
+# become" (`launch_binding.bind_by_nonce`) must be able to tell "this session has no turn yet" from
+# "this session could not be read", because #989's rule is that unreadable is not absent (review
+# comment 72377 finding 3). An engine whose adapter already raises on a failed read needs none.
+_STRICT_ADAPTERS: dict[str, TranscriptAdapter] = {}
+
+
+def register_strict_adapter(engine_id: str, adapter: TranscriptAdapter) -> None:
+    """Register the read for ``engine_id`` that raises instead of returning ``[]`` on failure."""
+    _STRICT_ADAPTERS[engine_id] = adapter
+
+
+def strict_adapter_for(engine_id: str) -> TranscriptAdapter | None:
+    """The strict reader for ``engine_id`` when one is registered, else its ordinary adapter."""
+    return _STRICT_ADAPTERS.get(engine_id) or adapter_for(engine_id)
+
+
 # Where an engine keeps a session's FULL transcript, as an agent-readable location string (#716).
 # Deliberately separate from the adapters: an adapter *parses* a transcript, a locator only
 # *names where it lives*, so a handoff seed can point the receiving agent at the history the
@@ -811,17 +830,26 @@ def _opencode_message_turns(role: str, part_rows: list[tuple]) -> list[Turn]:
 def _opencode_adapter(native_id: str, home: Path) -> list[Turn]:
     """opencode keeps its conversation in SQLite (``message`` + ``part`` tables). Take the last
     ``DEFAULT_MAX_MESSAGES`` messages for the session (``id`` is a monotonic ULID), oldest-first,
-    and expand each into its part Turns. Read-only + fail-soft: any sqlite error → ``[]``. The DB
-    is the same env-overridable path the provider reads (``base._opencode_db``)."""
+    and expand each into its part Turns. Read-only + fail-soft: any sqlite error → ``[]``, so a
+    locked or corrupt store never takes down the rows and views built on it. The DB is the same
+    env-overridable path the provider reads (``base._opencode_db``)."""
+    try:
+        return _opencode_turns_strict(native_id, home)
+    except (sqlite3.Error, FileNotFoundError):
+        return []
+
+
+def _opencode_turns_strict(native_id: str, home: Path) -> list[Turn]:
+    """`_opencode_adapter`'s read, RAISING where it degrades (review comment 72377 finding 3).
+
+    A missing DB is `FileNotFoundError` and any SQLite failure propagates: the binder only asks
+    about ids it has just read out of this very store, so neither is "no turn yet"."""
     from .engines import base
 
     db = Path(base._opencode_db(home))
     if not db.exists():
-        return []
-    try:
-        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.5)
-    except sqlite3.Error:
-        return []
+        raise FileNotFoundError(f"opencode's store {db} does not exist")
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.5)
     try:
         rows = conn.execute(
             "SELECT id, data FROM message WHERE session_id=? ORDER BY id DESC LIMIT ?",
@@ -839,8 +867,6 @@ def _opencode_adapter(native_id: str, home: Path) -> list[Turn]:
             ).fetchall()
             turns.extend(_opencode_message_turns(role, parts))
         return turns
-    except sqlite3.Error:
-        return []
     finally:
         conn.close()
 
@@ -949,6 +975,7 @@ def _opencode_growth(native_id: str, home: Path) -> int | None:
 
 
 register_adapter("opencode", _opencode_adapter)
+register_strict_adapter("opencode", _opencode_turns_strict)
 register_locator("opencode", _opencode_locator)
 register_growth("opencode", _opencode_growth)
 

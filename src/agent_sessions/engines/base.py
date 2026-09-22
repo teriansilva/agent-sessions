@@ -122,6 +122,23 @@ def _opencode_db(home: Path | None = None) -> str:
     )
 
 
+def _opencode_log(home: Path | None = None) -> Path:
+    """opencode's structured log — the START artifact for an unattended launch (#1050).
+
+    Its SQLite store cannot answer "did an agent start": measured on 2026-09-21, a launched,
+    painted, ready opencode wrote **no** ``session`` row for 45 s with nothing typed, which is
+    #916's deadlock exactly (the record waits on the turn, the turn waits on the brief, the brief
+    waits on the record). This file gets a ``creating instance`` line carrying the launch
+    directory ~1.8 s in, with nothing typed.
+
+    Env-overridable so tests never read the operator's real log.
+    """
+    return Path(
+        os.environ.get("AGENT_SESSIONS_OPENCODE_LOG")
+        or ((home or Path.home()) / ".local" / "share" / "opencode" / "log" / "opencode.log")
+    )
+
+
 def _shell_dir(home: Path | None = None) -> Path:
     """Per-session record store for the shell engine (#636). A plain shell has no native engine
     store to scan, so ``ShellProvider`` persists one JSON record per session here (``scan`` globs
