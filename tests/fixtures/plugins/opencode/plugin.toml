@@ -1,0 +1,56 @@
+contract = 1
+maintenance = ["sqlite-vacuum"]
+
+[identity]
+id = "opencode"
+label = "opencode"
+publisher = "battlelab"
+version = "1"
+
+[binary]
+name = "opencode"
+env_var = "AGENT_SESSIONS_OPENCODE_BIN"
+search_paths = ["~/.opencode/bin", "~/.local/bin"]
+
+[session_id]
+pattern = "^ses_[A-Za-z0-9]+$"
+mint = "adopt"
+
+[store]
+root = "~/.local/share/opencode"
+env_override = "AGENT_SESSIONS_OPENCODE_DIR"
+layout = "opencode-sqlite"
+[store.paths]
+db = "opencode.db"
+log = "log/opencode.log"
+
+[launch]
+resume = { kind = "positional-dir", flag = "--session" }
+new = { kind = "positional-dir" }
+admission = "sqlite-store-shared"
+
+[capabilities]
+resume = true
+new = true
+archive = true
+handoff_target = true
+seed_start = true
+orchestrator_input = true
+raw_tty = true
+
+[transcript]
+kind = "opencode-sqlite"
+strict = true
+
+[usage]
+source = "tokens"
+kind = "opencode-store-query"
+
+[unattended]
+start_evidence = "opencode-log"
+
+[display]
+name = "opencode"
+badge = "oc"
+accent = "teal"
+id_prefix = "ses_"

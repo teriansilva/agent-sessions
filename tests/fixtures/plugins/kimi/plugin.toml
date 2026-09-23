@@ -1,0 +1,50 @@
+contract = 1
+
+[identity]
+id = "kimi"
+label = "Kimi Code"
+publisher = "battlelab"
+version = "1"
+
+[binary]
+name = "kimi"
+env_var = "AGENT_SESSIONS_KIMI_BIN"
+search_paths = ["~/.kimi-code/bin", "~/.local/bin"]
+
+[session_id]
+pattern = "^session_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+mint = "adopt"
+
+[store]
+root = "~/.kimi-code"
+env_override = "AGENT_SESSIONS_KIMI_DIR"
+layout = "kimi-code"
+
+[launch]
+resume = { kind = "flag", flag = "-S" }
+new = { kind = "bare" }
+bypass = ["-y"]
+
+[capabilities]
+resume = true
+new = true
+archive = true
+handoff_target = true
+seed_start = true
+orchestrator_input = true
+raw_tty = true
+
+[transcript]
+kind = "kimi-wire"
+
+[usage]
+source = "manual"
+
+[terminal]
+repaint = "wipe"
+
+[display]
+name = "kimi"
+badge = "ki"
+accent = "magenta"
+id_prefix = "session_"

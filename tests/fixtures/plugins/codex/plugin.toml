@@ -1,0 +1,53 @@
+contract = 1
+
+[identity]
+id = "codex"
+label = "Codex"
+publisher = "battlelab"
+version = "1"
+
+[binary]
+name = "codex"
+env_var = "AGENT_SESSIONS_CODEX_BIN"
+search_paths = ["~/.codex/bin", "~/.local/bin"]
+
+[session_id]
+pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+mint = "adopt"
+
+[store]
+root = "~/.codex"
+env_override = "AGENT_SESSIONS_CODEX_SESSIONS_DIR"
+layout = "codex-rollouts"
+[store.paths]
+sessions = "sessions"
+
+[launch]
+resume = { kind = "subcommand", subcommand = "resume" }
+new = { kind = "cwd-flag", flag = "--cd" }
+bypass = ["--dangerously-bypass-approvals-and-sandbox"]
+bypass_on = "new"
+
+[capabilities]
+resume = true
+new = true
+archive = true
+handoff_target = true
+seed_start = true
+orchestrator_input = true
+raw_tty = true
+
+[transcript]
+kind = "codex-rollout"
+
+[usage]
+source = "plan"
+kind = "codex-rollout-field"
+
+[terminal]
+repaint = "wipe"
+
+[display]
+name = "codex"
+badge = "cx"
+accent = "green"

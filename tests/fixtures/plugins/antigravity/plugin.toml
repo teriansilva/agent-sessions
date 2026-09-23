@@ -1,0 +1,47 @@
+contract = 1
+
+[identity]
+id = "antigravity"
+label = "Antigravity"
+publisher = "battlelab"
+version = "1"
+
+[binary]
+name = "agy"
+aliases = ["agy"]
+env_var = "AGENT_SESSIONS_AGY_BIN"
+search_paths = ["~/.local/bin"]
+
+[session_id]
+pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+mint = "adopt"
+
+[store]
+root = "~/.gemini/antigravity-cli"
+env_override = "AGENT_SESSIONS_ANTIGRAVITY_DIR"
+layout = "antigravity-cli"
+
+[launch]
+resume = { kind = "flag", flag = "--conversation" }
+new = { kind = "bare" }
+bypass = ["--dangerously-skip-permissions"]
+
+[capabilities]
+resume = true
+new = true
+archive = true
+orchestrator_input = true
+raw_tty = true
+
+[transcript]
+kind = "antigravity-brain"
+
+[usage]
+source = "plan"
+kind = "agy-cli-probe"
+probe_token = "/usage"
+
+[display]
+name = "antigravity"
+badge = "ag"
+accent = "lime"

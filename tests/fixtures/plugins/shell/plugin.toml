@@ -1,0 +1,38 @@
+contract = 1
+
+[identity]
+id = "shell"
+label = "Shell"
+publisher = "battlelab"
+version = "1"
+kind = "terminal"
+
+[binary]
+name = "bash"
+aliases = ["bash"]
+env_var = "AGENT_SESSIONS_BASH_BIN"
+search_paths = ["/bin", "/usr/bin"]
+
+[session_id]
+pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+mint = "pinned"
+
+[store]
+root = "~/.claude/shell-sessions"
+env_override = "AGENT_SESSIONS_SHELL_DIR"
+layout = "shell-records"
+
+[launch]
+resume = { kind = "fresh" }
+new = { kind = "bare" }
+base_args = ["-l"]
+
+[capabilities]
+resume = true
+new = true
+archive = true
+
+[display]
+name = "shell"
+badge = "sh"
+accent = "slate"

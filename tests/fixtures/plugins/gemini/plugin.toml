@@ -1,0 +1,44 @@
+contract = 1
+
+[identity]
+id = "gemini"
+label = "Gemini CLI"
+publisher = "battlelab"
+version = "1"
+
+[binary]
+name = "gemini"
+env_var = "AGENT_SESSIONS_GEMINI_BIN"
+search_paths = ["~/.local/bin"]
+
+[session_id]
+pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+mint = "pinned"
+
+[store]
+root = "~/.gemini"
+env_override = "AGENT_SESSIONS_GEMINI_TMP_DIR"
+layout = "gemini-tmp"
+
+[launch]
+resume = { kind = "flag", flag = "--resume" }
+new = { kind = "pin-flag", flag = "--session-id" }
+bypass = ["--yolo", "--skip-trust"]
+
+[capabilities]
+resume = true
+new = true
+archive = true
+orchestrator_input = true
+raw_tty = true
+
+[transcript]
+kind = "gemini-chat"
+
+[usage]
+source = "manual"
+
+[display]
+name = "gemini"
+badge = "gm"
+accent = "blue"

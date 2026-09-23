@@ -1,0 +1,62 @@
+contract = 1
+verify = ["binary", "version", "store", "new", "resume", "transcript", "usage"]
+
+[identity]
+id = "claude"
+label = "Claude Code"
+publisher = "battlelab"
+version = "1"
+
+[binary]
+name = "claude"
+env_var = "AGENT_SESSIONS_CLAUDE_BIN"
+search_paths = ["~/.local/bin"]
+version_flag = "--version"
+
+[session_id]
+pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+mint = "pinned"
+legacy_bare_id = true
+
+[store]
+root = "~/.claude"
+layout = "claude-projects"
+[store.paths]
+sessions = "projects"
+archive = "projects-archive"
+
+[launch]
+resume = { kind = "flag", flag = "--resume" }
+new = { kind = "pin-flag", flag = "--session-id" }
+bypass = ["--dangerously-skip-permissions"]
+
+[capabilities]
+resume = true
+new = true
+archive = true
+handoff_target = true
+seed_start = true
+orchestrator_input = true
+raw_tty = true
+owns_transcript = true
+
+[transcript]
+kind = "claude-jsonl"
+
+[usage]
+source = "plan"
+kind = "claude-cli-probe"
+probe_token = "/usage"
+
+[terminal]
+ready = "claude-first-paint"
+menu = "claude-numbered"
+menu_digit_submits = true
+
+[unattended]
+start_evidence = "claude-sessions"
+
+[display]
+name = "claude"
+badge = "cc"
+accent = "amber"
