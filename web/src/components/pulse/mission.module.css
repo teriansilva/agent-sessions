@@ -731,6 +731,29 @@
   outline: 2px solid var(--accent);
   outline-offset: -1px;
 }
+/* The checklist picker (#1061) takes the project picker's look but sizes to its longest option: a
+   playbook label is the operator's own text, and "Checklist: Ship a P…" clipped at 180px. */
+.newMissionPlaybook {
+  /* Never shrunk below its text on a wide box — the project picker gives way first; a narrow box
+     gives the picker a row of its own (below). */
+  flex: 0 0 auto;
+  max-width: 300px;
+}
+/* The line under the box saying what the chosen checklist means (#1061). */
+.playbookNote {
+  overflow-wrap: anywhere;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--text-2);
+}
+.playbookNote strong {
+  color: var(--text-1);
+  font-weight: 600;
+}
+/* "No checklist" states its cost — attention, not failure — in the TEXT-SAFE amber. */
+.playbookNoteWarn {
+  color: var(--warn-text);
+}
 
 /* --- ONE COMPOSER BOX (#967) ----------------------------------------------------------------------
    The start screen used to be four loose pieces: the mode strip above, the project picker beside the
@@ -803,6 +826,14 @@
   .newMissionForm .footTrail > [type="submit"] {
     flex: 1 1 0;
   }
+  /* The checklist gets a row of its own: at half a phone's width both pickers clipped. */
+  .newMissionForm .footLead {
+    flex-wrap: wrap;
+  }
+  .newMissionForm .newMissionProject.newMissionPlaybook {
+    flex: 1 1 100%;
+    max-width: none;
+  }
   .newMissionForm .footSpacer,
   .newMissionForm .footHint {
     display: none;
@@ -819,6 +850,14 @@
   .newMissionForm .newMissionProject,
   .newMissionForm .footTrail > [type="submit"] {
     flex: 1 1 0;
+  }
+  /* The checklist gets a row of its own: at half a phone's width both pickers clipped. */
+  .newMissionForm .footLead {
+    flex-wrap: wrap;
+  }
+  .newMissionForm .newMissionProject.newMissionPlaybook {
+    flex: 1 1 100%;
+    max-width: none;
   }
   .newMissionForm .footSpacer,
   .newMissionForm .footHint {

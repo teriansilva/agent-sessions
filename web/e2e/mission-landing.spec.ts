@@ -35,7 +35,7 @@ const TEMPLATE = {
   last_used_at: null,
 };
 
-async function setup(page: Page, opts: { cards?: unknown[] } = {}) {
+async function setup(page: Page, opts: { cards?: unknown[]; config?: Record<string, unknown> } = {}) {
   await page.route("**/api/**", (r) => r.fulfill({ json: {} }));
   await page.route("**/api/config", (r) =>
     r.fulfill({
@@ -46,6 +46,7 @@ async function setup(page: Page, opts: { cards?: unknown[] } = {}) {
         pulse: { configured: true },
         new_session_engines: ["claude"],
         onboarded: true,
+        ...opts.config,
       },
     }),
   );
@@ -403,4 +404,64 @@ test("a template appends to an existing brief on a new line, and a cancelled pic
   await expect(brief).toHaveValue(
     "Keep the retry budget\nFix auth and open a PR /tmp/uploads/20260914-shot.png",
   );
+});
+
+test("the checklist is chosen per mission: default pre-selected, the pick is what is sent (#1061)", async ({
+  page,
+}) => {
+  await setup(page, {
+    config: {
+      mission_playbooks: {
+        default_id: "pr",
+        revision: 1,
+        playbooks: [
+          { id: "pr", label: "Ship a PR", objectives: [] },
+          { id: "audit", label: "Dependency audit", objectives: [] },
+        ],
+      },
+    },
+  });
+  const creates: Record<string, unknown>[] = [];
+  await page.route("**/api/missions", (r) => {
+    if (r.request().method() !== "POST") return r.fallback();
+    creates.push(r.request().postDataJSON());
+    return r.fulfill({ status: 201, json: { ...MISSION, id: CREATED, title: "Created mission" } });
+  });
+  await page.goto(MISSION_PATH);
+  const pick = page.getByTestId("new-mission-playbook");
+  await expect(pick).toHaveValue("pr");
+  await expect(pick.locator("option")).toHaveText([
+    "Checklist: Ship a PR",
+    "Checklist: Dependency audit",
+    "No checklist",
+  ]);
+
+  // It sits in the composer footer and stays inside it, phone included.
+  const foot = await page.getByTestId("composer-foot").boundingBox();
+  const box = await pick.boundingBox();
+  expect(box!.x).toBeGreaterThanOrEqual(foot!.x - 0.5);
+  expect(box!.x + box!.width).toBeLessThanOrEqual(foot!.x + foot!.width + 0.5);
+  expect(box!.height).toBeGreaterThanOrEqual(44);
+  const vw = page.viewportSize()!.width;
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(vw);
+
+  await expect(page.getByTestId("new-mission-playbook-note")).toContainText("Ship a PR —");
+  await pick.selectOption(":none");
+  // Declining states its cost under the box, in the text-safe amber.
+  const warn = page.getByTestId("new-mission-playbook-note");
+  await expect(warn).toContainText("never confirm itself finished");
+  const colours = await warn.evaluate((el) => {
+    const probe = document.createElement("span");
+    probe.style.color = "var(--warn-text)";
+    document.body.appendChild(probe);
+    const want = getComputedStyle(probe).color;
+    probe.remove();
+    return [getComputedStyle(el).color, want];
+  });
+  expect(colours[0]).toBe(colours[1]);
+  await page.getByTestId("new-mission-instruction").fill("tidy the readme");
+  await page.getByTestId("new-mission-project").selectOption("p1");
+  await page.getByTestId("new-mission-start").click();
+  await expect.poll(() => creates.length).toBe(1);
+  expect(creates[0]).toMatchObject({ instruction: "tidy the readme", project_id: "p1", playbook_id: ":none" });
 });

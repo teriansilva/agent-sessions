@@ -21,6 +21,7 @@
 import { BookMarked } from "lucide-react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 
+import { useConfig } from "../../app/config";
 import { api, ApiError } from "../../lib/api";
 import type { Mission, ProjectEntity } from "../../types/api";
 
@@ -28,6 +29,9 @@ import action from "../ui/actionButton.module.css";
 import styles from "./mission.module.css";
 import { renderTemplate } from "../../lib/templateMessage";
 import { TemplatePickerModal } from "../templates/TemplatePickerModal";
+
+/** `missions.PLAYBOOK_DECLINED`: this mission gets no checklist — notes only (#1061). */
+export const PLAYBOOK_DECLINED = ":none";
 
 /** The server's instruction cap (`missions.INSTRUCTION_MAX`). It truncates silently, so the form
  *  refuses to start over it rather than letting the tail of a brief disappear (#948). */
@@ -76,6 +80,24 @@ export function NewMissionForm({
 
   const [instruction, setInstruction] = useState("");
   const [projectId, setProjectId] = useState("");
+  /** The checklist for THIS mission (#1061). `null` = untouched, so the pre-selection follows the
+   *  configured default even when the config lands after mount; a pick is the operator's and
+   *  sticks. */
+  const [pickedPlaybook, setPickedPlaybook] = useState<string | null>(null);
+  const config = useConfig();
+  const playbookBlock = config?.mission_playbooks;
+  const playbooks = playbookBlock?.playbooks ?? [];
+  const defaultPlaybook = playbooks.some(
+    (p) => p.id === playbookBlock?.default_id,
+  )
+    ? playbookBlock!.default_id
+    : PLAYBOOK_DECLINED;
+  const playbookId =
+    pickedPlaybook !== null &&
+    (pickedPlaybook === PLAYBOOK_DECLINED ||
+      playbooks.some((p) => p.id === pickedPlaybook))
+      ? pickedPlaybook
+      : defaultPlaybook;
   const [projects, setProjects] = useState<ProjectEntity[] | null>(null);
   /** The list could not be READ — a different fact from an empty one, and with a different fix. */
   const [projectsError, setProjectsError] = useState(false);
@@ -142,6 +164,11 @@ export function NewMissionForm({
         const m = await api.createMission({
           instruction: text,
           project_id: projectId,
+          // SENT EXPLICITLY whenever there is anything to choose, so the mission records the
+          // checklist the operator saw selected — including "No checklist" — instead of whatever
+          // the Settings default becomes later. With no playbooks configured nothing is sent and
+          // the server's own default applies, exactly as before.
+          ...(playbooks.length ? { playbook_id: playbookId } : {}),
         });
         // FENCED AT RESOLUTION, ON THE VISIT. The operator may have moved to another mission, or
         // flipped Active → Archived while this was in flight. The last of
@@ -155,6 +182,7 @@ export function NewMissionForm({
         const focus = liveRef.current && isVisitCurrent(at);
         setInstruction("");
         setProjectId("");
+        setPickedPlaybook(null);
         onCreated(m, { focus });
       } catch (err) {
         // The server's own `detail` — a project with no folder to work in, an unresolvable
@@ -169,7 +197,17 @@ export function NewMissionForm({
         setBusy(false);
       }
     },
-    [instruction, projectId, busy, overCap, onCreated, visit, isVisitCurrent],
+    [
+      instruction,
+      projectId,
+      busy,
+      overCap,
+      onCreated,
+      visit,
+      isVisitCurrent,
+      playbooks.length,
+      playbookId,
+    ],
   );
 
   /* SAID BEFORE THE CREATE, and it names the fix rather than a control that does not exist.
@@ -245,6 +283,25 @@ export function NewMissionForm({
                 </option>
               ))}
             </select>
+            {/* WHICH CHECKLIST, per mission (#1061). Hidden when no playbook is configured: there
+                is nothing to choose, and an empty picker would only say so in the way. */}
+            {playbooks.length ? (
+              <select
+                className={`${styles.newMissionProject} ${styles.newMissionPlaybook}`}
+                value={playbookId}
+                onChange={(e) => setPickedPlaybook(e.target.value)}
+                aria-label="Checklist"
+                title="The objectives this mission is checked against"
+                data-testid="new-mission-playbook"
+              >
+                {playbooks.map((pb) => (
+                  <option key={pb.id} value={pb.id}>
+                    {`Checklist: ${pb.label}`}
+                  </option>
+                ))}
+                <option value={PLAYBOOK_DECLINED}>No checklist</option>
+              </select>
+            ) : null}
           </div>
           <div className={styles.footTrail}>
             <button
@@ -297,6 +354,38 @@ export function NewMissionForm({
           />
         ) : null}
       </form>
+      {/* WHAT THE CHOSEN CHECKLIST MEANS (#1061), under the box as the issue's mockup draws it: the
+          playbook's own objective titles, or — for "No checklist" — its cost, in the text-safe amber,
+          because a mission with nothing to check can never confirm itself finished. */}
+      {playbooks.length ? (
+        playbookId === PLAYBOOK_DECLINED ? (
+          <div
+            className={`${styles.playbookNote} ${styles.playbookNoteWarn} ${styles.boxNote}`}
+            data-testid="new-mission-playbook-note"
+          >
+            No checklist — notes only: nothing can be checked, so the mission
+            can never confirm itself finished. You close it.
+          </div>
+        ) : (
+          <div
+            className={`${styles.playbookNote} ${styles.boxNote}`}
+            data-testid="new-mission-playbook-note"
+          >
+            {(() => {
+              const pb = playbooks.find((p) => p.id === playbookId)!;
+              const titles = pb.objectives.map((o) => o.title).filter(Boolean);
+              return (
+                <>
+                  <strong>{pb.label}</strong>
+                  {titles.length
+                    ? ` — ${titles.join(" · ")}. Checked by the server; fitted to your instruction.`
+                    : " — no objectives in this playbook yet."}
+                </>
+              );
+            })()}
+          </div>
+        )
+      ) : null}
       {/* Under the box: what the form needs from the operator, never inside the row. */}
       {note ? (
         <div
