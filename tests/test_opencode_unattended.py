@@ -22,6 +22,10 @@ from agent_sessions import start_evidence as se
 from agent_sessions.engines import base
 from agent_sessions.engines import opencode as oc
 
+# Captured at import, before the autouse stand-in below replaces it, so the one test about the
+# real probe can restore it without `monkeypatch.undo()` (which also reverts conftest's pins).
+_REAL_LAUNCH_MASTER_STATE = oc._launch_master_state
+
 
 @pytest.fixture(autouse=True)
 def master_alive(monkeypatch):
@@ -497,7 +501,8 @@ def test_a_line_in_our_folder_is_not_OUR_start_once_our_master_is_gone(
 def test_the_master_probe_asks_the_socket_of_THIS_launch(monkeypatch):
     from agent_sessions import ptybridge
 
-    monkeypatch.undo()  # the real `_launch_master_state`, not the autouse stand-in
+    # The real `_launch_master_state`, not the autouse stand-in.
+    monkeypatch.setattr(oc, "_launch_master_state", _REAL_LAUNCH_MASTER_STATE)
     asked: list = []
     monkeypatch.setattr(ptybridge, "probe_master", lambda sock: asked.append(sock) or "dead")
     launch = base.LaunchContext(

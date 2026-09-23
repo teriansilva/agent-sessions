@@ -466,26 +466,23 @@ def test_a_crash_after_the_bell_write_does_not_duplicate_the_alert(monkeypatch, 
     monkeypatch.setattr(au, "REPORTERS", {"claude": _claude_at(97.0)})
     from agent_sessions import notifications
 
-    # Crash: the bell write lands, the commit never does.
-    monkeypatch.setattr(
-        au, "mark_announced", lambda *a, **k: (_ for _ in ()).throw(OSError("crash"))
-    )
-    with pytest.raises(OSError):
-        usage_loop.refresh_once()
-    doc = au.load(tmp_path / "usage.json")
-    assert len(notifications.listing(tmp_path / "notifications.json")["notifications"]) == 1
-    assert doc.get("alerted") == [], "the key never got committed"
-    assert doc.get("pending"), "but the attempt is on record"
+    # Crash: the bell write lands, the commit never does. Scoped, never `monkeypatch.undo()`:
+    # undo would also revert conftest's store pins and send the recovery phase to the
+    # operator's real `~/.config/agent-sessions` (missions.db, prefs.json).
+    with pytest.MonkeyPatch.context() as crash:
+        crash.setattr(au, "mark_announced", lambda *a, **k: (_ for _ in ()).throw(OSError("crash")))
+        with pytest.raises(OSError):
+            usage_loop.refresh_once()
+        doc = au.load(tmp_path / "usage.json")
+        assert len(notifications.listing(tmp_path / "notifications.json")["notifications"]) == 1
+        assert doc.get("alerted") == [], "the key never got committed"
+        assert doc.get("pending"), "but the attempt is on record"
 
-    # The operator dismisses the row they already saw — so the bell can no longer answer.
-    notifications.dismiss(None, tmp_path / "notifications.json")
-    assert notifications.listing(tmp_path / "notifications.json")["notifications"] == []
+        # The operator dismisses the row they already saw — so the bell can no longer answer.
+        notifications.dismiss(None, tmp_path / "notifications.json")
+        assert notifications.listing(tmp_path / "notifications.json")["notifications"] == []
 
     # Recovery: the outbox settles it, with no second bell entry and no second push.
-    monkeypatch.undo()
-    monkeypatch.setenv("AGENT_SESSIONS_AGENT_USAGE", str(tmp_path / "usage.json"))
-    monkeypatch.setenv("AGENT_SESSIONS_NOTIFICATIONS", str(tmp_path / "notifications.json"))
-    monkeypatch.setattr(au, "REPORTERS", {"claude": _claude_at(97.0)})
     pushed = []
     monkeypatch.setattr(notifications, "fanout", lambda rec, *a, **k: pushed.append(rec))
     out = usage_loop.refresh_once()
@@ -639,18 +636,17 @@ def test_raising_the_threshold_after_the_sweep_withdraws_the_alert(monkeypatch, 
         return out
 
     monkeypatch.setattr(au, "REPORTERS", {"claude": _claude_at(95.0)})
-    monkeypatch.setattr(au, "refresh", refresh_then_raise_the_bar)
     from agent_sessions import notifications
 
-    out = usage_loop.refresh_once()
+    # Scoped, never `monkeypatch.undo()`: undo also reverted conftest's `AGENT_SESSIONS_PREFS`
+    # pin, so the `set_agent_budgets` below rewrote the operator's REAL prefs.json.
+    with pytest.MonkeyPatch.context() as raised:
+        raised.setattr(au, "refresh", refresh_then_raise_the_bar)
+        out = usage_loop.refresh_once()
     assert out["delivered"] == []
     assert notifications.listing(tmp_path / "notifications.json")["notifications"] == []
     # Withdrawn, not consumed: lowering the bar again announces it properly.
     assert au.load(tmp_path / "usage.json").get("alerted") == []
-    monkeypatch.undo()
-    monkeypatch.setenv("AGENT_SESSIONS_AGENT_USAGE", str(tmp_path / "usage.json"))
-    monkeypatch.setenv("AGENT_SESSIONS_NOTIFICATIONS", str(tmp_path / "notifications.json"))
-    monkeypatch.setattr(au, "REPORTERS", {"claude": _claude_at(95.0)})
     prefs.set_agent_budgets({"threshold_pct": 90})
     assert usage_loop.refresh_once()["delivered"]
 
@@ -673,11 +669,10 @@ def test_a_short_bell_write_does_not_consume_the_crossing(monkeypatch, tmp_path)
         # The kernel is permitted to do exactly this.
         return real_write(fd, data[: len(data) // 2]) if len(data) > 40 else real_write(fd, data)
 
-    monkeypatch.setattr(os, "write", short_write)
-    usage_loop.refresh_once()
-    monkeypatch.undo()
-    monkeypatch.setenv("AGENT_SESSIONS_AGENT_USAGE", str(tmp_path / "usage.json"))
-    monkeypatch.setenv("AGENT_SESSIONS_NOTIFICATIONS", str(tmp_path / "notifications.json"))
+    # Scoped, never `monkeypatch.undo()` — see the crash test above.
+    with pytest.MonkeyPatch.context() as short:
+        short.setattr(os, "write", short_write)
+        usage_loop.refresh_once()
 
     rows = notifications.listing(tmp_path / "notifications.json")["notifications"]
     assert len(rows) == 1, "the record must be complete and readable, or not claimed as written"
@@ -717,30 +712,16 @@ def test_a_crash_mid_batch_does_not_silence_the_alerts_it_never_reached(monkeypa
             raise SystemExit("process died mid-delivery")
         return real_add(**kw)
 
-    monkeypatch.setattr(notifications, "add", die_on_the_first)
-    with pytest.raises(SystemExit):
-        usage_loop.refresh_once()
+    # Scoped, never `monkeypatch.undo()` — see the crash test above.
+    with pytest.MonkeyPatch.context() as dying:
+        dying.setattr(notifications, "add", die_on_the_first)
+        with pytest.raises(SystemExit):
+            usage_loop.refresh_once()
 
-    doc = au.load(tmp_path / "usage.json")
-    assert len(doc.get("pending") or []) == 1, "only the crossing in flight was claimed"
+        doc = au.load(tmp_path / "usage.json")
+        assert len(doc.get("pending") or []) == 1, "only the crossing in flight was claimed"
 
     # Recovery settles that ONE, and the others are still offered.
-    monkeypatch.undo()
-    monkeypatch.setenv("AGENT_SESSIONS_AGENT_USAGE", str(tmp_path / "usage.json"))
-    monkeypatch.setenv("AGENT_SESSIONS_NOTIFICATIONS", str(tmp_path / "notifications.json"))
-    monkeypatch.setattr(
-        au,
-        "REPORTERS",
-        {
-            "claude": _claude_at(97.0),
-            "codex": lambda: au.Report(
-                engine="codex",
-                source=au.SOURCE_PLAN,
-                windows=[au.Window("week", 96.0, 1_800_000_000)],
-                at=time.time(),
-            ),
-        },
-    )
     out = usage_loop.refresh_once()
     engines_alerted = {a["engine"] for a in out["alerts"]}
     assert engines_alerted, "the untouched crossings survive the crash"

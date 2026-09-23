@@ -229,10 +229,11 @@ def test_startup_failure_after_spawn_still_reaps_the_master(tmp_path, monkeypatc
     def explode(self_):
         raise boom
 
-    monkeypatch.setattr(H.threading.Thread, "start", explode)
-    with pytest.raises(RuntimeError):
-        s.__enter__()
-    monkeypatch.undo()
+    # Scoped, never `monkeypatch.undo()` (that also reverts conftest's store pins).
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(H.threading.Thread, "start", explode)
+        with pytest.raises(RuntimeError):
+            s.__enter__()
 
     assert not s.master_alive(), (
         f"master survived a failed __enter__ (reap outcome: {s.reap_outcome!r}) — a live agent "
@@ -706,13 +707,14 @@ def test_teardown_raises_when_containment_cannot_be_verified(tmp_path, monkeypat
         native_id=str(uuid.uuid4()),
         argv_override=[sleep, "5"],
     )
-    monkeypatch.setattr(H.RealSession, "_stop_scope", lambda self, **k: False)
-    monkeypatch.setattr(H.RealSession, "_kill_scope", lambda self, **k: False)
-    with pytest.raises(RuntimeError, match="containment NOT verified"):
-        with s2:
-            pass
+    # Scoped, never `monkeypatch.undo()` (that also reverts conftest's store pins).
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(H.RealSession, "_stop_scope", lambda self, **k: False)
+        mp.setattr(H.RealSession, "_kill_scope", lambda self, **k: False)
+        with pytest.raises(RuntimeError, match="containment NOT verified"):
+            with s2:
+                pass
     # Clean up the scope the failed teardown deliberately left alone.
-    monkeypatch.undo()
     s2._kill_scope()
 
 

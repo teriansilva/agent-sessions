@@ -197,19 +197,22 @@ def test_the_GROUP_KILL_does_not_depend_on_the_leader_still_being_resolvable(tmp
     time.sleep(0.4)
 
     # The teardown-time lookup is unavailable — exactly the state a reaped leader produces.
-    monkeypatch.setattr(
-        os, "getpgid", lambda _pid: (_ for _ in ()).throw(ProcessLookupError("no such process"))
-    )
+    # Scoped, never `monkeypatch.undo()` (that also reverts conftest's store pins).
     try:
-        ea._kill_group(leader, pgid)
-        deadline = time.time() + 5
-        while time.time() < deadline:
-            try:
-                os.killpg(pgid, 0)
-            except (ProcessLookupError, PermissionError):
-                break
-            time.sleep(0.1)
-        monkeypatch.undo()
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(
+                os,
+                "getpgid",
+                lambda _pid: (_ for _ in ()).throw(ProcessLookupError("no such process")),
+            )
+            ea._kill_group(leader, pgid)
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                try:
+                    os.killpg(pgid, 0)
+                except (ProcessLookupError, PermissionError):
+                    break
+                time.sleep(0.1)
         try:
             os.killpg(pgid, 0)
             alive = True
@@ -219,7 +222,6 @@ def test_the_GROUP_KILL_does_not_depend_on_the_leader_still_being_resolvable(tmp
             not alive
         ), "the group survived: the kill still depended on resolving the leader at teardown"
     finally:
-        monkeypatch.undo()
         with contextlib.suppress(Exception):
             os.killpg(pgid, 9)
 

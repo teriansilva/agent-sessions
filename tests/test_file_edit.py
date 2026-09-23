@@ -1127,7 +1127,6 @@ def test_a_record_that_cannot_be_resolved_does_not_block_other_saves(root, monke
     def unavailable(*a, **k):
         raise OSError(errno.ENOSYS, "renameat2 is unavailable")
 
-    monkeypatch.setattr(fileedit, "_rename_noreplace", unavailable, raising=False)
     p = root / "a.txt"
     p.write_bytes(b"orig\n")
 
@@ -1136,19 +1135,18 @@ def test_a_record_that_cannot_be_resolved_does_not_block_other_saves(root, monke
             os.unlink(p)
             os.mkdir(p)
 
-    fileedit._HOOK = hook
-    with pytest.raises(FsError):
-        fileedit.save(str(p), "mine\n", sha(b"orig\n"))
-    fileedit._HOOK = None
-    other = root / "b.txt"
-    other.write_bytes(b"b\n")
-    fileedit.save(str(other), "B\n", sha(b"b\n"))
-    assert other.read_bytes() == b"B\n"
-    monkeypatch.undo()
-    monkeypatch.setenv("AGENT_SESSIONS_FS_ROOT", str(root))
-    monkeypatch.setenv(
-        "AGENT_SESSIONS_EDIT_RECOVERY", str(root / ".agent-sessions" / "edit-recovery")
-    )
+    # Scoped, never `monkeypatch.undo()`: undo also reverts every conftest store pin, so the
+    # rest of the test would run against the operator's real stores.
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(fileedit, "_rename_noreplace", unavailable, raising=False)
+        fileedit._HOOK = hook
+        with pytest.raises(FsError):
+            fileedit.save(str(p), "mine\n", sha(b"orig\n"))
+        fileedit._HOOK = None
+        other = root / "b.txt"
+        other.write_bytes(b"b\n")
+        fileedit.save(str(other), "B\n", sha(b"b\n"))
+        assert other.read_bytes() == b"B\n"
     _resolve()  # with the no-clobber rename back, the directory returns to its name
     assert p.is_dir()
 

@@ -1285,11 +1285,12 @@ def test_ingest_cannot_land_between_the_epoch_read_and_byte_one(pty_pair, monkey
         landed_during_write.append(not t.is_alive())  # True == it got in (bad)
         return real_write(fd, data)
 
-    monkeypatch.setattr(os, "write", write_and_probe)
-    out = session_input.send_input(
-        KEY, b"CHOOSE-1\n", final_guard=lambda: (True, ""), require_quiet=False
-    )
-    monkeypatch.undo()
+    # Scoped, never `monkeypatch.undo()` (that also reverts conftest's store pins).
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(os, "write", write_and_probe)
+        out = session_input.send_input(
+            KEY, b"CHOOSE-1\n", final_guard=lambda: (True, ""), require_quiet=False
+        )
 
     assert out.state == "delivered", f"the settled-screen send was refused: {out}"
     assert landed_during_write, "the write path never ran"

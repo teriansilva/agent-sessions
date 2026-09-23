@@ -6,16 +6,207 @@ every fixture sets up isolated paths.
 
 from __future__ import annotations
 
+import os
+import pwd
 import re
 import shutil
 import sqlite3
+import sys
 import tempfile
+import types
 from pathlib import Path
 
 import pytest
 
-from agent_sessions import auth, privatedir
-from agent_sessions.auth import AuthConfig, hash_password
+# --- No test may reach the operator's real stores ------------------------------------------------
+#
+# Measured, not hypothetical: a mid-test `monkeypatch.undo()` also undid the autouse pins below, so
+# `_db_path()` fell back to `Path.home()/.config/agent-sessions/missions.db` — the LIVE store of the
+# app running on the CI host — and a schema-30 branch migrated it in place (#1097), breaking the
+# running service. Two layers stop that class of leak, independently of whether the per-test pins
+# survive:
+#
+# 1. **Backstop.** Every store path the app reads from the environment is pinned at process start
+#    to a session sandbox by writing `os.environ` directly. A `monkeypatch` restores what it saw,
+#    so an `undo()` (or a fixture that forgot one) lands in the sandbox, never `$HOME`. Done at
+#    conftest IMPORT, before `agent_sessions` is imported, because some modules capture a path at
+#    import (`scrollback._SCROLLBACK_DIR`); `pytest_configure` re-asserts it. Engine transcript
+#    stores (`~/.claude`, `~/.codex`, …) are deliberately not pinned: tests point `$HOME` at a tmp
+#    dir and rely on those following it.
+# 2. **Tripwire.** An audit hook refuses any open / sqlite connect / mkdir / rename / unlink under
+#    the REAL app store directories, resolved from the passwd entry (never `$HOME`, which tests
+#    move). It raises at the call site AND is reported by an autouse fixture, so a leak fails the
+#    test even when the app code swallows the exception as a fail-soft read.
+
+# The real home, from the passwd database — `$HOME` is monkeypatched all over the suite.
+_REAL_HOME = pwd.getpwuid(os.getuid()).pw_dir
+
+# Store env var → sub-path under the sandbox (mirroring the production default layout). Values
+# derived from `AGENT_SESSIONS_HOME` (the env file, `2fa.json`, plugins, update progress) are
+# covered by pinning that one and are NOT pinned separately: tests that move the app home expect
+# them to follow it.
+STORE_ENV_PATHS: dict[str, str] = {
+    "AGENT_SESSIONS_MISSIONS_DB": ".config/agent-sessions/missions.db",
+    "AGENT_SESSIONS_PREFS": ".config/agent-sessions/prefs.json",
+    "AGENT_SESSIONS_METADATA": ".config/agent-sessions/metadata.json",
+    "AGENT_SESSIONS_PROJECTS": ".config/agent-sessions/projects.json",
+    "AGENT_SESSIONS_NOTIFICATIONS": ".config/agent-sessions/notifications.json",
+    "AGENT_SESSIONS_PUSH_SUBS": ".config/agent-sessions/push-subscriptions.json",
+    "AGENT_SESSIONS_ORCHESTRATOR_LEDGER": ".config/agent-sessions/orchestrator-ledger.jsonl",
+    "AGENT_SESSIONS_AGENT_USAGE": ".config/agent-sessions/agent-usage.json",
+    "AGENT_SESSIONS_TEMPLATES": ".config/agent-sessions/templates.json",
+    "AGENT_SESSIONS_TEMPLATE_VARS": ".config/agent-sessions/template-variables.json",
+    "AGENT_SESSIONS_TEMPLATE_SECRETS_KEY": ".config/agent-sessions/template-secrets.key",
+    "AGENT_SESSIONS_PULSE_CACHE": ".config/agent-sessions/pulse-cache.json",
+    "AGENT_SESSIONS_VAPID_KEYS": ".config/agent-sessions/vapid.json",
+    "AGENT_SESSIONS_HOME": ".local/share/agent-sessions",
+    "AGENT_SESSIONS_OPENCODE_DB": ".local/share/opencode/opencode.db",
+    "AGENT_SESSIONS_RUNTIME_DIR": "rt",  # short: AF_UNIX sockets live here (see below)
+    "AGENT_SESSIONS_LOCK_DIR": ".agent-sessions/locks",
+    "AGENT_SESSIONS_EDIT_RECOVERY": ".agent-sessions/edit-recovery",
+    "AGENT_SESSIONS_SCROLLBACK_DIR": ".agent-sessions/scrollback",
+}
+
+# The app's own state directories in the REAL home — and in the `$HOME` the run was started with,
+# when that differs (a developer pointing the whole run at a sandbox home gets the same guarantee
+# for it). The tripwire guards these. Tests that point `$HOME` at a tmp dir are unaffected.
+PROTECTED_DIRS: tuple[str, ...] = tuple(
+    dict.fromkeys(
+        os.path.join(home, sub)
+        for home in (_REAL_HOME, os.environ.get("HOME") or _REAL_HOME)
+        for sub in (".config/agent-sessions", ".local/share/agent-sessions", ".agent-sessions")
+    )
+)
+
+_STATE_MODULE = "_agent_sessions_test_isolation"  # one per process, even if conftest re-imports
+
+
+def _state() -> types.ModuleType:
+    mod = sys.modules.get(_STATE_MODULE)
+    if mod is None:
+        mod = types.ModuleType(_STATE_MODULE)
+        mod.sandbox = None
+        mod.violations = []
+        mod.reported = 0
+        mod.outside = []
+        mod.hook_installed = False
+        sys.modules[_STATE_MODULE] = mod
+    return mod
+
+
+def _pin_store_env() -> str:
+    """Point every store env var at the process's session sandbox (idempotent)."""
+    st = _state()
+    if st.sandbox is None:
+        st.sandbox = tempfile.mkdtemp(prefix="blsess-")
+    for var, sub in STORE_ENV_PATHS.items():
+        os.environ[var] = os.path.join(st.sandbox, sub)
+    return st.sandbox
+
+
+def _under_protected(raw: object) -> str | None:
+    if isinstance(raw, int) or raw is None:
+        return None  # a descriptor, or nothing: not a path we can judge
+    try:
+        path = os.fsdecode(raw)
+    except TypeError:
+        return None
+    if path.startswith("file:"):  # sqlite URI form
+        path = path[5:].split("?", 1)[0]
+    if not path or path == ":memory:":
+        return None
+    if not os.path.isabs(path):
+        path = os.path.join(os.getcwd(), path)
+    path = os.path.normpath(path)
+    for root in PROTECTED_DIRS:
+        if path == root or path.startswith(root + os.sep):
+            return path
+    return None
+
+
+class RealStoreTouched(RuntimeError):
+    """Deliberately NOT an OSError, so a fail-soft `except OSError` in the app cannot eat it."""
+
+
+# Audit event → indexes of its path arguments. A relative path with a `dir_fd` is not judged
+# (it cannot be resolved without a syscall); every store in the app is opened by absolute path.
+_AUDITED: dict[str, tuple[int, ...]] = {
+    "open": (0,),
+    "sqlite3.connect": (0,),
+    "os.mkdir": (0,),
+    "os.rename": (0, 1),
+    "os.remove": (0,),
+    "os.rmdir": (0,),
+    "os.link": (0, 1),
+    "os.symlink": (1,),
+    "os.truncate": (0,),
+    "os.chmod": (0,),
+    "os.utime": (0,),
+    "shutil.rmtree": (0,),
+}
+
+
+def _audit(event: str, args: tuple) -> None:
+    idx = _AUDITED.get(event)
+    if idx is None:
+        return
+    for i in idx:
+        if i < len(args):
+            hit = _under_protected(args[i])
+            if hit is not None:
+                _state().violations.append(f"{event} {hit}")
+                raise RealStoreTouched(
+                    f"test isolation breach: {event} on the operator's real store {hit!r} — "
+                    "a store path fell back to the real $HOME (a mid-test monkeypatch.undo()?)"
+                )
+
+
+def _install_tripwire() -> None:
+    st = _state()
+    if not st.hook_installed:  # audit hooks cannot be removed: install exactly once per process
+        sys.addaudithook(_audit)
+        st.hook_installed = True
+
+
+_pin_store_env()
+_install_tripwire()
+
+
+def pytest_configure(config) -> None:
+    # Re-assert at session start (xdist workers run this too; each worker is its own process).
+    _pin_store_env()
+    _install_tripwire()
+
+
+def pytest_unconfigure(config) -> None:
+    st = _state()
+    if st.sandbox is not None:
+        shutil.rmtree(st.sandbox, ignore_errors=True)
+
+
+def pytest_sessionfinish(session, exitstatus) -> None:
+    st = _state()
+    stray = st.outside + st.violations[st.reported :]
+    if stray:  # touched outside any test (import, collection, a session fixture)
+        sys.stderr.write("\n".join(["real-store isolation breaches:", *stray]) + "\n")
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
+@pytest.fixture(autouse=True)
+def _real_store_tripwire():
+    """Fail the test that touched a real store, even if the app swallowed the exception."""
+    st = _state()
+    st.outside.extend(st.violations[st.reported :])  # between tests: owned by no test
+    start = st.reported = len(st.violations)
+    yield
+    hits = st.violations[start:]
+    st.reported = len(st.violations)
+    if hits:
+        pytest.fail("touched the operator's real store: " + "; ".join(hits), pytrace=False)
+
+
+from agent_sessions import auth, privatedir  # noqa: E402  (after the env pins, deliberately)
+from agent_sessions.auth import AuthConfig, hash_password  # noqa: E402
 
 # The production work factor, captured at conftest import — i.e. before ANY fixture (in
 # particular _fast_pbkdf2 below) can patch the module constant. The dedicated guard test
@@ -130,6 +321,17 @@ def _isolate_prefs(tmp_path, monkeypatch) -> None:
         "AGENT_SESSIONS_TEMPLATE_SECRETS_KEY",
         str(tmp_path / ".config" / "agent-sessions" / "template-secrets.key"),
     )
+    # The session sidecar (#1054's leak: authfence, maintenance-prune, kimi and nudge-harness
+    # tests wrote the operator's real metadata.json), the projects store, the pulse cache and the
+    # VAPID identity all default under the real `$HOME` too, and `tmp_home` is opt-in. Same
+    # canonical sub-path `tmp_home` uses, so a test that opts in still lines up.
+    for var, name in (
+        ("AGENT_SESSIONS_METADATA", "metadata.json"),
+        ("AGENT_SESSIONS_PROJECTS", "projects.json"),
+        ("AGENT_SESSIONS_PULSE_CACHE", "pulse-cache.json"),
+        ("AGENT_SESSIONS_VAPID_KEYS", "vapid.json"),
+    ):
+        monkeypatch.setenv(var, str(tmp_path / ".config" / "agent-sessions" / name))
     from agent_sessions import template_secrets
 
     template_secrets._reset_for_tests()
