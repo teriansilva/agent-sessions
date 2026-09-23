@@ -118,3 +118,8 @@
 /* The tile is NOT duplicated into the drawer, unlike `?` and the gear. It carries
  * `data-topbar-keep`, so it stays in the bar at every width — a corner that stops saying who you
  * are the moment the screen narrows is the corner that most needed to. */
+
+/* A hairline between the menu's groups (#1085): account · help · sign out. */
+.groupStart {
+  border-top: 1px solid var(--line);
+}

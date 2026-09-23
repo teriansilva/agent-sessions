@@ -36,6 +36,8 @@ vi.mock("../lib/api", async () => {
       system: vi.fn(),
       updateCheck: vi.fn(),
       updateApply: vi.fn(),
+      // #1085: the Updates card reads the installer's progress record.
+      updateProgress: vi.fn().mockResolvedValue({ state: "idle", steps: 7 }),
       updateSettings: vi.fn(),
       setUpdateSettings: vi.fn(),
       config: vi.fn(),
@@ -1297,9 +1299,21 @@ test("Updates: check finds an update, then apply calls the API", async () => {
   expect(
     await screen.findByText(/update available: abc1234/i),
   ).toBeInTheDocument();
+  vi.mocked(api.updateProgress).mockResolvedValue({
+    state: "running",
+    steps: 7,
+    step: "fetch",
+    step_index: 2,
+    label: "Downloading the release",
+    started_at: Math.floor(Date.now() / 1000) - 5,
+    elapsed_s: 5,
+  });
   await userEvent.click(screen.getByRole("button", { name: /update now/i }));
   expect(api.updateApply).toHaveBeenCalled();
-  expect(await screen.findByText(/will restart/i)).toBeInTheDocument();
+  // #1085: the card shows the installer's own progress instead of "reload in a moment".
+  expect(await screen.findByTestId("update-progress")).toHaveTextContent(
+    "Step 2 of 7 · Downloading the release",
+  );
 });
 
 // ---- Updates: the frozen-install escape hatch (#931) ----

@@ -2,7 +2,6 @@ import { render } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { ButtonGlitch } from "./ButtonGlitch";
 import { DataFlowCanvas } from "./DataFlowCanvas";
-import { SysClock } from "./SysClock";
 
 function mockReducedMotion(reduce: boolean) {
   vi.stubGlobal(
@@ -18,15 +17,6 @@ function mockReducedMotion(reduce: boolean) {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
-});
-
-test("SysClock renders a SYS // UTC readout", () => {
-  const { getByText, container } = render(<SysClock />);
-  expect(getByText(/SYS \/\//)).toBeInTheDocument();
-  // a HH:MM:SSZ time sits in the tabular-num slot
-  expect(container.querySelector(".num")?.textContent).toMatch(
-    /^\d{2}:\d{2}:\d{2}Z$/,
-  );
 });
 
 test("DataFlowCanvas renders an aria-hidden #bg canvas and survives a null 2d context", () => {

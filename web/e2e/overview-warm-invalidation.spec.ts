@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { settingsPath } from "../src/routes/settingsTabs";
 
 import { openMapFromNav } from "./mapNav";
+import { openSettingsFromMenu } from "./settingsNav";
 
 /** #1007 Phase 1 — a mutation made on ANY surface is reflected when the operator returns to the map.
  *
@@ -147,8 +148,6 @@ const chips = (page: Page) => page.locator(".tr-overview .tr-ov-chip");
  *  desktop too. */
 const rows = (page: Page) =>
   page.locator('aside.sidebar .sidebarBody a[href^="/s/"]');
-const settingsLink = (page: Page) =>
-  page.getByRole("link", { name: "Settings", exact: true }).filter({ visible: true }).first();
 
 async function openDrawer(page: Page, project: string) {
   if (project !== "mobile") return;
@@ -224,7 +223,7 @@ test("a BULK archive in Settings removes those sessions from the map on return (
   // In-app to Settings → Maintenance. A `goto` would reload the document and discard the retained
   // result, which is the state under test.
   await openDrawer(page, project);
-  await settingsLink(page).click();
+  await openSettingsFromMenu(page);
   await expect(page).toHaveURL(/\/settings/);
   await page
     .locator('nav[aria-label="Settings"]')

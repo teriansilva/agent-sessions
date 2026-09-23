@@ -3,6 +3,7 @@
 import { DIRECTION_PREVIEW_PATH } from "./apiPaths";
 import { uploadStoredName } from "./templateMessage";
 import type {
+  AgentCounts,
   AgentBudgets,
   AgentUsageResponse,
   AiActivity,
@@ -57,6 +58,7 @@ import type {
   TemplatesResponse,
   TwoFactorEnrollment,
   UpdateInfo,
+  UpdateProgress,
   UpdateSettings,
   UploadBatch,
   UploadResult,
@@ -395,6 +397,8 @@ async function upload(
 export const api = {
   config: () => getJson<AppConfig>("/api/config"),
   version: () => getJson<{ version: string }>("/api/version"),
+  /** Host-wide running / working agent counts (#1085) — cheap, no session walk. */
+  agents: () => getJson<AgentCounts>("/api/agents"),
   /** Discovery: every known engine provider with presence / new-session / bin path. */
   engines: () => getJson<EnginesResponse>("/api/engines"),
 
@@ -444,6 +448,8 @@ export const api = {
   updateCheck: () => getJson<UpdateInfo>("/api/update/check"),
   /** Apply the channel's latest (re-runs the installer detached). CSRF-guarded; 202. */
   updateApply: () => postJson<{ status: string }>("/api/update/apply"),
+  /** The running (or last) self-update's progress (#1085). */
+  updateProgress: () => getJson<UpdateProgress>("/api/update/progress"),
   /** Cheap read (no remote hit) of the persisted update settings for the card mount (#538). */
   updateSettings: () => getJson<UpdateSettings>("/api/update/settings"),
   /** Persist the auto-update opt-in and/or release channel (#538). CSRF-guarded. */

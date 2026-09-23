@@ -1,6 +1,14 @@
 import { createContext, useContext } from "react";
 import type { Session } from "../types/api";
 
+/** The sidebar footer's counts (#1085), published by the list that fetched them. They describe
+ *  its FILTERED set, never the loaded page. (The bottom bar's host-wide count is its own poll,
+ *  `useAgentCounts`, because the list is not mounted on every route.) */
+export interface SessionCounts {
+  total: number;
+  live: number;
+}
+
 /** Shared store of the sessions the sidebar has loaded, so the compact desktop/mobile
  *  header can resolve the *current* session's title (matched by engine+uuid from the URL)
  *  without re-fetching. The sidebar (the single owner of the list data) publishes its rows
@@ -20,6 +28,9 @@ import type { Session } from "../types/api";
 export interface SessionsStore {
   sessions: Session[];
   setSessions: (s: Session[]) => void;
+  /** Footer counts (#1085); `null` until the first page carrying them lands. */
+  counts: SessionCounts | null;
+  setCounts: (c: SessionCounts | null) => void;
   /** The looked-up row for `key`, or null when nothing has been fetched (yet, or ever —
    *  a 404 is a permanent null for that key). Never consulted when the list already has
    *  the row: the list is the fresher source and a poll supersedes a fetched copy. */
@@ -42,6 +53,8 @@ export interface SessionsStore {
 export const SessionsCtx = createContext<SessionsStore>({
   sessions: [],
   setSessions: () => {},
+  counts: null,
+  setCounts: () => {},
   looked: {},
   lookup: () => {},
   retryGen: 0,

@@ -1,0 +1,80 @@
+/* What's new on the Updates card (#1085): the brand rule down the left, the What's new dialog's
+ * accent eyebrow, square chrome. */
+
+.box {
+  margin: 14px 0;
+  padding: 6px 12px;
+  border-left: 3px solid var(--accent);
+}
+
+.h {
+  margin: 0 0 6px;
+  font: 600 0.7rem var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.title {
+  margin: 0 0 6px;
+  font-size: 0.9rem;
+  color: var(--text-1, var(--text));
+}
+
+.body {
+  margin: 6px 0 0;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+.list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 0.82rem;
+  line-height: 1.6;
+  color: var(--text-2);
+}
+
+.list b {
+  color: var(--text-1, var(--text));
+  font-weight: 600;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  margin-top: 8px;
+}
+
+.open {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-2);
+  font: 400 0.72rem var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.open:hover {
+  border-color: var(--accent);
+  color: var(--text-1, var(--text));
+}
+
+.link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  color: var(--accent);
+  font-size: 0.82rem;
+}

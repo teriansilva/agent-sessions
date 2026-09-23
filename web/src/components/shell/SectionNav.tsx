@@ -66,11 +66,19 @@ export function SectionNav({
       aria-current={parentCurrent(s)}
       onClick={onNavigate}
       // For the eye at icon-only widths; the link's own text is its accessible name.
-      title={s.label}
+      title={s.beta ? `${s.label} (beta)` : s.label}
       data-section={s.id}
     >
       <s.Icon size={16} aria-hidden="true" />
       <span className="section-nav-label">{s.label}</span>
+      {/* BETA (#1085): for the eye only. The link's name stays "Missions" — the tag is not part
+          of the destination, and every spec and screen reader that names it keeps working. The
+          `title` says it in words. */}
+      {s.beta ? (
+        <span className="section-nav-beta" aria-hidden="true">
+          Beta
+        </span>
+      ) : null}
     </Link>
   );
 

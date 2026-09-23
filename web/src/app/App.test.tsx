@@ -14,8 +14,14 @@ vi.mock("../lib/api", () => ({
         csrf: "x",
         new_session_engines: [],
         terminal_backend: "ws",
+        // The operator tile renders once the auth mode is known (#1058); Settings and Help live
+        // in its menu since #1085.
+        auth_mode: "single-user",
+        username: "marcus",
       }),
     version: vi.fn().mockResolvedValue({ version: "0.0.0" }),
+    // #1085: the bottom bar polls host-wide agent counts.
+    agents: vi.fn().mockResolvedValue({ live: 3, working: 1 }),
     // #726 Phase 3: the topbar mounts the notification bell, which polls on mount.
     notifications: vi.fn().mockResolvedValue({ notifications: [], unread: 0 }),
     markNotificationsRead: vi
@@ -77,29 +83,60 @@ function mockMobileViewport() {
   })) as unknown as typeof window.matchMedia;
 }
 
-test("the command topbar carries the Settings entrypoint (#211 redux)", async () => {
+/** Open the operator tile's menu and return it. */
+async function openOperatorMenu() {
+  await userEvent.click(await screen.findByTestId("operator-menu"));
+  return screen.findByTestId("operator-menu-panel");
+}
+
+test("Settings and Help live in the operator menu, not as their own topbar icons (#1085)", async () => {
   const { container } = render(<App />);
-  // The command topbar has one Settings gear (the small-screen copy lives in the sidebar
-  // drawer — same href — so scope the assertion to the topbar).
-  await screen.findAllByRole("link", { name: "Settings" });
   const topbar = container.querySelector(".hud-topbar") as HTMLElement;
-  const link = within(topbar).getByRole("link", { name: "Settings" });
-  expect(link).toHaveAttribute("href", "/settings");
-  await waitFor(() => expect(link).toBeInTheDocument());
+  await screen.findByTestId("operator-menu");
+  // No ⚙ link and no `?` button of their own any more — in the bar or in the drawer.
+  expect(within(topbar).queryByRole("link", { name: "Settings" })).toBeNull();
+  expect(within(topbar).queryByRole("button", { name: "Help" })).toBeNull();
+  expect(container.querySelector(".sidebar-actions")).toBeNull();
+  // …and no SYS clock / MISSION timer readout either.
+  expect(topbar.textContent).not.toMatch(/SYS \/\/|MISSION \/\//);
+  const menu = await openOperatorMenu();
+  expect(
+    within(menu)
+      .getAllByRole("menuitem")
+      .map((n) => n.textContent?.replace(/\s+/g, " ").trim()),
+  ).toEqual(
+    expect.arrayContaining(["Settings", "Security & 2FA", "Intro tour", "Sign out"]),
+  );
+  expect(within(menu).getByRole("menuitem", { name: "Settings" })).toHaveAttribute(
+    "href",
+    "/settings",
+  );
+  expect(
+    within(menu).getByRole("menuitem", { name: "Documentation (opens in a new tab)" }),
+  ).toHaveAttribute("target", "_blank");
 });
 
 // #357/#956: the Settings links keep pointing at the canonical bare /settings entry; on desktop
 // the route shell replace-redirects to the first section, so every Settings navigation lands on
 // a section URL.
-test("clicking the topbar Settings link lands on the first settings section (#357)", async () => {
-  const { container } = render(<App />);
-  await screen.findAllByRole("link", { name: "Settings" });
-  const topbar = container.querySelector(".hud-topbar") as HTMLElement;
-  await userEvent.click(within(topbar).getByRole("link", { name: "Settings" }));
+test("choosing Settings in the operator menu lands on the first settings section (#357, #1085)", async () => {
+  render(<App />);
+  const menu = await openOperatorMenu();
+  await userEvent.click(within(menu).getByRole("menuitem", { name: "Settings" }));
   expect(
     await screen.findByRole("link", { name: "Appearance" }),
   ).toHaveAttribute("aria-current", "page");
   expect(window.location.pathname).toBe("/settings/appearance");
+});
+
+test("the bottom bar counts agents host-wide: running, and how many are working (#1085)", async () => {
+  const { container } = render(<App />);
+  const bar = container.querySelector("footer.hud-classbar") as HTMLElement;
+  await waitFor(() =>
+    expect(within(bar).getByTestId("agent-counts")).toHaveTextContent(
+      "3 AGENTS LIVE · 1 WORKING",
+    ),
+  );
 });
 
 test("desktop: the single command-bar toggle collapses then re-expands the sidebar (#132/#211)", async () => {
@@ -135,7 +172,10 @@ test("the command topbar names every work section, Ask first, the map under Sess
   expect(
     within(nav)
       .getAllByRole("link")
-      .map((a) => [a.textContent, a.getAttribute("href")]),
+      .map((a) => [
+        a.querySelector(".section-nav-label")?.textContent,
+        a.getAttribute("href"),
+      ]),
   ).toEqual([
     ["Ask", "/ask"],
     ["Sessions", "/"],
@@ -160,9 +200,7 @@ test("the command topbar names every work section, Ask first, the map under Sess
   const actions = topbar.querySelector(".hud-topbar-actions") as HTMLElement;
   expect(actions.querySelector('a[href="/overview"]')).toBeNull();
   expect(actions.querySelector('a[href="/templates"]')).toBeNull();
-  expect(
-    within(actions).getByRole("link", { name: "Settings" }),
-  ).toHaveAttribute("href", "/settings");
+  expect(within(actions).getByTestId("operator-menu")).toBeInTheDocument();
 });
 
 test("the section labels stay in the DOM, so an icon-only bar is still named (#1058)", async () => {
@@ -176,9 +214,11 @@ test("the section labels stay in the DOM, so an icon-only bar is still named (#1
   ).findByRole("navigation", { name: "Main sections" });
   for (const a of within(nav).getAllByRole("link")) {
     expect(a).not.toHaveAttribute("aria-label");
-    expect(a.querySelector(".section-nav-label")?.textContent).toBe(
-      a.textContent,
-    );
+    // The accessible name IS the label's text — decorations like the BETA tag (#1085) are
+    // aria-hidden and do not join it.
+    const label = a.querySelector(".section-nav-label")?.textContent ?? "";
+    expect(label).not.toBe("");
+    expect(within(nav).getByRole("link", { name: label })).toBe(a);
   }
 });
 
@@ -276,13 +316,12 @@ test("sidebar: a failed order save snaps the toggle back to the server truth (#5
   expect(api.config).toHaveBeenCalledTimes(1); // no config refresh on a failed save
 });
 
-// #283: on mobile, same-route nav targets (New session / Overview / Settings while already on
-// that route) don't change location.pathname, so the route-change effect never closes the
-// drawer. The shared closeMobileDrawer handler wired onto those links must close it in one tap.
-// Default route in jsdom is "/", so all three of these are same-route no-ops on mount.
+// #283: on mobile, same-route nav targets (New session while already on that route) don't change
+// location.pathname, so the route-change effect never closes the drawer. The shared
+// closeMobileDrawer handler wired onto those links must close it in one tap. (Settings used to be
+// a case here; since #1085 it is in the operator menu, which is outside the drawer.)
 test.each([
   ["New session", /new session/i],
-  ["Settings", /^settings$/i],
 ])(
   "mobile: tapping same-route %s closes the open drawer in one tap (#283)",
   async (_label, name) => {

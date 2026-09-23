@@ -351,6 +351,12 @@ def register(
         out["last_auto"] = update.last_auto()
         return JSONResponse(out)
 
+    @app.get("/api/update/progress")
+    async def update_progress(_: str = Depends(logged_in)) -> JSONResponse:
+        # The running (or last) self-update, read from the installer's progress record (#1085).
+        # Read-only, no remote call; the record is validated and labelled server-side.
+        return JSONResponse(await asyncio.to_thread(update.progress))
+
     @app.post("/api/update/apply")
     async def update_apply(
         _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)

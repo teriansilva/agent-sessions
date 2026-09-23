@@ -173,3 +173,25 @@ test("layout snapshot (per-project: desktop + mobile viewports)", async ({
     contentType: "image/png",
   });
 });
+
+test("Missions carries a BETA tag inside its own tile at every width, and keeps its name (#1085)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  for (const width of [320, 412, 800, 801, 1440]) {
+    await page.setViewportSize({ width, height: 740 });
+    const link = page
+      .locator(".hud-topbar")
+      .getByRole("navigation", { name: "Main sections" })
+      .getByRole("link", { name: "Missions", exact: true });
+    await expect(link).toHaveAttribute("title", "Missions (beta)");
+    const tag = link.locator(".section-nav-beta");
+    await expect(tag, `tag at ${width}`).toBeVisible();
+    const t = (await tag.boundingBox())!;
+    const l = (await link.boundingBox())!;
+    expect(t.x, `tag inside at ${width}`).toBeGreaterThanOrEqual(l.x);
+    expect(t.x + t.width, `tag inside at ${width}`).toBeLessThanOrEqual(l.x + l.width + 0.5);
+    expect(t.y).toBeGreaterThanOrEqual(l.y);
+    expect(t.y + t.height).toBeLessThanOrEqual(l.y + l.height + 0.5);
+  }
+});

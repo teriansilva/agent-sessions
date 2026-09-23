@@ -109,11 +109,13 @@ import {
   type SettingsSectionId,
 } from "./settingsTabs";
 import styles from "./Settings.module.css";
+import { UpdateProgressPanel } from "../components/updates/UpdateProgressPanel";
+import { UpdateWhatsNew } from "../components/updates/UpdateWhatsNew";
+import { SOURCE_URL } from "../lib/links";
 import { whatsNewLabel } from "../whatsnew/due";
 import { useOpenWhatsNew } from "../whatsnew/WhatsNewContext";
 
 const BUY_ME_A_COFFEE = "https://buymeacoffee.com/teriansilva";
-const SOURCE_URL = "https://github.com/teriansilva/agent-sessions";
 // AGPL-3.0 §13: a network-served build must offer its users the Corresponding Source. The
 // About panel already links SOURCE_URL; naming the license next to it makes the offer legible
 // rather than implied — and tells an operator running a *modified* build what they owe their
@@ -900,6 +902,9 @@ function AnalyticsCard() {
  *  it resets when the service restarts). */
 function UpdatesCard() {
   const [info, setInfo] = useState<UpdateInfo | null>(null);
+  // Bumped when this card starts an update, so the progress panel polls at once (#1085).
+  const [startedGen, setStartedGen] = useState(0);
+  const openWhatsNew = useOpenWhatsNew();
   const [current, setCurrent] = useState<string | null>(null);
   const [settings, setSettings] = useState<UpdateSettings | null>(null);
   const [state, setState] = useState<
@@ -971,7 +976,8 @@ function UpdatesCard() {
     try {
       await api.updateApply();
       setState("applied");
-      setMsg("Updating… the app will restart shortly; reload in a moment.");
+      // The progress panel below says the rest — step by step, through the restart (#1085).
+      setStartedGen((g) => g + 1);
     } catch (e) {
       setState("error");
       setMsg(
@@ -1124,6 +1130,13 @@ function UpdatesCard() {
           terminals reconnect.
         </p>
       )}
+      <UpdateProgressPanel started={startedGen} />
+      <UpdateWhatsNew
+        channel={channel}
+        current={info?.current ?? current}
+        available={info?.update_available ? info.latest : null}
+        onOpen={openWhatsNew ?? undefined}
+      />
     </section>
   );
 }

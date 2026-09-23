@@ -1,4 +1,10 @@
-/** The operator tile in the corner (#1058) — who is signed in, and the three things you do about it.
+/** The operator tile in the corner (#1058) — who is signed in, and everything you do about the app.
+ *
+ *  **It is also where Help and Settings live (#1085).** The top bar used to carry a `?` menu and a
+ *  ⚙ link beside this tile, and the drawer repeated both in its own action row — three places for
+ *  the same five things. The operator asked for them here: this tile stays in the bar at every
+ *  width (`data-topbar-keep`), so one menu reaches Settings, Security, the tour, the docs and
+ *  What's new on a phone and on a desktop alike.
  *
  *  The corner used to be four anonymous icons, two of which were destinations (#1058 moved those
  *  into the section nav). What was left had no answer to "which account is this tab?" — on a tool
@@ -29,21 +35,35 @@
  *  `authMode === undefined` is the one "we do not know yet" case, and it renders NOTHING. A tile
  *  that says LOCAL for a frame and then flips to a username is worse than one that arrives late.
  */
-import { LogOut, Settings as SettingsIcon, ShieldCheck } from "lucide-react";
-import { Link } from "react-router-dom";
+import {
+  BookOpen,
+  Compass,
+  ExternalLink,
+  LogOut,
+  Settings as SettingsIcon,
+  ShieldCheck,
+  Sparkles,
+} from "lucide-react";
+import { Link, useLocation } from "react-router-dom";
 
 import { api } from "../../lib/api";
+import { DOCS_HOME_URL } from "../../lib/links";
 import { settingsPath } from "../../routes/settingsTabs";
 import { AnchoredMenu } from "../ui/AnchoredMenu";
 import help from "./HelpMenu.module.css";
 import styles from "./OperatorMenu.module.css";
 import { operatorInitials } from "./operatorInitials";
 
+const DOCS_HOST = new URL(DOCS_HOME_URL).host;
+
 export function OperatorMenu({
   username,
   authMode,
   align = "end",
   onNavigate,
+  onTour,
+  onWhatsNew,
+  whatsNewLabel = null,
 }: {
   /** The operator's login name. `null` on a no-login install, `undefined` before the config
    *  arrives or on a server too old to send it — neither decides whether there IS a login. */
@@ -55,7 +75,15 @@ export function OperatorMenu({
   align?: "end" | "start";
   /** Closes the mobile drawer on a same-route tap (#283). */
   onNavigate: () => void;
+  /** Opens the intro tour. Absent ⇒ no tour item. The shell owns the tour; the menu only calls. */
+  onTour?: () => void;
+  /** Opens What's new. Shown only with `whatsNewLabel` (no bundled release notes ⇒ no item). */
+  onWhatsNew?: () => void;
+  /** `whatsNewLabel()` — e.g. "What's new in 0.20"; `null` when nothing is bundled. */
+  whatsNewLabel?: string | null;
 }) {
+  // Settings returns to wherever it was opened from, as the old top-bar ⚙ did.
+  const location = useLocation();
   // No config yet: render nothing rather than a placeholder identity.
   if (authMode === undefined) return null;
 
@@ -113,6 +141,7 @@ export function OperatorMenu({
             role="menuitem"
             className={help.item}
             to={settingsPath()}
+            state={{ returnTo: location.pathname }}
             onClick={() => {
               close();
               onNavigate();
@@ -137,11 +166,66 @@ export function OperatorMenu({
             </span>
             Security &amp; 2FA
           </Link>
-          {signedIn ? (
+          {/* HELP (#1085), what the `?` menu held — the tour, the manual, What's new. */}
+          {onTour ? (
+            <button
+              type="button"
+              role="menuitem"
+              className={`${help.item} ${styles.groupStart}`}
+              onClick={() => {
+                close();
+                onNavigate();
+                onTour();
+              }}
+            >
+              <span className={help.icon} aria-hidden="true">
+                <Compass size={15} />
+              </span>
+              Intro tour
+            </button>
+          ) : null}
+          <a
+            role="menuitem"
+            className={onTour ? help.item : `${help.item} ${styles.groupStart}`}
+            href={DOCS_HOME_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="Documentation (opens in a new tab)"
+            onClick={close}
+          >
+            <span className={help.icon} aria-hidden="true">
+              <BookOpen size={15} />
+            </span>
+            <span className={help.label}>
+              Documentation
+              <span className={help.sub}>{DOCS_HOST}</span>
+            </span>
+            <span className={help.trail} aria-hidden="true">
+              <ExternalLink size={13} />
+            </span>
+          </a>
+          {onWhatsNew && whatsNewLabel ? (
             <button
               type="button"
               role="menuitem"
               className={help.item}
+              onClick={() => {
+                close();
+                onNavigate();
+                onWhatsNew();
+              }}
+            >
+              <span className={help.icon} aria-hidden="true">
+                <Sparkles size={15} />
+              </span>
+              {whatsNewLabel}
+            </button>
+          ) : null}
+          {signedIn ? (
+            <button
+              type="button"
+              role="menuitem"
+              className={`${help.item} ${styles.groupStart}`}
               onClick={() => {
                 close();
                 // `logout` hard-navigates to /login on success; a failure leaves the operator

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { openSettingsFromMenu } from "./settingsNav";
 
 // Real-browser checks for TEMPLATES — the instruction-template gallery + editor (#905 P2).
 // Runs on desktop AND mobile: the one-column reflow, the bottom-sheet confirm and the 44px
@@ -220,9 +221,8 @@ test("create: name + instructions + an image → the preview shows the path, and
   await expect(page.getByText(/saved “match this mockup”/i)).toBeVisible();
 });
 
-test("edit: leaving with unsaved edits asks first — via Cancel, a topbar gear and browser Back; save sends the loaded updated_at as the fence", async ({
+test("edit: leaving with unsaved edits asks first — via Cancel, the Settings menu item and browser Back; save sends the loaded updated_at as the fence", async ({
   page,
-  isMobile,
 }) => {
   const requests = await mockTemplates(page, [tpl()]);
   await page.goto("/templates");
@@ -240,14 +240,12 @@ test("edit: leaving with unsaved edits asks first — via Cancel, a topbar gear 
   await expect(dialog).toBeHidden();
   await expect(name).toHaveValue("PR review checklist v2");
 
-  // A shell navigation: the Settings gear (in the drawer on mobile). The router blocker holds
-  // it — the first cut only wired this page's Cancel (#907 review).
-  if (isMobile) await page.getByRole("button", { name: /open session list/i }).click();
-  await page.getByRole("link", { name: "Settings", exact: true }).click();
+  // A shell navigation: Settings from the operator menu (#1085; the topbar gear before). The
+  // router blocker holds it — the first cut only wired this page's Cancel (#907 review).
+  await openSettingsFromMenu(page);
   await expect(page.getByRole("dialog")).toContainText(/unsaved changes/i);
   await page.getByRole("dialog").getByRole("button", { name: /keep editing/i }).click();
   await expect(page).toHaveURL(/\/templates\/pr-review$/);
-  if (isMobile) await page.keyboard.press("Escape");
 
   // Browser Back.
   await page.goBack();

@@ -59,6 +59,8 @@ export interface Section {
   to: string | null;
   /** The sub-menu. The FIRST child is the section's own destination, so the menu also names it. */
   children?: Subsection[];
+  /** Still settling (#1085): the entry carries a small BETA tag. */
+  beta?: boolean;
 }
 
 export const SECTIONS: Section[] = [
@@ -73,7 +75,7 @@ export const SECTIONS: Section[] = [
       { id: "map", label: "Sessions map", Icon: Network, to: MAP_PATH },
     ],
   },
-  { id: "mission", label: "Missions", Icon: Crosshair, to: MISSION_PATH },
+  { id: "mission", label: "Missions", Icon: Crosshair, to: MISSION_PATH, beta: true },
   { id: "templates", label: "Templates", Icon: BookMarked, to: TEMPLATES_PATH },
 ];
 

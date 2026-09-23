@@ -23,6 +23,9 @@ export interface Session {
   /** True when ``now - last_output_at`` is inside the working window (#156 v1).
    * Browser-attached-only; a headless session not yet reconnected to reports false. */
   working?: boolean;
+  /** An agent process is running for this session right now — a live dtach master, whether or
+   *  not anyone is watching and whether or not it is printing (#1085). Absent on an older server. */
+  running?: boolean;
   first_user_message: string;
   title: string;
   sticky: boolean;
@@ -635,10 +638,18 @@ export interface AiActivity {
   detail?: string;
 }
 
+/** Running vs working, host-wide (#1085): agents running, and how many printed in the window. */
+export interface AgentCounts {
+  live: number;
+  working: number;
+}
+
 export interface SessionsPage {
   sessions: Session[];
   next_offset: number | null;
   total: number;
+  /** Of `total` — the FILTERED set, not the page — how many have an agent running (#1085). */
+  live_total?: number;
   facets: {
     projects: ProjectRef[];
     engines: string[];
@@ -972,6 +983,21 @@ export interface SystemInfo {
   disk_total?: number;
   disk_free?: number;
   uptime_seconds?: number;
+}
+
+/** GET /api/update/progress (#1085) — the running (or last) self-update, read from the
+ *  installer's own progress record. `label` is the server's text for the step, never the file's. */
+export interface UpdateProgress {
+  state: "idle" | "running" | "done" | "failed" | "rolled_back" | "stale";
+  steps: number;
+  step?: string;
+  /** 1-based; 0 before the installer's first milestone. */
+  step_index?: number;
+  label?: string;
+  started_at?: number | null;
+  elapsed_s?: number | null;
+  /** How long the last COMPLETED update took, when one has been seen. */
+  last_duration_s?: number | null;
 }
 
 export interface UpdateInfo {

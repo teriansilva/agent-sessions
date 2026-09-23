@@ -547,6 +547,9 @@ def test_installer_failed_first_install_residue_is_still_fresh(tmp_path):
         "AGENT_SESSIONS_PORT": "8798",
         "AGENT_SESSIONS_SKIP_WEB_BUILD": "1",
         "AGENT_SESSIONS_PREFS": str(prefs_file),
+        # #1085: this full run also proves the progress record ends on `done`.
+        "AGENT_SESSIONS_UPDATE_PROGRESS": str(tmp_path / "progress.json"),
+        "AGENT_SESSIONS_UPDATE_STARTED": "1700000000",
     }
     r = subprocess.run(
         ["sh", str(INSTALL_SH)], env=env, capture_output=True, text=True, timeout=600
@@ -554,6 +557,54 @@ def test_installer_failed_first_install_residue_is_still_fresh(tmp_path):
     assert r.returncode == 0, r.stderr
     assert (home / "current").is_symlink()  # this run is the one that completed the install
     assert json.loads(prefs_file.read_text()).get("onboarded") is False
+    rec = json.loads((tmp_path / "progress.json").read_text())
+    # NO_SERVICE stops before the restart steps; the last step reached is the switch.
+    assert rec["state"] == "done" and rec["step"] == "switch"
+    assert rec["started_at"] == 1700000000 and rec["pid"] > 0
+    assert not list(tmp_path.glob("progress.json.tmp.*"))
+
+
+def test_installer_progress_records_the_failing_step(tmp_path):
+    """#1085: a failed update says WHERE it failed, and the record is valid JSON the app parses.
+    A bogus started_at is coerced to 0 rather than written into the JSON raw."""
+    progress = tmp_path / "progress.json"
+    env = {
+        **_clean_env(),
+        "AGENT_SESSIONS_REPO": str(tmp_path / "no-such-repo"),
+        "AGENT_SESSIONS_REF": "v0.0.0",
+        "AGENT_SESSIONS_HOME": str(tmp_path / "prefix"),
+        "AGENT_SESSIONS_NO_SERVICE": "1",
+        "AGENT_SESSIONS_ASSUME_YES": "1",
+        "AGENT_SESSIONS_PORT": "8799",
+        "AGENT_SESSIONS_UPDATE_PROGRESS": str(progress),
+        "AGENT_SESSIONS_UPDATE_STARTED": '1, "state": "done"',
+    }
+    r = subprocess.run(
+        ["sh", str(INSTALL_SH)], env=env, capture_output=True, text=True, timeout=120
+    )
+    assert r.returncode != 0
+    rec = json.loads(progress.read_text())
+    assert rec["step"] == "fetch"
+    assert rec["started_at"] == 0
+    # `set -e` exits the clone without passing through `die`, so the record may still say
+    # running — which is exactly why it carries the PID the app checks.
+    assert rec["state"] in ("failed", "running")
+    assert rec["pid"] > 0
+
+
+def test_installer_without_the_progress_env_writes_no_record(tmp_path):
+    env = {
+        **_clean_env(),
+        "AGENT_SESSIONS_REPO": str(tmp_path / "no-such-repo"),
+        "AGENT_SESSIONS_REF": "v0.0.0",
+        "AGENT_SESSIONS_HOME": str(tmp_path / "prefix"),
+        "AGENT_SESSIONS_NO_SERVICE": "1",
+        "AGENT_SESSIONS_ASSUME_YES": "1",
+        "AGENT_SESSIONS_PORT": "8799",
+    }
+    env.pop("AGENT_SESSIONS_UPDATE_PROGRESS", None)
+    subprocess.run(["sh", str(INSTALL_SH)], env=env, capture_output=True, text=True, timeout=120)
+    assert not [p for p in tmp_path.rglob("*") if "progress" in p.name]
 
 
 @pytest.mark.e2e_install

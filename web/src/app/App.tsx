@@ -1,8 +1,4 @@
-import {
-  Menu,
-  PanelLeftClose,
-  Settings as SettingsIcon,
-} from "lucide-react";
+import { Menu, PanelLeftClose } from "lucide-react";
 import {
   Suspense,
   useCallback,
@@ -13,7 +9,6 @@ import {
 } from "react";
 import {
   createBrowserRouter,
-  Link,
   Navigate,
   Route,
   RouterProvider,
@@ -22,7 +17,6 @@ import {
   useNavigate,
 } from "react-router-dom";
 import { NotificationBell } from "../components/pulse/NotificationBell";
-import { HelpMenu } from "../components/shell/HelpMenu";
 import { SessionList } from "../components/sidebar/SessionList";
 import { MissionRailSlotProvider } from "../components/pulse/railSlot";
 import { useModalDrawer } from "../components/pulse/useModalDrawer";
@@ -36,8 +30,6 @@ import { Settings } from "../routes/Settings";
 import { SessionView } from "../routes/SessionView";
 import { ButtonGlitch } from "../components/hud/ButtonGlitch";
 import { DataFlowCanvas } from "../components/hud/DataFlowCanvas";
-import { MissionTimer } from "../components/hud/MissionTimer";
-import { SysClock } from "../components/hud/SysClock";
 import { AccentProvider } from "../theme/AccentProvider";
 import { TermFontProvider } from "../theme/TermFontProvider";
 import { TermSizeProvider } from "../theme/TermSizeProvider";
@@ -56,6 +48,7 @@ import { OverviewSessionsProvider } from "./OverviewSessionsContext";
 import { SessionsProvider } from "./SessionsContext";
 import { WorkspaceProvider } from "./WorkspaceContext";
 import { useSessionsStore } from "./sessionsStore";
+import { useAgentCounts } from "./useAgentCounts";
 import {
   clampW,
   DEFAULT_W,
@@ -66,7 +59,6 @@ import {
   WIDTH_STEP,
 } from "./sidebarWidth";
 import { ASK_PATH, LEGACY_MISSION_PATH, MISSION_PATH } from "../lib/routes";
-import { SETTINGS_PATH } from "../routes/settingsTabs";
 import { OperatorMenu } from "../components/shell/OperatorMenu";
 import { SectionNav } from "../components/shell/SectionNav";
 import {
@@ -326,11 +318,13 @@ function Layout() {
     [railSlotEl, dismissRail, railHeadEl, railFootEl],
   );
 
-  // Sidebar footer + classification-bar counts (HUD telemetry, #211): loaded sessions and how
-  // many are live (within the working window). Derived from the shared store the list fills.
-  const { sessions } = useSessionsStore();
-  const engaged = sessions.length;
-  const live = sessions.filter((s) => s.working).length;
+  // Sidebar footer + classification-bar counts (#211, redefined in #1085). They used to count
+  // the sidebar's LOADED rows — a 20-row page — and called "printed in the last 10 s" LIVE, so a
+  // host with a dozen agents up read "20 ENGAGED · 1 LIVE". Now both come from the server:
+  // LIVE is an agent process running (thinking, waiting on you, or printing — watched or not),
+  // the sidebar counts its whole FILTERED list, and the bottom bar counts the whole host.
+  const { counts } = useSessionsStore();
+  const agents = useAgentCounts();
 
   // Session-list order toggle in the sidebar header (#548) — same server-synced pref as the
   // Settings → Appearance radio (#506). `orderPending` is the optimistic flip; it reconciles
@@ -430,26 +424,11 @@ function Layout() {
             sessionsPath={lastSessionPath}
             onNavigate={closeMobileDrawer}
           />
-          <span className="hud-telemetry">
-            <SysClock />
-            <MissionTimer />
-          </span>
+          {/* The SYS clock and the MISSION uptime readout are gone (#1085): decoration the operator
+              asked to drop, and the width goes back to the nav. */}
           <span className="hud-topbar-actions">
-            <HelpMenu
-              onTour={() => setTourOpen(true)}
-              onWhatsNew={whatsNew.open}
-              whatsNewLabel={helpWhatsNew}
-            />
+            {/* The `?` and ⚙ that sat here moved into the operator menu (#1085). */}
             <NotificationBell />
-            <Link
-              to={SETTINGS_PATH}
-              state={{ returnTo: location.pathname }}
-              className="gear"
-              aria-label="Settings"
-              onClick={closeMobileDrawer}
-            >
-              <SettingsIcon size={18} />
-            </Link>
             {/* LAST, hard against the edge, and it KEEPS ITS PLACE on a phone (#1058): the bell
                 and the tile both carry `data-topbar-keep`, so the corner still answers "which
                 account, and is anything waiting?" once the rest of the cluster rides the drawer.
@@ -460,6 +439,9 @@ function Layout() {
                 username={config?.username}
                 authMode={config?.auth_mode}
                 onNavigate={closeMobileDrawer}
+                onTour={() => setTourOpen(true)}
+                onWhatsNew={whatsNew.open}
+                whatsNewLabel={helpWhatsNew}
               />
             </span>
           </span>
@@ -568,34 +550,9 @@ function Layout() {
               </>
             )}
           </header>
-          {/* On small screens the topbar actions collapse into here (behind the hamburger). The
-              drawer does NOT repeat the section nav: the bar above already shows every section,
-              and a second copy took a third of the drawer on a phone (#1069 follow-up). */}
-          <div className="sidebar-actions">
-            {/* Choosing the tour or What's new closes the drawer first; the overlay that opens then
-                takes focus a frame later, after the drawer has restored its trigger (#987). */}
-            <HelpMenu
-              align="start"
-              onTour={() => {
-                closeMobileDrawer();
-                setTourOpen(true);
-              }}
-              onWhatsNew={() => {
-                closeMobileDrawer();
-                whatsNew.open();
-              }}
-              whatsNewLabel={helpWhatsNew}
-            />
-            <Link
-              to={SETTINGS_PATH}
-              state={{ returnTo: location.pathname }}
-              className="gear"
-              aria-label="Settings"
-              onClick={closeMobileDrawer}
-            >
-              <SettingsIcon size={18} />
-            </Link>
-          </div>
+          {/* No action row here any more (#1085): Help and Settings live in the operator menu,
+              which stays in the top bar at every width, and the drawer does not repeat the
+              section nav either (#1069). */}
           <div className="sidebarBody">
             {railInSidebar ? (
               /* The portal DESTINATION, part of the shell's own markup rather than created on
@@ -617,9 +574,13 @@ function Layout() {
                  the session counts #937 had to relabel. */
               <span ref={setRailFootEl} data-testid="mission-foot-slot" />
             ) : (
-              <span className="hud-tag">
-                <b className="num">{engaged}</b> ENGAGED ·{" "}
-                <b className="num">{live}</b> LIVE
+              <span
+                className="hud-tag"
+                data-testid="sidebar-counts"
+                title="Sessions in this list, and how many have an agent running"
+              >
+                <b className="num">{counts?.total ?? "—"}</b> SESSIONS ·{" "}
+                <b className="num">{counts?.live ?? "—"}</b> LIVE
               </span>
             )}
           </footer>
@@ -712,12 +673,17 @@ function Layout() {
               TAP TO RELOAD
             </button>
           )}
-          <span className="hud-tag">
+          <span
+            className="hud-tag"
+            data-testid="agent-counts"
+            title="Agents running on this host, and how many printed output in the last 10 seconds"
+          >
             <span
-              className={`hud-led ${live > 0 ? "up" : "idle"}`}
+              className={`hud-led ${(agents?.live ?? 0) > 0 ? "up" : "idle"}`}
               aria-hidden="true"
             />
-            <b className="num">{live}</b> AGENTS LIVE
+            <b className="num">{agents?.live ?? "—"}</b> AGENTS LIVE ·{" "}
+            <b className="num">{agents?.working ?? "—"}</b> WORKING
           </span>
         </footer>
       </div>

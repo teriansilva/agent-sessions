@@ -109,3 +109,89 @@ test.describe("in-app auto-update settings (#538)", () => {
     expect(overflow).toBeLessThanOrEqual(0);
   });
 });
+
+// #1085: an update shows its progress — step, bar, elapsed — THROUGH the restart it causes, and
+// What's new links the release notes on stable. The server is mocked: the progress sequence is
+// what `GET /api/update/progress` returns while the installer runs, and a dropped request stands
+// in for the restart window (the real server is down for a moment there).
+test("Update now shows the installer's progress through the restart, and links the release notes (#1085)", async ({
+  page,
+}) => {
+  const now = () => Math.floor(Date.now() / 1000);
+  const started = now();
+  let applied = false;
+  let reads = 0;
+  const run = (step: string, index: number, label: string) => ({
+    state: "running",
+    steps: 7,
+    step,
+    step_index: index,
+    label,
+    started_at: started,
+    elapsed_s: now() - started,
+    last_duration_s: 360,
+  });
+  await page.route("**/api/update/check", (r) =>
+    r.fulfill({
+      json: { current: "1.2.3", channel: "stable", latest: "v1.3.0", update_available: true },
+    }),
+  );
+  await page.route("**/api/update/apply", (r) => {
+    applied = true;
+    return r.fulfill({ status: 202, json: { status: "updating" } });
+  });
+  await page.route("**/api/update/progress", (r) => {
+    if (!applied) return r.fulfill({ json: { state: "idle", steps: 7, last_duration_s: 360 } });
+    reads += 1;
+    if (reads === 1) return r.fulfill({ json: run("web", 4, "Building the web UI") });
+    if (reads === 2) return r.fulfill({ json: run("restart", 6, "Restarting the service") });
+    if (reads === 3) return r.abort("connectionrefused");
+    return r.fulfill({
+      json: {
+        ...run("health", 7, "Checking it came back"),
+        state: "done",
+        elapsed_s: now() - started + 1,
+      },
+    });
+  });
+  await setup(page);
+
+  // Before anything runs: the last duration, and What's new with the installed release's notes.
+  await expect(page.getByTestId("update-last-duration")).toHaveText("The last update took 6 min.");
+  const whatsNew = page.getByTestId("update-whats-new");
+  await expect(whatsNew).toBeVisible();
+  await expect(page.getByTestId("update-release-notes")).toHaveAttribute(
+    "href",
+    "https://github.com/teriansilva/agent-sessions/releases/tag/v1.2.3",
+  );
+
+  await page.getByRole("button", { name: /check for updates/i }).click();
+  await expect(page.getByText("Update available: v1.3.0")).toBeVisible();
+  // …and now the notes link is the release on offer.
+  await expect(page.getByTestId("update-release-notes")).toHaveAttribute(
+    "href",
+    "https://github.com/teriansilva/agent-sessions/releases/tag/v1.3.0",
+  );
+
+  await page.getByTestId("update-apply").click();
+  const panel = page.getByTestId("update-progress");
+  await expect(panel).toContainText("Step 4 of 7 · Building the web UI");
+  await expect(panel).toContainText("last update took 6 min");
+  await expect(page.getByRole("progressbar", { name: "Update progress" })).toHaveAttribute(
+    "aria-valuenow",
+    "4",
+  );
+  await expect(panel).toContainText("Step 6 of 7 · Restarting the service");
+  // The dropped read is the restart, not an error.
+  await expect(panel).toContainText("Restarting… reconnecting");
+  await expect(panel).toContainText("Update finished");
+  await expect(page.getByTestId("update-reload")).toBeVisible();
+  // Terminal: the panel stops asking.
+  const settled = reads;
+  await page.waitForTimeout(4_500);
+  expect(reads).toBe(settled);
+  // No sideways scroll on a phone.
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+    page.viewportSize()!.width,
+  );
+});

@@ -75,6 +75,9 @@ _LAST_AUTO: dict[str, object] | None = None
 # and a silently-not-updating install is exactly what an attacker who moved a tag would want
 # nobody to notice. Surfaced on `check()` so the Settings card can show it.
 _LAST_BLOCK: str | None = None
+# The installer this process spawned (#1085), kept so its exit can be observed — and it reaped —
+# through its own handle. See `_pid_alive`.
+_INSTALLER: subprocess.Popen | None = None
 
 
 def _repo_url() -> str:
@@ -499,6 +502,184 @@ def check() -> dict[str, object]:
     return info
 
 
+# ---------------------------------------------------------------- update progress (#1085)
+#
+# The installer runs detached with its output discarded, so for the minutes a build takes the
+# Updates page could say nothing but "Updating…". `apply()` now names a progress file for it
+# (`AGENT_SESSIONS_UPDATE_PROGRESS`) and install.sh writes one small JSON record per milestone.
+#
+# The record is INPUT, and is read as such: a fixed path under the install prefix (never a
+# client-supplied one), a size cap, a JSON object, an enum state, a step id from the table
+# below, and plain integers. Display text never comes from the file — the labels are ours, so
+# nothing the installer (or anything else that could write that file) prints reaches the page.
+#
+# It also has to survive what the update itself does: the app restarts part-way through, so
+# the record lives on disk, not in this process, and the new process reads the same file.
+
+PROGRESS_STEPS: tuple[tuple[str, str], ...] = (
+    ("prepare", "Checking prerequisites"),
+    ("fetch", "Downloading the release"),
+    ("python", "Installing the Python package"),
+    ("web", "Building the web UI"),
+    ("switch", "Switching to the new release"),
+    ("restart", "Restarting the service"),
+    ("health", "Checking it came back"),
+)
+_STEP_IDS = [sid for sid, _ in PROGRESS_STEPS]
+_PROGRESS_STATES = ("running", "done", "failed", "rolled_back")
+_PROGRESS_MAX_BYTES = 4096
+#: A `running` record older than this with no newer write is not believed any more.
+PROGRESS_STALE_S = 45 * 60
+#: The seed is written before the spawn; an installer that never overwrote it never started.
+_SEED_GRACE_S = 120
+
+
+def progress_path() -> Path:
+    return _home() / "update-progress.json"
+
+
+def _history_path() -> Path:
+    return _home() / "update-history.json"
+
+
+def _write_json_atomic(path: Path, obj: dict) -> None:
+    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+    tmp.write_text(json.dumps(obj))
+    os.replace(tmp, path)
+
+
+def _seed_progress(started_at: int) -> None:
+    """The record before the installer's first write, so a page that opens in the gap already
+    sees a run. Best-effort: a prefix we cannot write to must not stop the update itself."""
+    try:
+        _home().mkdir(parents=True, exist_ok=True)
+        _write_json_atomic(
+            progress_path(),
+            {"state": "running", "step": "", "pid": 0, "started_at": started_at, "at": started_at},
+        )
+    except OSError as e:
+        log.warning("update progress: could not seed the record (%s)", type(e).__name__)
+
+
+def _pid_alive(pid: int) -> bool:
+    """Is the installer still RUNNING — not merely present in the process table?
+
+    Signal 0 succeeds for a zombie, and the installer is this app's own child while the app lives,
+    so an installer that exited through ``set -e`` without reaching ``die`` read as running until
+    the stale window (Hermes on #1089).
+
+    **Reaped only through its own handle.** ``apply()`` keeps the ``Popen`` in ``_INSTALLER``, and
+    ``poll()`` on it reaps exactly that child. A bare ``waitpid(pid)`` would be wrong twice over: a
+    PID from a stale record can by now belong to ANOTHER child of this app (an agent launch, a
+    usage probe) whose exit status it would steal, and reaping behind ``Popen``'s back leaves the
+    object to ``waitpid`` a reused PID later. Any other PID — the installer of a previous app
+    process, now someone else's child — is only looked at: signal 0, then the zombie state in
+    ``/proc/<pid>/stat``."""
+    proc = _INSTALLER
+    if proc is not None and getattr(proc, "pid", None) == pid:
+        return proc.poll() is None
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    except OSError:
+        return False
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return True  # no /proc (or it vanished between the calls): signal 0 said it exists
+    # The state is the first field after the parenthesised command, which may contain spaces.
+    return stat.rsplit(")", 1)[-1].split()[:1] != ["Z"]
+
+
+def _int(v: object) -> int | None:
+    return v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else None
+
+
+def _read_record(path: Path) -> dict | None:
+    try:
+        with path.open("rb") as f:
+            raw = f.read(_PROGRESS_MAX_BYTES + 1)
+    except OSError:
+        return None
+    if len(raw) > _PROGRESS_MAX_BYTES:
+        return None
+    try:
+        obj = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _last_duration() -> int | None:
+    rec = _read_record(_history_path())
+    return _int(rec.get("duration_s")) if rec else None
+
+
+def _remember_duration(started_at: int, duration: int) -> None:
+    """Keep the last completed update's duration for "last update took X" — written once per
+    run (keyed on its start), by whichever process first reads the finished record."""
+    rec = _read_record(_history_path()) or {}
+    if rec.get("started_at") == started_at:
+        return
+    try:
+        _write_json_atomic(_history_path(), {"started_at": started_at, "duration_s": duration})
+    except OSError as e:
+        log.warning("update progress: could not record the duration (%s)", type(e).__name__)
+
+
+def progress(now: float | None = None) -> dict[str, object]:
+    """The current (or last) self-update, validated. ``state`` is one of ``idle`` (no record),
+    ``running``, ``done``, ``failed``, ``rolled_back`` or ``stale``."""
+    now = time.time() if now is None else now
+    out: dict[str, object] = {
+        "state": "idle",
+        "steps": len(PROGRESS_STEPS),
+        "last_duration_s": _last_duration(),
+    }
+    rec = _read_record(progress_path())
+    if rec is None:
+        return out
+    state = rec.get("state")
+    step = rec.get("step")
+    started = _int(rec.get("started_at"))
+    at = _int(rec.get("at"))
+    pid = _int(rec.get("pid"))
+    if state not in _PROGRESS_STATES or started is None or at is None or pid is None:
+        return out
+    if not isinstance(step, str) or (step and step not in _STEP_IDS):
+        return out
+    if state == "running":
+        if pid == 0:
+            # Still the seed: the installer has not written yet. Past the grace, it never will.
+            if now - at > _SEED_GRACE_S:
+                state = "failed"
+        elif not _pid_alive(pid):
+            # Exited without writing a terminal record — `set -e` bypasses `die`.
+            state = "failed"
+        elif now - at > PROGRESS_STALE_S:
+            state = "stale"
+    index = _STEP_IDS.index(step) + 1 if step else 0
+    end = at if state in ("done", "failed", "rolled_back") else now
+    elapsed = max(0, int(end - started)) if started else None
+    if state == "done" and started and elapsed is not None:
+        _remember_duration(started, elapsed)
+    out.update(
+        {
+            "state": state,
+            "step": step,
+            "step_index": index,
+            "label": PROGRESS_STEPS[index - 1][1] if index else "Starting",
+            "started_at": started or None,
+            "elapsed_s": elapsed,
+            "last_duration_s": _last_duration(),
+        }
+    )
+    return out
+
+
 def installer_path() -> Path | None:
     p = _home() / "current" / "src" / "install.sh"
     return p if p.exists() else None
@@ -543,7 +724,13 @@ def apply() -> bool:
     if target and pin:
         env["AGENT_SESSIONS_REF"] = target
         env["AGENT_SESSIONS_EXPECT_COMMIT"] = pin
-    subprocess.Popen(  # noqa: S603
+    # Progress (#1085): a fixed path under the prefix, and the start time the record carries.
+    started = int(time.time())
+    _seed_progress(started)
+    env["AGENT_SESSIONS_UPDATE_PROGRESS"] = str(progress_path())
+    env["AGENT_SESSIONS_UPDATE_STARTED"] = str(started)
+    global _INSTALLER
+    _INSTALLER = subprocess.Popen(  # noqa: S603
         [sh, str(inst)],
         env=env,
         stdout=subprocess.DEVNULL,

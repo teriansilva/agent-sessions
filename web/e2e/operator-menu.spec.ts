@@ -55,9 +55,8 @@ async function mockShell(
   );
 }
 
-test("the corner names the operator, and keeps the bell and the gear beside it", async ({
+test("the corner names the operator beside the bell, and no gear or ? of its own (#1085)", async ({
   page,
-  isMobile,
 }) => {
   await mockShell(page);
   await page.goto("/");
@@ -73,19 +72,11 @@ test("the corner names the operator, and keeps the bell and the gear beside it",
   const tb = (await tile.boundingBox())!;
   expect(tb.x).toBeGreaterThan(bb.x);
 
-  // The gear is beside them on a desktop; on a phone the whole action cluster except the two
-  // kept controls rides the drawer, and the TILE'S OWN MENU is what keeps Settings one tap from
-  // the corner. Both are asserted, because "settings next to the avatar" has to remain true at
-  // both widths — just not in the same place.
-  const gear = actions.getByRole("link", { name: "Settings" });
-  if (isMobile) {
-    await expect(gear).toBeHidden();
-  } else {
-    await expect(gear).toBeVisible();
-    const gbox = (await gear.boundingBox())!;
-    expect(gbox.x).toBeGreaterThan(bb.x);
-    expect(tb.x).toBeGreaterThan(gbox.x);
-  }
+  // Settings and Help are IN the tile's menu since #1085 — the corner is the bell and the tile,
+  // at every width, with no ⚙ link or ? button of their own.
+  await expect(actions.getByRole("link", { name: "Settings" })).toHaveCount(0);
+  await expect(actions.getByRole("button", { name: "Help" })).toHaveCount(0);
+  await expect(actions.locator(":scope > *")).toHaveCount(2);
 });
 
 test("the panel opens ABOVE the terminal pane and its items are actually clickable (#752/#987)", async ({
@@ -144,4 +135,30 @@ test("a no-login install reads LOCAL and offers no Sign out", async ({
       name: "Settings",
     }),
   ).toBeVisible();
+});
+
+test("on a short landscape screen every item — Sign out included — stays reachable (#1089)", async ({
+  page,
+}) => {
+  // Hermes on #1089: seven rows at 667×320 put Sign out below the viewport, and the page itself
+  // cannot scroll. The panel is bounded to the room under the tile and scrolls inside itself.
+  await page.setViewportSize({ width: 667, height: 320 });
+  await mockShell(page);
+  await page.goto("/");
+  await page.getByTestId("operator-menu").click();
+  const panel = page.getByTestId("operator-menu-panel");
+  await expect(panel).toBeVisible();
+  const box = (await panel.boundingBox())!;
+  expect(box.y + box.height).toBeLessThanOrEqual(320);
+  expect(await panel.evaluate((el) => getComputedStyle(el).overflowY)).toBe("auto");
+  const signOut = panel.getByRole("menuitem", { name: /sign out/i });
+  await signOut.scrollIntoViewIfNeeded();
+  const s = (await signOut.boundingBox())!;
+  expect(s.y + s.height).toBeLessThanOrEqual(320);
+  // Actually hittable where it is drawn — not covered by anything.
+  await signOut.click({ trial: true });
+  // …and the keyboard reaches it too: End moves focus there, which scrolls it into view.
+  await panel.getByRole("menuitem").first().focus();
+  await page.keyboard.press("End");
+  await expect(signOut).toBeFocused();
 });

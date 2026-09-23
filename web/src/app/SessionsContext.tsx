@@ -2,7 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api, ApiError } from "../lib/api";
 import type { Session } from "../types/api";
-import { isNewSessionPlaceholder, SessionsCtx } from "./sessionsStore";
+import {
+  isNewSessionPlaceholder,
+  type SessionCounts,
+  SessionsCtx,
+} from "./sessionsStore";
 
 /** Backoff for TRANSIENT lookup failures (#867 review). A 404 is an answer; a dropped
  *  connection or a 500 is not, and settling one as "this session has no row" left a
@@ -28,6 +32,7 @@ class IdentityMismatch extends Error {
 
 export function SessionsProvider({ children }: { children: ReactNode }) {
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [counts, setCounts] = useState<SessionCounts | null>(null);
   // Resolved lookups, keyed by session id. A key maps to its row, or to null once a 404 has
   // settled it — both are answers, and both are stored under the key they were REQUESTED for.
   // Nothing is ever read out of a "current session" slot, which is what stops a response that
@@ -171,8 +176,18 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
   }, [later, bump]);
 
   const value = useMemo(
-    () => ({ sessions, setSessions, looked, lookup, retryGen, remember, forget }),
-    [sessions, looked, lookup, retryGen, remember, forget],
+    () => ({
+      sessions,
+      setSessions,
+      counts,
+      setCounts,
+      looked,
+      lookup,
+      retryGen,
+      remember,
+      forget,
+    }),
+    [sessions, counts, looked, lookup, retryGen, remember, forget],
   );
   return <SessionsCtx.Provider value={value}>{children}</SessionsCtx.Provider>;
 }

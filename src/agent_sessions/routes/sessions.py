@@ -27,6 +27,7 @@ from .. import (
     prefs,
     project_dirs,
     projects,
+    ptybridge,
     runtime_cleanup,
     scanner,
     transcript_owner,
@@ -37,6 +38,48 @@ from . import upload
 # How long after the last byte from the agent we still call the session "working" (#156).
 # Picked to feel responsive without flapping between every keystroke of a streaming reply.
 _WORKING_WINDOW_S = 10.0
+
+# RUNNING vs WORKING (#1085). "Working" above is "printed something in the last 10 s"; an agent that
+# is thinking, or waiting on the operator, is not working but IS running. The footers counted
+# `working` over the sidebar's loaded 20-row page and called it LIVE, so a host with a dozen
+# agents up read "1 LIVE". Running is a live dtach master — the one fact that does not depend on
+# a viewer being attached or the agent talking — probed once per TTL for the whole host rather
+# than per row, since the 15 s sidebar poll and a keystroke burst would otherwise re-probe every
+# socket on each request.
+_RUNNING_TTL_S = 5.0
+_running_lock = threading.Lock()
+_running_cache: tuple[float, frozenset[str]] | None = None
+
+
+def _running_keys() -> frozenset[str]:
+    """Physical keys (``engine:native``) of every session whose agent is running right now.
+
+    Fail-soft: a runtime dir that cannot be listed reads as "none running", never an error — this
+    feeds counts, and a count must not take the session list down with it."""
+    global _running_cache
+    now = time.monotonic()
+    with _running_lock:
+        if _running_cache is not None and now - _running_cache[0] < _RUNNING_TTL_S:
+            return _running_cache[1]
+    try:
+        keys = frozenset(f"{e}:{sid}" for e, sid in ptybridge.list_sessions())
+    except Exception:  # noqa: BLE001 — see docstring
+        keys = frozenset()
+    with _running_lock:
+        _running_cache = (time.monotonic(), keys)
+    return keys
+
+
+def _agent_counts(running: frozenset[str]) -> dict[str, int]:
+    """Host-wide: agents running, and how many of them printed in the working window."""
+    now = time.time()
+    working = 0
+    for k in running:
+        last = webterm.get_last_output_at(k)
+        if last is not None and now - last < _WORKING_WINDOW_S:
+            working += 1
+    return {"live": len(running), "working": working}
+
 
 # Compose-draft (#477) bounds: keep a server-side draft sane and the sidecar small. A draft
 # is unsent prompt text + already-uploaded image attachment paths — never image blobs.
@@ -327,6 +370,14 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         key = row["id"]
         row["mission"] = index.get(key) or index.get(engines.physical_key(key, aliases))
 
+    @app.get("/api/agents")
+    async def agent_counts(_: str = Depends(logged_in)) -> JSONResponse:
+        """Host-wide running / working counts (#1085) for the bottom bar, which must stay right
+        on pages where the session list is not mounted. Counts only — no ids, no rows — and no
+        transcript walk: one TTL-cached socket probe (``_running_keys``), off the event loop."""
+        running = await asyncio.to_thread(_running_keys)
+        return JSONResponse(_agent_counts(running))
+
     @app.get("/api/sessions")
     async def list_sessions(
         _: str = Depends(logged_in),
@@ -435,6 +486,11 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         memberships = _membership_index()
         for r in scoped:
             _stamp_mission(r, memberships, aliases)
+        # Running (#1085): stamped before filtering so `live_total` describes the filtered set,
+        # not the page — the footer's count, like `total`, is about the list, not the window.
+        running = _running_keys()
+        for r in scoped:
+            r["running"] = engines.physical_key(r["id"], aliases) in running
         # Facets for the project/agent dropdowns (#445): the project dropdown lists PROJECT
         # ENTITIES, not folder paths. Computed over the visible (already hide-filtered)
         # archived-scoped set, BEFORE q/project/engine filtering — so the dropdown lists every
@@ -514,6 +570,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 "sessions": [],
                 "next_offset": None,
                 "total": 0,
+                "live_total": 0,
                 "facets": facets,
                 "mission_filter_unavailable": True,
                 **pinned,
@@ -567,6 +624,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             "sessions": window,
             "next_offset": next_offset,
             "total": len(rows),
+            # Of those, how many have an agent running (#1085). The host-wide count is
+            # `GET /api/agents`, which the bottom bar polls on every route.
+            "live_total": sum(1 for r in rows if r["running"]),
             "facets": facets,
             **pinned,
         }
@@ -643,6 +703,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # The pane reads the same membership the list does (#948), so the header and the
             # sidebar row can never disagree about which mission holds this session.
             _stamp_mission(row, _membership_index(), aliases)
+            # Same stamp as the list (#1085), so the lookup stays the list's row shape exactly.
+            row["running"] = engines.physical_key(row["id"], aliases) in _running_keys()
             return row
         return _NOT_FOUND
 

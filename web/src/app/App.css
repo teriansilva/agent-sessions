@@ -325,14 +325,8 @@
   backdrop-filter: blur(7px) saturate(110%);
   border-bottom: 1px solid var(--line);
 }
-/* SYS // clock + MISSION // timer, pushed to the right; takes the slack after the wordmark. */
-.hud-telemetry {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 22px;
-}
-/* Topbar actions (Overview + Settings) at the far right, after the telemetry. */
+/* Topbar corner: the notification bell and the operator tile, against the right edge. (The SYS
+   clock and MISSION timer that sat before it were removed in #1085.) */
 .hud-topbar-actions {
   display: inline-flex;
   align-items: center;
@@ -345,12 +339,6 @@
      alignment rather than borrowing a neighbour's. Above 1100px both carry `auto`, which puts the
      telemetry right of the sections and the cluster right of the telemetry — unchanged to the eye. */
   margin-left: auto;
-}
-/* Overview/Settings actions that live in the sidebar drawer on small screens (#211 review).
- * Hidden on wide screens (the topbar carries them); shown ≤640px where the topbar would
- * otherwise overflow — reached via the hamburger. */
-.sidebar-actions {
-  display: none;
 }
 @media (max-width: 640px) {
   /* The topbar keeps hamburger, wordmark and sections; the Overview/Settings actions move into the
@@ -374,22 +362,6 @@
   }
   .hud-topbar-actions > *:not([data-topbar-keep]) {
     display: none;
-  }
-  .sidebar-actions {
-    display: flex;
-    flex-direction: row;
-    gap: 4px;
-    padding: 8px;
-    border-bottom: 1px dashed var(--line);
-  }
-  /* One icon-only row (#494): Help/Pulse/Overview/Settings share the drawer width equally,
-   * no text labels (the buttons keep their aria-label), recovering vertical space. */
-  .sidebar-actions .gear {
-    flex: 1 1 0;
-    height: 40px;
-    border-color: var(--line);
-    background: color-mix(in srgb, var(--bg-2) 45%, transparent);
-    color: var(--text-2);
   }
 }
 /* Full-width classification footer (#211 redux): the bottom HUD bar. */
@@ -446,10 +418,6 @@
     flex: none;
     position: relative;
     z-index: 40; /* above the drawer so the toggle is always reachable */
-  }
-  /* Telemetry is noisy on a phone; the wordmark + actions are enough. */
-  .hud-telemetry {
-    display: none;
   }
   .sidebar {
     position: fixed;
@@ -790,6 +758,8 @@ body.hud-static-grid {
   min-width: 0;
 }
 .section-nav a {
+  /* The corner BETA tag (#1085) anchors to the entry. */
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -814,6 +784,22 @@ body.hud-static-grid {
 .section-nav a:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
+}
+
+/* BETA (#1085): a small outlined tag beside the label. Accent ink on the bar's ground — the brand
+   colour, never a status colour (docs/design.md §3). On the active (filled) entry it takes the
+   fill's ink instead. Below the desktop line it becomes a corner tag inside the icon tile. */
+.section-nav-beta {
+  padding: 1px 3px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  font: 600 0.5rem/1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.section-nav a[aria-current] .section-nav-beta {
+  border-color: var(--on-accent);
+  color: var(--on-accent);
 }
 
 /* A SECTION WITH A SUB-MENU (#1069) is its link plus a chevron, drawn as one box: the link gives
@@ -866,9 +852,6 @@ body.hud-static-grid {
 }
 
 @media (max-width: 1100px) {
-  .hud-telemetry {
-    display: none;
-  }
   /* The bar carries five sections and four corner controls now. Below a full desktop the first
      things to go are the decorations: the section ICONS (the label is the name) and the operator
      tile's username (the panel repeats it in full the moment it opens). */
@@ -940,6 +923,17 @@ body.hud-static-grid {
   }
   .section-nav a svg {
     display: block;
+  }
+  .section-nav-beta {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    padding: 0 2px;
+    font-size: 0.42rem;
+    background: var(--bg-1);
+  }
+  .section-nav a[aria-current] .section-nav-beta {
+    background: var(--accent);
   }
   .section-nav-chevron {
     width: 24px;

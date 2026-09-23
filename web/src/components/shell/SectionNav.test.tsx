@@ -74,8 +74,13 @@ describe("SectionNav", () => {
     expect(
       within(nav)
         .getAllByRole("link")
-        .map((a) => a.textContent),
+        .map((a) => a.querySelector(".section-nav-label")?.textContent),
     ).toEqual(top);
+    // Missions carries a BETA tag (#1085) — for the eye only: its accessible name is still just
+    // "Missions", and the tooltip says it in words.
+    const missions = within(nav).getByRole("link", { name: "Missions" });
+    expect(missions.querySelector(".section-nav-beta")).toHaveAttribute("aria-hidden", "true");
+    expect(missions).toHaveAttribute("title", "Missions (beta)");
     expect(nav.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
     expect(within(nav).getByRole("link", { name: "Ask" })).toHaveAttribute(
       "aria-current",

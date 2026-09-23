@@ -104,7 +104,31 @@ HOMEFREE_CONNECT_URL="${AGENT_SESSIONS_CONNECT_URL:-https://battlelab.superstatu
 
 log()  { printf '  %s\n' "$*"; }
 note() { printf '\n%s\n' "$*"; }
-die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
+die()  { printf 'error: %s\n' "$*" >&2; progress failed; exit 1; }
+
+# SELF-UPDATE PROGRESS (#1085). The app's "Update now" spawns this script detached with its
+# output discarded, so the Updates page had nothing to show for the minutes a build takes. When
+# (and only when) the app sets AGENT_SESSIONS_UPDATE_PROGRESS, each milestone writes one tiny
+# JSON record there — the step's id (never display text: the app owns the labels), this PID (so
+# an exit that bypassed `die` reads as failed rather than "running" forever) and the start time
+# the app stamped. A hand-run install sets neither and writes nothing. The write is atomic
+# (tmp + rename) and best-effort: a progress record can never fail an install.
+PROGRESS_FILE="${AGENT_SESSIONS_UPDATE_PROGRESS:-}"
+PROGRESS_STARTED="${AGENT_SESSIONS_UPDATE_STARTED:-0}"
+case "$PROGRESS_STARTED" in ''|*[!0-9]*) PROGRESS_STARTED=0 ;; esac
+PROGRESS_STEP=""
+PROGRESS_FINAL=""
+progress() {  # progress <running|done|failed|rolled_back> [step-id]
+  [ -n "$PROGRESS_FILE" ] || return 0
+  # A terminal state is written once; a later `die` must not turn "rolled back" into "failed".
+  [ -z "$PROGRESS_FINAL" ] || return 0
+  [ "$1" = running ] || PROGRESS_FINAL="$1"
+  [ -z "${2:-}" ] || PROGRESS_STEP="$2"
+  _ptmp="$PROGRESS_FILE.tmp.$$"
+  printf '{"state":"%s","step":"%s","pid":%s,"started_at":%s,"at":%s}\n' \
+    "$1" "$PROGRESS_STEP" "$$" "$PROGRESS_STARTED" "$(date +%s)" > "$_ptmp" 2>/dev/null \
+    && mv -f "$_ptmp" "$PROGRESS_FILE" 2>/dev/null || rm -f "$_ptmp" 2>/dev/null || true
+}
 have() { command -v "$1" >/dev/null 2>&1; }
 _sha256() {  # print the hex SHA-256 of file $1 using whatever tool exists (empty if none)
   if   have sha256sum; then sha256sum "$1" | awk '{print $1}'
@@ -523,6 +547,7 @@ build_release() {
   # absolute, so a venv must never be moved after creation. Only the plain source tree
   # is relocated. `current` is flipped to $rel by the caller after a full build.
   ref="$1"
+  progress running fetch
   tmp="$(mktemp -d "$PREFIX/.clone.XXXXXX")"
   if [ -n "$ref" ]; then
     git clone -q --depth 1 --branch "$ref" "$REPO_URL" "$tmp/src" 2>/dev/null \
@@ -558,6 +583,7 @@ build_release() {
   mkdir -p "$rel"
   mv "$tmp/src" "$rel/src"   # source is plain files — safe to relocate
   rm -rf "$tmp"
+  progress running python
   "$PY" -m venv "$rel/venv"   # built at its final path (with the resolved python) → valid shebangs
   "$rel/venv/bin/pip" install --quiet --upgrade pip
   "$rel/venv/bin/pip" install --quiet "$rel/src"
@@ -573,6 +599,7 @@ build_web() {
     log "skipping UI build (AGENT_SESSIONS_SKIP_WEB_BUILD=1)"; return 0
   fi
   [ -f "$rel/src/web/package.json" ] || { log "no web/ in this release — skipping UI build"; return 0; }
+  progress running web
   log "building the React UI (this can take a minute)…"
   # Stamp the release version into the bundle (#661): build_release() pip-installed the package
   # before calling us, so the venv's CLI reports the exact version being installed. Vite bakes
@@ -1252,7 +1279,9 @@ manage_service() {
   render_unit
   systemctl --user daemon-reload
   systemctl --user enable "$APP.service" >/dev/null 2>&1 || true
+  progress running restart
   systemctl --user restart "$APP.service"
+  progress running health
   _healthcheck && return 0
   # Unhealthy. Roll back to the previous release if there is one (self-update safety):
   # re-point `current` (atomic) + restart so a bad update can't leave the host down.
@@ -1262,7 +1291,7 @@ manage_service() {
     ln -s "$prev" "$rb"
     mv -Tf "$rb" "$CURRENT" 2>/dev/null || { rm -f "$rb"; ln -sfn "$prev" "$CURRENT"; }
     systemctl --user restart "$APP.service"
-    _healthcheck && die "update failed health check — rolled back to the previous release"
+    _healthcheck && { progress rolled_back; die "update failed health check — rolled back to the previous release"; }
     die "update failed and the rollback release is also unhealthy"
   fi
   die "service started but /healthz never came up on $HOST:$PORT"
@@ -1323,6 +1352,7 @@ main() {
   adopt_persisted_bind    # re-run: a persisted bind in the env file wins (no silent revert to localhost)
   adopt_persisted_channel # re-run: a persisted (UI-chosen) channel wins the same way (#538)
   choose_host             # fresh interactive install: offer to bind a chosen address / all interfaces
+  progress running prepare
   ensure_prereqs
   ref="$(resolve_ref)"
   log "installing $APP (${ref:-default branch}) into $PREFIX …"
@@ -1346,6 +1376,7 @@ main() {
   # sees a missing `current` (unlike `ln -sfn`, which unlinks then recreates). Falls back
   # to a plain swap where `mv -T` is unavailable. One-step rollback = re-point to a prior
   # release dir.
+  progress running switch
   prev_target="$(readlink "$CURRENT" 2>/dev/null || true)"  # for rollback on a bad update
   tmp_link="$PREFIX/.current.$$"
   ln -s "$rel" "$tmp_link"
@@ -1359,6 +1390,7 @@ main() {
   migrate_legacy_autoupdate  # retire the systemd timer → in-app setting BEFORE the service (re)starts
   manage_service "$prev_target"
   version="$("$CURRENT/venv/bin/agent-sessions" version 2>/dev/null || echo '?')"
+  progress done
 
   note "agent-sessions $version installed."
   log "URL:     $ORIGIN"

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { SessionCounts } from "../app/sessionsStore";
 import { useSectionState } from "../app/sectionState";
 import { useConfig } from "../app/config";
 import { api, ApiError } from "../lib/api";
@@ -59,6 +60,8 @@ export function useSessionsList() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [nextOffset, setNextOffset] = useState<number | null>(0);
   const [total, setTotal] = useState(0);
+  // Footer counts (#1085). `null` until a server that sends them answers.
+  const [counts, setCounts] = useState<SessionCounts | null>(null);
   const [facets, setFacets] = useState<Facets>({ projects: [], engines: [] });
   /** The server could not apply the mission filter (#948): say so, rather than "no sessions". */
   const [missionFilterUnavailable, setMissionFilterUnavailable] = useState(false);
@@ -154,6 +157,9 @@ export function useSessionsList() {
         });
         setNextOffset(page.next_offset);
         setTotal(page.total);
+        if (typeof page.live_total === "number") {
+          setCounts({ total: page.total, live: page.live_total });
+        }
         setFacets(page.facets);
         setMissionFilterUnavailable(Boolean(page.mission_filter_unavailable));
       } catch (e) {
@@ -422,6 +428,7 @@ export function useSessionsList() {
   return {
     sessions,
     total,
+    counts,
     missionFilterUnavailable,
     facets,
     filters,

@@ -1,9 +1,19 @@
 import { expect, test } from "@playwright/test";
 import { promptPath, settingsPath } from "../src/routes/settingsTabs";
+import { openSettingsFromMenu } from "./settingsNav";
 
 // #155: leaving Settings should return you to the session you came from — not drop you on the
 // new-session landing and deselect it. Real browser, no backend needed (the shell mounts the
-// terminal in a connecting state without a ws).
+// terminal in a connecting state without a ws). Settings is opened from the operator menu (#1085),
+// which renders once the config names an auth mode — so that one route is mocked.
+
+test.beforeEach(async ({ page }) => {
+  await page.route("**/api/config", (r) =>
+    r.fulfill({
+      json: { csrf: "x", auth_mode: "none", terminal_backend: "ws", new_session_engines: [] },
+    }),
+  );
+});
 
 test("Settings back returns to the originating session (#155)", async ({
   page,
@@ -11,19 +21,7 @@ test("Settings back returns to the originating session (#155)", async ({
   await page.goto("/s/claude/back-test");
   await expect(page.locator(".xterm")).toBeVisible();
 
-  // Settings is in the command topbar on desktop; ≤640px it collapses into the drawer.
-  if (testInfo.project.name === "mobile") {
-    await page.locator(".navToggle").click();
-    await page
-      .locator(".sidebar")
-      .getByRole("link", { name: "Settings" })
-      .click();
-  } else {
-    await page
-      .locator(".hud-topbar")
-      .getByRole("link", { name: "Settings" })
-      .click();
-  }
+  await openSettingsFromMenu(page);
   // Desktop: bare /settings replace-redirects to the first section (#357). A phone keeps
   // /settings — it IS the section index there (#956). Either way the back link is on screen.
   await expect(page).toHaveURL(
@@ -59,12 +57,7 @@ test("Back to sessions still returns to the session after an in-app prompt link 
   const phone = testInfo.project.name === "mobile";
   await page.goto("/s/claude/back-test");
   await expect(page.locator(".xterm")).toBeVisible();
-  if (phone) {
-    await page.locator(".navToggle").click();
-    await page.locator(".sidebar").getByRole("link", { name: "Settings" }).click();
-  } else {
-    await page.locator(".hud-topbar").getByRole("link", { name: "Settings" }).click();
-  }
+  await openSettingsFromMenu(page);
 
   // Settings → AI → Session review → "Prompts → Tail review", all in-app.
   const nav = page.getByRole("navigation", { name: "Settings", exact: true });

@@ -123,13 +123,14 @@ test("the mission sidebar footer counts missions and held sessions, not sessions
   });
   await page.goto("/");
   await openMissionRail(page);
-  await expect(page.locator(".sidebar-foot")).toContainText(/ENGAGED · \d+ LIVE$/);
+  // #1085: the sessions footer counts the filtered list and its running agents.
+  await expect(page.locator(".sidebar-foot")).toContainText(/\S+ SESSIONS · \S+ LIVE$/);
 
   await page.goto("/mission");
   await openMissionRail(page);
   const foot = page.locator(".sidebar-foot");
   await expect(foot.getByTestId("rail-foot")).toHaveText("2 MISSIONS · 3 HELD");
-  await expect(foot).not.toContainText("ENGAGED");
+  await expect(foot).not.toContainText("SESSIONS ·");
   // Same typography as the sessions footer it replaces: both are the shell's .hud-tag.
   const tag = await styleOf(foot.getByTestId("rail-foot"), TYPE);
   await page.goto("/");

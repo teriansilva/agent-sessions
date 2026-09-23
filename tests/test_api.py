@@ -43,7 +43,7 @@ def test_sessions_paginated_shape(auth_cfg, fake_jsonl):
     r = c.get("/api/sessions?limit=2&offset=0")
     assert r.status_code == 200
     d = r.json()
-    assert set(d) == {"sessions", "next_offset", "total", "facets"}
+    assert set(d) == {"sessions", "next_offset", "total", "facets", "live_total"}
     assert len(d["sessions"]) == 2
     # 4 live sessions in the fixture (1 archived excluded) → next_offset advances
     assert d["total"] == 4

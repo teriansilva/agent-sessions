@@ -489,6 +489,7 @@ export function SessionList({ onNavigate }: SessionListProps = {}) {
     setOrchestratorExcluded,
     setProject,
     missionFilterUnavailable,
+    counts,
   } = useSessionsList();
   const rowRefs = useRef(new Map<string, HTMLLIElement>());
   const previousRowTops = useRef(new Map<string, number>());
@@ -616,10 +617,15 @@ export function SessionList({ onNavigate }: SessionListProps = {}) {
   );
 
   // Publish the loaded rows so the compact header can resolve the current session's title.
-  const { setSessions } = useSessionsStore();
+  const { setSessions, setCounts } = useSessionsStore();
   useEffect(() => {
     setSessions(sessions);
   }, [sessions, setSessions]);
+  // …and the footer counts (#1085), which describe the whole filtered list and the host, not
+  // the rows loaded so far.
+  useEffect(() => {
+    setCounts(counts);
+  }, [counts, setCounts]);
 
   // Relative-time labels otherwise stay frozen ("2m ago", "2m ago", …) until something else
   // re-renders the list. Bump a counter every ~30s while the tab is visible so `relTime` is

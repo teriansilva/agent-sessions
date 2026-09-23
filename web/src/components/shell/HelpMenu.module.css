@@ -1,4 +1,5 @@
-/* The `?` Help menu (#987): the anchored panel the mission `⋯` draws (`mission.module.css`
+/* The operator menu's panel and rows. Born as the `?` Help menu (#987), whose items moved into the
+ * operator menu in #1085: the anchored panel the mission `⋯` draws (`mission.module.css`
  * .overflowMenu) and RowMenu's rows. Flat fill, hairline border, zero radius — `docs/design.md`. */
 
 .wrap {
@@ -67,14 +68,4 @@
   margin-left: auto;
   padding-left: 12px;
   color: var(--text-3, var(--text-muted));
-}
-
-/* The drawer's action row gives each icon an equal share (#494). The `?` now sits in this wrapper,
- * so the share goes to the wrapper and the trigger fills it. */
-:global(.sidebar-actions) .wrap {
-  flex: 1 1 0;
-}
-
-:global(.sidebar-actions) .wrap > :global(.gear) {
-  width: 100%;
 }

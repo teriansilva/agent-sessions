@@ -84,9 +84,11 @@ export function AnchoredMenu({
   children: ReactNode | ((close: () => void) => ReactNode);
 }) {
   const [open, setOpen] = useState(false);
-  const [anchor, setAnchor] = useState<{ top: number; right: number } | null>(
-    null,
-  );
+  const [anchor, setAnchor] = useState<{
+    top: number;
+    right: number;
+    maxHeight: number;
+  } | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -95,7 +97,16 @@ export function AnchoredMenu({
 
   const measure = useCallback(() => {
     const r = triggerRef.current?.getBoundingClientRect();
-    if (r) setAnchor({ top: r.bottom + 4, right: window.innerWidth - r.right });
+    // BOUNDED TO THE ROOM BELOW THE TRIGGER (Hermes on #1089). The operator menu grew to seven
+    // rows, and at 667×320 landscape Sign out started below the viewport — with the body's own
+    // overflow hidden, nothing could scroll to it. The panel now stops 8px above the bottom edge
+    // and scrolls inside itself, so every item stays reachable at any height.
+    if (r)
+      setAnchor({
+        top: r.bottom + 4,
+        right: window.innerWidth - r.right,
+        maxHeight: Math.max(120, window.innerHeight - (r.bottom + 4) - 8),
+      });
   }, []);
 
   // Re-measure while open: the topbar does not scroll, but a resize moves the trigger.
@@ -167,7 +178,14 @@ export function AnchoredMenu({
       data-modal-inside={portal ? "" : undefined}
       style={
         portal && anchor
-          ? { position: "fixed", top: anchor.top, right: anchor.right, left: "auto" }
+          ? {
+              position: "fixed",
+              top: anchor.top,
+              right: anchor.right,
+              left: "auto",
+              maxHeight: anchor.maxHeight,
+              overflowY: "auto",
+            }
           : undefined
       }
       onKeyDown={onKeyDown}
