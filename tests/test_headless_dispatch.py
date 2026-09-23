@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import pathlib
+import threading
 import time
 
 import pytest
@@ -694,13 +695,16 @@ async def test_CANCELLATION_after_the_spawn_tears_down_before_it_unlocks(
     from agent_sessions import runtime_cleanup
 
     order: list[str] = []
+    # The launched process stays alive until the teardown stops it, as the real `dtach` does. A
+    # flat sleep kept the worker thread busy for 30 s after the assertions had already passed.
+    killed = threading.Event()
 
     class SlowProc:
         returncode = 0
 
         def wait(self):
             order.append("waiting")
-            time.sleep(30)  # cancelled here
+            killed.wait(30)  # cancelled here
             return 0
 
     def fake(argv, **kw):
@@ -712,6 +716,7 @@ async def test_CANCELLATION_after_the_spawn_tears_down_before_it_unlocks(
 
     async def cleanup(engine, native, **kwargs):
         order.append("abandon")
+        killed.set()
         return "term"
 
     monkeypatch.setattr(runtime_cleanup, "cleanup_runtime", cleanup)
@@ -770,7 +775,9 @@ async def test_the_launch_is_wrapped_in_a_TRANSIENT_SCOPE(env, prov, reg, monkey
         return P()
 
     monkeypatch.setattr(headless_dispatch, "_popen", fake)
-    out = await headless_dispatch.dispatch(registry=reg, engine="claude", cwd=str(env), brief="x")
+    out = await headless_dispatch.dispatch(
+        registry=reg, engine="claude", cwd=str(env), brief="x", start_timeout=0.3
+    )
     assert out.state != "failed", out.reason
     assert len(seen) == 1, "the dispatch launch was not offered to the scope wrapper"
     # It wrapped the DTACH argv, not the agent's own — the master and everything it forks have to
@@ -788,7 +795,9 @@ async def test_a_host_with_NO_SCOPES_still_dispatches(env, prov, reg, monkeypatc
 
     monkeypatch.setattr(scopedspawn, "wrap", lambda argv, **kw: (argv, None))
     _stub_spawn(monkeypatch)
-    out = await headless_dispatch.dispatch(registry=reg, engine="claude", cwd=str(env), brief="x")
+    out = await headless_dispatch.dispatch(
+        registry=reg, engine="claude", cwd=str(env), brief="x", start_timeout=0.3
+    )
     assert out.state != "failed", out.reason
 
 
@@ -838,7 +847,9 @@ async def test_the_LAUNCH_lands_in_the_directory_that_was_APPROVED_not_the_name(
         return P()
 
     monkeypatch.setattr(headless_dispatch, "_popen", fake)
-    await headless_dispatch.dispatch(engine="claude", cwd=str(approved), brief="go", registry=reg)
+    await headless_dispatch.dispatch(
+        engine="claude", cwd=str(approved), brief="go", registry=reg, start_timeout=0.3
+    )
 
     # The cwd handed to the spawn still resolves to the directory the operator approved, even
     # though its NAME now belongs to something else.

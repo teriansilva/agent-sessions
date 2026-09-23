@@ -107,6 +107,18 @@ class FakeLate:
 
 
 @pytest.fixture
+def short_bind(monkeypatch):
+    """Shrink the readiness budgets for a test that NEEDS them to expire.
+
+    `mission_dispatch.run` passes no `start_timeout`, so a launch whose session never binds waits
+    out the production budget (`START_EVIDENCE_TIMEOUT_S`, 90 s) — the outcome asserted is the
+    same at 0.3 s, and 90 s per test made this file the slowest in the suite (#1098).
+    """
+    monkeypatch.setattr(headless_dispatch, "START_EVIDENCE_TIMEOUT_S", 0.3)
+    monkeypatch.setattr(headless_dispatch, "BIND_TIMEOUT_S", 0.3)
+
+
+@pytest.fixture
 def work(tmp_path, monkeypatch):
     sockdir = tempfile.mkdtemp(prefix="as-lb-")
     monkeypatch.setenv("AGENT_SESSIONS_RUNTIME_DIR", sockdir)
@@ -480,7 +492,7 @@ def test_a_MISSION_adopts_the_real_key_records_where_it_runs_and_publishes_the_a
 
 
 def test_DELIVERED_but_UNBOUND_fails_and_Start_again_stays_refused(
-    work, prov, spawned, typed, torn_down
+    work, prov, spawned, typed, torn_down, short_bind
 ):
     mid, claimed = _claimed(work)
     out = asyncio.run(mission_dispatch.run(mid, claimed, registry=Reg()))
@@ -1266,7 +1278,9 @@ def test_a_launch_that_ADOPTS_its_session_asks_for_an_early_reading(
     assert asked == [mid]
 
 
-def test_a_launch_that_FAILS_asks_for_nothing(work, prov, spawned, typed, torn_down, monkeypatch):
+def test_a_launch_that_FAILS_asks_for_nothing(
+    work, prov, spawned, typed, torn_down, monkeypatch, short_bind
+):
     asked = _record_early(monkeypatch)
     mid, claimed = _claimed(work)
     out = asyncio.run(mission_dispatch.run(mid, claimed, registry=Reg()))

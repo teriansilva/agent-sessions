@@ -1414,9 +1414,12 @@ def test_a_name_that_RESOLVES_to_loopback_is_refused(repo, root, monkeypatch):
 @pytest.mark.parametrize(
     "host", ["example.invalid", "192.0.2.10", "[2001:db8::1]", "git.example.test"]
 )
-def test_a_genuinely_remote_host_is_not_refused_as_local(repo, root, host):
+def test_a_genuinely_remote_host_is_not_refused_as_local(repo, root, host, monkeypatch):
     """The negative control, and it is load-bearing: without it, a classifier that called
     EVERYTHING local would pass every test above while disabling the feature outright."""
+    # 192.0.2.10 is TEST-NET-1: the connect is dropped, not refused, so the fetch waits out its
+    # budget. The assertion is about the classifier, so a short budget proves the same thing.
+    monkeypatch.setattr(gitwrite, "NET_TIMEOUT_S", 2.0)
     _git(repo, "remote", "add", "ext", f"ssh://{host}/srv/out.git")
     with pytest.raises((FsError, gitpanel.GitError)) as e:
         gitwrite.git_fetch(str(repo), "ext")

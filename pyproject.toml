@@ -34,6 +34,7 @@ agent-sessions = "agent_sessions.cli:main"
 [project.optional-dependencies]
 dev = [
     "pytest==8.3.4",
+    "pytest-xdist==3.8.0",  # pr-validate runs `pytest -n 8 --dist loadfile` (#1098)
     "httpx==0.28.1",  # for FastAPI TestClient
     "ruff==0.8.4",
 ]

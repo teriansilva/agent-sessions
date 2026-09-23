@@ -25,6 +25,7 @@ ruff check src tests          # lint
 ruff format --check src tests # formatting
 pytest                        # unit + integration
 pytest -m "not e2e_install"   # same, minus the multi-minute install.sh end-to-end tests
+pytest -n 8 --dist loadfile   # the full suite in parallel, exactly as pr-validate runs it
 
 # Web
 cd web

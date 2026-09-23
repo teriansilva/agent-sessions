@@ -1504,7 +1504,7 @@ def run_git_net(
     gitdir: str,
     args: list[str],
     *,
-    timeout: float = NET_TIMEOUT_S,
+    timeout: float | None = None,
     extra_config: list[str] | None = None,
     ssh_command: str | None = None,
     allow_protocol: str | None = None,
@@ -1539,6 +1539,10 @@ def run_git_net(
         *(extra_config or []),
         *args,
     ]
+    # Read at call time, not bound as the default: a default is evaluated once at import, so
+    # patching NET_TIMEOUT_S would silently do nothing (#1098).
+    if timeout is None:
+        timeout = NET_TIMEOUT_S
     return _run_argv(argv, env, repo.gitdir, timeout).decode("utf-8", "replace")
 
 
