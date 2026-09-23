@@ -402,3 +402,54 @@ def test_unretire_touches_only_that_actions_escalation_rows(tmp_path):
     rows = {r["id"]: r for r in notifications._read(p)}
     assert rows["a"]["retired"] is False and "settled_at" not in rows["a"]
     assert rows["b"]["retired"] is True and rows["c"]["retired"] is True
+
+
+def test_a_compaction_inside_the_race_still_never_reports_nothing_sent(world, monkeypatch):
+    """#1082 review (compaction note): a compaction between the other settler's CAS and the check
+    rewrites the history into one merged row, so no `claimed` EVENT is left to find. `claim_owner`
+    survives the merge, and the answer stays indeterminate."""
+    choose, slave = world
+    real_send = actuator.session_input.send_input
+
+    def send_race_compact(*a, **k):
+        out = real_send(*a, **k)
+        [rec] = [
+            r
+            for r in ledger.latest_by_id().values()
+            if r.get("verb") == "choose" and r.get("state") == "claimed"
+        ]
+        ledger.compare_and_set(
+            rec["id"], frozenset({"claimed"}), "indeterminate", None, detail="archive sweep"
+        )
+        ledger.compact()
+        return out
+
+    monkeypatch.setattr(actuator.session_input, "send_input", send_race_compact)
+    r = choose({"option": 2, "label": "Green"})
+    assert _typed(slave) == b"2"
+    assert r.status_code == 502, r.text
+    esc = ledger.get("esc-1")
+    assert esc["state"] == "rejected" and esc["outcome"] == menu_answer.ANSWERED_OUTCOME
+
+
+def test_zero_byte_fails_closed_when_the_ledger_cannot_be_read(monkeypatch):
+    monkeypatch.setattr(menu_answer.ledger, "lookup", lambda _id: ("unreadable", None))
+    assert menu_answer._zero_byte("choose_x") is False
+    monkeypatch.setattr(menu_answer.ledger, "lookup", lambda _id: ("absent", None))
+    assert menu_answer._zero_byte("choose_x") is False
+
+
+@pytest.mark.parametrize(
+    "rec, zero",
+    [
+        ({"state": "stale"}, True),  # settled before any claim
+        ({"state": "failed", "claim_owner": "t", "outcome": "failed"}, True),
+        ({"state": "failed", "claim_owner": "t", "outcome": "not_live"}, True),
+        ({"state": "failed", "claim_owner": "t", "outcome": "aborted"}, False),
+        ({"state": "indeterminate", "claim_owner": "t"}, False),
+        ({"state": "claimed", "claim_owner": "t"}, False),
+    ],
+)
+def test_zero_byte_reads_the_merged_record(monkeypatch, rec, zero):
+    monkeypatch.setattr(menu_answer.ledger, "lookup", lambda _id: ("found", rec))
+    assert menu_answer._zero_byte("choose_x") is zero

@@ -199,11 +199,6 @@ def _reopen(escalation_id: str, action_id: str, prev_state: str, why: str) -> No
             notifications.unretire_for_action(escalation_id)
 
 
-def _ever_claimed(action_id: str) -> bool:
-    """Did this action ever reach ``claimed``? Read from the ledger's own history. Blocking."""
-    return any(r.get("id") == action_id and r.get("state") == "claimed" for r in ledger.read_all())
-
-
 def _zero_byte(action_id: str) -> bool:
     """Did this `choose` certainly put NO byte on the PTY? Asked of the LEDGER, never inferred
     from what `deliver` returned (#1082 review 5022).
@@ -216,11 +211,16 @@ def _zero_byte(action_id: str) -> bool:
     * claimed ⇒ zero bytes ONLY when the writer itself said so (`outcome` in the zero-byte set);
       anything else — another settler's `indeterminate`, a missing outcome — may have been sent.
 
-    Blocking.
+    "Was it claimed" is `claim_owner` on the MERGED record, which `ledger.claim` stamps and every
+    later event carries forward — so it survives a compaction that rewrites the history into one
+    row, where a scan for a `claimed` event would find none (#1082 review, compaction note). An
+    unreadable ledger FAILS CLOSED: not provably zero-byte, so indeterminate. Blocking.
     """
-    if not _ever_claimed(action_id):
+    status, cur = ledger.lookup(action_id)
+    if status != "found" or cur is None:
+        return False
+    if not cur.get("claim_owner"):
         return True
-    cur = ledger.get(action_id) or {}
     return cur.get("outcome") in ZERO_BYTE_OUTCOMES
 
 
