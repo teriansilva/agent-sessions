@@ -419,10 +419,25 @@ export function ActionRow({
             </span>
           </>
         )}
-        <span className={styles.conf}>
-          conf {action.confidence.toFixed(2)}
-          {escSuffix ? ` · ${escSuffix}` : ""}
-        </span>
+        {/* WHAT THE NUMBER IS CONFIDENCE IN (#1060). For an action the model chose to ESCALATE, the
+            figure is how sure it is that the decision is the operator's — `DEFAULT_ORCH_PROMPT`
+            defines confidence as "right AND safe", and the right action here is to ask. Printed as
+            "conf 0.90 · needs your call" it read as confidence in an ANSWER, the opposite claim. The
+            other reasons keep their shape: there the figure really is about a proposed action. */}
+        {action.escalation_reason === "model" && isEscalation(action.state) ? (
+          <span
+            className={styles.conf}
+            aria-label={`Needs your call — the supervisor is ${action.confidence.toFixed(2)} sure this decision is yours`}
+            title="How sure the supervisor is that this decision is yours — not confidence in any answer"
+          >
+            needs your call · {action.confidence.toFixed(2)} sure
+          </span>
+        ) : (
+          <span className={styles.conf}>
+            conf {action.confidence.toFixed(2)}
+            {escSuffix ? ` · ${escSuffix}` : ""}
+          </span>
+        )}
       </div>
       {action.rationale && <p className={styles.why}>{action.rationale}</p>}
       {action.answer && <p className={styles.why}>{`“${action.answer}”`}</p>}

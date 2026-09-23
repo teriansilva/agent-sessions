@@ -213,6 +213,11 @@ async def ask(
                 orchestrator.precondition_for,
                 orchestrator.engines.physical_key(action["session_id"]),
             )
+        elif action["verb"] == "escalate":
+            rec["observed_prompt"] = await asyncio.to_thread(
+                orchestrator.observed_prompt_for,
+                orchestrator.engines.physical_key(action["session_id"]),
+            )
         if turn_id:
             # Durable provenance, MISSION-QUALIFIED. Without the mission half, a recovering turn
             # in mission B can adopt an identically-named turn's actions from mission A — the

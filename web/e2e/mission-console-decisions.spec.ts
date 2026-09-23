@@ -300,3 +300,25 @@ test.describe("mobile", () => {
     await expect(page.getByRole("button", { name: /^approve$/i })).toHaveCount(0);
   });
 });
+
+test("a model escalation says its number is confidence that the call is YOURS (#1060)", async ({
+  page,
+}) => {
+  // `DEFAULT_ORCH_PROMPT` defines confidence as "right AND safe", and for an escalation the right
+  // action is to ask — so 0.90 means "0.90 sure this decision is yours". Printed as
+  // "conf 0.90 · needs your call" it read as confidence in an answer, the opposite claim. This is
+  // the card the operator meets in the mission thread; it moved here when #1054 removed the pane's
+  // decision strip, which is where this assertion used to live.
+  const esc = {
+    ...ESCALATE_ACTION,
+    escalation_reason: "model",
+    confidence: 0.9,
+  } as typeof CONTINUE_ACTION;
+  await openConsole(page, [esc]);
+  await expect(page.getByText(ESCALATE_ACTION.rationale)).toBeVisible();
+
+  const chip = page.getByText(/^needs your call · 0\.90 sure$/);
+  await expect(chip).toBeVisible();
+  await expect(chip).toHaveAttribute("aria-label", /0\.90 sure this decision is yours/);
+  await expect(page.getByText(/^conf 0\.90/)).toHaveCount(0);
+});

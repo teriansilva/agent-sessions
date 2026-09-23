@@ -419,7 +419,10 @@ def screen_matches(phys: str, pre: dict) -> tuple[bool, str]:
     want_fp = pre.get("screen_fingerprint")
     if not want_fp:
         return True, ""
-    screen = scrollback.live_tail_text(phys, orchestrator.PRECONDITION_CHARS)
+    # THE SAME WINDOW `precondition_for` judged from (#1060): a narrower read here could cut a
+    # menu's title that the proposal saw, classify the unchanged frame differently, and refuse a
+    # delivery as "a different kind of prompt now" when nothing moved.
+    screen = scrollback.live_tail_text(phys, orchestrator.PROMPT_SCREEN_CHARS)
     if orchestrator._screen_fingerprint(screen) != want_fp:
         return False, "the session's screen changed since this was proposed"
     want_class = pre.get("prompt_class")

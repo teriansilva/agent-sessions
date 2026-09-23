@@ -858,6 +858,41 @@ test("both kinds of escalation still explain themselves", () => {
   expect(screen.getByText(/below threshold/i)).toBeInTheDocument();
 });
 
+test("a model escalation says its number is confidence that the call is YOURS (#1060)", () => {
+  // `DEFAULT_ORCH_PROMPT` defines confidence as "right AND safe", and for an escalation the right
+  // action is to ask — so 0.90 means "0.90 sure this is your decision". Printed as
+  // "conf 0.90 · needs your call" it read as confidence in an answer, the opposite claim.
+  renderRow({
+    state: "escalated",
+    verb: "escalate",
+    confidence: 0.9,
+    escalation_reason: "model",
+    can_approve: false,
+    can_reject: true,
+  });
+  const chip = screen.getByText("needs your call · 0.90 sure");
+  expect(chip).toHaveAttribute(
+    "aria-label",
+    "Needs your call — the supervisor is 0.90 sure this decision is yours",
+  );
+  expect(screen.queryByText(/^conf 0\.90/)).toBeNull();
+});
+
+test("where the number IS about a proposed action, the chip keeps its old shape", () => {
+  // A low-confidence escalation of a real delivering verb: 0.40 really is confidence in the
+  // proposed `continue`, so "conf 0.40 · below threshold" is the true reading.
+  renderRow({
+    state: "escalated_low_confidence",
+    verb: "continue",
+    confidence: 0.4,
+    escalation_reason: "confidence",
+    can_approve: true,
+    can_reject: true,
+  });
+  expect(screen.getByText(/^conf 0\.40 · below threshold$/)).toBeInTheDocument();
+  expect(screen.queryByText(/sure$/)).toBeNull();
+});
+
 test("a low-confidence escalation carries the same NEEDS-A-DECISION tone as any other", () => {
   // Status colour is load-bearing here (docs/design.md): amber `degraded` means "needs a
   // decision". A new escalation state that fell through `toneOf` would render as idle grey —

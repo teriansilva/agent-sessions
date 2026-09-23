@@ -375,6 +375,21 @@ export interface OrchestratorAction {
    *  yolo threshold. Absent on every non-escalated action, and on records written before the
    *  field existed — which render NO reason rather than a guessed one. */
   escalation_reason?: "model" | "degraded" | "confidence";
+  /** What the session's screen showed when this was ESCALATED (#1060) — `orchestrator.
+   *  observed_prompt_for`. An escalation delivers nothing, so it has no precondition; this is the
+   *  card's only fact about the screen. `menu` is the engine's own menu when one was recognised at
+   *  the bottom of the screen, else null. Its labels are the agent's words — display text, never
+   *  bytes: what a tap sends is re-derived from the live screen at approval time. Absent on every
+   *  other verb and on records written before the field existed. */
+  observed_prompt?: {
+    prompt_class: string;
+    menu: {
+      engine: string;
+      question: string;
+      options: { n: number; label: string; selected: boolean }[];
+    } | null;
+    observed_at: number;
+  };
   /** How this action should be RENDERED — decided once on the server by
    *  `orchestrator_ledger.project_for_operator` and consumed verbatim (#852/#840 §16).
    *

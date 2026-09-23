@@ -425,6 +425,42 @@ def test_run_pass_records_why_an_action_escalated(monkeypatch, configured_ai):
     assert [k for k in stored if "escalation" in k] == ["escalation_reason"]
 
 
+def test_run_pass_records_the_screen_an_ESCALATION_saw_and_no_precondition(
+    monkeypatch, configured_ai
+):
+    """#1060: an escalation delivers nothing, so it gets no precondition — but it now records what
+    the screen showed, so the card can tell a session parked at a menu from one that stopped."""
+    from pathlib import Path
+
+    menu = (Path(__file__).parent / "fixtures" / "claude_select_menu.screen.txt").read_text("utf-8")
+    now = time.time()
+    uid = "77777777-7777-4777-8777-777777777777"
+    _setup(monkeypatch, [FakeSession("claude", uid, "/a", now)])
+    monkeypatch.setattr(
+        orchestrator.scrollback, "live_tail_text", lambda key, n=4000, **k: menu[-n:]
+    )
+    monkeypatch.setattr(
+        review,
+        "_TRANSPORT",
+        _transport(
+            {
+                "assessment": "a decision only the operator can make",
+                "actions": [
+                    {"session_id": f"claude:{uid}", "verb": "escalate", "confidence": 0.9},
+                ],
+            },
+            [],
+        ),
+    )
+    report = asyncio.run(orchestrator.run_pass(now=now))
+    rec = report["actions"][0]
+    assert rec["verb"] == "escalate" and rec["escalation_reason"] == "model"
+    assert "precondition" not in rec
+    stored = ledger.get(rec["id"])
+    assert stored["observed_prompt"]["prompt_class"] == "choice"
+    assert [o["n"] for o in stored["observed_prompt"]["menu"]["options"]] == [1, 2, 3, 4]
+
+
 def test_run_pass_leaves_no_escalation_reason_on_a_proposal(monkeypatch, configured_ai):
     """The field explains an escalation. Anything else wearing one is a claim about a decision
     that was never handed to the operator."""

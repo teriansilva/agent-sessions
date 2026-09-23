@@ -650,6 +650,37 @@ def test_a_chat_escalation_records_why_it_escalated(monkeypatch):
     assert ledger.get(act["id"])["escalation_reason"] == "model"
 
 
+def test_a_chat_escalation_records_the_screen_it_saw(monkeypatch):
+    """The chat is the ledger's other writer; a field only one of them records is the missing-
+    suffix bug again, with the card's behaviour depending on which writer made the action."""
+    from pathlib import Path
+
+    menu = (Path(__file__).parent / "fixtures" / "claude_select_menu.screen.txt").read_text("utf-8")
+    _setup(monkeypatch, [FakeSession("claude", UID, "/a", time.time())])
+    monkeypatch.setattr(
+        orchestrator.scrollback, "live_tail_text", lambda key, n=4000, **k: menu[-n:]
+    )
+    monkeypatch.setattr(
+        review,
+        "_TRANSPORT",
+        _scripted(
+            [
+                {"intent": "instruct"},
+                {
+                    "answer": "That one needs you.",
+                    "actions": [
+                        {"session_id": KEY, "verb": "escalate", "confidence": 0.9, "rationale": "x"}
+                    ],
+                },
+            ]
+        ),
+    )
+    act = asyncio.run(orchestrator_chat.ask("what about the claude session?"))["actions"][0]
+    stored = ledger.get(act["id"])
+    assert stored["observed_prompt"]["prompt_class"] == "choice"
+    assert stored["observed_prompt"]["menu"]["options"][0]["label"] == "Merge both ready branches"
+
+
 def test_a_chat_action_the_validator_degraded_says_so(monkeypatch):
     """A `choose` with no usable option number is rewritten to `escalate`. The record has to
     carry `degraded`, not `model` — the model DID mean to deliver, it just produced nothing

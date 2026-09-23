@@ -51,6 +51,7 @@ from . import (
     prompts,
     pulse,
     review,
+    screen_menus,
     scrollback,
     session_input,
 )
@@ -74,6 +75,13 @@ EVIDENCE_KINDS: tuple[str, ...] = ("screen", "transcript_tail", "recap", "none")
 # How much rendered screen feeds the precondition fingerprint. Small on purpose: the
 # fingerprint should track "is this still the same prompt", not "did a spinner tick".
 PRECONDITION_CHARS = 1200
+#: How much rendered screen the prompt CLASS is judged from (#1060) — at proposal time and, through
+#: `actuator.screen_matches`, again at delivery, so the two can never read different windows and
+#: disagree about the same frame. Wider than the fingerprint on purpose: a claude select list with
+#: wrapped descriptions runs to ~2 KB, and a 1200-char tail cut off its title, so the real menu that
+#: motivated #1060 classified as `open`. The fingerprint still hashes only the last
+#: `PRECONDITION_CHARS` of this read, which is the same text a narrower read returned.
+PROMPT_SCREEN_CHARS = 8000
 EVIDENCE_SCREEN_CHARS = 2000
 EVIDENCE_TRANSCRIPT_CHARS = 4000
 EVIDENCE_RECAP_CHARS = 1500
@@ -106,6 +114,12 @@ def _prompt_class(screen: str) -> str:
     precondition. Deliberately coarse: it must survive a spinner frame or a re-render, and only
     change when the nature of the prompt does — otherwise every proposal would be stale by the
     time the operator looked at it."""
+    # AN ENGINE'S OWN MENU FIRST (#1060). The substring checks below only see the last 400
+    # characters, and a claude select list with long descriptions keeps its "1." further up than
+    # that — the real menu that motivated #1060 classified as `open`. A menu recognised by its own
+    # chrome at the bottom of the screen is a choice whatever the tail's substrings say.
+    if screen_menus.recognises(screen):
+        return "choice"
     tail = screen[-400:].lower()
     if any(t in tail for t in ("(y/n)", "[y/n]", "yes/no", "do you want to proceed")):
         return "confirm"
@@ -127,13 +141,36 @@ def precondition_for(key: str) -> dict:
     """Capture what the pass believed about this session's screen. Blocking (ring replay) —
     call under ``asyncio.to_thread``."""
     try:
-        screen = scrollback.live_tail_text(key, PRECONDITION_CHARS)
+        screen = scrollback.live_tail_text(key, PROMPT_SCREEN_CHARS)
     except Exception:
         screen = ""
     return {
         "key": key,
         "screen_fingerprint": _screen_fingerprint(screen),
         "prompt_class": _prompt_class(screen),
+        "observed_at": time.time(),
+    }
+
+
+def observed_prompt_for(key: str) -> dict:
+    """What the session's screen showed when a decision was ESCALATED (#1060). Blocking.
+
+    An escalation delivers nothing, so it never gets a precondition — and so it carried no fact
+    about the screen at all: the card the operator acts on could not tell a session parked at a
+    numbered menu from one that simply stopped. This records, for the card to read:
+
+    * ``prompt_class`` — the same classification a precondition carries, from the same window;
+    * ``menu`` — the engine's own menu if `screen_menus` recognises one, else ``None``. Display text
+      only: labels are the agent's words, cleaned and capped, and never become bytes. What a tap
+      would send is re-derived from the LIVE screen at approval time, never from this snapshot.
+    """
+    try:
+        screen = scrollback.live_tail_text(key, PROMPT_SCREEN_CHARS)
+    except Exception:
+        screen = ""
+    return {
+        "prompt_class": _prompt_class(screen),
+        "menu": screen_menus.parse(screen, screen_menus.engine_of(key)),
         "observed_at": time.time(),
     }
 
@@ -678,6 +715,12 @@ async def run_pass(
         if action["verb"] in DELIVERING_VERBS:
             rec["precondition"] = await asyncio.to_thread(
                 precondition_for, engines.physical_key(action["session_id"])
+            )
+        elif action["verb"] == "escalate":
+            # …and an escalation says what the screen showed (#1060), so the card can tell a
+            # session parked at a menu from one that simply stopped.
+            rec["observed_prompt"] = await asyncio.to_thread(
+                observed_prompt_for, engines.physical_key(action["session_id"])
             )
         recorded.append(rec)
 
