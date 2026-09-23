@@ -16,7 +16,8 @@ import { defineConfig, devices } from "@playwright/test";
 // A CI run id is stable across Playwright's main + worker processes (it's an inherited env var),
 // so it yields ONE port per run that every process agrees on — `process.pid` would differ per
 // worker and break the webServer/baseURL match. Local (no run id, single dev, no concurrency)
-// keeps the fixed 41873.
+// keeps the fixed 41873. web-ci shards the suite (#1099) and every shard shares one run id, so
+// the workflow sets E2E_PORT per shard from a disjoint 46000+ range.
 const CI_RUN = process.env.GITHUB_RUN_ID ?? process.env.GITHUB_RUN_NUMBER;
 const PORT = Number(
   process.env.E2E_PORT ?? (CI_RUN ? 41000 + ((Number(CI_RUN) % 4000) + 1) : 41873),
@@ -29,7 +30,8 @@ export default defineConfig({
   // Cap CI concurrency: every worker loads the SPA (xterm + WS) against the single shared
   // `vite preview` server, so the default (~half the runner's cores) saturates page setup and
   // specs flake with "Test timeout … setting up page". 2 keeps it parallel but reliable; local
-  // stays uncapped for speed.
+  // stays uncapped for speed. CI scales OUT instead (#1099): web-ci runs 4 shards, each with its
+  // own preview server at this same 2-worker load.
   workers: process.env.CI ? 2 : undefined,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
