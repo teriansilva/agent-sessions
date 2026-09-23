@@ -34,6 +34,7 @@ from .. import (
     actuator,
     aitasks,
     engines,
+    menu_answer,
     metadata,
     missions,
     notifications,
@@ -597,6 +598,42 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # Belt-and-braces with the ledger's own settlement hook: `deliver` normally settles
         # through a CAS that retires this already, but the route must not depend on which
         # internal path produced the record it is about to return.
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(_retire_decided, action_id)
+        return JSONResponse(rec)
+
+    @app.post("/api/pulse/actions/{action_id}/choose")
+    async def choose_from_menu(
+        action_id: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """Answer an escalated menu with one of its options (#1060 Phase 3). See `menu_answer`.
+
+        The body names the option NUMBER and the LABEL the card showed; both must match the menu
+        the escalation recorded and the menu parsed from the live screen now. The payload is the
+        digit alone and is delivered through `actuator.deliver`, like an approval: the operator's
+        tap is the approval, so an attached viewer does not refuse it (`operator_approval`).
+        """
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = None
+        if not isinstance(body, dict):
+            return JSONResponse({"detail": "a JSON object is required"}, status_code=422)
+        try:
+            rec = await menu_answer.answer(
+                action_id, body.get("option"), body.get("label"), registry=registry
+            )
+        except menu_answer.Refused as e:
+            return JSONResponse({"detail": e.detail}, status_code=e.status)
+        except menu_answer.Indeterminate as e:
+            return JSONResponse(
+                {"detail": e.detail, "state": "indeterminate", "action_id": e.action_id},
+                status_code=502,
+            )
+        # The escalation is answered: retire its alert as an approval retires a proposal's.
         with contextlib.suppress(Exception):
             await asyncio.to_thread(_retire_decided, action_id)
         return JSONResponse(rec)

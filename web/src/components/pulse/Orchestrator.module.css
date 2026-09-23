@@ -556,3 +556,55 @@
 .degraded a {
   color: var(--accent);
 }
+
+/* --- #1060 P3: the session's own menu, answerable from the card -----------------------------------
+ * The question in the row's body text, then one button per option in the reject button's quiet
+ * shape. The armed option takes the approve shape ("Send 2") — the same two-step an approval has. */
+.menu {
+  margin: 7px 0 0;
+}
+.menuQ {
+  margin: 0 0 6px;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.menuLead {
+  color: var(--text-2);
+}
+.menuBtns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.menuOpt {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  max-width: 100%;
+  padding: 6px 12px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text-1);
+  font: inherit;
+  font-size: 0.78rem;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.menuOpt:hover:not(:disabled) {
+  background: var(--glass-strong);
+}
+.menuOpt:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.menuBtns .approve {
+  min-height: 44px;
+}
+.menuHint {
+  margin: 6px 0 0;
+  font-size: 0.72rem;
+  color: var(--text-2);
+}

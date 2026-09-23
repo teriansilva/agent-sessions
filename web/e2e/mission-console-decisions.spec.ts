@@ -322,3 +322,99 @@ test("a model escalation says its number is confidence that the call is YOURS (#
   await expect(chip).toHaveAttribute("aria-label", /0\.90 sure this decision is yours/);
   await expect(page.getByText(/^conf 0\.90/)).toHaveCount(0);
 });
+
+test("a session's own menu is answered from the card, and answering never attaches a viewer (#1060)", async ({
+  page,
+}) => {
+  const sockets: string[] = [];
+  page.on("websocket", (ws) => sockets.push(ws.url()));
+  const esc = {
+    ...ESCALATE_ACTION,
+    escalation_reason: "model",
+    confidence: 0.9,
+    observed_prompt: {
+      prompt_class: "choice",
+      observed_at: NOW,
+      menu: {
+        engine: "claude",
+        question: "Which migration strategy should I use?",
+        options: [
+          { n: 1, label: "Online, batched", selected: true },
+          { n: 2, label: "Offline, in one transaction", selected: false },
+        ],
+      },
+    },
+  } as unknown as typeof CONTINUE_ACTION;
+  let answered = false;
+  let body: unknown = null;
+  await page.route(/\/api\/pulse\/actions\/.*\/choose$/, async (r) => {
+    body = r.request().postDataJSON();
+    answered = true;
+    await r.fulfill({
+      json: {
+        ...esc,
+        state: "rejected",
+        outcome: "answered_by_operator",
+        choice: { id: "choose_1", verb: "choose", option: 2, state: "delivered" },
+      },
+    });
+  });
+  await openConsole(page, [esc], () => answered);
+  const url = page.url();
+
+  const menu = page.getByTestId("menu-options");
+  await expect(menu).toContainText("Which migration strategy should I use?");
+  const opts = menu.getByTestId("menu-option");
+  await expect(opts).toHaveText(["1. Online, batched", "2. Offline, in one transaction"]);
+  for (const i of [0, 1]) expect((await opts.nth(i).boundingBox())!.height).toBeGreaterThanOrEqual(44);
+
+  // The first tap arms and sends nothing; the second sends the number AND the label shown.
+  await opts.nth(1).click();
+  await expect(opts.nth(1)).toHaveText("Send 2 · Offline, in one transaction");
+  await expect(page.getByTestId("menu-armed")).toContainText("Types 2 into the session");
+  expect(answered).toBe(false);
+  await opts.nth(1).click();
+  await expect.poll(() => body).toEqual({ option: 2, label: "Offline, in one transaction" });
+
+  // The decision is settled and leaves the thread; the operator never left the console.
+  await expect(page.getByText(ESCALATE_ACTION.rationale)).toHaveCount(0);
+  expect(page.url()).toBe(url);
+  // NO VIEWER: answering is a server-side write through the actuator, never a terminal socket.
+  expect(sockets.filter((u) => u.includes("/ws"))).toEqual([]);
+});
+
+test("a refused answer says nothing was sent and keeps the decision (#1060)", async ({ page }) => {
+  const esc = {
+    ...ESCALATE_ACTION,
+    observed_prompt: {
+      prompt_class: "choice",
+      observed_at: NOW,
+      menu: {
+        engine: "claude",
+        question: "Proceed?",
+        options: [
+          { n: 1, label: "Yes", selected: true },
+          { n: 2, label: "No", selected: false },
+        ],
+      },
+    },
+  } as unknown as typeof CONTINUE_ACTION;
+  await page.route(/\/api\/pulse\/actions\/.*\/choose$/, (r) =>
+    r.fulfill({
+      status: 409,
+      json: {
+        detail:
+          "nothing was sent: the session is no longer at that menu — open it to see what it is showing now",
+      },
+    }),
+  );
+  await openConsole(page, [esc]);
+  const opts = page.getByTestId("menu-option");
+  await opts.nth(0).click();
+  await opts.nth(0).click();
+  await expect(page.getByTestId("menu-note")).toContainText(
+    "Not sent — nothing was sent: the session is no longer at that menu",
+  );
+  await expect(page.getByText(ESCALATE_ACTION.rationale)).toBeVisible();
+  await expect(opts.nth(0)).toHaveText("1. Yes");
+});

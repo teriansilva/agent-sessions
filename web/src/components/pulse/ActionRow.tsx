@@ -11,6 +11,7 @@ import d from "./direction.module.css";
 import { DraftDirection } from "./DraftDirection";
 import { draftView } from "./draftDirection";
 import { SupervisorNudge } from "./SupervisorNudge";
+import { MenuOptions } from "./MenuOptions";
 import { nudgeView } from "./supervisorNudge";
 import {
   DELIVERING_FALLBACK,
@@ -441,6 +442,11 @@ export function ActionRow({
       </div>
       {action.rationale && <p className={styles.why}>{action.rationale}</p>}
       {action.answer && <p className={styles.why}>{`“${action.answer}”`}</p>}
+      {/* THE SESSION'S OWN MENU, answerable from here (#1060 Phase 3): only on the model's question,
+          only when the server parsed a menu off the screen. The row's Dismiss stays beside it. */}
+      {action.verb === "escalate" && isEscalation(action.state) ? (
+        <MenuOptions action={action} onResolved={onResolved} onNote={onNote} />
+      ) : null}
       {/* Evidence sits ABOVE the buttons on purpose: the operator should be able to see what
           the session is actually showing before they authorise typing into it. */}
       <EvidenceBlock

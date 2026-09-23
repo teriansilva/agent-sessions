@@ -982,6 +982,15 @@ export const api = {
       `/api/pulse/actions/${enc(id)}/approve`,
       {},
     ).then(announceActionResolved),
+  /** Answer an escalated menu with option `n` (#1060 Phase 3). `label` is the text the card showed
+   *  for it; the server refuses unless both still match the live screen. Returns the settled
+   *  escalation, with the delivered choice under `choice`. */
+  chooseAction: (id: string, option: number, label: string) =>
+    mutateJson<OrchestratorAction>(
+      "POST",
+      `/api/pulse/actions/${enc(id)}/choose`,
+      { option, label },
+    ).then(announceActionResolved),
   /** Decline an action (#726 Phase 2). Terminal — the ledger keeps it as history. */
   rejectAction: (id: string) =>
     mutateJson<OrchestratorAction>(

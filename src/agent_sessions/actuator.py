@@ -351,6 +351,12 @@ def render(action: dict, cfg: dict) -> bytes:
             raise NotDeliverable("choose without a validated option")
         if not (orchestrator.OPTION_MIN <= opt <= orchestrator.OPTION_MAX):
             raise NotDeliverable("choose option out of range")
+        # THE DIGIT ALONE for an operator's answer from the console to an engine whose menu is
+        # proven to submit on the digit (#1060 Phase 3, `menu_answer.DIGIT_SUBMITS`): the `\r`
+        # would land after the answer, in the agent's next prompt. Gated on `origin` too, so a
+        # model-built record can never opt into it.
+        if action.get("submit") == "digit" and action.get("origin") == "operator":
+            return f"{opt}".encode()
         # A digit and a carriage return. No paste framing, no model text — a numbered prompt
         # wants a keypress, and the narrower the payload the smaller the blast radius.
         return f"{opt}\r".encode()

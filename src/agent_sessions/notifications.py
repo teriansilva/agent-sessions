@@ -692,6 +692,34 @@ def retire_for_actions(
         return n
 
 
+def unretire_for_action(action_id: str, path: Path | None = None) -> int:
+    """Revive the escalation rows of an action that became LIVE again (#1060, #1082 review).
+
+    An operator's answer from the console closes the escalation before the keypress, and that
+    settlement retires its bell row. When the answer then sends nothing the escalation reopens —
+    and its row must too, or the bell stops pointing at a decision that is still open. The same
+    three fields `add` clears when it revives a row, for the same reasons.
+    """
+    if not action_id:
+        return 0
+    p = path or _notifications_path()
+    with _locked(p):
+        rows = _read(p)
+        n = 0
+        for r in rows:
+            if r.get("action_id") != action_id or not r.get("retired"):
+                continue
+            if r.get("escalation") is not True:
+                continue
+            r["retired"] = False
+            r.pop("settled_at", None)
+            r.pop("settled_hidden", None)
+            n += 1
+        if n:
+            _write(p, rows)
+        return n
+
+
 def listing(path: Path | None = None) -> dict:
     """The bell: rows still awaiting the operator, plus the unread count over that same set.
 
