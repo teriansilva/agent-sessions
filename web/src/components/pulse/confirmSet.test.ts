@@ -28,10 +28,10 @@ test("an ordinary set says nothing", () => {
 
 test("each clause of the predicate is said on its own", () => {
   expect(worthALook({ dropped: 0, parameterised: 2 }, [o({})])).toEqual([
-    "2 objectives were fitted to targets named in your instruction — check they are the right ones.",
+    "When this checklist was proposed, 2 objectives were fitted to targets named in your instruction — check they are the right ones.",
   ]);
   expect(worthALook({ dropped: 1, parameterised: 0 }, [o({})])).toEqual([
-    "1 suggestion did not fit the checklist and was dropped.",
+    "When it was proposed, 1 suggestion did not fit the checklist and was dropped.",
   ]);
   expect(
     worthALook({ dropped: 0, parameterised: 0 }, [o({ gate: false })]),

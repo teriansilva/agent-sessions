@@ -4,7 +4,11 @@
  *  The confirmation is shown before EVERY launch — nothing runs without the operator's Confirm begin —
  *  so "ask only when ambiguous" becomes "say why it is worth a look only when it is": the issue's
  *  predicate, verbatim. Any one of (1) a suggestion was dropped, (2) a target was filled in from the
- *  instruction, (3) nothing gates completion. Mechanical, never a model judgement. */
+ *  instruction, (3) nothing gates completion. Mechanical, never a model judgement.
+ *
+ *  Clauses (1) and (2) are a snapshot from when the set was PROPOSED (`objectives_fit`), so they say
+ *  so: after the operator edits the set they may no longer describe it. Clause (3) is recomputed from
+ *  the current rows. */
 import type { MissionObjective } from "../../types/api";
 
 export interface Fit {
@@ -22,11 +26,11 @@ export function worthALook(
   const d = fit?.dropped ?? 0;
   if (p > 0)
     out.push(
-      `${p} ${p === 1 ? "objective was" : "objectives were"} fitted to targets named in your instruction — check they are the right ones.`,
+      `When this checklist was proposed, ${p} ${p === 1 ? "objective was" : "objectives were"} fitted to targets named in your instruction — check they are the right ones.`,
     );
   if (d > 0)
     out.push(
-      `${d} ${d === 1 ? "suggestion" : "suggestions"} did not fit the checklist and ${d === 1 ? "was" : "were"} dropped.`,
+      `When it was proposed, ${d} ${d === 1 ? "suggestion" : "suggestions"} did not fit the checklist and ${d === 1 ? "was" : "were"} dropped.`,
     );
   if (objectives.length > 0 && !objectives.some((o) => o.gate))
     out.push(
