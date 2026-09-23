@@ -4,7 +4,7 @@ import { Copy, Pencil, Plus, Search, Send, Trash2 } from "lucide-react";
 import { ConfirmDialog } from "../components/templates/ConfirmDialog";
 import { SessionChooserModal } from "../components/templates/SessionChooserModal";
 import { UploadImage } from "../components/templates/UploadImage";
-import { VariablesPanel } from "../components/templates/VariablesPanel";
+import { VariablesPanel, type CreatingKind } from "../components/templates/VariablesPanel";
 import { api, ApiError } from "../lib/api";
 import type {
   Template,
@@ -40,6 +40,7 @@ const VARIABLE_LIMITS_FALLBACK: TemplateVariableLimits = {
   variables_max: 100,
   value_max: 2000,
   name_max: 32,
+  secret_min: 8,
 };
 
 export default function Templates() {
@@ -50,7 +51,7 @@ export default function Templates() {
   const [variables, setVariables] = useState<TemplateVariable[] | null>(null);
   const [varLimits, setVarLimits] = useState<TemplateVariableLimits>(VARIABLE_LIMITS_FALLBACK);
   const [varError, setVarError] = useState("");
-  const [creatingVar, setCreatingVar] = useState(false);
+  const [creatingVar, setCreatingVar] = useState<CreatingKind>(null);
   const [templates, setTemplates] = useState<Template[] | null>(null);
   const [limits, setLimits] = useState<TemplateLimits | null>(null);
   const [error, setError] = useState("");
@@ -239,17 +240,33 @@ export default function Templates() {
         </div>
         <div className={styles.headRight}>
           {tab === "variables" ? (
-            <button
-              type="button"
-              className={styles.cta}
-              disabled={
-                creatingVar || variables === null || variables.length >= varLimits.variables_max
-              }
-              onClick={() => setCreatingVar(true)}
-            >
-              <Plus size={14} aria-hidden="true" />
-              New variable
-            </button>
+            <>
+              <button
+                type="button"
+                className={styles.ghost}
+                disabled={
+                  creatingVar !== null ||
+                  variables === null ||
+                  variables.length >= varLimits.variables_max
+                }
+                onClick={() => setCreatingVar("secret")}
+              >
+                🔒 New secret
+              </button>
+              <button
+                type="button"
+                className={styles.cta}
+                disabled={
+                  creatingVar !== null ||
+                  variables === null ||
+                  variables.length >= varLimits.variables_max
+                }
+                onClick={() => setCreatingVar("text")}
+              >
+                <Plus size={14} aria-hidden="true" />
+                New variable
+              </button>
+            </>
           ) : (
             <Link to="/templates/new" className={styles.cta}>
               <Plus size={14} aria-hidden="true" />

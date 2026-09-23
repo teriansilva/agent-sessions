@@ -100,6 +100,32 @@
   padding-bottom: 7px;
   line-height: 1.45;
 }
+.kindChip {
+  margin-left: 8px;
+  padding: 1px 5px;
+  border: 1px solid color-mix(in srgb, var(--accent) 60%, var(--line));
+  color: var(--accent);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+/* A stored secret: never its value, only that one is set. */
+.masked {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  letter-spacing: 0.2em;
+  color: var(--text-3);
+}
+.maskHint {
+  letter-spacing: 0.04em;
+  font-size: 0.72rem;
+}
+/* Warning ink, not a status LED: the operator has a step to take (mockup E). */
+.reentry {
+  font-size: 0.78rem;
+  color: var(--warn-text);
+}
 .used {
   font-size: 0.78rem;
   color: var(--text-2);

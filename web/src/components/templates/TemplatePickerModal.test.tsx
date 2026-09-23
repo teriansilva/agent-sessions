@@ -1,13 +1,20 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
-import { api } from "../../lib/api";
+import { api, ApiError } from "../../lib/api";
 import type { Template } from "../../types/api";
 import { TemplatePickerModal } from "./TemplatePickerModal";
 
 vi.mock("../../lib/api", async () => {
   const actual = await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
-  return { ...actual, api: { templates: vi.fn(), templateVariables: vi.fn(() => Promise.resolve({ variables: [], limits: {} })), } };
+  return {
+    ...actual,
+    api: {
+      templates: vi.fn(),
+      templateVariables: vi.fn(() => Promise.resolve({ variables: [], limits: {} })),
+      sendTemplate: vi.fn(),
+    },
+  };
 });
 
 const LIMITS = {
@@ -46,6 +53,7 @@ function tpl(over: Partial<Template> = {}): Template {
 const mocked = api as unknown as {
   templates: ReturnType<typeof vi.fn>;
   templateVariables: ReturnType<typeof vi.fn>;
+  sendTemplate: ReturnType<typeof vi.fn>;
 };
 
 /** A template whose host and command come from the variables library (#1090). */
@@ -280,4 +288,226 @@ test("a multi-line library value reaches the send with its lines, and an overrid
   await userEvent.type(cmd, "{Enter}npm run lint");
   await userEvent.click(screen.getByRole("button", { name: /^send smoke test$/i }));
   expect(onSend.mock.calls[0][1].test_cmd).toBe("cd repo\nnpm test\nnpm run lint");
+});
+
+// ---- secret fields (#1090 Phase 2) -------------------------------------------------------------
+
+function secretTpl(): Template {
+  return tpl({
+    id: "migrate",
+    name: "Run migration",
+    body: "Connect with {{db_pass}} and {{token}} for {{ticket}}",
+    fields: [
+      { name: "db_pass", label: "DB password", default: "", required: false, source: "library", kind: "secret" },
+      { name: "token", label: "Deploy token", default: "", required: true, source: "template", kind: "secret" },
+      { name: "ticket", label: "Ticket", default: "", required: true, source: "template", kind: "text" },
+    ],
+    images: [],
+    updated_at: 7,
+  });
+}
+
+function secretLibrary(state: "ok" | "reentry" | "absent" = "ok") {
+  return {
+    variables:
+      state === "absent"
+        ? []
+        : [
+            {
+              name: "db_pass",
+              kind: "secret",
+              set: true,
+              needs_reentry: state === "reentry",
+              created_at: 1,
+              updated_at: 1,
+              used_by: [],
+            },
+          ],
+    limits: { variables_max: 100, value_max: 2000, name_max: 32, secret_min: 8 },
+  };
+}
+
+test("a secret template is sent by the server: stored secret never sent from here, typed one once, preview masked", async () => {
+  mocked.templates.mockResolvedValue({ templates: [secretTpl()], limits: LIMITS });
+  mocked.templateVariables.mockResolvedValue(secretLibrary());
+  mocked.sendTemplate.mockResolvedValue({
+    masked: "Connect with [secret: db_pass] and [secret: token] for ACME-7",
+    template: secretTpl(),
+  });
+  const onSend = vi.fn();
+  const onServerSent = vi.fn();
+  render(
+    <TemplatePickerModal
+      sessionId="claude:abc"
+      onSend={onSend}
+      onServerSent={onServerSent}
+      onInsert={vi.fn()}
+      onClose={() => {}}
+    />,
+  );
+  await userEvent.click(await screen.findByRole("button", { name: /run migration/i }));
+  expect(screen.getByText("•••••••• stored")).toBeInTheDocument();
+  const token = screen.getByLabelText(/^deploy token$/i);
+  expect(token).toHaveAttribute("type", "password");
+  await userEvent.type(token, "typed-token-1");
+  await userEvent.type(screen.getByLabelText(/^ticket$/i), "ACME-7");
+  // The preview never shows a secret — not even the one just typed.
+  const preview = screen.getByLabelText(/what will be sent/i);
+  expect(preview).toHaveTextContent("Connect with [secret: db_pass] and [secret: token] for ACME-7");
+  expect(preview).not.toHaveTextContent("typed-token-1");
+  // Insert would put the value in a text box: never offered.
+  expect(screen.getByRole("button", { name: /insert run migration into composer/i })).toBeDisabled();
+  await userEvent.click(screen.getByRole("button", { name: /^send run migration$/i }));
+  expect(mocked.sendTemplate).toHaveBeenCalledWith(
+    "migrate",
+    "claude:abc",
+    { token: "typed-token-1", ticket: "ACME-7" },
+    7,
+  );
+  expect(onSend).not.toHaveBeenCalled();
+  await waitFor(() => expect(onServerSent).toHaveBeenCalledTimes(1));
+  expect(onServerSent.mock.calls[0][1].masked).toContain("[secret: token]");
+});
+
+test("a secret template cannot be sent from a session with no id yet, nor with a short or missing secret", async () => {
+  mocked.templates.mockResolvedValue({ templates: [secretTpl()], limits: LIMITS });
+  mocked.templateVariables.mockResolvedValue(secretLibrary());
+  const { unmount } = render(
+    <TemplatePickerModal sessionId={null} onSend={vi.fn()} onInsert={vi.fn()} onClose={() => {}} />,
+  );
+  await userEvent.click(await screen.findByRole("button", { name: /run migration/i }));
+  await userEvent.type(screen.getByLabelText(/^deploy token$/i), "typed-token-1");
+  await userEvent.type(screen.getByLabelText(/^ticket$/i), "T");
+  const send = screen.getByRole("button", { name: /^send run migration$/i });
+  expect(send).toBeDisabled();
+  expect(screen.getByText(/can be sent once this session has started/i)).toBeInTheDocument();
+  unmount();
+
+  render(
+    <TemplatePickerModal sessionId="claude:abc" onSend={vi.fn()} onInsert={vi.fn()} onClose={() => {}} />,
+  );
+  await userEvent.click(await screen.findByRole("button", { name: /run migration/i }));
+  await userEvent.type(screen.getByLabelText(/^deploy token$/i), "short");
+  await userEvent.type(screen.getByLabelText(/^ticket$/i), "T");
+  expect(screen.getByRole("button", { name: /^send run migration$/i })).toBeDisabled();
+  expect(mocked.sendTemplate).not.toHaveBeenCalled();
+});
+
+test("a stored secret that needs re-entry blocks the send and says why", async () => {
+  mocked.templates.mockResolvedValue({ templates: [secretTpl()], limits: LIMITS });
+  mocked.templateVariables.mockResolvedValue(secretLibrary("reentry"));
+  render(
+    <TemplatePickerModal sessionId="claude:abc" onSend={vi.fn()} onInsert={vi.fn()} onClose={() => {}} />,
+  );
+  await userEvent.click(await screen.findByRole("button", { name: /run migration/i }));
+  expect(screen.getByText(/db password · secret · needs re-entry/i)).toBeInTheDocument();
+  expect(screen.getByRole("alert")).toHaveTextContent(/\{\{db_pass\}\} can no longer be decrypted/i);
+  await userEvent.type(screen.getByLabelText(/^deploy token$/i), "typed-token-1");
+  await userEvent.type(screen.getByLabelText(/^ticket$/i), "T");
+  expect(screen.getByRole("button", { name: /^send run migration$/i })).toBeDisabled();
+});
+
+test("the mission brief (no session) can never insert a secret template", async () => {
+  mocked.templates.mockResolvedValue({ templates: [secretTpl()], limits: LIMITS });
+  mocked.templateVariables.mockResolvedValue(secretLibrary());
+  const onInsert = vi.fn();
+  render(<TemplatePickerModal insertLabel="Insert into mission brief" onInsert={onInsert} onClose={() => {}} />);
+  await userEvent.click(await screen.findByRole("button", { name: /run migration/i }));
+  const insert = screen.getByRole("button", { name: /insert run migration into mission brief/i });
+  expect(insert).toBeDisabled();
+  expect(screen.getByText(/can only be sent into a session/i)).toBeInTheDocument();
+  await userEvent.click(insert);
+  expect(onInsert).not.toHaveBeenCalled();
+});
+
+test("a refused server-side send keeps the dialog open and shows the server's reason", async () => {
+  mocked.templates.mockResolvedValue({ templates: [secretTpl()], limits: LIMITS });
+  mocked.templateVariables.mockResolvedValue(secretLibrary());
+  mocked.sendTemplate.mockRejectedValue(
+    new ApiError(409, "This session isn't running — open it and try again"),
+  );
+  const onServerSent = vi.fn();
+  render(
+    <TemplatePickerModal
+      sessionId="claude:abc"
+      onSend={vi.fn()}
+      onServerSent={onServerSent}
+      onInsert={vi.fn()}
+      onClose={() => {}}
+    />,
+  );
+  await userEvent.click(await screen.findByRole("button", { name: /run migration/i }));
+  await userEvent.type(screen.getByLabelText(/^deploy token$/i), "typed-token-1");
+  await userEvent.type(screen.getByLabelText(/^ticket$/i), "T");
+  await userEvent.click(screen.getByRole("button", { name: /^send run migration$/i }));
+  expect(await screen.findByText(/isn't running/i)).toBeInTheDocument();
+  expect(onServerSent).not.toHaveBeenCalled();
+  expect(screen.getByRole("dialog")).toBeInTheDocument();
+});
+
+test("a server-side send in flight pins the dialog: Escape, backdrop and Close wait for it (#1105 review)", async () => {
+  mocked.templates.mockResolvedValue({ templates: [secretTpl()], limits: LIMITS });
+  mocked.templateVariables.mockResolvedValue(secretLibrary());
+  let settle: (v: unknown) => void = () => {};
+  mocked.sendTemplate.mockImplementation(() => new Promise((r) => (settle = r)));
+  const onClose = vi.fn();
+  const onServerSent = vi.fn();
+  render(
+    <TemplatePickerModal
+      sessionId="claude:abc"
+      onSend={vi.fn()}
+      onServerSent={onServerSent}
+      onInsert={vi.fn()}
+      onClose={onClose}
+    />,
+  );
+  await userEvent.click(await screen.findByRole("button", { name: /run migration/i }));
+  await userEvent.type(screen.getByLabelText(/^deploy token$/i), "typed-token-1");
+  await userEvent.type(screen.getByLabelText(/^ticket$/i), "T");
+  await userEvent.click(screen.getByRole("button", { name: /^send run migration$/i }));
+  await userEvent.keyboard("{Escape}");
+  expect(screen.getByRole("button", { name: /^close$/i })).toBeDisabled();
+  await userEvent.click(screen.getByRole("button", { name: /^close$/i }));
+  expect(onClose).not.toHaveBeenCalled();
+  await act(async () => settle({ masked: "m", template: secretTpl() }));
+  expect(onServerSent).toHaveBeenCalledTimes(1);
+  await userEvent.keyboard("{Escape}");
+  expect(onClose).toHaveBeenCalledTimes(1);
+});
+
+test("while a server send is pending, selection, Insert, field edits and the gallery links all wait (#1105 review, round 2)", async () => {
+  mocked.templates.mockResolvedValue({
+    templates: [secretTpl(), tpl({ id: "plain", name: "Plain one", fields: [], images: [] })],
+    limits: LIMITS,
+  });
+  mocked.templateVariables.mockResolvedValue(secretLibrary());
+  let settle: (v: unknown) => void = () => {};
+  mocked.sendTemplate.mockImplementation(() => new Promise((r) => (settle = r)));
+  const onInsert = vi.fn();
+  const onOpenGallery = vi.fn();
+  render(
+    <TemplatePickerModal
+      sessionId="claude:abc"
+      onSend={vi.fn()}
+      onServerSent={vi.fn()}
+      onInsert={onInsert}
+      onOpenGallery={onOpenGallery}
+      onClose={vi.fn()}
+    />,
+  );
+  await userEvent.click(await screen.findByRole("button", { name: /run migration/i }));
+  await userEvent.type(screen.getByLabelText(/^deploy token$/i), "typed-token-1");
+  await userEvent.type(screen.getByLabelText(/^ticket$/i), "T");
+  await userEvent.click(screen.getByRole("button", { name: /^send run migration$/i }));
+  // Another template cannot be chosen, the fields cannot change, and no link leaves.
+  expect(screen.getByRole("button", { name: /^plain one/i })).toBeDisabled();
+  expect(screen.getByLabelText(/^ticket$/i)).toHaveAttribute("readonly");
+  await userEvent.type(screen.getByLabelText(/^ticket$/i), "X");
+  expect(screen.getByLabelText(/^ticket$/i)).toHaveValue("T");
+  await userEvent.click(screen.getByRole("link", { name: /manage in the gallery/i }));
+  expect(onOpenGallery).not.toHaveBeenCalled();
+  expect(onInsert).not.toHaveBeenCalled();
+  await act(async () => settle({ masked: "m", template: secretTpl() }));
+  await userEvent.click(screen.getByRole("link", { name: /manage in the gallery/i }));
+  expect(onOpenGallery).toHaveBeenCalledWith("/templates");
 });

@@ -416,7 +416,7 @@ test("an empty library is an honest empty state, and NEW VARIABLE adds one", asy
     limits: VAR_LIMITS,
   });
   await userEvent.click(add);
-  expect(vmocked.createTemplateVariable).toHaveBeenCalledWith({ name: "host", value: "a.test" });
+  expect(vmocked.createTemplateVariable).toHaveBeenCalledWith({ name: "host", value: "a.test", kind: "text" });
   expect(await screen.findByText(/added \{\{host\}\}/i)).toBeInTheDocument();
 });
 
@@ -536,7 +536,7 @@ test("a multi-line value keeps its lines when created and when edited (#1095 rev
   await userEvent.type(within(form).getByPlaceholderText("staging.acme.test"), "cd repo{Enter}npm test");
   expect(vmocked.createTemplateVariable).not.toHaveBeenCalled();
   await userEvent.click(within(form).getByRole("button", { name: /^add$/i }));
-  expect(vmocked.createTemplateVariable).toHaveBeenCalledWith({ name: "run", value: "cd repo\nnpm test" });
+  expect(vmocked.createTemplateVariable).toHaveBeenCalledWith({ name: "run", value: "cd repo\nnpm test", kind: "text" });
 
   vmocked.templateVariables.mockResolvedValue({
     variables: [variable({ name: "run", value: "cd repo\nnpm test" })],
@@ -573,4 +573,61 @@ test("a 409 that is not an edit conflict shows the server's reason, never 'chang
   const alert = await screen.findByRole("alert");
   expect(alert).toHaveTextContent(reason);
   expect(alert).not.toHaveTextContent(/changed elsewhere/i);
+});
+
+// ---- secret variables (#1090 Phase 2) ------------------------------------------------------------
+
+test("NEW SECRET stores a write-only value: password input, the minimum, and never shown again", async () => {
+  mocked.templates.mockResolvedValue({ templates: [], limits: LIMITS });
+  vmocked.templateVariables.mockResolvedValue({ variables: [], limits: { ...VAR_LIMITS, secret_min: 8 } });
+  vmocked.createTemplateVariable.mockResolvedValue({
+    name: "db_pass", kind: "secret", set: true, needs_reentry: false, created_at: 1, updated_at: 1, used_by: [],
+  });
+  renderVariables();
+  await userEvent.click((await screen.findAllByRole("button", { name: /new secret/i }))[0]);
+  const form = screen.getByRole("form", { name: /new secret/i });
+  await userEvent.type(within(form).getByPlaceholderText("staging_host"), "db_pass");
+  const value = within(form).getByPlaceholderText("stored encrypted");
+  expect(value).toHaveAttribute("type", "password");
+  await userEvent.type(value, "short");
+  expect(within(form).getByText(/at least 8 characters$/i)).toBeInTheDocument();
+  expect(within(form).getByRole("button", { name: /^add$/i })).toBeDisabled();
+  await userEvent.type(value, "-and-longer");
+  vmocked.templateVariables.mockResolvedValue({
+    variables: [
+      { name: "db_pass", kind: "secret", set: true, needs_reentry: false, created_at: 1, updated_at: 1, used_by: [] },
+    ],
+    limits: VAR_LIMITS,
+  });
+  await userEvent.click(within(form).getByRole("button", { name: /^add$/i }));
+  expect(vmocked.createTemplateVariable).toHaveBeenCalledWith({
+    name: "db_pass",
+    value: "short-and-longer",
+    kind: "secret",
+  });
+  const row = await screen.findByText("{{db_pass}}");
+  const li = row.closest("li")!;
+  expect(li).toHaveTextContent(/•••••••• set · never shown again/);
+  expect(li).not.toHaveTextContent("short-and-longer");
+  expect(within(li).getByRole("button", { name: /^replace db_pass$/i })).toBeInTheDocument();
+});
+
+test("REPLACE starts empty — the old value is never in the browser — and sends the new one fenced", async () => {
+  mocked.templates.mockResolvedValue({ templates: [], limits: LIMITS });
+  vmocked.templateVariables.mockResolvedValue({
+    variables: [
+      { name: "db_pass", kind: "secret", set: true, needs_reentry: true, created_at: 1, updated_at: 5, used_by: [] },
+    ],
+    limits: VAR_LIMITS,
+  });
+  vmocked.updateTemplateVariable.mockResolvedValue({ name: "db_pass", kind: "secret", set: true, created_at: 1, updated_at: 6, used_by: [] });
+  renderVariables();
+  expect(await screen.findByText(/needs re-entry/i)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: /^re-enter db_pass$/i }));
+  const input = screen.getByLabelText(/new value of db_pass/i);
+  expect(input).toHaveAttribute("type", "password");
+  expect(input).toHaveValue("");
+  await userEvent.type(input, "a-brand-new-secret");
+  await userEvent.click(screen.getByRole("button", { name: /^save db_pass$/i }));
+  expect(vmocked.updateTemplateVariable).toHaveBeenCalledWith("db_pass", "a-brand-new-secret", 5);
 });

@@ -80,12 +80,17 @@ export interface DraftAttachment {
  *  the same name in the variables library. A `library` field carries no default of its own. */
 export type TemplateFieldSource = "template" | "library";
 
+/** What a field's value is (#1090 Phase 2): text, or a SECRET — never stored in the template,
+ *  never held by the browser. A template with any secret field is sent server-side only. */
+export type TemplateFieldKind = "text" | "secret";
+
 export interface TemplateField {
   name: string;
   label: string;
   default: string;
   required: boolean;
   source: TemplateFieldSource;
+  kind: TemplateFieldKind;
 }
 
 /** A reference image on a template — an upload path, never a blob. The thumbnail is read back
@@ -149,7 +154,14 @@ export interface TemplateRef {
  *  identity (no rename); `updated_at` is the edit/delete fence, as on a template. */
 export interface TemplateVariable {
   name: string;
-  value: string;
+  /** `secret` (#1090 Phase 2): no `value` ever — only whether one is stored and still decrypts. */
+  kind: "text" | "secret";
+  /** A text variable's value. Absent on a secret. */
+  value?: string;
+  /** Secret only: a value is stored. */
+  set?: boolean;
+  /** Secret only: the stored value no longer decrypts (key file missing or replaced). */
+  needs_reentry?: boolean;
   created_at: number;
   updated_at: number;
   used_by: TemplateRef[];
@@ -159,6 +171,17 @@ export interface TemplateVariableLimits {
   variables_max: number;
   value_max: number;
   name_max: number;
+  /** Minimum length of any secret, stored or typed once. */
+  secret_min: number;
+}
+
+/** `POST /api/templates/{id}/send` (#1090 Phase 2): only the MASKED text comes back. */
+export interface TemplateSendResult {
+  masked: string;
+  template: Template;
+  /** The usage counter moved. `false` = bookkeeping failed AFTER a delivered send — the send
+   *  itself still succeeded and must never be retried. */
+  counted?: boolean;
 }
 
 export interface TemplateVariablesResponse {

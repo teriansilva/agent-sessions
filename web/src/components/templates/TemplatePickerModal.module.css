@@ -299,6 +299,16 @@ textarea.input {
 }
 /* A library variable the template needs is missing (#1090): Send and Insert are off. The
  * warning ink, not a status LED — nothing is down, the operator has a step to take. */
+/* A stored secret (#1090 Phase 2): the browser has no value — only that one is stored. */
+.stored {
+  display: block;
+  padding: 7px 10px;
+  border: 1px dashed var(--line-strong);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  letter-spacing: 0.12em;
+  color: var(--text-3);
+}
 .blocked {
   margin: 6px 0 0;
   font-size: 0.78rem;

@@ -584,6 +584,10 @@
   outline: none;
   border-color: var(--accent);
 }
+/* A secret field's kind select wears the accent: it changes how the template is sent. */
+.kindSecret {
+  color: var(--accent);
+}
 .libVal,
 .libMissing {
   display: block;
@@ -880,26 +884,6 @@
     padding: 0;
     border-bottom: 0;
   }
-  .fields tbody td:nth-child(1) {
-    grid-column: 1;
-    grid-row: 1;
-  }
-  .fields tbody td:nth-child(2) {
-    grid-column: 2;
-    grid-row: 1;
-  }
-  .fields tbody td:nth-child(5) {
-    grid-column: 3;
-    grid-row: 1;
-  }
-  .fields tbody td:nth-child(6) {
-    grid-column: 4;
-    grid-row: 1;
-  }
-  .fields tbody td:nth-child(3) {
-    grid-column: 1;
-    grid-row: 2;
-  }
   .reqHint {
     display: inline;
     margin-left: 4px;
@@ -909,9 +893,35 @@
     text-transform: uppercase;
     color: var(--text-3);
   }
+  /* Cells: 1 name · 2 source · 3 kind · 4 label · 5 default · 6 required · 7 remove.
+   * Row 1: name, source, required, remove. Row 2: kind, label. Row 3: the value. */
+  .fields tbody td:nth-child(1) {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .fields tbody td:nth-child(2) {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .fields tbody td:nth-child(6) {
+    grid-column: 3;
+    grid-row: 1;
+  }
+  .fields tbody td:nth-child(7) {
+    grid-column: 4;
+    grid-row: 1;
+  }
+  .fields tbody td:nth-child(3) {
+    grid-column: 1;
+    grid-row: 2;
+  }
   .fields tbody td:nth-child(4) {
     grid-column: 2 / span 3;
     grid-row: 2;
+  }
+  .fields tbody td:nth-child(5) {
+    grid-column: 1 / span 4;
+    grid-row: 3;
     align-self: center;
   }
   .tagRow {

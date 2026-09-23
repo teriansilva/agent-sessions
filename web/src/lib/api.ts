@@ -56,6 +56,7 @@ import type {
   Template,
   TemplateInput,
   TemplatesResponse,
+  TemplateSendResult,
   TemplateVariable,
   TemplateVariablesResponse,
   TwoFactorEnrollment,
@@ -551,12 +552,25 @@ export const api = {
   /** A send happened — bumps the usage counters, never `updated_at`. */
   markTemplateUsed: (id: string) =>
     mutateJson<Template>("POST", `/api/templates/${enc(id)}/used`),
+  /** Render + deliver a template SERVER-SIDE (#1090 Phase 2) — the only path for a template
+   *  with a secret field. Only the masked text comes back; the server bumps the usage counter. */
+  sendTemplate: (
+    id: string,
+    session: string,
+    values: Record<string, string>,
+    expectedUpdatedAt: number,
+  ) =>
+    mutateJson<TemplateSendResult>("POST", `/api/templates/${enc(id)}/send`, {
+      session,
+      values,
+      expected_updated_at: expectedUpdatedAt,
+    }),
   /** The template variables library (#1090): values a `source: "library"` field takes by name.
    *  Same fencing as a template; the name is the identity (no rename). A DELETE refused because
    *  templates still use the variable is a 409 whose `record.dependants` lists them. */
   templateVariables: () =>
     getJsonWithDetail<TemplateVariablesResponse>("/api/template-variables"),
-  createTemplateVariable: (input: { name: string; value: string }) =>
+  createTemplateVariable: (input: { name: string; value: string; kind?: "text" | "secret" }) =>
     mutateJson<TemplateVariable>("POST", "/api/template-variables", input),
   updateTemplateVariable: (name: string, value: string, expectedUpdatedAt: number) =>
     mutateJson<TemplateVariable>("PATCH", `/api/template-variables/${enc(name)}`, {

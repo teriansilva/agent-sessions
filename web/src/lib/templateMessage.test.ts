@@ -1,10 +1,16 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, test } from "vitest";
 import {
   assembleMessage,
   defaultValues,
+  hasSecret,
+  maskedValues,
   missingLibrary,
   missingRequired,
   previewValues,
+  shortSecrets,
+  splitLibrary,
   renderTemplate,
   seedValues,
   substituteFields,
@@ -140,5 +146,75 @@ describe("library fields (#1090)", () => {
     expect(missingLibrary([{ name: "constructor", source: "library" }], {})).toEqual([
       "constructor",
     ]);
+  });
+});
+
+describe("secret fields (#1090 Phase 2)", () => {
+  const fields = [
+    { name: "host", source: "library" as const, kind: "text" as const },
+    { name: "db_pass", source: "library" as const, kind: "secret" as const, required: true },
+    { name: "token", source: "template" as const, kind: "secret" as const, required: true },
+    { name: "ticket", required: true },
+  ];
+
+  test("splitLibrary keeps secrets as state only, never a value", () => {
+    const lib = splitLibrary([
+      { name: "host", kind: "text", value: "h" },
+      { name: "db_pass", kind: "secret", needs_reentry: false },
+      { name: "old", kind: "secret", needs_reentry: true },
+    ]);
+    expect(lib).toEqual({ text: { host: "h" }, secrets: { db_pass: "ok", old: "reentry" } });
+  });
+
+  test("a text field naming a secret, or a secret field naming a text variable, is missing", () => {
+    expect(missingLibrary(fields, { db_pass: "not-a-secret" }, { host: "ok" })).toEqual([
+      "host",
+      "db_pass",
+    ]);
+    expect(missingLibrary(fields, { host: "h" }, { db_pass: "ok" })).toEqual([]);
+    expect(missingLibrary(fields, { host: "h" }, { db_pass: "reentry" })).toEqual(["db_pass"]);
+  });
+
+  test("the preview and the history only ever see masks", () => {
+    expect(previewValues(fields, { host: "h" })).toMatchObject({
+      db_pass: "[secret: db_pass]",
+      token: "[secret: token]",
+    });
+    // The typed value is replaced; the text field is untouched; a stored secret gets its mask.
+    expect(maskedValues(fields, { token: "typed-value-1", ticket: "T" })).toEqual({
+      token: "[secret: token]",
+      ticket: "T",
+      db_pass: "[secret: db_pass]",
+    });
+  });
+
+  test("required-ness skips a stored secret (the server resolves it) but not a typed one", () => {
+    expect(missingRequired(fields, { token: "", ticket: "T" })).toEqual(["token"]);
+    expect(hasSecret(fields)).toBe(true);
+    expect(hasSecret([{ name: "x" }])).toBe(false);
+  });
+
+  test("a typed-once secret under the minimum is flagged; a stored one never is", () => {
+    expect(shortSecrets(fields, { token: "short" }, 8)).toEqual(["token"]);
+    expect(shortSecrets(fields, { token: "long-enough" }, 8)).toEqual([]);
+  });
+});
+
+describe("render parity with the server (#1090 Phase 2)", () => {
+  // The same table `tests/test_template_secrets.py` drives through `template_send`: a template
+  // with a secret field is rendered by the SERVER, so its substitution must be this one exactly.
+  const cases = JSON.parse(
+    readFileSync(resolve(process.cwd(), "../tests/fixtures/template_render_cases.json"), "utf8"),
+  ) as {
+    name: string;
+    body: string;
+    fields: string[];
+    values: Record<string, string>;
+    paths: string[];
+    expected: string;
+  }[];
+  test.each(cases.map((c) => [c.name, c] as const))("%s", (_name, c) => {
+    const fields = c.fields.map((name) => ({ name }));
+    expect(assembleMessage(substituteFields(c.body, fields, c.values), c.paths)).toBe(c.expected);
   });
 });

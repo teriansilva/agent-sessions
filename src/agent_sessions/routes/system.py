@@ -654,7 +654,18 @@ def register(
                 v = payload[key]
                 if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
                     raise HTTPException(status_code=422, detail=f"{key} must be a list of strings")
-                stored = setter(v)
+                if key in ("project_roots", "folder_exclusions"):
+                    # These two take the write seam's cross-process fence (#1090): off the loop,
+                    # so a contended fence never stalls every terminal stream behind it.
+                    try:
+                        stored = await asyncio.to_thread(setter, v)
+                    except session_input.AuthorityFenceBusy:
+                        raise HTTPException(
+                            status_code=503,
+                            detail="busy sending into a session — nothing was saved; try again",
+                        ) from None
+                else:
+                    stored = setter(v)
                 # For `project_roots` echo the EFFECTIVE (merged, normalized, existing-dir-only)
                 # list so the client sees what actually took effect (#465); others echo the raw
                 # stored value.

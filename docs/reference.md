@@ -86,8 +86,9 @@ CSRF token. Template and upload responses are `no-store`.
 | `PATCH /api/templates/{tid}` | Replace a template's editable fields. The body must carry the `expected_updated_at` the editor loaded; a stale one is a 409 with the `current` record, and nothing is written. |
 | `DELETE /api/templates/{tid}?expected_updated_at=` | Delete, under the same check (204). |
 | `POST /api/templates/{tid}/used` | Bump a template's usage counters after a send. Never changes `updated_at`, so an open editor stays valid. |
+| `POST /api/templates/{tid}/send` | Send a template **server-side** (a template with a secret field): `{session, values, expected_updated_at}`. The server fills in the secrets and types the message into the session; the response carries only the masked text. Refused with 403 outside your project folders and 409 when a secret is missing or needs re-entry, or the session is not running, busy, or changed. |
 | `GET /api/template-variables` | The variables library: every variable with its value, the templates that use it (`used_by`), and the `limits`. |
-| `POST /api/template-variables` | Create a variable `{name, value}` (201). The name follows the field-name rule; a duplicate name is a 422. |
+| `POST /api/template-variables` | Create a variable `{name, value, kind}` (201); `kind` is `text` (the default) or `secret` (at least 8 characters, stored encrypted, never returned). The name follows the field-name rule and is unique across both kinds; a duplicate is a 422. |
 | `PATCH /api/template-variables/{name}` | Replace a variable's value, under the same `expected_updated_at` check as a template. The name cannot be changed: delete and recreate instead. |
 | `DELETE /api/template-variables/{name}?expected_updated_at=` | Delete a variable (204). Refused with a 409 listing the `dependants` while any template still uses it as a library field. |
 | `GET /api/uploads/{stored}` | Serve one uploaded image (`.png` `.jpg` `.jpeg` `.gif` `.webp`) back for the template gallery. Anything else, or a name the upload route did not write, is a 404. |

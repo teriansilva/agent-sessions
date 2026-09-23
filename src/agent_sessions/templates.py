@@ -31,9 +31,15 @@ drop the fields it cannot see, and publish the result as version 1.
 every v1 record reads as) is the field this template declares; ``library`` means its value comes
 from the variable of the same name in ``template_vars`` — so it carries no ``default`` of its own,
 and one edit to the variable reaches every template that uses it. A v1 file reads without
-rewriting; the first accepted write publishes it as v2. Secret fields are NOT expressible here:
-they arrive with ``kind`` in store v3, so a v2 build facing a v3 file refuses every write rather
-than re-saving a secret field as text.
+rewriting; the first accepted write publishes it as v2.
+
+**Version 3 (#1090, Phase 2) adds ``kind`` to a field** — ``text`` (the default) or ``secret``. A
+secret field never carries a ``default``, so no secret can be written into this file: with
+``source: "library"`` its value is the stored (encrypted) secret variable of that name; with
+``source: "template"`` it is typed at send time and never stored. A template with any secret field
+is rendered and delivered SERVER-SIDE (``template_send``) — the browser never holds the value. A
+v2 build facing this v3 file serves it read-empty and refuses every write, so it can never drop
+``kind`` and re-save a secret field as text.
 
 **Optimistic concurrency, not last-write-wins.** ``update_template`` and ``delete_template`` take
 the ``updated_at`` the editor last read; a mismatch raises ``TemplateConflict`` carrying the
@@ -65,7 +71,7 @@ from .routes.upload import STORED_RE, open_upload, uploads_dir
 
 log = logging.getLogger(__name__)
 
-STORE_VERSION = 2
+STORE_VERSION = 3
 
 TEMPLATES_MAX = 200
 NAME_MAX = 120
@@ -93,7 +99,10 @@ NUMBER_MAX = float(2**53)
 NUMBER_MAX_INT = 2**53
 
 EDITABLE_KEYS = frozenset({"name", "description", "tags", "body", "fields", "images"})
-_FIELD_KEYS = frozenset({"name", "label", "default", "required", "source"})
+_FIELD_KEYS = frozenset({"name", "label", "default", "required", "source", "kind"})
+#: What a field's value is (store v3, #1090 Phase 2): plain text, or a secret that never lands in
+#: this file and never reaches the browser.
+FIELD_KINDS = ("text", "secret")
 #: Where a field's value comes from (store v2, #1090): this template, or the variables library.
 FIELD_SOURCES = ("template", "library")
 _IMAGE_KEYS = frozenset({"name", "path"})
@@ -101,6 +110,7 @@ _IMAGE_KEYS = frozenset({"name", "path"})
 # C0 controls other than TAB / LF, plus DEL and the C1 range. CR never reaches this check: CRLF
 # and lone CR are normalized to LF first, which only ever shrinks the text.
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x80-\x9f]")
+_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
 
 #: What the client may show as caps. Served with the library so the editor needs no copy.
 LIMITS = {
@@ -168,6 +178,10 @@ def _text(
     raw = raw.replace("\r\n", "\n").replace("\r", "\n")
     if _CONTROL_RE.search(raw):
         raise TemplateError(f"{key} contains a control character")
+    if _SURROGATE_RE.search(raw):
+        # A lone UTF-16 surrogate survives `json.loads` but not `.encode("utf-8")` — it would
+        # surface as a 500 at write time (or, on a send, after the prompt line was cleared).
+        raise TemplateError(f"{key} contains an invalid character")
     if not multiline and "\n" in raw:
         raise TemplateError(f"{key} must be a single line")
     if len(raw) > max_len:
@@ -233,6 +247,12 @@ def _fields(raw: object) -> list[dict]:
             # One owner for the value: a library field whose own default differed from the
             # variable would make "what gets sent" depend on which one the reader looked at.
             raise TemplateError(f"field {name}: a library field takes its value from the library")
+        kind = item.get("kind", "text")
+        if kind not in FIELD_KINDS:
+            raise TemplateError(f"field {name}: kind must be 'text' or 'secret'")
+        if kind == "secret" and default:
+            # The whole point: a secret is never written into templates.json.
+            raise TemplateError(f"field {name}: a secret field has no default")
         out.append(
             {
                 "name": name,
@@ -240,6 +260,7 @@ def _fields(raw: object) -> list[dict]:
                 "default": default,
                 "required": required,
                 "source": source,
+                "kind": kind,
             }
         )
     return out
@@ -442,7 +463,11 @@ def _mutate(fn: Callable[[list[dict]], dict | None]) -> dict | None:
     the original name. A newer store version raises out of ``_read`` before anything happens.
     """
     path = store_path()
-    with json_write_lock(path):
+    # Under the write seam's cross-process fence: a template send's fingerprint re-reads these
+    # revisions inside it right before byte one (#1090, Hermes on #1105).
+    from . import session_input
+
+    with session_input.mutation_fence(), json_write_lock(path):
         records, damaged = _read(path)
         result = fn(records)
         if damaged and path.exists():
@@ -544,6 +569,11 @@ def library_references(name: str) -> list[dict]:
     uses ``library_references_checked`` instead (Hermes on #1095).
     """
     return _references(_read_leniently(store_path()), name)
+
+
+def has_secret(template: dict) -> bool:
+    """Whether a template must be sent server-side (any secret field)."""
+    return any(f["kind"] == "secret" for f in template["fields"])
 
 
 def library_usage() -> dict[str, list[dict]]:
@@ -662,9 +692,11 @@ __all__ = [
     "TemplateNotFound",
     "TemplateStoreUnsupported",
     "create_template",
+    "FIELD_KINDS",
     "FIELD_SOURCES",
     "delete_template",
     "get_template",
+    "has_secret",
     "library_references",
     "library_references_checked",
     "library_usage",

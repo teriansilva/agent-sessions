@@ -664,8 +664,16 @@ def get_project_roots(path: Path | None = None) -> list[str]:
 
 
 def set_project_roots(roots: object, path: Path | None = None) -> list[str]:
-    """Persist the project-root dirs (#465). Stored raw; preserves other keys."""
-    return _set("project_roots", coerce_str_list(roots), path)
+    """Persist the project-root dirs (#465). Stored raw; preserves other keys.
+
+    Under the write seam's cross-process fence (#1090, Hermes on #1105): roots are part of the
+    authority a template send's fingerprint re-reads right before byte one, so a scope change
+    commits either before that re-read (the send refuses) or after the byte. BLOCKING on a
+    contended fence — async callers run it off the event loop."""
+    from . import session_input
+
+    with session_input.mutation_fence():
+        return _set("project_roots", coerce_str_list(roots), path)
 
 
 def get_folder_exclusions(path: Path | None = None) -> list[str]:
@@ -675,8 +683,12 @@ def get_folder_exclusions(path: Path | None = None) -> list[str]:
 
 
 def set_folder_exclusions(exclusions: object, path: Path | None = None) -> list[str]:
-    """Persist the folder-exclusion prefixes (#465). Preserves other keys."""
-    return _set("folder_exclusions", coerce_str_list(exclusions), path)
+    """Persist the folder-exclusion prefixes (#465). Preserves other keys. Fenced like
+    ``set_project_roots`` — an exclusion withdraws authority from an in-flight send."""
+    from . import session_input
+
+    with session_input.mutation_fence():
+        return _set("folder_exclusions", coerce_str_list(exclusions), path)
 
 
 def get_default_project(path: Path | None = None) -> str:

@@ -85,7 +85,8 @@ def test_a_field_carries_its_source_and_defaults_to_template(tmp_home):
         ({"name": "x", "source": "library", "default": "mine"}, "takes its value from the library"),
         ({"name": "x", "source": "vault"}, "source must be"),
         ({"name": "x", "source": None}, "source must be"),
-        ({"name": "x", "kind": "secret"}, "unknown field keys"),
+        ({"name": "x", "kind": "vault"}, "kind must be"),
+        ({"name": "x", "kind": "secret", "default": "hunter22"}, "a secret field has no default"),
     ],
 )
 def test_bad_sources_are_refused(tmp_home, field, message):
@@ -93,7 +94,7 @@ def test_bad_sources_are_refused(tmp_home, field, message):
         templates.validate(_template(fields=[field], body="{{x}}"))
 
 
-def test_a_v1_store_reads_as_template_fields_and_is_republished_as_v2(tmp_home):
+def test_a_v1_store_reads_as_template_fields_and_is_republished_current(tmp_home):
     store = templates.store_path()
     store.parent.mkdir(parents=True)
     v1_record = {
@@ -112,13 +113,15 @@ def test_a_v1_store_reads_as_template_fields_and_is_republished_as_v2(tmp_home):
     store.write_text(json.dumps({"version": 1, "templates": [v1_record]}))
     [rec] = templates.list_templates()
     assert rec["fields"][0]["source"] == "template"
+    assert rec["fields"][0]["kind"] == "text"
     # Reading never rewrote the file…
     assert json.loads(store.read_text())["version"] == 1
-    # …the first accepted write publishes v2, with nothing quarantined (v1 is not damage).
+    # …the first accepted write publishes the current version, with nothing quarantined.
     templates.mark_used("old")
     doc = json.loads(store.read_text())
-    assert doc["version"] == 2
+    assert doc["version"] == templates.STORE_VERSION
     assert doc["templates"][0]["fields"][0]["source"] == "template"
+    assert doc["templates"][0]["fields"][0]["kind"] == "text"
     assert not list(store.parent.glob("templates.json.corrupt-*"))
 
 

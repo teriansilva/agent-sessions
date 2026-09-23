@@ -17,10 +17,61 @@ export interface TemplateFieldLike {
   required?: boolean;
   /** `library` (#1090): the value is the variables library's, by name — never `default`. */
   source?: "template" | "library";
+  /** `secret` (#1090 Phase 2): never stored in the template, never held by the browser. */
+  kind?: "text" | "secret";
 }
 
-/** The variables library as a send resolves it: `{name: value}` (#1090). */
+/** The TEXT variables as a send resolves them: `{name: value}` (#1090). */
 export type LibraryValues = Readonly<Record<string, string>>;
+
+/** The SECRET variables, by state only — the browser never has a secret's value (#1090 Phase 2). */
+export type SecretLibrary = Readonly<Record<string, "ok" | "reentry">>;
+
+/** Both halves of the library, split from `GET /api/template-variables`. One name space: a name
+ *  is in at most one half, so a text field naming a secret (or the reverse) finds nothing. */
+export function splitLibrary(
+  variables: readonly { name: string; kind?: string; value?: string; needs_reentry?: boolean }[],
+): { text: LibraryValues; secrets: SecretLibrary } {
+  const text: Record<string, string> = {};
+  const secrets: Record<string, "ok" | "reentry"> = {};
+  for (const v of variables) {
+    if (v.kind === "secret") secrets[v.name] = v.needs_reentry ? "reentry" : "ok";
+    else if (typeof v.value === "string") text[v.name] = v.value;
+  }
+  return { text, secrets };
+}
+
+const isSecret = (f: TemplateFieldLike) => f.kind === "secret";
+
+/** Whether a template must be sent server-side: it has a secret field. */
+export function hasSecret(fields: readonly TemplateFieldLike[]): boolean {
+  return fields.some(isSecret);
+}
+
+/** How a secret shows anywhere in the browser — the preview, the sent history. The server
+ *  masks with the same words, so what the history keeps is exactly what the route answered. */
+export const secretMask = (name: string) => `[secret: ${name}]`;
+
+/** `values` with every secret field replaced by its mask — what a preview may show. */
+export function maskedValues(
+  fields: readonly TemplateFieldLike[],
+  values: Readonly<Record<string, string | undefined>>,
+): Record<string, string | undefined> {
+  const out: Record<string, string | undefined> = { ...values };
+  for (const f of fields) if (isSecret(f)) out[f.name] = secretMask(f.name);
+  return out;
+}
+
+/** Typed-once secret fields whose value is shorter than the server's minimum. */
+export function shortSecrets(
+  fields: readonly TemplateFieldLike[],
+  values: Readonly<Record<string, string | undefined>>,
+  min: number,
+): string[] {
+  return fields
+    .filter((f) => isSecret(f) && f.source !== "library" && (values[f.name] ?? "").length < min)
+    .map((f) => f.name);
+}
 
 /** The server's field-name shape (`templates.FIELD_NAME_RE`), global so it can be iterated. */
 export const FIELD_TOKEN_RE = /\{\{([a-z][a-z0-9_]{0,31})\}\}/g;
@@ -81,7 +132,9 @@ export function previewValues(
 ): Record<string, string> {
   const out: Record<string, string> = {};
   for (const f of fields) {
-    if (isLibrary(f)) {
+    if (isSecret(f)) {
+      out[f.name] = secretMask(f.name);
+    } else if (isLibrary(f)) {
       if (Object.hasOwn(library, f.name)) out[f.name] = library[f.name];
     } else if (f.default) {
       out[f.name] = f.default;
@@ -99,11 +152,13 @@ export function seedValues(
 ): Record<string, string> {
   const out: Record<string, string> = {};
   for (const f of fields) {
-    out[f.name] = isLibrary(f)
-      ? Object.hasOwn(library, f.name)
-        ? library[f.name]
-        : ""
-      : (f.default ?? "");
+    out[f.name] = isSecret(f)
+      ? "" // a stored secret is never here; a typed-once one starts empty
+      : isLibrary(f)
+        ? Object.hasOwn(library, f.name)
+          ? library[f.name]
+          : ""
+        : (f.default ?? "");
   }
   return out;
 }
@@ -113,8 +168,17 @@ export function seedValues(
 export function missingLibrary(
   fields: readonly TemplateFieldLike[],
   library: LibraryValues,
+  secrets: SecretLibrary = {},
 ): string[] {
-  return fields.filter((f) => isLibrary(f) && !Object.hasOwn(library, f.name)).map((f) => f.name);
+  return fields
+    .filter((f) =>
+      !isLibrary(f)
+        ? false
+        : isSecret(f)
+          ? secrets[f.name] !== "ok" || !Object.hasOwn(secrets, f.name)
+          : !Object.hasOwn(library, f.name),
+    )
+    .map((f) => f.name);
 }
 
 /** Required fields whose effective value (given, else default) is blank. */
@@ -123,6 +187,8 @@ export function missingRequired(
   values: Readonly<Record<string, string | undefined>>,
 ): string[] {
   return fields
+    // A stored secret is resolved server-side — the browser has no value to check.
+    .filter((f) => !(isSecret(f) && isLibrary(f)))
     .filter((f) => f.required && !(values[f.name] ?? f.default ?? "").trim())
     .map((f) => f.name);
 }

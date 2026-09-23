@@ -223,6 +223,20 @@ def _authority_fence():
 
 
 @contextlib.contextmanager
+def mutation_fence():
+    """The cross-process fence for a mutation that a WRITER's ``policy_fingerprint`` reads —
+    without bumping the policy epoch (which would refuse every unrelated in-flight delivery).
+
+    Template and template-variable edits take it (#1090, Hermes on #1105): the template send's
+    fingerprint re-reads their revisions inside this same fence right before byte one, so an edit
+    commits either before that re-read (the send refuses) or after the byte. Fails closed on a
+    busy fence like every other fenced mutation.
+    """
+    with _authority_fence():
+        yield
+
+
+@contextlib.contextmanager
 def policy_transaction():
     """Hold the write fence across a policy change, bumping the epoch on the way out.
 

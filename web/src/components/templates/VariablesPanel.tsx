@@ -28,12 +28,17 @@ import styles from "./VariablesPanel.module.css";
  *  control is frozen and a second submit is ignored, so nothing typed after Save can be
  *  dropped under a "Saved" message. */
 
-/** An edit in progress: the draft, and the revision it was started from (the save fence). */
+/** An edit in progress: the draft, and the revision it was started from (the save fence). A
+ *  secret's edit starts EMPTY — its value is never in the browser — and replaces it whole. */
 interface Editing {
   name: string;
   value: string;
   base: number;
+  secret: boolean;
 }
+
+/** What NEW VARIABLE / NEW SECRET opened (#1090 Phase 2), or `null`. */
+export type CreatingKind = "text" | "secret" | null;
 
 /** A 409 that IS an edit conflict carries the record as stored now (`current`). Every other 409
  *  (the template library could not be read in full, so a delete is refused; a newer store) is
@@ -61,9 +66,9 @@ export function VariablesPanel({
 }: {
   variables: TemplateVariable[];
   limits: TemplateVariableLimits;
-  /** The header's NEW VARIABLE opens the create row; the panel closes it. */
-  creating: boolean;
-  onCreatingChange: (open: boolean) => void;
+  /** The header's NEW VARIABLE / NEW SECRET opens the create row; the panel closes it. */
+  creating: CreatingKind;
+  onCreatingChange: (open: CreatingKind) => void;
   /** Re-read the library; resolves to whether it succeeded (a caller never claims "reloaded"
    *  over a failed reload — the gallery's rule, Hermes on #907). */
   reload: () => Promise<boolean>;
@@ -97,30 +102,39 @@ export function VariablesPanel({
       : variables.some((v) => v.name === draftName)
         ? "a variable with this name exists"
         : "";
+  const creatingSecret = creating === "secret";
+  const secretMin = limits.secret_min ?? 8;
   const canCreate =
     !busy &&
     FIELD_NAME_RE.test(draftName) &&
     !nameProblem &&
     draftValue.trim() !== "" &&
     cp(draftValue) <= limits.value_max &&
+    (!creatingSecret || (draftValue.length >= secretMin && draftValue === draftValue.trim())) &&
     variables.length < limits.variables_max;
 
   const closeCreate = () => {
     setDraftName("");
     setDraftValue("");
-    onCreatingChange(false);
+    onCreatingChange(null);
   };
 
   const create = async () => {
     if (!canCreate || busy) return;
     setBusy(true);
     try {
-      const rec = await api.createTemplateVariable({ name: draftName, value: draftValue });
+      const rec = await api.createTemplateVariable({
+        name: draftName,
+        value: draftValue,
+        kind: creatingSecret ? "secret" : "text",
+      });
       closeCreate();
       const ok = await reload();
       say(
         ok
-          ? `Added {{${rec.name}}}. Set a template field's source to Library to use it.`
+          ? rec.kind === "secret"
+            ? `Stored the secret {{${rec.name}}}. It will not be shown again — use it from a field set to Library and Secret.`
+            : `Added {{${rec.name}}}. Set a template field's source to Library to use it.`
           : `Added {{${rec.name}}}, but the list could not be refreshed.`,
       );
     } catch (e) {
@@ -227,7 +241,7 @@ export function VariablesPanel({
       {creating && (
         <form
           className={styles.create}
-          aria-label="New variable"
+          aria-label={creatingSecret ? "New secret" : "New variable"}
           onSubmit={(e) => {
             e.preventDefault();
             void create();
@@ -247,27 +261,48 @@ export function VariablesPanel({
             />
             {nameProblem && <span className={styles.rowErr}>{nameProblem}</span>}
           </label>
-          <label className={`${styles.cell} ${styles.grow}`}>
-            <span className={styles.lbl}>
-              Value · {cp(draftValue)} / {limits.value_max}
-            </span>
-            <textarea
-              className={`${page.input} ${styles.mono} ${styles.valueArea}`}
-              value={draftValue}
-              rows={rowsFor(draftValue)}
-              readOnly={busy}
-              onChange={(e) => setDraftValue(e.target.value)}
-              onKeyDown={(e) => {
-                if (submitKey(e)) {
-                  e.preventDefault();
-                  void create();
-                }
-              }}
-              placeholder="staging.acme.test"
-              autoComplete="off"
-              spellCheck={false}
-            />
-          </label>
+          {creatingSecret ? (
+            <label className={`${styles.cell} ${styles.grow}`}>
+              <span className={styles.lbl}>
+                🔒 Secret · at least {secretMin} characters · never shown again
+              </span>
+              <input
+                type="password"
+                className={`${page.input} ${styles.mono}`}
+                value={draftValue}
+                readOnly={busy}
+                onChange={(e) => setDraftValue(e.target.value)}
+                placeholder="stored encrypted"
+                autoComplete="new-password"
+                spellCheck={false}
+              />
+              {draftValue !== "" && draftValue.length < secretMin && (
+                <span className={styles.rowErr}>at least {secretMin} characters</span>
+              )}
+            </label>
+          ) : (
+            <label className={`${styles.cell} ${styles.grow}`}>
+              <span className={styles.lbl}>
+                Value · {cp(draftValue)} / {limits.value_max}
+              </span>
+              <textarea
+                className={`${page.input} ${styles.mono} ${styles.valueArea}`}
+                value={draftValue}
+                rows={rowsFor(draftValue)}
+                readOnly={busy}
+                onChange={(e) => setDraftValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (submitKey(e)) {
+                    e.preventDefault();
+                    void create();
+                  }
+                }}
+                placeholder="staging.acme.test"
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </label>
+          )}
           <div className={styles.createActs}>
             <button type="submit" className={page.cta} disabled={!canCreate}>
               <Check size={13} aria-hidden="true" />
@@ -292,9 +327,12 @@ export function VariablesPanel({
             Change it here, and every template that uses it changes with it.
           </p>
           <div className={page.emptyActs}>
-            <button type="button" className={page.cta} onClick={() => onCreatingChange(true)}>
+            <button type="button" className={page.cta} onClick={() => onCreatingChange("text")}>
               <Plus size={14} aria-hidden="true" />
               New variable
+            </button>
+            <button type="button" className={page.ghost} onClick={() => onCreatingChange("secret")}>
+              🔒 New secret
             </button>
           </div>
         </div>
@@ -312,8 +350,32 @@ export function VariablesPanel({
             const on = editing?.name === v.name;
             return (
               <li key={v.name} className={styles.row} data-variable={v.name}>
-                <span className={styles.name}>{`{{${v.name}}}`}</span>
-                {on ? (
+                <span className={styles.name}>
+                  {`{{${v.name}}}`}
+                  {v.kind === "secret" && <span className={styles.kindChip}>🔒 secret</span>}
+                </span>
+                {on && editing.secret ? (
+                  <input
+                    type="password"
+                    className={`${page.input} ${styles.mono}`}
+                    value={editing.value}
+                    readOnly={busy}
+                    onChange={(e) => setEditing({ ...editing, value: e.target.value })}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void save(v);
+                      } else if (e.key === "Escape" && !busy) {
+                        setEditing(null);
+                      }
+                    }}
+                    aria-label={`New value of ${v.name}`}
+                    placeholder={`at least ${secretMin} characters`}
+                    autoComplete="new-password"
+                    spellCheck={false}
+                    autoFocus
+                  />
+                ) : on ? (
                   <textarea
                     className={`${page.input} ${styles.mono} ${styles.valueArea}`}
                     value={editing.value}
@@ -333,6 +395,16 @@ export function VariablesPanel({
                     spellCheck={false}
                     autoFocus
                   />
+                ) : v.kind === "secret" ? (
+                  v.needs_reentry ? (
+                    <span className={styles.reentry}>
+                      ⚠ needs re-entry · the stored value can no longer be decrypted
+                    </span>
+                  ) : (
+                    <span className={styles.masked}>
+                      ••••••••<span className={styles.maskHint}> set · never shown again</span>
+                    </span>
+                  )
                 ) : (
                   <span className={styles.value} title={v.value}>
                     {v.value}
@@ -354,7 +426,10 @@ export function VariablesPanel({
                         type="button"
                         className={`${page.act} ${page.actUse}`}
                         disabled={
-                          busy || !editing.value.trim() || cp(editing.value) > limits.value_max
+                          busy ||
+                          !editing.value.trim() ||
+                          cp(editing.value) > limits.value_max ||
+                          (editing.secret && editing.value.length < secretMin)
                         }
                         onClick={() => void save(v)}
                         aria-label={`Save ${v.name}`}
@@ -380,12 +455,21 @@ export function VariablesPanel({
                         className={page.act}
                         disabled={busy}
                         onClick={() =>
-                          setEditing({ name: v.name, value: v.value, base: v.updated_at })
+                          setEditing({
+                            name: v.name,
+                            value: v.kind === "secret" ? "" : (v.value ?? ""),
+                            base: v.updated_at,
+                            secret: v.kind === "secret",
+                          })
                         }
-                        aria-label={`Edit ${v.name}`}
+                        aria-label={
+                          v.kind === "secret"
+                            ? `${v.needs_reentry ? "Re-enter" : "Replace"} ${v.name}`
+                            : `Edit ${v.name}`
+                        }
                       >
                         <Pencil size={13} aria-hidden="true" />
-                        Edit
+                        {v.kind === "secret" ? (v.needs_reentry ? "Re-enter" : "Replace") : "Edit"}
                       </button>
                       <button
                         type="button"

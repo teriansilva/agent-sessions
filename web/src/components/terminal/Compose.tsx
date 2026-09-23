@@ -41,7 +41,7 @@ import {
   substituteFields,
   uploadStoredName,
 } from "../../lib/templateMessage";
-import type { Template } from "../../types/api";
+import type { Template, TemplateSendResult } from "../../types/api";
 import { TemplatePickerModal } from "../templates/TemplatePickerModal";
 import { SentMessagesModal } from "./SentMessagesModal";
 import {
@@ -1441,6 +1441,20 @@ export const Compose = forwardRef<
     }
   };
 
+  // A template with SECRET fields was sent by the server (#1090 Phase 2): nothing went through
+  // this composer's socket, so there is no transaction to confirm — the history records the
+  // MASKED text the route answered with, already confirmed (the server's writes completed).
+  // Never the values: the browser never had the stored secrets, and the typed-once ones are
+  // not kept.
+  const recordServerSent = (result: TemplateSendResult) => {
+    setTemplatesOpen(null);
+    const id = appendSent({ text: result.masked, attachments: [], session: sessionId });
+    if (id) confirmSent(id);
+    setHistory(readSent());
+    setNote("sent");
+    setTimeout(() => setNote(""), 2000);
+  };
+
   const uploadFiles = async (files: File[], forceAttachment = false) => {
     if (!files.length) return;
     setNote("uploading…");
@@ -1837,6 +1851,8 @@ export const Compose = forwardRef<
           preselect={templatesOpen.preselect}
           onInsert={insertTemplate}
           onSend={(t, values) => void sendTemplate(t, values)}
+          sessionId={sessionId}
+          onServerSent={(_t, result) => recordServerSent(result)}
           onClose={() => setTemplatesOpen(null)}
           onOpenGallery={onOpenGallery ? openGallery : undefined}
           returnFocusTo={templatesBtnRef.current}

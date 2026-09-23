@@ -6,6 +6,8 @@
   ``expected_updated_at``: a stale edit is 409 carrying the current record, and nothing is written
 * ``DELETE /api/templates/{id}?expected_updated_at=…`` — the same fence
 * ``POST   /api/templates/{id}/used``       — bump the usage counters (never ``updated_at``)
+* ``POST   /api/templates/{id}/send``       — render + deliver server-side (#1090 Phase 2): the
+  only path for a template with a secret field; answers with the MASKED text only
 
 The variables library (#1090, Phase 1) — values a ``source: "library"`` field takes by name:
 
@@ -34,6 +36,7 @@ import asyncio
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
+from .. import session_input, template_secrets, template_send
 from .. import template_vars as vstore
 from .. import templates as store
 from .upload import NO_STORE
@@ -78,6 +81,11 @@ def _err(status_code: int, detail: str) -> HTTPException:
     return HTTPException(status_code=status_code, detail=detail, headers=NO_STORE)
 
 
+# Every store call below runs OFF the event loop (Hermes on #1105): a mutation waits on the write
+# seam's cross-process fence (`session_input.mutation_fence`, up to its budget), and on the loop
+# that wait would stall every terminal WebSocket and unrelated request behind it (#678).
+
+
 def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
     @app.middleware("http")
     async def _templates_are_never_cached(request: Request, call_next):
@@ -89,6 +97,14 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
             return await call_next(request)
         try:
             response = await call_next(request)
+        except session_input.AuthorityFenceBusy:
+            # An edit waits on the write seam's fence while a send is at byte one; a fence busy
+            # past its budget is a retryable refusal, never an unordered write (#1090).
+            return JSONResponse(
+                {"detail": "busy sending into a session — nothing was saved; try again"},
+                status_code=503,
+                headers=NO_STORE,
+            )
         except Exception:
             return JSONResponse(
                 {"detail": "the template store failed"}, status_code=500, headers=NO_STORE
@@ -98,7 +114,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
 
     @app.get("/api/templates")
     async def list_templates(_user: str = Depends(logged_in)) -> JSONResponse:
-        return _json({"templates": store.list_templates(), "limits": store.LIMITS})
+        return _json(
+            {"templates": await asyncio.to_thread(store.list_templates), "limits": store.LIMITS}
+        )
 
     @app.post("/api/templates", status_code=201)
     async def create_template(
@@ -108,7 +126,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
     ) -> JSONResponse:
         payload = await _json_object(request)
         try:
-            rec = store.create_template(payload)
+            rec = await asyncio.to_thread(store.create_template, payload)
         except store.TemplateError as e:
             raise _err(422, str(e)) from None
         except store.TemplateStoreUnsupported as e:
@@ -126,7 +144,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         expected = _expected(payload.get("expected_updated_at"))
         fields = {k: v for k, v in payload.items() if k not in _PATCH_EXTRA}
         try:
-            rec = store.update_template(tid, fields, expected)
+            rec = await asyncio.to_thread(store.update_template, tid, fields, expected)
         except store.TemplateError as e:
             raise _err(422, str(e)) from None
         except store.TemplateStoreUnsupported as e:
@@ -146,7 +164,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
     ) -> Response:
         expected = _expected(request.query_params.get("expected_updated_at"))
         try:
-            store.delete_template(tid, expected)
+            await asyncio.to_thread(store.delete_template, tid, expected)
         except store.TemplateStoreUnsupported as e:
             raise _err(409, str(e)) from None
         except store.TemplateNotFound:
@@ -155,6 +173,28 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
             return _conflict(e)
         return Response(status_code=204, headers=NO_STORE)
 
+    @app.post("/api/templates/{tid}/send")
+    async def send_template(
+        tid: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """Render and deliver a template SERVER-SIDE (#1090 Phase 2) — the path for any template
+        with a secret field. The response carries only the masked text."""
+        payload = await _json_object(request)
+        try:
+            out = await asyncio.to_thread(template_send.send, tid, payload)
+        except template_send.SendRefused as e:
+            raise _err(e.status, e.detail) from None
+        except store.TemplateError as e:
+            raise _err(422, str(e)) from None
+        except store.TemplateStoreUnsupported as e:
+            raise _err(409, str(e)) from None
+        except store.TemplateNotFound:
+            raise _err(404, "unknown template") from None
+        return _json(out)
+
     @app.post("/api/templates/{tid}/used")
     async def mark_used(
         tid: str,
@@ -162,7 +202,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         _csrf: None = Depends(csrf_guard),
     ) -> JSONResponse:
         try:
-            rec = store.mark_used(tid)
+            rec = await asyncio.to_thread(store.mark_used, tid)
         except store.TemplateStoreUnsupported as e:
             raise _err(409, str(e)) from None
         except store.TemplateNotFound:
@@ -186,11 +226,13 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
     ) -> JSONResponse:
         payload = await _json_object(request)
         try:
-            rec = vstore.create_variable(payload)
+            rec = await asyncio.to_thread(vstore.create_variable, payload)
         except vstore.VariableError as e:
             raise _err(422, str(e)) from None
         except vstore.VariableStoreUnsupported as e:
             raise _err(409, str(e)) from None
+        except template_secrets.SecretKeyUnavailable as e:
+            raise _err(409, f"{e} — nothing was written") from None
         return _json(rec, 201)
 
     @app.patch("/api/template-variables/{name}")
@@ -204,11 +246,13 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         expected = _expected(payload.get("expected_updated_at"))
         fields = {k: v for k, v in payload.items() if k not in _PATCH_EXTRA}
         try:
-            rec = vstore.update_variable(name, fields, expected)
+            rec = await asyncio.to_thread(vstore.update_variable, name, fields, expected)
         except vstore.VariableError as e:
             raise _err(422, str(e)) from None
         except vstore.VariableStoreUnsupported as e:
             raise _err(409, str(e)) from None
+        except template_secrets.SecretKeyUnavailable as e:
+            raise _err(409, f"{e} — nothing was written") from None
         except vstore.VariableNotFound:
             raise _err(404, "unknown variable") from None
         except vstore.VariableConflict as e:
@@ -224,9 +268,11 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
     ) -> Response:
         expected = _expected(request.query_params.get("expected_updated_at"))
         try:
-            vstore.delete_variable(name, expected)
+            await asyncio.to_thread(vstore.delete_variable, name, expected)
         except vstore.VariableStoreUnsupported as e:
             raise _err(409, str(e)) from None
+        except template_secrets.SecretKeyUnavailable as e:
+            raise _err(409, f"{e} — nothing was written") from None
         except vstore.VariableNotFound:
             raise _err(404, "unknown variable") from None
         except vstore.VariableConflict as e:

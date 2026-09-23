@@ -15,9 +15,11 @@ import { api, ApiError } from "../lib/api";
 import {
   assembleMessage,
   previewValues,
+  splitLibrary,
   substituteFields,
   unknownTokens,
   type LibraryValues,
+  type SecretLibrary,
 } from "../lib/templateMessage";
 import { useIsMobile } from "../lib/useIsMobile";
 import type {
@@ -126,13 +128,17 @@ function TemplateEditorFor() {
   const formRef = useRef(form);
   // The variables library (#1090) — `null` while loading; a failed read is `{}` + a note.
   const [library, setLibrary] = useState<LibraryValues | null>(null);
+  const [secretLib, setSecretLib] = useState<SecretLibrary>({});
   const [libraryError, setLibraryError] = useState(false);
   useEffect(() => {
     let alive = true;
     api
       .templateVariables()
       .then((r) => {
-        if (alive) setLibrary(Object.fromEntries(r.variables.map((v) => [v.name, v.value])));
+        if (!alive) return;
+        const lib = splitLibrary(r.variables);
+        setLibrary(lib.text);
+        setSecretLib(lib.secrets);
       })
       .catch(() => {
         if (!alive) return;
@@ -296,7 +302,7 @@ function TemplateEditorFor() {
     patch({
       fields: [
         ...form.fields,
-        { name: "", label: "", default: "", required: false, source: "template" },
+        { name: "", label: "", default: "", required: false, source: "template", kind: "text" },
       ],
     });
   const removeField = (i: number) => patch({ fields: form.fields.filter((_, j) => j !== i) });
@@ -596,6 +602,7 @@ function TemplateEditorFor() {
                 <tr>
                   <th scope="col">name</th>
                   <th scope="col">source</th>
+                  <th scope="col">kind</th>
                   <th scope="col">label</th>
                   <th scope="col">default</th>
                   <th scope="col">required</th>
@@ -643,6 +650,26 @@ function TemplateEditorFor() {
                         </select>
                       </td>
                       <td>
+                        <select
+                          className={`${styles.sourceSel} ${f.kind === "secret" ? styles.kindSecret : ""}`}
+                          value={f.kind}
+                          onChange={(e) =>
+                            // A secret field owns no default either: it is typed at send time
+                            // or stored (encrypted) in the library — never in this template.
+                            setField(
+                              i,
+                              e.target.value === "secret"
+                                ? { kind: "secret", default: "" }
+                                : { kind: "text" },
+                            )
+                          }
+                          aria-label={`Field ${i + 1} kind`}
+                        >
+                          <option value="text">Text</option>
+                          <option value="secret">🔒 Secret</option>
+                        </select>
+                      </td>
+                      <td>
                         <input
                           type="text"
                           value={f.label}
@@ -653,7 +680,14 @@ function TemplateEditorFor() {
                         />
                       </td>
                       <td>
-                        {f.source === "library" ? (
+                        {f.kind === "secret" ? (
+                          <SecretCell
+                            name={f.name}
+                            library={f.source === "library" ? secretLib : null}
+                            loading={library === null}
+                            failed={libraryError}
+                          />
+                        ) : f.source === "library" ? (
                           <LibraryCell name={f.name} library={library} failed={libraryError} />
                         ) : (
                           <input
@@ -914,6 +948,33 @@ function LibraryCell({
   return (
     <span className={styles.libVal} title={library[name]}>
       {library[name]}
+    </span>
+  );
+}
+
+/** A secret field's value cell (#1090 Phase 2). There is never a value to show: a library secret
+ *  says whether one is stored (and still decrypts); a typed-once one says it is asked for at send
+ *  time and not kept. */
+function SecretCell({
+  name,
+  library,
+  loading,
+  failed,
+}: {
+  name: string;
+  library: SecretLibrary | null;
+  loading: boolean;
+  failed: boolean;
+}) {
+  if (library === null) return <span className={styles.libVal}>typed at send time · not stored</span>;
+  if (loading) return <span className={styles.libVal}>loading…</span>;
+  if (failed) return <span className={styles.libMissing}>library not loaded</span>;
+  const state = name && Object.hasOwn(library, name) ? library[name] : undefined;
+  if (state === "ok") return <span className={styles.libVal}>•••••••• stored</span>;
+  if (state === "reentry") return <span className={styles.libMissing}>needs re-entry</span>;
+  return (
+    <span className={styles.libMissing}>
+      {name ? "missing secret variable" : "name it after a secret variable"}
     </span>
   );
 }

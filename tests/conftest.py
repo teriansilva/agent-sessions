@@ -124,6 +124,15 @@ def _isolate_prefs(tmp_path, monkeypatch) -> None:
         "AGENT_SESSIONS_TEMPLATE_VARS",
         str(tmp_path / ".config" / "agent-sessions" / "template-variables.json"),
     )
+    # …and the key its secret variables are encrypted under (#1090 Phase 2): a test must never
+    # create or read the operator's real key file.
+    monkeypatch.setenv(
+        "AGENT_SESSIONS_TEMPLATE_SECRETS_KEY",
+        str(tmp_path / ".config" / "agent-sessions" / "template-secrets.key"),
+    )
+    from agent_sessions import template_secrets
+
+    template_secrets._reset_for_tests()
 
 
 @pytest.fixture(autouse=True)

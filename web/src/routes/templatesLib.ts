@@ -56,6 +56,7 @@ export function formProblems(f: TemplateInput, limits: TemplateLimits): string[]
     if (cp(fl.default) > limits.default_max) {
       out.push(`default too long (max ${limits.default_max})`);
     }
+    if (fl.kind === "secret" && fl.default) out.push(`${fl.name}: a secret field has no default`);
   }
   if (f.images.length > limits.images_max) {
     out.push(`too many images (max ${limits.images_max})`);

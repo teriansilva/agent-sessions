@@ -78,6 +78,64 @@ instructions. The library holds up to 100 variables, in its own file
 `AGENT_SESSIONS_TEMPLATE_VARS`), written atomically at mode `0600`, with the same damaged-file and
 newer-version protections as the template library below.
 
+### Secret fields: passwords and tokens
+
+A field whose **Kind** is **Secret** holds a password, token or other credential. The value is
+never written into the template and never shown again after you enter it. BattleLab never sends a
+stored secret to your browser. The one exception is what the agent itself prints: after a send,
+the value can appear on the session's screen and in its history.
+
+- **Stored secret.** Under **Variables**, **New secret** stores a value encrypted. A secret is at
+  least 8 characters, and cannot start or end with a space. It appears as `••••••••` with **Replace**, which starts empty: you type a new value,
+  since the old one is never shown. Use it from a field with **Source: Library** and **Kind:
+  Secret** of the same name.
+- **Typed once.** A secret field with **Source: This template** is asked for in the picker, in a
+  password box, each time you send. It is not stored anywhere.
+
+A template with any secret field is **sent by the server**: BattleLab fills in the secrets, then
+clears the prompt line, pastes the message and presses Enter in the session, spaced like a normal
+send. So such a template can be **sent** from a session's composer but never **inserted** into the
+composer or a mission brief, because either would put the secret in a text box. It also cannot be
+sent into a session that has not started yet, because there is no session id to send to.
+
+What you see instead of the value:
+
+- the picker and editor preview show `[secret: name]`;
+- your sent history keeps the same masked text, so **Restore** gives you the mask, not the secret;
+- the send fails with a clear reason, and nothing is typed, if a stored secret is missing or needs
+  re-entry.
+- one template send at a time per session: a second one sent while the first is still being typed
+  is refused, so two messages can never merge into one prompt. The picker stays open until the
+  send has finished.
+
+**What the protection covers, and what it does not.**
+
+- The file `~/.config/agent-sessions/template-variables.json` holds only ciphertext. The key is
+  a separate file, `template-secrets.key` (0600, next to it). A copy of the store without the key
+  file decrypts nothing. **Leave `template-secrets.key` out of any sync or backup** of that folder
+  if you want the encryption to protect that copy.
+- The key is not your login's secret key, so rotating that key does not affect stored secrets. If
+  the key file is lost or replaced, every stored secret shows **needs re-entry**; enter it again.
+- **The agent receives the plain value**, because that is the point. It may repeat it in its
+  output, a commit, a log or a pull request, and it is on that session's screen (the terminal and
+  its scroll-back history) and in its transcript. Agents run as your user and can read the key
+  file.
+- A **Quick** handoff copies recent turns into a new session; a secret in those turns is replaced
+  with `[secret]` first, in the preview and in what the new agent receives.
+- **Before anything goes to your AI endpoint** (reviews, recaps, Ask, missions), BattleLab
+  replaces every stored secret, and every value typed once in the last 24 hours, with `[secret]`.
+  This covers the plain text, JSON- and URL-encoded copies, and copies split by terminal colour
+  codes. It **cannot** catch a secret the agent's screen wrapped across two lines, or one the
+  agent re-encoded (base64, hex).
+- If BattleLab cannot read the file of stored secrets in full, it **does not call the AI
+  endpoint** (the review or recap reports an error) rather than risk sending one unredacted. It
+  refuses even if it read the file successfully a moment before, because a secret may have been
+  added since.
+- A value typed once, and a stored value you **replace or delete** (or that stops decrypting),
+  keeps being redacted for 24 hours from when BattleLab last held it, and only until the app
+  restarts. After that it is no longer known, so a transcript that still contains it is sent as it
+  is. If you rotate a leaked credential, it is safest to also archive the sessions it was sent to.
+
 ### The preview is exactly what the agent receives
 
 **What the agent receives** shows the instructions with each field's default filled in, followed by

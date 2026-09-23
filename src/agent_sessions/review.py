@@ -38,7 +38,7 @@ from pathlib import Path
 
 import httpx
 
-from . import metadata, prefs, prompts, scrollback, transcript
+from . import metadata, prefs, prompts, scrollback, template_secrets, transcript
 
 # Output field caps — server-owned, applied AFTER parsing so an over-long model reply is
 # truncated rather than rejected (the shape is the contract; the length is hygiene).
@@ -803,6 +803,16 @@ async def _post_chat(cfg: dict, body: dict, *, retry_without_json_mode: bool = F
     inventory in ``tests/test_prompts_registry.py``'s ``POST_SITES``.
     """
     _assert_registered_system_prompts(body.get("messages") or [])
+    # Secret template values (#1090 Phase 2) never ride to the endpoint: once a secret is pasted
+    # into a session it is in that session's transcript and screen, which every prompt here may
+    # read. Redacted HERE — the one transport — so it holds for every prompt, current or future,
+    # however its messages were assembled. System messages are untouched (the registry check
+    # above compares them byte for byte, and they are the operator's prompt text).
+    try:
+        body = {**body, "messages": template_secrets.redact_messages(body.get("messages") or [])}
+    except template_secrets.RedactionUnavailable as e:
+        # Fail closed: if the values to redact cannot be established, nothing is sent.
+        raise ReviewError(f"{e} — nothing was sent to the AI endpoint") from None
     url = _base(cfg) + "/chat/completions"
     key = _capability_key(cfg, body.get("model"))
     # Every attempt builds its OWN body. The previous version degraded by mutating the caller's

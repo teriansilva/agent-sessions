@@ -132,7 +132,9 @@ test("a new template cannot be saved until it has a name and instructions; then 
     description: "",
     tags: ["ops"],
     body: "Watch the deploy for {{sha}}",
-    fields: [{ name: "sha", label: "", default: "", required: true, source: "template" }],
+    fields: [
+      { name: "sha", label: "", default: "", required: true, source: "template", kind: "text" },
+    ],
     images: [],
   });
   expect(await screen.findByText("gallery route")).toBeInTheDocument();
@@ -648,4 +650,27 @@ test("a library field whose variable does not exist says so and previews its tok
   expect(screen.getByLabelText(/what the agent receives/i).textContent).toContain(
     "for {{issue_ref}} and",
   );
+});
+
+test("a field set to Secret drops its default, previews a mask, and saves kind=secret (#1090 Phase 2)", async () => {
+  mocked.templateVariables.mockResolvedValue({
+    variables: [],
+    limits: { variables_max: 100, value_max: 2000, name_max: 32, secret_min: 8 },
+  });
+  mocked.updateTemplate.mockResolvedValue(tpl({ updated_at: 1_788_440_000 }));
+  renderEditor("/templates/pr-review");
+  const kind = await screen.findByLabelText(/field 2 kind/i);
+  await userEvent.selectOptions(kind, "secret");
+  expect(screen.queryByLabelText(/field 2 default/i)).not.toBeInTheDocument();
+  expect(screen.getByText(/typed at send time · not stored/i)).toBeInTheDocument();
+  expect(screen.getByLabelText(/what the agent receives/i).textContent).toContain(
+    "for [secret: issue_ref] and",
+  );
+  await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+  await waitFor(() => expect(mocked.updateTemplate).toHaveBeenCalledTimes(1));
+  expect(mocked.updateTemplate.mock.calls[0][1].fields[1]).toMatchObject({
+    name: "issue_ref",
+    default: "",
+    kind: "secret",
+  });
 });

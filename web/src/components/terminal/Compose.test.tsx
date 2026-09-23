@@ -20,6 +20,7 @@ vi.mock("../../lib/api", () => ({
     templates: vi.fn(() => Promise.resolve({ templates: [], limits: {} })),
     markTemplateUsed: vi.fn(() => Promise.resolve({})),
     templateVariables: vi.fn(() => Promise.resolve({ variables: [], limits: {} })),
+    sendTemplate: vi.fn(),
   },
 }));
 
@@ -2517,4 +2518,44 @@ test("Send while the mic grant is still pending sends the draft and cancels the 
   expect(recogCount).toBe(0);
   expect(lastRecog).toBeNull();
   expect(micChip()).toHaveAttribute("aria-pressed", "false");
+});
+
+test("a template with a SECRET field is sent by the server, never through this socket; history keeps the MASKED text (#1090 Phase 2)", async () => {
+  const secretTemplate = {
+    ...TEMPLATE,
+    id: "migrate",
+    name: "Run migration",
+    body: "Use {{token}} on {{pr_url}}.",
+    fields: [
+      { name: "token", label: "Token", default: "", required: true, source: "template", kind: "secret" },
+      { name: "pr_url", label: "PR link", default: "", required: true, source: "template", kind: "text" },
+    ],
+    images: [],
+  };
+  vi.mocked(api.templates).mockResolvedValue({ templates: [secretTemplate], limits: {} } as never);
+  vi.mocked(api.sendTemplate).mockResolvedValue({
+    masked: "Use [secret: token] on https://x/1.",
+    template: secretTemplate,
+  } as never);
+  const user = userEvent.setup();
+  render(<Compose sendInput={sendInput} connEpoch={() => 1} sessionId="claude:abc" />);
+  await user.click(screen.getByRole("button", { name: /^use a template$/i }));
+  const dialog = await screen.findByRole("dialog");
+  await user.click(await within(dialog).findByRole("button", { name: /^run migration/i }));
+  await user.type(within(dialog).getByLabelText(/^token$/i), "typed-secret-1");
+  await user.type(within(dialog).getByLabelText(/^pr link$/i), "https://x/1");
+  await user.click(within(dialog).getByRole("button", { name: /^send run migration$/i }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  expect(api.sendTemplate).toHaveBeenCalledWith(
+    "migrate",
+    "claude:abc",
+    { token: "typed-secret-1", pr_url: "https://x/1" },
+    secretTemplate.updated_at,
+  );
+  // Not one frame went through the browser's socket, and the client did not bump /used itself.
+  expect(sendInput).not.toHaveBeenCalled();
+  expect(api.markTemplateUsed).not.toHaveBeenCalled();
+  const ring = readSent();
+  expect(ring[0]).toMatchObject({ text: "Use [secret: token] on https://x/1.", confirmed: true });
+  expect(JSON.stringify(ring)).not.toContain("typed-secret-1");
 });

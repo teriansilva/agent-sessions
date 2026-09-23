@@ -103,6 +103,7 @@ def test_create_list_get_round_trip(auth_cfg, tmp_home):
         "default": "",
         "required": True,
         "source": "template",
+        "kind": "text",
     }
     assert rec["fields"][1] == {
         "name": "issue_ref",
@@ -110,6 +111,7 @@ def test_create_list_get_round_trip(auth_cfg, tmp_home):
         "default": "the linked issue",
         "required": False,
         "source": "template",
+        "kind": "text",
     }
     assert rec["images"] == [{"name": "shot.png", "path": up["path"]}]
 

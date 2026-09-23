@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import metadata, transcript
+from . import metadata, template_secrets, transcript
 
 # --- tunables (env-overridable like the transcript/scrollback knobs) -------------------------
 
@@ -278,6 +278,13 @@ def build_quick_seed(
     texts = _source_texts(engine, native)
     if not texts:
         raise HandoffError(409, "source transcript is empty — nothing to hand off")
+    # A secret template value (#1090) sent into the source is in these turns. The Quick seed
+    # goes to the browser as the preview and then into ANOTHER agent — possibly another vendor's
+    # — without passing `review._post_chat`, so it is redacted here, once, before anything is
+    # rendered or measured (independent review of #1105). The AI mode goes through `_post_chat`.
+    secrets = template_secrets.redaction_values()
+    if secrets:
+        texts = [(role, template_secrets.redact_text(text, secrets)) for role, text in texts]
     tail = texts[-SEED_MAX_TURNS:]
     # Resolved once — `_doc` re-renders the header on every trim iteration below.
     loc = resolve_source_location(engine, native, include=include_source_ref)
