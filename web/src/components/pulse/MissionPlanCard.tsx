@@ -27,6 +27,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { Mission } from "../../types/api";
 import action from "../ui/actionButton.module.css";
 import styles from "./mission.module.css";
+import { checksWhat, worthALook } from "./confirmSet";
 import {
   LAUNCH_WARNING_ID,
   PLAN_CARD_ID,
@@ -378,14 +379,36 @@ export function MissionPlanCard({
             saved instructions and {objectives.length}{" "}
             {objectives.length === 1 ? "objective" : "objectives"}.
           </p>
-          <ul className={styles.confirmObjectives}>
+          {/* WHAT IT WILL TRACK (#1061 Phase 3): each objective with whether it is required and what
+              it checks, so a target fitted from the instruction is seen before anything runs. */}
+          <ul
+            className={styles.confirmObjectives}
+            data-testid="mission-confirm-objectives"
+          >
             {objectives.map((o) => (
-              <li key={o.key}>
-                {o.title}
-                {o.gate ? " · Required" : ""}
+              <li key={o.key} className={styles.confirmRow}>
+                <span
+                  className={o.gate ? styles.confirmGate : styles.confirmGoal}
+                >
+                  {o.gate ? "Required" : "Goal"}
+                </span>
+                <span className={styles.confirmTitle}>{o.title}</span>
+                <span className={styles.confirmChecks}>{checksWhat(o)}</span>
               </li>
             ))}
           </ul>
+          {(() => {
+            const why = worthALook(mission.objectives_fit, objectives);
+            return why.length ? (
+              <div
+                className={styles.confirmWhy}
+                data-testid="mission-confirm-why"
+              >
+                <strong>Worth a look before it starts.</strong>{" "}
+                {why.join(" ")}
+              </div>
+            ) : null;
+          })()}
           {/* The header keeps one primary, so the Cancel that pairs with "Confirm begin" lives with
               the confirmation it cancels, as a ghost. */}
           <div className={styles.planStatusActions}>
@@ -397,6 +420,21 @@ export function MissionPlanCard({
             >
               Cancel
             </button>
+            {/* Change the set before it runs: the objectives panel already drops, waives and adds.
+                Opening it cancels the armed launch, because the set it confirmed may change. */}
+            {start.onObjectives ? (
+              <button
+                type="button"
+                className={action.ghost}
+                onClick={() => {
+                  start.cancelConfirm();
+                  start.onObjectives?.();
+                }}
+                data-testid="mission-confirm-edit"
+              >
+                Edit objectives
+              </button>
+            ) : null}
           </div>
         </div>
       ) : leadIsReason ? null : (

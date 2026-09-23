@@ -356,6 +356,31 @@ async def propose(mission_id: str) -> dict:
                 )
             )
         return {"objectives": [], "dropped": dropped, "templates": "stale"}
+    # HOW THE SET WAS FITTED (#1061 Phase 3): a suggestion that did not fit was dropped, or a
+    # target was filled in from the instruction. Said once, on the timeline, and carried as `meta`
+    # so the launch confirmation can say why this set is worth a look before anything runs.
+    fitted = stats.get("parameterised", 0)
+    if written and (dropped or fitted):
+        parts = []
+        if fitted:
+            parts.append(
+                f"{fitted} objective{'s' if fitted != 1 else ''} fitted to targets named in the "
+                "instruction"
+            )
+        if dropped:
+            parts.append(
+                f"{dropped} suggestion{'s' if dropped != 1 else ''} did not fit the checklist and "
+                f"{'were' if dropped != 1 else 'was'} dropped"
+            )
+        with contextlib.suppress(Exception):
+            await missions.run_admitted(
+                lambda: missions.append_event(
+                    mission_id,
+                    "objective",
+                    text="; ".join(parts),
+                    meta={"fit": {"dropped": dropped, "parameterised": fitted}},
+                )
+            )
     # NOTHING HERE GATES — said once, where the operator will look for it (#1063).
     #
     # A checklist of notes checks nothing and blocks nothing, so the mission can never confirm

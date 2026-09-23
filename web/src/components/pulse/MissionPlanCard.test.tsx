@@ -957,3 +957,58 @@ test("a Plan again that FAILED keeps the previous plan, says which plan it is, a
   expect(screen.queryByTestId("mission-plan-manually")).toBeNull();
   expect(screen.getByTestId("mission-begin")).toBeEnabled();
 });
+
+// ---- #1061 Phase 3: the confirmation says what it will track, and why it is worth a look -------
+
+test("the armed launch lists each objective as required or a goal, with what it checks", async () => {
+  mount(
+    mission({
+      state: "planned",
+      plan: plan(),
+      objectives: [
+        {
+          key: "merged",
+          title: "devopsagent/alpha is merged",
+          gate: true,
+          probe: "forge_merged",
+          probe_args: { branch: "devopsagent/alpha" },
+        },
+        {
+          key: "note:1",
+          title: "Look for conflicts",
+          gate: false,
+          probe: "none",
+          probe_args: null,
+        },
+      ] as never,
+      objectives_fit: { dropped: 1, parameterised: 1 },
+    }),
+  );
+  await userEvent.click(screen.getByTestId("mission-begin"));
+  const list = await screen.findByTestId("mission-confirm-objectives");
+  expect(list).toHaveTextContent(
+    "Requireddevopsagent/alpha is mergedforge_merged · devopsagent/alpha",
+  );
+  expect(list).toHaveTextContent("GoalLook for conflictsnote · not checked");
+  const why = screen.getByTestId("mission-confirm-why");
+  expect(why).toHaveTextContent(
+    "1 objective was fitted to targets named in your instruction",
+  );
+  expect(why).toHaveTextContent(
+    "1 suggestion did not fit the checklist and was dropped.",
+  );
+  expect(api.dispatchMission).not.toHaveBeenCalled();
+});
+
+test("an ordinary set arms the same confirmation with no 'worth a look' line", async () => {
+  mount(
+    mission({
+      state: "planned",
+      plan: plan(),
+      objectives_fit: { dropped: 0, parameterised: 0 },
+    }),
+  );
+  await userEvent.click(screen.getByTestId("mission-begin"));
+  await screen.findByTestId("mission-confirm-objectives");
+  expect(screen.queryByTestId("mission-confirm-why")).toBeNull();
+});

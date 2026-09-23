@@ -2345,6 +2345,23 @@ def _row_to_mission(row) -> dict:
     return dict(row)
 
 
+def _objectives_fit(raw) -> dict:
+    """`{"dropped": n, "parameterised": m}` from a fit row's meta — zeros when absent or malformed.
+
+    Read-lenient: the counts are display facts for the launch confirmation, never an authority, so
+    a hand-edited row degrades to "nothing unusual" rather than failing the mission read.
+    """
+    meta = _loads(raw)
+    fit = meta.get("fit") if isinstance(meta, dict) else None
+    out = {"dropped": 0, "parameterised": 0}
+    if isinstance(fit, dict):
+        for k in out:
+            v = fit.get(k)
+            if isinstance(v, int) and not isinstance(v, bool) and v > 0:
+                out[k] = min(v, 1000)
+    return out
+
+
 def _event_row(row) -> dict:
     d = dict(row)
     d["meta"] = _loads(d.get("meta"))
@@ -2807,6 +2824,16 @@ def get_mission(
         # START AGAIN, from the same predicate the state write uses and in this same snapshot
         # (#966). Advisory: the write re-reads it under its own transaction.
         retry = _retry_verdict(con, mission_id)
+        # HOW THE CHECKLIST WAS FITTED (#1061 Phase 3), from the one row
+        # `mission_objectives.propose` writes when it dropped a suggestion or filled in a target —
+        # the facts the launch confirmation uses to say why the set is worth a look. Absent row ⇒
+        # nothing unusual.
+        fit_row = con.execute(
+            "SELECT meta FROM mission_events WHERE mission_id=? AND kind='objective' "
+            "AND json_valid(meta) AND json_extract(meta, '$.fit') IS NOT NULL "
+            "ORDER BY seq DESC LIMIT 1",
+            (mission_id,),
+        ).fetchone()
         con.execute("COMMIT")
     except BaseException:
         with contextlib.suppress(sqlite3.Error):
@@ -2817,6 +2844,7 @@ def get_mission(
     mission = _row_to_mission(row)
     mission["sessions"] = [dict(s) for s in sessions]
     mission["objectives"] = [_objective_row(o) for o in objectives]
+    mission["objectives_fit"] = _objectives_fit(fit_row["meta"] if fit_row else None)
     mission["events"] = [_event_row(e) for e in events]
     _attach_settlements(mission["events"], path=path)
     # Anything neither compaction nor the settlement hook froze is reconciled here while the

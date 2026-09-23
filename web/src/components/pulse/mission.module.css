@@ -2423,3 +2423,67 @@
 .nowStale {
   font-style: italic;
 }
+
+/* --- #1061 P3: what the launch confirmation says it will track -----------------------------------
+ * One row per objective: a REQUIRED / GOAL mark, the title, and the probe with its target in mono.
+ * Required is the solid mark and goal the dashed one, as the issue's mockup draws them — neither is a
+ * status colour, because nothing here is a state yet. The "worth a look" line is attention, not
+ * failure: the text-safe amber. */
+.confirmObjectives {
+  display: flex;
+  flex-direction: column;
+  margin: 8px 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--border);
+  padding-right: 8px;
+}
+.confirmRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  min-width: 0;
+}
+.confirmGate,
+.confirmGoal {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.confirmGate {
+  border: 1px solid var(--line-strong);
+  color: var(--text-1);
+}
+.confirmGoal {
+  border: 1px dashed var(--line-strong);
+  color: var(--text-3);
+}
+.confirmTitle {
+  flex: 1 1 12em;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-1);
+}
+/* What it checks sits on its own line under the title at every width: beside it, a long title was
+   squeezed into a narrow column and the mono target ran to the pane's edge. */
+.confirmChecks {
+  flex: 1 1 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-3);
+}
+.confirmWhy {
+  margin: 4px 0 8px;
+  overflow-wrap: anywhere;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--warn-text);
+}

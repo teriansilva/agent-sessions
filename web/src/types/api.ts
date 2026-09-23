@@ -1645,6 +1645,10 @@ export interface Mission {
   seed_outcome?: string | null;
   /** Why Start again is refused, set only while the mission is failed and not eligible. */
   retry_reason?: string | null;
+  /** How the checklist was fitted when it was proposed (#1061 Phase 3): suggestions dropped, and
+   *  objectives whose target was filled in from the instruction. Zeros when nothing was unusual.
+   *  Display facts for the launch confirmation, never an authority. */
+  objectives_fit?: { dropped: number; parameterised: number };
 }
 
 /** An unresolved turn: still running, or terminal-and-ambiguous. `done` never appears here —

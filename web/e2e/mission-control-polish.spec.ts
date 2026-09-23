@@ -675,3 +675,86 @@ test("the mission Send IS the session Send — paper plane, label and all (#967)
   await page.getByTestId("composer-input").fill("which session was that?");
   expect.soft(await sendLook(page.getByTestId("composer-send")), "ASK page Send").toEqual(ref);
 });
+
+test("the launch confirmation says what it will track, and why the set is worth a look (#1061)", async ({
+  page,
+}) => {
+  await stubMissions(page, ["planned"]);
+  await page.route(/\/api\/missions\/msn_planned(\?.*)?$/, (r) =>
+    r.fulfill({
+      json: {
+        ...MISSION,
+        id: "msn_planned",
+        title: TITLES.planned,
+        project_id: "p1",
+        ...STATES.planned,
+        objectives: [
+          {
+            mission_id: "msn_planned",
+            key: "merged",
+            ord: 0,
+            title: "devopsagent/alpha is merged",
+            probe: "forge_merged",
+            probe_args: { branch: "devopsagent/alpha" },
+            gate: true,
+            state: "unmet",
+            met_at: null,
+            observed: null,
+            source: "playbook",
+          },
+          {
+            mission_id: "msn_planned",
+            key: "note:1",
+            ord: 1,
+            title: "Look for file conflicts between the approved PRs before merging",
+            probe: "none",
+            probe_args: null,
+            gate: false,
+            state: "unmet",
+            met_at: null,
+            observed: null,
+            source: "model",
+          },
+        ],
+        objectives_fit: { dropped: 1, parameterised: 1 },
+        events: [],
+        events_next_seq: null,
+      },
+    }),
+  );
+  await page.goto("/mission");
+  await selectMission(page, TITLES.planned);
+  await page.getByTestId("mission-begin").click();
+  await expect(page.getByTestId("mission-begin")).toHaveText("Confirm begin");
+
+  const rows = page.getByTestId("mission-confirm-objectives").locator("li");
+  await expect(rows).toHaveCount(2);
+  await expect(rows.nth(0)).toContainText("Required");
+  await expect(rows.nth(0)).toContainText("forge_merged · devopsagent/alpha");
+  await expect(rows.nth(1)).toContainText("Goal");
+  await expect(rows.nth(1)).toContainText("note · not checked");
+  const why = page.getByTestId("mission-confirm-why");
+  await expect(why).toContainText("fitted to targets named in your instruction");
+  await expect(why).toContainText("did not fit the checklist and was dropped");
+
+  // Attention, not failure: the text-safe amber. And nothing leaves the viewport on a phone.
+  const [got, want] = await why.evaluate((el) => {
+    const p = document.createElement("span");
+    p.style.color = "var(--warn-text)";
+    document.body.appendChild(p);
+    const w = getComputedStyle(p).color;
+    p.remove();
+    return [getComputedStyle(el).color, w];
+  });
+  expect(got).toBe(want);
+  const vw = page.viewportSize()!.width;
+  for (const i of [0, 1]) {
+    const b = await rows.nth(i).boundingBox();
+    expect(b!.x + b!.width).toBeLessThanOrEqual(vw + 0.5);
+  }
+
+  // Edit objectives disarms the launch: the set it confirmed may change.
+  await page.getByTestId("mission-confirm-edit").click();
+  await expect(page.getByTestId("mission-begin")).toHaveText("Begin");
+  await expect(page.getByTestId("mission-confirm-objectives")).toHaveCount(0);
+});
