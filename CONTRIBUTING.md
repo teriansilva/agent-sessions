@@ -65,7 +65,9 @@ container (no usable Python/Node — the vendored-toolchain path) installs from 
 installed app must serve `/healthz` → `{"ok":true}`, and the uninstall must remove the install
 root + prefs + cache while a seeded `~/.claude` survives. It takes ~5–10 min (vendors both
 toolchains + a real Vite build) and runs in parallel with the other checks. Reproduce locally
-with `scripts/smoke-install` (needs Docker).
+with `scripts/smoke-install` (needs Docker). Toolchain tarballs (only the sha256-pinned ones) and
+the pip/npm caches persist in `~/.cache/agent-sessions-smoke` between runs; set
+`SMOKE_CACHE_DIR=off` for a fully cold run (#1102).
 
 Tests never touch your real `~/.claude`: they use a `mktemp -d` `AGENT_SESSIONS_HOME`. Installer
 tests must set `AGENT_SESSIONS_NO_SERVICE=1` so they don't write your real systemd unit. Heavy
