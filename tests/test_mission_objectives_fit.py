@@ -266,7 +266,7 @@ async def test_a_declined_checklist_is_said_as_a_choice_on_the_timeline(store, m
     await mo.propose(mid)
     texts = [e.get("text") or "" for e in missions.get_mission(mid)["events"]]
     assert any(t.startswith("checklist declined for this mission") for t in texts), texts
-    assert not any("no objective templates: declined" in t for t in texts)
+    assert not any("no checklist applied" in t for t in texts)
 
 
 def test_a_bare_repo_does_not_match_the_owner_qualified_one_the_instruction_names():

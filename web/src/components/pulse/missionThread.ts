@@ -273,7 +273,7 @@ export function threadRow(e: MissionEvent): ThreadRow {
   }
 
   // A CHECKLIST CHANGE with nothing in its text (#1063's screenshot: an empty "Objective" box). An
-  // `objective` event that DOES carry text — "no objective templates: …", "nothing on this checklist
+  // `objective` event that DOES carry text — "no checklist applied: …", "nothing on this checklist
   // gates completion …" — is a sentence the server wrote for a person, and keeps the generic row.
   if (e.kind === "objective" && !text(e) && Array.isArray(meta?.ops)) {
     const counts = new Map<string, number>();

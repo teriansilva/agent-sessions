@@ -146,9 +146,9 @@ export function ObjectiveDirectionDialog({
                   data-testid="direction-keep"
                 />
                 <span className={d.choiceText}>
-                  Use the playbook&rsquo;s direction
+                  Use the checklist&rsquo;s direction
                   <small>
-                    copied when this mission was created · playbook edits do not
+                    copied when this mission was created · checklist edits do not
                     change it
                   </small>
                 </span>
@@ -168,7 +168,7 @@ export function ObjectiveDirectionDialog({
               onClick={() => void submit({ op: "reset_direction", key: objective.key })}
               data-testid="direction-reset"
             >
-              Reset to the playbook&rsquo;s current direction
+              Reset to the checklist&rsquo;s current direction
             </button>
           ) : null}
           <label className={d.choice} data-testid="direction-choice-write">

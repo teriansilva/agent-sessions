@@ -176,7 +176,7 @@ for; it never changes *where* the request goes (that is **Settings → AI → En
 | Ask — catalog · Ask — verify | The session finder's two retrieval stages: pick candidate sessions from the catalog, then re-rank them against their real transcripts. |
 | Scheduled pass | The orchestrator's continue / choose / answer / escalate decision. |
 | Chat router · Chat instruct | Mission chat: whether a message is a find, an instruction or a history question, and turning an instruction into actions on the sessions it names. |
-| Mission objectives | A mission's checklist, **selected** from your playbook templates — it never chooses what an objective checks. |
+| Mission objectives | A mission's checklist, **selected** from your checklist templates — it never chooses what an objective checks. |
 | Mission plan | A dispatch proposal — project, agent and brief — **selected** from server-built lists; it never writes a path or an agent name. |
 | Mission question | One bounded question to you, with concrete options, instead of a guess. Each option maps to a server action; the model never authors one. |
 | Mission supervisor | Reads a mission's objectives and recent session activity, writes its recap, and may propose one nudge against an unmet objective. It never closes anything. |

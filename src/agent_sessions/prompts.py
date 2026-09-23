@@ -433,7 +433,7 @@ REGISTRY: tuple[Prompt, ...] = (
         label="Mission objectives",
         description=(
             "Turns a mission instruction into a checklist, by SELECTING from the operator's "
-            "playbook templates. It never chooses what an objective checks."
+            "checklist templates. It never chooses what an objective checks."
         ),
         # Index-shaped on purpose: `probe` and `probe_args` are resolved server-side from the
         # selected template and are refused as model input entirely, so there is no code path

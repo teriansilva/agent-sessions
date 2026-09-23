@@ -187,7 +187,7 @@ function checklistEvents() {
   seq = 0;
   return [
     ev("operator_msg", "review all open bugs and bring them to a viable state", null),
-    ev("objective", "no objective templates: no_default", null),
+    ev("objective", "no checklist applied: no default checklist is set", null),
     ev("objective", "", {
       by: "instantiation",
       ops: [
@@ -471,7 +471,7 @@ test("a checklist or session change reads as a sentence, and no meta-only event 
   );
 
   // A sentence the server wrote for a person keeps its generic row, text and all.
-  await expect(page.getByTestId("pane")).toContainText("no objective templates: no_default");
+  await expect(page.getByTestId("pane")).toContainText("no checklist applied: no default checklist is set");
 
   // An unknown meta-only kind is one bare line with its name — never a box over nothing, and never
   // its meta.

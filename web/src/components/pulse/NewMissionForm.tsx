@@ -379,7 +379,7 @@ export function NewMissionForm({
                   <strong>{pb.label}</strong>
                   {titles.length
                     ? ` — ${titles.join(" · ")}. Checked by the server; fitted to your instruction.`
-                    : " — no objectives in this playbook yet."}
+                    : " — no objectives in this checklist yet."}
                 </>
               );
             })()}

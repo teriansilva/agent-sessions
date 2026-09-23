@@ -6,7 +6,8 @@ about it without opening a terminal.
 It is the `/mission` route (`/pulse` redirects there), and it used to be a dashboard: a grid of session cards, a "state of your
 work" banner, and a separate Ask box. That told you what mattered and then handed you off to a
 terminal to act. The console replaces all three with a shape you already know — a rail of missions
-on the left, one thread in the middle, and the mission's own detail beside it.
+on the left, one thread in the middle, and the mission's own detail beside it. Ask was not folded
+into the console: it is its own section at `/ask`, first in the top bar's section nav.
 
 ## A mission is the unit of work
 
@@ -23,7 +24,7 @@ actually allows:
 | `planned` | Decided on. Ready to begin — but nothing has been launched yet. |
 | `dispatching` | Being started: the mission is acquiring the session it will run in. |
 | `running` | Work is underway. |
-| `review` | Every gate is met — the console thinks it looks finished and is asking you. |
+| `review` | At least one objective is required, and every required one is met (or you marked it not required) — the console thinks it looks finished and is asking you. |
 | `done` · `failed` | Closed. Can be reopened. |
 | `abandoned` | Closed, and terminal in the strong sense — **not** reopenable. |
 
@@ -31,18 +32,25 @@ actually allows:
 
 ## Starting one
 
-Entering Missions opens on the new-mission page: the brief is the centre of the screen, with
-**+ New mission** in the rail to come back to it, and anything that needs you listed below. A
+Entering Missions opens on the new-mission page: the brief is the centre of the screen, and
+anything that needs you is listed below it. A
 **Template** control inserts a template from your library into the brief; nothing is sent until you
 start the mission. See [Templates](/guide/templates).
 
-**NEW MISSION** is a mode of the composer rather than a pop-up dialog, so it is reachable from
-every state the page can be in — including a completely fresh install where there is nothing else
-on screen yet.
+The new-mission page is where Missions lands whenever no mission is selected, not a pop-up
+dialog, so it is there in every state the page can be in — including a completely fresh install
+where there is nothing else on screen yet. **+ New mission** at the top of the rail brings you back
+to it from any mission and puts the cursor in the brief.
 
 You give it an instruction and a project. The project matters: the server resolves the mission's
 working directory from it, and a mission with no project stays a `draft` — legal, but it cannot
-start work, and the form says so before you press START rather than letting you find out later.
+start work — so **Start mission** stays disabled until you pick one, rather than letting you find
+out later.
+
+If you have any checklists configured, the same row has a **Checklist** picker: your default is
+preselected (No checklist, if you have not set a default), you can pick another, or pick **No checklist**. The line under the box says what the
+choice means — the chosen checklist's objectives, or, for No checklist, that the mission can never
+confirm itself finished.
 
 Objectives arrive a moment after the mission does; see below.
 
@@ -68,9 +76,10 @@ A mission carries a checklist, and the point is that it is written **before** th
 argued about after. "The agent said it's done" is a report about one turn; an objective list is a
 set of facts.
 
-Objectives come from a **playbook** — an operator-authored template list. The shipped
-`Ship a change` playbook gates on: a branch exists, a PR is open, checks are green, it has been
-reviewed, it is merged.
+Objectives come from a **checklist** — an operator-authored template list, edited in **Settings →
+AI → Checklists** and chosen per mission on the new-mission form. The shipped `Ship a change`
+checklist gates on: a branch exists, a PR is open, checks are green, it has been reviewed, it is
+merged.
 
 You can edit the list at any time: add, rename, reorder, remove, or mark one **NOT REQUIRED**.
 
@@ -98,7 +107,7 @@ That third case is why a forge outage does not look like your work going backwar
 nobody could check has not been shown to be unmet.
 
 Probes that talk to a forge need a [forge connection](/guide/settings); without one they answer
-*unknown* rather than failing. Probe targets can only ever come from a playbook a person typed —
+*unknown* rather than failing. Probe targets can only ever come from a checklist a person typed —
 there is no path from model output to an address the server will fetch.
 
 ## Follow-through — the part that nudges
@@ -129,7 +138,7 @@ visibly unmet.
 ### Directions
 
 A nudge types your text, never the model's. By default that is the global nudge from Settings. An
-objective can carry a **direction** instead: text you write on the playbook template, or for one
+objective can carry a **direction** instead: text you write on the checklist template, or for one
 mission, such as `PR #{pr} checks are {checks} on {branch}. Open the failing check and fix it.`
 
 - **Placeholders are a closed list.** `{pr}`, `{pr_state}`, `{checks}` and `{review}` come from
@@ -137,8 +146,8 @@ mission, such as `PR #{pr} checks are {checks} on {branch}. Open the failing che
   arguments. An unknown placeholder, or one the objective's probe cannot fill, is refused when you
   save. Probe detail text, titles, the checkout's own branch and session content are never used.
 - **Copied, not linked.** A mission copies the template's direction when its objectives are
-  created. Editing the playbook later changes no running mission; you can reset one to the
-  playbook's current direction, write your own, or clear it.
+  created. Editing the checklist later changes no running mission; you can reset one to the
+  checklist's current direction, write your own, or clear it.
 - **Never half-filled.** If a fact is missing, stale, or was observed for a different target or
   head, the nudge is held and the mission asks for you. It is not sent with blanks, and it does not
   fall back to the global nudge.
@@ -147,11 +156,11 @@ mission, such as `PR #{pr} checks are {checks} on {branch}. Open the failing che
   the time it is approved or sent automatically, including an edit to the global nudge, it is not
   sent. A re-probe that finds the same facts changes nothing, so a proposal waits for you as long
   as its facts hold and are fresh. A nudge without a direction never goes stale on a re-probe.
-- **Where you write one.** In **Settings → AI → Playbooks**, each objective has a **Direction**
+- **Where you write one.** In **Settings → AI → Checklists**, each objective has a **Direction**
   field. Tap a fact chip to insert a placeholder that objective's check can fill. The preview shows
   the text filled with example facts, and an unknown placeholder is refused there in the same words a
   save uses. For a single mission, use an objective's ⋯ → **Edit direction**. You can keep the copy,
-  reset it to the playbook's current direction, write your own, or have none. Objectives with a
+  reset it to the checklist's current direction, write your own, or have none. Objectives with a
   direction carry a small *direction* mark.
 - **What you approve is what is typed.** On Suggest, the decision shows **Will type**: the exact
   text, the facts it was filled with and when they were checked. The AI's *Why now* is kept
@@ -159,15 +168,29 @@ mission, such as `PR #{pr} checks are {checks} on {branch}. Open the failing che
   Dismiss. The thread records a **Nudged** row for each nudge that was sent, with **Show text** for
   exactly what was typed, and a **Held** row for a nudge that was not.
 - **Drafts from the AI.** For an objective without a direction, mission control may draft one from
-  the session. It shows as a dashed **AI-drafted direction** card and is never sent on its own, at
-  any autonomy level. **Send as written** types exactly the text shown. **Edit** puts the text in
+  the session. It shows as a dashed **AI-drafted direction** card and, by default, waits for your
+  tap. **Send as written** types exactly the text shown. **Edit** puts the text in
   that session's message box under the mission's **Context**, where sending it replaces the draft
   and it goes as your own message. **Dismiss** drops it. A draft you send counts against the
   objective's nudge budget like a nudge does; your own edited message does not.
+- **The one exception, off unless you turn it on.** On **YOLO** only, **Let mission control send
+  AI-written directions on its own** (Settings → AI → Mission control) lets a draft the model rates
+  at or above a threshold you set be sent with nobody reading it first. The threshold cannot go
+  below **0.90**; below it a draft still waits for your tap. At most one such send happens per
+  objective attempt, every send is announced as a notification ("sent automatically by mission
+  control, without review"), and the thread row for it carries **Turn off AI-written directions**, one tap to switch the mode off.
+  Leaving YOLO turns it off too. Confidence is the model's opinion of its own work, not a safety
+  check — the settings page says so beside the switch.
 
-When every gate is met the supervisor proposes completion and **closes nothing** — it quotes the
-list back and the call is yours. It says which objectives were *observed* to hold and which you
-waived, because those are different claims.
+When at least one objective is required and every required one is met or marked not required, the
+supervisor proposes completion and **closes nothing** — it quotes the list back and the call is
+yours. It says which objectives were *observed* to hold and which you waived, because those are
+different claims.
+
+"At least one" is the point. A mission started with **No checklist** gets notes-only objectives:
+nothing on it can be checked and nothing is required, so it is unmeasured rather than finished, and
+it never proposes its own completion. You close it. Objectives you add to its list later from the
+console are notes too — the add row takes a title, not a check — so they do not change that.
 
 ## The timeline
 
@@ -210,8 +233,9 @@ behind it.
 
 The console still works. Missions, adoption, objectives, the timeline and approvals all run with no
 model at all. What goes quiet is suggestion, recaps and progress judgements — and the page says so
-rather than looking broken. Completion proposals do not go quiet: when every gate is met, the
-supervisor moves the mission to `review` mechanically, before any model call.
+rather than looking broken. Completion proposals do not go quiet: when at least one objective is
+required and every required one is met or marked not required, the supervisor moves the mission to `review` mechanically,
+before any model call.
 
 ## On a phone
 
@@ -221,14 +245,14 @@ you were typing. The mission's own controls stay above the content.
 
 ## What moved, and what did not
 
-The card grid, the "state of your work" banner and the standalone Ask box are **gone**, not
-relocated:
+The card grid and the "state of your work" banner are **gone**, not relocated. The Ask box was
+relocated — out of mission control entirely, into its own section:
 
 | Was | Is now |
 |---|---|
 | A session card in the grid | A mission row in the rail |
 | The banner | The mission's own recap stream |
-| The Ask box | The composer, in the thread |
+| The Ask box | Its own section, `/ask` |
 | A session no mission owns | Adopted from the session itself — its row menu or its pane header |
 
 Deliberately unchanged: the **terminal**, the **sidebar**, and the **per-session recap** — which is
@@ -236,9 +260,13 @@ more useful, not less, when one mission is driving several sessions. Jumping int
 typing at it directly is always available; it just stopped being the only way.
 
 ::: info Verified against
-Commit `8b1c66b` — `src/agent_sessions/missions.py § STATES, _ALLOWED, PROBE_KINDS`;
+Commit `f5611f0` — `src/agent_sessions/missions.py § STATES, _ALLOWED, PROBE_KINDS, gate_tally, gates_settled, _op_add`;
 `src/agent_sessions/mission_supervisor.py § NUDGE_BUDGET, assess`;
-`src/agent_sessions/mission_probes.py`; `src/agent_sessions/prefs.py § DEFAULT_MISSION_PLAYBOOKS`;
+`src/agent_sessions/mission_probes.py`; `src/agent_sessions/prefs.py § DEFAULT_MISSION_PLAYBOOKS, ORCH_AI_DIRECTION_CONF_*`;
+`src/agent_sessions/actuator.py § draft_auto_allowed, _announce_auto_direction`;
+`web/src/lib/routes.ts § ASK_PATH`; `web/src/components/shell/sections.ts`;
+`web/src/components/pulse/{NewMissionForm,MissionConsole,MissionRail,MissionObjectives,MissionThreadEvent}.tsx`;
+`web/src/routes/OrchestratorSettings.tsx`; `web/src/routes/settingsTabs.ts`;
 `src/agent_sessions/pulse.py § SCAN_DEPTHS, DEFAULT_DEPTH, coerce_depth, WINDOW_DAYS_*, RECENT_ACTIVE_S, SLOW_SESSION_CAP, SYNTH_CALL_SPACING_S, run_scan`;
 `web/src/routes/Pulse.tsx`, `web/src/routes/PulseSettings.tsx`, `web/src/components/pulse/`.
 :::

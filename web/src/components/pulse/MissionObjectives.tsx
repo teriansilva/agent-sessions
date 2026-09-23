@@ -332,7 +332,7 @@ function ObjectiveRow({
         title={
           o.direction_source === "operator"
             ? "A direction written for this mission"
-            : "A direction copied from the playbook"
+            : "A direction copied from the checklist"
         }
       >
         <Signpost size={11} aria-hidden="true" />

@@ -235,10 +235,10 @@ export function MissionPlaybooks() {
       // a friendlier sentence would be a less useful one.
       setError(
         e instanceof ApiError && e.status === 409
-          ? `${e.message} Nothing was overwritten — reload to see the current playbooks.`
+          ? `${e.message} Nothing was overwritten — reload to see the current checklists.`
           : e instanceof ApiError && e.message
             ? e.message
-            : "The playbooks could not be saved.",
+            : "The checklists could not be saved.",
       );
     } finally {
       setBusy(false);
@@ -250,17 +250,17 @@ export function MissionPlaybooks() {
 
   return (
     <section className={styles.section} data-testid="mission-playbooks">
-      <h2>Mission playbooks</h2>
+      <h2>Mission checklists</h2>
       <p className={styles.blurb}>
-        A playbook is the checklist a new mission starts with — what has to be
-        true before the work counts as done. Objectives with a <b>probe</b> are
-        checked by the server; the rest you settle yourself. Only a playbook can
-        give an objective something to check, which is what keeps an AI from
+        A checklist is what a new mission starts with — what has to be true
+        before the work counts as done. Objectives with a <b>probe</b> are
+        checked by the server; the rest you settle yourself. Only a checklist
+        can give an objective something to check, which is what keeps an AI from
         pointing one somewhere nobody chose.
       </p>
 
       <label className={styles.aiField}>
-        <span className={styles.aiFieldLabel}>Default playbook</span>
+        <span className={styles.aiFieldLabel}>Default checklist</span>
         <select
           className={styles.aiInput}
           value={block.default_id}
@@ -299,7 +299,7 @@ export function MissionPlaybooks() {
                   className={styles.aiInput}
                   value={p.id}
                   placeholder="id (lowercase, no spaces)"
-                  aria-label="Playbook id"
+                  aria-label="Checklist id"
                   onChange={(e) =>
                     editPlaybook(i, (pb) => ({ ...pb, id: e.target.value }))
                   }
@@ -311,8 +311,8 @@ export function MissionPlaybooks() {
               <input
                 className={styles.aiInput}
                 value={p.label}
-                placeholder="What this playbook is for"
-                aria-label="Playbook label"
+                placeholder="What this checklist is for"
+                aria-label="Checklist label"
                 onChange={(e) =>
                   editPlaybook(i, (pb) => ({ ...pb, label: e.target.value }))
                 }
@@ -564,7 +564,7 @@ export function MissionPlaybooks() {
           }}
           data-testid="playbook-add"
         >
-          ADD PLAYBOOK
+          ADD CHECKLIST
         </button>
         <button
           type="button"
@@ -573,14 +573,14 @@ export function MissionPlaybooks() {
           onClick={() => void save()}
           data-testid="playbook-save"
         >
-          {busy ? "Saving…" : "Save playbooks"}
+          {busy ? "Saving…" : "Save checklists"}
         </button>
         {saved ? <span className={styles.ok}>Saved.</span> : null}
       </div>
 
       {block.playbooks.some((p) => p.id && !ID_RE.test(p.id)) ? (
         <p className={styles.warn}>
-          A playbook id is lowercase letters, digits, <code>-</code> and{" "}
+          A checklist id is lowercase letters, digits, <code>-</code> and{" "}
           <code>_</code>, starting with a letter or digit.
         </p>
       ) : null}

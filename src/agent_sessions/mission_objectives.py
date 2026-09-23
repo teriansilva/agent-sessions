@@ -309,8 +309,12 @@ async def propose(mission_id: str) -> dict:
                     # "no objective templates: declined (:none)", which reads as a fault.
                     "checklist declined for this mission — objectives are notes only"
                     if status == "declined"
-                    else f"no objective templates: {status}"
+                    else "no checklist applied: no default checklist is set"
+                    if status == "no_default"
+                    else "no checklist applied: the chosen checklist no longer exists"
                     + (f" ({row.get('playbook_id')})" if row.get("playbook_id") else "")
+                    if status == "unknown_playbook"
+                    else f"no checklist applied: {status}"
                 ),
             )
         )
@@ -386,7 +390,7 @@ async def propose(mission_id: str) -> dict:
     # A checklist of notes checks nothing and blocks nothing, so the mission can never confirm
     # itself finished; completion becomes the operator's to press. That used to be invisible,
     # and the surfaces that should have said so said the opposite — "every gate is met", over an
-    # empty gate set. The row sits beside the `no objective templates: …` one this function
+    # empty gate set. The row sits beside the `no checklist applied: …` one this function
     # already writes, at the same moment and for the same reason: an unusual checklist should
     # explain itself rather than be discovered later.
     #

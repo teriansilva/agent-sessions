@@ -2367,41 +2367,41 @@ def _coerce_mission_playbooks(raw: object, *, strict: bool = False) -> dict:
             raise PlaybookError("playbooks must be a list")
         return {"default_id": "", "playbooks": [], "revision": 0}
     if strict and len(raw_list) > PLAYBOOKS_MAX:
-        raise PlaybookError(f"at most {PLAYBOOKS_MAX} playbooks")
+        raise PlaybookError(f"at most {PLAYBOOKS_MAX} checklists")
 
     out: list[dict] = []
     seen: set[str] = set()
     for entry in raw_list[:PLAYBOOKS_MAX]:
         if not isinstance(entry, dict):
             if strict:
-                raise PlaybookError("each playbook must be an object")
+                raise PlaybookError("each checklist must be an object")
             continue
         pid = entry.get("id")
         label = entry.get("label")
         if not isinstance(pid, str) or not _PLAYBOOK_ID_RE.match(pid) or len(pid) > PLAYBOOK_ID_MAX:
             if strict:
-                raise PlaybookError(f"bad playbook id {pid!r}")
+                raise PlaybookError(f"bad checklist id {pid!r}")
             continue
         if pid in seen:
             # Duplicate ids make `default_id` and `playbook_id` ambiguous, which is exactly the
             # kind of ambiguity that resolves differently in two places later.
             if strict:
-                raise PlaybookError(f"duplicate playbook id {pid!r}")
+                raise PlaybookError(f"duplicate checklist id {pid!r}")
             continue
         if not isinstance(label, str) or not label.strip() or len(label) > PLAYBOOK_LABEL_MAX:
             if strict:
-                raise PlaybookError(f"bad playbook label for {pid!r}")
+                raise PlaybookError(f"bad checklist label for {pid!r}")
             continue
         extra = set(entry) - {"id", "label", "objectives"}
         if extra and strict:
-            raise PlaybookError(f"playbook {pid!r} does not take {', '.join(sorted(extra))}")
+            raise PlaybookError(f"checklist {pid!r} does not take {', '.join(sorted(extra))}")
         objs_raw = entry.get("objectives")
         if not isinstance(objs_raw, list):
             if strict:
-                raise PlaybookError(f"playbook {pid!r} objectives must be a list")
+                raise PlaybookError(f"checklist {pid!r} objectives must be a list")
             continue
         if strict and len(objs_raw) > PLAYBOOK_OBJECTIVES_MAX:
-            raise PlaybookError(f"at most {PLAYBOOK_OBJECTIVES_MAX} objectives per playbook")
+            raise PlaybookError(f"at most {PLAYBOOK_OBJECTIVES_MAX} objectives per checklist")
         objs = [
             o
             for o in (
@@ -2412,7 +2412,7 @@ def _coerce_mission_playbooks(raw: object, *, strict: bool = False) -> dict:
         keys = [o["key"] for o in objs]
         if len(set(keys)) != len(keys):
             if strict:
-                raise PlaybookError(f"playbook {pid!r} has duplicate objective keys")
+                raise PlaybookError(f"checklist {pid!r} has duplicate objective keys")
             continue
         seen.add(pid)
         out.append({"id": pid, "label": label, "objectives": objs})
@@ -2421,7 +2421,7 @@ def _coerce_mission_playbooks(raw: object, *, strict: bool = False) -> dict:
     if not isinstance(did, str):
         did = ""
     if strict and did and did not in {p["id"] for p in out}:
-        raise PlaybookError(f"default_id {did!r} names no playbook")
+        raise PlaybookError(f"default_id {did!r} names no checklist")
     # On READ a stale default is NOT an error and is NOT silently replaced: it resolves to "no
     # default", which the caller treats as notes-only. Substituting another playbook would arm
     # gating objectives with probe targets nobody chose for that mission (#883).
@@ -2475,7 +2475,7 @@ def set_mission_playbooks(
         have = _coerce_mission_playbooks(cur if cur is not _ABSENT else _ABSENT)
         rev = int(have.get("revision") or 0)
         if expect_revision is not None and int(expect_revision) != rev:
-            raise PlaybookConflict("the playbooks changed in another tab; read them again", have)
+            raise PlaybookConflict("the checklists changed in another tab; read them again", have)
         return {**checked, "revision": rev + 1}
 
     return _mutate("mission_playbooks", merge, path)

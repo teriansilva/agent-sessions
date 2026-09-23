@@ -2705,7 +2705,7 @@ def create_mission(
             playbook_id == PLAYBOOK_DECLINED
             or (len(playbook_id) <= 200 and _PLAYBOOK_REF_RE.match(playbook_id))
         ):
-            raise MissionError('playbook_id must be a playbook id or ":none"', status=422)
+            raise MissionError('playbook_id must be a checklist id or ":none"', status=422)
     ts = time.time() if now is None else now
     mission_id = new_id()
     with _write_lock:
@@ -6889,7 +6889,7 @@ def _playbook_policy_held(mission_id: str, expect_binding: str | None, *, path: 
     with json_write_lock(_prefs_path()):
         if playbook_binding(mission_id, path=path) != expect_binding:
             raise MissionError(
-                "the mission's playbook changed while its objectives were being proposed; "
+                "the mission's checklist changed while its objectives were being proposed; "
                 "nothing was instantiated",
                 status=409,
             )
@@ -9188,12 +9188,12 @@ def _op_reset_direction(
     t = template_for_key(templates, key)
     if t is None:
         raise MissionError(
-            f"the mission's playbook has no objective {key} to reset the direction from",
+            f"the mission's checklist has no objective {key} to reset the direction from",
             status=409,
         )
     if str(t.get("probe") or "none") != probe:
         raise MissionError(
-            f"the playbook's objective {key} now checks something different; nothing was reset",
+            f"the checklist's objective {key} now checks something different; nothing was reset",
             status=409,
         )
     direction = _validate_direction(t.get("direction"), probe)

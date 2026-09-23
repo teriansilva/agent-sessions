@@ -26,7 +26,7 @@ export const SETTINGS_SECTIONS = [
   { id: "ai-session-review", label: "Session review", group: "ai" },
   { id: "ai-auto-sort", label: "Auto-sort", group: "ai" },
   { id: "ai-mission-control", label: "Mission control", group: "ai" },
-  { id: "ai-playbooks", label: "Playbooks", group: "ai" },
+  { id: "ai-playbooks", label: "Checklists", group: "ai" },
   { id: "ai-prompts", label: "Prompts", group: "ai" },
   { id: "ai-activity", label: "Activity", group: "ai" },
   { id: "agents", label: "Agents & usage", group: "system" },

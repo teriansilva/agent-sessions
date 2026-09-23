@@ -346,10 +346,10 @@ describe("checklist and session changes (#1063)", () => {
   });
 
   test("an objective event WITH text keeps its sentence — the server wrote it for a person", () => {
-    expect(threadRow(ev("objective", "no objective templates: no_default", null))).toEqual({
+    expect(threadRow(ev("objective", "no checklist applied: no default checklist is set", null))).toEqual({
       type: "system",
       label: "Objective",
-      text: "no objective templates: no_default",
+      text: "no checklist applied: no default checklist is set",
     });
   });
 

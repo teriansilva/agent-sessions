@@ -449,7 +449,7 @@ async def test_a_playbook_REVOKED_mid_proposal_arms_nothing(store, no_requests, 
     assert out["objectives"] == [], "a revoked playbook's target was instantiated anyway"
     assert missions.objectives(mid) == []
     events = missions.get_mission(mid)["events"]
-    assert any("playbook changed" in (e.get("text") or "") for e in events), events
+    assert any("checklist changed" in (e.get("text") or "") for e in events), events
 
 
 @pytest.mark.anyio

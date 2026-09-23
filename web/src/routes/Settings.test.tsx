@@ -400,7 +400,7 @@ test.each([
   ["ai-session-review", ["Session review"]],
   ["ai-auto-sort", ["Auto-sort projects"]],
   ["ai-mission-control", ["Orchestrator", "Session scan", "Forge connection"]],
-  ["ai-playbooks", ["Mission playbooks"]],
+  ["ai-playbooks", ["Mission checklists"]],
   ["ai-prompts", ["Prompts"]],
   ["ai-activity", ["AI activity"]],
   ["agents", ["Connected agents"]],
