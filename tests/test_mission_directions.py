@@ -756,7 +756,12 @@ async def test_a_change_after_the_final_guard_is_refused_by_the_in_fence_fingerp
             assert edited.wait(30)
             return verdict
 
-        return real_send(key, payload, final_guard=guard, **kw)
+        # The guard deliberately WAITS (up to 30 s) for the edit to land inside the window. The
+        # seam's own default deadline (`WRITE_TIMEOUT_S`, 5 s, bound as a default argument) kept
+        # running meanwhile, and on a starved runner it expired first: "write timeout before any
+        # byte was sent" instead of the fence refusal under test (#1107). Test-only budget; the
+        # real writer, guard and fingerprint fence are unchanged.
+        return real_send(key, payload, final_guard=guard, **{**kw, "timeout_s": 60.0})
 
     monkeypatch.setattr(session_input, "send_input", send)
     worker = threading.Thread(target=editor, daemon=True)

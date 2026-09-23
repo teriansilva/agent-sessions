@@ -56,6 +56,13 @@ def root(tmp_path, monkeypatch):
     # Inside the panel's boundary, so a retained copy is something the viewer can open.
     monkeypatch.setenv("AGENT_SESSIONS_EDIT_RECOVERY", str(r / ".agent-sessions" / "edit-recovery"))
     files.reset_capabilities_for_test()
+    # Generous CEILINGS for the tests (#1107). The production budgets (a 10 s save, a 5 s wait for
+    # the store lock) are unchanged; on a starved shared runner a correct save exceeded them and
+    # these tests failed with 503 "took too long" / "another save is still running". Neither
+    # budget is what these tests are about, and a correct save passes the instant it finishes.
+    # The two expiry paths keep their own deterministic tests (search `budget_expiry`).
+    monkeypatch.setattr(fileedit, "LEASE_BUDGET_S", 120.0)
+    monkeypatch.setattr(fileedit, "STORE_LOCK_WAIT_S", 120.0)
     prev = signal.getsignal(signal.SIGIO)
     assert fileedit.install_lease_signal_handler()
     yield r
@@ -278,6 +285,40 @@ def test_crlf_and_bom_round_trip_byte_for_byte(root):
     assert same["retained"] is None and p.read_bytes() == original and records(root) == []
     fileedit.save(str(p), as_editor_sends.replace("two", "TWO"), loaded["version"])
     assert p.read_bytes() == b"\xef\xbb\xbfone\r\nTWO\r\n"
+
+
+def test_budget_expiry_a_save_past_its_deadline_is_refused_and_replaces_nothing(root, monkeypatch):
+    """The deadline the fixture raises for every other test still refuses, deterministically —
+    with the original bytes untouched (#1107: the ceiling must not turn expiry into a pass)."""
+    p = root / "deadline.txt"
+    p.write_bytes(b"original\n")
+    loaded = fileedit.read_file(str(p))
+    monkeypatch.setattr(fileedit, "LEASE_BUDGET_S", -1.0)  # already expired at the first check
+    with pytest.raises(FsError) as e:
+        fileedit.save(str(p), "replacement\n", loaded["version"])
+    assert e.value.status == 503 and "took too long" in str(e.value)
+    assert p.read_bytes() == b"original\n"
+
+
+def test_budget_expiry_a_save_that_cannot_get_the_store_lock_is_refused(root, monkeypatch):
+    """Another save holding the recovery store: past the wait, a 503 — never a second writer."""
+    import fcntl
+
+    p = root / "locked.txt"
+    p.write_bytes(b"original\n")
+    loaded = fileedit.read_file(str(p))
+    store_dir = fileedit.recovery_dir()
+    os.makedirs(store_dir, mode=0o700, exist_ok=True)
+    fd = os.open(os.path.join(store_dir, ".lock"), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        monkeypatch.setattr(fileedit, "STORE_LOCK_WAIT_S", 0.1)
+        with pytest.raises(FsError) as e:
+            fileedit.save(str(p), "replacement\n", loaded["version"])
+        assert e.value.status == 503 and "another save is still running" in str(e.value)
+    finally:
+        os.close(fd)
+    assert p.read_bytes() == b"original\n"
 
 
 def test_a_stale_version_is_refused_and_names_the_version_on_disk(root):
@@ -549,6 +590,10 @@ CHILD = r"""
 import os, signal, sys
 from agent_sessions import fileedit
 assert fileedit.install_lease_signal_handler()
+# The same test CEILINGS the `root` fixture sets (#1107) — this child is another process, so the
+# fixture's monkeypatch never reached it and a starved runner expired the real 10 s budget here.
+fileedit.LEASE_BUDGET_S = 120.0
+fileedit.STORE_LOCK_WAIT_S = 120.0
 step, path, content, expect, action = sys.argv[1:6]
 
 def hook(name):

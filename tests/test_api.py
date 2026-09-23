@@ -2056,12 +2056,19 @@ def test_unarchive_does_not_reap_runtime(auth_cfg, fake_jsonl, monkeypatch):
         return "gone"
 
     monkeypatch.setattr(sroutes.runtime_cleanup, "cleanup_runtime", rec_cleanup)
+    # The background-agent guard scans the WHOLE host's /proc for a process referencing
+    # `<uuid>.jsonl`. This uuid is a shared fixture value, so a concurrent test run on the same
+    # runner (another PR's pr-validate) can own it — the archive then answers 409 and the unarchive
+    # below 404s (#1107). The guard is not what this test is about; its own tests pin it.
+    monkeypatch.setattr(sroutes.transcript_owner, "transcript_is_owned", lambda *_a, **_k: False)
 
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
     hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
     uuid = "11111111-1111-1111-1111-111111111111"
-    c.post(f"/api/sessions/claude:{uuid}/archive", headers=hdr)
+    archived = c.post(f"/api/sessions/claude:{uuid}/archive", headers=hdr)
+    # The setup must have happened, or the unarchive below proves nothing — and says why.
+    assert archived.status_code == 200, archived.text
     called.clear()
     r = c.post(f"/api/sessions/claude:{uuid}/unarchive", headers=hdr)
     assert r.status_code == 200 and r.json()["archived"] is False

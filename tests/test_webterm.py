@@ -1872,12 +1872,35 @@ def test_ws_attach_allowed_for_a_fresh_session_when_no_boundary_is_configured(
         return terminal_route.sessions.ATTACH, None
 
     monkeypatch.setattr(terminal_route, "_open_action_offloop", _attach)
+    # The bridge is replaced by a recording stub (#1107). The real one ran an actual `dtach -a`
+    # for a socket that does not exist, and on a starved runner the test client's teardown
+    # cancelled it mid-flight (CancelledError) — failing a test whose subject is the SCOPE GATE,
+    # which had already let the attach through. The stub makes that positive: the gate
+    # DISPATCHED to the bridge, which is stronger than "did not close with 4404".
+    dispatched: list[list[str]] = []
+
+    async def _bridge(ws, argv, **_kw):
+        dispatched.append(list(argv))
+        await ws.close(code=4999)
+
+    monkeypatch.setattr(terminal_route.webterm, "run", _bridge)
     c = _client(auth_cfg)
     headers = _login_headers(c, auth_cfg)
     unknown = "claude:77777777-7777-4777-8777-777777777777"  # nothing scanned under this id
-    # `not 4404` rather than a specific downstream code: what this pins is that the SCOPE GATE
-    # did not refuse it. Whatever the bridge does next is a different contract.
-    assert _close_code(c, f"/ws/term/{unknown}", headers) != 4404
+    # Read until the close: the route may send its own frames (role, …) before the bridge runs,
+    # and `_close_code` stops at the first non-close message.
+    code = None
+    try:
+        with c.websocket_connect(f"/ws/term/{unknown}", headers=headers) as ws:
+            for _ in range(20):
+                msg = ws.receive()
+                if isinstance(msg, dict) and msg.get("type") == "websocket.close":
+                    code = msg.get("code")
+                    break
+    except WebSocketDisconnect as e:
+        code = e.code
+    assert code == 4999, code
+    assert len(dispatched) == 1, "the scope gate must hand the attach to the bridge"
 
 
 def test_ws_attach_refuses_an_unknown_row_once_a_boundary_is_configured(

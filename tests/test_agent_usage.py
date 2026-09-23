@@ -1287,22 +1287,40 @@ def test_a_probe_descendant_does_not_outlive_a_SUCCESSFUL_probe(tmp_path):
     import sys as _sys
 
     pidfile = tmp_path / "helper.pid"
+    # The helper PUBLISHES its pid atomically: write a sibling temporary, close it, rename it
+    # into place. `Path.write_text` creates the file before writing it, so a parent polling for
+    # existence could see an EMPTY pidfile and exit, the helper was reaped, and `int('')` failed
+    # (Hermes on #1114). The 0.25 s pause between creating the temporary and publishing it is
+    # that create-before-write window, exercised on every run: the parent must not proceed
+    # through it.
     child = (
-        "import os, pathlib, time\n"
-        f"pathlib.Path({str(pidfile)!r}).write_text(str(os.getpid()))\n"
+        "import os, time\n"
+        f"tmp = {str(pidfile) + '.tmp'!r}\n"
+        "fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)\n"
+        "time.sleep(0.25)\n"
+        "os.write(fd, str(os.getpid()).encode())\n"
+        "os.close(fd)\n"
+        f"os.replace(tmp, {str(pidfile)!r})\n"
         "time.sleep(120)\n"
     )
+    # The parent waits until the helper has PROVABLY started (its pidfile is published), bounded.
+    # A fixed 0.5 s head start was a race on a loaded runner: Python start-up alone can take
+    # longer, the parent exited first, and the helper was reaped before writing its pidfile —
+    # "the helper must have started" (#1107). The property under test is unchanged: the helper
+    # is still running when the parent exits cleanly.
     parent = (
-        "import subprocess, sys, time\n"
+        "import os, subprocess, sys, time\n"
         f"subprocess.Popen([sys.executable, '-c', {child!r}],"
         " stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
-        "time.sleep(0.5)\n"
+        "deadline = time.time() + 30\n"
+        f"while not os.path.exists({str(pidfile)!r}) and time.time() < deadline:\n"
+        "    time.sleep(0.05)\n"
         "print('parent done')\n"
     )
     code, out = au._run([_sys.executable, "-c", parent])
     assert code == 0 and "parent done" in out
     assert pidfile.exists(), "the helper must have started, or this proves nothing"
-    helper = int(pidfile.read_text())
+    helper = int(pidfile.read_text())  # published whole, never an empty file
     time.sleep(0.5)
     with pytest.raises(OSError):
         # Signal 0 only checks existence. A live helper makes this succeed.

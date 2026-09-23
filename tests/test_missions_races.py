@@ -999,7 +999,10 @@ def test_a_failed_heartbeat_retries_soon_not_a_full_interval_later(tmp_path, mon
         # cadence produced by this same run under this same load.
         async with missions.holding(key, token, interval=interval, path=db):
             t0 = time.time()
-            while time.time() - t0 < interval * 12:
+            # A CEILING on waiting for the fourth attempt, never the property: the policy is
+            # asserted below as a ratio of gaps the beat itself produced. 12 intervals ran out
+            # on a starved runner with three attempts seen (#1107).
+            while time.time() - t0 < interval * 60:
                 if len(at) >= 4:
                     return True
                 time.sleep(0.01)

@@ -43,7 +43,11 @@ def _runtime(tmp_path, monkeypatch):
 # master that died with its spawner never comes back to life, so polling can only remove false
 # NEGATIVES. On an idle host every wait below returns on its first poll and costs nothing.
 _STARTUP_TIMEOUT_S = 10.0
-_SURVIVAL_TIMEOUT_S = 5.0
+# How long to WAIT for a survival condition to become true — a ceiling, never the invariant. On
+# the shared runner (load 70-100, #1107) a live master can take seconds to accept a connection;
+# every check below passes the moment the condition holds, so a large ceiling costs nothing
+# when the invariant holds and still fails (bounded) when it does not.
+_SURVIVAL_TIMEOUT_S = 30.0
 
 
 def _wait_until(pred, timeout: float, interval: float = 0.05) -> bool:
@@ -107,6 +111,26 @@ def _sleep_child() -> tuple[list[str], str]:
     return ["/bin/sleep", marker], marker
 
 
+def _master_pids(sock) -> list[int]:
+    """PIDs of the dtach master(s) serving THIS test's socket (matched on our unique path)."""
+    out = subprocess.run(["pgrep", "-fa", "dtach"], capture_output=True, text=True).stdout
+    return [int(line.split()[0]) for line in out.splitlines() if str(sock) in line]
+
+
+def _master_survives(sock) -> bool:
+    """The invariant, asserted on what it IS: the master PROCESS is alive and its socket is still
+    there and not refusing connections (#1107).
+
+    `ptybridge.session_exists` answers False for UNKNOWN — every probe timed out — which on a
+    starved runner happens to a perfectly live master that is merely slow to accept. That made
+    "slow" read as "died with the spawner". A dead master is decisive, never UNKNOWN: its socket
+    is gone or refuses the connection (DEAD), and its process is gone.
+    """
+    if not sock.exists() or ptybridge.probe_master(sock) is ptybridge.DEAD:
+        return False
+    return any(_pid_alive(pid) for pid in _master_pids(sock))
+
+
 def _reap(sock, marker: str) -> None:
     """Kill only THIS test's dtach master and its child, then drop the socket.
 
@@ -124,8 +148,9 @@ def _reap(sock, marker: str) -> None:
                 os.kill(pid, 9)
     # An orphaned child (master already dead) — matched on OUR marker, never a bare "sleep 60".
     subprocess.run(["pkill", "-9", "-f", re.escape(f"sleep {marker}")], check=False)
-    if sock.exists():
-        sock.unlink()
+    # The master removes its own socket when its child dies, which can land between an
+    # `exists()` and an `unlink()` (#1107: FileNotFoundError in CI teardown after the test passed).
+    sock.unlink(missing_ok=True)
 
 
 def test_dtach_master_survives_spawner_death():
@@ -162,8 +187,7 @@ def test_dtach_master_survives_spawner_death():
         # needs a moment to notice the spawner died, and how long that takes is a property of
         # host load, not of the invariant under test. The MASTER stays up.
         assert _wait_until(
-            lambda: sock.exists() and ptybridge.session_exists("test", "survive"),
-            _SURVIVAL_TIMEOUT_S,
+            lambda: _master_survives(sock), _SURVIVAL_TIMEOUT_S
         ), "master died with the spawner — KillMode/start_new_session/setsid escape failed"
 
         # The child — the analogue of `claude --resume <uuid>` — is still alive. Match OUR
@@ -214,7 +238,7 @@ def test_dtach_a_attaches_to_a_surviving_master():
         # Sanity: the master must actually be alive at this point, otherwise the dtach -a
         # below would correctly fail and we'd be testing the wrong thing.
         assert _wait_until(
-            lambda: ptybridge.session_exists("test", "reattach"), _SURVIVAL_TIMEOUT_S
+            lambda: _master_survives(sock), _SURVIVAL_TIMEOUT_S
         ), "master came up, then died with the spawner — KillMode/start_new_session escape failed"
 
         # New broker would now spawn `dtach -a <sock>` — verify that works. Like -c,

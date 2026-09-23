@@ -1763,7 +1763,10 @@ def test_an_ADOPTION_cannot_INTERLEAVE_the_teardown_at_all(store, monkeypatch):
 
     monkeypatch.setattr(runtime_cleanup, "cleanup_runtime", teardown)
     asyncio.run(mission_dispatch_recover.recover_once())
-    adopted.wait(timeout=5)
+    # Wait for the adopter to COMMIT, bounded — and fail saying so. 5 s ran out on a starved runner
+    # (#1107): `adopt` was then missing from `order` (a ValueError, not a finding), and the
+    # still-running daemon thread went on to lock the NEXT test's store ("database is locked").
+    assert adopted.wait(timeout=60), f"the adopter never committed after the teardown: {order}"
 
     # THE ORDER IS THE PROPERTY. The adoption may BEGIN inside the window — nothing stops a
     # request arriving — but it cannot COMMIT until the teardown has released the fence, so the
@@ -1841,7 +1844,10 @@ def test_a_SUCCESSFUL_DISPATCH_cannot_interleave_a_teardown_of_the_session_it_ad
     monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", launcher)
     monkeypatch.setattr(runtime_cleanup, "cleanup_runtime", teardown)
     asyncio.run(mission_dispatch_recover.recover_once())
-    adopted.wait(timeout=5)
+    # Wait for the adopter to COMMIT, bounded — and fail saying so. 5 s ran out on a starved runner
+    # (#1107): `adopt` was then missing from `order` (a ValueError, not a finding), and the
+    # still-running daemon thread went on to lock the NEXT test's store ("database is locked").
+    assert adopted.wait(timeout=60), f"the adopter never committed after the teardown: {order}"
 
     # THE ORDER IS THE PROPERTY, exactly as for the route's adoption: the launch may happen inside
     # the window — nothing stops an agent starting — but the settlement that ADOPTS cannot commit
@@ -2249,7 +2255,7 @@ def test_a_REQUEST_TIME_teardown_cannot_kill_a_session_somebody_just_adopted(sto
 
     monkeypatch.setattr(runtime_cleanup, "cleanup_runtime", teardown)
     asyncio.run(mission_dispatch._abandon_session(key))
-    assert adopted.wait(timeout=10)
+    assert adopted.wait(timeout=60), f"the adopter never committed after the teardown: {order}"
 
     assert order.index("signal") < order.index("adopt"), order
     assert missions.holder_of(key) == other
