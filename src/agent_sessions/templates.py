@@ -27,6 +27,14 @@ written by a later build reads as an empty library (logged) and every write rais
 ``TemplateStoreUnsupported`` — an older binary must not coerce records it does not understand,
 drop the fields it cannot see, and publish the result as version 1.
 
+**Version 2 (#1090, Phase 1) adds ``source`` to a field.** ``template`` (the default, and what
+every v1 record reads as) is the field this template declares; ``library`` means its value comes
+from the variable of the same name in ``template_vars`` — so it carries no ``default`` of its own,
+and one edit to the variable reaches every template that uses it. A v1 file reads without
+rewriting; the first accepted write publishes it as v2. Secret fields are NOT expressible here:
+they arrive with ``kind`` in store v3, so a v2 build facing a v3 file refuses every write rather
+than re-saving a secret field as text.
+
 **Optimistic concurrency, not last-write-wins.** ``update_template`` and ``delete_template`` take
 the ``updated_at`` the editor last read; a mismatch raises ``TemplateConflict`` carrying the
 current record and writes nothing. ``mark_used`` deliberately does not touch ``updated_at`` — a
@@ -57,7 +65,7 @@ from .routes.upload import STORED_RE, open_upload, uploads_dir
 
 log = logging.getLogger(__name__)
 
-STORE_VERSION = 1
+STORE_VERSION = 2
 
 TEMPLATES_MAX = 200
 NAME_MAX = 120
@@ -85,7 +93,9 @@ NUMBER_MAX = float(2**53)
 NUMBER_MAX_INT = 2**53
 
 EDITABLE_KEYS = frozenset({"name", "description", "tags", "body", "fields", "images"})
-_FIELD_KEYS = frozenset({"name", "label", "default", "required"})
+_FIELD_KEYS = frozenset({"name", "label", "default", "required", "source"})
+#: Where a field's value comes from (store v2, #1090): this template, or the variables library.
+FIELD_SOURCES = ("template", "library")
 _IMAGE_KEYS = frozenset({"name", "path"})
 
 # C0 controls other than TAB / LF, plus DEL and the C1 range. CR never reaches this check: CRLF
@@ -216,7 +226,22 @@ def _fields(raw: object) -> list[dict]:
         required = item.get("required", False)
         if not isinstance(required, bool):
             raise TemplateError(f"field {name}: required must be true or false")
-        out.append({"name": name, "label": label, "default": default, "required": required})
+        source = item.get("source", "template")
+        if source not in FIELD_SOURCES:
+            raise TemplateError(f"field {name}: source must be 'template' or 'library'")
+        if source == "library" and default:
+            # One owner for the value: a library field whose own default differed from the
+            # variable would make "what gets sent" depend on which one the reader looked at.
+            raise TemplateError(f"field {name}: a library field takes its value from the library")
+        out.append(
+            {
+                "name": name,
+                "label": label,
+                "default": default,
+                "required": required,
+                "source": source,
+            }
+        )
     return out
 
 
@@ -498,6 +523,59 @@ def list_templates() -> list[dict]:
     return _sorted(_read_leniently(store_path()))
 
 
+class TemplateInventoryIncomplete(RuntimeError):
+    """The template library could not be read in full, so "who uses this variable?" has no
+    trustworthy answer. A destructive caller must refuse rather than read it as "nobody"."""
+
+
+def _references(records: list[dict], name: str) -> list[dict]:
+    return [
+        {"id": t["id"], "name": t["name"]}
+        for t in _sorted(records)
+        if any(f["source"] == "library" and f["name"] == name for f in t["fields"])
+    ]
+
+
+def library_references(name: str) -> list[dict]:
+    """Every template with a ``library`` field named ``name`` — ``[{id, name}]``, gallery order.
+
+    DISPLAY ONLY (a variable's ``used by`` count): lenient like every read, so an unreadable,
+    damaged or newer store simply names fewer dependants. Anything that DESTROYS on the answer
+    uses ``library_references_checked`` instead (Hermes on #1095).
+    """
+    return _references(_read_leniently(store_path()), name)
+
+
+def library_usage() -> dict[str, list[dict]]:
+    """``{variable name: [{id, name}]}`` for every library field in the library, from ONE
+    lenient read — what the variables list shows as ``used by``. Reading the store once per
+    variable made the list O(variables × library): 24 s at the caps, measured (#1095 review).
+    """
+    usage: dict[str, list[dict]] = {}
+    for t in _sorted(_read_leniently(store_path())):
+        for name in {f["name"] for f in t["fields"] if f["source"] == "library"}:
+            usage.setdefault(name, []).append({"id": t["id"], "name": t["name"]})
+    return usage
+
+
+def library_references_checked(name: str) -> list[dict]:
+    """``library_references``, but fail-closed: an unreadable file, a damaged record or a newer
+    store version raises ``TemplateInventoryIncomplete`` rather than answering "no dependants".
+
+    A missing file is a real answer (no templates, so none use it). Everything else that
+    ``_read`` degrades to "the records it could trust" is an INCOMPLETE inventory — a dependant
+    may sit in exactly the part that could not be read — and deleting on it would strip a live
+    template of its value (Hermes on #1095 reproduced it with EACCES and a v3 store).
+    """
+    try:
+        records, damaged = _read(store_path())
+    except TemplateStoreUnsupported as e:
+        raise TemplateInventoryIncomplete(str(e)) from None
+    if damaged:
+        raise TemplateInventoryIncomplete("the template library could not be read in full")
+    return _references(records, name)
+
+
 def get_template(tid: str) -> dict:
     return _find(_read_leniently(store_path()), tid)
 
@@ -580,11 +658,16 @@ __all__ = [
     "NUMBER_MAX_INT",
     "TemplateConflict",
     "TemplateError",
+    "TemplateInventoryIncomplete",
     "TemplateNotFound",
     "TemplateStoreUnsupported",
     "create_template",
+    "FIELD_SOURCES",
     "delete_template",
     "get_template",
+    "library_references",
+    "library_references_checked",
+    "library_usage",
     "list_templates",
     "mark_used",
     "parse_fence",

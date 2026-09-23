@@ -15,7 +15,12 @@ export interface TemplateFieldLike {
   label?: string;
   default?: string;
   required?: boolean;
+  /** `library` (#1090): the value is the variables library's, by name — never `default`. */
+  source?: "template" | "library";
 }
+
+/** The variables library as a send resolves it: `{name: value}` (#1090). */
+export type LibraryValues = Readonly<Record<string, string>>;
 
 /** The server's field-name shape (`templates.FIELD_NAME_RE`), global so it can be iterated. */
 export const FIELD_TOKEN_RE = /\{\{([a-z][a-z0-9_]{0,31})\}\}/g;
@@ -63,6 +68,53 @@ export function defaultValues(fields: readonly TemplateFieldLike[]): Record<stri
   const out: Record<string, string> = {};
   for (const f of fields) if (f.default) out[f.name] = f.default;
   return out;
+}
+
+const isLibrary = (f: TemplateFieldLike) => f.source === "library";
+
+/** What the editor's preview substitutes: each template field's non-empty default and each
+ *  library field's library value. A library field whose variable does not exist is left out,
+ *  so the preview shows its `{{token}}` rather than a blank (#1090). */
+export function previewValues(
+  fields: readonly TemplateFieldLike[],
+  library: LibraryValues,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const f of fields) {
+    if (isLibrary(f)) {
+      if (Object.hasOwn(library, f.name)) out[f.name] = library[f.name];
+    } else if (f.default) {
+      out[f.name] = f.default;
+    }
+  }
+  return out;
+}
+
+/** The picker's starting values: a template field starts at its default, a library field at
+ *  the library's value (editable for this one send — the library itself never changes). A
+ *  library field with no variable starts empty and is reported by `missingLibrary`. */
+export function seedValues(
+  fields: readonly TemplateFieldLike[],
+  library: LibraryValues,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const f of fields) {
+    out[f.name] = isLibrary(f)
+      ? Object.hasOwn(library, f.name)
+        ? library[f.name]
+        : ""
+      : (f.default ?? "");
+  }
+  return out;
+}
+
+/** Library fields whose variable is not in the library. A template with any of these must not
+ *  be sent or inserted: its slot would go out empty, or as a literal `{{token}}` (#1090). */
+export function missingLibrary(
+  fields: readonly TemplateFieldLike[],
+  library: LibraryValues,
+): string[] {
+  return fields.filter((f) => isLibrary(f) && !Object.hasOwn(library, f.name)).map((f) => f.name);
 }
 
 /** Required fields whose effective value (given, else default) is blank. */

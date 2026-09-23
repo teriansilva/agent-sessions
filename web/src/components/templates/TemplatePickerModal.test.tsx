@@ -7,7 +7,7 @@ import { TemplatePickerModal } from "./TemplatePickerModal";
 
 vi.mock("../../lib/api", async () => {
   const actual = await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
-  return { ...actual, api: { templates: vi.fn() } };
+  return { ...actual, api: { templates: vi.fn(), templateVariables: vi.fn(() => Promise.resolve({ variables: [], limits: {} })), } };
 });
 
 const LIMITS = {
@@ -43,7 +43,38 @@ function tpl(over: Partial<Template> = {}): Template {
   };
 }
 
-const mocked = api as unknown as { templates: ReturnType<typeof vi.fn> };
+const mocked = api as unknown as {
+  templates: ReturnType<typeof vi.fn>;
+  templateVariables: ReturnType<typeof vi.fn>;
+};
+
+/** A template whose host and command come from the variables library (#1090). */
+function libTpl(): Template {
+  return tpl({
+    id: "smoke",
+    name: "Smoke test",
+    body: "Run {{test_cmd}} against {{host}} for {{ticket}}",
+    fields: [
+      { name: "test_cmd", label: "Test command", default: "", required: false, source: "library" },
+      { name: "host", label: "Host", default: "", required: true, source: "library" },
+      { name: "ticket", label: "Ticket", default: "", required: false, source: "template" },
+    ],
+    images: [],
+  });
+}
+
+function library(values: Record<string, string>) {
+  return {
+    variables: Object.entries(values).map(([name, value]) => ({
+      name,
+      value,
+      created_at: 1,
+      updated_at: 1,
+      used_by: [],
+    })),
+    limits: { variables_max: 100, value_max: 2000, name_max: 32 },
+  };
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -171,4 +202,82 @@ test("closing returns focus to a CONNECTED trigger: a detached one falls back to
   expect(more).toHaveFocus(); // unfixed: focus went to the detached node, i.e. document.body
   expect(inertAtFocus).toBe(false); // unfixed: restored while the root was still inert
   root.remove();
+});
+
+// ---- the variables library (#1090) ---------------------------------------------------------
+
+test("a library field starts at the library's value, says so, and can be changed for one send", async () => {
+  mocked.templates.mockResolvedValue({ templates: [libTpl()], limits: LIMITS });
+  mocked.templateVariables.mockResolvedValue(
+    library({ test_cmd: "uv run pytest -q", host: "staging.acme.test" }),
+  );
+  const onSend = vi.fn();
+  render(<TemplatePickerModal onSend={onSend} onInsert={vi.fn()} onClose={() => {}} />);
+  await userEvent.click(await screen.findByRole("button", { name: /smoke test/i }));
+  expect(screen.getByText(/test command · from library/i)).toBeInTheDocument();
+  expect(screen.getByLabelText(/^host$/i)).toHaveValue("staging.acme.test");
+  expect(screen.getByLabelText(/what will be sent/i)).toHaveTextContent(
+    "Run uv run pytest -q against staging.acme.test for",
+  );
+  // An override is for THIS send only — the picker has no way to write the library.
+  const host = screen.getByLabelText(/^host$/i);
+  await userEvent.clear(host);
+  await userEvent.type(host, "canary.acme.test");
+  await userEvent.click(screen.getByRole("button", { name: /^send smoke test$/i }));
+  expect(onSend.mock.calls[0][1]).toEqual({
+    test_cmd: "uv run pytest -q",
+    host: "canary.acme.test",
+    ticket: "",
+  });
+});
+
+test("a missing library variable disables Send AND Insert and names the variable", async () => {
+  mocked.templates.mockResolvedValue({ templates: [libTpl()], limits: LIMITS });
+  mocked.templateVariables.mockResolvedValue(library({ host: "staging.acme.test" }));
+  const onSend = vi.fn();
+  const onInsert = vi.fn();
+  render(<TemplatePickerModal onSend={onSend} onInsert={onInsert} onClose={() => {}} />);
+  await userEvent.click(await screen.findByRole("button", { name: /smoke test/i }));
+  expect(screen.getByText(/test command · missing library variable/i)).toBeInTheDocument();
+  const alert = screen.getByRole("alert");
+  expect(alert).toHaveTextContent("{{test_cmd}}");
+  expect(within(alert).getByRole("link", { name: /variables/i })).toHaveAttribute(
+    "href",
+    "/templates?tab=variables",
+  );
+  // Typing a value into the empty slot does not unblock it: the library is the owner.
+  await userEvent.type(screen.getByLabelText(/^test command$/i), "pytest");
+  expect(screen.getByRole("button", { name: /^send smoke test$/i })).toBeDisabled();
+  const insert = screen.getByRole("button", { name: /insert smoke test into composer/i });
+  expect(insert).toBeDisabled();
+  await userEvent.click(insert);
+  expect(onSend).not.toHaveBeenCalled();
+  expect(onInsert).not.toHaveBeenCalled();
+});
+
+test("a library that cannot be loaded never blocks templates without library fields", async () => {
+  mocked.templates.mockResolvedValue({ templates: [tpl(), libTpl()], limits: LIMITS });
+  mocked.templateVariables.mockRejectedValue(new Error("boom"));
+  render(<TemplatePickerModal onSend={vi.fn()} onInsert={vi.fn()} onClose={() => {}} />);
+  await userEvent.click(await screen.findByRole("button", { name: /pr review checklist/i }));
+  await userEvent.type(screen.getByLabelText(/^pr link$/i), "https://x/1");
+  expect(screen.getByRole("button", { name: /^send pr review checklist$/i })).toBeEnabled();
+  await userEvent.click(screen.getByRole("button", { name: /smoke test/i }));
+  expect(screen.getByRole("alert")).toHaveTextContent(/couldn't load the variables library/i);
+  expect(screen.getByRole("button", { name: /^send smoke test$/i })).toBeDisabled();
+});
+
+test("a multi-line library value reaches the send with its lines, and an override keeps them (#1095 review)", async () => {
+  mocked.templates.mockResolvedValue({ templates: [libTpl()], limits: LIMITS });
+  mocked.templateVariables.mockResolvedValue(
+    library({ test_cmd: "cd repo\nnpm test", host: "staging.acme.test" }),
+  );
+  const onSend = vi.fn();
+  render(<TemplatePickerModal onSend={onSend} onInsert={vi.fn()} onClose={() => {}} />);
+  await userEvent.click(await screen.findByRole("button", { name: /smoke test/i }));
+  const cmd = screen.getByLabelText(/^test command$/i);
+  expect(cmd).toHaveValue("cd repo\nnpm test");
+  await userEvent.type(cmd, "{Enter}npm run lint");
+  await userEvent.click(screen.getByRole("button", { name: /^send smoke test$/i }));
+  expect(onSend.mock.calls[0][1].test_cmd).toBe("cd repo\nnpm test\nnpm run lint");
 });

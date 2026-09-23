@@ -119,6 +119,11 @@ def _isolate_prefs(tmp_path, monkeypatch) -> None:
         "AGENT_SESSIONS_TEMPLATES",
         str(tmp_path / ".config" / "agent-sessions" / "templates.json"),
     )
+    # …and so does its variables library (#1090).
+    monkeypatch.setenv(
+        "AGENT_SESSIONS_TEMPLATE_VARS",
+        str(tmp_path / ".config" / "agent-sessions" / "template-variables.json"),
+    )
 
 
 @pytest.fixture(autouse=True)

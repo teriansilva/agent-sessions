@@ -102,12 +102,14 @@ def test_create_list_get_round_trip(auth_cfg, tmp_home):
         "label": "PR link",
         "default": "",
         "required": True,
+        "source": "template",
     }
     assert rec["fields"][1] == {
         "name": "issue_ref",
         "label": "issue_ref",
         "default": "the linked issue",
         "required": False,
+        "source": "template",
     }
     assert rec["images"] == [{"name": "shot.png", "path": up["path"]}]
 
@@ -121,7 +123,7 @@ def test_create_list_get_round_trip(auth_cfg, tmp_home):
     assert store == tmp_home / ".config" / "agent-sessions" / "templates.json"
     assert store.stat().st_mode & 0o777 == 0o600
     doc = json.loads(store.read_text())
-    assert doc["version"] == 1 and len(doc["templates"]) == 1
+    assert doc["version"] == templates.STORE_VERSION and len(doc["templates"]) == 1
 
 
 def test_id_is_minted_from_name_and_never_collides(auth_cfg, tmp_home):
@@ -595,7 +597,7 @@ def test_a_newer_store_version_is_refused_and_never_rewritten(auth_cfg, tmp_home
     store.parent.mkdir(parents=True)
     raw = json.dumps(
         {
-            "version": 2,
+            "version": templates.STORE_VERSION + 1,
             "templates": [
                 {
                     **_payload(),
@@ -627,7 +629,10 @@ def test_a_newer_store_version_is_refused_and_never_rewritten(auth_cfg, tmp_home
         c.delete("/api/templates/future?expected_updated_at=1.0", headers=_hdr(auth_cfg, csrf)),
     ):
         assert r.status_code == 409, r.text
-        assert "version 2" in r.json()["detail"] and "nothing was written" in r.json()["detail"]
+        assert (
+            f"version {templates.STORE_VERSION + 1}" in r.json()["detail"]
+            and "nothing was written" in r.json()["detail"]
+        )
     assert store.read_bytes() == raw
     assert not list(store.parent.glob("templates.json.corrupt-*"))
 
@@ -745,11 +750,16 @@ def test_a_symlinked_uploads_folder_is_refused_everywhere(auth_cfg, tmp_home):
 
 
 def test_a_future_store_is_refused_before_its_shape_is_judged(auth_cfg, tmp_home):
-    """A version-2 store need not carry a v1 ``templates`` list; judging shape first called it
+    """A newer store need not carry a v1 ``templates`` list; judging shape first called it
     damaged and the next write quarantined + downgraded it (Hermes on #906, round 2)."""
     store = templates.store_path()
     store.parent.mkdir(parents=True)
-    raw = json.dumps({"version": 2, "entries": [{"id": "future", "payload": "keep me"}]}).encode()
+    raw = json.dumps(
+        {
+            "version": templates.STORE_VERSION + 1,
+            "entries": [{"id": "future", "payload": "keep me"}],
+        }
+    ).encode()
     store.write_bytes(raw)
     assert templates.list_templates() == []
     with pytest.raises(templates.TemplateStoreUnsupported):
@@ -757,7 +767,7 @@ def test_a_future_store_is_refused_before_its_shape_is_judged(auth_cfg, tmp_home
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
     r = c.post("/api/templates", json=_payload(), headers=_hdr(auth_cfg, csrf))
-    assert r.status_code == 409 and "version 2" in r.json()["detail"]
+    assert r.status_code == 409 and f"version {templates.STORE_VERSION + 1}" in r.json()["detail"]
     assert store.read_bytes() == raw
     assert not list(store.parent.glob("templates.json.corrupt-*"))
 

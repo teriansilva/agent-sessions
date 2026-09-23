@@ -7,6 +7,15 @@
 * ``DELETE /api/templates/{id}?expected_updated_at=…`` — the same fence
 * ``POST   /api/templates/{id}/used``       — bump the usage counters (never ``updated_at``)
 
+The variables library (#1090, Phase 1) — values a ``source: "library"`` field takes by name:
+
+* ``GET    /api/template-variables``          — every variable, with the templates that use it
+* ``POST   /api/template-variables``          — create ``{name, value}``
+* ``PATCH  /api/template-variables/{name}``   — replace the value, fenced like a template; the
+  name is the identity and cannot change (no rename)
+* ``DELETE /api/template-variables/{name}?expected_updated_at=…`` — refused with 409 +
+  ``dependants`` while any template still references it
+
 Deliberately NOT on ``/api/config`` (see ``templates.py``). Auth matches every other settings
 surface: the reads need a session, the writes need a session AND the CSRF guard (which also
 carries the Origin/Referer check). Every rule on a body runs server-side in ``templates.validate``;
@@ -20,9 +29,12 @@ any handler runs, and an exception that escapes a handler, are covered as well.
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
+from .. import template_vars as vstore
 from .. import templates as store
 from .upload import NO_STORE
 
@@ -50,9 +62,9 @@ def _expected(value: object) -> float:
         raise _err(422, str(e)) from None
 
 
-def _conflict(exc: store.TemplateConflict) -> JSONResponse:
+def _conflict(exc: store.TemplateConflict, what: str = "template") -> JSONResponse:
     return JSONResponse(
-        {"detail": "template changed since you loaded it", "current": exc.current},
+        {"detail": f"{what} changed since you loaded it", "current": exc.current},
         status_code=409,
         headers=NO_STORE,
     )
@@ -70,7 +82,10 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
     @app.middleware("http")
     async def _templates_are_never_cached(request: Request, call_next):
         path = request.url.path
-        if not (path == "/api/templates" or path.startswith("/api/templates/")):
+        if not any(
+            path == root or path.startswith(root + "/")
+            for root in ("/api/templates", "/api/template-variables")
+        ):
             return await call_next(request)
         try:
             response = await call_next(request)
@@ -153,3 +168,80 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         except store.TemplateNotFound:
             raise _err(404, "unknown template") from None
         return _json(rec)
+
+    # ---- the variables library (#1090) ---------------------------------------------------
+
+    @app.get("/api/template-variables")
+    async def list_variables(_user: str = Depends(logged_in)) -> JSONResponse:
+        # Off the event loop: it reads and validates both stores (the whole template library,
+        # bodies included), and a stall here would stall every terminal WebSocket (#678).
+        variables = await asyncio.to_thread(vstore.list_variables)
+        return _json({"variables": variables, "limits": vstore.LIMITS})
+
+    @app.post("/api/template-variables", status_code=201)
+    async def create_variable(
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        payload = await _json_object(request)
+        try:
+            rec = vstore.create_variable(payload)
+        except vstore.VariableError as e:
+            raise _err(422, str(e)) from None
+        except vstore.VariableStoreUnsupported as e:
+            raise _err(409, str(e)) from None
+        return _json(rec, 201)
+
+    @app.patch("/api/template-variables/{name}")
+    async def update_variable(
+        name: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        payload = await _json_object(request)
+        expected = _expected(payload.get("expected_updated_at"))
+        fields = {k: v for k, v in payload.items() if k not in _PATCH_EXTRA}
+        try:
+            rec = vstore.update_variable(name, fields, expected)
+        except vstore.VariableError as e:
+            raise _err(422, str(e)) from None
+        except vstore.VariableStoreUnsupported as e:
+            raise _err(409, str(e)) from None
+        except vstore.VariableNotFound:
+            raise _err(404, "unknown variable") from None
+        except vstore.VariableConflict as e:
+            return _conflict(e, "variable")
+        return _json(rec)
+
+    @app.delete("/api/template-variables/{name}")
+    async def delete_variable(
+        name: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> Response:
+        expected = _expected(request.query_params.get("expected_updated_at"))
+        try:
+            vstore.delete_variable(name, expected)
+        except vstore.VariableStoreUnsupported as e:
+            raise _err(409, str(e)) from None
+        except vstore.VariableNotFound:
+            raise _err(404, "unknown variable") from None
+        except vstore.VariableConflict as e:
+            return _conflict(e, "variable")
+        except vstore.VariableRefsUnknown as e:
+            raise _err(
+                409, f"{e} — nothing was deleted, because a template might still use it"
+            ) from None
+        except vstore.VariableInUse as e:
+            return _json(
+                {
+                    "detail": f"{e.name} is still used by {len(e.dependants)} "
+                    f"{'template' if len(e.dependants) == 1 else 'templates'}",
+                    "dependants": e.dependants,
+                },
+                409,
+            )
+        return Response(status_code=204, headers=NO_STORE)

@@ -2,7 +2,13 @@ import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { Search, Send, X } from "lucide-react";
 import { api } from "../../lib/api";
-import { missingRequired, renderTemplate } from "../../lib/templateMessage";
+import {
+  missingLibrary,
+  missingRequired,
+  renderTemplate,
+  seedValues,
+  type LibraryValues,
+} from "../../lib/templateMessage";
 import { errMessage } from "../../routes/templatesLib";
 import type { Template } from "../../types/api";
 import { useInertBehind } from "./useInertBehind";
@@ -16,15 +22,17 @@ import styles from "./TemplatePickerModal.module.css";
  *  bottom sheet ≤800px). The library is fetched on open — it is small and the chip must not
  *  cost a request per session pane. The preview under the fill step is `renderTemplate`, the
  *  same assembly the editor's preview and the composer's send use, so what it shows is what
- *  SEND pastes. */
+ *  SEND pastes.
+ *
+ *  Library fields (#1090) start at the variables library's value and stay editable for this one
+ *  send; the library is not changed. A library field whose variable does not exist disables
+ *  Send AND Insert — its slot would otherwise go out empty. The library is fetched beside the
+ *  templates; if it cannot be loaded the picker still works, every library field reads as
+ *  missing, and it says why. */
 
 export type FieldValues = Record<string, string>;
 
-function seed(t: Template): FieldValues {
-  const v: FieldValues = {};
-  for (const f of t.fields) v[f.name] = f.default ?? "";
-  return v;
-}
+const NO_LIBRARY: LibraryValues = {};
 
 function matches(t: Template, q: string): boolean {
   if (!q) return true;
@@ -60,18 +68,28 @@ export function TemplatePickerModal({
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(preselect ?? null);
   const [values, setValues] = useState<FieldValues>({});
+  // `null` until loaded; a failed load is an empty library plus `libraryError`, never a blocker.
+  const [library, setLibrary] = useState<LibraryValues | null>(null);
+  const [libraryError, setLibraryError] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const titleId = "template-picker-title";
 
   useEffect(() => {
     let alive = true;
-    api
-      .templates()
-      .then((r) => {
+    const vars = api
+      .templateVariables()
+      .then((r): LibraryValues => Object.fromEntries(r.variables.map((v) => [v.name, v.value])))
+      .catch((): LibraryValues => {
+        if (alive) setLibraryError(true);
+        return NO_LIBRARY;
+      });
+    Promise.all([api.templates(), vars])
+      .then(([r, lib]) => {
         if (!alive) return;
         setTemplates(r.templates);
+        setLibrary(lib);
         const pre = preselect ? r.templates.find((t) => t.id === preselect) : undefined;
-        if (pre) setValues(seed(pre));
+        if (pre) setValues(seedValues(pre.fields, lib));
         else if (preselect) setSelectedId(null);
       })
       .catch((e: unknown) => {
@@ -111,6 +129,8 @@ export function TemplatePickerModal({
   }, [templates, query]);
   const selected = templates?.find((t) => t.id === selectedId) ?? null;
   const missing = selected ? missingRequired(selected.fields, values) : [];
+  const unset = selected ? missingLibrary(selected.fields, library ?? NO_LIBRARY) : [];
+  const blocked = unset.length > 0;
   const preview = selected ? renderTemplate(selected, values) : "";
 
   const gallery = (e: MouseEvent<HTMLAnchorElement>) => {
@@ -119,13 +139,19 @@ export function TemplatePickerModal({
     onOpenGallery("/templates");
   };
 
+  const variablesLink = (e: MouseEvent<HTMLAnchorElement>) => {
+    if (!onOpenGallery) return;
+    e.preventDefault();
+    onOpenGallery("/templates?tab=variables");
+  };
+
   const select = (t: Template) => {
     if (t.id === selectedId) {
       setSelectedId(null);
       return;
     }
     setSelectedId(t.id);
-    setValues(seed(t));
+    setValues(seedValues(t.fields, library ?? NO_LIBRARY));
   };
 
   return createPortal(
@@ -218,32 +244,69 @@ export function TemplatePickerModal({
                         <label key={f.name} className={styles.field}>
                           <span className={styles.flabel}>
                             {f.label}
-                            {f.required ? " · required" : f.default ? ` · default “${f.default}”` : ""}
+                            {f.required ? " · required" : ""}
+                            {f.source === "library"
+                              ? unset.includes(f.name)
+                                ? " · missing library variable"
+                                : " · from library"
+                              : !f.required && f.default
+                                ? ` · default “${f.default}”`
+                                : ""}
                           </span>
-                          <input
+                          {/* A textarea, never an <input>: a field value may span lines (a
+                              default or a library value both may), and an input silently
+                              drops the newlines — `cd repo⏎npm test` would send as
+                              `cd reponpm test` (Hermes on #1095). */}
+                          <textarea
                             className={styles.input}
                             value={values[f.name] ?? ""}
+                            rows={Math.min(6, Math.max(1, (values[f.name] ?? "").split("\n").length))}
                             onChange={(e) =>
                               setValues((v) => ({ ...v, [f.name]: e.target.value }))
                             }
                             aria-label={f.label}
                             autoComplete="off"
+                            spellCheck={false}
                           />
                         </label>
                       ))}
                       <pre className={styles.preview} aria-label="What will be sent">
                         {preview}
                       </pre>
+                      {blocked && (
+                        <p className={styles.blocked} role="alert">
+                          {libraryError
+                            ? "Couldn't load the variables library, so "
+                            : "The variables library has no "}
+                          {libraryError ? (
+                            <>
+                              {unset.map((n) => `{{${n}}}`).join(", ")}{" "}
+                              {unset.length === 1 ? "has" : "have"} no value.
+                            </>
+                          ) : (
+                            <>
+                              {unset.map((n) => `{{${n}}}`).join(", ")} — add{" "}
+                              {unset.length === 1 ? "it" : "them"} under{" "}
+                              <a href="/templates?tab=variables" onClick={variablesLink}>
+                                Variables
+                              </a>{" "}
+                              first.
+                            </>
+                          )}
+                        </p>
+                      )}
                       <div className={styles.acts}>
 {onSend ? (
                         <button
                           type="button"
                           className={`${styles.act} ${styles.primary}`}
-                          disabled={missing.length > 0}
+                          disabled={missing.length > 0 || blocked}
                           title={
-                            missing.length
-                              ? `Fill ${missing.length === 1 ? "the required field" : "the required fields"} first`
-                              : "Send now, as one message"
+                            blocked
+                              ? "A library variable this template uses does not exist"
+                              : missing.length
+                                ? `Fill ${missing.length === 1 ? "the required field" : "the required fields"} first`
+                                : "Send now, as one message"
                           }
                           aria-label={`Send ${t.name}`}
                           onClick={() => onSend?.(selected, values)}
@@ -256,6 +319,7 @@ export function TemplatePickerModal({
                           type="button"
                           className={styles.act}
                           aria-label={`Insert ${t.name} into ${onSend ? "composer" : "mission brief"}`}
+                          disabled={blocked}
                           onClick={() => onInsert(selected, values)}
                         >
                           {insertLabel}

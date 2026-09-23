@@ -14,9 +14,10 @@ import { UploadImage } from "../components/templates/UploadImage";
 import { api, ApiError } from "../lib/api";
 import {
   assembleMessage,
-  defaultValues,
+  previewValues,
   substituteFields,
   unknownTokens,
+  type LibraryValues,
 } from "../lib/templateMessage";
 import { useIsMobile } from "../lib/useIsMobile";
 import type {
@@ -45,7 +46,12 @@ import { cp, errMessage, FIELD_NAME_RE, formProblems, TAG_RE } from "./templates
  *  in flight fences Save and leaving too, and each finished upload is committed to the form
  *  as it lands, so a slow or partially failed multi-file pick never loses an image that did
  *  arrive. Every rule the form checks client-side is re-checked by the server; the server's
- *  422 detail is what the error line shows. */
+ *  422 detail is what the error line shows.
+ *
+ *  A field's SOURCE (#1090) is this template or the variables library. A library field owns no
+ *  default — its cell shows the library's value, read-only, or says the variable is missing —
+ *  and the preview substitutes the library value, so it still shows exactly what a send pastes.
+ *  The library is read once on open; if it cannot be read the editor still works and says so. */
 
 type Form = TemplateInput;
 
@@ -76,6 +82,8 @@ function fromRecord(t: Template): Form {
 }
 
 const serialize = (f: Form) => JSON.stringify(f);
+
+const NO_LIBRARY: LibraryValues = {};
 
 export default function TemplateEditor() {
   const { id } = useParams<{ id: string }>();
@@ -116,6 +124,25 @@ function TemplateEditorFor() {
   );
   // What the form holds RIGHT NOW, for code that runs after an await (the save fence below).
   const formRef = useRef(form);
+  // The variables library (#1090) — `null` while loading; a failed read is `{}` + a note.
+  const [library, setLibrary] = useState<LibraryValues | null>(null);
+  const [libraryError, setLibraryError] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    api
+      .templateVariables()
+      .then((r) => {
+        if (alive) setLibrary(Object.fromEntries(r.variables.map((v) => [v.name, v.value])));
+      })
+      .catch(() => {
+        if (!alive) return;
+        setLibrary(NO_LIBRARY);
+        setLibraryError(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
   useEffect(() => {
     formRef.current = form;
   }, [form]);
@@ -226,8 +253,13 @@ function TemplateEditorFor() {
   // `previewText` plus one space before each path, which is `assembleMessage`'s join, so its
   // textContent is `previewFull` by construction; the unit test pins that identity.
   const previewText = useMemo(
-    () => substituteFields(form.body, form.fields, defaultValues(form.fields)).trim(),
-    [form.body, form.fields],
+    () =>
+      substituteFields(
+        form.body,
+        form.fields,
+        previewValues(form.fields, library ?? NO_LIBRARY),
+      ).trim(),
+    [form.body, form.fields, library],
   );
   const previewFull = useMemo(
     () => assembleMessage(previewText, form.images.map((i) => i.path)),
@@ -262,7 +294,10 @@ function TemplateEditorFor() {
     patch({ fields: form.fields.map((f, j) => (j === i ? { ...f, ...next } : f)) });
   const addField = () =>
     patch({
-      fields: [...form.fields, { name: "", label: "", default: "", required: false }],
+      fields: [
+        ...form.fields,
+        { name: "", label: "", default: "", required: false, source: "template" },
+      ],
     });
   const removeField = (i: number) => patch({ fields: form.fields.filter((_, j) => j !== i) });
 
@@ -560,6 +595,7 @@ function TemplateEditorFor() {
               <thead>
                 <tr>
                   <th scope="col">name</th>
+                  <th scope="col">source</th>
                   <th scope="col">label</th>
                   <th scope="col">default</th>
                   <th scope="col">required</th>
@@ -587,6 +623,26 @@ function TemplateEditorFor() {
                         {bad && <span className={styles.rowErr}>a-z, 0-9, _ · starts with a letter</span>}
                       </td>
                       <td>
+                        <select
+                          className={styles.sourceSel}
+                          value={f.source}
+                          onChange={(e) =>
+                            // A library field owns no default: switching clears it, so the
+                            // server's "one owner for the value" rule never trips on save.
+                            setField(
+                              i,
+                              e.target.value === "library"
+                                ? { source: "library", default: "" }
+                                : { source: "template" },
+                            )
+                          }
+                          aria-label={`Field ${i + 1} source`}
+                        >
+                          <option value="template">This template</option>
+                          <option value="library">Library</option>
+                        </select>
+                      </td>
+                      <td>
                         <input
                           type="text"
                           value={f.label}
@@ -597,14 +653,18 @@ function TemplateEditorFor() {
                         />
                       </td>
                       <td>
-                        <input
-                          type="text"
-                          value={f.default}
-                          onChange={(e) => setField(i, { default: e.target.value })}
-                          aria-label={`Field ${i + 1} default`}
-                          placeholder="—"
-                          autoComplete="off"
-                        />
+                        {f.source === "library" ? (
+                          <LibraryCell name={f.name} library={library} failed={libraryError} />
+                        ) : (
+                          <input
+                            type="text"
+                            value={f.default}
+                            onChange={(e) => setField(i, { default: e.target.value })}
+                            aria-label={`Field ${i + 1} default`}
+                            placeholder="—"
+                            autoComplete="off"
+                          />
+                        )}
                       </td>
                       <td>
                         {/* The label is the touch target (44×44 on mobile); the box stays 18-24px. */}
@@ -615,6 +675,11 @@ function TemplateEditorFor() {
                             onChange={(e) => setField(i, { required: e.target.checked })}
                             aria-label={`Field ${i + 1} required`}
                           />
+                          {/* The column header is screen-reader-only on a phone, where the row
+                              becomes a two-line grid — so the box names itself there. */}
+                          <span className={styles.reqHint} aria-hidden="true">
+                            req
+                          </span>
                         </label>
                       </td>
                       <td>
@@ -823,5 +888,32 @@ function TemplateEditorFor() {
         </ConfirmDialog>
       )}
     </div>
+  );
+}
+
+/** A library field's value cell: the variable's value, read-only (it is edited under Variables,
+ *  where the change reaches every template that uses it), or why there is none. */
+function LibraryCell({
+  name,
+  library,
+  failed,
+}: {
+  name: string;
+  library: LibraryValues | null;
+  failed: boolean;
+}) {
+  if (library === null) return <span className={styles.libVal}>loading…</span>;
+  if (failed) return <span className={styles.libMissing}>library not loaded</span>;
+  if (!name || !Object.hasOwn(library, name)) {
+    return (
+      <span className={styles.libMissing}>
+        {name ? "missing library variable" : "name it after a variable"}
+      </span>
+    );
+  }
+  return (
+    <span className={styles.libVal} title={library[name]}>
+      {library[name]}
+    </span>
   );
 }

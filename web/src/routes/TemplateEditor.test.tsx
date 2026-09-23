@@ -13,6 +13,7 @@ vi.mock("../lib/api", async () => {
     ...actual,
     api: {
       templates: vi.fn(),
+      templateVariables: vi.fn(() => Promise.resolve({ variables: [], limits: {} })),
       createTemplate: vi.fn(),
       updateTemplate: vi.fn(),
       deleteTemplate: vi.fn(),
@@ -131,7 +132,7 @@ test("a new template cannot be saved until it has a name and instructions; then 
     description: "",
     tags: ["ops"],
     body: "Watch the deploy for {{sha}}",
-    fields: [{ name: "sha", label: "", default: "", required: true }],
+    fields: [{ name: "sha", label: "", default: "", required: true, source: "template" }],
     images: [],
   });
   expect(await screen.findByText("gallery route")).toBeInTheDocument();
@@ -605,4 +606,46 @@ test("the save-as-template prefill is consumed once: the entry's state is cleare
   });
   expect(await screen.findByLabelText(/instructions/i)).toHaveValue("");
   expect(screen.queryByText(/prefilled from a sent message/i)).toBeNull();
+});
+
+// ---- a field's source (#1090) ------------------------------------------------------------------
+
+test("switching a field to Library clears its default, shows the library's value, previews it, and saves source=library", async () => {
+  mocked.templateVariables.mockResolvedValue({
+    variables: [{ name: "issue_ref", value: "ACME-7", created_at: 1, updated_at: 1, used_by: [] }],
+    limits: { variables_max: 100, value_max: 2000, name_max: 32 },
+  });
+  mocked.updateTemplate.mockResolvedValue(tpl({ updated_at: 1_788_440_000 }));
+  renderEditor("/templates/pr-review");
+  const source = await screen.findByLabelText(/field 2 source/i);
+  expect(screen.getByLabelText(/field 2 default/i)).toHaveValue("the linked issue");
+  await userEvent.selectOptions(source, "library");
+  // The default input is gone: a library field owns no value of its own.
+  expect(screen.queryByLabelText(/field 2 default/i)).not.toBeInTheDocument();
+  expect(screen.getByText("ACME-7")).toBeInTheDocument();
+  const pre = screen.getByLabelText(/what the agent receives/i);
+  expect(pre.textContent).toContain("for ACME-7 and");
+  await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+  await waitFor(() => expect(mocked.updateTemplate).toHaveBeenCalledTimes(1));
+  const input = mocked.updateTemplate.mock.calls[0][1];
+  expect(input.fields[1]).toEqual({
+    name: "issue_ref",
+    label: "Issue",
+    default: "",
+    required: false,
+    source: "library",
+  });
+});
+
+test("a library field whose variable does not exist says so and previews its token", async () => {
+  mocked.templateVariables.mockResolvedValue({
+    variables: [],
+    limits: { variables_max: 100, value_max: 2000, name_max: 32 },
+  });
+  renderEditor("/templates/pr-review");
+  await userEvent.selectOptions(await screen.findByLabelText(/field 2 source/i), "library");
+  expect(await screen.findByText(/missing library variable/i)).toBeInTheDocument();
+  expect(screen.getByLabelText(/what the agent receives/i).textContent).toContain(
+    "for {{issue_ref}} and",
+  );
 });

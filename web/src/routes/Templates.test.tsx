@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
   createMemoryRouter,
@@ -10,7 +10,7 @@ import {
 } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
 import { api, ApiError, setApiFetch } from "../lib/api";
-import type { Template, TemplatesResponse } from "../types/api";
+import type { Template, TemplatesResponse, TemplateVariable } from "../types/api";
 import Templates from "./Templates";
 import { SessionsCtx } from "../app/sessionsStore";
 import type { Session } from "../types/api";
@@ -23,6 +23,12 @@ vi.mock("../lib/api", async () => {
       templates: vi.fn(),
       createTemplate: vi.fn(),
       deleteTemplate: vi.fn(),
+      templateVariables: vi.fn(() =>
+        Promise.resolve({ variables: [], limits: { variables_max: 100, value_max: 2000, name_max: 32 } }),
+      ),
+      createTemplateVariable: vi.fn(),
+      updateTemplateVariable: vi.fn(),
+      deleteTemplateVariable: vi.fn(),
       // Thumbnails go through the seam, never a native <img src> (Home Free tunnel, #907 review).
       uploadBlob: vi.fn(() => Promise.resolve(new Blob([new Uint8Array([137, 80, 78, 71])]))),
     },
@@ -337,4 +343,234 @@ test("USE picks a session from the sidebar's store and lands there with the temp
   ]);
   await userEvent.click(options[0]);
   expect(await screen.findByText(/session route/i)).toHaveTextContent('{"template":"pr-review"}');
+});
+
+// ---- VARIABLES (#1090) ---------------------------------------------------------------------------
+
+const VAR_LIMITS = { variables_max: 100, value_max: 2000, name_max: 32 };
+
+function variable(over: Partial<TemplateVariable> = {}): TemplateVariable {
+  return {
+    name: "staging_host",
+    value: "staging.acme.test",
+    created_at: 1,
+    updated_at: 10,
+    used_by: [],
+    ...over,
+  };
+}
+
+const vmocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
+
+function renderVariables() {
+  return render(
+    <MemoryRouter initialEntries={["/templates?tab=variables"]}>
+      <Routes>
+        <Route path="/templates" element={<Templates />} />
+        <Route path="/templates/:id" element={<p>editor route</p>} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+test("?tab=variables opens the library; both tab counts are real", async () => {
+  mocked.templates.mockResolvedValue({ templates: [tpl()], limits: LIMITS });
+  vmocked.templateVariables.mockResolvedValue({
+    variables: [
+      variable({ used_by: [{ id: "pr-review", name: "PR review checklist" }] }),
+      variable({ name: "test_cmd", value: "uv run pytest -q" }),
+    ],
+    limits: VAR_LIMITS,
+  });
+  renderVariables();
+  const list = await screen.findByRole("list", { name: /^variables$/i });
+  const rows = within(list).getAllByRole("listitem").filter((li) => li.dataset.variable);
+  expect(rows.map((r) => r.dataset.variable)).toEqual(["staging_host", "test_cmd"]);
+  expect(within(rows[0]).getByText("{{staging_host}}")).toBeInTheDocument();
+  expect(within(rows[0]).getByText("1 template")).toBeInTheDocument();
+  expect(within(rows[1]).getByText(/not used yet/i)).toBeInTheDocument();
+  expect(screen.getByRole("tab", { name: /variables 2/i })).toHaveAttribute("aria-selected", "true");
+  expect(screen.getByRole("tab", { name: /templates 1/i })).toHaveAttribute("aria-selected", "false");
+  // The gallery's own list is not rendered on this tab.
+  expect(screen.queryByRole("list", { name: /^templates$/i })).not.toBeInTheDocument();
+});
+
+test("an empty library is an honest empty state, and NEW VARIABLE adds one", async () => {
+  mocked.templates.mockResolvedValue({ templates: [], limits: LIMITS });
+  vmocked.templateVariables.mockResolvedValue({ variables: [], limits: VAR_LIMITS });
+  vmocked.createTemplateVariable.mockResolvedValue(variable({ name: "host", value: "a.test" }));
+  renderVariables();
+  expect(await screen.findByText(/no variables yet/i)).toBeInTheDocument();
+  await userEvent.click(screen.getAllByRole("button", { name: /new variable/i })[0]);
+  const form = screen.getByRole("form", { name: /new variable/i });
+  const add = within(form).getByRole("button", { name: /^add$/i });
+  expect(add).toBeDisabled();
+  await userEvent.type(within(form).getByPlaceholderText("staging_host"), "9lives");
+  // A name must start with a letter — refused before it can be sent.
+  expect(within(form).getByText(/a-z, 0-9, _/i)).toBeInTheDocument();
+  await userEvent.clear(within(form).getByPlaceholderText("staging_host"));
+  await userEvent.type(within(form).getByPlaceholderText("staging_host"), "host");
+  await userEvent.type(within(form).getByPlaceholderText("staging.acme.test"), "a.test");
+  vmocked.templateVariables.mockResolvedValue({
+    variables: [variable({ name: "host", value: "a.test" })],
+    limits: VAR_LIMITS,
+  });
+  await userEvent.click(add);
+  expect(vmocked.createTemplateVariable).toHaveBeenCalledWith({ name: "host", value: "a.test" });
+  expect(await screen.findByText(/added \{\{host\}\}/i)).toBeInTheDocument();
+});
+
+test("an edit is fenced by updated_at, and a 409 reloads instead of overwriting", async () => {
+  mocked.templates.mockResolvedValue({ templates: [], limits: LIMITS });
+  vmocked.templateVariables.mockResolvedValue({ variables: [variable()], limits: VAR_LIMITS });
+  vmocked.updateTemplateVariable.mockRejectedValueOnce(
+    new ApiError(409, "variable changed since you loaded it", { current: variable({ value: "x" }) }),
+  );
+  renderVariables();
+  await userEvent.click(await screen.findByRole("button", { name: /^edit staging_host$/i }));
+  const input = screen.getByLabelText(/value of staging_host/i);
+  await userEvent.clear(input);
+  await userEvent.type(input, "new.acme.test");
+  await userEvent.keyboard("{Control>}{Enter}{/Control}");
+  expect(vmocked.updateTemplateVariable).toHaveBeenCalledWith("staging_host", "new.acme.test", 10);
+  expect(await screen.findByRole("alert")).toHaveTextContent(/changed elsewhere — reloaded, nothing saved/i);
+  expect(vmocked.templateVariables).toHaveBeenCalledTimes(2);
+});
+
+test("a delete refused because templates still use the variable names them, with links", async () => {
+  mocked.templates.mockResolvedValue({ templates: [], limits: LIMITS });
+  const deps = [
+    { id: "run-migration", name: "Run staging migration" },
+    { id: "smoke", name: "Smoke test staging" },
+  ];
+  vmocked.templateVariables.mockResolvedValue({
+    variables: [variable({ used_by: deps })],
+    limits: VAR_LIMITS,
+  });
+  vmocked.deleteTemplateVariable.mockRejectedValue(
+    new ApiError(409, "staging_host is still used by 2 templates", { dependants: deps }),
+  );
+  renderVariables();
+  await userEvent.click(await screen.findByRole("button", { name: /^delete staging_host$/i }));
+  const dialog = screen.getByRole("dialog");
+  expect(dialog).toHaveTextContent(/2 templates use this variable/i);
+  await userEvent.click(within(dialog).getByRole("button", { name: /^delete$/i }));
+  expect(vmocked.deleteTemplateVariable).toHaveBeenCalledWith("staging_host", 10);
+  const alert = await screen.findByRole("alert");
+  expect(alert).toHaveTextContent(/can't delete \{\{staging_host\}\} — 2 templates still use it/i);
+  expect(within(alert).getByRole("link", { name: "Smoke test staging" })).toHaveAttribute(
+    "href",
+    "/templates/smoke",
+  );
+});
+
+test("a variables library that fails to load leaves the templates tab working", async () => {
+  mocked.templates.mockResolvedValue({ templates: [tpl()], limits: LIMITS });
+  vmocked.templateVariables.mockRejectedValue(new ApiError(500, "the template store failed"));
+  renderGallery();
+  expect(await screen.findByRole("list", { name: /^templates$/i })).toBeInTheDocument();
+  expect(screen.getByRole("tab", { name: /variables –/i })).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("tab", { name: /variables/i }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(/the template store failed/i);
+});
+
+test("an edit is fenced by the revision it STARTED from, even after a refresh moved the row (#1095 review)", async () => {
+  mocked.templates.mockResolvedValue({ templates: [], limits: LIMITS });
+  vmocked.templateVariables.mockResolvedValue({ variables: [variable()], limits: VAR_LIMITS });
+  vmocked.createTemplateVariable.mockResolvedValue(variable({ name: "other", value: "x" }));
+  vmocked.updateTemplateVariable.mockResolvedValue(variable({ value: "mine", updated_at: 30 }));
+  renderVariables();
+  // Start editing at revision 10…
+  await userEvent.click(await screen.findByRole("button", { name: /^edit staging_host$/i }));
+  const input = screen.getByLabelText(/value of staging_host/i);
+  await userEvent.clear(input);
+  await userEvent.type(input, "mine");
+  // …another tab saves it (revision 20), and an unrelated create here refreshes the list.
+  vmocked.templateVariables.mockResolvedValue({
+    variables: [variable({ value: "theirs", updated_at: 20 }), variable({ name: "other", value: "x" })],
+    limits: VAR_LIMITS,
+  });
+  await userEvent.click(screen.getAllByRole("button", { name: /new variable/i })[0]);
+  const form = screen.getByRole("form", { name: /new variable/i });
+  await userEvent.type(within(form).getByPlaceholderText("staging_host"), "other");
+  await userEvent.type(within(form).getByPlaceholderText("staging.acme.test"), "x");
+  await userEvent.click(within(form).getByRole("button", { name: /^add$/i }));
+  await screen.findByText(/added \{\{other\}\}/i);
+  // The draft is still open, and its save carries 10 — so the server answers 409, not overwrite.
+  await userEvent.click(screen.getByRole("button", { name: /^save staging_host$/i }));
+  expect(vmocked.updateTemplateVariable).toHaveBeenCalledWith("staging_host", "mine", 10);
+});
+
+test("a save in flight freezes the draft and a second submit is ignored (#1095 review)", async () => {
+  mocked.templates.mockResolvedValue({ templates: [], limits: LIMITS });
+  vmocked.templateVariables.mockResolvedValue({ variables: [variable()], limits: VAR_LIMITS });
+  let settle: (v: TemplateVariable) => void = () => {};
+  vmocked.updateTemplateVariable.mockImplementation(
+    () => new Promise<TemplateVariable>((r) => (settle = r)),
+  );
+  renderVariables();
+  await userEvent.click(await screen.findByRole("button", { name: /^edit staging_host$/i }));
+  const input = screen.getByLabelText(/value of staging_host/i);
+  await userEvent.clear(input);
+  await userEvent.type(input, "first");
+  await userEvent.keyboard("{Control>}{Enter}{/Control}");
+  // Pending: typing more does nothing, and a second Ctrl+Enter does not submit again.
+  expect(input).toHaveAttribute("readonly");
+  await userEvent.type(input, "second");
+  expect(input).toHaveValue("first");
+  await userEvent.keyboard("{Control>}{Enter}{/Control}");
+  expect(vmocked.updateTemplateVariable).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole("button", { name: /^save staging_host$/i })).toBeDisabled();
+  await act(async () => settle(variable({ value: "first", updated_at: 11 })));
+});
+
+test("a multi-line value keeps its lines when created and when edited (#1095 review)", async () => {
+  mocked.templates.mockResolvedValue({ templates: [], limits: LIMITS });
+  vmocked.templateVariables.mockResolvedValue({ variables: [], limits: VAR_LIMITS });
+  vmocked.createTemplateVariable.mockResolvedValue(variable({ name: "run", value: "cd repo\nnpm test" }));
+  renderVariables();
+  await userEvent.click((await screen.findAllByRole("button", { name: /new variable/i }))[0]);
+  const form = screen.getByRole("form", { name: /new variable/i });
+  await userEvent.type(within(form).getByPlaceholderText("staging_host"), "run");
+  // Enter is a newline in the value, never a submit.
+  await userEvent.type(within(form).getByPlaceholderText("staging.acme.test"), "cd repo{Enter}npm test");
+  expect(vmocked.createTemplateVariable).not.toHaveBeenCalled();
+  await userEvent.click(within(form).getByRole("button", { name: /^add$/i }));
+  expect(vmocked.createTemplateVariable).toHaveBeenCalledWith({ name: "run", value: "cd repo\nnpm test" });
+
+  vmocked.templateVariables.mockResolvedValue({
+    variables: [variable({ name: "run", value: "cd repo\nnpm test" })],
+    limits: VAR_LIMITS,
+  });
+  vmocked.updateTemplateVariable.mockResolvedValue(variable({ name: "run", value: "x" }));
+  cleanupAndRender();
+  await userEvent.click(await screen.findByRole("button", { name: /^edit run$/i }));
+  const input = screen.getByLabelText(/value of run/i);
+  expect(input).toHaveValue("cd repo\nnpm test");
+  await userEvent.type(input, "{Enter}npm run lint");
+  await userEvent.click(screen.getByRole("button", { name: /^save run$/i }));
+  expect(vmocked.updateTemplateVariable).toHaveBeenCalledWith(
+    "run",
+    "cd repo\nnpm test\nnpm run lint",
+    10,
+  );
+});
+
+function cleanupAndRender() {
+  cleanup();
+  renderVariables();
+}
+
+test("a 409 that is not an edit conflict shows the server's reason, never 'changed elsewhere' (#1095 review)", async () => {
+  mocked.templates.mockResolvedValue({ templates: [], limits: LIMITS });
+  vmocked.templateVariables.mockResolvedValue({ variables: [variable()], limits: VAR_LIMITS });
+  const reason =
+    "the template library could not be read in full — nothing was deleted, because a template might still use it";
+  vmocked.deleteTemplateVariable.mockRejectedValue(new ApiError(409, reason, { detail: reason }));
+  renderVariables();
+  await userEvent.click(await screen.findByRole("button", { name: /^delete staging_host$/i }));
+  await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /^delete$/i }));
+  const alert = await screen.findByRole("alert");
+  expect(alert).toHaveTextContent(reason);
+  expect(alert).not.toHaveTextContent(/changed elsewhere/i);
 });

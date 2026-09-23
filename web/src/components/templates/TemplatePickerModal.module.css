@@ -226,6 +226,13 @@
   font-size: 0.85rem;
   border-radius: 0;
 }
+/* The field control is a textarea (multi-line values): one line tall until it holds more. */
+textarea.input {
+  display: block;
+  padding: 7px 10px;
+  line-height: 1.45;
+  resize: vertical;
+}
 .input:focus {
   outline: none;
   border-color: var(--accent);
@@ -289,6 +296,16 @@
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-3);
+}
+/* A library variable the template needs is missing (#1090): Send and Insert are off. The
+ * warning ink, not a status LED — nothing is down, the operator has a step to take. */
+.blocked {
+  margin: 6px 0 0;
+  font-size: 0.78rem;
+  color: var(--warn-text);
+}
+.blocked a {
+  color: inherit;
 }
 .foot {
   margin-top: 12px;

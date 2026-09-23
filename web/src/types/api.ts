@@ -76,11 +76,16 @@ export interface DraftAttachment {
 
 /** A `{{name}}` slot on an instruction template (#905), filled when the template is used.
  *  `name` is the token (`[a-z][a-z0-9_]{0,31}`); `label` is what the fill step shows. */
+/** Where a field's value comes from (#1090): the template's own `default`, or the variable of
+ *  the same name in the variables library. A `library` field carries no default of its own. */
+export type TemplateFieldSource = "template" | "library";
+
 export interface TemplateField {
   name: string;
   label: string;
   default: string;
   required: boolean;
+  source: TemplateFieldSource;
 }
 
 /** A reference image on a template — an upload path, never a blob. The thumbnail is read back
@@ -132,6 +137,33 @@ export interface TemplateLimits {
 export interface TemplatesResponse {
   templates: Template[];
   limits: TemplateLimits;
+}
+
+/** A template that uses a variable — what a variable's `used_by` and a refused delete list. */
+export interface TemplateRef {
+  id: string;
+  name: string;
+}
+
+/** A variable in the templates library (#1090) — `GET /api/template-variables`. The name is its
+ *  identity (no rename); `updated_at` is the edit/delete fence, as on a template. */
+export interface TemplateVariable {
+  name: string;
+  value: string;
+  created_at: number;
+  updated_at: number;
+  used_by: TemplateRef[];
+}
+
+export interface TemplateVariableLimits {
+  variables_max: number;
+  value_max: number;
+  name_max: number;
+}
+
+export interface TemplateVariablesResponse {
+  variables: TemplateVariable[];
+  limits: TemplateVariableLimits;
 }
 
 /** GET /api/sessions/{id}/draft (#477): the saved compose draft for a session, or an empty

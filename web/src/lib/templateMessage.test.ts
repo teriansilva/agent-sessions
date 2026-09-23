@@ -2,8 +2,11 @@ import { describe, expect, test } from "vitest";
 import {
   assembleMessage,
   defaultValues,
+  missingLibrary,
   missingRequired,
+  previewValues,
   renderTemplate,
+  seedValues,
   substituteFields,
   tokensIn,
   uploadStoredName,
@@ -103,4 +106,39 @@ test("uploadStoredName is the last path component", () => {
     "20260903-1-a.png",
   );
   expect(uploadStoredName("bare.png")).toBe("bare.png");
+});
+
+describe("library fields (#1090)", () => {
+  const fields = [
+    { name: "host", default: "", source: "library" as const },
+    { name: "cmd", default: "", source: "library" as const },
+    { name: "who", default: "you", source: "template" as const },
+    { name: "why", default: "" },
+  ];
+  const lib = { host: "staging.acme.test" };
+
+  test("the preview takes a library field's value from the library, never its default", () => {
+    expect(previewValues(fields, lib)).toEqual({ host: "staging.acme.test", who: "you" });
+    // A missing variable keeps its token visible instead of previewing a blank.
+    expect(substituteFields("{{host}} {{cmd}} {{who}}", fields, previewValues(fields, lib))).toBe(
+      "staging.acme.test {{cmd}} you",
+    );
+  });
+
+  test("the picker seeds library fields from the library and a missing one empty", () => {
+    expect(seedValues(fields, lib)).toEqual({ host: "staging.acme.test", cmd: "", who: "you", why: "" });
+  });
+
+  test("missingLibrary names only library fields with no variable", () => {
+    expect(missingLibrary(fields, lib)).toEqual(["cmd"]);
+    expect(missingLibrary(fields, { host: "h", cmd: "c" })).toEqual([]);
+    // A template field is never "missing" whatever the library holds.
+    expect(missingLibrary([{ name: "who" }], {})).toEqual([]);
+  });
+
+  test("an inherited Object property is not a library variable", () => {
+    expect(missingLibrary([{ name: "constructor", source: "library" }], {})).toEqual([
+      "constructor",
+    ]);
+  });
 });

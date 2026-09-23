@@ -56,6 +56,8 @@ import type {
   Template,
   TemplateInput,
   TemplatesResponse,
+  TemplateVariable,
+  TemplateVariablesResponse,
   TwoFactorEnrollment,
   UpdateInfo,
   UpdateProgress,
@@ -549,6 +551,22 @@ export const api = {
   /** A send happened — bumps the usage counters, never `updated_at`. */
   markTemplateUsed: (id: string) =>
     mutateJson<Template>("POST", `/api/templates/${enc(id)}/used`),
+  /** The template variables library (#1090): values a `source: "library"` field takes by name.
+   *  Same fencing as a template; the name is the identity (no rename). A DELETE refused because
+   *  templates still use the variable is a 409 whose `record.dependants` lists them. */
+  templateVariables: () =>
+    getJsonWithDetail<TemplateVariablesResponse>("/api/template-variables"),
+  createTemplateVariable: (input: { name: string; value: string }) =>
+    mutateJson<TemplateVariable>("POST", "/api/template-variables", input),
+  updateTemplateVariable: (name: string, value: string, expectedUpdatedAt: number) =>
+    mutateJson<TemplateVariable>("PATCH", `/api/template-variables/${enc(name)}`, {
+      value,
+      expected_updated_at: expectedUpdatedAt,
+    }),
+  deleteTemplateVariable: (name: string, expectedUpdatedAt: number) =>
+    deleteVoid(
+      `/api/template-variables/${enc(name)}?expected_updated_at=${enc(String(expectedUpdatedAt))}`,
+    ),
   /** Launch-folder list (#361: behaviour-preserving rename of the old /api/projects).
    *  `visible: true` applies the mode-aware visibility filter (#335) — the new-session
    *  picker uses it so the dropdown mirrors the curated sidebar; Settings omits it to

@@ -19,6 +19,7 @@ vi.mock("../../lib/api", () => ({
     // #905 P3: the template picker + the usage bump.
     templates: vi.fn(() => Promise.resolve({ templates: [], limits: {} })),
     markTemplateUsed: vi.fn(() => Promise.resolve({})),
+    templateVariables: vi.fn(() => Promise.resolve({ variables: [], limits: {} })),
   },
 }));
 

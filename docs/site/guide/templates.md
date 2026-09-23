@@ -45,6 +45,39 @@ uploads folder (`~/.agent-sessions/uploads`, a `0700` folder of `0600` files). A
 only the path. If that file is deleted later, the template still works as text; only its thumbnail
 is missing.
 
+### Variables: values you define once
+
+Some values appear in many templates: a staging host, a repository URL, the command that runs your
+tests. Instead of copying them into each template's field defaults, define them once under the
+**Variables** tab of `/templates` (`/templates?tab=variables`) and use them from any template.
+
+To use a variable, add a field with the **same name** and set its **Source** to **Library**. A
+library field has no default of its own: the editor shows the variable's value instead, and the
+preview uses it. **Edit** a variable, and every template that uses it sends the new value from its
+next send. The picker reads the library when it opens, so a picker that is already open keeps the
+values it opened with; close and reopen it to pick up an edit made meanwhile.
+
+A value may span several lines, for example `cd repo` and `npm test` on separate lines. Enter adds a
+line; **Ctrl+Enter** (**⌘+Enter** on a Mac) saves, and Escape cancels an edit.
+
+- **In the picker**, a library field starts at the variable's value, marked **from library**. You
+  can change it for that one send; the variable itself does not change.
+- **A missing variable blocks the send.** If a template uses a library field whose variable does
+  not exist, the picker says which one, and both **Send** and **Insert** stay disabled until you add
+  it. The `{{token}}` is never sent as written, and the slot is never sent empty.
+- **There is no rename.** A variable's name is what templates match on. To change a name, add the
+  new variable, switch the templates to it, and delete the old one.
+- **A variable in use cannot be deleted.** The delete is refused and the templates that still use
+  it are listed, so no template is silently left without its value. Change those fields' source
+  back to **This template** first.
+
+Variable names follow the field-name rule (a lowercase letter, then letters, digits or `_`, up to
+32 characters). A value is up to 2,000 characters, with the same control-character rule as the
+instructions. The library holds up to 100 variables, in its own file
+`~/.config/agent-sessions/template-variables.json` beside `templates.json` (override:
+`AGENT_SESSIONS_TEMPLATE_VARS`), written atomically at mode `0600`, with the same damaged-file and
+newer-version protections as the template library below.
+
 ### The preview is exactly what the agent receives
 
 **What the agent receives** shows the instructions with each field's default filled in, followed by

@@ -110,6 +110,39 @@
   margin: 0 0 12px;
 }
 
+/* --- tabs: TEMPLATES / VARIABLES (#1090) --------------------------------------- */
+/* An underline in the accent marks the open tab — the header nav's own idiom, square, no fill. */
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--line);
+  margin: 0 0 14px;
+}
+.tabBtn {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 0 14px;
+  margin-bottom: -1px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-3);
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.tabBtn:hover {
+  color: var(--text-1);
+}
+.tabOn {
+  color: var(--text-1);
+  border-bottom-color: var(--accent);
+}
+
 /* --- toolbar: search + tag chips --------------------------------------------- */
 .tools {
   display: flex;
@@ -518,6 +551,9 @@
   font-family: var(--font-mono);
   color: var(--accent);
 }
+.reqHint {
+  display: none;
+}
 .checkWrap {
   display: inline-flex;
   align-items: center;
@@ -531,6 +567,38 @@
   height: 18px;
   accent-color: var(--accent);
   cursor: pointer;
+}
+/* #1090: a field's source, and a library field's read-only value (or why it has none). */
+.sourceSel {
+  width: 100%;
+  min-height: 30px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  background: var(--glass);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 0.8rem;
+  border-radius: 0;
+}
+.sourceSel:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.libVal,
+.libMissing {
+  display: block;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+.libVal {
+  color: var(--text-2);
+}
+.libMissing {
+  color: var(--warn-text);
 }
 .rowErr {
   font-family: var(--font-mono);
@@ -714,6 +782,7 @@
     grid-template-columns: 1fr;
   }
   .chip,
+  .tabBtn,
   .cta,
   .ghost,
   .danger,
@@ -783,8 +852,67 @@
    * the field cells. */
   .input,
   .tagRow input,
-  .fields td input[type="text"] {
+  .fields td input[type="text"],
+  .sourceSel {
     min-height: 44px;
+  }
+  /* Six columns do not fit a phone (#1090 added SOURCE): each field becomes a two-line grid —
+   * name · source · required · remove, then label · default — so no input is squeezed under
+   * its 44px floor. The header row is kept for screen readers only; every cell's control
+   * carries its own label. */
+  .fields thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+  .fields tbody tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto;
+    gap: 4px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .fields tbody td {
+    display: block;
+    padding: 0;
+    border-bottom: 0;
+  }
+  .fields tbody td:nth-child(1) {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .fields tbody td:nth-child(2) {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .fields tbody td:nth-child(5) {
+    grid-column: 3;
+    grid-row: 1;
+  }
+  .fields tbody td:nth-child(6) {
+    grid-column: 4;
+    grid-row: 1;
+  }
+  .fields tbody td:nth-child(3) {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  .reqHint {
+    display: inline;
+    margin-left: 4px;
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-3);
+  }
+  .fields tbody td:nth-child(4) {
+    grid-column: 2 / span 3;
+    grid-row: 2;
+    align-self: center;
   }
   .tagRow {
     min-height: 44px;

@@ -1,11 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Copy, Pencil, Plus, Search, Send, Trash2 } from "lucide-react";
 import { ConfirmDialog } from "../components/templates/ConfirmDialog";
 import { SessionChooserModal } from "../components/templates/SessionChooserModal";
 import { UploadImage } from "../components/templates/UploadImage";
+import { VariablesPanel } from "../components/templates/VariablesPanel";
 import { api, ApiError } from "../lib/api";
-import type { Template, TemplateLimits } from "../types/api";
+import type {
+  Template,
+  TemplateLimits,
+  TemplateVariable,
+  TemplateVariableLimits,
+} from "../types/api";
 import styles from "./Templates.module.css";
 import { errMessage, metaLine } from "./templatesLib";
 
@@ -18,7 +24,11 @@ import { errMessage, metaLine } from "./templatesLib";
  *
  *  Delete goes through a real confirm (not `window.confirm`): a template is authored text,
  *  not cheap metadata. It sends the card's `updated_at` as the fence, so a delete against a
- *  record another tab just edited is a 409 the gallery folds back in by reloading. */
+ *  record another tab just edited is a 409 the gallery folds back in by reloading.
+ *
+ *  Two tabs (#1090): TEMPLATES and VARIABLES — the variables library, `?tab=variables`, so the
+ *  picker and the editor can link straight to it. The library is loaded beside the templates so
+ *  both tab counts are real; a failure to load it never blocks the gallery. */
 
 function matches(t: Template, q: string): boolean {
   if (!q) return true;
@@ -26,16 +36,26 @@ function matches(t: Template, q: string): boolean {
   return hay.includes(q);
 }
 
+const VARIABLE_LIMITS_FALLBACK: TemplateVariableLimits = {
+  variables_max: 100,
+  value_max: 2000,
+  name_max: 32,
+};
+
 export default function Templates() {
   const navigate = useNavigate();
   const location = useLocation();
+  const [params, setParams] = useSearchParams();
+  const tab = params.get("tab") === "variables" ? "variables" : "templates";
+  const [variables, setVariables] = useState<TemplateVariable[] | null>(null);
+  const [varLimits, setVarLimits] = useState<TemplateVariableLimits>(VARIABLE_LIMITS_FALLBACK);
+  const [varError, setVarError] = useState("");
+  const [creatingVar, setCreatingVar] = useState(false);
   const [templates, setTemplates] = useState<Template[] | null>(null);
   const [limits, setLimits] = useState<TemplateLimits | null>(null);
   const [error, setError] = useState("");
   // The editor navigates here with `state.note` after a save or delete (one-shot, not a URL).
-  const [note, setNote] = useState(
-    () => (location.state as { note?: string } | null)?.note ?? "",
-  );
+  const [note, setNote] = useState(() => (location.state as { note?: string } | null)?.note ?? "");
   const [query, setQuery] = useState("");
   const [tag, setTag] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -77,6 +97,30 @@ export default function Templates() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const loadVariables = useCallback(
+    (): Promise<boolean> =>
+      Promise.resolve()
+        .then(() => api.templateVariables())
+        .then((r) => {
+          setVariables(r.variables);
+          setVarLimits(r.limits);
+          setVarError("");
+          return true;
+        })
+        .catch((e: unknown) => {
+          setVarError(errMessage(e, "Could not load the variables library"));
+          return false;
+        }),
+    [],
+  );
+  useEffect(() => {
+    void loadVariables();
+  }, [loadVariables]);
+
+  const showTab = (next: "templates" | "variables") => {
+    setParams(next === "variables" ? { tab: "variables" } : {}, { replace: true });
+  };
 
   const tagCounts = useMemo(() => {
     const m = new Map<string, number>();
@@ -172,9 +216,19 @@ export default function Templates() {
             //
           </span>
           <span className={styles.meta}>
-            {templates === null ? (error ? "not loaded" : "loading") : `${total} saved`}
+            {tab === "variables"
+              ? variables === null
+                ? varError
+                  ? "not loaded"
+                  : "loading"
+                : `${variables.length} ${variables.length === 1 ? "variable" : "variables"}`
+              : templates === null
+                ? error
+                  ? "not loaded"
+                  : "loading"
+                : `${total} saved`}
           </span>
-          {total > 0 && (
+          {tab === "templates" && total > 0 && (
             <>
               <span className={styles.sl} aria-hidden="true">
                 //
@@ -184,181 +238,256 @@ export default function Templates() {
           )}
         </div>
         <div className={styles.headRight}>
-          <Link to="/templates/new" className={styles.cta}>
-            <Plus size={14} aria-hidden="true" />
-            New template
-          </Link>
-        </div>
-      </header>
-
-      {note && <p className={styles.note}>{note}</p>}
-      {error && (
-        <p className={styles.err} role="alert">
-          {error}
-          {templates === null && (
-            // The first load failed: there is no list to show, so say so (the header reads
-            // "not loaded", never "loading") and offer the retry (Hermes on #907, addendum).
+          {tab === "variables" ? (
             <button
               type="button"
-              className={styles.retry}
-              onClick={() => {
-                setError("");
-                void load();
-              }}
+              className={styles.cta}
+              disabled={
+                creatingVar || variables === null || variables.length >= varLimits.variables_max
+              }
+              onClick={() => setCreatingVar(true)}
             >
-              Retry
+              <Plus size={14} aria-hidden="true" />
+              New variable
             </button>
-          )}
-        </p>
-      )}
-
-      {total > 0 && (
-        <div className={styles.tools}>
-          <label className={styles.search}>
-            <Search size={14} aria-hidden="true" />
-            <input
-              type="search"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search name, tag, text…"
-              aria-label="Search templates"
-            />
-          </label>
-          {tagCounts.length > 0 && (
-            <div className={styles.chips} role="group" aria-label="Filter by tag">
-              <button
-                type="button"
-                className={`${styles.chip} ${effTag === null ? styles.chipOn : ""}`}
-                aria-pressed={effTag === null}
-                onClick={() => setTag(null)}
-              >
-                All <span className={styles.chipN}>{total}</span>
-              </button>
-              {tagCounts.map(([g, n]) => (
-                <button
-                  key={g}
-                  type="button"
-                  className={`${styles.chip} ${effTag === g ? styles.chipOn : ""}`}
-                  aria-pressed={effTag === g}
-                  onClick={() => setTag(effTag === g ? null : g)}
-                >
-                  {g} <span className={styles.chipN}>{n}</span>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {templates !== null && total === 0 && (
-        <div className={styles.empty}>
-          <span className={styles.emptyGlyph} aria-hidden="true">
-            &gt;_
-          </span>
-          <p className={styles.emptyTitle}>No templates yet</p>
-          <p className={styles.emptyHint}>
-            A template is an instruction you send more than once — the text, the reference
-            images, and the <code>{"{{fields}}"}</code> that change each time. Start one here, or
-            save a message you already sent from the composer&apos;s history.
-          </p>
-          <div className={styles.emptyActs}>
+          ) : (
             <Link to="/templates/new" className={styles.cta}>
               <Plus size={14} aria-hidden="true" />
               New template
             </Link>
-          </div>
+          )}
         </div>
-      )}
+      </header>
 
-      {total > 0 && visible.length === 0 && (
-        <p className={styles.state}>No template matches</p>
-      )}
+      <div className={styles.tabs} role="tablist" aria-label="Templates sections">
+        <button
+          type="button"
+          role="tab"
+          id="tpl-tab-templates"
+          aria-selected={tab === "templates"}
+          aria-controls="tpl-tabpanel"
+          className={`${styles.tabBtn} ${tab === "templates" ? styles.tabOn : ""}`}
+          onClick={() => showTab("templates")}
+        >
+          Templates <span className={styles.chipN}>{templates?.length ?? "–"}</span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="tpl-tab-variables"
+          aria-selected={tab === "variables"}
+          aria-controls="tpl-tabpanel"
+          className={`${styles.tabBtn} ${tab === "variables" ? styles.tabOn : ""}`}
+          onClick={() => showTab("variables")}
+        >
+          Variables <span className={styles.chipN}>{variables?.length ?? "–"}</span>
+        </button>
+      </div>
 
-      {visible.length > 0 && (
-        <ul className={styles.cards} aria-label="Templates">
-          {visible.map((t) => (
-            <li key={t.id} className={styles.card} data-template-id={t.id}>
-              <div className={styles.thumb}>
-                {t.images[0] ? (
-                  <UploadImage
-                    path={t.images[0].path}
-                    alt=""
-                    fallback={
-                      <span className={styles.glyph} aria-hidden="true">
-                        &gt;_
-                      </span>
-                    }
+      <div
+        id="tpl-tabpanel"
+        role="tabpanel"
+        aria-labelledby={tab === "variables" ? "tpl-tab-variables" : "tpl-tab-templates"}
+      >
+        {tab === "variables" ? (
+          <>
+            {varError && (
+              <p className={styles.err} role="alert">
+                {varError}
+                <button
+                  type="button"
+                  className={styles.retry}
+                  onClick={() => {
+                    setVarError("");
+                    void loadVariables();
+                  }}
+                >
+                  Retry
+                </button>
+              </p>
+            )}
+            {variables === null && !varError && <p className={styles.state}>Loading…</p>}
+            {variables !== null && (
+              <VariablesPanel
+                variables={variables}
+                limits={varLimits}
+                creating={creatingVar}
+                onCreatingChange={setCreatingVar}
+                reload={loadVariables}
+              />
+            )}
+          </>
+        ) : (
+          <>
+            {note && <p className={styles.note}>{note}</p>}
+            {error && (
+              <p className={styles.err} role="alert">
+                {error}
+                {templates === null && (
+                  // The first load failed: there is no list to show, so say so (the header reads
+                  // "not loaded", never "loading") and offer the retry (Hermes on #907, addendum).
+                  <button
+                    type="button"
+                    className={styles.retry}
+                    onClick={() => {
+                      setError("");
+                      void load();
+                    }}
+                  >
+                    Retry
+                  </button>
+                )}
+              </p>
+            )}
+
+            {total > 0 && (
+              <div className={styles.tools}>
+                <label className={styles.search}>
+                  <Search size={14} aria-hidden="true" />
+                  <input
+                    type="search"
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder="Search name, tag, text…"
+                    aria-label="Search templates"
                   />
-                ) : (
-                  <span className={styles.glyph} aria-hidden="true">
-                    &gt;_
-                  </span>
-                )}
-                {t.images.length > 0 && (
-                  <span className={styles.thumbN}>
-                    {t.images.length} img
-                  </span>
-                )}
-              </div>
-              <div className={styles.cbody}>
-                <h2 className={styles.cname}>
-                  <Link to={`/templates/${encodeURIComponent(t.id)}`}>{t.name}</Link>
-                </h2>
-                {t.description && <p className={styles.cdesc}>{t.description}</p>}
-                {t.tags.length > 0 && (
-                  <div className={styles.tags}>
-                    {t.tags.map((g) => (
-                      <span key={g} className={styles.tag}>
-                        {g}
-                      </span>
+                </label>
+                {tagCounts.length > 0 && (
+                  <div className={styles.chips} role="group" aria-label="Filter by tag">
+                    <button
+                      type="button"
+                      className={`${styles.chip} ${effTag === null ? styles.chipOn : ""}`}
+                      aria-pressed={effTag === null}
+                      onClick={() => setTag(null)}
+                    >
+                      All <span className={styles.chipN}>{total}</span>
+                    </button>
+                    {tagCounts.map(([g, n]) => (
+                      <button
+                        key={g}
+                        type="button"
+                        className={`${styles.chip} ${effTag === g ? styles.chipOn : ""}`}
+                        aria-pressed={effTag === g}
+                        onClick={() => setTag(effTag === g ? null : g)}
+                      >
+                        {g} <span className={styles.chipN}>{n}</span>
+                      </button>
                     ))}
                   </div>
                 )}
-                <p className={styles.cmeta}>{metaLine(t)}</p>
               </div>
-              <div className={styles.acts}>
-                <button
-                  type="button"
-                  className={`${styles.act} ${styles.actUse}`}
-                  aria-label={`Use ${t.name}`}
-                  onClick={(e) => setChooser({ t, returnTo: e.currentTarget })}
-                >
-                  <Send size={13} aria-hidden="true" />
-                  Use
-                </button>
-                <Link
-                  to={`/templates/${encodeURIComponent(t.id)}`}
-                  className={styles.act}
-                  aria-label={`Edit ${t.name}`}
-                >
-                  <Pencil size={13} aria-hidden="true" />
-                  Edit
-                </Link>
-                <button
-                  type="button"
-                  className={styles.act}
-                  aria-label={`Duplicate ${t.name}`}
-                  disabled={busy}
-                  onClick={() => void duplicate(t)}
-                >
-                  <Copy size={13} aria-hidden="true" />
-                  Duplicate
-                </button>
-                <button
-                  type="button"
-                  className={`${styles.act} ${styles.actDanger}`}
-                  aria-label={`Delete ${t.name}`}
-                  disabled={busy}
-                  onClick={(e) => setPendingDelete({ t, returnTo: e.currentTarget })}
-                >
-                  <Trash2 size={13} aria-hidden="true" />
-                  Delete
-                </button>
+            )}
+
+            {templates !== null && total === 0 && (
+              <div className={styles.empty}>
+                <span className={styles.emptyGlyph} aria-hidden="true">
+                  &gt;_
+                </span>
+                <p className={styles.emptyTitle}>No templates yet</p>
+                <p className={styles.emptyHint}>
+                  A template is an instruction you send more than once — the text, the reference
+                  images, and the <code>{"{{fields}}"}</code> that change each time. Start one here,
+                  or save a message you already sent from the composer&apos;s history.
+                </p>
+                <div className={styles.emptyActs}>
+                  <Link to="/templates/new" className={styles.cta}>
+                    <Plus size={14} aria-hidden="true" />
+                    New template
+                  </Link>
+                </div>
               </div>
-            </li>
-          ))}
-        </ul>
-      )}
+            )}
+
+            {total > 0 && visible.length === 0 && (
+              <p className={styles.state}>No template matches</p>
+            )}
+
+            {visible.length > 0 && (
+              <ul className={styles.cards} aria-label="Templates">
+                {visible.map((t) => (
+                  <li key={t.id} className={styles.card} data-template-id={t.id}>
+                    <div className={styles.thumb}>
+                      {t.images[0] ? (
+                        <UploadImage
+                          path={t.images[0].path}
+                          alt=""
+                          fallback={
+                            <span className={styles.glyph} aria-hidden="true">
+                              &gt;_
+                            </span>
+                          }
+                        />
+                      ) : (
+                        <span className={styles.glyph} aria-hidden="true">
+                          &gt;_
+                        </span>
+                      )}
+                      {t.images.length > 0 && (
+                        <span className={styles.thumbN}>{t.images.length} img</span>
+                      )}
+                    </div>
+                    <div className={styles.cbody}>
+                      <h2 className={styles.cname}>
+                        <Link to={`/templates/${encodeURIComponent(t.id)}`}>{t.name}</Link>
+                      </h2>
+                      {t.description && <p className={styles.cdesc}>{t.description}</p>}
+                      {t.tags.length > 0 && (
+                        <div className={styles.tags}>
+                          {t.tags.map((g) => (
+                            <span key={g} className={styles.tag}>
+                              {g}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      <p className={styles.cmeta}>{metaLine(t)}</p>
+                    </div>
+                    <div className={styles.acts}>
+                      <button
+                        type="button"
+                        className={`${styles.act} ${styles.actUse}`}
+                        aria-label={`Use ${t.name}`}
+                        onClick={(e) => setChooser({ t, returnTo: e.currentTarget })}
+                      >
+                        <Send size={13} aria-hidden="true" />
+                        Use
+                      </button>
+                      <Link
+                        to={`/templates/${encodeURIComponent(t.id)}`}
+                        className={styles.act}
+                        aria-label={`Edit ${t.name}`}
+                      >
+                        <Pencil size={13} aria-hidden="true" />
+                        Edit
+                      </Link>
+                      <button
+                        type="button"
+                        className={styles.act}
+                        aria-label={`Duplicate ${t.name}`}
+                        disabled={busy}
+                        onClick={() => void duplicate(t)}
+                      >
+                        <Copy size={13} aria-hidden="true" />
+                        Duplicate
+                      </button>
+                      <button
+                        type="button"
+                        className={`${styles.act} ${styles.actDanger}`}
+                        aria-label={`Delete ${t.name}`}
+                        disabled={busy}
+                        onClick={(e) => setPendingDelete({ t, returnTo: e.currentTarget })}
+                      >
+                        <Trash2 size={13} aria-hidden="true" />
+                        Delete
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
+        )}
+      </div>
 
       {chooser && (
         <SessionChooserModal
