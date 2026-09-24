@@ -180,25 +180,26 @@ def test_pulse_defaults_and_validation(prefs_at_tmp):
     assert prefs.get_pulse() == {
         "auto_enabled": False,
         "interval_minutes": 30,
-        "window_days": 3,
+        "window_days": 1,  # #1086: 1–3 days, default 1
         "scan_depth": "fast",
     }
     assert (
         prefs.validate_pulse_patch(
-            {"auto_enabled": True, "interval_minutes": 15, "window_days": 7, "scan_depth": "slow"}
+            {"auto_enabled": True, "interval_minutes": 15, "window_days": 3, "scan_depth": "slow"}
         )
         is None
     )
     assert prefs.validate_pulse_patch({"auto_enabled": "yes"}) is not None
     assert prefs.validate_pulse_patch({"interval_minutes": 1}) is not None  # below floor
     assert prefs.validate_pulse_patch({"window_days": 99}) is not None  # above ceiling
+    assert prefs.validate_pulse_patch({"window_days": 4}) is not None  # #1086: ceiling is 3
     assert prefs.validate_pulse_patch({"scan_depth": "turbo"}) is not None  # unknown depth
     assert prefs.validate_pulse_patch({"bogus": 1}) is not None  # unknown key
     assert prefs.validate_pulse_patch({"scan_depth": "medium"}) is not None  # removed (#956)
     prefs.set_pulse({"auto_enabled": True, "scan_depth": "slow"})
     got = prefs.get_pulse()
     assert got["auto_enabled"] is True and got["scan_depth"] == "slow"
-    assert got["window_days"] == 3  # untouched keys preserved
+    assert got["window_days"] == 1  # untouched keys preserved
 
 
 def test_public_pulse_reports_endpoint_readiness(prefs_at_tmp):
@@ -212,8 +213,8 @@ def test_public_pulse_reports_endpoint_readiness(prefs_at_tmp):
 
 
 def test_pulse_bounds_constants_in_sync(tmp_path):
-    # prefs.py keeps its own PULSE_* bounds (no import of pulse.py → no cycle); they MUST match
-    # pulse.py's window/depth source of truth — this guard fails if one drifts.
+    # prefs.py owns the PULSE_* bounds and pulse.py mirrors them (pulse imports prefs; prefs never
+    # imports pulse, so there is no cycle) — this guard fails if one drifts.
     assert prefs.PULSE_WINDOW_MIN == pulse.WINDOW_DAYS_MIN
     assert prefs.PULSE_WINDOW_MAX == pulse.WINDOW_DAYS_MAX
     assert prefs.PULSE_DEPTHS == pulse.SCAN_DEPTHS

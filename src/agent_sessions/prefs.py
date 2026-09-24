@@ -1259,13 +1259,19 @@ def set_auto_sort(patch: dict, path: Path | None = None) -> dict:
 # --- Pulse recent-work overview (#441 Phase 3) -----------------------------------------
 # Opt-in background scan loop + the window/depth the manual + background scans use. Reuses the
 # `ai_review` gateway for synthesis (depth >= medium), so it holds no endpoint config / secret
-# of its own — `configured` mirrors the ai_review readiness. The window/depth bounds mirror the
-# constants in pulse.py; tests/test_pulse.py asserts they stay in sync (no import → no cycle:
-# pulse.py imports review.py which imports prefs.py).
+# of its own — `configured` mirrors the ai_review readiness. These window/depth bounds are the
+# source of truth; pulse.py mirrors them and delegates its window rule here (pulse imports prefs,
+# prefs never imports pulse — no cycle). tests/test_pulse_loop.py asserts they stay in sync.
 PULSE_INTERVAL_MIN = 5
 PULSE_INTERVAL_MAX = 24 * 60
 PULSE_WINDOW_MIN = 1
-PULSE_WINDOW_MAX = 30
+PULSE_WINDOW_MAX = 3
+# The Ask page's "recent work" window (#1086): 1–3 days, default 1 ("throughout the day"). It was
+# 1–30 with a default of 3. Reads CLAMP (a stored 7 reads as 3) instead of falling back to the
+# default, so an install that had chosen a long window keeps the longest one still offered; writes
+# stay strict. Rule shared with `pulse.coerce_window_days` and web/src/lib/recentWindow.ts through
+# tests/fixtures/pulse_window_days_cases.json.
+PULSE_WINDOW_DEFAULT = 1
 # `medium` was removed (#956): all it added was a banner nothing rendered. A stored `medium` reads
 # as `fast` (same visible output) via the membership check in `get_pulse`; a WRITE of it is a 422.
 PULSE_DEPTHS: tuple[str, ...] = ("fast", "slow")
@@ -1274,9 +1280,39 @@ PULSE_DEFAULT_DEPTH = "fast"
 _PULSE_DEFAULTS: dict[str, object] = {
     "auto_enabled": False,  # background scan loop on/off
     "interval_minutes": 30,
-    "window_days": 3,  # rolling recency window
+    "window_days": PULSE_WINDOW_DEFAULT,  # rolling recency window (#1086: 1–3 days)
     "scan_depth": PULSE_DEFAULT_DEPTH,  # fast | medium | slow
 }
+
+
+def coerce_pulse_window_days(value: object) -> int:
+    """READ normalization for the recent-work window (#1086): never throws, always in range.
+
+    A finite number rounds half away from zero (``floor(x + 0.5)``, the spelling
+    web/src/lib/recentWindow.ts uses too, because ``round()`` is banker's) and CLAMPS to
+    ``[PULSE_WINDOW_MIN, PULSE_WINDOW_MAX]``. Anything else — a boolean included, since
+    ``isinstance(True, int)`` is true — is the default.
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return PULSE_WINDOW_DEFAULT
+    try:
+        v = float(value)
+    except OverflowError:
+        # An integer past float range is what JS's JSON.parse reads as Infinity, and the TS twin
+        # gives Infinity the default — so this does too, rather than raising (review 5044).
+        return PULSE_WINDOW_DEFAULT
+    if not math.isfinite(v):
+        return PULSE_WINDOW_DEFAULT
+    return max(PULSE_WINDOW_MIN, min(PULSE_WINDOW_MAX, math.floor(v + 0.5)))
+
+
+def is_valid_pulse_window_days(value: object) -> bool:
+    """WRITE gate: an int (never a bool, never a float) in range. Strict: a 422, never coerced."""
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and PULSE_WINDOW_MIN <= value <= PULSE_WINDOW_MAX
+    )
 
 
 def get_pulse(path: Path | None = None) -> dict:
@@ -1286,13 +1322,14 @@ def get_pulse(path: Path | None = None) -> dict:
     if isinstance(raw, dict):
         if isinstance(raw.get("auto_enabled"), bool):
             out["auto_enabled"] = raw["auto_enabled"]
-        for k, lo, hi in (
-            ("interval_minutes", PULSE_INTERVAL_MIN, PULSE_INTERVAL_MAX),
-            ("window_days", PULSE_WINDOW_MIN, PULSE_WINDOW_MAX),
+        v = raw.get("interval_minutes")
+        if (
+            isinstance(v, int)
+            and not isinstance(v, bool)
+            and PULSE_INTERVAL_MIN <= v <= PULSE_INTERVAL_MAX
         ):
-            v = raw.get(k)
-            if isinstance(v, int) and not isinstance(v, bool) and lo <= v <= hi:
-                out[k] = v
+            out["interval_minutes"] = v
+        out["window_days"] = coerce_pulse_window_days(raw.get("window_days"))
         d = raw.get("scan_depth")
         if isinstance(d, str) and d in PULSE_DEPTHS:
             out["scan_depth"] = d
@@ -1318,14 +1355,22 @@ def validate_pulse_patch(patch: object) -> str | None:
         return f"unknown pulse fields: {sorted(unknown)}"
     if "auto_enabled" in patch and not isinstance(patch["auto_enabled"], bool):
         return "pulse.auto_enabled must be a boolean"
-    for k, lo, hi in (
-        ("interval_minutes", PULSE_INTERVAL_MIN, PULSE_INTERVAL_MAX),
-        ("window_days", PULSE_WINDOW_MIN, PULSE_WINDOW_MAX),
-    ):
-        if k in patch:
-            v = patch[k]
-            if not isinstance(v, int) or isinstance(v, bool) or not (lo <= v <= hi):
-                return f"pulse.{k} must be an integer between {lo} and {hi}"
+    if "interval_minutes" in patch:
+        v = patch["interval_minutes"]
+        if (
+            not isinstance(v, int)
+            or isinstance(v, bool)
+            or not (PULSE_INTERVAL_MIN <= v <= PULSE_INTERVAL_MAX)
+        ):
+            return (
+                f"pulse.interval_minutes must be an integer between "
+                f"{PULSE_INTERVAL_MIN} and {PULSE_INTERVAL_MAX}"
+            )
+    if "window_days" in patch and not is_valid_pulse_window_days(patch["window_days"]):
+        return (
+            f"pulse.window_days must be an integer between "
+            f"{PULSE_WINDOW_MIN} and {PULSE_WINDOW_MAX}"
+        )
     if "scan_depth" in patch and patch["scan_depth"] not in PULSE_DEPTHS:
         return f"pulse.scan_depth must be one of {list(PULSE_DEPTHS)}"
     return None

@@ -54,7 +54,8 @@ def _patch(c, cfg, csrf, pid, body):
 
 
 def test_registry_covers_every_system_prompt():
-    assert len(prompts.REGISTRY) == 15  # #956 removed pulse_banner; #1088 added mission_judge
+    # #956 removed pulse_banner; #1088 added mission_judge; #1086 added pulse_recap
+    assert len(prompts.REGISTRY) == 16
     assert len(prompts.IDS) == len(set(prompts.IDS))
     # PINNED BY NAME, not by count — adding a guarded prompt should have to say so here.
     # `mission_objectives` earns it without emitting a verb: an objective list is what the
@@ -98,6 +99,7 @@ EXPECTED_DEFAULT_SHA = {
     "handoff_brief": "6229dae66d00c62f",
     "auto_sort": "e7dcb9cc74f397aa",
     "pulse_session_line": "2c5ed998d9df3d00",
+    "pulse_recap": "9be97db184a142c7",  # #1086
     # #1069: Ask covers missions too — both stages name the mission kind and its content.
     "ask_catalog": "4a0cadec55d2678b",
     "ask_verify": "2ea52d623aa35336",

@@ -39,7 +39,7 @@ import os
 import time
 from pathlib import Path
 
-from . import atomicjson, engines, metadata, projects, prompts, review
+from . import atomicjson, engines, metadata, prefs, projects, prompts, review
 
 # Bump when the artifact shape (cards / banner / top-level fields) changes incompatibly —
 # `load_cache` treats any other version as a miss so an old shape never renders wrong.
@@ -50,9 +50,10 @@ from . import atomicjson, engines, metadata, projects, prompts, review
 # carries a stale `banner` key is simply ignored field-wise.
 CACHE_VERSION = 2
 
-WINDOW_DAYS_DEFAULT = 3
+# 1–3 days, default 1 (#1086) — the same numbers as `prefs.PULSE_WINDOW_*`, which own the rule.
+WINDOW_DAYS_DEFAULT = 1
 WINDOW_DAYS_MIN = 1
-WINDOW_DAYS_MAX = 30
+WINDOW_DAYS_MAX = 3
 
 # `medium` (banner only) was removed in #956; `coerce_depth` maps it — like any unknown — to fast.
 SCAN_DEPTHS: tuple[str, ...] = ("fast", "slow")
@@ -93,10 +94,9 @@ def _cache_path() -> Path:
 
 
 def coerce_window_days(value: object) -> int:
-    """Narrow any input to a window in ``[MIN, MAX]`` days, falling back to the default."""
-    if isinstance(value, int) and not isinstance(value, bool):
-        return max(WINDOW_DAYS_MIN, min(WINDOW_DAYS_MAX, value))
-    return WINDOW_DAYS_DEFAULT
+    """Narrow any input to a window in ``[MIN, MAX]`` days — `prefs.coerce_pulse_window_days`,
+    the one read rule (#1086), so a scan and the stored pref can never disagree about a window."""
+    return prefs.coerce_pulse_window_days(value)
 
 
 def coerce_depth(value: object) -> str:

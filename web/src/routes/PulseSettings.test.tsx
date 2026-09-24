@@ -57,22 +57,22 @@ test("toggling auto-scan persists pulse.auto_enabled (#441 P6)", async () => {
   expect(api.setPrefs).toHaveBeenCalledWith({ pulse: { auto_enabled: true } });
 });
 
-test("the window commits on blur within bounds; out-of-range reverts (#441 P6)", async () => {
+test("the window commits on blur within bounds; out-of-range reverts (#441 P6, #1086)", async () => {
   renderPanel(block({ window_days: 3 }));
   const input = screen.getByLabelText(/recent window/i);
   await userEvent.clear(input);
-  await userEvent.type(input, "7");
+  await userEvent.type(input, "2");
   await userEvent.tab();
-  expect(api.setPrefs).toHaveBeenCalledWith({ pulse: { window_days: 7 } });
+  expect(api.setPrefs).toHaveBeenCalledWith({ pulse: { window_days: 2 } });
 
   vi.mocked(api.setPrefs).mockClear();
   await userEvent.clear(input);
-  await userEvent.type(input, "99"); // above the 30-day ceiling → revert, no save
+  await userEvent.type(input, "7"); // valid under the old 1–30 range, above the 3-day ceiling now
   await userEvent.tab();
   expect(api.setPrefs).not.toHaveBeenCalled();
   expect(input).toHaveValue(3);
   // …and the revert says why instead of silently snapping back.
-  expect(screen.getByText(/between 1 and 30 days/i)).toBeInTheDocument();
+  expect(screen.getByText(/between 1 and 3 days/i)).toBeInTheDocument();
 });
 
 test("a successful save flashes a Saved note and refreshes the config context", async () => {

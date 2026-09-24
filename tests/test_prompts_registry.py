@@ -34,6 +34,7 @@ EXPECTED_SITES = {
     ("orchestrator_chat.py", "chat_route"),
     ("orchestrator_chat.py", "chat_instruct"),
     ("pulse.py", "pulse_session_line"),
+    ("work_recap.py", "pulse_recap"),  # #1086: RECENT WORK above Ask
     ("pulse_chat.py", "ask_catalog"),
     ("pulse_chat.py", "ask_verify"),
     ("review.py", "tail_review"),

@@ -96,6 +96,19 @@ _PULSE_LINE = (
     'Reply with ONLY a JSON object: {"line": "<one line, max 140 chars>"}.'
 )
 
+_WORK_RECAP = (
+    "You write a short chronological account of what a developer did across their AI-coding "
+    "sessions over the last day or few days. You are given the window and a list of sessions, "
+    "each with a key, title, project, agent, last-activity time and a recap of what happened in "
+    "it. Write entries in the order things happened: each entry names ONE session by its key, a "
+    "time taken from that session's own activity, and one plain sentence in the past tense saying "
+    "what the developer got done or where it stands \u2014 lead with the outcome, not the tool. "
+    "Merge trivial steps; skip sessions where nothing worth reporting happened. Use only keys "
+    "from the list and only times inside the window. No markdown, no preamble. Reply with ONLY a "
+    'JSON object: {"entries": [{"session_key": "<key from the list>", "ts": <unix seconds>, '
+    '"text": "<one sentence, max 200 chars>"}]}.'
+)
+
 _ASK_CATALOG = (
     "You help a developer find their past AI-coding sessions and missions. You are given "
     "their question (and possibly prior conversation turns) plus a catalog. Each entry has "
@@ -407,6 +420,20 @@ REGISTRY: tuple[Prompt, ...] = (
         max_chars=2000,
         block=BLOCK,
         field="pulse_session_line",
+    ),
+    Prompt(
+        id="pulse_recap",
+        group="Mission control",
+        label="Recent work",
+        description=(
+            "The chronological summary above Ask: what you did across sessions in the recent-work "
+            "window, one entry per step, each tied to its session."
+        ),
+        contract='{"entries": [{"session_key": str, "ts": number, "text": str}]}',
+        default=_WORK_RECAP,
+        max_chars=4000,
+        block=BLOCK,
+        field="pulse_recap",
     ),
     Prompt(
         id="ask_catalog",

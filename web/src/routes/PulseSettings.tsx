@@ -2,13 +2,19 @@ import { Activity } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useConfig, useConfigRefresh } from "../app/config";
 import { api, ApiError } from "../lib/api";
+import {
+  isRecentWindowDays,
+  RECENT_WINDOW_DEFAULT,
+  RECENT_WINDOW_MAX,
+  RECENT_WINDOW_MIN,
+} from "../lib/recentWindow";
 import type { PulseConfig, PulseDepth } from "../types/api";
 import styles from "./Settings.module.css";
 
 const FALLBACK: PulseConfig = {
   auto_enabled: false,
   interval_minutes: 30,
-  window_days: 3,
+  window_days: RECENT_WINDOW_DEFAULT,
   scan_depth: "fast",
   configured: false,
 };
@@ -112,7 +118,7 @@ export function PulseSettings() {
     }
   };
 
-  // Bounds mirror the server (interval 5–1440 min, window 1–30 days); out-of-range reverts
+  // Bounds mirror the server (interval 5–1440 min, window 1–3 days, #1086); out-of-range reverts
   // to the saved value, with a message saying why instead of a silent snap-back.
   const commitInterval = () => {
     const n = Number(intervalDraft);
@@ -128,10 +134,10 @@ export function PulseSettings() {
   };
   const commitWindow = () => {
     const n = Number(windowDraft);
-    if (!Number.isInteger(n) || n < 1 || n > 30) {
+    if (!isRecentWindowDays(n)) {
       setWindowDraft(String(block.window_days));
       setError(
-        "The recent window must be a whole number between 1 and 30 days.",
+        `The recent window must be a whole number between ${RECENT_WINDOW_MIN} and ${RECENT_WINDOW_MAX} days.`,
       );
       return;
     }
@@ -237,8 +243,8 @@ export function PulseSettings() {
             id="pulse-window"
             className={`${styles.aiInput} ${styles.aiIntervalInput}`}
             type="number"
-            min={1}
-            max={30}
+            min={RECENT_WINDOW_MIN}
+            max={RECENT_WINDOW_MAX}
             value={windowDraft}
             onChange={(e) => setWindowDraft(e.target.value)}
             onBlur={commitWindow}

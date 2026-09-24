@@ -51,12 +51,12 @@ def _write_raw_prefs(doc: dict) -> None:
 
 
 def test_a_stored_medium_depth_reads_as_fast_and_keeps_the_rest_of_the_block():
-    _write_raw_prefs({"pulse": {"scan_depth": "medium", "auto_enabled": True, "window_days": 7}})
+    _write_raw_prefs({"pulse": {"scan_depth": "medium", "auto_enabled": True, "window_days": 2}})
     got = prefs.get_pulse()
     # Same visible output: medium only ever added a banner nothing rendered.
     assert got["scan_depth"] == "fast"
     assert got["auto_enabled"] is True
-    assert got["window_days"] == 7
+    assert got["window_days"] == 2
 
 
 def test_writing_medium_is_refused_not_coerced(auth_cfg, fake_jsonl):

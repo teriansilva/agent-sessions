@@ -381,13 +381,15 @@ def test_config_exposes_pulse_and_prefs_roundtrip(auth_cfg, fake_jsonl):
     assert cfg["pulse"]["configured"] is False  # no ai_review endpoint → synthesis would degrade
     r = c.post(
         "/api/prefs",
-        json={"pulse": {"auto_enabled": True, "scan_depth": "slow", "window_days": 7}},
+        json={"pulse": {"auto_enabled": True, "scan_depth": "slow", "window_days": 3}},
         headers=hdr,
     )
     assert r.status_code == 200
     assert r.json()["pulse"]["auto_enabled"] is True
     after = c.get("/api/config").json()["pulse"]
-    assert after["scan_depth"] == "slow" and after["window_days"] == 7
+    assert after["scan_depth"] == "slow" and after["window_days"] == 3
+    over = c.post("/api/prefs", json={"pulse": {"window_days": 7}}, headers=hdr)
+    assert over.status_code == 422  # #1086: the window is 1–3 days, and a write is strict
     bad = c.post("/api/prefs", json={"pulse": {"scan_depth": "turbo"}}, headers=hdr)
     assert bad.status_code == 422
     # `medium` was removed (#956): writing it is refused, never coerced.

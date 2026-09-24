@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -37,6 +38,7 @@ from .. import (
     menu_answer,
     metadata,
     missions,
+    needs_you,
     notifications,
     orchestrator,
     orchestrator_chat,
@@ -47,7 +49,11 @@ from .. import (
     review,
     session_input,
     webpush,
+    work_recap,
 )
+from .sessions import _hard_scope_filter
+
+log = logging.getLogger(__name__)
 
 # How many ledger rows the activity feed carries. Bounded so a long-lived install's
 # history can't make the Pulse page payload grow without limit.
@@ -356,6 +362,146 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # overlay and two callers computing "what is busy" differently would propose against
         # different views of the world.
         return actuator.working_keys(registry)
+
+    def _pending_checked() -> list[dict]:
+        """The operator-pending actions, PROJECTED, from ONE checked ledger snapshot.
+
+        `_pending_and_feed` reads through `live_actions`, which turns an unreadable ledger into
+        "no actions" — right for a feed, wrong for a worklist, where it silently drops every
+        decision-only session. So this reads `latest_by_id_checked` once and derives the rows from
+        that same snapshot: a separate health probe followed by the fail-soft read would race.
+        """
+        status, latest = orchestrator_ledger.latest_by_id_checked()
+        if status != "ok":
+            raise needs_you.LedgerUnavailable
+        cfg = _orchestrator_cfg()
+        titles: dict[str, dict] = {}
+        return [
+            _operator_projection(r, cfg, titles)
+            for r in latest.values()
+            if r.get("state") in orchestrator_ledger.OPERATOR_PENDING_STATES
+        ]
+
+    def _in_scope_cards(cards: list[dict]) -> list[dict]:
+        """Roots + ``folder_exclusions`` — the TERMINAL's form of the boundary (#867).
+
+        The Ask page lists these sessions and (#1086 Phase 3) acts on them, so a session the
+        terminal would refuse to resume is neither named nor summarised here. The strict form
+        (`honour_curation=False`) is the one resume uses; the list's looser form would let an
+        adopted out-of-root session through to a surface that can type into it.
+        """
+        in_scope = _hard_scope_filter(honour_curation=False)
+        return [
+            c
+            for c in cards
+            if isinstance(c.get("cwd"), str)
+            and in_scope(c["cwd"], c.get("project") or {"kind": ""})
+        ]
+
+    @app.get("/api/pulse/recap")
+    async def recent_work(
+        window_days: int | None = None, _user: str = Depends(logged_in)
+    ) -> JSONResponse:
+        """RECENT WORK above Ask (#1086) — never calls the model. See `work_recap.read`."""
+        wd = pulse.coerce_window_days(
+            window_days if window_days is not None else prefs.get_pulse()["window_days"]
+        )
+        configured = bool(prefs.public_ai_review()["configured"])
+
+        def _read() -> dict:
+            cards = _in_scope_cards(work_recap.cards_for(wd))
+            return work_recap.read(cards, window_days=wd, configured=configured)
+
+        return JSONResponse(await asyncio.to_thread(_read))
+
+    @app.post("/api/pulse/recap")
+    async def refresh_recent_work(
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """Write a fresh RECENT WORK summary (one completion; a no-op when nothing changed).
+
+        Single-flight under its own kind, so it never blocks a scan, an Ask or a pass. The body
+        may name ``window_days`` (coerced like every read); anything else in it is ignored.
+        """
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 — an empty or non-JSON body means "the stored window"
+            body = None
+        raw = body.get("window_days") if isinstance(body, dict) else None
+        wd = pulse.coerce_window_days(raw if raw is not None else prefs.get_pulse()["window_days"])
+        try:
+            async with aitasks.single_flight("work-recap", f"{wd}d"):
+                cards = await asyncio.to_thread(lambda: _in_scope_cards(work_recap.cards_for(wd)))
+                out = await work_recap.generate(cards, window_days=wd)
+        except aitasks.AlreadyRunning:
+            return JSONResponse(
+                {"detail": "a recent-work summary is already being written"}, status_code=409
+            )
+        return JSONResponse(out)
+
+    @app.get("/api/pulse/needs-you")
+    async def needs_you_feed(
+        window_days: int | None = None,
+        engine: str | None = None,
+        project: str | None = None,
+        _user: str = Depends(logged_in),
+    ) -> JSONResponse:
+        """The Ask page's NEEDS YOU list (#1086) — sessions no mission holds that need the
+        operator, newest first, with the one decision each row can settle. See `needs_you`.
+
+        ``window_days`` defaults to the stored pref and is COERCED like every read of it (1–3).
+        The filters are plain equality on the engine id and the project id; facets ride over the
+        unfiltered set. It decides nothing. Its one write is the ledger housekeeping every
+        decision read runs first (`actuator.housekeep_pending`: expire overdue actions, withdraw
+        undeliverable ones, #969), so an expired proposal is never offered here. It runs off the
+        event loop — it scans, reads the ledger and a live screen per shown row (#678).
+        """
+        wd = pulse.coerce_window_days(
+            window_days if window_days is not None else prefs.get_pulse()["window_days"]
+        )
+        engine_f = (engine or "").strip()[:64] or None
+        project_f = (project or "").strip()[:200] or None
+
+        def _build() -> dict:
+            cards = _in_scope_cards(pulse.build_cards(window_days=wd))
+            # The same retirement every other decision read applies first (#969): an expired or
+            # undeliverable proposal must not be offered as approvable here either.
+            try:
+                actuator.housekeep_pending()
+            except Exception:  # noqa: BLE001 — `needs_you` also refuses a past-deadline action
+                log.debug("needs-you: housekeeping failed", exc_info=True)
+            pending = _pending_checked()
+            try:
+                held: set[str] | None = set(missions.all_active_memberships())
+            except Exception:  # noqa: BLE001 — unreadable ownership is its own answer
+                held = None
+            out = needs_you.build(
+                cards,
+                pending,
+                held,
+                observe=lambda row: orchestrator.observed_prompt_for(
+                    engines.physical_key(row["id"])
+                ),
+                engine=engine_f,
+                project=project_f,
+            )
+            out["window_days"] = wd
+            return out
+
+        try:
+            return JSONResponse(await asyncio.to_thread(_build))
+        except needs_you.MembershipUnavailable:
+            return JSONResponse(
+                {"detail": "mission membership could not be read, so ownership is unknown"},
+                status_code=503,
+            )
+        except needs_you.LedgerUnavailable:
+            return JSONResponse(
+                {"detail": "the action ledger could not be read, so pending decisions are unknown"},
+                status_code=503,
+            )
 
     @app.get("/api/pulse")
     async def get_pulse(_: str = Depends(logged_in)) -> JSONResponse:

@@ -58,6 +58,7 @@ STORE_ENV_PATHS: dict[str, str] = {
     "AGENT_SESSIONS_TEMPLATE_VARS": ".config/agent-sessions/template-variables.json",
     "AGENT_SESSIONS_TEMPLATE_SECRETS_KEY": ".config/agent-sessions/template-secrets.key",
     "AGENT_SESSIONS_PULSE_CACHE": ".config/agent-sessions/pulse-cache.json",
+    "AGENT_SESSIONS_WORK_RECAP": ".config/agent-sessions/work-recap.json",  # #1086
     "AGENT_SESSIONS_VAPID_KEYS": ".config/agent-sessions/vapid.json",
     "AGENT_SESSIONS_HOME": ".local/share/agent-sessions",
     "AGENT_SESSIONS_OPENCODE_DB": ".local/share/opencode/opencode.db",
@@ -472,6 +473,12 @@ def _isolate_notifications(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv(
         "AGENT_SESSIONS_ORCHESTRATOR_LEDGER",
         str(tmp_path / ".config" / "agent-sessions" / "orchestrator-ledger.jsonl"),
+    )
+    # #1086: the RECENT WORK summary cache. A test that generates one must never overwrite the
+    # operator's, and a stale real cache must never decide what a test reads.
+    monkeypatch.setenv(
+        "AGENT_SESSIONS_WORK_RECAP",
+        str(tmp_path / ".config" / "agent-sessions" / "work-recap.json"),
     )
 
 

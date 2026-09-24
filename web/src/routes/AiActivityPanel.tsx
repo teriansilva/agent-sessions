@@ -24,6 +24,8 @@ const KINDS: { kind: string; label: string }[] = [
   { kind: "mission-question", label: "Mission questions" },
   // `pulse-chat` is the single-flight kind shared by mission chat turns and Ask.
   { kind: "pulse-chat", label: "Mission chat" },
+  // #1086: the Recent work summary above Ask.
+  { kind: "work-recap", label: "Recent work summary" },
 ];
 
 const POLL_MS = 3000;
