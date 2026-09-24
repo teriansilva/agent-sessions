@@ -1,13 +1,14 @@
-"""A decision nobody can act on is not counted, and not pushed (#1057, operator's call on #1054).
+"""Which decisions are COUNTED, and which are PUSHED (#1057, widened by #1086 Phase 3).
 
-Since #1049 removed the session pane's decision strip, the mission console is the only surface
-that renders Approve / Reject, and it renders a decision exactly when a mission holds the
-decision's session. So:
+#1049 removed the session pane's decision strip, so for a while the mission console was the only
+surface that rendered Approve / Reject, and #1057 took mission-less decisions out of the count.
+#1086 Phase 3 gives them a surface again — the Ask page's NEEDS YOU list — so:
 
-* **Held** — counted in the unread badge and pushed, exactly as before.
-* **Mission-less** — still LISTED in the bell (visibility is never traded away; the Open link
-  still leads to the session), but neither counted as actionable nor as `uncertain`, and not
-  pushed: nothing the operator could do would clear it.
+* **Counted** — every actionable decision, held or not: the mission console settles a held one,
+  the Ask page a mission-less one. Detaching a session moves its decision between the two surfaces;
+  it does not take it out of the count.
+* **Pushed** — still only a HELD session's escalation. Pushes for standalone decisions wait for
+  #1086 Phase 4's conservative, withdrawable notifications (`notifications.mission_surfaces`).
 * **Membership unreadable** — an unestablishable answer, resolved the way #852 rule 5 resolves
   the others: `uncertain` in the bell, and the push fails toward announcing.
 
@@ -68,26 +69,26 @@ def _escalate(action_id: str, session: str) -> None:
     )
 
 
-def test_a_held_decision_counts_and_a_mission_less_one_is_listed_but_not_counted(held):
+def test_held_and_mission_less_decisions_both_count_once_ask_can_act_on_them(held):
+    """#1086 Phase 3 reverses #1057's exclusion: a mission-less decision is settled on the Ask
+    page, so it is something the operator can clear by acting, and the badge counts it."""
     _escalate("act-held", HELD)
     _escalate("act-loose", LOOSE)
 
     out = notifications.listing()
     listed = {r["action_id"] for r in out["notifications"]}
-    assert listed == {"act-held", "act-loose"}, "a decision with no surface must stay VISIBLE"
-    assert out["unread"] == 1, "only the decision the mission console can act on is counted"
-    assert (
-        out["uncertain"] == 0
-    ), "a mission-less decision is KNOWN to have no surface — that is not an uncertain state"
+    assert listed == {"act-held", "act-loose"}
+    assert out["unread"] == 2, "the mission console settles one, the Ask page the other"
+    assert out["uncertain"] == 0
 
 
-def test_detaching_the_session_takes_its_decision_out_of_the_count(held):
-    """The count follows membership at READ time, the same fact the console renders from."""
+def test_detaching_a_session_moves_its_decision_to_Ask_and_keeps_it_counted(held):
+    """Detaching changes WHICH surface settles the decision, not whether one does."""
     _escalate("act-held", HELD)
     assert notifications.listing()["unread"] == 1
     missions.detach(held["id"], HELD)
     out = notifications.listing()
-    assert out["unread"] == 0
+    assert out["unread"] == 1
     assert [r["action_id"] for r in out["notifications"]] == ["act-held"]
 
 
@@ -131,7 +132,7 @@ def test_a_held_escalation_is_pushed(held, monkeypatch):
 def test_a_mission_less_escalation_is_listed_but_not_pushed(held, monkeypatch):
     assert (
         _persist_escalation("act-loose", LOOSE, monkeypatch) == []
-    ), "a push must not wake the operator for a decision no surface can take"
+    ), "pushes for standalone decisions wait for #1086 Phase 4's withdrawable notifications"
     assert [r["action_id"] for r in notifications.listing()["notifications"]] == ["act-loose"]
 
 

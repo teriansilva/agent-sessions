@@ -59,6 +59,7 @@ STORE_ENV_PATHS: dict[str, str] = {
     "AGENT_SESSIONS_TEMPLATE_SECRETS_KEY": ".config/agent-sessions/template-secrets.key",
     "AGENT_SESSIONS_PULSE_CACHE": ".config/agent-sessions/pulse-cache.json",
     "AGENT_SESSIONS_WORK_RECAP": ".config/agent-sessions/work-recap.json",  # #1086
+    "AGENT_SESSIONS_NEEDS_YOU_DISMISSED": ".config/agent-sessions/needs-you-dismissed.json",
     "AGENT_SESSIONS_VAPID_KEYS": ".config/agent-sessions/vapid.json",
     "AGENT_SESSIONS_HOME": ".local/share/agent-sessions",
     "AGENT_SESSIONS_OPENCODE_DB": ".local/share/opencode/opencode.db",
@@ -791,6 +792,9 @@ def every_session_held(monkeypatch) -> None:
     from agent_sessions import notifications
 
     monkeypatch.setattr(notifications, "decision_surfaces", lambda: _EverySession())
+    # …and the PUSH gate's membership (#1086 Phase 3 split it out as `mission_surfaces`): this
+    # fixture means "some mission holds every session", which is the push rule's input too.
+    monkeypatch.setattr(notifications, "mission_surfaces", lambda: _EverySession())
 
 
 @pytest.fixture(autouse=True)

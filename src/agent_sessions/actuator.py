@@ -831,7 +831,40 @@ def withdraw_undeliverable(path=None) -> list[str]:
     probe for a session with no writer); call under ``asyncio.to_thread``.
     """
     moved: list[str] = []
+    evidence = None  # computed once, only if a standalone candidate exists
+    held: set[str] | None = None
     for rec in ledger.live_actions(path):
+        if rec.get("state") not in ledger.OPERATOR_PENDING_STATES:
+            continue
+        # NO SURFACE LEFT (#1086 review 5184). A standalone decision is settled on the Ask page,
+        # which lists only sessions that are in scope, not archived and not review-excluded. One
+        # whose session stopped being listed after it was proposed can no longer be acted on
+        # anywhere — and would still count in the badge. Withdrawn, with the reason — but ONLY on
+        # facts the OPERATOR RECORDED (review 5188): the sidecar's `archived` / `review_excluded`
+        # flags, or the action's own proposal-time `cwd` now outside roots + `folder_exclusions`.
+        # Never on a scan's absence: scans fail soft, and one transient read error must not
+        # durably withdraw a valid decision. Unreadable anything → no evidence → keep it. A held
+        # session's decision belongs to its mission console; an unreadable membership store
+        # withdraws nothing. Unarchiving later means a NEW pass may propose again.
+        if not rec.get("mission_id"):
+            if held is None:
+                held = _held_sessions()
+            sid = str(rec.get("session_id") or "")
+            if held is not None and sid not in held:
+                if evidence is None:
+                    evidence = _surface_evidence()
+                if evidence is not None and _no_surface(rec, *evidence):
+                    # Every state that COUNTS (escalations included), never `claimed`.
+                    if ledger.compare_and_set(
+                        rec["id"],
+                        ledger.OPERATOR_PENDING_STATES - {"claimed"},
+                        "stale",
+                        path,
+                        detail=NO_SURFACE_DETAIL,
+                    ):
+                        moved.append(rec["id"])
+                    continue
+        # The live-screen rules below are about DELIVERY, so only claimable actions are theirs.
         if rec.get("state") not in CLAIMABLE_STATES:
             continue
         try:
@@ -849,6 +882,46 @@ def withdraw_undeliverable(path=None) -> list[str]:
         if ledger.compare_and_set(rec["id"], CLAIMABLE_STATES, "stale", path, detail=why):
             moved.append(rec["id"])
     return moved
+
+
+NO_SURFACE_DETAIL = "its session is no longer listed (archived, excluded or out of scope)"
+
+
+def _held_sessions() -> set[str] | None:
+    """Sessions an open mission holds, or ``None`` when the store cannot be read."""
+    try:
+        from . import missions
+
+        return set(missions.all_active_memberships())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _surface_evidence():
+    """``(metadata index, aliases, in_scope)`` for :func:`_no_surface`, or ``None``. Blocking.
+
+    All three fail toward "no evidence": `metadata.load` answers ``{}`` for an unreadable sidecar
+    (no flags → nothing withdrawn), and a prefs read that fails returns no exclusions."""
+    try:
+        from .routes.sessions import _hard_scope_filter
+
+        return metadata.load(), metadata.load_aliases(), _hard_scope_filter(honour_curation=False)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _no_surface(rec: dict, meta_index: dict, aliases: dict, in_scope) -> bool:
+    """True only on RECORDED evidence that the Ask page cannot list this action's session."""
+    sid = str(rec.get("session_id") or "")
+    try:
+        phys = engines.physical_key(sid, aliases)
+    except Exception:  # noqa: BLE001
+        phys = sid
+    m = meta_index.get(sid) or meta_index.get(phys)
+    if m is not None and (m.archived is True or m.review_excluded):
+        return True
+    cwd = rec.get("cwd")
+    return isinstance(cwd, str) and bool(cwd) and not in_scope(cwd, {"kind": ""})
 
 
 def housekeep_pending(path=None) -> tuple[list[str], list[str]]:
@@ -869,6 +942,7 @@ async def deliver(
     authority=None,
     extra_fingerprint=None,
     operator_approval: bool = False,
+    edit: dict | None = None,
 ) -> dict:
     """Deliver one ledger action. Returns the resulting ledger record.
 
@@ -885,6 +959,12 @@ async def deliver(
         raise NotDeliverable("unknown action")
     if rec.get("state") not in CLAIMABLE_STATES:
         raise NotDeliverable(f"action is {rec.get('state')}, not deliverable")
+    # An operator's EDIT (#1086): never written to the pending proposal, only carried here — the
+    # bytes are rendered from this view and the claim below writes the same fields atomically.
+    if edit is not None and not operator_approval:
+        raise NotDeliverable("an edit is delivered only on the operator's own approval")
+    read_ts = rec.get("ts")
+    view = {**rec, **edit} if edit else rec
 
     exp = rec.get("expires_at")
     if isinstance(exp, int | float) and time.time() >= exp:
@@ -930,7 +1010,7 @@ async def deliver(
 
     try:
         # Off the loop: a supervisor nudge re-reads its objective from the missions store.
-        payload = await asyncio.to_thread(render, rec, cfg)
+        payload = await asyncio.to_thread(render, view, cfg)
     except RenderStale as e:
         return _settle_waiting(action_id, "stale", detail=str(e)) or rec
     except NotDeliverable as e:
@@ -942,8 +1022,11 @@ async def deliver(
 
     # Claim BEFORE writing, and ATOMICALLY. A read-then-write across two lock holds lets two
     # callers both see `proposed` and both write — a duplicate `choose` answers a prompt twice.
-    if ledger.claim(action_id, CLAIMABLE_STATES) is None:
-        raise NotDeliverable("another caller claimed this action first")
+    # …and against the REVISION that was read and rendered (#1086 review 5184): a record that moved
+    # since — another claim, another edit, a state change — makes this view stale, so it types
+    # nothing. The edit's fields ride the claim itself.
+    if ledger.claim(action_id, CLAIMABLE_STATES, expect_ts=read_ts, **(edit or {})) is None:
+        raise NotDeliverable("another caller claimed or changed this action first")
 
     sup_check, sup_state = _supervisor_authority(rec)
     mem_check, mem_state = _mission_membership_authority(rec)

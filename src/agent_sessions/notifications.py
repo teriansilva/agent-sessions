@@ -516,15 +516,46 @@ def _row_projection(row: dict, states: dict[str, str] | None) -> dict:
     return ledger.project_for_operator(states.get(aid) if known else None, known=known)
 
 
-def decision_surfaces() -> set[str] | None:
-    """The sessions whose pending decision has somewhere to be ACTED on, or ``None`` if that
-    cannot be established (#1057).
+class _EverySession:
+    """Membership that contains every session key: each pending decision has a surface.
 
-    Since the session pane's decision strip was removed (#1049), the one surface that renders
-    Approve / Reject is the mission console, and it draws a decision exactly when the decision's
-    session is an OPEN member of the mission (`MissionBody.decisions`: card id in the mission's
-    un-removed session keys). This is that same membership, read by the same key, so the badge
-    and the console cannot disagree about which decisions have a home.
+    Since #1086 Phase 3, a decision for a session a mission holds is settled in the mission
+    console, and one for a session no mission holds is settled on the Ask page (NEEDS YOU) — so
+    whichever it is, the operator can act on it. Only an UNREADABLE membership store leaves that
+    unestablished, and that stays ``None`` below.
+    """
+
+    def __contains__(self, _key: object) -> bool:
+        return True
+
+
+EVERY_SESSION = _EverySession()
+
+
+def mission_surfaces() -> set[str] | None:
+    """The sessions an OPEN mission holds, or ``None`` if the membership cannot be read (#1057).
+
+    Kept separate from :func:`decision_surfaces` for one caller: the orchestrator's PUSH gate.
+    Until #1086 Phase 4 lands conservative, withdrawable notifications, a push for a standalone
+    escalation stays off — the badge widening below must not quietly re-enable pushes.
+    """
+    try:
+        from . import missions
+
+        return set(missions.all_active_memberships())
+    except Exception:  # noqa: BLE001 — unreadable is its own answer
+        log.debug("notifications: could not read mission membership", exc_info=True)
+        return None
+
+
+def decision_surfaces() -> set[str] | _EverySession | None:
+    """The sessions whose pending decision has somewhere to be ACTED on, or ``None`` if that
+    cannot be established (#1057, widened by #1086 Phase 3).
+
+    A session a mission holds is decided in the mission console; one no mission holds is decided
+    on the Ask page's NEEDS YOU list, which the orchestrator's eligibility and that list both scope
+    to the same roots + ``folder_exclusions`` boundary. So every session has a surface —
+    :data:`EVERY_SESSION` — once the membership that decides WHICH surface can be read.
 
     ``None`` is not "no surfaces": an unreadable membership store is an unestablishable answer,
     and it resolves the way #852 rule 5 resolves every other one — counted as `uncertain`, never
@@ -532,17 +563,11 @@ def decision_surfaces() -> set[str] | None:
 
     Read WITHOUT the notifications lock held — see :func:`listing`.
     """
-    try:
-        from . import missions
-
-        return set(missions.all_active_memberships())
-    except Exception:  # noqa: BLE001 — unreadable is its own answer, see above
-        log.debug("notifications: could not read mission membership", exc_info=True)
-        return None
+    return None if mission_surfaces() is None else EVERY_SESSION
 
 
 def _counts_toward_badge(
-    row: dict, states: dict[str, str] | None, surfaces: set[str] | None
+    row: dict, states: dict[str, str] | None, surfaces: set[str] | _EverySession | None
 ) -> bool:
     """Does this unread row still want the operator, **and can the operator do anything?**
     (#852 rule 5.)
@@ -569,12 +594,11 @@ def _counts_toward_badge(
 
     **An actionable decision with no surface is not counted either (#1057).** The projection says
     whether the LEDGER would still accept a decision; it cannot say whether any screen offers one.
-    Since #1049 only the mission console does, so a decision for a session no mission holds is
-    one the operator cannot clear by acting — rule 5's defect by a second cause. It stays in the
-    listing (the bell's Open link still takes the operator to the session, to read and type), it
-    is simply not a number that asks for a decision. The membership is the SAME fact the console
-    renders from (:func:`decision_surfaces`), not a parallel derivation, and nothing
-    model-authored enters it.
+    Between #1049 and #1086 Phase 3 only the mission console did, so a decision for a session no
+    mission held was one the operator could not clear by acting — rule 5's defect by a second
+    cause. Since the Ask page's NEEDS YOU list acts on those, every decision has a surface again
+    (:func:`decision_surfaces`); what remains uncountable is an UNREADABLE membership, which is
+    `uncertain`. Nothing model-authored enters this.
     """
     if row.get("escalation") is not True:
         return False  # a log entry, never a decision
@@ -585,7 +609,9 @@ def _counts_toward_badge(
     return surfaces is not None and str(row.get("session_id") or "") in surfaces
 
 
-def _is_uncertain(row: dict, states: dict[str, str] | None, surfaces: set[str] | None) -> bool:
+def _is_uncertain(
+    row: dict, states: dict[str, str] | None, surfaces: set[str] | _EverySession | None
+) -> bool:
     """An escalation whose state could not be established — counted, but never as actionable.
 
     Either half can be unestablishable: the ledger state (`unknown`), or — for a decision the

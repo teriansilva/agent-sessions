@@ -174,6 +174,37 @@ def _base(cfg: dict) -> str:
 # --- input assembly ------------------------------------------------------------------
 
 
+def _turns(key: str, aliases: dict[str, str] | None = None) -> list:
+    """The engine's saved conversation as `transcript.Turn`s. Fail-soft: any error → []."""
+    try:
+        from . import engines
+
+        prov, native = engines.parse_key(engines.logical_key(key, aliases))
+    except Exception:
+        return []
+    adapter = transcript.adapter_for(prov.engine_id)
+    if adapter is None:
+        return []
+    try:
+        return list(adapter(native, Path.home()))
+    except Exception:
+        return []
+
+
+def last_words(key: str, max_chars: int = 1500) -> str:
+    """The session's LAST assistant message, plain text, at most ``max_chars``. Blocking.
+
+    What the Ask page's details show as "the session's last words" (#1086 Phase 3): the agent's
+    own final message from its transcript, never the screen, capped from the END so the question
+    it asked survives. "" when there is no transcript or no assistant text yet.
+    """
+    for t in reversed(_turns(key, _load_aliases())):
+        text = (t.text or "").strip()
+        if t.role == "assistant" and t.kind == "text" and text:
+            return text if len(text) <= max_chars else "…" + text[-max_chars:]
+    return ""
+
+
 def _plain_transcript(key: str, aliases: dict[str, str] | None = None) -> str:
     """The engine's saved conversation rendered as plain text (no ANSI). Fail-soft: any
     adapter/parse error → "" (live-tail-only review).
@@ -183,21 +214,8 @@ def _plain_transcript(key: str, aliases: dict[str, str] | None = None) -> str:
     it to the id the engine's own transcript store uses (#611) or every in-app-created session
     on those engines reviews with an empty transcript, on nothing but its terminal screen.
     """
-    try:
-        from . import engines
-
-        prov, native = engines.parse_key(engines.logical_key(key, aliases))
-    except Exception:
-        return ""
-    adapter = transcript.adapter_for(prov.engine_id)
-    if adapter is None:
-        return ""
-    try:
-        turns = adapter(native, Path.home())
-    except Exception:
-        return ""
     lines: list[str] = []
-    for t in turns:
+    for t in _turns(key, aliases):
         text = (t.text or "").strip()
         if not text:
             continue

@@ -697,6 +697,103 @@ export interface Evidence {
   available: boolean;
 }
 
+/** A numbered menu parsed server-side off a session's screen (`screen_menus`, #1060/#1082). */
+export interface ScreenMenu {
+  engine: string;
+  question: string;
+  options: { n: number; label: string; selected: boolean }[];
+}
+
+/** What kind of stop a NEEDS YOU row is at — read off the SCREEN, never from a model (#1086). */
+export type NeedsYouKind = "choice" | "approval" | "question" | "needs_inspection";
+
+/** The one decision a NEEDS YOU row can settle: the operator projection of a ledger action,
+ *  whitelisted server-side. `menu` is the menu an escalation RECORDED (what `/choose` checks). */
+export interface NeedsYouAction {
+  id: string;
+  verb: string;
+  state: string;
+  projection?: string;
+  can_approve?: boolean;
+  can_reject?: boolean;
+  confidence?: number;
+  rationale?: string;
+  escalation_reason?: string;
+  option?: number;
+  answer?: string;
+  ts?: number;
+  expires_at?: number;
+  menu?: ScreenMenu;
+  /** Details only: this decision's text can be edited before approving (answer / continue). */
+  editable?: boolean;
+  /** Details only: exactly what an unedited approve would type. */
+  suggested_text?: string;
+}
+
+export interface NeedsYouRow {
+  id: string;
+  engine: string;
+  title: string;
+  project: { id: string; name: string };
+  last_activity: number | null;
+  /** When it started needing you (the decision's time, else the review's). */
+  since: number;
+  reason: string;
+  summary: string;
+  flagged: boolean;
+  kind: NeedsYouKind;
+  menu: ScreenMenu | null;
+  action: NeedsYouAction | null;
+}
+
+export interface NeedsYouPayload {
+  rows: NeedsYouRow[];
+  total: number;
+  total_unfiltered: number;
+  /** Every session that needs you, before the filter and the row cap (membership, not display). */
+  needs_you_ids?: string[];
+  truncated: boolean;
+  facets: { engines: string[]; projects: { id: string; name: string }[] };
+  window_days: number;
+}
+
+export interface NeedsYouDetails {
+  id: string;
+  title: string;
+  engine: string;
+  project: { id: string; name: string };
+  reason: string;
+  /** The session's last assistant message, from its transcript. Agent text: render as text. */
+  last_words: string;
+  /** The live screen tail, read WITHOUT attaching a viewer. Agent text: render as text. */
+  screen: string;
+  prompt_class: string;
+  menu: ScreenMenu | null;
+  action: NeedsYouAction | null;
+}
+
+export interface RecentWorkEntry {
+  session_key: string;
+  ts: number;
+  text: string;
+  engine: string;
+  title: string;
+  project: { id: string; name: string };
+  /** That session's own stored recap, for the ▸ expansion. Agent-derived: render as text. */
+  session_recap: string;
+}
+
+export interface RecentWorkPayload {
+  window_days: number;
+  source: "ai" | "local";
+  generated_at: number | null;
+  /** A refresh would write something different (sessions moved on, or an entry aged out). */
+  stale: boolean;
+  configured: boolean;
+  error: string | null;
+  entries: RecentWorkEntry[];
+}
+
 export interface PulseAskMatch extends PulseCard {
   why: string;
   /** The live orchestrator action on this session, if there is one — server-supplied, never

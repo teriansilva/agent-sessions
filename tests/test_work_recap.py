@@ -315,7 +315,7 @@ def test_needs_you_honours_folder_exclusions_too(auth_cfg, fake_jsonl, cards, mo
         r["intervention_required"] = True
     monkeypatch.setattr(orchestrator_ledger, "live_actions", lambda *a, **k: [])
     monkeypatch.setattr(missions, "all_active_memberships", lambda **k: {})
-    monkeypatch.setattr(orchestrator, "observed_prompt_for", lambda key: None)
+    monkeypatch.setattr(orchestrator, "observed_screen", lambda key: None)
     prefs.set_folder_exclusions(["/secret"])
     c = _client(auth_cfg)
     _login(c, auth_cfg)

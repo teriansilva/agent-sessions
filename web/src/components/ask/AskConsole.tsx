@@ -46,7 +46,7 @@
  * composer already made for the session pane's Send (`terminal/Compose.module.css`). One box, drawn
  * one way, wherever it appears.
  */
-import { Send } from "lucide-react";
+import { Info, Send } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -92,6 +92,9 @@ function matchRoute(key: string): string {
 export function AskConsole({
   configured,
   intro,
+  pinned,
+  needsYou,
+  onDetails,
 }: {
   /** False when no AI endpoint is configured. `/api/pulse/ask` answers 409 in that case and has
    *  no local fallback, so the control is disabled and says why — `find` / `history` genuinely
@@ -99,6 +102,14 @@ export function AskConsole({
   configured: boolean;
   /** The greeting shown in the empty thread, before the first question. The page owns its words. */
   intro?: ReactNode;
+  /** Once a conversation has started, what stays pinned above it (#1086): the page's sections
+   *  collapsed into a bar, so NEEDS YOU never leaves the screen. `reset` starts a new
+   *  conversation — the turns are this page's own and transient (#878), so reset just drops them. */
+  pinned?: (reset: () => void) => ReactNode;
+  /** Sessions currently on the NEEDS YOU list: an answer row for one of them carries the marker
+   *  and ⓘ, which opens the same details the list does (#1086). */
+  needsYou?: Set<string>;
+  onDetails?: (sessionId: string) => void;
 }) {
   const [turns, setTurns] = useState<AskTurn[]>([]);
   const [text, setText] = useState("");
@@ -234,6 +245,11 @@ export function AskConsole({
 
   return (
     <div className={`${styles.threadCol} ${a.col}`} data-testid="ask-col">
+      {turns.length > 0 && pinned ? (
+        <div className={a.measure} data-testid="ask-pinned">
+          {pinned(() => setTurns([]))}
+        </div>
+      ) : null}
       <div className={styles.pane} ref={paneRef} data-testid="ask-pane">
         {turns.length === 0 ? (
           <div className={`${a.measure} ${a.intro}`}>{intro}</div>
@@ -300,11 +316,29 @@ export function AskConsole({
                           data-testid="ask-match"
                         >
                           <div className={styles.matchBody}>
-                            <div className={styles.eventText}>{m.title}</div>
+                            <div className={styles.eventText}>
+                              {m.title}
+                              {needsYou?.has(m.id) ? (
+                                <span className={a.needsTag} data-testid="ask-match-needs-you">
+                                  <span className={a.needsDot} aria-hidden="true" />
+                                  Needs you
+                                </span>
+                              ) : null}
+                            </div>
                             {m.why ? (
                               <div className={styles.objReason}>{m.why}</div>
                             ) : null}
                           </div>
+                          {needsYou?.has(m.id) && onDetails ? (
+                            <button
+                              type="button"
+                              className={a.detailsBtn}
+                              aria-label={`Details for ${m.title}`}
+                              onClick={() => onDetails(m.id)}
+                            >
+                              <Info size={16} aria-hidden="true" />
+                            </button>
+                          ) : null}
                           <Link
                             className={styles.openSession}
                             to={matchRoute(m.id)}

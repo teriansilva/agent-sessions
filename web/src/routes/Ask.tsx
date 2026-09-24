@@ -1,29 +1,125 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
 
 import { AskConsole } from "../components/ask/AskConsole";
-import { useConfig } from "../app/config";
+import s from "../components/ask/AskHome.module.css";
+import { NeedsYou } from "../components/ask/NeedsYou";
+import { NeedsYouDetailsDialog } from "../components/ask/NeedsYouDetailsDialog";
+import { needsYouIds } from "../components/ask/needsYouLabels";
+import { RecentWork } from "../components/ask/RecentWork";
+import { useNeedsYou } from "../components/ask/useNeedsYou";
+import { useConfig, useConfigRefresh } from "../app/config";
+import { api } from "../lib/api";
+import { coerceRecentWindowDays } from "../lib/recentWindow";
 import { settingsPath } from "./settingsTabs";
 import styles from "./Ask.module.css";
 
-/** ASK — its own top-level route since #1058, beside Sessions / Missions / Map / Templates.
+/** ASK — its own top-level route since #1058, and since #1086 the home for sessions without a
+ *  mission: RECENT WORK (what you did, 1–3 days) and NEEDS YOU (only the sessions that need you,
+ *  with the one decision each can settle) above the field.
  *
- *  It was a mode of the mission composer, which meant a question about SESSIONS could only be asked
- *  from inside the Missions section, and could not be linked to at all. The page is thin on purpose:
- *  the console below it is the same box, the same turns and the same `POST /api/pulse/ask` the
- *  composer sent, so the only thing this file adds is the page it now has.
+ *  Once a conversation starts, the thread takes the page as it always did (#1069) and both
+ *  sections collapse into a pinned bar — NEEDS YOU never leaves the screen mid-conversation, and
+ *  either section drops back down over the thread on a tap. Answer rows for a session that needs
+ *  you carry the marker and ⓘ, which opens the same details the list does.
  *
- *  `configured` is the AI endpoint's own flag (`/api/config → pulse.configured`), read here rather
- *  than inside the console so the page can say what to DO about a missing endpoint — a disabled
- *  field with a placeholder is a symptom, and the operator needs the route to Settings. The console
- *  still disables itself on the same flag; this is the explanation, not the guard.
- */
+ *  `configured` is the AI endpoint's own flag. Ask itself has no local fallback; NEEDS YOU and a
+ *  locally-listed RECENT WORK work without one. */
 export default function Ask() {
-  const configured = useConfig()?.pulse?.configured ?? false;
+  const cfg = useConfig();
+  const refreshConfig = useConfigRefresh();
+  const configured = cfg?.pulse?.configured ?? false;
+
+  // ONE window for both sections: the stored preference, changed from either picker.
+  const stored = coerceRecentWindowDays(cfg?.pulse?.window_days);
+  const [windowDays, setWindowDays] = useState(stored);
+  const [synced, setSynced] = useState(stored);
+  if (stored !== synced) {
+    setSynced(stored);
+    setWindowDays(stored);
+  }
+  const changeWindow = (d: number) => {
+    setWindowDays(d);
+    void api
+      .setPrefs({ pulse: { window_days: d } })
+      .then(() => refreshConfig())
+      .catch(() => setWindowDays(stored)); // a refused save must not look saved
+  };
+
+  const [engine, setEngine] = useState("");
+  const [project, setProject] = useState("");
+  const { state, facets, membership, refresh } = useNeedsYou(windowDays, engine, project);
+  const [details, setDetails] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<null | "needs" | "recent">(null);
+
+  const recent = <RecentWork windowDays={windowDays} onWindowDays={changeWindow} />;
+  const needs = (
+    <NeedsYou
+      state={state}
+      facets={facets}
+      engine={engine}
+      project={project}
+      onEngine={setEngine}
+      onProject={setProject}
+      onDetails={setDetails}
+      onChanged={() => void refresh()}
+    />
+  );
+  // The UNFILTERED count: the pinned bar summarises everything that needs you, never the subset a
+  // list filter happens to show (review 5184).
+  const count = membership
+    ? membership.total
+    : state.status === "ok"
+      ? (state.data.total_unfiltered ?? state.data.total ?? null)
+      : null;
 
   return (
     <div className={styles.page} data-testid="ask-page">
       <AskConsole
         configured={configured}
+        needsYou={membership?.ids ?? needsYouIds(state.data?.rows)}
+        onDetails={setDetails}
+        pinned={(reset) => (
+          <>
+            <div className={s.bar} data-testid="ask-bar">
+              <button
+                type="button"
+                className={`${s.btn} ${count ? s.hot : ""}`}
+                aria-expanded={expanded === "needs"}
+                onClick={() => setExpanded((e) => (e === "needs" ? null : "needs"))}
+              >
+                {count ? <span className={s.dot} aria-hidden="true" /> : null}
+                Needs you{count !== null ? ` · ${count}` : ""} ▾
+              </button>
+              <button
+                type="button"
+                className={s.btn}
+                aria-label="Recent work"
+                aria-expanded={expanded === "recent"}
+                onClick={() => setExpanded((e) => (e === "recent" ? null : "recent"))}
+              >
+                <span className={s.long}>Recent work</span>
+                <span className={s.short}>Recent</span> ▾
+              </button>
+              <span className={s.sp} />
+              <button
+                type="button"
+                className={s.btn}
+                aria-label="New conversation"
+                onClick={() => {
+                  setExpanded(null);
+                  reset();
+                }}
+              >
+                <span className={s.long}>New conversation</span>
+                <span className={s.short}>New</span>
+              </button>
+            </div>
+            {expanded ? (
+              <div className={s.panel}>{expanded === "needs" ? needs : recent}</div>
+            ) : null}
+          </>
+        )}
         intro={
           <>
             <div className={styles.kicker}>Ask // your work</div>
@@ -42,9 +138,20 @@ export default function Ask() {
                 , then come back.
               </div>
             ) : null}
+            {recent}
+            {needs}
           </>
         }
       />
+      {details ? (
+        <NeedsYouDetailsDialog
+          key={details}
+          sessionId={details}
+          // Close only THIS dialog: a completion that lands later must never close a newer one.
+          onClose={() => setDetails((cur) => (cur === details ? null : cur))}
+          onChanged={() => void refresh()}
+        />
+      ) : null}
     </div>
   );
 }

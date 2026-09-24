@@ -27,6 +27,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import time
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -35,10 +36,12 @@ from .. import (
     actuator,
     aitasks,
     engines,
+    handoff,
     menu_answer,
     metadata,
     missions,
     needs_you,
+    needs_you_dismissals,
     notifications,
     orchestrator,
     orchestrator_chat,
@@ -58,6 +61,70 @@ log = logging.getLogger(__name__)
 # How many ledger rows the activity feed carries. Bounded so a long-lived install's
 # history can't make the Pulse page payload grow without limit.
 FEED_LIMIT = 100
+
+
+#: Longest operator-edited message an approve may carry (#1086 Phase 3).
+EDIT_TEXT_MAX = 4000
+#: The decisions whose TEXT the operator may edit before approving: the model's `answer` and the
+#: standalone `continue` nudge. A choice is a digit, and a mission's actions are checked against
+#: their objectives (`txt_check`), so neither is editable here.
+EDITABLE_VERBS = frozenset({"answer", "continue"})
+
+
+def _suggested_text(action: dict) -> str:
+    """What approving this text decision UNEDITED would type — the same text `actuator.render`
+    produces for it. "" when an `answer` carries nothing usable."""
+    if action.get("verb") == "answer":
+        try:
+            return handoff.sanitize_seed(str(action.get("answer") or ""))
+        except handoff.HandoffError:
+            return ""
+    return actuator.default_nudge_text(prefs.get_orchestrator())
+
+
+def _operator_edit(action_id: str, text: object) -> tuple[dict | None, tuple[int, str] | None]:
+    """The EDIT an approve carries — ``(fields, None)`` — or a refusal ``(None, (status, reason))``.
+
+    Edited text is the operator's, not the model's, so the delivered action becomes a `relay`, the
+    verb for operator-authored bytes (`actuator.OPERATOR_VERBS`): same renderer, same
+    `sanitize_seed`, same claim-before-write and the action's OWN fence (fingerprint + prompt
+    class). The record keeps what was SUGGESTED and what was SENT side by side.
+
+    **Nothing is written here** (#1086 review 5184). An earlier cut rewrote the pending proposal
+    in place, and two approvals could then interleave — A's claim sending B's text, or an unedited
+    approve sending the original under a record that said the edit was sent. The fields are handed
+    to `actuator.deliver`, which renders from them and writes them in the SAME atomic claim that
+    decides who delivers, against the revision it read. ``(None, None)`` = no edit (identical text).
+    """
+    if not isinstance(text, str):
+        return None, (422, "text must be a string")
+    if len(text) > EDIT_TEXT_MAX:
+        return None, (422, f"text must be at most {EDIT_TEXT_MAX} characters")
+    try:
+        sent = handoff.sanitize_seed(text)
+    except handoff.HandoffError:  # empty once sanitised — the same rule a seed obeys
+        return None, (422, "text is empty")
+    if not sent.strip():
+        return None, (422, "text is empty")
+    status, cur = orchestrator_ledger.lookup(action_id)
+    if status != "found" or cur is None:
+        return None, ((404 if status == "absent" else 503), "unknown action")
+    if cur.get("verb") not in EDITABLE_VERBS or cur.get("mission_id"):
+        return None, (422, "this decision's text cannot be edited here")
+    if cur.get("state") not in orchestrator_ledger.CLAIMABLE_STATES:
+        return None, (409, "this decision can no longer be approved")
+    suggested = _suggested_text(cur)
+    if sent == suggested:
+        return None, None
+    return {
+        "verb": "relay",
+        "answer": sent,
+        "origin": "operator",
+        "operator_edited": True,
+        "suggested_verb": cur.get("verb"),
+        "suggested_text": suggested,
+        "sent_text": sent,
+    }, None
 
 
 def _retire_decided(action_id: str) -> int:
@@ -398,6 +465,112 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             and in_scope(c["cwd"], c.get("project") or {"kind": ""})
         ]
 
+    def _standalone_card(session_id: str) -> tuple[dict | None, tuple[int, str] | None]:
+        """The card for a session the Ask page may act on, or ``(None, (status, reason))``.
+
+        The same gates the NEEDS YOU list applies — a key that parses, a session that exists, the
+        roots + exclusions boundary, and NOT held by a mission (decided in its console) — so these
+        routes can never reach a session the list would not show. Blocking.
+        """
+        try:
+            engines.parse_key(session_id)
+        except Exception:  # noqa: BLE001 — a malformed id is simply not a session
+            return None, (404, "unknown session")
+        card = next((c for c in pulse.build_cards(window_days=None) if c["id"] == session_id), None)
+        if card is None or not _in_scope_cards([card]):
+            return None, (404, "unknown session")
+        try:
+            held = set(missions.all_active_memberships())
+        except Exception:  # noqa: BLE001
+            return None, (503, "mission membership could not be read")
+        if session_id in held:
+            return None, (409, "this session is decided in its mission")
+        return card, None
+
+    @app.get("/api/pulse/needs-you/{session_id:path}/details")
+    async def needs_you_details(session_id: str, _user: str = Depends(logged_in)) -> JSONResponse:
+        """What the Ask page's details modal shows (#1086 Phase 3). READ-ONLY, and no viewer is
+        attached: the screen comes from the ring, so opening details can never make Approve refuse
+        (#1049). Agent text (last words, screen, menu labels) is data, rendered as text."""
+
+        def _read() -> tuple[int, dict]:
+            card, err = _standalone_card(session_id)
+            if err is not None:
+                return err[0], {"detail": err[1]}
+            observed = orchestrator.observed_screen(engines.physical_key(session_id))
+            try:
+                pending = [a for a in _pending_checked() if a.get("session_id") == session_id]
+            except needs_you.LedgerUnavailable:
+                return 503, {"detail": "the action ledger could not be read"}
+            action = needs_you._pick_action(pending, time.time())
+            public = needs_you._public_action(action) if action else None
+            if (
+                public is not None
+                and action.get("verb") in EDITABLE_VERBS
+                and not action.get("mission_id")
+            ):
+                public["editable"] = True
+                public["suggested_text"] = _suggested_text(action)
+            recorded = (public or {}).get("menu")
+            return 200, {
+                "id": session_id,
+                "title": str(card.get("title") or ""),
+                "engine": str(card.get("engine") or ""),
+                "project": needs_you._project(card),
+                "reason": str(card.get("intervention_reason") or ""),
+                "last_words": review.last_words(session_id),
+                "screen": observed["screen"],
+                "prompt_class": observed["prompt_class"],
+                "menu": recorded if isinstance(recorded, dict) else observed["menu"],
+                "action": public,
+            }
+
+        status, body = await asyncio.to_thread(_read)
+        return JSONResponse(body, status_code=status)
+
+    @app.post("/api/pulse/needs-you/{session_id:path}/dismiss")
+    async def needs_you_dismiss(
+        session_id: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """DISMISS a NEEDS YOU row (#1086 Phase 3): hide it until the session's screen changes, and
+        reject its pending decision when the body names one. The fingerprint is read HERE, from the
+        live screen — a client can say which session, never which screen."""
+        try:
+            raw = await request.body()
+            body = json.loads(raw) if raw.strip() else {}
+        except ValueError:
+            return JSONResponse({"detail": "the body must be JSON"}, status_code=422)
+        if not isinstance(body, dict) or set(body) - {"action_id"}:
+            return JSONResponse({"detail": "the body may only name action_id"}, status_code=422)
+        action_id = body.get("action_id")
+        if action_id is not None and not isinstance(action_id, str):
+            return JSONResponse({"detail": "action_id must be a string"}, status_code=422)
+
+        def _apply() -> tuple[int, dict]:
+            card, err = _standalone_card(session_id)
+            if err is not None:
+                return err[0], {"detail": err[1]}
+            rejected = None
+            if action_id:
+                status, cur = orchestrator_ledger.lookup(action_id)
+                if status != "found" or cur is None or cur.get("session_id") != session_id:
+                    return 404, {"detail": "unknown action for this session"}
+                rejected = orchestrator_ledger.compare_and_set(
+                    action_id, orchestrator_ledger.REJECTABLE_STATES, "rejected"
+                )
+                if rejected is not None:
+                    with contextlib.suppress(Exception):
+                        _retire_decided(action_id)
+            fp = orchestrator.observed_screen(engines.physical_key(session_id))["fingerprint"]
+            needs_you_dismissals.dismiss(session_id, fp)
+            return 200, {"dismissed": True, "rejected": rejected is not None}
+
+        status, out = await asyncio.to_thread(_apply)
+        return JSONResponse(out, status_code=status)
+
     @app.get("/api/pulse/recap")
     async def recent_work(
         window_days: int | None = None, _user: str = Depends(logged_in)
@@ -465,7 +638,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         project_f = (project or "").strip()[:200] or None
 
         def _build() -> dict:
-            cards = _in_scope_cards(pulse.build_cards(window_days=wd))
+            cards = pulse.build_cards(window_days=wd)
             # The same retirement every other decision read applies first (#969): an expired or
             # undeliverable proposal must not be offered as approvable here either.
             try:
@@ -473,6 +646,14 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             except Exception:  # noqa: BLE001 — `needs_you` also refuses a past-deadline action
                 log.debug("needs-you: housekeeping failed", exc_info=True)
             pending = _pending_checked()
+            # A LIVE DECISION IS LISTED WHATEVER THE WINDOW (#1086 Phase 3). The window scopes the
+            # review flag's "needs you"; a decision the operator can still act on must never
+            # vanish from the one surface that acts on it because the session is older than it.
+            in_window = {c["id"] for c in cards}
+            wanted = {str(a.get("session_id") or "") for a in pending} - in_window
+            if wanted:
+                cards += [c for c in pulse.build_cards(window_days=None) if c["id"] in wanted]
+            cards = _in_scope_cards(cards)
             try:
                 held: set[str] | None = set(missions.all_active_memberships())
             except Exception:  # noqa: BLE001 — unreadable ownership is its own answer
@@ -481,11 +662,10 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 cards,
                 pending,
                 held,
-                observe=lambda row: orchestrator.observed_prompt_for(
-                    engines.physical_key(row["id"])
-                ),
+                observe=lambda row: orchestrator.observed_screen(engines.physical_key(row["id"])),
                 engine=engine_f,
                 project=project_f,
+                suppressed=needs_you_dismissals.suppressed(),
             )
             out["window_days"] = wd
             return out
@@ -709,6 +889,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
     @app.post("/api/pulse/actions/{action_id}/approve")
     async def approve_action(
         action_id: str,
+        request: Request,
         _user: str = Depends(logged_in),
         _csrf: None = Depends(csrf_guard),
     ) -> JSONResponse:
@@ -725,8 +906,24 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         deciding) not count as someone else typing. It does not stop a repaint for a new width
         from moving the screen and refusing the approval as stale; that is #973.
         """
+        # OPTIONAL edited text (#1086 Phase 3). A body-less approve is exactly what it always was.
         try:
-            rec = await actuator.deliver(action_id, registry=registry, operator_approval=True)
+            raw = await request.body()
+            body = json.loads(raw) if raw.strip() else None
+        except ValueError:
+            return JSONResponse({"detail": "the body must be JSON"}, status_code=422)
+        edit = None
+        if body is not None:
+            if not isinstance(body, dict) or set(body) - {"text"}:
+                return JSONResponse({"detail": "the body may only carry text"}, status_code=422)
+            if "text" in body:
+                edit, refused = await asyncio.to_thread(_operator_edit, action_id, body["text"])
+                if refused is not None:
+                    return JSONResponse({"detail": refused[1]}, status_code=refused[0])
+        try:
+            rec = await actuator.deliver(
+                action_id, registry=registry, operator_approval=True, edit=edit
+            )
         except actuator.NotDeliverable as e:
             return JSONResponse({"detail": str(e)}, status_code=409)
         if rec.get("state") in ("stale", "expired"):

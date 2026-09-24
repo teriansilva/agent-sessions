@@ -175,6 +175,26 @@ def observed_prompt_for(key: str) -> dict:
     }
 
 
+def observed_screen(key: str) -> dict:
+    """The live screen as the Ask page reads it (#1086 Phase 3), WITHOUT attaching. Blocking.
+
+    ``prompt_class`` and ``menu`` exactly as :func:`observed_prompt_for`; ``fingerprint`` the same
+    normalised hash a precondition carries (so a dismissal can be keyed to "this screen"); and
+    ``screen`` the tail itself, control bytes stripped and capped, for display as TEXT only.
+    Reading the ring is not attaching a viewer: nothing here can make an Approve refuse (#1049).
+    """
+    try:
+        screen = scrollback.live_tail_text(key, PROMPT_SCREEN_CHARS)
+    except Exception:
+        screen = ""
+    return {
+        "prompt_class": _prompt_class(screen),
+        "menu": screen_menus.parse(screen, screen_menus.engine_of(key)),
+        "fingerprint": _screen_fingerprint(screen),
+        "screen": _clean_evidence(screen)[-EVIDENCE_SCREEN_CHARS:],
+    }
+
+
 def stale_hours(cfg: dict | None = None) -> float:
     """How long a session may sit idle and still be worth interrupting the operator about.
 
@@ -232,11 +252,29 @@ def eligible_cards(
         for r in ledger.live_actions()
         if r.get("state") in ledger.OPERATOR_PENDING_STATES
     }
-    skipped = {"engine": 0, "excluded": 0, "pending": 0, "working": 0, "stale": 0}
+    # ROOTS + FOLDER EXCLUSIONS, the terminal's form of the boundary (#1086 Phase 3). A proposal is
+    # a proposal to TYPE into a session, so a session the terminal refuses to resume is not
+    # eligible either — and that is also what lets every pending decision have a surface: the Ask
+    # page lists exactly the in-scope sessions no mission holds. Lazy import: a core module must
+    # not import the route layer at load time.
+    from . import project_dirs
+    from .routes.sessions import _hard_scope_filter
+
+    in_scope = _hard_scope_filter(honour_curation=False)
+    # A card with no cwd has nothing to check. The terminal's rule for exactly that case: fail
+    # CLOSED where a boundary is configured, open where none is (CLAUDE.md, "Two boundary rules").
+    boundary = bool(project_dirs.effective_roots() or prefs.get_folder_exclusions())
+    skipped = {"engine": 0, "excluded": 0, "pending": 0, "working": 0, "stale": 0, "scope": 0}
     out: list[dict] = []
     for card in cards:
         if card.get("engine") not in actuable:
             skipped["engine"] += 1
+            continue
+        cwd = card.get("cwd")
+        if (not isinstance(cwd, str) and boundary) or (
+            isinstance(cwd, str) and not in_scope(cwd, card.get("project") or {"kind": ""})
+        ):
+            skipped["scope"] += 1
             continue
         key = card["id"]
         phys = engines.physical_key(key, aliases)
@@ -825,6 +863,9 @@ async def run_pass(
             "title": _clamp(card.get("title"), TITLE_MAX),
             "project": _clamp((card.get("project") or {}).get("name"), PROJECT_MAX),
             "project_id": (card.get("project") or {}).get("id") or "",
+            # Where the session was when this was proposed (#1086): the scope boundary is judged
+            # against THIS if it later changes — recorded evidence, never a re-scan's absence.
+            "cwd": card.get("cwd") or "",
             # The session's own clock at proposal time. The bell uses it to tell "the same
             # unresolved situation, re-proposed" from "something new happened here" (#752).
             "last_activity": card.get("last_activity"),
@@ -937,10 +978,11 @@ def _persist(records: list[dict], *, gate=None) -> list[dict]:
     ledger.compact_if_needed()
 
     notify = str(prefs.get_orchestrator().get("notify") or "escalations")
-    # WHICH DECISIONS HAVE A SURFACE (#1057), read once per pass and only when there is something
-    # to announce. Since #1049 only the mission console can approve, so a push for an escalation
-    # on a session no mission holds would wake the operator for a decision no screen can take.
-    surfaces = notifications.decision_surfaces() if kept else None
+    # WHICH ESCALATIONS MAY PUSH (#1057), read once per pass and only when there is something to
+    # announce: sessions a mission holds. The Ask page (#1086 Phase 3) is a surface for the rest,
+    # so the BADGE counts them now — but a push stays off for them until Phase 4 brings the
+    # conservative, withdrawable notification model. Deliberately NOT `decision_surfaces()`.
+    surfaces = notifications.mission_surfaces() if kept else None
     for rec in kept:
         # `escalated` IS the "I'm not sure, you look" state (see _decide). `all` also covers
         # actions taken autonomously, so a yolo operator still gets a record of what was done.

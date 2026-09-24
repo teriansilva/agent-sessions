@@ -734,6 +734,8 @@ def compare_and_set(
     from_states: frozenset[str],
     to_state: str,
     path: Path | None = None,
+    *,
+    expect_ts: float | None = None,
     **fields: object,
 ) -> dict | None:
     """Atomically move an action to ``to_state`` iff it is currently in ``from_states``.
@@ -752,6 +754,10 @@ def compare_and_set(
     with _locked(p):
         cur = _latest_by_id_locked(p).get(action_id)
         if cur is None or cur.get("state") not in from_states:
+            return None
+        # REVISION check (#1086 review 5184): the caller acted on the record as it read it; any
+        # event since (another claim, an edit, a state change) means that view is stale.
+        if expect_ts is not None and cur.get("ts") != expect_ts:
             return None
         rec = {"id": action_id, "state": to_state, "ts": time.time()}
         # Carry the same optional fields `transition` records (detail, outcome), so a CAS
@@ -821,7 +827,14 @@ def owner_is_live(token: object) -> bool | None:
     return now == started
 
 
-def claim(action_id: str, from_states: frozenset[str], path: Path | None = None) -> dict | None:
+def claim(
+    action_id: str,
+    from_states: frozenset[str],
+    path: Path | None = None,
+    *,
+    expect_ts: float | None = None,
+    **fields: object,
+) -> dict | None:
     """Atomically move an action to ``claimed`` iff it is currently in ``from_states``.
 
     ``get()`` then ``transition()`` is a read and a write across TWO lock holds, so two callers
@@ -837,8 +850,22 @@ def claim(action_id: str, from_states: frozenset[str], path: Path | None = None)
     them are running: instance B starting while A is mid-delivery would recover A's claim, and A's
     own ``claimed -> delivered`` CAS then fails after the bytes have already landed. Recovery can
     only act on a claim it can PROVE is orphaned, and this is what makes that provable.
+
+    **Revision and payload are part of the claim** (#1086 review 5184). ``expect_ts`` refuses a
+    record that changed since the caller read and rendered it, and ``fields`` (an operator's edit:
+    the `relay` verb and its text) are written by the SAME atomic append that claims — so the bytes
+    rendered from that view are exactly what the claimed record says was sent, and two approvals
+    can never interleave one's text with the other's claim.
     """
-    return compare_and_set(action_id, from_states, "claimed", path, claim_owner=owner_token())
+    return compare_and_set(
+        action_id,
+        from_states,
+        "claimed",
+        path,
+        expect_ts=expect_ts,
+        claim_owner=owner_token(),
+        **fields,
+    )
 
 
 def expire_due(now: float | None = None, path: Path | None = None) -> list[str]:

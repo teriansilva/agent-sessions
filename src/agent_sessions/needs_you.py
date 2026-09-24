@@ -136,6 +136,13 @@ def _kind(observed: dict | None) -> tuple[str, dict | None]:
     return _KIND_BY_CLASS.get(str(observed.get("prompt_class") or ""), "needs_inspection"), None
 
 
+def _safe_observe(observe: Callable[[dict], dict | None], row: dict) -> dict | None:
+    try:
+        return observe(row)
+    except Exception:  # noqa: BLE001 — an unreadable screen is `needs_inspection`, not an error
+        return None
+
+
 def _project(card: dict) -> dict:
     p = card.get("project") or {}
     return {"id": str(p.get("id") or ""), "name": str(p.get("name") or "")}
@@ -150,6 +157,7 @@ def build(
     engine: str | None = None,
     project: str | None = None,
     now: float | None = None,
+    suppressed: dict[str, str] | None = None,
 ) -> dict:
     """The NEEDS YOU payload. Pure apart from ``observe`` (a screen read per candidate row).
 
@@ -199,6 +207,22 @@ def build(
             }
         )
 
+    # DISMISSED rows (#1086 Phase 3) stay hidden while the session still shows the screen the
+    # operator dismissed; the moment it moves on, it needs them again. Only the dismissed rows are
+    # read here, and the read is reused below — never a second screen read for one row.
+    observed_cache: dict[str, dict | None] = {}
+    if suppressed:
+        kept = []
+        for r in rows:
+            fp = suppressed.get(r["id"])
+            if fp is None:
+                kept.append(r)
+                continue
+            observed_cache[r["id"]] = _safe_observe(observe, r)
+            current = (observed_cache[r["id"]] or {}).get("fingerprint")
+            if current != fp:
+                kept.append(r)
+        rows = kept
     rows.sort(key=lambda r: r["since"], reverse=True)
     facets = {
         "engines": sorted({r["engine"] for r in rows if r["engine"]}),
@@ -213,6 +237,10 @@ def build(
         ),
     }
     total_unfiltered = len(rows)
+    # Membership, not display (#1086 review 5184): every session that needs you, BEFORE the list's
+    # agent/project filter and its row cap, so an Ask answer can mark a session the list is
+    # currently filtering out, and the pinned count is never a filtered subset passed off as all.
+    all_ids = [r["id"] for r in rows]
     if engine:
         rows = [r for r in rows if r["engine"] == engine]
     if project:
@@ -221,10 +249,9 @@ def build(
     rows = rows[:ROWS_MAX]
     # The screen is read only for rows that will be SHOWN — the read is per row and bounded.
     for r in rows:
-        try:
-            observed = observe(r)
-        except Exception:  # noqa: BLE001 — an unreadable screen is `needs_inspection`, not an error
-            observed = None
+        observed = (
+            observed_cache[r["id"]] if r["id"] in observed_cache else _safe_observe(observe, r)
+        )
         r["kind"], live_menu = _kind(observed)
         # A menu for display: the recorded one when the decision has one (what `/choose` checks),
         # else what the screen shows now. Labels are agent text, cleaned and capped by the parser.
@@ -234,6 +261,7 @@ def build(
         "rows": rows,
         "total": total,
         "total_unfiltered": total_unfiltered,
+        "needs_you_ids": all_ids,
         "truncated": total > len(rows),
         "facets": facets,
     }

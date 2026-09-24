@@ -146,9 +146,9 @@ async def test_INVARIANT_2_a_write_is_RECORDED_BEFORE_the_bytes(store, monkeypat
 
     real_claim = ledger.claim
 
-    def claim(aid, states):
+    def claim(aid, states, *a, **kw):  # forwards the revision/edit arguments (#1086)
         order.append("claimed")
-        return real_claim(aid, states)
+        return real_claim(aid, states, *a, **kw)
 
     monkeypatch.setattr(ledger, "claim", claim)
     monkeypatch.setattr(

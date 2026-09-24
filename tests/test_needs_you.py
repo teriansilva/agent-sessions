@@ -103,6 +103,8 @@ def test_facets_are_computed_BEFORE_the_filters():
     assert out["facets"]["engines"] == ["claude", "codex"]
     assert [p["id"] for p in out["facets"]["projects"]] == ["p1", "p2"]
     assert (out["total"], out["total_unfiltered"]) == (1, 2)
+    # Membership ignores the filter: an answer can still mark the filtered-out session.
+    assert sorted(out["needs_you_ids"]) == ["claude:a", "codex:b"]
     only_p1 = needs_you.build(cards, [], set(), observe=_observe_open, project="p1")
     assert [r["id"] for r in only_p1["rows"]] == ["claude:a"]
 
@@ -241,7 +243,7 @@ def stubbed(monkeypatch):
     monkeypatch.setattr(orchestrator_ledger, "live_actions", lambda *a, **k: [])
     monkeypatch.setattr(missions, "all_active_memberships", lambda **k: {"claude:held": "msn_1"})
     monkeypatch.setattr(
-        orchestrator, "observed_prompt_for", lambda key: {"prompt_class": "question", "menu": None}
+        orchestrator, "observed_screen", lambda key: {"prompt_class": "question", "menu": None}
     )
     return seen
 
@@ -310,7 +312,7 @@ def real_ledger_route(monkeypatch):
     monkeypatch.setattr(pulse, "build_cards", cards)
     monkeypatch.setattr(missions, "all_active_memberships", lambda **k: {})
     monkeypatch.setattr(
-        orchestrator, "observed_prompt_for", lambda key: {"prompt_class": "open", "menu": None}
+        orchestrator, "observed_screen", lambda key: {"prompt_class": "open", "menu": None}
     )
 
 

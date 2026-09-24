@@ -40,6 +40,9 @@ import type {
   MissionTurn,
   NotificationList,
   OrchestratorAction,
+  NeedsYouDetails,
+  NeedsYouPayload,
+  RecentWorkPayload,
   OrchestratorState_,
   ProjectArchiveReport,
   ProjectEntity,
@@ -1028,12 +1031,45 @@ export const api = {
   /** Approve one orchestrator action and deliver it (#726 Phase 2). Compare-and-execute: the
    *  server re-verifies the screen immediately before writing, so a session that moved on comes
    *  back 409 rather than receiving input meant for a different prompt. CSRF-guarded. */
-  approveAction: (id: string) =>
+  approveAction: (id: string, text?: string) =>
     mutateJson<OrchestratorAction>(
       "POST",
       `/api/pulse/actions/${enc(id)}/approve`,
-      {},
+      // #1086: the operator's EDITED text for a standalone answer/continue. The server turns it
+      // into an operator-authored `relay`; omitted, the approve is exactly what it always was.
+      text === undefined ? {} : { text },
     ).then(announceActionResolved),
+  /** The Ask page's NEEDS YOU list (#1086): sessions no mission holds that need the operator. */
+  needsYou: (params: { window_days?: number; engine?: string; project?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (params.window_days !== undefined) q.set("window_days", String(params.window_days));
+    if (params.engine) q.set("engine", params.engine);
+    if (params.project) q.set("project", params.project);
+    const qs = q.toString();
+    return getJsonWithDetail<NeedsYouPayload>(`/api/pulse/needs-you${qs ? `?${qs}` : ""}`);
+  },
+  /** Details for one NEEDS YOU row — read-only, and no viewer is attached (#1086). */
+  needsYouDetails: (sessionId: string) =>
+    getJsonWithDetail<NeedsYouDetails>(`/api/pulse/needs-you/${enc(sessionId)}/details`),
+  /** Hide a row until its screen changes; reject `actionId` too when given (#1086). */
+  needsYouDismiss: (sessionId: string, actionId?: string) =>
+    mutateJson<{ dismissed: boolean; rejected: boolean }>(
+      "POST",
+      `/api/pulse/needs-you/${enc(sessionId)}/dismiss`,
+      actionId ? { action_id: actionId } : {},
+    ),
+  /** RECENT WORK above Ask (#1086). Never calls the model. */
+  recentWork: (windowDays?: number) =>
+    getJsonWithDetail<RecentWorkPayload>(
+      `/api/pulse/recap${windowDays !== undefined ? `?window_days=${windowDays}` : ""}`,
+    ),
+  /** Write a fresh RECENT WORK summary (one completion; a no-op when nothing changed). */
+  refreshRecentWork: (windowDays?: number) =>
+    mutateJson<RecentWorkPayload>(
+      "POST",
+      "/api/pulse/recap",
+      windowDays !== undefined ? { window_days: windowDays } : {},
+    ),
   /** Answer an escalated menu with option `n` (#1060 Phase 3). `label` is the text the card showed
    *  for it; the server refuses unless both still match the live screen. Returns the settled
    *  escalation, with the delivered choice under `choice`. */

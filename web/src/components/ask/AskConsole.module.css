@@ -27,3 +27,35 @@
 .group {
   margin-top: 10px;
 }
+
+/* #1086: an answer row for a session on the NEEDS YOU list. The dot is STATE (`--status-degraded`,
+ * the same needs-you colour the list uses), never decoration. */
+.needsTag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--warn-text, var(--status-degraded));
+}
+.needsDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--status-degraded);
+}
+.detailsBtn {
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
