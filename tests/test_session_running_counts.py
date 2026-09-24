@@ -49,7 +49,7 @@ def _running(monkeypatch, *sids):
         calls.append(1)
         return [("claude", s) for s in sids]
 
-    monkeypatch.setattr(ptybridge, "list_sessions", fake)
+    monkeypatch.setattr(ptybridge, "list_sessions_checked", lambda: (fake(), True))
     return calls
 
 
@@ -95,7 +95,7 @@ def test_the_probe_runs_once_per_ttl_and_fails_soft(auth_cfg, fake_jsonl, monkey
         raise OSError("runtime dir gone")
 
     sessions_routes._running_cache = None
-    monkeypatch.setattr(ptybridge, "list_sessions", boom)
+    monkeypatch.setattr(ptybridge, "list_sessions_checked", boom)
     d = c.get("/api/sessions").json()
     assert d["live_total"] == 0
     assert d["total"] >= 1

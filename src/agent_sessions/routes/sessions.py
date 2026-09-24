@@ -48,7 +48,7 @@ _WORKING_WINDOW_S = 10.0
 # socket on each request.
 _RUNNING_TTL_S = 5.0
 _running_lock = threading.Lock()
-_running_cache: tuple[float, frozenset[str]] | None = None
+_running_cache: tuple[float, frozenset[str], bool] | None = None
 
 
 def _running_keys() -> frozenset[str]:
@@ -56,18 +56,31 @@ def _running_keys() -> frozenset[str]:
 
     Fail-soft: a runtime dir that cannot be listed reads as "none running", never an error — this
     feeds counts, and a count must not take the session list down with it."""
+    return _running_state()[0]
+
+
+def _running_state() -> tuple[frozenset[str], bool]:
+    """``(keys, ok)`` — the same probe as :func:`_running_keys`, with its READ HEALTH (#1123).
+
+    The bottom bar and the list fail soft to "none running", which is right for them. A dashboard
+    tile that shows "0 running" after a failed probe states something false, so it reads ``ok``
+    and says it could not read instead."""
     global _running_cache
     now = time.monotonic()
     with _running_lock:
         if _running_cache is not None and now - _running_cache[0] < _RUNNING_TTL_S:
-            return _running_cache[1]
+            return _running_cache[1], _running_cache[2]
     try:
-        keys = frozenset(f"{e}:{sid}" for e, sid in ptybridge.list_sessions())
+        # The health-preserving enumeration (Hermes on #1138): `list_sessions` turns an unlistable
+        # runtime dir into [] and an UNKNOWN socket probe into "not running", so a flag set merely
+        # because it RETURNED would still read a failed probe as a healthy zero.
+        found, ok = ptybridge.list_sessions_checked()
+        keys = frozenset(f"{e}:{sid}" for e, sid in found)
     except Exception:  # noqa: BLE001 — see docstring
-        keys = frozenset()
+        keys, ok = frozenset(), False
     with _running_lock:
-        _running_cache = (time.monotonic(), keys)
-    return keys
+        _running_cache = (time.monotonic(), keys, ok)
+    return keys, ok
 
 
 def _agent_counts(running: frozenset[str]) -> dict[str, int]:
@@ -378,6 +391,101 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         running = await asyncio.to_thread(_running_keys)
         return JSONResponse(_agent_counts(running))
 
+    def _dashboard_sync(live_limit: int, recent_limit: int) -> dict:
+        """The BattleLab dashboard's session reads (#1123), from ONE scoped row set.
+
+        Three read contracts, each pinned by a test:
+
+        1. **Unknown survives.** A failed runtime probe is ``live.health == "unavailable"`` with no
+           counts, never "0 running".
+        2. **A count equals its destination.** Every count is over :func:`_scoped_rows` — the rows
+           the session list shows — so ``live.total`` is exactly ``/api/sessions?running=live``'s
+           ``total`` and ``live.working`` is ``?running=working``'s. Visibility is never relaxed
+           to make a number bigger.
+        3. **Latest N is by last activity.** The recent list is sorted by last activity (ties by
+           key) BEFORE it is limited; review-excluded sessions are omitted, as on every review
+           surface. Its ``band`` is Pulse's classification (`pulse._classify` semantics).
+        """
+        from .. import orchestrator, pulse
+
+        rows, _memberships, _pinned, _aliases, running_ok = _scoped_rows(archived=False)
+        now = time.time()
+
+        def _project(r: dict) -> dict:
+            p = r.get("project") or {}
+            return {"id": str(p.get("id") or ""), "name": str(p.get("name") or "")}
+
+        def _latest(rs: list[dict]) -> list[dict]:
+            return sorted(rs, key=lambda r: (-float(r.get("last_mtime") or 0), r["id"]))
+
+        if running_ok:
+            live_rows = _latest([r for r in rows if r["running"]])
+            by_engine: dict[str, dict[str, int]] = {}
+            for r in live_rows:
+                e = by_engine.setdefault(r["engine"], {"live": 0, "working": 0})
+                e["live"] += 1
+                e["working"] += 1 if r["working"] else 0
+            live: dict = {
+                "health": "ok",
+                "total": len(live_rows),
+                "working": sum(1 for r in live_rows if r["working"]),
+                "by_engine": dict(sorted(by_engine.items())),
+                "rows": [
+                    {
+                        "id": r["id"],
+                        "title": r["title"],
+                        "engine": r["engine"],
+                        "project": _project(r),
+                        "working": bool(r["working"]),
+                        "last_activity": r["last_mtime"],
+                        "state_line": orchestrator._clamp(
+                            orchestrator._state_line(r.get("ai_recap") or ""),
+                            orchestrator.STATE_LINE_MAX,
+                        ),
+                    }
+                    for r in live_rows[:live_limit]
+                ],
+            }
+        else:
+            live = {"health": "unavailable"}
+
+        def _band(r: dict) -> str:
+            if r.get("intervention_required"):
+                return "needs_you"
+            if r["running"]:
+                return "in_flight"
+            if now - float(r.get("last_mtime") or 0) <= pulse.RECENT_ACTIVE_S:
+                return "recently_active"
+            return "idle"
+
+        reviewable = _latest([r for r in rows if not r.get("review_excluded")])
+        recent = {
+            "total": len(reviewable),
+            "rows": [
+                {
+                    "id": r["id"],
+                    "title": r["title"],
+                    "engine": r["engine"],
+                    "project": _project(r),
+                    "band": _band(r),
+                    "running": bool(r["running"]) if running_ok else None,
+                    "last_activity": r["last_mtime"],
+                }
+                for r in reviewable[:recent_limit]
+            ],
+        }
+        return {"live": live, "recent": recent}
+
+    @app.get("/api/dashboard/sessions")
+    async def dashboard_sessions(
+        _: str = Depends(logged_in),
+        live_limit: int = Query(5, ge=1, le=50),
+        recent_limit: int = Query(6, ge=1, le=50),
+    ) -> JSONResponse:
+        """The dashboard's live and recent sessions (#1123) — see :func:`_dashboard_sync`.
+        Read-only, bounded, scoped like the list, off the event loop (#678)."""
+        return JSONResponse(await asyncio.to_thread(_dashboard_sync, live_limit, recent_limit))
+
     @app.get("/api/sessions")
     async def list_sessions(
         _: str = Depends(logged_in),
@@ -389,6 +497,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         engine: str | None = Query(None),
         mission: str | None = Query(None),
         snapshot: str | None = Query(None),
+        running: str | None = Query(None, pattern="^(live|working)$"),
     ) -> JSONResponse:
         # Flat, paginated, newest-first. Favorited (sticky) rows are a GLOBAL pin (#520): the sort
         # runs over the whole filtered set before the window is sliced, so a favorite floats to the
@@ -408,6 +517,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 engine=engine,
                 mission=mission,
                 snapshot=snapshot,
+                running=running,
             )
 
         # #652 measurement probe: time the whole request-serving pipeline (cached scan +
@@ -416,17 +526,15 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         with perfstats.timed("api_sessions_ms"):
             return JSONResponse(await asyncio.to_thread(_build))
 
-    def _list_sessions_sync(
-        *,
-        limit: int,
-        offset: int,
-        archived: bool,
-        q: str | None,
-        project: str | None,
-        engine: str | None,
-        mission: str | None = None,
-        snapshot: str | None = None,
-    ) -> dict:
+    def _scoped_rows(
+        *, archived: bool, snapshot: str | None = None
+    ) -> tuple[list[dict], dict[str, dict] | None, dict[str, str], dict, bool]:
+        """The list's rows AFTER its scope (#567), with the mission and running stamps — the one
+        set every count that links to the session list is computed over (#1123: a dashboard
+        count equals its destination). Returns ``(rows, memberships, pinned, aliases,
+        running_ok)``; ``running_ok`` is False when the runtime probe failed, in which case every
+        row reads as not running and a count built on it must say it could not read.
+        Blocking."""
         meta_index = metadata.load()
         # opencode new-session alias (#127): the live row is the real ``ses_…`` from
         # scan_all (the placeholder never appears here — it isn't in opencode.db), so
@@ -488,9 +596,27 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             _stamp_mission(r, memberships, aliases)
         # Running (#1085): stamped before filtering so `live_total` describes the filtered set,
         # not the page — the footer's count, like `total`, is about the list, not the window.
-        running = _running_keys()
+        running, running_ok = _running_state()
         for r in scoped:
             r["running"] = engines.physical_key(r["id"], aliases) in running
+        return scoped, memberships, pinned, aliases, running_ok
+
+    def _list_sessions_sync(
+        *,
+        limit: int,
+        offset: int,
+        archived: bool,
+        q: str | None,
+        project: str | None,
+        engine: str | None,
+        mission: str | None = None,
+        snapshot: str | None = None,
+        running: str | None = None,
+    ) -> dict:
+        scoped, memberships, pinned, aliases, running_ok = _scoped_rows(
+            archived=archived, snapshot=snapshot
+        )
+        project_index = projects.load()
         # Facets for the project/agent dropdowns (#445): the project dropdown lists PROJECT
         # ENTITIES, not folder paths. Computed over the visible (already hide-filtered)
         # archived-scoped set, BEFORE q/project/engine filtering — so the dropdown lists every
@@ -562,6 +688,18 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         engine_f = (engine or "").strip() or None
         # `none` = held by no mission. A mission id is `msn_<hex>`, so it cannot collide.
         mission_f = (mission or "").strip() or None
+        if running is not None and not running_ok:
+            # A running filter the runtime probe cannot answer (#1123): every row would read as
+            # "not running", so the filtered list would claim nothing is running. Say so instead.
+            return {
+                "sessions": [],
+                "next_offset": None,
+                "total": 0,
+                "live_total": 0,
+                "facets": facets,
+                "running_filter_unavailable": True,
+                **pinned,
+            }
         if mission_f is not None and memberships is None:
             # A mission filter the store cannot answer. Returning the unfiltered list would label
             # every session as a match; returning a bare empty page would say "no sessions".
@@ -597,6 +735,11 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 elif r["project"]["id"] != project_f and r["cwd"] != project_f:
                     return False
             if engine_f is not None and r["engine"] != engine_f:
+                return False
+            # `live` = an agent is running; `working` = running AND visibly printing (#1085/#1123).
+            if running == "live" and not r["running"]:
+                return False
+            if running == "working" and not (r["running"] and r["working"]):
                 return False
             if mission_f is not None:
                 held = r.get("mission")

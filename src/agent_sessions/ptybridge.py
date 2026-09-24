@@ -234,20 +234,39 @@ def list_sessions() -> list[tuple[str, str]]:
 
     Orphan sock files (master dead but file lingered) are filtered out by the
     same connect-probe `session_exists` uses, so callers never see a phantom
-    session that would 4500 on the next attach.
+    session that would 4500 on the next attach. Fail-soft: see
+    :func:`list_sessions_checked` for the same enumeration with its read health.
+    """
+    return list_sessions_checked()[0]
+
+
+def list_sessions_checked() -> tuple[list[tuple[str, str]], bool]:
+    """``(sessions, complete)`` — :func:`list_sessions` plus whether the answer is COMPLETE (#1123).
+
+    ``complete`` is False when the runtime directory could not be listed, or when any socket's
+    probe was UNKNOWN (every attempt timed out). Both are "we could not tell", which
+    :func:`list_sessions` folds into "not running" — right for routing, wrong for a count that
+    claims to know how many agents run. The sessions that DID answer ALIVE are still returned.
     """
     out: list[tuple[str, str]] = []
     try:
         entries = list(runtime_dir().iterdir())
+    except FileNotFoundError:
+        return out, True  # no runtime dir means no sockets: a COMPLETE "nothing is running"
     except OSError:
-        return out
+        return out, False
+    complete = True
     for p in entries:
         if p.suffix != ".sock" or not p.is_socket():
             continue
-        if not _master_alive(p):
+        verdict = probe_master(p)
+        if verdict is UNKNOWN:
+            complete = False
+            continue
+        if verdict is not ALIVE:
             continue
         stem = p.stem
         engine, sep, sid = stem.partition("-")
         if sep and engine and sid:
             out.append((engine, sid))
-    return out
+    return out, complete
