@@ -136,6 +136,13 @@ class NotConfiguredError(ReviewError):
     """The ai_review endpoint is not configured (missing base URL / API key)."""
 
 
+class MalformedReplyError(ReviewError):
+    """The endpoint answered, and what it answered was not a JSON object (#1088). A subclass, so
+    every existing `except ReviewError` is unchanged; the one caller that must tell a DETERMINISTIC
+    bad reply from a transient failure — the objective judge, which does not retry the same output
+    after the former — can."""
+
+
 class ModelsUnsupportedError(ReviewError):
     """The endpoint answered but cannot list models (404/405, or a body that is not a model
     list) — distinct from a rejection, because the URL and key can still be right (#956)."""
@@ -345,6 +352,32 @@ def _with_context(key: str, phys_key: str, body: str, aliases: dict[str, str] | 
     return f"{header}\n\n{body}" if header else body
 
 
+def judge_sources(key: str, transcript_max: int, screen_max: int) -> tuple[str, str, bool]:
+    """``(transcript_tail, screen, has_transcript)`` for one session — the objective judge's input
+    (#1088), from the same readers `gather_input` uses, but kept APART rather than assembled.
+
+    The judge needs them separate for two reasons: every quote it returns must be verified against
+    the one source it names, and its fingerprint must hash the transcript and NOT the screen of an
+    agent that keeps a transcript (a spinner or a clock moves the screen of an idle session).
+    ``has_transcript`` says whether this engine registers a transcript adapter at all — `shell`
+    does not, and then the screen is the evidence. Fail-soft like its siblings.
+    """
+    phys_key = _physical(key)
+    aliases = _load_aliases()
+    transcript_text = _plain_transcript(key, aliases)
+    # FAIL CLOSED (#1088 review): an engine that cannot be resolved is assumed to KEEP a transcript,
+    # so its screen stays context and never becomes evidence on its own.
+    has_transcript = True
+    with contextlib.suppress(Exception):
+        from . import engines
+
+        prov, _ = engines.parse_key(engines.logical_key(key, aliases))
+        has_transcript = transcript.adapter_for(prov.engine_id) is not None
+    screen = scrollback.live_tail_text(phys_key, screen_max) if screen_max > 0 else ""
+    tail = transcript_text[-transcript_max:] if transcript_max > 0 else ""
+    return tail, screen or "", has_transcript
+
+
 def gather_input(
     key: str, max_input_chars: int, aliases: dict[str, str] | None = None
 ) -> tuple[str, str]:
@@ -504,7 +537,7 @@ def _extract_json(content: str) -> dict:
                 return obj
         except (ValueError, TypeError):
             pass
-    raise ReviewError("review response was not valid JSON")
+    raise MalformedReplyError("review response was not valid JSON")
 
 
 def _shape_guard(obj: dict) -> dict:

@@ -64,6 +64,21 @@ export type ThreadRow =
   | { type: "checklist"; by: "plan" | "you" | "other"; counts: Array<[string, number]>; reopened: boolean }
   /** A session joining or leaving the mission. Same history: `meta.adopted` / `meta.detached` only. */
   | { type: "session"; change: "adopted" | "released"; role: string | null; sessionKey: string | null }
+  /** The supervisor proposing the mission for review (#1063), with how each gate holds (#1088):
+   *  observed, judged (each with its confidence) or waived. */
+  | {
+      type: "completion";
+      gates: number;
+      unmet: number;
+      observed: string[];
+      judged: Array<{ title: string; confidence: number }>;
+      waived: string[];
+      /** Non-gating goals still open (#1097 review 5040, finding 6): they do not block the
+       *  proposal, and the operator deciding whether to close needs to see them. */
+      outstanding: string[];
+      outstandingCount: number;
+      text: string | null;
+    }
   | { type: "system"; label: string; text: string | null };
 
 /** How a checklist edit reads, per `op`. Only verbs the store writes; anything else is dropped rather
@@ -77,6 +92,7 @@ const CHECKLIST_VERBS: Record<string, string> = {
   set_direction: "given a direction",
   reset_direction: "direction reset",
   clear_direction: "direction cleared",
+  reject_judgment: "judgment rejected",
 };
 
 function str(meta: Record<string, unknown> | null, key: string): string | null {
@@ -295,6 +311,53 @@ export function threadRow(e: MissionEvent): ThreadRow {
 
   // A SESSION JOINING OR LEAVING, likewise text-less. A sub-agent spawn carries its own sentence and
   // is left to the generic row.
+  if (e.kind === "completion" && meta?.proposal === true && meta.held && typeof meta.held === "object") {
+    const held = meta.held as Record<string, unknown>;
+    const titles = (v: unknown): string[] =>
+      Array.isArray(v)
+        ? v.flatMap((x) => {
+            if (!x || typeof x !== "object") return [];
+            const r = x as Record<string, unknown>;
+            const t = typeof r.title === "string" && r.title ? r.title : typeof r.key === "string" ? r.key : "";
+            return t ? [t] : [];
+          })
+        : [];
+    const judged = Array.isArray(held.judged)
+      ? held.judged.flatMap((x) => {
+          if (!x || typeof x !== "object") return [];
+          const r = x as Record<string, unknown>;
+          const t = typeof r.title === "string" && r.title ? r.title : typeof r.key === "string" ? r.key : "";
+          const c = typeof r.confidence === "number" && Number.isFinite(r.confidence) ? r.confidence : null;
+          return t && c !== null ? [{ title: t, confidence: c }] : [];
+        })
+      : [];
+    // THE PRODUCER'S OWN LIST: `objectives[]` carries every row with its CURRENT status. A goal
+    // (not a gate) is outstanding when it does not hold now — including one stored `met` whose
+    // latest judgment is negative, below the threshold, stale or unknown (#1097 review 5159).
+    // Events written before `current` existed fall back to the settlement they carry.
+    const outstanding = Array.isArray(meta.objectives)
+      ? meta.objectives.flatMap((x) => {
+          if (!x || typeof x !== "object") return [];
+          const r = x as Record<string, unknown>;
+          if (r.gate === true) return [];
+          const open = typeof r.current === "string" ? r.current === "outstanding" : r.settled_by === "pending";
+          if (!open) return [];
+          const t = typeof r.title === "string" && r.title ? r.title : typeof r.key === "string" ? r.key : "";
+          return t ? [t] : [];
+        })
+      : [];
+    return {
+      type: "completion",
+      gates: num(meta, "gates") ?? 0,
+      unmet: num(meta, "unmet_gates") ?? 0,
+      observed: titles(held.observed),
+      judged,
+      waived: titles(held.waived),
+      outstanding,
+      outstandingCount: Math.max(num(meta, "outstanding_goals") ?? 0, outstanding.length),
+      text: text(e),
+    };
+  }
   if (e.kind === "session" && !text(e)) {
     const sessionKey = e.session_key && isPersistableKey(e.session_key) ? e.session_key : null;
     const role = str(meta, "adopted");

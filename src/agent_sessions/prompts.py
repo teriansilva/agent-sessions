@@ -1,7 +1,8 @@
 """The AI prompt registry (#824) — every system prompt this app sends, declared in one place.
 
-Every system prompt goes to the one configured AI endpoint (``review.complete_json``) — fourteen
-of them as of #956, which removed the unrendered overview banner. Three were operator-editable
+Every system prompt goes to the one configured AI endpoint (``review.complete_json``) — fifteen
+of them as of #1088, which added the objective judge (#956 removed the unrendered overview
+banner). Three were operator-editable
 through their feature's prefs block; the rest were module constants, so changing how a recap
 reads meant editing Python and shipping a release. This module owns all of them: their text,
 their bounds, and where each one is stored.
@@ -186,6 +187,11 @@ Rules:
   select the same template once per branch the instruction names. Any other value refuses the row.
 - Anything worth tracking that no template covers goes in `notes`. A note is a reminder only —
   it checks nothing and gates nothing.
+- If you are told the operator DECLINED a checklist, there are no templates. Then write in `notes`
+  the outcomes that would show the instruction is done — at most six, each a concrete, checkable
+  result ("the root cause is written down in the repository"), never a step. An independent
+  supervisor judges each one against what the agents actually produced, and together they decide
+  when the mission is proposed for review.
 - `gate` means the mission is not done until this holds. Use it for outcomes, not for steps.
 - Prefer few objectives. A checklist nobody reads is worse than three that matter."""
 _MISSION_PLAN = """You turn a mission instruction into a DISPATCH PROPOSAL. Nothing you write
@@ -306,6 +312,40 @@ anything, and you must not claim an objective is met — that is settled by obse
 your reading of the transcript.
 - If the evidence is thin, say `on_track` and propose no nudge. Guessing costs the operator a \
 nudge they did not need."""
+
+
+_MISSION_JUDGE = """You judge whether ONE objective of a mission has been met, from what the \
+mission's agents actually produced. You are independent of the agent that did the work: its \
+own claim that it is finished is not evidence, and neither is a plan, an intention or a summary \
+of what it will do next.
+
+You are given the objective, the operator's instruction as context, and LABELLED sources: \
+`transcript:<session>` (what the agent and its tools wrote), `screen:<session>` (its terminal as \
+it looks now) and `diff` (the checkout's uncommitted changes).
+
+Answer with JSON only:
+
+{"met": true | false,
+ "confidence": <0..1>,
+ "evidence": [{"source": "<a label you were given>", "quote": "<words copied exactly>"}],
+ "reason": "<one or two sentences, at most 300 characters>"}
+
+Rules:
+
+- `met` is true only if the sources show the OUTCOME itself — the finding written down, the issue \
+closed, the file changed — not that an agent says it did it.
+- Quote the artifact. Every `quote` is copied word for word from the one source you name: at most \
+three quotes, each at most 200 characters and AT LEAST 20 non-space characters and three words \
+(for Chinese, Japanese, Korean or Thai text, at least 10 of those characters instead of three \
+words). Prefer the whole surrounding line over a fragment: "Tests: 42 passed" is too short to \
+count, "pytest: 42 passed, 0 failed in 3.1s" is not. A quote that is not in that source, or is \
+too short, is discarded, and `met: true` with nothing that can be verified counts as not judged.
+- For an agent that keeps a transcript, its screen is context only: quote the transcript or the \
+diff.
+- `confidence` is how sure you are that the objective is met, from 0 to 1. Be conservative. The \
+operator decides what confidence counts, and a wrong "met" moves the mission to review too early.
+- If the sources do not show it, answer `met: false` with a low confidence and say what is \
+missing."""
 
 
 REGISTRY: tuple[Prompt, ...] = (
@@ -523,6 +563,29 @@ REGISTRY: tuple[Prompt, ...] = (
         # GUARDED, and here the reason is direct rather than one phase removed: this prompt's
         # output decides whether an autonomous nudge is sent at all. Operator text that shaped it
         # would be shaping an action against a live session.
+        guarded=True,
+    ),
+    Prompt(
+        id="mission_judge",
+        group="Missions",
+        label="Objective judge",
+        description=(
+            'Judges ONE objective no probe can check — like "a finding is written down" — from '
+            "what the mission's sessions produced. It must quote its evidence, and it counts as "
+            "met only at or above your confidence setting. At most it proposes review; you close "
+            "the mission."
+        ),
+        # Evidence-shaped, and the server trusts three things from it: `met`, `confidence` and the
+        # quotes that verify VERBATIM against the source they name. No URL, verb, path or text to
+        # type comes out of it (#1088).
+        contract='{"met": bool, "confidence": number, '
+        '"evidence": [{"source": str, "quote": str}], "reason": str}',
+        default=_MISSION_JUDGE,
+        max_chars=6000,
+        block=BLOCK,
+        field="mission_judge",
+        # GUARDED. Its output decides whether a completion gate is settled — and session content,
+        # which it reads, is exactly where an instruction to "say met" would be hidden.
         guarded=True,
     ),
 )

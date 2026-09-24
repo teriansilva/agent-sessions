@@ -204,7 +204,7 @@ def test_a_WAIVED_objective_is_never_probed(store, monkeypatch):
     assert calls == []
 
 
-def test_agent_judged_and_none_are_never_run(store, monkeypatch):
+def test_supervisor_judged_and_none_are_never_run_by_the_probe_runner(store, monkeypatch):
     calls: list[str] = []
     monkeypatch.setattr(
         mission_probes,
@@ -212,7 +212,7 @@ def test_agent_judged_and_none_are_never_run(store, monkeypatch):
         lambda m, o, **_: calls.append(o["key"]) or forge.Fact.seen(True),
     )
     m = _mission()
-    _add(m["id"], "claimed", "agent_judged", gate=False)
+    _add(m["id"], "claimed", "supervisor_judged", gate=False)
     _add(m["id"], "byhand", "none", gate=False)
     mission_probes.run_for_mission(m["id"])
     assert calls == []
@@ -321,7 +321,7 @@ def test_NO_REQUEST_is_issued_for_a_probe_kind_that_does_not_fetch(store, monkey
     # A model can only ever produce a NOTE — no probe, never a gate (#883). Its title is attacker-
     # controlled text; the runner must not read a target out of it.
     _add(m["id"], "note_x", "none", gate=False)
-    _add(m["id"], "claimed", "agent_judged", gate=False)
+    _add(m["id"], "claimed", "supervisor_judged", gate=False)
     out = mission_probes.run_for_mission(m["id"])
     assert out["probed"] == 0
 

@@ -42,6 +42,8 @@ export function worthALook(
 /** `forge_merged · devopsagent/alpha`, `note · not checked`: the probe and the target it checks. */
 export function checksWhat(o: MissionObjective): string {
   if (o.probe === "none") return "note · not checked";
+  // A judged criterion names no target: the supervisor reads the session output (#1088).
+  if (o.probe === "supervisor_judged") return "judged by the supervisor";
   const a = o.probe_args ?? {};
   const target = ["repo", "branch", "url"]
     .map((k) => a[k])

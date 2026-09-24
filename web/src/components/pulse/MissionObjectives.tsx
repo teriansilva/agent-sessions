@@ -43,9 +43,11 @@ import {
   MoreHorizontal,
   Pencil,
   Plus,
+  RotateCcw,
   Signpost,
   Trash2,
 } from "lucide-react";
+import { Link } from "react-router-dom";
 import {
   type ReactNode,
   useCallback,
@@ -88,6 +90,17 @@ import { boardFor } from "./supervisorBoard";
 import d from "./direction.module.css";
 import { ObjectiveDirectionDialog } from "./ObjectiveDirectionDialog";
 import { type DirectionOp, hasDirection } from "./objectiveDirection";
+import { useConfig } from "../../app/config";
+import { settingsPath } from "../../routes/settingsTabs";
+import {
+  isJudged,
+  type Judged,
+  judgedStateWord,
+  judgmentOf,
+  NO_ENDPOINT_REASON,
+  sourceLabel,
+  type Verdict,
+} from "./judgment";
 
 /** One `PATCH /objectives` op. The shapes the route accepts; `state` is not among them. */
 export type ObjectiveOp =
@@ -96,6 +109,8 @@ export type ObjectiveOp =
   | { op: "retitle"; key: string; title: string }
   | { op: "waive"; key: string }
   | { op: "reorder"; keys: string[] }
+  /** #1088: overrule a judgment — "Not met — judge again", for the episode the row was drawn at. */
+  | { op: "reject_judgment"; key: string; episode: number }
   /** #983: write, re-copy or remove this mission's direction for one objective. */
   | DirectionOp;
 
@@ -109,6 +124,12 @@ function when(ts: number | null | undefined): string {
 
 /** Semantic state colour. `met` is the only "good" state; everything else is neutral or amber. */
 function dotFor(o: MissionObjective): string {
+  // A JUDGED row is green only while its judgment still counts (#1088): a met row whose latest
+  // judgment is stale, below the threshold or rejected is not a gate that holds.
+  if (o.state === "met" && isJudged(o)) {
+    const j = judgmentOf(o);
+    return j?.kind === "verdict" && j.counts ? styles.dotRunning : styles.dot;
+  }
   if (o.state === "met") return styles.dotRunning;
   if (o.state === "failed") return styles.dotFailed;
   if (o.state === "waived") return styles.dotDone;
@@ -278,6 +299,181 @@ function ObjectiveTitle({
   );
 }
 
+/** THE JUDGMENT, under a judged row's meta line (#1088): why it holds or does not, and the evidence
+ *  the supervisor quoted one tap away. Quotes are plain React text — never markdown, never HTML. */
+function JudgedDetail({
+  o,
+  j,
+  episode,
+  onReject,
+  busy,
+}: {
+  o: MissionObjective;
+  j: Judged;
+  /** The episode the row was rendered at — what a reject tap is fenced on. */
+  episode: number | null;
+  onReject?: (key: string, episode: number) => void;
+  busy: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const configured = useConfig()?.ai_review?.configured;
+  const panelId = `judged-evidence-${o.key}`;
+  // WAIVED TAKES PRECEDENCE HERE TOO (Hermes 5104): a waived gate is satisfied, so an earlier
+  // failed attempt's warning — "this mission cannot propose itself finished" — no longer applies.
+  if (j.kind === "unknown" && o.state === "waived") return null;
+  if (j.kind === "unknown") {
+    const noEndpoint = j.reason === NO_ENDPOINT_REASON;
+    return (
+      <span className={styles.objReason} data-testid="objective-judged-unknown">
+        {noEndpoint ? (
+          <>
+            Cannot be judged — no AI endpoint is configured.
+            {/* Only a REQUIRED row blocks the proposal; an optional goal's unknown does not
+                (#1097 review 5159). */}
+            {o.gate ? " This mission cannot propose itself finished; you close it." : ""}{" "}
+            {configured === false || configured === undefined ? (
+              <Link
+                className={styles.judgedLink}
+                to={settingsPath("ai-endpoint")}
+              >
+                Settings → AI
+              </Link>
+            ) : null}
+          </>
+        ) : (
+          <>
+            Not judged yet: {j.reason || "the supervisor could not judge it"}.
+          </>
+        )}
+      </span>
+    );
+  }
+  if (j.kind !== "verdict") return null;
+  const v: Verdict = j;
+  const checked = when(v.checkedAt);
+  // WAIVED: the operator's decision is the current state; the judgment is history only — no stale
+  // or rejected notice, no overrule, and the panel says it is the earlier judgment.
+  const waived = o.state === "waived";
+  const canReject =
+    !waived &&
+    !!onReject &&
+    episode !== null &&
+    !v.rejected &&
+    (o.state === "met" || v.counts);
+  // Switched on the server's structured `stale_kind`, never on its wording (#1097 review 5).
+  const changedCriterion = v.staleKind === "criterion";
+  return (
+    <>
+      {v.stale && !waived ? (
+        <>
+          <span
+            className={styles.objStale}
+            data-testid="objective-judged-stale"
+          >
+            last judged {checked || "earlier"} · stale
+          </span>
+          <span className={styles.objReason}>
+            {changedCriterion
+              ? "You changed this objective since the judgment."
+              : "Session output changed since the judgment."}{" "}
+            It will be judged again on a later pass, and it does not count
+            toward completion until then.
+          </span>
+        </>
+      ) : null}
+      {v.rejected && !waived ? (
+        <span
+          className={styles.objReason}
+          data-testid="objective-judged-rejected"
+        >
+          You rejected this judgment. The supervisor judges it again when the
+          session writes something new.
+        </span>
+      ) : null}
+      <button
+        type="button"
+        className={styles.judgedToggle}
+        aria-expanded={open}
+        // Only while the panel exists: an `aria-controls` naming an absent id is a broken reference.
+        aria-controls={open ? panelId : undefined}
+        onClick={() => setOpen((x) => !x)}
+        data-testid="objective-evidence-toggle"
+      >
+        {open
+          ? "Hide evidence"
+          : waived
+            ? "Show the earlier judgment"
+            : v.stale && checked
+              ? `Show evidence from ${checked}`
+              : "Show evidence"}
+      </button>
+      {open ? (
+        <div
+          className={styles.judgedPanel}
+          id={panelId}
+          data-testid="objective-evidence"
+        >
+          <div className={styles.judgedHead}>
+            {waived ? "Earlier judgment — you marked this not required · " : ""}
+            Evidence the supervisor quoted
+            {checked ? ` · checked ${checked}` : ""}
+            {/* WHY IT DOES NOT COUNT, said accurately: a verdict of "not met" is not the same as
+                a "met" below the threshold (#1097 review 5040, note). */}
+            {waived || v.counts || v.stale || v.rejected
+              ? ""
+              : !v.met
+                ? " · judged not met"
+                : v.confidence < v.threshold
+                  ? ` · below your ${v.threshold.toFixed(2)}`
+                  : ""}
+          </div>
+          {v.evidence.length ? (
+            v.evidence.map((q, i) => (
+              <div key={i} className={styles.judgedQuoteBox}>
+                <div className={styles.judgedSource}>
+                  {sourceLabel(q.source)}
+                </div>
+                <div
+                  className={styles.judgedQuote}
+                  data-testid="objective-evidence-quote"
+                >
+                  {q.quote}
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className={styles.judgedSource}>
+              The supervisor quoted nothing.
+            </div>
+          )}
+          {v.reason ? (
+            <p className={styles.judgedWhy}>
+              <b>Why:</b> {v.reason}
+            </p>
+          ) : null}
+          {v.counts && checked && !waived ? (
+            <p className={styles.judgedHolds}>
+              Holds while the session is unchanged since {checked} — any new
+              output re-judges it.
+            </p>
+          ) : null}
+          {canReject ? (
+            <button
+              type="button"
+              className={styles.judgedReject}
+              disabled={busy}
+              onClick={() => onReject!(o.key, episode!)}
+              data-testid="objective-reject-judgment"
+            >
+              Not met — judge again
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 /** How a row takes part in the order: dragged by its handle, holding the handle's column open
  *  (a row built from the assessment alone, inside a list that can be reordered), or neither. */
 type RowHandle = "drag" | "space" | "none";
@@ -291,6 +487,9 @@ interface ObjectiveRowProps {
   shared: string | null;
   /** The inline rename form, while this row is being renamed. */
   editor: ReactNode;
+  /** Overrule this row's judgment (#1088). Absent ⇒ read-only. */
+  onReject?: (key: string, episode: number) => void;
+  busy?: boolean;
 }
 
 function ObjectiveRow({
@@ -300,6 +499,8 @@ function ObjectiveRow({
   menu,
   shared,
   editor,
+  onReject,
+  busy = false,
   handle,
   // The drag wiring arrives as separate props, not one object: a node setter passed to `ref` makes
   // whatever holds it a ref to the React compiler, and reading the handle's props off that same
@@ -310,15 +511,42 @@ function ObjectiveRow({
   handleProps,
   isDragging = false,
 }: ObjectiveRowProps & { handle: RowHandle } & Partial<SortableRow>) {
-  const st = staleness(o);
+  const j = judgmentOf(o);
+  // A judged row's staleness is the JUDGMENT's, and says so itself (#1088) — never the generic
+  // "last seen … · stale" a probe row reads.
+  const st = j ? null : staleness(o);
   const title = o.title ?? o.key;
-  const stateText = `${o.state}${o.met_at ? ` ${when(o.met_at)}` : ""}`;
+  const plain = `${o.state}${o.met_at ? ` ${when(o.met_at)}` : ""}`;
+  const stateText = j ? judgedStateWord(j, plain, o.state) : plain;
+  // HOW IT HOLDS, beside the state word (#1088): `judged` for the supervisor's reading, `observed`
+  // for a probe's. A judgment must never be mistaken for a fetch.
+  const tag = j ? (
+    <span
+      className={`${styles.objTag} ${styles.objTagJudged}`}
+      data-testid="objective-tag"
+    >
+      judged
+    </span>
+  ) : o.state === "met" && o.probe && o.probe !== "none" ? (
+    <span className={styles.objTag} data-testid="objective-tag">
+      observed
+    </span>
+  ) : null;
   // The state is announced in text too — the dot alone is not readable by a screen reader, and
   // status colour is load-bearing here.
-  const lead = stateIsDrawn(o) ? (
-    <span className={styles.objState}>{stateText}</span>
+  const drawn = stateIsDrawn(o) || j?.kind === "verdict";
+  const lead = drawn ? (
+    <>
+      <span className={styles.objState} data-testid="objective-state">
+        {stateText}
+      </span>
+      {tag}
+    </>
   ) : (
-    <span className={styles.objSr}>{stateText}</span>
+    <>
+      <span className={styles.objSr}>{stateText}</span>
+      {tag}
+    </>
   );
   // A row that carries a direction says so on its meta line (#983 P2): a nudge for it types that
   // direction rather than the default nudge.
@@ -347,9 +575,7 @@ function ObjectiveRow({
       ref={setRow}
       style={rowStyle}
       className={
-        isDragging
-          ? `${styles.objRow} ${styles.objRowDragging}`
-          : styles.objRow
+        isDragging ? `${styles.objRow} ${styles.objRowDragging}` : styles.objRow
       }
       data-testid="objective"
       data-key={o.key}
@@ -388,11 +614,20 @@ function ObjectiveRow({
             lead={meta}
             hideWhy={shared !== null && sup.why_not === shared}
           />
-        ) : stateIsDrawn(o) || directed ? (
+        ) : drawn || directed || tag ? (
           <span className={styles.supCell}>{meta}</span>
         ) : (
           lead
         )}
+        {j ? (
+          <JudgedDetail
+            o={o}
+            j={j}
+            episode={sup ? sup.episode : null}
+            onReject={onReject}
+            busy={busy}
+          />
+        ) : null}
         {st ? (
           <>
             <span className={styles.objStale} data-testid="objective-stale">
@@ -598,6 +833,13 @@ export function MissionObjectives({
     [adding, onOps, busyKey, run],
   );
 
+  /** Overrule a judgment, fenced on the episode the row was rendered at (#1088). */
+  const rejectJudgment = useCallback(
+    (key: string, episode: number) =>
+      run(key, [{ op: "reject_judgment", key, episode }]),
+    [run],
+  );
+
   /** How the drag announcements name a row: its title, quoted. */
   const nameOf = useCallback(
     (key: string) => {
@@ -637,7 +879,10 @@ export function MissionObjectives({
   const noSession = supervisor?.no_session === true;
 
   /** The row's ⋯ menu. Empty ⇒ no ⋯ at all, which is what a read-only row gets. */
-  const menuFor = (o: MissionObjective, index: number | null): RowMenuEntry[] => {
+  const menuFor = (
+    o: MissionObjective,
+    index: number | null,
+  ): RowMenuEntry[] => {
     const title = o.title ?? o.key;
     const sup = reading.get(o.key);
     const editable = !!onOps && index !== null;
@@ -699,6 +944,27 @@ export function MissionObjectives({
           "data-episode": sup.episode,
         },
         onSelect: () => onStandDown(o.key, sup.episode),
+      });
+    }
+    // "Not met — judge again" (#1088), also on the row's evidence panel. Only for a judgment that
+    // currently says met: the ONE op that may move a met row back to pending, and only a judged one.
+    const jv = judgmentOf(o);
+    if (
+      editable &&
+      sup &&
+      jv?.kind === "verdict" &&
+      o.state !== "waived" &&
+      !jv.rejected &&
+      (o.state === "met" || jv.counts)
+    ) {
+      first.push({
+        key: "reject-judgment",
+        label: "Not met — judge again",
+        ariaLabel: `Reject the judgment on "${title}"`,
+        icon: <RotateCcw size={15} />,
+        disabled: locked,
+        data: { "data-testid": "objective-menu-reject-judgment" },
+        onSelect: () => void rejectJudgment(o.key, sup.episode),
       });
     }
     if (!editable || index === null) return first;
@@ -789,6 +1055,11 @@ export function MissionObjectives({
     menu: menuFor(o, index),
     shared,
     editor: editorFor(o),
+    onReject:
+      onOps && index !== null
+        ? (k: string, ep: number) => void rejectJudgment(k, ep)
+        : undefined,
+    busy: locked,
   });
 
   const sortable = !!onOps && listed.length > 0;
@@ -800,7 +1071,11 @@ export function MissionObjectives({
     >
       {listed.map((o, i) =>
         sortable ? (
-          <SortableObjectiveRow key={o.key} {...rowProps(o, i)} locked={locked} />
+          <SortableObjectiveRow
+            key={o.key}
+            {...rowProps(o, i)}
+            locked={locked}
+          />
         ) : (
           <ObjectiveRow key={o.key} {...rowProps(o, null)} handle="none" />
         ),
@@ -825,7 +1100,10 @@ export function MissionObjectives({
       {/* SAID ONCE (#967 P3). With no session every row carried the same sentence; the section
           says it here and a row keeps only a reason that differs. Still the server's words. */}
       {shared && listed.length + extra.length > 0 ? (
-        <div className={styles.objNotice} data-testid="objectives-shared-reason">
+        <div
+          className={styles.objNotice}
+          data-testid="objectives-shared-reason"
+        >
           {shared}
         </div>
       ) : null}

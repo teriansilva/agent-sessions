@@ -38,7 +38,7 @@ const CONFIG = {
   },
   mission_probes: {
     kinds: ["none", "http_status"],
-    non_gating: ["agent_judged"],
+    non_gating: [],
     args: {
       none: { required: [], optional: [] },
       http_status: { required: ["url"], optional: ["expect_status"] },

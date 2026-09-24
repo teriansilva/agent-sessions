@@ -208,3 +208,25 @@ def test_the_loop_serves_an_early_reading_long_before_the_sweep_and_does_not_swe
     assert read == ["msn_new"], "the early reading was not served while the sweep was an hour away"
     assert swept == [], "the sweep ran early — the cadence must be untouched"
     assert loop._wake is None, "the wake event outlived the loop"
+
+
+def test_switching_supervision_off_mid_batch_stops_the_early_judge_calls(monkeypatch):
+    """The early path re-checks the switch before judging, like the sweep's judge phase (#1097)."""
+    enabled = {"on": True}
+    monkeypatch.setattr(loop, "_enabled", lambda: enabled["on"])
+
+    async def run_pass(mid, registry=None):
+        enabled["on"] = False  # the operator switches supervision off while this reading runs
+        return _pass(READ)
+
+    monkeypatch.setattr(loop.mission_supervisor, "run_pass", run_pass)
+    judged: list = []
+
+    async def judge_batch(ids, budget):
+        judged.append(list(ids))
+        return {}
+
+    monkeypatch.setattr(loop.mission_judge, "judge_batch", judge_batch)
+    loop.request_early_pass("msn_a", now=0.0)
+    asyncio.run(loop.run_due_early(now=D))
+    assert judged == []

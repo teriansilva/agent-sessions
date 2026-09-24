@@ -1382,6 +1382,26 @@ ORCH_AI_DIRECTION_CONF_LO = 0.90
 ORCH_AI_DIRECTION_CONF_HI = 1.00
 ORCH_AI_DIRECTION_CONF_DEFAULT = 0.90
 
+# THE SUPERVISOR'S JUDGMENT FLOOR (#1088). A `supervisor_judged` objective counts as met only when
+# an independent model call says so at or above this confidence. The operator decided the floor
+# and the default together ("high confidence"): 0.90, the same number as the one confidence floor
+# this app already had. RAISING it is the conservative direction (1.00 means "only when certain");
+# lowering below the floor is a 422, never a clamp. The consequence of a judgment is bounded
+# anyway — it can at most move a mission to `review`, and the operator closes it.
+ORCH_JUDGE_CONF_LO = 0.90
+ORCH_JUDGE_CONF_HI = 1.00
+ORCH_JUDGE_CONF_DEFAULT = 0.90
+
+
+def judge_conf_in_range(v: object) -> bool:
+    """A real number inside the judgment floor..ceiling. Booleans are refused on TYPE —
+    `isinstance(True, int)` is True in Python — and `nan`/`±inf` fail the comparison anyway."""
+    return (
+        isinstance(v, int | float)
+        and not isinstance(v, bool)
+        and ORCH_JUDGE_CONF_LO <= v <= ORCH_JUDGE_CONF_HI
+    )
+
 
 def auto_verbs(cfg: object) -> frozenset[str]:
     """The verbs that may be delivered WITHOUT a tap, for this configuration.
@@ -1470,6 +1490,9 @@ _ORCH_DEFAULTS: dict[str, object] = {
     # Off by default. See `ORCH_AI_DIRECTION_CONF_LO` above for why the floor is what it is.
     "auto_ai_directions": False,
     "ai_direction_confidence_min": ORCH_AI_DIRECTION_CONF_DEFAULT,
+    # The supervisor's judgment threshold (#1088). A MISSION setting: when #1019 splits the policy
+    # blocks it moves with mission orchestration.
+    "judge_confidence_min": ORCH_JUDGE_CONF_DEFAULT,
 }
 
 
@@ -1524,6 +1547,11 @@ def _coerce_orchestrator(raw: object) -> dict:
             and ORCH_AI_DIRECTION_CONF_LO <= ac <= ORCH_AI_DIRECTION_CONF_HI
         ):
             out["ai_direction_confidence_min"] = float(ac)
+        # READ-LENIENT: an out-of-range, boolean or non-numeric stored value reads as the default,
+        # never as itself, so a hand-edited file cannot put the threshold under the floor.
+        jc = raw.get("judge_confidence_min")
+        if judge_conf_in_range(jc):
+            out["judge_confidence_min"] = float(jc)
         if "allowed_verbs" in raw:
             out["allowed_verbs"] = coerce_allowed_verbs(
                 raw["allowed_verbs"], allow_draft=out["auto_ai_directions"] is True
@@ -1575,6 +1603,8 @@ def public_orchestrator(path: Path | None = None) -> dict:
     out["auto_verbs_ceiling"] = sorted(auto_verbs(out))
     out["ai_direction_confidence_floor"] = ORCH_AI_DIRECTION_CONF_LO
     out["ai_direction_confidence_max"] = ORCH_AI_DIRECTION_CONF_HI
+    out["judge_confidence_floor"] = ORCH_JUDGE_CONF_LO
+    out["judge_confidence_max"] = ORCH_JUDGE_CONF_HI
     return out
 
 
@@ -1633,6 +1663,14 @@ def validate_orchestrator_patch(patch: object, path: Path | None = None) -> str 
                 f"{ORCH_AI_DIRECTION_CONF_LO:.2f} is the approved floor for autonomous "
                 "AI-written directions: it can be raised, never lowered."
             )
+    if "judge_confidence_min" in patch and not judge_conf_in_range(patch["judge_confidence_min"]):
+        # WRITE-STRICT: 422, never a coercion. The floor is the operator's own decision (#1088).
+        return (
+            f"orchestrator.judge_confidence_min must be a number between "
+            f"{ORCH_JUDGE_CONF_LO:.2f} and {ORCH_JUDGE_CONF_HI:.2f}. "
+            f"{ORCH_JUDGE_CONF_LO:.2f} is the floor for a supervisor's judgment: it can be "
+            "raised, never lowered."
+        )
     if "allowed_verbs" in patch:
         v = patch["allowed_verbs"]
         if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
@@ -1718,6 +1756,10 @@ def set_orchestrator(patch: dict, path: Path | None = None) -> dict:
             and not isinstance(conf, bool)
             and ORCH_AI_DIRECTION_CONF_LO <= conf <= ORCH_AI_DIRECTION_CONF_HI
             else ORCH_AI_DIRECTION_CONF_DEFAULT
+        )
+        jc = cur.get("judge_confidence_min")
+        cur["judge_confidence_min"] = (
+            float(jc) if judge_conf_in_range(jc) else ORCH_JUDGE_CONF_DEFAULT
         )
         cur["allowed_verbs"] = coerce_allowed_verbs(
             cur.get("allowed_verbs"), allow_draft=cur["auto_ai_directions"] is True
@@ -2187,14 +2229,16 @@ DEFAULT_MISSION_PLAYBOOKS: dict[str, object] = {
         {
             "id": "investigate",
             "label": "Investigate",
-            # Nothing gates: `agent_judged` may not (NON_GATING_PROBES), and the operator is the
-            # one who decides an investigation is finished.
+            # `finding` GATES (#1088): the supervisor judges it, and at or above the operator's
+            # confidence floor the mission is PROPOSED for review — the operator still closes it.
+            # `confirmed` stays the operator's own, non-gating. An operator's saved copy keeps its
+            # own `gate: false`: nothing changes their configuration for them.
             "objectives": [
                 {
                     "key": "finding",
                     "title": "A finding is written down",
-                    "probe": "agent_judged",
-                    "gate": False,
+                    "probe": "supervisor_judged",
+                    "gate": True,
                 },
                 {
                     "key": "confirmed",
@@ -2265,6 +2309,14 @@ def _check_objective(obj: object, *, strict: bool) -> dict | None:
         if strict:
             raise PlaybookError(f"objective key may not start with {_m.NOTE_KEY_PREFIX!r}")
         return None
+    if strict and (key.startswith(_m.GOAL_KEY_PREFIX) or key == _m.DONE_AS_INSTRUCTED_KEY):
+        # Reserved for the objectives the orchestrator writes from the instruction of a mission
+        # that declined a checklist (#1088). Refused on WRITE only: a declined mission has no
+        # templates, so a checklist saved before this rule cannot collide and keeps working.
+        raise PlaybookError(
+            f"objective key may not be {_m.DONE_AS_INSTRUCTED_KEY!r} or start with "
+            f"{_m.GOAL_KEY_PREFIX!r}"
+        )
     if strict and _m.MINTED_KEY_SEP in key:
         # Reserved for the keys a template's repeated use is minted under (#1061), so a minted row
         # can always be traced back to its template. Refused on WRITE only: a playbook stored before
@@ -2275,7 +2327,12 @@ def _check_objective(obj: object, *, strict: bool) -> dict | None:
             raise PlaybookError(f"bad objective title for {key!r}")
         return None
 
-    probe = obj.get("probe", "none")
+    # THE ALIAS (#1088): a checklist saved before the rename says `agent_judged`. It is READ as the
+    # new name and nothing rewrites the file on read; the next save of the checklists writes the new
+    # name, because a save stores what this returns.
+    from . import missions as _mm
+
+    probe = _mm.canonical_probe(obj.get("probe", "none"))
     args = obj.get("probe_args")
     # AN ACTUAL BOOLEAN, never a coercion. `bool("false")` is `True`, so a client that
     # stringifies a false value would silently create a MANDATORY gate — and a gate nobody

@@ -35,7 +35,7 @@ import logging
 import time
 import uuid
 
-from . import mission_directions, mission_probes, mission_questions, missions, prefs
+from . import mission_directions, mission_judge, mission_probes, mission_questions, missions, prefs
 from . import orchestrator_ledger as ledger
 
 log = logging.getLogger(__name__)
@@ -1299,19 +1299,98 @@ async def escalate(
 _ELIGIBLE_STATES: frozenset[str] = frozenset({"running", "review"})
 
 
+def _judged_confidence(o: dict) -> float | None:
+    """The confidence of the judgment that settled this row, or `None` when a probe settled it."""
+    if missions.canonical_probe(str(o.get("probe") or "")) != "supervisor_judged":
+        return None
+    raw = o.get("observed")
+    obs = missions._loads(raw) if isinstance(raw, str) else raw
+    rec = obs.get("judged") if isinstance(obs, dict) else None
+    conf = rec.get("confidence") if isinstance(rec, dict) else None
+    if isinstance(conf, int | float) and not isinstance(conf, bool):
+        return float(conf)
+    return None
+
+
+def _obs_of(o: dict) -> dict | None:
+    raw = o.get("observed")
+    obs = missions._loads(raw) if isinstance(raw, str) else raw
+    return obs if isinstance(obs, dict) else None
+
+
+def _current(o: dict) -> str:
+    """The objective's CURRENT status, from its latest evidence — never its historical state alone.
+
+    `holds` (settled, and the latest observation still backs it — the same `observation_supports`
+    the completion gate asks), `waived` (the operator's call; precedence over any evidence), or
+    `outstanding` (everything else, INCLUDING a row whose stored state is still `met` from an
+    earlier look that a later look no longer supports: a negative re-judgment, a verdict below the
+    threshold, a stale one, or an attempt that could not be judged) (#1097 review 5159)."""
+    state = str(o.get("state") or "")
+    if state == "waived":
+        return "waived"
+    if state != "met":
+        return "outstanding"
+    cur = {"observed": _obs_of(o)}
+    if "title" in o:
+        cur["title"] = o.get("title")
+        cur["direction"] = o.get("direction")
+    return "holds" if missions.observation_supports(cur) else "outstanding"
+
+
 def _settled_by(o: dict) -> str:
-    """WHY this objective counts as settled — the fact, not the flag.
+    """WHY this objective counts as settled — or why it does not any more. The CURRENT fact, not the
+    stored flag.
 
     `waived` is called out separately from `met` on purpose: a waiver is the operator deciding the
     objective was not required, which is a different kind of claim from a probe having observed it
     hold, and a proposal that blurred them would overstate what was actually verified.
+
+    A JUDGMENT is called out too (#1088): it is the supervisor's reading of the session output,
+    at or above the operator's confidence floor — and never "observed to hold", which would claim a
+    fetch that did not happen.
+
+    A row still stored `met` whose LATEST look no longer supports it says so, with the reason
+    (#1097 review 5159): the old sentence printed "judged met (0.99)" beside a 0.99 NOT-met
+    re-judgment, in the sign-off record the operator closes the mission from.
     """
     state = str(o.get("state") or "")
-    if state == "met":
-        return "observed to hold"
-    if state == "waived":
+    current = _current(o)
+    if current == "waived":
         return "waived by the operator — not verified"
-    return state or "unknown"
+    if current == "holds":
+        conf = _judged_confidence(o)
+        if conf is not None:
+            return f"judged met ({conf:.2f}) — the supervisor's reading, not observed"
+        return "observed to hold"
+    if state != "met":
+        return state or "unknown"
+    return f"met earlier, {_why_not_now(o)}"
+
+
+def _why_not_now(o: dict) -> str:
+    """Why a row stored `met` is not supported by its latest look — in the operator's terms."""
+    obs = _obs_of(o) or {}
+    rec = obs.get("judged") if isinstance(obs.get("judged"), dict) else {}
+    if obs.get("stale") is True:
+        kind = str(obs.get("stale_kind") or "")
+        if kind == "unknown" or "attempted_fp" in rec:
+            reason = str(obs.get("reason") or obs.get("detail") or "").strip()
+            return "could not be judged since" + (f": {reason}" if reason else "")
+        if kind == "criterion":
+            return "not judged since the objective changed"
+        return "not re-checked since the output changed"
+    conf = _judged_confidence(o)
+    if conf is not None:
+        thr = rec.get("threshold")
+        if rec.get("met") is True and isinstance(thr, int | float) and conf < float(thr):
+            return f"now judged met at {conf:.2f}, below the {float(thr):.2f} threshold"
+        if rec.get("met") is False:
+            return f"now judged NOT met ({conf:.2f})"
+        return f"the latest judgment ({conf:.2f}) does not count"
+    if rec and "criterion" in rec:
+        return "judged for an earlier version of the objective"
+    return "the latest check did not see it hold"
 
 
 def _render_completion(rows: list[dict]) -> tuple[str, dict]:
@@ -1321,19 +1400,42 @@ def _render_completion(rows: list[dict]) -> tuple[str, dict]:
     they are at the moment the mission moves — every current objective, and each one's current
     settlement fact. The caller supplies the wording; the store supplies what it is about.
     """
+    # `settled_by` is derived from the FULL row (it needs `probe` and `observed` to tell a judgment
+    # from an observation), then carried on the projection that is published.
     objectives = [
         {
             "key": r.get("key"),
             "title": r.get("title"),
             "gate": bool(r.get("gate")),
             "state": r.get("state"),
+            # THE CURRENT STATUS, explicit, so a surface never re-derives it from `state` — the
+            # stored state keeps a historical `met` after a negative re-judgment (#1097 r. 5159).
+            "current": _current(r),
+            "settled_by": _settled_by(r),
         }
         for r in rows
     ]
     # COUNTED FROM THE ROWS THE STORE READ, not from the summary above: `gate_tally` needs
     # `observed` to decide whether a settlement still holds, and the projection drops it.
     gates, unmet = missions.gate_tally(rows)
-    outstanding = sum(1 for o in objectives if not o["gate"] and _settled_by(o) == "pending")
+    # A goal is outstanding when it does not hold NOW — not merely when it was never settled.
+    outstanding = sum(1 for o in objectives if not o["gate"] and o["current"] == "outstanding")
+    # HOW EACH GATE HOLDS (#1088): observed, judged (each with its confidence) or waived. A
+    # judgment is a different kind of claim from an observation, so the proposal lists them apart.
+    held: dict = {"observed": [], "judged": [], "waived": []}
+    for r in rows:
+        if not r.get("gate"):
+            continue
+        entry = {"key": r.get("key"), "title": r.get("title")}
+        cur = _current(r)
+        if cur == "waived":
+            held["waived"].append(entry)
+        elif cur == "holds":
+            conf = _judged_confidence(r)
+            if conf is None:
+                held["observed"].append(entry)
+            else:
+                held["judged"].append({**entry, "confidence": conf})
     meta = {
         "source": "supervisor",
         "proposal": True,
@@ -1342,12 +1444,23 @@ def _render_completion(rows: list[dict]) -> tuple[str, dict]:
         "gates": gates,
         "unmet_gates": unmet,
         "outstanding_goals": outstanding,
-        "objectives": [{**o, "settled_by": _settled_by(o)} for o in objectives],
+        "held": held,
+        "objectives": objectives,
     }
-    return _completion_text(objectives, gates=gates, unmet=unmet, outstanding=outstanding), meta
+    text = _completion_text(
+        objectives, gates=gates, unmet=unmet, outstanding=outstanding, held=held
+    )
+    return text, meta
 
 
-def _completion_text(objectives: list[dict], *, gates: int, unmet: int, outstanding: int) -> str:
+def _completion_text(
+    objectives: list[dict],
+    *,
+    gates: int,
+    unmet: int,
+    outstanding: int,
+    held: dict | None = None,
+) -> str:
     """The proposal, as the operator reads it in the timeline.
 
     **The first line is DERIVED (#1063).** It used to be a constant — `"Every gate is met. This
@@ -1383,18 +1496,46 @@ def _completion_text(objectives: list[dict], *, gates: int, unmet: int, outstand
                 "they do not gate completion."
             )
     lines = [head]
+    if held and gates:
+        judged = held.get("judged") or []
+        lines.append(
+            f"Observed {len(held.get('observed') or [])} · "
+            f"judged {len(judged)}"
+            + (
+                " ("
+                + ", ".join(
+                    f"{j.get('title') or j.get('key')} {float(j['confidence']):.2f}" for j in judged
+                )
+                + ")"
+                if judged
+                else ""
+            )
+            + f" · waived {len(held.get('waived') or [])}"
+        )
     for o in objectives:
         mark = "gate" if o.get("gate") else "goal"
-        lines.append(f"- [{mark}] {o.get('title') or o.get('key')}: {_settled_by(o)}")
+        lines.append(
+            f"- [{mark}] {o.get('title') or o.get('key')}: {o.get('settled_by') or _settled_by(o)}"
+        )
     return "\n".join(lines)
 
 
-async def run_pass(mission_id: str, *, registry=None, path=None) -> dict:
+async def run_pass(
+    mission_id: str,
+    *,
+    registry=None,
+    path=None,
+) -> dict:
     """One supervisor pass over one mission. Returns what it did, in the operator's terms.
 
     The order is the design, and each step is placed where it is for a reason:
 
-    0. **The probes run FIRST** (#891), before the assessment reads the objective rows. They are
+    0. **The probes run FIRST** (#891), before the assessment reads the objective rows — and the
+       REVALIDATION of the supervisor's judgments right after them (#1088, #1097 round 9:
+       `mission_judge.mark_mission` marks stale every verdict the current input or criterion no
+       longer backs; it makes no model call). The judging itself is the sweep's SECOND phase
+       (`mission_judge.judge_batch`, after every mission in the batch was supervised), so a verdict
+       written there is counted by the NEXT pass, after this revalidation. The probes are
        what makes a gate become met at all, and running them after the assessment would mean every
        settlement is acted on a full sweep interval late — the supervisor would nudge about an
        objective that had just been satisfied by the probe it had not run yet. Off the loop,
@@ -1440,6 +1581,23 @@ async def run_pass(mission_id: str, *, registry=None, path=None) -> dict:
             lambda: mission_probes.run_for_mission(mission_id, path=path)
         )
 
+    # (0b) THE JUDGMENTS' STALENESS (#1088, #1097 round 9), after the probes and BEFORE the
+    # assessment: every judgment whose input or criterion moved is marked stale, so the completion
+    # question below only ever counts verdicts just revalidated against the current input. This
+    # pass makes NO judge call: judging is the sweep's second phase (`mission_judge.judge_batch`),
+    # after every mission has been supervised, so a verdict written there is first counted by the
+    # NEXT pass, after its own revalidation — a judged-met gate can lag completion by one sweep.
+    judged: dict = {}
+    # FAIL CLOSED (#1097 review round 5): a pass that could not revalidate the judgments (a busy
+    # store, a failed read) proposes nothing, because it cannot vouch that a counted verdict still
+    # holds. With the calls moved out of the pass this is the only failure left to guard.
+    marks_unfinished = False
+    try:
+        judged = await mission_judge.mark_mission(mission_id, path=path)
+    except Exception as e:  # noqa: BLE001 — one mission's judge must not stop its pass
+        log.warning("mission %s: judgment revalidation failed: %s", mission_id, e)
+        marks_unfinished = True
+
     a = await missions.run_admitted(lambda: assess(mission_id, path=path))
     out: dict = {
         "assessment": None,
@@ -1447,12 +1605,13 @@ async def run_pass(mission_id: str, *, registry=None, path=None) -> dict:
         "drafted": None,
         "escalated": None,
         "probes": probes or None,
+        "judged": judged or None,
         "asked": None,
         "objectives": a["objectives"],
     }
 
     # (2) The completion proposal is MECHANICAL and comes before the gate, deliberately.
-    if a["likely_done"]:
+    if a["likely_done"] and not marks_unfinished:
         out["likely_done"] = True
         if state != "review":
             # ONE transaction: re-verify the gates, flip the state, post the artifact. Separately

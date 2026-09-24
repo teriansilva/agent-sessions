@@ -436,6 +436,66 @@ function HeldRow({
   );
 }
 
+/** The supervisor's completion proposal (#1063), with HOW each gate holds (#1088): observed by a
+ *  probe, judged by the supervisor (with its confidence), or waived by you. A judgment is never
+ *  folded into "observed" — it is a different kind of claim. Nothing here has been closed. */
+function CompletionRow({
+  event,
+  row,
+}: {
+  event: MissionEvent;
+  row: Extract<ThreadRow, { type: "completion" }>;
+}) {
+  const holds = row.gates > 0 && row.unmet === 0;
+  const lines: Array<[string, number, string]> = [
+    ["Observed", row.observed.length, row.observed.join(" · ")],
+    [
+      "Judged",
+      row.judged.length,
+      row.judged.map((j) => `${j.title} (${j.confidence.toFixed(2)})`).join(" · "),
+    ],
+    ["Waived", row.waived.length, row.waived.join(" · ")],
+  ];
+  const open = row.outstandingCount;
+  return (
+    <div
+      className={t.completion}
+      role="group"
+      aria-label="Proposed for review"
+      data-testid="thread-completion"
+    >
+      <div className={t.completionHead}>
+        <b>Proposed for review — nothing has been closed.</b>{" "}
+        {holds
+          ? `${row.gates} gate${row.gates === 1 ? "" : "s"}, ${
+              row.gates === 1 ? "it holds" : row.gates === 2 ? "both hold" : "all hold"
+            }:`
+          : `${row.unmet} of ${row.gates} gates still unmet.`}
+        <Time at={event.at} />
+      </div>
+      <dl className={t.completionHeld}>
+        {lines.map(([label, n, what]) => (
+          <div key={label} className={t.completionLine} data-testid={`thread-completion-${label.toLowerCase()}`}>
+            <dt>{label}</dt>
+            <dd>
+              {n}
+              {what ? ` · ${what}` : ""}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      {/* NON-GATING GOALS STILL OPEN (#1097 review 5040, finding 6). They do not block the
+          proposal, but the operator closing the mission should see what is still undone. */}
+      {open > 0 ? (
+        <p className={t.completionOpen} data-testid="thread-completion-open">
+          {open} goal{open === 1 ? "" : "s"} still open, not gating completion
+          {row.outstanding.length ? `: ${row.outstanding.join(" · ")}` : ""}.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 /** One timeline event in the thread. */
 export function MissionThreadEvent({
   event,
@@ -594,6 +654,9 @@ export function MissionThreadEvent({
           <Time at={event.at} />
         </div>
       );
+      break;
+    case "completion":
+      body = <CompletionRow event={event} row={row} />;
       break;
     case "session":
       body = (

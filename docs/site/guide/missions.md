@@ -49,8 +49,11 @@ out later.
 
 If you have any checklists configured, the same row has a **Checklist** picker: your default is
 preselected (No checklist, if you have not set a default), you can pick another, or pick **No checklist**. The line under the box says what the
-choice means — the chosen checklist's objectives, or, for No checklist, that the mission can never
-confirm itself finished.
+choice means — the chosen checklist's objectives, or, for No checklist, what happens instead. With
+an AI endpoint configured the option reads **No checklist — AI writes the objectives**: the
+orchestrator writes the objectives from your instruction and the supervisor judges them (see
+[No checklist](#no-checklist) below). Without an endpoint it is notes only, and the mission can
+never confirm itself finished.
 
 Objectives arrive a moment after the mission does; see below.
 
@@ -79,13 +82,17 @@ set of facts.
 Objectives come from a **checklist** — an operator-authored template list, edited in **Settings →
 AI → Checklists** and chosen per mission on the new-mission form. The shipped `Ship a change`
 checklist gates on: a branch exists, a PR is open, checks are green, it has been reviewed, it is
-merged.
+merged. The shipped `Investigate` checklist gates on *a finding is written down*, which the
+supervisor judges (below); *you have confirmed it* stays yours to settle and does not gate.
 
 You can edit the list at any time: add, rename, reorder, remove, or mark one **NOT REQUIRED**.
 
 That last label is deliberate and worth understanding. Marking an objective not required is a
 decision that it did not *need* to hold — it is **not** a claim that it does. The console cannot
-mark an objective met, and neither can a model: only an observation can, which is the next section.
+mark an objective met. Two things can: an **observation** (a probe the server ran) or a
+**judgment** (the supervisor's independent reading, at or above your confidence setting, with the
+evidence it quoted). A judgment can at most propose that a mission is finished; you close it. Both
+are the next section.
 
 ### The four meanings of an empty list
 
@@ -109,6 +116,72 @@ nobody could check has not been shown to be unmet.
 Probes that talk to a forge need a [forge connection](/guide/settings); without one they answer
 *unknown* rather than failing. Probe targets can only ever come from a checklist a person typed —
 there is no path from model output to an address the server will fetch.
+
+### Judged objectives
+
+Some objectives have no fact a server can fetch — *a finding is written down*, *every issue tagged
+`type:bug` is closed*. For those the checklist uses the **Supervisor judges** kind
+(`supervisor_judged`; older configurations say `agent_judged`, which still reads correctly).
+
+- **Who judges.** The supervisor, in a separate model call with its own prompt. The working agent
+  is never asked whether it is done: its own "I'm done" is something the judge reads, never
+  evidence.
+- **What it reads.** The mission's instruction, the objective, and for up to three of the mission's
+  recently active sessions (by transcript activity, not screen activity) the transcript tail and the
+  live screen, plus a bounded view of the checkout's uncommitted changes to tracked files. A new,
+  untracked file is listed by name and size only — its contents are never sent. Every source is
+  labelled.
+- **Evidence is checked, not trusted.** The judge must quote what it read. A quote is kept only if
+  it appears word for word in the source it names and is at least 20 characters and three words
+  long (for Chinese, Japanese, Korean or Thai text, ten of those characters instead of three
+  words) — a single word matches almost anything; a "met" with nothing verifiable counts as *not
+  judged*. A judgment belongs to the objective's exact wording — its title and its direction. If
+  you rename an objective or change its direction, the judgment made about the old wording stops
+  counting at once (it is kept as history), a judgment still in flight is thrown away, and the new
+  wording is judged on a later pass. For an agent that keeps a transcript the screen is context
+  only — a quote from the transcript or the diff is needed. Quotes are stored and shown as plain text, with credentials in
+  URLs removed.
+- **The threshold.** A judgment counts as met only at or above **Judge an objective met at or
+  above** in [Settings → AI → Mission control](/guide/settings) — **0.90** by default, and 0.90 is
+  also the floor. The row reads **judged met (0.93)** with a `judged` tag, never *observed*; below
+  the threshold it reads **judged not yet (0.62)**. **Show evidence** opens the quotes, the reason
+  and when it was checked. Changing the threshold re-applies it to the judgments already made, on
+  the next pass, without asking the model again.
+- **It holds while the output is unchanged.** A judgment records a fingerprint of what it read.
+  New session output marks it **stale** — it no longer counts — and a later pass judges it again
+  while the mission is `running` (a mission in `review` is marked stale but not re-judged: the
+  next move there is yours). Output that changes while the judge is still reading also counts as
+  new: the judgment is marked stale at once. The
+  live screen of an agent with a transcript is left out of that fingerprint, so a spinner or a
+  clock on an idle session does not cost a new judgment.
+- **Overruling it.** **Not met — judge again** (on the evidence, and in the row's ⋯ menu) puts the
+  objective back to pending, and — on a mission in `review` — moves the mission back to `running`.
+  The supervisor does not judge that same output again; it waits for new output.
+- **Every objective gets its turn.** Required objectives are judged first, and within them the one
+  judged longest ago (or never) goes first, so a mission whose output keeps changing still judges
+  every objective in turn. Across missions, each sweep first checks every mission, then hands
+  out its judge calls in turn: the mission that was last judged longest ago (or never) goes first,
+  and a mission that just had its turn goes to the back, so busy missions cannot keep a quiet one
+  waiting. Every attempt counts as a turn,
+  including one that failed — and so does a turn where there was nothing to read (no session
+  output and no changes in the checkout): that mission waits 30 minutes before it is first in line
+  again.
+- **Unknown is never met.** An endpoint error, a timeout, a reply that breaks the contract, or
+  evidence that does not verify leaves the row not judged, with the reason. With no AI endpoint
+  configured a judged row says it cannot be judged, and never settles.
+- **Cost.** At most two judge calls per mission per sweep, six per sweep, and six more shared by
+  the early readings of newly started missions between two sweeps; required objectives first, and
+  none at all when nothing the judgment read has changed. Only a call to the model is counted: a
+  mission with nothing to read, or nothing due, uses none of the six. A reply that breaks the
+  contract, or evidence that does not verify, is not retried until the output changes; a timeout,
+  an endpoint error or a missing endpoint is retried on the same output no sooner than 30 minutes
+  later.
+- **What a judgment can do.** Settle one objective. When every required objective holds, the
+  mission is *proposed* for `review` at the next sweep (so up to about five minutes after the
+  verdict, once it has been checked against the output again), exactly as with observations —
+  nothing is closed, no text is typed, no address is opened. Session output is untrusted, and an instruction hidden in it can
+  push the judge towards "met"; that is why the most a judgment can do is propose review, and why
+  the evidence and the overrule are one tap away.
 
 ## Follow-through — the part that nudges
 
@@ -184,13 +257,28 @@ mission, such as `PR #{pr} checks are {checks} on {branch}. Open the failing che
 
 When at least one objective is required and every required one is met or marked not required, the
 supervisor proposes completion and **closes nothing** — it quotes the list back and the call is
-yours. It says which objectives were *observed* to hold and which you waived, because those are
-different claims.
+yours. It lists the required objectives by how they hold — **observed** (a probe saw it),
+**judged** (the supervisor's reading, with its confidence) and **waived** (you marked it not
+required) — because those are different claims.
 
-"At least one" is the point. A mission started with **No checklist** gets notes-only objectives:
-nothing on it can be checked and nothing is required, so it is unmeasured rather than finished, and
-it never proposes its own completion. You close it. Objectives you add to its list later from the
-console are notes too — the add row takes a title, not a check — so they do not change that.
+### No checklist
+
+"At least one" is the point. What a mission started with **No checklist** gets depends on whether
+an AI endpoint is configured:
+
+- **With an endpoint**, the orchestrator writes the objectives from your instruction — at most six,
+  each a concrete outcome — and every one of them is a required, **judged** objective. If it writes
+  none it can use, the mission gets one instead: **Done as you instructed**, judged against the
+  instruction itself. So the mission is measured, and it is proposed for review when the judgments
+  hold. The model only ever chooses the wording of these objectives: it cannot give one a probe or
+  an address, and the most a judgment can do is propose review. You close the mission, or drop any
+  objective you do not want judged.
+- **Without an endpoint**, it gets notes-only objectives: nothing on it can be checked and nothing
+  is required, so it is unmeasured rather than finished, and it never proposes its own completion.
+  You close it.
+
+Objectives you add to a list later from the console are notes — the add row takes a title, not a
+check.
 
 ## The timeline
 
@@ -232,8 +320,9 @@ behind it.
 ## Without an AI endpoint
 
 The console still works. Missions, adoption, objectives, the timeline and approvals all run with no
-model at all. What goes quiet is suggestion, recaps and progress judgements — and the page says so
-rather than looking broken. Completion proposals do not go quiet: when at least one objective is
+model at all. What goes quiet is suggestion, recaps, progress judgements and **judged objectives** —
+a judged row says it cannot be judged, and never settles — and the page says so rather than looking
+broken. Completion proposals do not go quiet: when at least one objective is
 required and every required one is met or marked not required, the supervisor moves the mission to `review` mechanically,
 before any model call.
 
@@ -262,6 +351,8 @@ typing at it directly is always available; it just stopped being the only way.
 ::: info Verified against
 Commit `f5611f0` — `src/agent_sessions/missions.py § STATES, _ALLOWED, PROBE_KINDS, gate_tally, gates_settled, _op_add`;
 `src/agent_sessions/mission_supervisor.py § NUDGE_BUDGET, assess`;
+#1088 — `src/agent_sessions/mission_judge.py`; `src/agent_sessions/missions.py § PROBE_ALIASES, observe_objective, judgment_counts, _op_reject_judgment, INSTRUCTION_GATES_MAX`;
+`src/agent_sessions/mission_objectives.py § propose`; `src/agent_sessions/prefs.py § ORCH_JUDGE_CONF_*`;
 `src/agent_sessions/mission_probes.py`; `src/agent_sessions/prefs.py § DEFAULT_MISSION_PLAYBOOKS, ORCH_AI_DIRECTION_CONF_*`;
 `src/agent_sessions/actuator.py § draft_auto_allowed, _announce_auto_direction`;
 `web/src/lib/routes.ts § ASK_PATH`; `web/src/components/shell/sections.ts`;

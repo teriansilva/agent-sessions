@@ -265,7 +265,11 @@ async def test_a_declined_checklist_is_said_as_a_choice_on_the_timeline(store, m
     mid = missions.create_mission("look around", playbook_id=missions.PLAYBOOK_DECLINED)["id"]
     await mo.propose(mid)
     texts = [e.get("text") or "" for e in missions.get_mission(mid)["events"]]
-    assert any(t.startswith("checklist declined for this mission") for t in texts), texts
+    # With an AI endpoint the orchestrator writes the objectives and the supervisor judges them
+    # (#1088) — said as such, not as "notes only", which is no longer true there.
+    assert any(
+        t.startswith("checklist declined — the orchestrator writes the objectives") for t in texts
+    ), texts
     assert not any("no checklist applied" in t for t in texts)
 
 

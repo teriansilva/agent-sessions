@@ -26,7 +26,7 @@ import logging
 import os
 import time
 
-from . import aitasks, mission_supervisor, missions, prefs
+from . import aitasks, mission_judge, mission_supervisor, missions, prefs
 
 log = logging.getLogger(__name__)
 
@@ -64,6 +64,13 @@ EARLY_CONTENTION_BACKOFF_S = 5.0
 #: IN MEMORY, deliberately. A restart loses a pending request and the mission is read at the next
 #: sweep — the behaviour before #1064 — so there is nothing to persist and nothing to recover.
 _early: dict[str, tuple[float, int]] = {}
+#: The judge budget early readings share (#1088 review): every early reading between two sweeps
+#: draws on this one, replaced by a full one at the start of every sweep. It is a SEPARATE budget
+#: from the sweep's own, so the true bound is: at most `JUDGE_CALLS_PER_SWEEP` (6) judge calls per
+#: sweep, plus at most 6 for all early readings between two sweeps, and never more than
+#: `JUDGE_CALLS_PER_MISSION` (2) per mission per pass. Kept separate on purpose: an early reading is
+#: the operator's newest mission, and the sweep that follows should not find its budget spent.
+_early_budget: mission_judge.Budget = mission_judge.Budget()
 #: Set by `run()` so a request can wake a loop that would otherwise sleep the whole interval. `None`
 #: when no loop is running (tests, tooling), in which case a request is simply recorded.
 _wake: asyncio.Event | None = None
@@ -160,6 +167,10 @@ async def run_due_early(registry=None, *, now: float | None = None) -> dict:
         return {"skipped": "disabled"}
     t = time.monotonic() if now is None else now
     report: dict[str, str] = {}
+    return await _run_due(t, report, registry)
+
+
+async def _run_due(t: float, report: dict[str, str], registry) -> dict:
     for mid in due_early(t):
         _due, made = _early.pop(mid)
         res: dict | None = None
@@ -167,6 +178,13 @@ async def run_due_early(registry=None, *, now: float | None = None) -> dict:
             res = await mission_supervisor.run_pass(mid, registry=registry)
         except Exception as e:  # noqa: BLE001 — one mission's early read must not stop the loop
             log.warning("mission %s: early supervisor reading failed: %s", mid, e)
+        # …then the judge phase for this one mission, on the early readings' shared budget. Its
+        # verdict is counted by the NEXT pass, after revalidation, exactly as in a sweep.
+        # Re-checked per mission, like the sweep's judge phase: an operator who switched
+        # supervision off while this batch was running gets no further model calls from it.
+        if _enabled():
+            with contextlib.suppress(Exception):
+                await mission_judge.judge_batch([mid], _early_budget)
         made += 1
         if _produced_a_reading(res):
             report[mid] = "read"
@@ -206,6 +224,10 @@ async def sweep(registry=None) -> dict:
     await _reconcile_delivered()
     if not _enabled():
         return {"skipped": "disabled"}
+    await _forget_legacy_state()
+    # A new sweep window: early readings get a fresh shared judge budget (#1088 review).
+    global _early_budget
+    _early_budget = mission_judge.Budget()
 
     # A KEYSET CURSOR over the complete eligible set — not a rebuilt prefix of a list page.
     #
@@ -240,6 +262,40 @@ async def sweep(registry=None) -> dict:
         return {"swept": 0, "nudged": 0, "escalated": 0}
 
     out = {"swept": 0, "nudged": 0, "escalated": 0}
+    # ONE judge budget for the whole sweep (#1088): at most `JUDGE_CALLS_PER_SWEEP` model calls
+    # across every mission it visits, on top of the per-mission cap inside the pass.
+    #
+    # TWO PHASES (#1097 round 9). Phase 1 supervises every mission in cursor order — stale marks,
+    # assessment, completion, nudges — and makes no judge call. Phase 2 then judges the batch's
+    # running missions least recently served first, charging the sweep's budget only for calls
+    # actually made: nothing is held for a mission not yet visited, so no number of missions with
+    # nothing to read can keep one with work waiting.
+    #
+    # Phase 2 runs after phase 1 finished or failed with an ordinary error — never after a
+    # CANCELLATION (shutdown: `CancelledError` is not an `Exception`, so it propagates without a
+    # single judge call), and never once the orchestrator was switched off mid-sweep (#1097 round
+    # 10): turning supervision off stops the model calls, not just the next sweep.
+    try:
+        result = await _sweep_batch(batch, out, registry)
+    except Exception:
+        await _judge_phase(batch, out)
+        raise
+    await _judge_phase(batch, out)
+    return result
+
+
+async def _judge_phase(batch: list[str], out: dict) -> None:
+    """Phase 2 of a sweep, if supervision is still on. Best-effort: never raises an `Exception`."""
+    with contextlib.suppress(Exception):
+        if not _enabled():
+            out["judge_skipped"] = "disabled"
+            return
+        judged = await mission_judge.judge_batch(batch, mission_judge.Budget())
+        out["judge_calls"] = sum(int(r.get("calls") or 0) for r in judged.values())
+
+
+async def _sweep_batch(batch: list[str], out: dict, registry) -> dict:
+    """Run one pass per mission in `batch`, advancing the durable cursor after every attempt."""
     for mid in batch:
         failed = False
         try:
@@ -273,6 +329,26 @@ async def sweep(registry=None) -> dict:
         if res.get("escalated"):
             out["escalated"] += 1
     return out
+
+
+#: Supervisor-state keys an earlier build wrote and nothing reads any more (#1097 round 8): the
+#: durable starved-judgment queue, replaced by the stateless plan.
+_LEGACY_KEYS = ("judge_starved",)
+
+
+_legacy_forgotten = False
+
+
+async def _forget_legacy_state() -> None:
+    """Delete supervisor-state keys nothing reads. Once per process, from the first sweep, so boot
+    does not wait on the store; best-effort."""
+    global _legacy_forgotten
+    if _legacy_forgotten:
+        return
+    _legacy_forgotten = True
+    for key in _LEGACY_KEYS:
+        with contextlib.suppress(Exception):
+            await missions.run_admitted(lambda k=key: missions.set_supervisor_state(k, None))
 
 
 async def _reconcile_delivered() -> None:

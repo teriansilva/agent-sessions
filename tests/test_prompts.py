@@ -54,7 +54,7 @@ def _patch(c, cfg, csrf, pid, body):
 
 
 def test_registry_covers_every_system_prompt():
-    assert len(prompts.REGISTRY) == 14  # #956 removed pulse_banner
+    assert len(prompts.REGISTRY) == 15  # #956 removed pulse_banner; #1088 added mission_judge
     assert len(prompts.IDS) == len(set(prompts.IDS))
     # PINNED BY NAME, not by count — adding a guarded prompt should have to say so here.
     # `mission_objectives` earns it without emitting a verb: an objective list is what the
@@ -74,6 +74,9 @@ def test_registry_covers_every_system_prompt():
         "mission_plan",
         "mission_question",
         "mission_supervisor",
+        # `mission_judge` decides whether a completion gate is settled, reading session content —
+        # exactly where an instruction to "say met" would be hidden (#1088).
+        "mission_judge",
     ]
     for p in prompts.REGISTRY:
         assert p.default.strip(), p.id
@@ -87,7 +90,8 @@ def test_registry_covers_every_system_prompt():
 EXPECTED_DEFAULT_SHA = {
     # #1061 P2: a selection may carry `probe_args` — only `repo`/`branch`, only on a template marked
     # [may set: repo, branch], only a value that appears word for word in the instruction.
-    "mission_objectives": "3fa24983383d22e4",
+    # #1088: a declined checklist's notes are the outcomes the supervisor judges.
+    "mission_objectives": "60010e413ccd8954",
     "mission_question": "047f41d72b0e206b",
     "tail_review": "96d2b5fe33d5acee",
     "session_recap": "7438fbcf5328734f",
@@ -105,6 +109,8 @@ EXPECTED_DEFAULT_SHA = {
     # plainly that an opted-in operator has a draft typed with nobody reading it first.
     "mission_supervisor": "b13a71453329dd3b",
     "mission_plan": "a4d0cb1003a79e45",
+    # #1088: the objective judge — quotes verified verbatim, confidence against the floor.
+    "mission_judge": "604e82e9d100c1dc",
 }
 
 

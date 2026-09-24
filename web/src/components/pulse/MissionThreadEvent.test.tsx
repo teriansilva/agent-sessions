@@ -230,3 +230,56 @@ test("an unknown event kind renders a safe generic row", () => {
   expect(row.textContent).not.toContain("do not print");
   expect(row.textContent).not.toContain("secret");
 });
+
+test("the completion card shows OUTSTANDING goals beside how each gate holds (#1097 review 5040)", () => {
+  // Exactly the producer's shape (`mission_supervisor._render_completion`): one settled gate and a
+  // pending non-gating goal — pinned on the Python side by
+  // `test_the_completion_record_names_OUTSTANDING_goals`.
+  const completion: MissionEvent = {
+    seq: 9,
+    mission_id: "msn_1",
+    at: 1_700_000_100,
+    kind: "completion",
+    session_key: null,
+    action_id: null,
+    text: "Every gate is met (1 gate). This looks finished — nothing has been closed.",
+    meta: {
+      source: "supervisor",
+      proposal: true,
+      gates: 1,
+      unmet_gates: 0,
+      outstanding_goals: 1,
+      held: {
+        observed: [{ key: "pr", title: "A PR is open" }],
+        judged: [],
+        waived: [],
+      },
+      objectives: [
+        { key: "pr", title: "A PR is open", gate: true, state: "met", settled_by: "observed to hold" },
+        {
+          key: "confirmed",
+          title: "You have confirmed it",
+          gate: false,
+          state: "pending",
+          settled_by: "pending",
+        },
+      ],
+    },
+    settlement: null,
+  };
+  render(
+    <MemoryRouter>
+      <MissionThreadEvents
+        events={[completion]}
+        mission={null}
+        startAgain={{} as never}
+        objectives={null}
+        projectNames={{}}
+      />
+    </MemoryRouter>,
+  );
+  expect(screen.getByTestId("thread-completion-observed")).toHaveTextContent("A PR is open");
+  expect(screen.getByTestId("thread-completion-open")).toHaveTextContent(
+    "1 goal still open, not gating completion: You have confirmed it.",
+  );
+});

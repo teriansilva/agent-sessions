@@ -24,17 +24,20 @@ vi.mock("../lib/api", async () => {
   return { ...actual, api: { setPrefs: vi.fn() } };
 });
 
+// The server's real contract since #1088: `supervisor_judged` exists and NOTHING is non-gating.
 const SCHEMA = {
-  kinds: ["none", "forge_pr", "http_status"],
-  non_gating: ["agent_judged"],
+  kinds: ["none", "supervisor_judged", "forge_pr", "http_status"],
+  non_gating: [] as string[],
   args: {
     none: { required: [], optional: [] },
+    supervisor_judged: { required: [], optional: [] },
     forge_pr: { required: [], optional: ["branch", "repo"] },
     http_status: { required: ["url"], optional: ["expect_status"] },
   },
   // The JSON TYPE of each argument, as the server publishes it from `PROBE_ARG_TYPES`.
   types: {
     none: {},
+    supervisor_judged: {},
     forge_pr: { branch: "text", repo: "text" },
     http_status: { url: "text", expect_status: "int" },
   },
@@ -61,13 +64,17 @@ function block(): Block {
   };
 }
 
-function renderPanel(b: Block = block(), refresh: () => void = () => {}) {
+function renderPanel(
+  b: Block = block(),
+  refresh: () => void = () => {},
+  schema: typeof SCHEMA = SCHEMA,
+) {
   const config = {
     csrf: "t",
     new_session_engines: [],
     terminal_backend: "ws",
     mission_playbooks: b,
-    mission_probes: SCHEMA,
+    mission_probes: schema,
   } as AppConfig;
   return render(
     <ConfigRefreshCtx.Provider value={refresh}>
@@ -156,7 +163,7 @@ test("the server's REFUSAL is shown as it was written", async () => {
   );
 });
 
-test("a non-gating probe cannot be made a gate", async () => {
+test("a non-gating probe kind cannot be made a gate (the mechanism, kept for a future kind)", async () => {
   // "The agent believes it wrote tests" is not evidence that it did, so the control is withdrawn
   // rather than offered and then refused on save.
   renderPanel({
@@ -169,15 +176,35 @@ test("a non-gating probe cannot be made a gate", async () => {
           {
             key: "k",
             title: "T",
-            probe: "agent_judged",
+            probe: "supervisor_judged",
             probe_args: null,
             gate: false,
           },
         ],
       },
     ],
-  });
+  }, () => {}, { ...SCHEMA, non_gating: ["supervisor_judged"] });
   expect(screen.getByTestId("objective-gate")).toBeDisabled();
+});
+
+test("'Supervisor judges' is offered by name and CAN gate (#1088)", () => {
+  renderPanel({
+    default_id: "",
+    playbooks: [
+      {
+        id: "p",
+        label: "P",
+        objectives: [
+          { key: "k", title: "T", probe: "supervisor_judged", probe_args: null, gate: true },
+        ],
+      },
+    ],
+  });
+  const pick = screen.getByTestId("objective-probe") as HTMLSelectElement;
+  expect(pick.value).toBe("supervisor_judged");
+  expect(pick.selectedOptions[0].text).toBe("Supervisor judges");
+  expect(screen.getByTestId("objective-gate")).toBeEnabled();
+  expect(screen.getByTestId("objective-gate")).toBeChecked();
 });
 
 test("an INTEGER argument is sent as a number, not as the string the input yields", async () => {

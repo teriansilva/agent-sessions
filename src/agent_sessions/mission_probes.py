@@ -50,8 +50,9 @@ from . import gitpanel, missions, prefs
 
 log = logging.getLogger(__name__)
 
-#: Probe kinds this runner evaluates. `none` is the operator's to settle and `agent_judged` is the
-#: model's claim about itself — neither is evidence a server can fetch, so neither is run here.
+#: Probe kinds this runner evaluates. `none` is the operator's to settle and `supervisor_judged` is
+#: the supervisor's independent reading of the session output (#1088, `mission_judge`) — neither is
+#: a fact a server can fetch, so neither is run here.
 #: Listed explicitly rather than derived by subtraction: a kind added to `PROBE_KINDS` should have
 #: to be considered here rather than silently inherit a runner.
 MECHANICAL: frozenset[str] = frozenset(

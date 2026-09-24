@@ -311,14 +311,51 @@ def test_the_route_refuses_to_set_a_met_state(api):
     assert "server observation" in r.json()["detail"]
 
 
-def test_the_route_refuses_a_gating_agent_judged_objective(api):
+def test_the_route_refuses_a_gating_objective_of_a_non_gating_kind(api, monkeypatch):
+    monkeypatch.setattr(missions, "NON_GATING_PROBES", frozenset({"supervisor_judged"}))
     c, hdr, proj = api
     m = _create(c, hdr, project_id=proj.id)
     r = c.patch(
         f"/api/missions/{m['id']}/objectives",
         json={
-            "ops": [{"op": "add", "key": "t", "title": "t", "gate": True, "probe": "agent_judged"}]
+            "ops": [
+                {"op": "add", "key": "t", "title": "t", "gate": True, "probe": "supervisor_judged"}
+            ]
         },
+        headers=hdr,
+    )
+    assert r.status_code == 422
+
+
+def test_the_route_applies_reject_judgment_with_csrf_and_refuses_it_on_a_probe_row(api, auth_cfg):
+    """`reject_judgment` (#1088) is an op on the existing authenticated, CSRF-guarded route — the
+    one new mutation — and a probe-settled row is a 422 there too."""
+    c, hdr, proj = api
+    m = _create(c, hdr, project_id=proj.id)
+    mid = m["id"]
+    ops = [
+        {"op": "add", "key": "f", "title": "F", "gate": True, "probe": "supervisor_judged"},
+        {"op": "add", "key": "pr", "title": "PR", "gate": True, "probe": "forge_pr"},
+    ]
+    assert c.patch(f"/api/missions/{mid}/objectives", json={"ops": ops}, headers=hdr).is_success
+    rec = {"met": True, "confidence": 0.95, "threshold": 0.9, "evidence": [], "fingerprint": "fp"}
+    missions.observe_objective(mid, "f", observed=True, value=True, judged=rec)
+    missions.observe_objective(mid, "pr", observed=True, value=True, detail="PR #1")
+    ep = missions.objective_episode(mid, "f")[0]
+    body = {"ops": [{"op": "reject_judgment", "key": "f", "episode": ep}]}
+    no_csrf = c.patch(
+        f"/api/missions/{mid}/objectives", json=body, headers={"Origin": auth_cfg.origin}
+    )
+    assert no_csrf.status_code == 403
+    r = c.patch(f"/api/missions/{mid}/objectives", json=body, headers=hdr)
+    assert r.status_code == 200, r.text
+    row = next(o for o in r.json()["objectives"] if o["key"] == "f")
+    assert (row["state"], row["met_at"], row["judge_rejected"]) == ("pending", None, True)
+    assert "judge_rejected_fp" not in row
+    pr_ep = missions.objective_episode(mid, "pr")[0]
+    r = c.patch(
+        f"/api/missions/{mid}/objectives",
+        json={"ops": [{"op": "reject_judgment", "key": "pr", "episode": pr_ep}]},
         headers=hdr,
     )
     assert r.status_code == 422

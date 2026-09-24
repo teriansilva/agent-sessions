@@ -181,3 +181,23 @@ test("no playbooks configured: no line under the box either", () => {
   render(form(cfg("", [])));
   expect(screen.queryByTestId("new-mission-playbook-note")).toBeNull();
 });
+
+test("with an AI endpoint, 'No checklist' means the orchestrator writes the objectives (#1088)", async () => {
+  const c = {
+    ...cfg("pr"),
+    ai_review: { configured: true },
+    orchestrator: { judge_confidence_min: 0.93 },
+  } as unknown as AppConfig;
+  render(form(c));
+  const pick = screen.getByTestId("new-mission-playbook") as HTMLSelectElement;
+  // The id is still `:none`; only what the operator reads changes.
+  const declined = [...pick.options].find((o) => o.value === PLAYBOOK_DECLINED)!;
+  expect(declined.text).toBe("No checklist — AI writes the objectives");
+  await userEvent.selectOptions(pick, PLAYBOOK_DECLINED);
+  expect(screen.getByTestId("new-mission-playbook-note").textContent).toBe(
+    "No checklist — the orchestrator writes the objectives from your instruction, and the " +
+      "supervisor judges them. When it is at least 0.93 sure the work is done, the mission " +
+      "moves to review. You close it.",
+  );
+  expect((await start()).playbook_id).toBe(":none");
+});

@@ -70,7 +70,11 @@ Three panels, everything that tunes [Mission control](/guide/missions):
 - **Orchestrator** — **Mission control may act on my sessions**. Off stops the scheduled pass, the
   mission supervisor, delivering nudges, and starting or dispatching missions. The autonomy tier is
   **Off**, **Suggest** (every action waits for your approval) or **YOLO** (acts without asking above
-  the confidence threshold). **Run now** runs one pass immediately.
+  the confidence threshold). **Run now** runs one pass immediately. **Judge an objective met at or
+  above** is the confidence a [judged objective](/guide/missions#judged-objectives) needs before it
+  counts as met: 0.90 to 1.00, default 0.90, saved when you let go of the slider. 0.90 is the floor
+  and cannot be lowered. Confidence is the model's own opinion, so a judgment can at most move a
+  mission to review; you still close it.
 - **Session scan** — keeps the **Sessions without a mission** list current: a background scan and
   its interval, how many days back it looks, the scan depth (**Fast** or **Slow**), and **Scan
   now**.
@@ -82,7 +86,8 @@ Three panels, everything that tunes [Mission control](/guide/missions):
 
 The checklists a new mission starts with, and which one is the default — the shipped default is
 **Ship a change**. (The section's address still says `ai-playbooks`, the name these had before.) Objectives with a probe are
-checked by the server; the rest you settle yourself. The whole set saves at once, and a refused save
+checked by the server; **Supervisor judges** objectives are judged from what the mission's sessions
+produced, and count only at or above your confidence setting; the rest you settle yourself. The whole set saves at once, and a refused save
 shows the server's reason word for word.
 
 ### Prompts · `ai-prompts`

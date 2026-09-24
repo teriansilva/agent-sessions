@@ -65,7 +65,7 @@ log = logging.getLogger(__name__)
 MISSION_ID_RE = re.compile(r"^msn_[0-9a-f]{32}$")
 
 #: Bumped whenever the schema changes; ``PRAGMA user_version`` carries it in the file.
-SCHEMA_VERSION = 29
+SCHEMA_VERSION = 30
 
 #: How many live SUB-AGENTS one mission may hold, beyond the session it is already running.
 #:
@@ -315,11 +315,35 @@ PROBE_KINDS: frozenset[str] = frozenset(
         "forge_run",
         "http_status",
         "http_revision",
-        "agent_judged",
+        # THE SUPERVISOR'S JUDGMENT (#1088), for an objective no probe can fetch — "a finding is
+        # written down". An independent model call reads the mission's session output, quotes its
+        # evidence and gives a confidence; the objective counts as met only at or above the
+        # operator's `orchestrator.judge_confidence_min`. It was `agent_judged`, and the rename is
+        # the point: the WORKING agent is never asked whether it is done — its own claims are input
+        # to the judge, never evidence.
+        "supervisor_judged",
     }
 )
-#: "the agent believes it wrote tests" is not evidence that it did, so it may never gate alone.
-NON_GATING_PROBES: frozenset[str] = frozenset({"agent_judged"})
+#: The OLD spelling of a probe kind -> the current one (#1088). Applied on INPUT (`_validate_probe`,
+#: `validate_probe_args`, the prefs normaliser) and on READ (`_objective_row`), so an old client, a
+#: hand-edited `prefs.json` or a row the migration missed still resolves. Only the new name is ever
+#: WRITTEN. One map, so no path can learn an alias another does not know.
+PROBE_ALIASES: dict[str, str] = {"agent_judged": "supervisor_judged"}
+
+
+def canonical_probe(kind: object) -> object:
+    """`kind` with its alias resolved (#1088). Anything that is not a known alias is returned as is,
+    so validation still sees — and refuses — what it was actually given."""
+    if isinstance(kind, str):
+        return PROBE_ALIASES.get(kind, kind)
+    return kind
+
+
+#: Probe kinds that may not GATE. EMPTY since the judge runs (#1088): a `supervisor_judged` gate is
+#: settled by the supervisor's judgment above the operator's confidence floor, so it may gate like
+#: any other. Kept (and published at `/api/config` as `probes.non_gating`) so a future non-gating
+#: kind has somewhere to go.
+NON_GATING_PROBES: frozenset[str] = frozenset()
 
 #: WHAT A WELL-FORMED ARGUMENT SET LOOKS LIKE, per probe kind (#883).
 #:
@@ -432,9 +456,9 @@ _ArgSpec = dict[str, tuple[bool, object]]
 #: PATCH route, playbook writes, read-time normalization and instantiation — because two notions
 #: of validity is how one of them ends up weaker.
 PROBE_ARG_SCHEMA: dict[str, _ArgSpec] = {
-    # Nothing to configure: the operator settles these by hand, or the agent claims them.
+    # Nothing to configure: the operator settles `none` by hand; the supervisor judges the other.
     "none": {},
-    "agent_judged": {},
+    "supervisor_judged": {},
     # The mission's own checkout answers these; `branch` narrows it when the objective is about
     # a specific one rather than whatever the mission is on.
     "git_local": {"branch": (False, _arg_text)},
@@ -502,7 +526,20 @@ PROBE_ARG_TYPES: dict[str, dict[str, str]] = {
 NOTE_KEY_PREFIX = "note_"
 
 OBJECTIVE_STATES: frozenset[str] = frozenset({"pending", "active", "met", "failed", "waived"})
-OBJECTIVE_SOURCES: frozenset[str] = frozenset({"playbook", "model", "operator"})
+#: `instruction` (#1088): an objective the ORCHESTRATOR wrote from the operator's instruction, on a
+#: mission that declined a checklist — always `supervisor_judged`, never with arguments or a
+#: direction, and only on a declined mission. See `mission_objectives`.
+OBJECTIVE_SOURCES: frozenset[str] = frozenset({"playbook", "model", "operator", "instruction"})
+#: Keys the instantiator mints for `instruction` objectives (#1088), reserved from checklist writes
+#: like :data:`NOTE_KEY_PREFIX`, so a template can never collide with one.
+GOAL_KEY_PREFIX = "goal_"
+#: The one judged gate a declined mission falls back to when the model wrote no usable objective
+#: (#1088): its criterion is the operator's own instruction. Reserved from checklist writes.
+DONE_AS_INSTRUCTED_KEY = "done_as_instructed"
+DONE_AS_INSTRUCTED_TITLE = "Done as you instructed"
+#: How many `instruction` objectives one mission may hold — the AI-built gates of a declined
+#: checklist (#1088). A bound on what a model may make the mission wait for, and on judge calls.
+INSTRUCTION_GATES_MAX = 6
 #: Objective states that do NOT count as satisfied for the "adding a gate reopens `review`" rule.
 _UNMET_OBJECTIVE_STATES: frozenset[str] = frozenset({"pending", "active", "failed"})
 
@@ -794,6 +831,13 @@ CREATE TABLE IF NOT EXISTS mission_objectives (
   -- `incarnation`, for the same column-order reason.
   direction        TEXT,
   direction_source TEXT,
+  -- THE FINGERPRINT THE OPERATOR REJECTED (#1088): "Not met — judge again" records the session
+  -- output it overruled, so the judge does not settle that same output as met again. A COLUMN,
+  -- not a field inside `observed`, because `observe_objective` replaces that whole blob on every
+  -- write and a later unknown or stale write would erase it. One value, overwritten, never a
+  -- list; cleared by the supervisor pass once the output has moved on. Appended last, like the
+  -- two above, so an upgraded store and a fresh one agree on the stored DDL.
+  judge_rejected_fp TEXT,
   PRIMARY KEY (mission_id, key)
 );
 
@@ -1297,6 +1341,8 @@ def _migrate(con) -> int:
             _migrate_27_to_28(con)
         if version < 29:
             _migrate_28_to_29(con)
+        if version < 30:
+            _migrate_29_to_30(con)
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return SCHEMA_VERSION
 
@@ -1671,6 +1717,23 @@ def _migrate_28_to_29(con) -> None:
     unspent and nothing already delivered is treated as owing an announcement.
     """
     con.executescript(AUTO_DIRECTION_DDL)
+
+
+def _migrate_29_to_30(con) -> None:
+    """v30 renames `agent_judged` to `supervisor_judged` and adds `judge_rejected_fp` (#1088).
+
+    The rename changes NO `gate` value. Every existing `agent_judged` row was forced to `gate=0`
+    (the kind could not gate), so it stays non-gating: it gets judged and shows its evidence, but
+    it gates nothing until an operator says it should. Idempotent — a second run updates nothing
+    and the column is added only where it is missing — and skipped where the table is not there.
+    """
+    if not _has_table(con, "mission_objectives"):
+        return
+    have = {r["name"] for r in con.execute("PRAGMA table_info(mission_objectives)").fetchall()}
+    if "judge_rejected_fp" not in have:
+        con.execute("ALTER TABLE mission_objectives ADD COLUMN judge_rejected_fp TEXT")
+    for old, new in PROBE_ALIASES.items():
+        con.execute("UPDATE mission_objectives SET probe=? WHERE probe=?", (new, old))
 
 
 def _migrate_22_to_23(con) -> None:
@@ -2324,7 +2387,7 @@ def _json_or_none(value: object, limit: int, *, field: str = "value") -> str | N
     if value is None:
         return None
     try:
-        blob = json.dumps(value, sort_keys=True, default=str)
+        blob = _serialise(value)
     except (TypeError, ValueError) as e:
         raise MissionError(f"{field} is not serialisable", status=422) from e
     if len(blob) > limit:
@@ -2372,6 +2435,8 @@ def _event_row(row) -> dict:
 def _objective_row(row) -> dict:
     d = dict(row)
     d["gate"] = bool(d.get("gate"))
+    # THE ALIAS ON READ (#1088): a row the v30 migration did not reach reads as the current kind.
+    d["probe"] = canonical_probe(d.get("probe"))
     d["probe_args"] = _loads(d.get("probe_args"))
     # `observed` is stored as JSON like `probe_args` and, until #891, was handed back as the raw
     # STRING — because nothing wrote it, so nothing ever read it. The console's degraded rendering
@@ -2385,6 +2450,10 @@ def _objective_row(row) -> dict:
     # though it were mission state, and invite a client to send one back.
     d.pop("probe_target", None)
     d.pop("probe_gen", None)
+    # THE REJECTED FINGERPRINT IS A FENCE, NOT CONTENT (#1088): it is a digest of session output,
+    # and a client has no use for the value. What the console needs is the fact — "you rejected
+    # this judgment and the supervisor is waiting for new output" — so that is all it is given.
+    d["judge_rejected"] = bool(d.pop("judge_rejected_fp", None))
     return d
 
 
@@ -4388,9 +4457,24 @@ def observation_supports(o: dict) -> bool:
         return True
     if obs.get("stale") is True:
         return False
+    # A JUDGMENT SUPPORTS ONLY THE CRITERION IT JUDGED (#1097 review 5040, finding 1). The row's
+    # title and direction are what the judge was asked; a verdict about an older revision of them
+    # is not evidence for the current one, whatever its value. Edits invalidate the observation in
+    # their own transaction; this is the backstop every completion reader shares.
+    rec = obs.get("judged")
+    if isinstance(rec, dict) and "criterion" in rec and "title" in o:
+        if rec["criterion"] != judge_criterion(o.get("title"), o.get("direction")):
+            return False
     if "value" in obs:
         return bool(obs.get("value"))
     return True
+
+
+def judge_criterion(title: object, direction: object) -> str:
+    """A digest of the COMPLETE criterion the judge is asked about: the title and the direction —
+    everything about the objective the model reads (#1097 review 5040, finding 1)."""
+    blob = f"{title or ''}\x1f{direction or ''}"
+    return hashlib.sha256(blob.encode("utf-8", "replace")).hexdigest()[:32]
 
 
 def note_merge_sha(
@@ -4512,6 +4596,195 @@ def bind_probe_target(
             con.close()
 
 
+# ---------------------------------------------------------------- supervisor judgments (#1088)
+
+#: The judgment floor, as the STORE knows it. `missions` never reads prefs, so the runner passes the
+#: operator's current threshold in with every judgment — and this constant is what makes "a stored
+#: confidence below 0.90 never counts" hold even against a caller that passed a lower one. Pinned
+#: equal to `prefs.ORCH_JUDGE_CONF_LO` by a test.
+JUDGE_CONFIDENCE_FLOOR = 0.90
+#: The evidence contract's bounds (#1088 §2): at most three quotes, each at most 200 characters.
+JUDGE_EVIDENCE_MAX = 3
+JUDGE_QUOTE_MAX = 200
+JUDGE_SOURCE_MAX = 160
+JUDGE_FP_MAX = 64
+#: The two shapes a `judged` record may take. A VERDICT is what a model call answered (or the same
+#: verdict re-applied at a new threshold, or carried on a stale mark); an ATTEMPT is a call that
+#: produced no usable verdict, recorded so the idle skip applies to failures too.
+_JUDGED_VERDICT_FIELDS = frozenset(
+    {
+        "met",
+        "confidence",
+        "threshold",
+        "evidence",
+        "fingerprint",
+        "checked_at",
+        "stale",
+        "criterion",
+    }
+)
+_JUDGED_ATTEMPT_FIELDS = frozenset({"attempted_fp", "transient"})
+
+
+def _serialise(value: object) -> str:
+    """THE store's serialisation of a JSON column — and therefore its measure of size.
+
+    `json.dumps` with `ensure_ascii` left on, so a non-ASCII character costs six characters and an
+    emoji twelve. One function, used by the writer and by anything that has to predict whether a
+    blob will fit, so the two can never measure differently (#1088 §3)."""
+    return json.dumps(value, sort_keys=True, default=str)
+
+
+def observed_size(obs: object) -> int:
+    """How much of :data:`OBSERVED_MAX` this observation costs, measured exactly as it is stored."""
+    return len(_serialise(obs))
+
+
+def _is_num(v: object) -> bool:
+    return (
+        isinstance(v, int | float) and not isinstance(v, bool) and v == v and abs(v) != float("inf")
+    )
+
+
+def validate_judged(judged: object) -> dict:
+    """Check a `judged` record FIELD BY FIELD, and return a clean copy. Raises, never repairs.
+
+    `extra` could not carry this — it keeps only top-level scalars, so a nested evidence list would
+    be dropped without a word. This is an explicit keyword with an explicit contract instead, and a
+    field outside it is a programming error in the caller (422), not something to ignore.
+    """
+    if not isinstance(judged, dict):
+        raise MissionError("judged must be an object", status=422)
+    keys = set(judged)
+    if keys == _JUDGED_ATTEMPT_FIELDS:
+        fp = judged["attempted_fp"]
+        if not isinstance(fp, str) or not fp or len(fp) > JUDGE_FP_MAX:
+            raise MissionError("judged.attempted_fp must be a fingerprint", status=422)
+        if not isinstance(judged["transient"], bool):
+            raise MissionError("judged.transient must be true or false", status=422)
+        return {"attempted_fp": fp, "transient": judged["transient"]}
+    extra = keys - _JUDGED_VERDICT_FIELDS
+    missing = {"met", "confidence", "threshold", "evidence", "fingerprint"} - keys
+    if extra or missing:
+        raise MissionError(
+            f"judged is not a verdict or an attempt "
+            f"(extra {sorted(extra)}, missing {sorted(missing)})",
+            status=422,
+        )
+    if not isinstance(judged["met"], bool):
+        raise MissionError("judged.met must be true or false", status=422)
+    conf = judged["confidence"]
+    if not _is_num(conf) or not (0.0 <= conf <= 1.0):
+        raise MissionError("judged.confidence must be a number from 0 to 1", status=422)
+    thr = judged["threshold"]
+    if not _is_num(thr) or not (JUDGE_CONFIDENCE_FLOOR <= thr <= 1.0):
+        raise MissionError(
+            f"judged.threshold must be between {JUDGE_CONFIDENCE_FLOOR} and 1", status=422
+        )
+    fp = judged["fingerprint"]
+    if not isinstance(fp, str) or not fp or len(fp) > JUDGE_FP_MAX:
+        raise MissionError("judged.fingerprint must be a fingerprint", status=422)
+    ev = judged["evidence"]
+    if not isinstance(ev, list) or len(ev) > JUDGE_EVIDENCE_MAX:
+        raise MissionError(
+            f"judged.evidence must be a list of at most {JUDGE_EVIDENCE_MAX}", status=422
+        )
+    clean_ev: list[dict] = []
+    for q in ev:
+        if not isinstance(q, dict) or set(q) != {"source", "quote"}:
+            raise MissionError("each piece of evidence is {source, quote}", status=422)
+        src, quote = q["source"], q["quote"]
+        if not isinstance(src, str) or not src or len(src) > JUDGE_SOURCE_MAX:
+            raise MissionError("evidence source must be a short label", status=422)
+        if not isinstance(quote, str) or not quote.strip() or len(quote) > JUDGE_QUOTE_MAX:
+            raise MissionError(
+                f"an evidence quote must be text of at most {JUDGE_QUOTE_MAX} characters",
+                status=422,
+            )
+        clean_ev.append({"source": src, "quote": quote})
+    out: dict = {
+        "met": judged["met"],
+        "confidence": float(conf),
+        "threshold": float(thr),
+        "evidence": clean_ev,
+        "fingerprint": fp,
+    }
+    if "checked_at" in judged:
+        if not _is_num(judged["checked_at"]):
+            raise MissionError("judged.checked_at must be a time", status=422)
+        out["checked_at"] = float(judged["checked_at"])
+    if "stale" in judged:
+        if judged["stale"] is not True:
+            raise MissionError("judged.stale is only ever true", status=422)
+        out["stale"] = True
+    if "criterion" in judged:
+        c = judged["criterion"]
+        if not isinstance(c, str) or not c or len(c) > JUDGE_FP_MAX:
+            raise MissionError("judged.criterion must be a digest", status=422)
+        out["criterion"] = c
+    return out
+
+
+def judgment_counts(judged: dict, *, rejected_fp: str | None = None) -> bool:
+    """Does this verdict count as MET? `met` AND a confidence at or above BOTH the threshold it
+    carries and the store's own floor, AND not the output the operator already rejected (#1088).
+
+    The one definition. The settling write, the threshold recompute and the board all ask it, so no
+    two of them can disagree about whether 0.89 is enough (it is not)."""
+    if not isinstance(judged, dict) or judged.get("met") is not True:
+        return False
+    conf = judged.get("confidence")
+    thr = judged.get("threshold")
+    if not _is_num(conf) or not _is_num(thr):
+        return False
+    if conf < max(float(thr), JUDGE_CONFIDENCE_FLOOR):
+        return False
+    return not (rejected_fp and judged.get("fingerprint") == rejected_fp)
+
+
+def _slim_last(prior: object) -> dict | None:
+    """What a judged row carries forward when it can no longer vouch for its judgment: the value,
+    the confidence and when — nothing else, so a stale or unknown mark always fits (#1088 §3)."""
+    if not isinstance(prior, dict):
+        return None
+    if isinstance(prior.get("last"), dict) and prior.get("stale"):
+        last = prior["last"]
+        return {k: last[k] for k in ("value", "confidence", "at") if k in last}
+    if "value" not in prior:
+        return None
+    rec = prior.get("judged") if isinstance(prior.get("judged"), dict) else {}
+    out: dict = {"value": bool(prior.get("value")), "at": prior.get("at")}
+    if _is_num(rec.get("confidence")):
+        out["confidence"] = rec["confidence"]
+    return out
+
+
+def fit_judged(obs: dict) -> dict:
+    """Shrink a judged observation until the store will take it, measured the way the store does.
+
+    Whole quotes go first, from the end — a quote is never truncated, because half a quote is text
+    nobody said — but the FIRST quote is kept while the reason is shortened, because a judgment's
+    evidence matters more than its prose. Only if that still does not fit does the last quote go
+    too. What is left is small by construction (bounded numbers and a fingerprint), so a stale mark
+    always fits; the settling write refuses a MET verdict that lost all of its evidence this way
+    (see `observe_objective`), which the runner records as unknown."""
+    out = dict(obs)
+    rec = out.get("judged")
+    ev: list = []
+    if isinstance(rec, dict) and isinstance(rec.get("evidence"), list):
+        rec = dict(rec)
+        ev = rec["evidence"] = list(rec["evidence"])
+        out["judged"] = rec
+    while observed_size(out) > OBSERVED_MAX and len(ev) > 1:
+        ev.pop()
+    for field in ("detail", "reason"):
+        while observed_size(out) > OBSERVED_MAX and isinstance(out.get(field), str) and out[field]:
+            out[field] = out[field][: len(out[field]) // 2].rstrip()
+    while observed_size(out) > OBSERVED_MAX and ev:
+        ev.pop()
+    return out
+
+
 def observe_objective(
     mission_id: str,
     objective_key: str,
@@ -4520,19 +4793,24 @@ def observe_objective(
     value: bool,
     detail: str = "",
     extra: dict | None = None,
+    judged: dict | None = None,
     expect_probe: str | None = None,
     expect_args: object = _UNSET,
     expect_target: str | None = None,
     expect_gen: int | None = None,
+    expect_incarnation: str | None = None,
+    expect_title: str | None = None,
+    stale_kind: str | None = None,
     now: float | None = None,
     path: Path | None = None,
 ) -> dict | None:
-    """Record what a PROBE saw. **The only path that may write `met` from evidence (#891).**
+    """Record what a probe saw or the supervisor judged. **The only path that may write `met`
+    from evidence (#891, #1088).**
 
     `patch_objectives` — the operator's path — refuses `state` / `met_at` / `observed` outright, so
     an edit can never retroactively claim an objective holds. This is the other side of that rule:
-    a settlement written here is always backed by a fetch that actually happened, and the row keeps
-    the fact that settled it.
+    a settlement written here is always backed by a fetch that actually happened, or by a
+    supervisor's judgment that quoted what it read, and the row keeps the fact that settled it.
 
     **Three outcomes, and the third is not the second.**
 
@@ -4544,18 +4822,33 @@ def observe_objective(
       whole three-way split exists for: collapsing it into "false" makes a forge outage read as a
       mission going backwards, and collapsing it into "true" is the stale-200 lie.
 
+    **A JUDGMENT (`judged=`, #1088)** is written through the same three outcomes, and only for a
+    `supervisor_judged` row. For a verdict with ``observed=True`` the store computes the value
+    itself — :func:`judgment_counts`, i.e. `met` and a confidence at or above the threshold the
+    runner passed in and the store's own floor, and never the fingerprint the operator rejected —
+    so ``value`` is ignored there. The whole observation is fitted to :data:`OBSERVED_MAX` as the
+    store measures it (quotes shed whole, then the reason shortened); what still does not fit is a
+    422, which the runner records as unknown. A judged row that cannot vouch for its judgment
+    carries only ``{value, confidence, at}`` forward under ``last``.
+
     An **already-settled** objective is never re-opened by a probe. A `met` that later reads false
     (a PR reopened, a check re-run red) is a fact the operator needs, but silently un-meeting a
     gate would let the supervisor resume nudging a mission it had already proposed for completion —
     so the observation is recorded and the state is left alone. Moving a settled objective
-    backwards is an operator decision, through the edit path.
+    backwards is an operator decision, through the edit path — for a judgment, `reject_judgment`.
 
-    **`expect_probe` / `expect_args` are the objective's IDENTITY, compared inside this
-    transaction.** A probe is an external call that can outlive the row it was issued for: drop and
-    re-add the same key pointing at a different target while a request is in flight, and the old
-    answer would settle the new objective. `(mission_id, key)` is not identity — it is a slot, and
-    the same slot can hold a different question a second later. Refused rather than applied, and
-    reported as ``None`` like any other row that is not there to write (#897 review).
+    **`expect_probe` / `expect_args` / `expect_incarnation` are the objective's IDENTITY, compared
+    inside this transaction.** A probe or a judgment is an external call that can outlive the row it
+    was issued for: drop and re-add the same key pointing at a different target while a request is
+    in flight, and the old answer would settle the new objective. `(mission_id, key)` is not
+    identity — it is a slot, and the same slot can hold a different question a second later.
+    Refused rather than applied, and reported as ``None`` like any other row that is not there to
+    write (#897 review).
+
+    **`expect_title` is part of a JUDGMENT's identity (#1088 review).** `retitle` keeps the
+    incarnation, so "A finding is written down" retitled to "A PR fixing it is merged" mid-call is
+    the same row asking a different question. A verdict about the old title is refused here, in the
+    writing transaction — the runner reports it superseded, and the next pass judges the new title.
 
     **A `could not look` never destroys the last successful observation.** The prior value is
     carried forward under ``last``, so the console's "last seen … · stale" has something to name
@@ -4566,18 +4859,28 @@ def observe_objective(
     """
     validate_id(mission_id)
     ts = time.time() if now is None else now
+    rec = validate_judged(judged) if judged is not None else None
+    if rec is not None and "met" in rec and "checked_at" not in rec:
+        rec["checked_at"] = ts
     obs: dict = {
         "at": ts,
         "detail": _cap(str(detail or ""), OBSERVED_DETAIL_MAX),
     }
+    if stale_kind is not None and stale_kind not in STALE_KINDS:
+        raise MissionError(f"unknown stale_kind {stale_kind!r}", status=422)
     if not observed:
         # `stale` is the flag `MissionObjectives` already reads to render "last seen … · stale"
         # with its reason — the console's degraded rendering shipped in #878 against no producer,
         # and this is the producer.
         obs["stale"] = True
         obs["reason"] = obs["detail"]
+        # WHY it is stale, as a closed value the console switches on — never by reading the prose.
+        if stale_kind is not None:
+            obs["stale_kind"] = stale_kind
     else:
         obs["value"] = bool(value)
+    if rec is not None:
+        obs["judged"] = rec
     # THE EXTERNAL TARGET is ADJUDICATED here now, against the binding the row carries.
     #
     # Where a probe went is not row state — it is the configured forge plus the mission's checkout
@@ -4606,6 +4909,13 @@ def observe_objective(
                 continue
             if isinstance(v, str | int | float | bool):
                 obs[k] = _cap(v, OBSERVED_DETAIL_MAX) if isinstance(v, str) else v
+    if rec is not None:
+        obs = fit_judged(obs)
+        shed = obs["judged"].get("evidence") if isinstance(obs.get("judged"), dict) else None
+        if observed and rec.get("met") is True and rec.get("evidence") and not shed:
+            # A MET verdict whose every quote had to go to fit is a verdict with no evidence — which
+            # the judge's own contract calls unknown. Refused, so the runner records it as such.
+            raise MissionError("the judgment is too large to store with its evidence", status=422)
     # Serialised BEFORE the transaction opens, so an over-bound observation is refused without
     # having held the write lock — and refused rather than truncated, because a truncated blob
     # reads back as `None` and would report a write that silently lost its evidence.
@@ -4616,7 +4926,8 @@ def observe_objective(
         try:
             con.execute("BEGIN IMMEDIATE")
             row = con.execute(
-                "SELECT state, probe, probe_args, observed, probe_target, probe_gen, probe_rev "
+                "SELECT state, probe, probe_args, observed, probe_target, probe_gen, probe_rev, "
+                "incarnation, judge_rejected_fp, title, direction "
                 "FROM mission_objectives WHERE mission_id=? AND key=?",
                 (mission_id, objective_key),
             ).fetchone()
@@ -4625,10 +4936,39 @@ def observe_objective(
                 return None
             # THE IDENTITY CHECK, inside the transaction that writes. Outside it, this is
             # check-then-act and the row can change between the two.
-            if expect_probe is not None and str(row["probe"] or "") != expect_probe:
+            if (
+                expect_probe is not None
+                and canonical_probe(str(row["probe"] or "")) != expect_probe
+            ):
                 con.execute("ROLLBACK")
                 return None
             if expect_args is not _UNSET and _loads(row["probe_args"]) != expect_args:
+                con.execute("ROLLBACK")
+                return None
+            if (
+                expect_incarnation is not None
+                and str(row["incarnation"] or "") != expect_incarnation
+            ):
+                con.execute("ROLLBACK")
+                return None
+            if expect_title is not None and str(row["title"] or "") != expect_title:
+                con.execute("ROLLBACK")
+                return None
+            # …AND A VERDICT'S CRITERION, read here (#1097 review 5040, finding 1): the title AND
+            # the direction the judge was shown must still be the row's. A direction added while
+            # the model was thinking is a different question, exactly like a retitle.
+            if (
+                observed
+                and rec is not None
+                and "criterion" in rec
+                and rec["criterion"] != judge_criterion(row["title"], row["direction"])
+            ):
+                con.execute("ROLLBACK")
+                return None
+            # A JUDGMENT SETTLES ONLY A JUDGED ROW. Checked here as well as by `expect_probe`, so a
+            # caller that forgot to pass the fence still cannot write a model's verdict onto an
+            # objective whose settlement is an observation.
+            if rec is not None and canonical_probe(str(row["probe"] or "")) != "supervisor_judged":
                 con.execute("ROLLBACK")
                 return None
             # THE TARGET FENCE, in the same transaction as the write. `probe_target` is what the
@@ -4670,18 +5010,27 @@ def observe_objective(
             if str(mrow["state"] or "") in TERMINAL_STATES or mrow["archived_at"] is not None:
                 con.execute("ROLLBACK")
                 return None
+            # A VERDICT'S VALUE IS THE STORE'S TO COMPUTE (#1088), read against the rejected
+            # fingerprint in THIS transaction — so a verdict on the output the operator overruled
+            # can never settle, whatever the caller computed.
+            if observed and rec is not None and "met" in rec:
+                obs["value"] = judgment_counts(rec, rejected_fp=row["judge_rejected_fp"])
+                blob = _json_or_none(obs, OBSERVED_MAX, field="observed")
             # CARRY THE LAST SUCCESSFUL OBSERVATION FORWARD. `unknown` says nothing new; it must
             # not erase what was known.
             if not observed:
                 prior = _loads(row["observed"]) or {}
-                keep = prior.get("last") if isinstance(prior, dict) else None
-                if keep is None and isinstance(prior, dict) and "value" in prior:
-                    keep = {k: v for k, v in prior.items() if k not in ("stale", "reason")}
+                if canonical_probe(str(row["probe"] or "")) == "supervisor_judged":
+                    keep = _slim_last(prior)
+                else:
+                    keep = prior.get("last") if isinstance(prior, dict) else None
+                    if keep is None and isinstance(prior, dict) and "value" in prior:
+                        keep = {k: v for k, v in prior.items() if k not in ("stale", "reason")}
                 if keep is not None:
                     obs["last"] = keep
-                    blob_source = obs
+                    blob_source = fit_judged(obs) if rec is not None else obs
             state = str(row["state"] or "")
-            settle = observed and value and state not in ("met", "waived")
+            settle = observed and bool(obs.get("value")) and state not in ("met", "waived")
             if settle:
                 con.execute(
                     "UPDATE mission_objectives SET state='met', met_at=?, observed=? "
@@ -4698,7 +5047,17 @@ def observe_objective(
                     "probe",
                     at=ts,
                     text=_cap(f"{objective_key}: {obs['detail']}", EVENT_TEXT_MAX) or None,
-                    meta={"objective": objective_key, "settled": "met", "probe": row["probe"]},
+                    meta={
+                        "objective": objective_key,
+                        "settled": "met",
+                        "probe": canonical_probe(row["probe"]),
+                        # A judgment says so on the timeline too — never "observed".
+                        **(
+                            {"judged": True, "confidence": rec["confidence"]}
+                            if rec is not None and "confidence" in rec
+                            else {}
+                        ),
+                    },
                 )
             else:
                 # `met_at` is deliberately NOT in this UPDATE. An objective that was met keeps the
@@ -4726,6 +5085,78 @@ def observe_objective(
         if r["key"] == objective_key:
             return r
     return None
+
+
+def judge_worklist(mission_id: str, *, path: Path | None = None) -> dict | None:
+    """Everything the judge runner needs about one mission, in ONE read (#1088). Internal.
+
+    The mission's state, instruction and checkout, and every `supervisor_judged` row with the
+    fields the runner fences on (`incarnation`) and skips on (`judge_rejected_fp`, `observed`),
+    in checklist order. `None` for an unknown mission. Never returned by a route: the rejected
+    fingerprint is a fence, not content."""
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        con.execute("BEGIN")
+        m = con.execute(
+            "SELECT state, instruction, title, cwd, archived_at FROM missions WHERE id=?",
+            (mission_id,),
+        ).fetchone()
+        rows = con.execute(
+            "SELECT key, title, gate, state, probe, observed, incarnation, judge_rejected_fp, "
+            "direction, ord FROM mission_objectives WHERE mission_id=? ORDER BY ord ASC",
+            (mission_id,),
+        ).fetchall()
+        con.execute("COMMIT")
+    except BaseException:
+        with contextlib.suppress(sqlite3.Error):
+            con.execute("ROLLBACK")
+        raise
+    finally:
+        con.close()
+    if m is None:
+        return None
+    judged = []
+    for r in rows:
+        d = dict(r)
+        if canonical_probe(str(d.get("probe") or "")) != "supervisor_judged":
+            continue
+        d["probe"] = "supervisor_judged"
+        d["gate"] = bool(d.get("gate"))
+        d["observed"] = _loads(d.get("observed"))
+        judged.append(d)
+    return {
+        "state": str(m["state"] or ""),
+        "archived": m["archived_at"] is not None,
+        "instruction": str(m["instruction"] or m["title"] or ""),
+        "cwd": m["cwd"],
+        "rows": judged,
+    }
+
+
+def clear_judge_rejected(
+    mission_id: str, objective_key: str, *, expect_fp: str, path: Path | None = None
+) -> bool:
+    """Forget the rejected fingerprint once the output has moved on (#1088). Compare-and-set: it
+    clears only the value the caller saw, so a rejection that landed in between survives."""
+    validate_id(mission_id)
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            cur = con.execute(
+                "UPDATE mission_objectives SET judge_rejected_fp=NULL "
+                "WHERE mission_id=? AND key=? AND judge_rejected_fp=?",
+                (mission_id, objective_key, expect_fp),
+            )
+            con.execute("COMMIT")
+            return bool(cur.rowcount)
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                con.execute("ROLLBACK")
+            raise
+        finally:
+            con.close()
 
 
 def _question_answerable(con, mission_id: str) -> bool:
@@ -5141,7 +5572,14 @@ def gate_tally(rows) -> tuple[int, int]:
             continue
         raw = r["observed"] if not isinstance(r, dict) else r.get("observed")
         obs = _loads(raw) if isinstance(raw, str) else raw
-        if not observation_supports({"observed": obs}):
+        # The criterion the row asks NOW travels with the observation, so a judgment of an older
+        # title or direction never counts (#1097 review 5040, finding 1).
+        keys = r.keys() if not isinstance(r, dict) else r
+        cur = {"observed": obs}
+        if "title" in keys:
+            cur["title"] = r["title"]
+            cur["direction"] = r["direction"] if "direction" in keys else None
+        if not observation_supports(cur):
             unmet += 1
     return gates, unmet
 
@@ -8919,7 +9357,7 @@ def instantiate_objectives(
                 if not isinstance(row, dict):
                     raise MissionError("each objective must be an object", status=422)
                 src = row.get("source")
-                if src not in ("playbook", "model"):
+                if src not in ("playbook", "model", "instruction"):
                     # Not a client-facing message: reaching it means a caller inside this module
                     # tried to mint an authority it does not have.
                     raise MissionError(f"instantiation cannot write source {src!r}", status=500)
@@ -8966,11 +9404,11 @@ def objectives(mission_id: str, *, path: Path | None = None) -> list[dict]:
 
 
 def _validate_probe(probe: object, probe_args: object, gate: bool) -> tuple[str, str | None]:
+    probe = canonical_probe(probe)
     kind = probe if isinstance(probe, str) else ""
     if kind not in PROBE_KINDS:
         raise MissionError(f"unknown probe {probe!r}", status=422)
     if gate and kind in NON_GATING_PROBES:
-        # "the agent believes it wrote tests" is not evidence that it did.
         raise MissionError(f"probe {kind} may not be a gate", status=422)
     if probe_args is not None and not isinstance(probe_args, dict):
         raise MissionError("probe_args must be an object", status=422)
@@ -9002,7 +9440,8 @@ def validate_probe_args(kind: str, probe_args: object) -> None:
     and an `expect_status` that was an object; both persisted, and both would have reached the
     Phase 5 runner as a target it cannot probe.
     """
-    spec = PROBE_ARG_SCHEMA.get(kind)
+    kind = canonical_probe(kind)  # type: ignore[assignment]
+    spec = PROBE_ARG_SCHEMA.get(kind) if isinstance(kind, str) else None
     if spec is None:
         raise MissionError(f"unknown probe {kind!r}", status=422)
     if probe_args is None:
@@ -9043,7 +9482,12 @@ def patch_objectives(
       which is a decision not to require the objective, not a claim that it holds.
     * **Adding an unmet gating objective to a mission in ``review`` moves it back to ``running``**
       — in the same transaction as the insert, so the list and the state can never disagree.
-    * ``agent_judged`` may not gate, rejected at write time.
+    * a probe kind in :data:`NON_GATING_PROBES` may not gate, rejected at write time.
+    * **``reject_judgment`` is the ONE deliberate exception to "no op un-meets a row" (#1088).**
+      Only for a ``supervisor_judged`` row (a probe-settled row is a 422): it returns the row to
+      ``pending``, clears ``met_at``, records the fingerprint it overruled so that same output is
+      not judged met again, and — on a mission in ``review`` — reopens it like an added gate.
+      ``retitle`` / ``waive`` / ``reorder`` still cannot un-meet anything.
 
     **…and a mission being DISPATCHED is closed to edits entirely** (#904 review 5, finding 2).
     `claim_plan` compares the approved checklist inside its own transaction, and that transaction
@@ -9111,6 +9555,10 @@ def patch_objectives(
                     _op_reset_direction(con, mission_id, op, source, templates)
                 elif kind == "clear_direction":
                     _op_clear_direction(con, mission_id, op)
+                elif kind == "reject_judgment":
+                    if source != "operator":
+                        raise MissionError("only the operator may reject a judgment", status=403)
+                    added_unmet_gate |= _op_reject_judgment(con, mission_id, op, ts)
                 else:
                     raise MissionError(f"unknown objective op {kind!r}", status=422)
                 # The op and key only — never the direction's text, which the row already holds.
@@ -9165,11 +9613,13 @@ def _op_set_direction(con, mission_id: str, op: dict, source: str) -> None:
     direction = _validate_direction(op.get("direction"), probe)
     if direction is None:
         raise MissionError("a direction needs text; use clear_direction to remove one", status=422)
+    before = _criterion_of(con, mission_id, key)
     con.execute(
         "UPDATE mission_objectives SET direction=?, direction_source='operator' "
         "WHERE mission_id=? AND key=?",
         (direction, mission_id, key),
     )
+    _invalidate_if_criterion_moved(con, mission_id, key, before)
 
 
 def _op_reset_direction(
@@ -9197,16 +9647,19 @@ def _op_reset_direction(
             status=409,
         )
     direction = _validate_direction(t.get("direction"), probe)
+    before = _criterion_of(con, mission_id, key)
     con.execute(
         "UPDATE mission_objectives SET direction=?, direction_source=? "
         "WHERE mission_id=? AND key=?",
         (direction, None if direction is None else "template", mission_id, key),
     )
+    _invalidate_if_criterion_moved(con, mission_id, key, before)
 
 
 def _op_clear_direction(con, mission_id: str, op: dict) -> None:
     """No direction: a supervisor nudge for this objective types the global nudge again."""
     key = _cap(op.get("key"), OBJECTIVE_KEY_MAX)
+    before = _criterion_of(con, mission_id, key)
     cur = con.execute(
         "UPDATE mission_objectives SET direction=NULL, direction_source=NULL "
         "WHERE mission_id=? AND key=?",
@@ -9214,6 +9667,7 @@ def _op_clear_direction(con, mission_id: str, op: dict) -> None:
     )
     if not cur.rowcount:
         raise MissionError(f"unknown objective {key}", status=404)
+    _invalidate_if_criterion_moved(con, mission_id, key, before)
 
 
 #: What an operator edit may name. Everything else is refused rather than silently dropped —
@@ -9229,6 +9683,9 @@ _OP_FIELDS: dict[str, frozenset[str]] = {
     "set_direction": frozenset({"op", "key", "direction"}),
     "reset_direction": frozenset({"op", "key"}),
     "clear_direction": frozenset({"op", "key"}),
+    # #1088. "Not met — judge again": the ONE operator op that may move a met row back to pending,
+    # and only a row the supervisor judged. `episode` is the one the row was rendered at.
+    "reject_judgment": frozenset({"op", "key", "episode"}),
 }
 #: Named separately so the refusal can say *why* rather than "unknown field".
 _SETTLED_BY_OBSERVATION = frozenset({"state", "met_at", "observed"})
@@ -9283,6 +9740,38 @@ def _op_add(con, mission_id: str, op: dict, source: str, ts: float) -> bool:
     # from a playbook template or the operator's own edit — and a model row carrying one is refused.
     if source == "model" and op.get("direction") is not None:
         raise MissionError("a model-proposed objective may not carry a direction", status=422)
+    # AN `instruction` ROW IS A JUDGED CRITERION THE ORCHESTRATOR WROTE (#1088), so its authority
+    # is exactly one thing: `supervisor_judged`, no arguments, no direction, only on a mission that
+    # DECLINED a checklist, and at most `INSTRUCTION_GATES_MAX` of them. A model never names a
+    # mechanical probe or a target through it — that is the SSRF rule `model` rows already keep.
+    if source == "instruction":
+        if (
+            canonical_probe(op.get("probe")) != "supervisor_judged"
+            or op.get("probe_args")
+            or op.get("direction") is not None
+        ):
+            raise MissionError(
+                "an objective written from the instruction is judged by the supervisor and "
+                "carries no probe arguments or direction",
+                status=422,
+            )
+        mrow = con.execute("SELECT playbook_id FROM missions WHERE id=?", (mission_id,)).fetchone()
+        if mrow is None or str(mrow["playbook_id"] or "") != PLAYBOOK_DECLINED:
+            raise MissionError(
+                "only a mission that declined a checklist gets objectives written from its "
+                "instruction",
+                status=422,
+            )
+        held = con.execute(
+            "SELECT COUNT(*) FROM mission_objectives WHERE mission_id=? AND source='instruction'",
+            (mission_id,),
+        ).fetchone()[0]
+        if int(held) >= INSTRUCTION_GATES_MAX:
+            raise MissionError(
+                f"a mission may hold at most {INSTRUCTION_GATES_MAX} objectives written from its "
+                "instruction",
+                status=422,
+            )
     probe, args = _validate_probe(op.get("probe", "none"), op.get("probe_args"), gate)
     direction = _validate_direction(op.get("direction"), probe)
     nxt = con.execute(
@@ -9406,17 +9895,70 @@ def _forget_objective(con, mission_id: str, key: str) -> None:
     )
 
 
+CRITERION_CHANGED_REASON = "the objective changed since the judgment"
+#: Why a judged observation is stale (#1097 review round 5): the objective's criterion changed,
+#: the session input changed, or the latest attempt produced no usable verdict.
+STALE_KINDS: frozenset[str] = frozenset({"criterion", "input", "unknown"})
+
+
+def _criterion_of(con, mission_id: str, key: str) -> str | None:
+    row = con.execute(
+        "SELECT title, direction FROM mission_objectives WHERE mission_id=? AND key=?",
+        (mission_id, key),
+    ).fetchone()
+    return None if row is None else judge_criterion(row["title"], row["direction"])
+
+
+def _invalidate_if_criterion_moved(con, mission_id: str, key: str, before: str | None) -> None:
+    """An edit to what a JUDGED objective asks — its title or its direction — withdraws the current
+    judgment's support in the SAME transaction (#1097 review 5040, finding 1). The observation is
+    marked stale (its value carried under `last` as history); the historical `state=met` stays,
+    and `observation_supports` stops counting it, so no completion can consume an answer to a
+    question the row no longer asks. The next pass judges the new criterion."""
+    row = con.execute(
+        "SELECT probe, observed, title, direction FROM mission_objectives "
+        "WHERE mission_id=? AND key=?",
+        (mission_id, key),
+    ).fetchone()
+    if row is None or canonical_probe(str(row["probe"] or "")) != "supervisor_judged":
+        return
+    if before is None or judge_criterion(row["title"], row["direction"]) == before:
+        return
+    prior = _loads(row["observed"])
+    rec = prior.get("judged") if isinstance(prior, dict) else None
+    if not isinstance(rec, dict) or "met" not in rec or prior.get("stale"):
+        return
+    ts = time.time()
+    obs = {
+        "at": ts,
+        "detail": CRITERION_CHANGED_REASON,
+        "reason": CRITERION_CHANGED_REASON,
+        "stale": True,
+        "stale_kind": "criterion",
+        "judged": {**rec, "stale": True},
+    }
+    last = _slim_last(prior)
+    if last is not None:
+        obs["last"] = last
+    con.execute(
+        "UPDATE mission_objectives SET observed=? WHERE mission_id=? AND key=?",
+        (_json_or_none(fit_judged(obs), OBSERVED_MAX, field="observed"), mission_id, key),
+    )
+
+
 def _op_retitle(con, mission_id: str, op: dict) -> None:
     key = _cap(op.get("key"), OBJECTIVE_KEY_MAX)
     title = _cap(op.get("title"), OBJECTIVE_TITLE_MAX)
     if not title:
         raise MissionError("objective title is required", status=422)
+    before = _criterion_of(con, mission_id, key)
     cur = con.execute(
         "UPDATE mission_objectives SET title=? WHERE mission_id=? AND key=?",
         (title, mission_id, key),
     )
     if not cur.rowcount:
         raise MissionError(f"unknown objective {key}", status=404)
+    _invalidate_if_criterion_moved(con, mission_id, key, before)
 
 
 def _op_waive(con, mission_id: str, op: dict, ts: float) -> None:
@@ -9474,6 +10016,79 @@ def _op_reorder(con, mission_id: str, op: dict) -> None:
             "UPDATE mission_objectives SET ord=? WHERE mission_id=? AND key=?",
             (i, mission_id, key),
         )
+
+
+def _op_reject_judgment(con, mission_id: str, op: dict, ts: float) -> bool:
+    """ "Not met — judge again" (#1088). Returns True iff the row GATES (so `review` reopens).
+
+    The operator overrules the supervisor's judgment in one action. The row goes back to
+    `pending`, `met_at` is cleared in the same transaction, and the fingerprint of the output that
+    was judged is recorded in `judge_rejected_fp` — a column, because `observe_objective` replaces
+    the whole `observed` blob on every write and an intervening unknown or stale write would erase
+    a field kept there. The judge therefore does not settle that same output as met again; the next
+    judgment waits for new output.
+
+    Fenced like STAND DOWN: `episode` is the one the row was rendered at, and a stale tap is a 409.
+    The episode ADVANCES here, because pending is a transition — which is what lets the next
+    settling judgment be told apart from this one.
+    """
+    key = _cap(op.get("key"), OBJECTIVE_KEY_MAX)
+    episode = op.get("episode")
+    if not isinstance(episode, int) or isinstance(episode, bool) or episode < 1:
+        raise MissionError(
+            "episode is required and must be the one the objective was rendered at", status=422
+        )
+    row = con.execute(
+        "SELECT state, probe, gate, observed, title FROM mission_objectives "
+        "WHERE mission_id=? AND key=?",
+        (mission_id, key),
+    ).fetchone()
+    if row is None:
+        raise MissionError(f"unknown objective {key}", status=404)
+    if canonical_probe(str(row["probe"] or "")) != "supervisor_judged":
+        # A PROBE-SETTLED row is an observation, and an observation is not the supervisor's
+        # opinion to overrule — un-meeting it stays impossible, exactly as before #1088.
+        raise MissionError(
+            "only a judged objective can be rejected; this one is settled by an observation",
+            status=422,
+        )
+    ep = con.execute(
+        "SELECT episode FROM mission_objective_episode WHERE mission_id=? AND objective_key=?",
+        (mission_id, key),
+    ).fetchone()
+    current = 1 if ep is None else int(ep["episode"])
+    if episode != current:
+        raise MissionError("this objective has moved on since you saw it", status=409)
+    obs = _loads(row["observed"])
+    rec = obs.get("judged") if isinstance(obs, dict) else None
+    state = str(row["state"] or "")
+    if state == "waived" or not isinstance(rec, dict) or "fingerprint" not in rec:
+        raise MissionError("there is no judgment on this objective to reject", status=409)
+    if state != "met" and not (isinstance(obs, dict) and obs.get("value")):
+        raise MissionError("the supervisor has not judged this objective met", status=409)
+    new_obs = dict(obs)
+    new_obs["value"] = False
+    new_obs["rejected_at"] = ts
+    new_obs.pop("stale", None)
+    new_obs.pop("reason", None)
+    blob = _json_or_none(fit_judged(new_obs), OBSERVED_MAX, field="observed")
+    con.execute(
+        "UPDATE mission_objectives SET state='pending', met_at=NULL, observed=?, "
+        "judge_rejected_fp=? WHERE mission_id=? AND key=?",
+        (blob, str(rec["fingerprint"]), mission_id, key),
+    )
+    _bump_episode_con(con, mission_id, key, ts)
+    conf = rec.get("confidence")
+    said = f" ({float(conf):.2f})" if _is_num(conf) else ""
+    _append_event(
+        con,
+        mission_id,
+        "objective",
+        at=ts,
+        text=_cap(f"you rejected the judgment{said} on “{row['title']}”", EVENT_TEXT_MAX),
+        meta={"objective": key, "rejected_judgment": True},
+    )
+    return bool(row["gate"])
 
 
 def unmet_gates(mission_id: str, *, path: Path | None = None) -> list[str]:

@@ -96,7 +96,7 @@ def _add(mid, key, probe, *, direction=None, args=None, title=None):
         "title": title or key,
         "probe": probe,
         "probe_args": args,
-        "gate": probe not in ("none", "agent_judged"),
+        "gate": probe not in ("none", "supervisor_judged"),
     }
     if direction is not None:
         op["direction"] = direction
@@ -1521,9 +1521,12 @@ def test_v27_upgrades_a_v26_store_with_NULL_directions_and_the_fresh_column_orde
             con.close()
 
     fresh = cols()
-    assert fresh[-2:] == ["direction", "direction_source"]
+    # v30 (#1088) appends `judge_rejected_fp` after the two v27 columns.
+    assert fresh[-3:] == ["direction", "direction_source", "judge_rejected_fp"]
 
     con = sqlite3.connect(db)
+    # A real v26 store has none of the later columns either.
+    con.execute("ALTER TABLE mission_objectives DROP COLUMN judge_rejected_fp")
     con.execute("ALTER TABLE mission_objectives DROP COLUMN direction_source")
     con.execute("ALTER TABLE mission_objectives DROP COLUMN direction")
     con.execute("PRAGMA user_version=26")

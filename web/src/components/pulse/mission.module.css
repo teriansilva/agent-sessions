@@ -2526,3 +2526,121 @@
   line-height: 1.45;
   color: var(--warn-text);
 }
+
+/* --- judged objectives (#1088) ---------------------------------------------------------------
+ * A JUDGMENT is not an OBSERVATION, and the row says which. The tag is a small outlined mono word:
+ * `observed` in the neutral text colour, `judged` in the text-safe amber (`--git-mod-fg`, the
+ * attention hue already used for "stale") — never a status LED, never the brand accent. No radius,
+ * no gradient (design §3). Every control is ≥44px (§8). Quotes are plain text in the mono face on
+ * the editor's ground, wrapped, never markup. */
+.objTag {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  padding: 0.05rem 0.3rem;
+  border: 1px solid var(--line-strong);
+  color: var(--text-3);
+}
+.objTagJudged {
+  border-color: currentColor;
+  color: var(--git-mod-fg);
+}
+.judgedToggle {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 13px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.judgedToggle:hover {
+  color: var(--text-1);
+}
+.judgedToggle:focus-visible,
+.judgedReject:focus-visible,
+.judgedLink:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.judgedLink {
+  color: var(--text-2);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.judgedPanel {
+  margin: 2px 0 6px;
+  padding: 0.6rem 0.75rem;
+  border-left: 2px solid var(--git-mod-fg);
+  background: var(--bg-2);
+  min-width: 0;
+}
+.judgedHead {
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin-bottom: 0.45rem;
+  overflow-wrap: anywhere;
+}
+.judgedQuoteBox {
+  margin: 0 0 0.5rem;
+}
+.judgedSource {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  color: var(--text-3);
+  margin-bottom: 0.2rem;
+  overflow-wrap: anywhere;
+}
+.judgedQuote {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-1);
+  background: var(--surface-3);
+  padding: 0.45rem 0.6rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.judgedWhy {
+  margin: 0.4rem 0 0.2rem;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.judgedWhy b {
+  color: var(--text-1);
+}
+.judgedHolds {
+  margin: 0 0 0.4rem;
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  color: var(--text-3);
+}
+.judgedReject {
+  min-height: 44px;
+  padding: 0 1rem;
+  border: 1px solid var(--line-strong);
+  background: none;
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.judgedReject:hover {
+  border-color: var(--text-2);
+}
+.judgedReject[disabled] {
+  opacity: 0.5;
+  cursor: default;
+}

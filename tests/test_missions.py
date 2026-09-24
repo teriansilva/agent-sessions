@@ -323,14 +323,35 @@ def test_adding_a_non_gating_objective_does_not_reopen_review(store):
     assert missions.get_mission(mid)["state"] == "review"
 
 
-def test_agent_judged_may_never_gate(store):
-    """ "the agent believes it wrote tests" is not evidence that it did."""
+def test_a_non_gating_probe_kind_may_not_gate(store, monkeypatch):
+    """A kind in `NON_GATING_PROBES` is refused as a gate at write time (#1088 keeps the set, empty
+    once the judge runs, so a future non-gating kind has somewhere to go)."""
+    monkeypatch.setattr(missions, "NON_GATING_PROBES", frozenset({"supervisor_judged"}))
     mid = _running()
     with pytest.raises(missions.MissionError) as e:
-        _add(mid, "tests", gate=True, probe="agent_judged")
+        _add(mid, "tests", gate=True, probe="supervisor_judged")
     assert e.value.status == 422
     # Non-gating is fine — it is a visibly weaker kind, not a forbidden one.
-    assert _add(mid, "tests", gate=False, probe="agent_judged")[0]["probe"] == "agent_judged"
+    row = _add(mid, "tests", gate=False, probe="supervisor_judged")[0]
+    assert row["probe"] == "supervisor_judged"
+
+
+def test_the_old_probe_name_is_accepted_on_input_and_only_the_new_one_is_written(store):
+    """`agent_judged` -> `supervisor_judged` (#1088): an old client still resolves, and what the
+    store holds is the new name."""
+    mid = _running()
+    row = _add(mid, "finding", gate=False, probe="agent_judged")[0]
+    assert row["probe"] == "supervisor_judged"
+    con = missions._ready()
+    try:
+        stored = con.execute(
+            "SELECT probe FROM mission_objectives WHERE mission_id=? AND key='finding'", (mid,)
+        ).fetchone()["probe"]
+    finally:
+        con.close()
+    assert stored == "supervisor_judged"
+    # …and the shared validator knows the alias too, so `prefs` inherits it.
+    missions.validate_probe_args("agent_judged", None)
 
 
 def test_an_unknown_probe_kind_is_refused(store):

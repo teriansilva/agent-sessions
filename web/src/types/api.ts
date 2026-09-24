@@ -561,6 +561,13 @@ export interface OrchestratorConfig {
    *  than spelled here, so the control cannot offer a value the save would 422. */
   ai_direction_confidence_floor: number;
   ai_direction_confidence_max: number;
+  /** THE SUPERVISOR'S JUDGMENT THRESHOLD (#1088). A `supervisor_judged` objective counts as met
+   *  only when the judge says so at or above this. The floor (0.90) and ceiling (1.00) come from the
+   *  server, so the control cannot offer a value the save would 422. Optional on the wire for an
+   *  older server; the UI falls back to the floor. */
+  judge_confidence_min?: number;
+  judge_confidence_floor?: number;
+  judge_confidence_max?: number;
 }
 
 export interface PulseNotification {
@@ -1540,6 +1547,9 @@ export interface MissionObjective {
    *  written for this mission (`operator`). Null when a nudge would type the default nudge. */
   direction?: string | null;
   direction_source?: "template" | "operator" | null;
+  /** The operator rejected a judgment of this objective and the supervisor is waiting for new
+   *  session output before it judges again (#1088). Only the fact — never the fingerprint. */
+  judge_rejected?: boolean;
 }
 
 /** A row from `GET /api/missions` — the LIST shape.

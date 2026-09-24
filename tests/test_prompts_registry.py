@@ -42,6 +42,7 @@ EXPECTED_SITES = {
     ("mission_supervisor.py", "mission_supervisor"),
     ("mission_plan.py", "mission_plan"),
     ("mission_questions.py", "mission_question"),
+    ("mission_judge.py", "mission_judge"),
 }
 
 

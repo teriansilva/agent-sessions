@@ -6,7 +6,7 @@
  * chosen value actually reaches the server, and that remounting shows the saved value rather
  * than the pre-save one (the #667 stale-ConfigCtx failure).
  */
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
@@ -136,6 +136,13 @@ test("a release that changed nothing costs no request", async () => {
   expect(api.setPrefs).not.toHaveBeenCalled();
 });
 
+/** The "Act above confidence" readout — scoped to its own row, because the judgment threshold
+ *  (#1088) sits on the same panel and also reads 0.90. */
+function actValue(text: string) {
+  const row = screen.getByLabelText(/act above confidence/i).parentElement!;
+  return within(row).getByText(text);
+}
+
 test("a stale save response cannot overwrite a newer one", async () => {
   // The defect behind "the slider says 0.70 but the server holds 0.85": responses do not arrive
   // in send order, so applying whichever lands LAST is not applying the last WRITE.
@@ -158,11 +165,11 @@ test("a stale save response cannot overwrite a newer one", async () => {
   fireEvent.change(slider, { target: { value: "0.9" } });
   fireEvent.pointerUp(slider); // save #2 — resolves immediately
 
-  await waitFor(() => expect(screen.getByText("0.90")).toBeInTheDocument());
+  await waitFor(() => expect(actValue("0.90")).toBeInTheDocument());
   // …now the older response finally lands, carrying the older value.
   releaseFirst({ orchestrator: block({ confidence_min: 0.6 }) });
   await new Promise((r) => setTimeout(r, 0));
-  expect(screen.getByText("0.90")).toBeInTheDocument();
+  expect(actValue("0.90")).toBeInTheDocument();
 });
 
 test("a stale FAILURE cannot paint an error over a newer success", async () => {
@@ -188,13 +195,13 @@ test("a stale FAILURE cannot paint an error over a newer success", async () => {
   fireEvent.change(slider, { target: { value: "0.9" } });
   fireEvent.pointerUp(slider); // save B — succeeds
 
-  await waitFor(() => expect(screen.getByText("0.90")).toBeInTheDocument());
+  await waitFor(() => expect(actValue("0.90")).toBeInTheDocument());
 
   rejectFirst(new Error("network died"));
   await new Promise((r) => setTimeout(r, 0));
 
   expect(screen.queryByText(/couldn’t save/i)).toBeNull();
-  expect(screen.getByText("0.90")).toBeInTheDocument();
+  expect(actValue("0.90")).toBeInTheDocument();
 });
 
 test("a genuine failure on the NEWEST save still reports itself", async () => {
@@ -266,4 +273,22 @@ test("a save resolving AFTER unmount does not arm a new timer (#922 review 1)", 
   } finally {
     vi.useRealTimers();
   }
+});
+
+test("the judgment threshold saves ONCE, on release, and cannot go under its floor (#1088)", async () => {
+  vi.mocked(api.setPrefs)
+    .mockReset()
+    .mockResolvedValue({ orchestrator: block({ judge_confidence_min: 0.95 }) });
+  renderPanel(block({ judge_confidence_min: 0.9, judge_confidence_floor: 0.9, judge_confidence_max: 1 }));
+  const slider = screen.getByTestId("judge-threshold") as HTMLInputElement;
+  expect(slider.min).toBe("0.9");
+  expect(slider.max).toBe("1");
+  for (const v of ["0.91", "0.93", "0.95"]) fireEvent.change(slider, { target: { value: v } });
+  expect(api.setPrefs).not.toHaveBeenCalled();
+  fireEvent.pointerUp(slider);
+  await waitFor(() => expect(api.setPrefs).toHaveBeenCalledTimes(1));
+  expect(api.setPrefs).toHaveBeenCalledWith({ orchestrator: { judge_confidence_min: 0.95 } });
+  const field = screen.getByTestId("orchestrator-judge");
+  expect(field).toHaveTextContent(/0\.90 is the floor and cannot be lowered/);
+  expect(field).toHaveTextContent(/at most move a mission to review/);
 });

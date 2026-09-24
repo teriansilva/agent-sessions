@@ -2,6 +2,9 @@
  *
  *  Every kind the server writes is pinned here, plus what happens to one it does not know: a generic
  *  row with a humanised label and its own text, never its meta. */
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { describe, expect, test } from "vitest";
 
 import type { Mission, MissionEvent } from "../../types/api";
@@ -424,5 +427,100 @@ describe("Start again is decided by the DETAIL", () => {
     expect(
       canStartAgain(mission({ retry_eligible: false, events: [snapshot] })),
     ).toBe(false);
+  });
+});
+
+describe("the completion proposal (#1088)", () => {
+  test("lists gates by how they hold: observed, judged with confidence, waived", () => {
+    const row = threadRow(
+      ev("completion", "Every gate is met (2 gates).", {
+        proposal: true,
+        gates: 2,
+        unmet_gates: 0,
+        held: {
+          observed: [{ key: "checks", title: "Checks are green" }],
+          judged: [{ key: "finding", title: "A finding is written down", confidence: 0.93 }],
+          waived: [],
+        },
+      }),
+    );
+    expect(row).toEqual({
+      type: "completion",
+      gates: 2,
+      unmet: 0,
+      observed: ["Checks are green"],
+      judged: [{ title: "A finding is written down", confidence: 0.93 }],
+      waived: [],
+      outstanding: [],
+      outstandingCount: 0,
+      text: "Every gate is met (2 gates).",
+    });
+  });
+
+  test("an older completion with no `held` keeps the generic row and its text", () => {
+    expect(threadRow(ev("completion", "Every gate is met.", { proposal: true })).type).toBe(
+      "system",
+    );
+  });
+
+  test("a judged entry whose confidence is not a number is dropped, never shown as NaN", () => {
+    const row = threadRow(
+      ev("completion", null, {
+        proposal: true,
+        gates: 1,
+        unmet_gates: 0,
+        held: { observed: [], judged: [{ title: "x", confidence: "high" }], waived: [] },
+      }),
+    );
+    expect(row.type === "completion" && row.judged).toEqual([]);
+  });
+
+  test("a rejected judgment reads as a checklist change", () => {
+    const row = threadRow(
+      ev("objective", null, { by: "operator", ops: [{ op: "reject_judgment", key: "f" }] }),
+    );
+    expect(row.type === "checklist" && row.counts).toEqual([["judgment rejected", 1]]);
+  });
+});
+
+// THE PRODUCER'S REAL OUTPUT (#1097 review 5159): `tests/test_supervisor_judged.py` writes and pins
+// this file from a real `propose_completion`, so the consumer is checked against what the server
+// actually sends — a previously met OPTIONAL goal whose latest look no longer holds is outstanding.
+describe("completion card: an optional goal reported by its CURRENT support", () => {
+  const FIXTURE = resolve(process.cwd(), "../tests/fixtures/completion_current_cases.json");
+  const CASES = JSON.parse(readFileSync(FIXTURE, "utf8")) as Record<
+    string,
+    { kind: string; text: string; meta: Record<string, unknown> }
+  >;
+
+  test("the fixture carries every case", () => {
+    expect(Object.keys(CASES).sort()).toEqual(["below_threshold", "negative", "stale", "unknown", "waived"]);
+  });
+
+  for (const [name, c] of Object.entries(CASES)) {
+    test(`${name}: the goal is ${name === "waived" ? "not " : ""}listed as outstanding`, () => {
+      const row = threadRow(ev(c.kind, c.text, c.meta));
+      expect(row.type).toBe("completion");
+      if (row.type !== "completion") return;
+      expect(row.judged).toEqual([{ title: "A finding is written down", confidence: 0.95 }]);
+      if (name === "waived") {
+        expect(row.outstanding).toEqual([]);
+        expect(row.outstandingCount).toBe(0);
+      } else {
+        expect(row.outstanding).toEqual(["The docs mention the fix"]);
+        expect(row.outstandingCount).toBe(1);
+      }
+    });
+  }
+
+  test("an event written before `current` existed still reads its `pending` goals", () => {
+    const row = threadRow(
+      ev("completion", "x", {
+        proposal: true,
+        held: { observed: [], judged: [], waived: [] },
+        objectives: [{ key: "g", title: "Old goal", gate: false, state: "pending", settled_by: "pending" }],
+      }),
+    );
+    expect(row.type === "completion" && row.outstanding).toEqual(["Old goal"]);
   });
 });

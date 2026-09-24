@@ -247,3 +247,55 @@
     align-self: flex-start;
   }
 }
+
+/* --- the completion proposal (#1063), with how each gate holds (#1088) ------------------------ */
+.completion {
+  min-width: 0;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--line-strong);
+  background: var(--glass);
+  font-size: 13px;
+  color: var(--text-2);
+}
+.completionHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 6px;
+  overflow-wrap: anywhere;
+}
+.completionHead b {
+  color: var(--text-1);
+}
+.completionHead > .time {
+  margin-left: auto;
+}
+.completionHeld {
+  margin: 6px 0 0;
+}
+.completionLine {
+  display: grid;
+  grid-template-columns: 6.5rem 1fr;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.completionLine dt {
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.completionLine dd {
+  margin: 0;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.completionOpen {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  color: var(--warn-text);
+  overflow-wrap: anywhere;
+}

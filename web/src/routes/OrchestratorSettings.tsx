@@ -25,6 +25,9 @@ const FALLBACK: OrchestratorConfig = {
   ai_direction_confidence_min: 0.9,
   ai_direction_confidence_floor: 0.9,
   ai_direction_confidence_max: 1,
+  judge_confidence_min: 0.9,
+  judge_confidence_floor: 0.9,
+  judge_confidence_max: 1,
 };
 
 /** Idle-window presets (#768). The useful values are few and the units need saying, so a
@@ -64,6 +67,11 @@ export function OrchestratorSettings() {
   );
   const [confDraft, setConfDraft] = useState(block.confidence_min);
   const [aiConfDraft, setAiConfDraft] = useState(block.ai_direction_confidence_min);
+  /** The judgment threshold (#1088). An older server may not send it: the floor is the answer. */
+  const judgeFloor = block.judge_confidence_floor ?? 0.9;
+  const judgeMax = block.judge_confidence_max ?? 1;
+  const judgeMin = block.judge_confidence_min ?? judgeFloor;
+  const [judgeDraft, setJudgeDraft] = useState(judgeMin);
   const [nudgeDraft, setNudgeDraft] = useState(block.nudge_template);
   const [seeded, setSeeded] = useState(block);
   if (seeded !== block) {
@@ -71,6 +79,7 @@ export function OrchestratorSettings() {
     setIntervalDraft(String(block.interval_minutes));
     setConfDraft(block.confidence_min);
     setAiConfDraft(block.ai_direction_confidence_min);
+    setJudgeDraft(block.judge_confidence_min ?? block.judge_confidence_floor ?? 0.9);
     setNudgeDraft(block.nudge_template);
   }
 
@@ -154,6 +163,12 @@ export function OrchestratorSettings() {
   const commitAiConf = () => {
     if (aiConfDraft === block.ai_direction_confidence_min) return;
     void save({ ai_direction_confidence_min: aiConfDraft });
+  };
+
+  // Same drag-then-save rule (#776): ONE write on release, never one per pixel.
+  const commitJudge = () => {
+    if (judgeDraft === judgeMin) return;
+    void save({ judge_confidence_min: judgeDraft });
   };
 
   const commitInterval = () => {
@@ -330,6 +345,41 @@ export function OrchestratorSettings() {
         <p className={styles.hint}>
           Below this, mission control asks you instead of acting. Unsure means ask — never
           guess.
+        </p>
+      </div>
+
+      {/* THE SUPERVISOR'S JUDGMENT FLOOR (#1088). What judging is, that the floor cannot be lowered,
+          and that confidence is the model's own opinion — beside the control, never in a tooltip. */}
+      <div className={styles.aiField} data-testid="orchestrator-judge">
+        <label className={styles.aiFieldLabel} htmlFor="orch-judge-conf">
+          Judge an objective met at or above
+        </label>
+        <div className={styles.aiIntervalRow}>
+          <input
+            id="orch-judge-conf"
+            type="range"
+            min={judgeFloor}
+            max={judgeMax}
+            step={0.01}
+            value={judgeDraft}
+            onChange={(e) => setJudgeDraft(Number(e.target.value))}
+            onPointerUp={commitJudge}
+            onKeyUp={commitJudge}
+            onBlur={commitJudge}
+            data-testid="judge-threshold"
+          />
+          <span data-testid="judge-threshold-value">{judgeDraft.toFixed(2)}</span>
+        </div>
+        <p className={styles.hint}>
+          For objectives the <strong>supervisor judges</strong> — like &ldquo;a finding is
+          written down&rdquo; — rather than checks. An independent model call reads the
+          session and must quote its evidence. At or above this, the objective counts as{" "}
+          <strong>judged met</strong>; below it, it stays unmet.
+        </p>
+        <p className={styles.hint}>
+          {judgeFloor.toFixed(2)} is the floor and cannot be lowered. Confidence is the
+          model&rsquo;s own opinion, and a session&rsquo;s output can try to talk it round — so a
+          judgment can at most move a mission to <strong>review</strong>. You still close it.
         </p>
       </div>
 

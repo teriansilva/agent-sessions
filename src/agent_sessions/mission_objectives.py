@@ -16,6 +16,18 @@ The answer is that **there is no code path from model text to a request target a
 * anything with no template becomes a NOTE — no probe, never a gate;
 * so the only way a new request target can exist is a human typing it into a playbook.
 
+**On a mission that DECLINED a checklist, the model writes the objectives (#1088, the operator's
+call: "No checklist means, build objectives by AI from the orchestrator").** With an AI endpoint
+configured, each note the model writes becomes a REAL objective — `supervisor_judged`, gating,
+source `instruction` — judged by the supervisor against what the agents produce. The guards that
+make that safe are the same ones, narrowed further: the only kind it can carry is
+`supervisor_judged` (no arguments, no direction, so no path to a target), at most
+:data:`missions.INSTRUCTION_GATES_MAX` of them, titles checked like every title, a reply that
+breaks the contract drops rows rather than degrading them, and a judgment can at most PROPOSE
+completion. If the model writes none, one judged gate — "Done as you instructed", whose criterion
+is the instruction itself — keeps the mission measured. A mission WITH a checklist is unchanged:
+its model rows stay notes.
+
 **One bounded exception, and exactly one (#1061):** a selection may fill `repo` or `branch` on a
 forge or git probe — the arguments that let "it is merged" name WHICH branch. They are not request
 targets: forge probes resolve against the configured forge, git probes against the mission's own
@@ -99,12 +111,30 @@ def _operator_authored(value: object, instruction: str) -> str | None:
     return v if v in tokens else None
 
 
+def _goal_title(item: object) -> str | None:
+    """A declined mission's AI-built objective title, or `None` to DROP it (#1088).
+
+    The same shape a note has — `{"title": str}` and nothing else — and the same title rules the
+    store enforces (non-empty, bounded, no control characters), applied HERE so one bad title drops
+    one row instead of failing the whole atomic batch."""
+    if not isinstance(item, dict) or set(item) - {"title"}:
+        return None
+    title = item.get("title")
+    if not isinstance(title, str):
+        return None
+    title = title.strip()
+    if not title or len(title) > TITLE_MAX or any(ch < " " or ch == "\x7f" for ch in title):
+        return None
+    return title
+
+
 def _rows_from_reply(
     obj: dict,
     templates: list[dict],
     *,
     instruction: str = "",
     stats: dict | None = None,
+    declined: bool = False,
 ) -> tuple[list[dict], int]:
     """`(rows, dropped)` — the objective rows to write, and how many selections were refused.
 
@@ -247,6 +277,32 @@ def _rows_from_reply(
         if len(rows) >= MAX_SELECTED:
             break
 
+    if declined:
+        # THE DECLINED CASE (#1088): the model's notes ARE the objectives — each a gating
+        # `supervisor_judged` row, capped, with nothing the model could turn into a target.
+        goals = 0
+        for item in notes[: missions.INSTRUCTION_GATES_MAX * 2]:
+            title = _goal_title(item)
+            if title is None:
+                dropped += 1
+                continue
+            if goals >= missions.INSTRUCTION_GATES_MAX:
+                dropped += 1
+                continue
+            goals += 1
+            rows.append(
+                {
+                    "key": f"{missions.GOAL_KEY_PREFIX}{goals}",
+                    "title": title,
+                    "probe": "supervisor_judged",
+                    "gate": True,
+                    "source": "instruction",
+                }
+            )
+        if stats is not None:
+            stats["parameterised"] = parameterised
+        return rows, dropped
+
     for n, item in enumerate(notes[:MAX_NOTES]):
         if not isinstance(item, dict) or set(item) - {"title"}:
             # A note is `{"title": ...}` and nothing else. Same rule as a selection: a field the
@@ -296,6 +352,19 @@ async def propose(mission_id: str) -> dict:
     status, templates, binding = await missions.run_admitted(
         lambda: missions.templates_and_binding(mission_id)
     )
+    # A DECLINED checklist with an AI endpoint: the model writes the objectives and the supervisor
+    # judges them (#1088). Without an endpoint there is nothing to write them or to judge them, so
+    # the mission keeps today's notes-only behaviour — and this function is not reached at all on
+    # that path (`propose_for_new_mission` stops first), but it is asked here as well so a direct
+    # caller cannot arm judged gates nobody can settle.
+    declined = status == "declined"
+    ai_built = False
+    if declined:
+        try:
+            review._require_config()
+            ai_built = True
+        except review.NotConfiguredError:
+            ai_built = False
     if status != "ok":
         # The operator's config changed under the mission (or they never chose). Recorded on the
         # timeline naming the id, so it is fixable rather than mysterious — and NOT substituted
@@ -307,7 +376,12 @@ async def propose(mission_id: str) -> dict:
                 text=(
                     # A declined checklist is the operator's choice, said as one (#1061) — not
                     # "no objective templates: declined (:none)", which reads as a fault.
-                    "checklist declined for this mission — objectives are notes only"
+                    (
+                        "checklist declined — the orchestrator writes the objectives and the "
+                        "supervisor judges them"
+                        if ai_built
+                        else "checklist declined for this mission — objectives are notes only"
+                    )
                     if status == "declined"
                     else "no checklist applied: no default checklist is set"
                     if status == "no_default"
@@ -319,25 +393,61 @@ async def propose(mission_id: str) -> dict:
             )
         )
 
-    obj = await review.complete_json(
-        [
-            {"role": "system", "content": prompts.effective("mission_objectives")},
-            {
-                "role": "user",
-                "content": (
-                    f"Instruction:\n{row.get('instruction') or row.get('title') or ''}\n\n"
-                    f"Templates:\n{_render_templates(templates)}"
-                ),
-            },
-        ]
+    declined_line = (
+        "The operator DECLINED a checklist for this mission: there are no templates. Write, as "
+        "`notes`, the outcomes that would show the instruction is done.\n\n"
+        if ai_built
+        else ""
     )
+    try:
+        obj = await review.complete_json(
+            [
+                {"role": "system", "content": prompts.effective("mission_objectives")},
+                {
+                    "role": "user",
+                    "content": (
+                        f"{declined_line}"
+                        f"Instruction:\n{row.get('instruction') or row.get('title') or ''}\n\n"
+                        f"Templates:\n{_render_templates(templates)}"
+                    ),
+                },
+            ]
+        )
+    except review.ReviewError as e:
+        if not ai_built:
+            raise
+        # A DECLINED mission is never left unmeasured because the model call failed: it gets the
+        # fallback gate below, and the timeline says why the model wrote nothing.
+        why = aitasks.clamp_error(e)
+        with contextlib.suppress(Exception):
+            await missions.run_admitted(
+                lambda: missions.append_event(
+                    mission_id,
+                    "objective",
+                    text=f"the orchestrator could not write the objectives: {why}",
+                )
+            )
+        obj = {}
     stats: dict = {}
     rows, dropped = _rows_from_reply(
         obj if isinstance(obj, dict) else {},
         templates,
         instruction=str(row.get("instruction") or ""),
         stats=stats,
+        declined=ai_built,
     )
+    if ai_built and not rows:
+        # ZERO usable objectives: one judged gate whose criterion is the instruction itself, so a
+        # declined mission with an AI endpoint is never unmeasured.
+        rows = [
+            {
+                "key": missions.DONE_AS_INSTRUCTED_KEY,
+                "title": missions.DONE_AS_INSTRUCTED_TITLE,
+                "probe": "supervisor_judged",
+                "gate": True,
+                "source": "instruction",
+            }
+        ]
     if not rows:
         return {"objectives": [], "dropped": dropped, "templates": status}
     try:

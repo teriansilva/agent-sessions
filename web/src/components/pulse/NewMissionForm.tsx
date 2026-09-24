@@ -30,7 +30,9 @@ import styles from "./mission.module.css";
 import { renderTemplate } from "../../lib/templateMessage";
 import { TemplatePickerModal } from "../templates/TemplatePickerModal";
 
-/** `missions.PLAYBOOK_DECLINED`: this mission gets no checklist — notes only (#1061). */
+/** `missions.PLAYBOOK_DECLINED`: this mission gets no checklist (#1061). With an AI endpoint the
+ *  orchestrator writes its objectives and the supervisor judges them (#1088); without one, notes
+ *  only. */
 export const PLAYBOOK_DECLINED = ":none";
 
 /** The server's instruction cap (`missions.INSTRUCTION_MAX`). It truncates silently, so the form
@@ -85,6 +87,14 @@ export function NewMissionForm({
    *  sticks. */
   const [pickedPlaybook, setPickedPlaybook] = useState<string | null>(null);
   const config = useConfig();
+  /** Whether "No checklist" means AI-written, supervisor-judged objectives (#1088) — true only with
+   *  an AI endpoint; without one it is notes only, and the copy says so. */
+  const aiBuilt = config?.ai_review?.configured === true;
+  const judgeAt = (
+    config?.orchestrator?.judge_confidence_min ??
+    config?.orchestrator?.judge_confidence_floor ??
+    0.9
+  ).toFixed(2);
   const playbookBlock = config?.mission_playbooks;
   const playbooks = playbookBlock?.playbooks ?? [];
   const defaultPlaybook = playbooks.some(
@@ -299,7 +309,9 @@ export function NewMissionForm({
                     {`Checklist: ${pb.label}`}
                   </option>
                 ))}
-                <option value={PLAYBOOK_DECLINED}>No checklist</option>
+                <option value={PLAYBOOK_DECLINED}>
+                  {aiBuilt ? "No checklist — AI writes the objectives" : "No checklist"}
+                </option>
               </select>
             ) : null}
           </div>
@@ -363,8 +375,19 @@ export function NewMissionForm({
             className={`${styles.playbookNote} ${styles.playbookNoteWarn} ${styles.boxNote}`}
             data-testid="new-mission-playbook-note"
           >
-            No checklist — notes only: nothing can be checked, so the mission
-            can never confirm itself finished. You close it.
+            {aiBuilt ? (
+              <>
+                No checklist — the orchestrator writes the objectives from your
+                instruction, and the supervisor judges them. When it is at least{" "}
+                {judgeAt} sure the work is done, the mission moves to review. You
+                close it.
+              </>
+            ) : (
+              <>
+                No checklist — notes only: nothing can be checked, so the mission
+                can never confirm itself finished. You close it.
+              </>
+            )}
           </div>
         ) : (
           <div

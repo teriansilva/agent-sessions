@@ -31,6 +31,7 @@ import type {
 
 import { DirectionField } from "../components/pulse/DirectionField";
 import styles from "./Settings.module.css";
+import { probeLabel } from "../components/pulse/judgment";
 
 const EMPTY: Block = { default_id: "", playbooks: [], revision: 0 };
 
@@ -254,7 +255,9 @@ export function MissionPlaybooks() {
       <p className={styles.blurb}>
         A checklist is what a new mission starts with — what has to be true
         before the work counts as done. Objectives with a <b>probe</b> are
-        checked by the server; the rest you settle yourself. Only a checklist
+        checked by the server; ones the <b>supervisor judges</b> are judged from
+        what the session produced, and count only at or above your confidence
+        setting; the rest you settle yourself. Only a checklist
         can give an objective something to check, which is what keeps an AI from
         pointing one somewhere nobody chose.
       </p>
@@ -416,9 +419,11 @@ export function MissionPlaybooks() {
                     }}
                     data-testid="objective-probe"
                   >
+                    {/* A READABLE NAME per kind (#1088, carry-forward 73023): the value is still the
+                        server's id; the label is what a person reads — "Supervisor judges". */}
                     {kinds.map((k) => (
                       <option key={k} value={k}>
-                        {k}
+                        {probeLabel(k)}
                       </option>
                     ))}
                   </select>
