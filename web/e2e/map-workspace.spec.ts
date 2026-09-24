@@ -177,6 +177,11 @@ async function openMap(page: Page) {
 }
 
 test.describe("map workspace", () => {
+  // Every test here drives real windows over a mounted React Flow map — dozens of awaited pointer
+  // moves, clicks and re-measures. On the shared runner under load they failed as TIMEOUTS
+  // (`mouse.move`, `locator.click`), never on an assertion; the budget is the spec's, not a test's.
+  test.describe.configure({ timeout: 90_000 });
+
   // eslint-disable-next-line no-empty-pattern -- Playwright requires the destructuring form
   test.beforeEach(async ({}, testInfo) => {
     test.skip(

@@ -105,6 +105,11 @@ export async function setupSections(page: Page) {
 test("section buttons share the brand row and keep their own declared typography at every width (#946, #967)", async ({
   page,
 }) => {
+  // Ten viewport widths, each a resize + relayout + a bounding-box read per section: ~15 s on an
+  // idle host, and past the default 30 s budget on the shared runner under load — where it failed
+  // on every PR's run as a TIMEOUT, never an assertion. The budget is the sweep's, like the
+  // short-screen test's below; the assertions are unchanged.
+  test.setTimeout(120_000);
   await setupSections(page);
   await page.goto("/mission");
   await selectMission(page, "Mission layout");
