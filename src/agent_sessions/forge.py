@@ -15,8 +15,8 @@ unattended on a timer with nobody watching. The narrowness is the safety propert
 `tests/test_prompts_registry.py` in the same change that adds the first call — `HTTP_MODULES` for
 "may hold a client at all", and a counted `POST_SITES` entry so a *second* call beside an approved
 one is a mismatch rather than an inherited pass. The AST checker is an accident detector rather
-than a boundary (CLAUDE.md is explicit about that); the inventory is how a new door becomes a
-review conversation instead of a diff nobody reads twice.
+than a boundary (docs/invariants/prompt-registry.md is explicit about that); the inventory is how
+a new door becomes a review conversation instead of a diff nobody reads twice.
 
 **`unknown` is a first-class answer and it is not `failed`.** Three outcomes, kept apart at every
 layer above this one:

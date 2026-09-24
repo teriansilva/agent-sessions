@@ -21,6 +21,7 @@ deploy/agent-sessions.service      export-ignore
 CLAUDE.md                          export-ignore
 AGENTS.md                          export-ignore
 docs/agent-workflow.md             export-ignore
+docs/invariants/                   export-ignore
 docs/implementation-workflow.md    export-ignore
 docs/visual-review.md              export-ignore
 docs/PROGRESS.md                   export-ignore

@@ -262,7 +262,8 @@ def eligible_cards(
 
     in_scope = _hard_scope_filter(honour_curation=False)
     # A card with no cwd has nothing to check. The terminal's rule for exactly that case: fail
-    # CLOSED where a boundary is configured, open where none is (CLAUDE.md, "Two boundary rules").
+    # CLOSED where a boundary is configured, open where none is
+    # (docs/invariants/session-list-filtering.md, "Two boundary rules").
     boundary = bool(project_dirs.effective_roots() or prefs.get_folder_exclusions())
     skipped = {"engine": 0, "excluded": 0, "pending": 0, "working": 0, "stale": 0, "scope": 0}
     out: list[dict] = []
