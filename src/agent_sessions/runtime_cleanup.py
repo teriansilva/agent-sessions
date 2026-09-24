@@ -57,7 +57,9 @@ async def resolve_runtime_key(engine: str, native: str) -> str:
     phys = engines.physical_key(logical)
     if phys != logical or engines.is_new_session_placeholder(logical):
         return phys
-    if not getattr(engines.get(engine), "new_session_reconciles", False):
+    # Active OR retiring (Hermes on PR #1132): a retiring late-id engine's placeholder master is
+    # exactly what teardown must still find through the durable mapping.
+    if not getattr(engines.get_any(engine), "new_session_reconciles", False):
         return phys
     from . import missions  # lazy: this module is the teardown, not a mission-store dependency
 

@@ -205,7 +205,7 @@ def _socket_candidates() -> tuple[list[tuple[str, str, Path, int]], list[tuple[s
         if p.suffix != ".sock":
             continue
         engine, sep, native = p.stem.partition("-")
-        if not (sep and engine and native) or engines.get(engine) is None:
+        if not (sep and engine and native) or engines.get_any(engine) is None:
             continue
         try:
             if ptybridge.socket_path(engine, native) != p:

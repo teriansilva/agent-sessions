@@ -213,6 +213,14 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     # context discovers live sessions on startup (so the sidebar's working dot +
     # scrollback resume are accurate even before any browser attaches) and
     # tears the streams down on shutdown.
+    # The reload boundary of #853 P3: reconcile the loaded engine roster with the recorded one, so
+    # an engine whose manifest was removed RETIRES (its live masters stay attachable) instead of
+    # vanishing. Best-effort: a state problem is logged by the pass and must not block startup.
+    try:
+        engines.registry.apply_retirement()
+    except Exception:  # noqa: BLE001 — startup must not fail on it, but it must not be silent
+        log.exception("engine retirement pass failed; removed engines are not attachable")
+
     registry = session_stream.SessionRegistry()
 
     # In-place saves (#950) hold a kernel write lease, and a lease break is delivered as SIGIO —

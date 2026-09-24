@@ -223,6 +223,9 @@ def register(
             # the server-side prepare rejection consume, so a disabled tile can never disagree
             # with what the server would accept. `seed_reason` is the user-facing why-not.
             can_seed, seed_reason = handoff.handoff_target_state(p, present=bin_path is not None)
+            retiring = engines.is_retiring(p)
+            if retiring:
+                can_seed, seed_reason = False, engines.REMOVED_REASON
             m = p.manifest
             return {
                 "id": p.engine_id,
@@ -252,13 +255,21 @@ def register(
                 ],
                 "usage": {"source": m.usage.source},
                 "terminal": {"repaint": m.terminal.repaint},
-                # Lifecycle (#853 P3): `active` for every loaded engine; `retiring` is added with
-                # the removal work, and is distinct from `present` (which is about the binary).
-                "status": "active",
-                "status_reason": None,
+                # Lifecycle (#853 P3), distinct from `present` (which is about the binary):
+                # `retiring` = its manifest is gone and its live sessions stay attachable (attach
+                # only) until they exit.
+                "status": "retiring" if retiring else "active",
+                "status_reason": (
+                    f"{engines.REMOVED_REASON} — its running sessions stay attachable "
+                    "until they exit"
+                    if retiring
+                    else None
+                ),
             }
 
-        rows = await asyncio.to_thread(lambda: [row(p) for p in engines.all_providers()])
+        rows = await asyncio.to_thread(
+            lambda: [row(p) for p in [*engines.all_providers(), *engines.retiring_providers()]]
+        )
         return JSONResponse({"engines": rows})
 
     @app.get("/api/ai/activity")

@@ -617,3 +617,32 @@ def test_EVERY_maintenance_target_is_reachable_with_its_own_database_and_lock(
     assert result["state"] == "done" and result["vacuum"] == "done", result
     assert _free_pages(mine) == 0
     assert _free_pages(theirs) == before, "another engine's database was touched"
+
+
+# --- compatibility pins the independent review of PR #1127 asked for ----------------------------
+
+
+def test_the_opencode_admission_lock_keeps_its_PRE_P3_name(tmp_path, monkeypatch):
+    """An instance still running the previous build takes `maintenance-opencode.lock`; this build
+    must take the SAME file or the two stop fencing each other's launches and compactions."""
+    from agent_sessions import sessionlock
+
+    monkeypatch.setenv("AGENT_SESSIONS_LOCK_DIR", str(tmp_path))
+    gate = opencode_admission.acquire(engine="opencode", exclusive=True)
+    try:
+        assert (tmp_path / "maintenance-opencode.lock").is_file()
+        assert sessionlock.lock_dir() == tmp_path
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["maintenance-opencode.lock"]
+    finally:
+        gate.release()
+
+
+def test_the_transcript_owner_probe_runs_ONLY_for_an_engine_that_declares_owns_transcript(
+    monkeypatch,
+):
+    """`/proc` is walked for claude (a background agent may own its JSONL) and for nobody else."""
+    probed: list[str] = []
+    monkeypatch.setattr(transcript_owner, "transcript_is_owned", lambda n: probed.append(n) or True)
+    for e in engines.engine_ids():
+        assert transcript_owner.owned_elsewhere(engines.get(e), "x") == (e == "claude"), e
+    assert probed == ["x"], "the probe ran for an engine that declares no transcript ownership"

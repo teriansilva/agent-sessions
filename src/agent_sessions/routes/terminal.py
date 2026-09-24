@@ -412,6 +412,13 @@ def register(
         action, lock = await _open_action_offloop(prov.engine_id, phys_native)
         if action == sessions.BUSY:
             return await reject(4409)  # held by another writer; client should retry → attach
+        # A RETIRING engine (#853 P3 — its manifest is gone) is ATTACH-ONLY: a live master stays
+        # reachable, but a dead one is never relaunched and no new session starts. Refused with the
+        # terminal code, so the client stops retrying instead of hammering a launch that cannot be.
+        if engines.is_retiring(prov) and action != sessions.ATTACH:
+            if lock is not None:
+                lock.release()
+            return await reject(4404)
         # Bounded relaunch backstop (#631): if this key's launched agent has exited instantly
         # several times in a row, stop relaunching and close on a TERMINAL code (4500) so the
         # client's retry loop ends instead of hammering the backend forever. 4409 (busy) / 4502

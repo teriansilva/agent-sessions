@@ -547,7 +547,9 @@ async def dispatch(
     """
     prov = engines.get(engine)
     if prov is None:
-        raise DispatchError(f"unknown engine {engine!r}")
+        # A removed engine says so (#853 P3) — and is never swapped for another one: the plan named
+        # this engine, and running the brief somewhere else is a decision nobody made.
+        raise DispatchError(engines.removed_reason(engine) or f"unknown engine {engine!r}")
     try:
         engines.require_pty(prov)  # a headless launch is a dtach master (#853 §7)
     except engines.EngineError as e:

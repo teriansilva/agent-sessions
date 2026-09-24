@@ -108,9 +108,176 @@ def reload(first_party_dir: Path | None = None) -> None:
     _BARE_ID_ENGINE = next(
         (p.engine_id for p in roster if p.manifest.session_id.legacy_bare_id), None
     )
+    apply_retirement()
     invalidate_scan_cache()
     for fn in list(_RELOAD_LISTENERS):
         fn()
+
+
+# --- retirement (#853 P3) -------------------------------------------------------------------------
+#
+# An engine whose manifest is gone at a reload is not simply forgotten:
+#
+# * with a live `dtach` master left it RETIRES — rebuilt from the recorded manifest copy
+#   (`plugins.roster_state`) so `parse_key` still validates its ids and ATTACH still works, but it
+#   is in no listing, has no entrypoint, and every new-work path refuses it with "agent removed";
+# * with none left it is REMOVED — its copy is dropped and its id tombstoned, so the refusal still
+#   says "agent removed" rather than "unknown engine" until a manifest with that id loads again.
+#
+# Nothing stored is touched: sessions stay on disk and in the sidecar, budgets stay in prefs.
+
+REMOVED_REASON = "agent removed"
+_RETIRING: dict[str, base.EngineProvider] = {}
+_REMOVED: set[str] = set()
+#: What the last retirement pass refused in the recorded state — reported, never acted on.
+RETIREMENT_PROBLEMS: list[str] = []
+
+
+def _engines_with_masters(candidates=()) -> set[str] | None:
+    """Engine ids with a dtach socket whose master is NOT provably dead — or ``None`` when the
+    runtime directory could not be listed at all.
+
+    ``None`` is UNKNOWN, never "no masters" (Hermes on PR #1132): a transient permission or I/O
+    error is not evidence that any session ended, and reading it as such would delete the only
+    recorded manifest of an engine whose sessions are still running.
+
+    Sockets are matched against the CANDIDATE engine ids (the recorded ones) with the same
+    sanitising `ptybridge.socket_path` applies, and a socket counts for EVERY candidate it could
+    belong to. A file name alone cannot prove ownership: `my-agent-abc123.sock` is both
+    `my-agent:abc123` and `my:agent-abc123`. Picking one owner — the first hyphen (independent
+    review of #1132) or the longest prefix (Hermes on #1132) — would call the other dead and delete
+    its only recorded manifest while its session runs. Ambiguity is uncertainty, and uncertainty
+    keeps an engine reachable.
+
+    Verdict-aware on purpose (#355): a starved master can time out a probe, and UNKNOWN read as
+    dead would end an engine's retirement while its session is still running — stranding exactly
+    the terminal this whole mechanism exists to keep reachable. Only DEAD counts as gone.
+    """
+    from .. import ptybridge
+
+    prefixes = [(ptybridge._UNSAFE.sub("_", e) + "-", e) for e in candidates]
+    out: set[str] = set()
+    try:
+        entries = list(ptybridge.runtime_dir().iterdir())
+    except OSError:
+        return None
+    for sock in entries:
+        if sock.suffix != ".sock":
+            continue
+        owners = {e for pre, e in prefixes if sock.name.startswith(pre)} - out
+        if not owners:
+            continue
+        try:
+            if ptybridge.probe_master(sock) != ptybridge.DEAD:
+                out |= owners
+        except OSError:
+            out |= owners  # cannot tell → keep them reachable
+    return out
+
+
+def _retiring_provider(m) -> base.EngineProvider:
+    from ..plugins import plugins_home, provenance
+    from ..plugins.provider import PluginProvider
+
+    prov = PluginProvider(m, trust=provenance.FIRST_PARTY, root=plugins_home() / m.id)
+    prov.retiring = True
+    # The store kind (when this build still has it) answers `lookup` ONLY, so ATTACH is authorized
+    # against the session's real cwd exactly as for an active engine. It is never scanned.
+    kind = STORE_KINDS.get(m.store.layout) if m.store is not None else None
+    if kind is not None:
+        try:
+            prov.attach_kind(kind())
+        except ValueError:
+            log.warning("retiring engine %s: store kind does not match; no lookup", m.id)
+    return prov
+
+
+def apply_retirement() -> None:
+    """Reconcile the loaded roster with the recorded one (the reload boundary)."""
+    global _RETIRING, _REMOVED, _BARE_ID_ENGINE
+    from ..plugins import roster_state
+
+    problems: list[str] = []
+    state = roster_state.load()
+    problems += state.problems
+    active = set(_BY_ID)
+    live = _engines_with_masters(state.manifests)
+    if live is None:
+        # Unknown is not dead: every recorded engine stays reachable and every copy is kept.
+        problems.append(
+            "the session runtime directory could not be listed; every removed engine is kept "
+            "retiring and no recorded manifest was dropped"
+        )
+        live = set(state.manifests)
+    retiring: dict[str, base.EngineProvider] = {}
+    removed = set(state.removed) - active
+    for eid, (name, raw) in list(state.manifests.items()):
+        if eid in active:
+            continue
+        if eid in live:
+            try:
+                retiring[eid] = _retiring_provider(roster_state.parse_copy(eid, name, raw))
+                continue
+            except Exception as e:  # noqa: BLE001 — a bad copy is reported, never trusted
+                problems.append(f"the recorded manifest for {eid!r} did not load ({e})")
+                # Kept on disk (a later build may read it) and its masters stay unreachable — but
+                # new work aimed at it still says "agent removed", never "unknown engine".
+                removed.add(eid)
+                continue
+        del state.manifests[eid]
+        removed.add(eid)
+    for p in _PROVIDERS:
+        rec = roster_state.manifest_bytes(p.manifest)
+        if rec is not None:
+            state.manifests[p.engine_id] = rec
+    state.removed = removed
+    if state.intact:
+        try:
+            roster_state.save(state)
+        except OSError as e:
+            problems.append(f"the roster state could not be saved ({e.strerror})")
+    else:
+        # A predecessor we could not read is never overwritten (Hermes on PR #1132): it may hold
+        # the only copy of a retiring engine. Nothing from it is trusted this time; the next
+        # reload reads it again.
+        problems.append("the recorded roster was not saved over, because it could not be read")
+    _RETIRING = retiring
+    _REMOVED = removed
+    # Legacy bare-id bookmarks keep parsing while their engine retires (they name live sessions
+    # too); an ACTIVE claimant always wins.
+    if _BARE_ID_ENGINE is None or _BARE_ID_ENGINE not in _BY_ID:
+        _BARE_ID_ENGINE = next(
+            (e for e, p in retiring.items() if p.manifest.session_id.legacy_bare_id),
+            next((p.engine_id for p in _PROVIDERS if p.manifest.session_id.legacy_bare_id), None),
+        )
+    RETIREMENT_PROBLEMS[:] = problems
+    for why in problems:
+        log.error("engine retirement: %s", why)
+    for eid in retiring:
+        log.warning("engine %s was removed; its live sessions stay attachable (retiring)", eid)
+
+
+def get_any(engine_id: str) -> base.EngineProvider | None:
+    """An ACTIVE or RETIRING provider. For paths about an EXISTING session — parsing, resolving,
+    tearing down, pruning its socket — which must keep working while the engine retires. Every
+    new-work path (launch, handoff target, dispatch, listings) uses `get`, which is active only."""
+    return _BY_ID.get(engine_id) or _RETIRING.get(engine_id)
+
+
+def is_retiring(ref) -> bool:
+    return bool(getattr(ref, "retiring", False)) if not isinstance(ref, str) else ref in _RETIRING
+
+
+def retiring_providers() -> list[base.EngineProvider]:
+    return list(_RETIRING.values())
+
+
+def removed_reason(engine_id: str) -> str | None:
+    """ "agent removed" for a retiring or tombstoned engine, else None. What every new-work path
+    says instead of "unknown engine" when the engine used to exist."""
+    if engine_id in _RETIRING or (engine_id in _REMOVED and engine_id not in _BY_ID):
+        return REMOVED_REASON
+    return None
 
 
 def launchable_bin(prov: base.EngineProvider | None) -> str | None:
@@ -154,7 +321,7 @@ def manifest_of(ref):
     if ref is None:
         return None
     if isinstance(ref, str):
-        ref = _BY_ID.get(ref.split(":", 1)[0])
+        ref = get_any(ref.split(":", 1)[0])
     return getattr(ref, "manifest", None)
 
 
@@ -236,7 +403,9 @@ def store_for_layout(layout: str, name: str | None = None, home: Path | None = N
 
     from ..plugins.provider import store_location
 
-    for p in _PROVIDERS:
+    # Retiring engines too (Hermes on PR #1132): their store kinds still answer `lookup` for a
+    # live session's ATTACH authorization. An active engine of the same layout comes first.
+    for p in [*_PROVIDERS, *_RETIRING.values()]:
         m = p.manifest
         if m.store is not None and m.store.layout == layout:
             got = store_location(m, home=home or Path.home(), env=os.environ, name=name)
@@ -618,9 +787,11 @@ def resolve_session(engine_id: str, native: str, *, arrival: float | None = None
     (fail closed wherever a boundary is configured)."""
     if arrival is None:
         arrival = time.monotonic()
-    prov = _BY_ID.get(engine_id)
+    prov = get_any(engine_id)
     if prov is None:
         return None
+    if is_retiring(prov):
+        return _resolve_retiring(prov, engine_id, native)
     try:
         lookup = getattr(prov, "lookup", None)
         if lookup is not None:
@@ -631,6 +802,25 @@ def resolve_session(engine_id: str, native: str, *, arrival: float | None = None
         rows = scan_all_since(arrival)
     except Exception:  # noqa: BLE001 — resolution is fail-soft; the caller fails closed
         log.warning("resolving %s:%s failed", engine_id, native, exc_info=True)
+        return None
+    return next((s for s in rows if s.engine == engine_id and s.uuid == native), None)
+
+
+def _resolve_retiring(prov, engine_id: str, native: str) -> Session | None:
+    """One session of a RETIRING engine (Hermes on PR #1132): read from ITS OWN recorded store —
+    the lookup inside its store scope, or, for a kind with no single-key lookup, its own scan —
+    because a retiring engine is in no shared walk. Fail-soft to None, so the terminal's
+    fail-closed rule for an unidentifiable session still applies."""
+    try:
+        with base.store_scope(engine_id):
+            lookup = getattr(prov, "lookup", None)
+            if lookup is not None:
+                row = lookup(native)
+                rows = [row] if row is not None else []
+            else:
+                rows = prov.scan()
+    except Exception:  # noqa: BLE001 — resolution is fail-soft; the caller fails closed
+        log.warning("resolving retiring %s:%s failed", engine_id, native, exc_info=True)
         return None
     return next((s for s in rows if s.engine == engine_id and s.uuid == native), None)
 
@@ -647,7 +837,7 @@ def is_new_session_placeholder(raw: str) -> bool:
     if ":" not in raw:
         return False
     engine_id, _, native = raw.partition(":")
-    prov = _BY_ID.get(engine_id)
+    prov = get_any(engine_id)
     return bool(getattr(prov, "new_session_reconciles", False)) and bool(
         base._NEW_PLACEHOLDER_RE.fullmatch(native)
     )
@@ -674,11 +864,13 @@ def parse_key(raw: str, *, allow_new_placeholder: bool = False) -> tuple[base.En
     """
     if ":" in raw:
         engine_id, _, native = raw.partition(":")
-        prov = _BY_ID.get(engine_id)
+        # A RETIRING engine still parses: its live masters must stay attachable (#853 P3). What
+        # it may not do — launch, resume, seed — is refused where that happens, by reason.
+        prov = get_any(engine_id)
         if prov is None:
             raise base.EngineError(f"unknown engine: {engine_id!r}")
     else:
-        prov = _BY_ID.get(_BARE_ID_ENGINE or "")
+        prov = get_any(_BARE_ID_ENGINE or "")
         if prov is None:
             raise base.EngineError("an engine-qualified id is required")
         native = raw

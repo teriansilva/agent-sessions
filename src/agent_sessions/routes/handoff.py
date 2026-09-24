@@ -76,6 +76,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         # disabled tile and this rejection can never disagree.
         tprov = engines.get(target_engine)
         if tprov is None:
+            why = engines.removed_reason(target_engine)
+            if why is not None:  # it existed: say so, rather than "unknown" (#853 P3)
+                raise HTTPException(status_code=422, detail=f"target engine unavailable: {why}")
             raise HTTPException(status_code=404, detail="unknown engine")
         present = bool(await asyncio.to_thread(engines.launchable_bin, tprov))
         ok, reason = handoff.handoff_target_state(tprov, present=present)

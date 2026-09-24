@@ -163,6 +163,10 @@ class PluginProvider:
         self._home = home
         self._cached: tuple[tuple, provenance.Entrypoint] | None = None
         self.kind = None
+        #: A RETIRING engine (#853 P3): its manifest is gone and this provider was rebuilt from
+        #: the recorded copy so its live masters stay attachable. It has no entrypoint — nothing
+        #: may be launched, resumed, seeded or probed for it — which `_entry_path` enforces.
+        self.retiring = False
 
         m = manifest
         self.engine_id = m.id
@@ -262,6 +266,8 @@ class PluginProvider:
         return self._entry_path()
 
     def _entry_path(self) -> str:
+        if self.retiring:
+            raise EngineError(f"{self.engine_id}: agent removed")
         try:
             ep = self.entrypoint()
         except provenance.ProvenanceError as e:

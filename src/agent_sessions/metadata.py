@@ -27,7 +27,7 @@ def _legacy_bare_engine():
     from .engines import registry
 
     eid = registry._BARE_ID_ENGINE
-    prov = registry.get(eid) if eid else None
+    prov = registry.get_any(eid) if eid else None
     return (eid, prov.id_pattern) if prov is not None else None
 
 

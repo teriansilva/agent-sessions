@@ -1,11 +1,11 @@
-"""Shared engine contract: the :class:`EngineProvider` protocol, :class:`EngineError`,
-the native-id patterns, and the engine binary paths (split out of the old single-file
+"""Shared engine contract: the :class:`EngineProvider` protocol, :class:`EngineError`, the
+native-id patterns, and the store-location helpers (split out of the old single-file
 ``engines.py`` in #265 S1).
 
-Provider modules (``claude``/``opencode``/``codex``/``gemini``) read the ``*_BIN`` constants
-from **this module at call time** (e.g. ``base.CLAUDE_BIN``), so a test can override a binary
-with ``monkeypatch.setattr(engines.base, "CLAUDE_BIN", ...)`` and the provider's launch argv
-picks it up. The package ``__init__`` re-exports them as ``engines.CLAUDE_BIN`` for reads.
+There are no binary constants here any more (#853 P3): every exec — launch, resume, usage probe —
+resolves its binary from the engine's manifest through ``plugins.provenance``. The store helpers
+(``_codex_sessions_dir`` & co) are thin, patchable names over one resolver that reads the
+manifest, and inside a :func:`store_scope` they resolve the REQUESTING engine's own store.
 """
 
 from __future__ import annotations
