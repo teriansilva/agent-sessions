@@ -36,7 +36,7 @@ import logging
 import os
 import time
 
-from . import actuator, aitasks, orchestrator, prefs, review
+from . import actuator, aitasks, engines, orchestrator, prefs, review
 from . import orchestrator_ledger as ledger
 
 log = logging.getLogger("agent_sessions.orchestrator_loop")
@@ -79,6 +79,8 @@ def world_fingerprint(
     cfg: dict | None = None,
     now: float | None = None,
     ledger_gen: str | None = None,
+    review_cfg: dict | None = None,
+    prompt_facts: dict[str, list] | None = None,
 ) -> str:
     """sha256 over the eligible session set's decision-relevant fields, PLUS the settings that
     change what a pass would decide.
@@ -95,6 +97,13 @@ def world_fingerprint(
     cfg = cfg if cfg is not None else prefs.get_orchestrator()
     now = time.time() if now is None else now
     ledger_gen = ledger.generation() if ledger_gen is None else ledger_gen
+    # #1086 Phase 2 (review 5180): the Session review settings change what the digest carries,
+    # so they are policy too — switching Standard → Deep must not read as "unchanged". And with
+    # recognition ON the digest carries each screen's prompt class and menu, so those are inputs:
+    # their IDENTITY, never the raw screen, which streams and would force a pass every sweep.
+    review_cfg = review_cfg if review_cfg is not None else prefs.get_session_review()
+    if prompt_facts is None:
+        prompt_facts = _prompt_facts(cards) if review_cfg.get("recognise_prompts") else {}
     payload = json.dumps(
         {
             "sessions": sorted(
@@ -124,6 +133,11 @@ def world_fingerprint(
             # fingerprint cannot distinguish from "nothing changed": the world afterwards is
             # byte-identical to the world before the proposal existed.
             "ledger": ledger_gen,
+            "session_review": [
+                bool(review_cfg.get("recognise_prompts")),
+                review_cfg.get("decision_context"),
+            ],
+            "prompts": sorted([k, *v] for k, v in prompt_facts.items()),
             "policy": [
                 cfg.get("autonomy"),
                 sorted(cfg.get("allowed_verbs") or []),
@@ -136,6 +150,23 @@ def world_fingerprint(
         sort_keys=True,
     )
     return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _prompt_facts(cards: list[dict]) -> dict[str, list]:
+    """``id -> [prompt_class, menu digest]`` for the fingerprint. Blocking (screen reads)."""
+    out: dict[str, list] = {}
+    for c in cards:
+        try:
+            observed = orchestrator.observed_prompt_for(engines.physical_key(c["id"]))
+        except Exception:  # noqa: BLE001 — unreadable is its own stable value
+            out[c["id"]] = ["unreadable", ""]
+            continue
+        menu = json.dumps(observed.get("menu"), sort_keys=True, default=str)
+        out[c["id"]] = [
+            str(observed.get("prompt_class") or ""),
+            hashlib.sha256(menu.encode()).hexdigest()[:16],
+        ]
+    return out
 
 
 async def sweep(registry=None) -> dict:
@@ -203,7 +234,7 @@ async def sweep(registry=None) -> dict:
     if not cards:
         _last_fingerprint = None
         return {"skipped": "empty", "expired": len(expired)}
-    fp = world_fingerprint(cards, cfg)
+    fp = await asyncio.to_thread(world_fingerprint, cards, cfg)
     if fp == _last_fingerprint:
         return {"skipped": "unchanged", "expired": len(expired)}
 

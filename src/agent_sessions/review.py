@@ -338,6 +338,19 @@ def _physical(key: str) -> str:
         return key
 
 
+def transcript_tail(key: str, max_chars: int) -> str:
+    """The END of the engine's saved conversation, plain text, at most ``max_chars``. Blocking.
+
+    TRANSCRIPT ONLY — unlike :func:`gather_input`, which assembles the transcript WITH the live
+    screen and any unsent compose draft. A caller that promised not to read the screen (the
+    decision pass with prompt recognition off, #1086 review 5180) must use this, never the
+    gatherer. Fail-soft: no transcript → "".
+    """
+    return (
+        _plain_transcript(key, _load_aliases())[-max(0, int(max_chars)) :] if max_chars > 0 else ""
+    )
+
+
 def _load_aliases() -> dict[str, str]:
     """The placeholder→real alias map, fail-soft. Callers inside a sweep should load it once
     and thread it through rather than re-reading the sidecar per session."""

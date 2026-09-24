@@ -137,6 +137,7 @@ def _preflight_prefs(payload: dict) -> None:
         ("forge", prefs.validate_forge_patch),
         ("auto_sort", prefs.validate_auto_sort_patch),
         ("pulse", prefs.validate_pulse_patch),
+        ("session_review", prefs.validate_session_review_patch),
         ("orchestrator", prefs.validate_orchestrator_patch),
     ):
         if key in payload:
@@ -515,6 +516,7 @@ def register(
                 # window/depth; holds no secret of its own, `configured` mirrors the reused
                 # ai_review endpoint readiness (depth ≥ medium synthesis needs it).
                 "pulse": prefs.public_pulse(),
+                "session_review": prefs.get_session_review(),
                 # Pulse orchestrator config (#726) — opt-in; holds no secret of its own,
                 # `configured` mirrors the reused ai_review endpoint readiness. Carries
                 # `auto_verbs_ceiling` so the UI can SHOW that choose/answer/dispatch always
@@ -714,6 +716,13 @@ def register(
                 raise HTTPException(status_code=422, detail=err)
             prefs.set_pulse(payload["pulse"])
             out["pulse"] = prefs.public_pulse()
+        if "session_review" in payload:
+            # Session review depth (#1086 Phase 2): prompt recognition + decision context.
+            # Its own block (never inside `ai_review`, which carries the key); no secret.
+            err = prefs.validate_session_review_patch(payload["session_review"])
+            if err is not None:
+                raise HTTPException(status_code=422, detail=err)
+            out["session_review"] = prefs.set_session_review(payload["session_review"])
         if "orchestrator" in payload:
             # Pulse orchestrator config (#726): tier + threshold + cadence + prompts,
             # server-validated. `allowed_verbs` is checked against the AUTO_VERBS_V1 ceiling

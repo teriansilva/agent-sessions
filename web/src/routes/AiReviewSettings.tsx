@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useConfig, useConfigRefresh } from "../app/config";
 import { api, ApiError } from "../lib/api";
-import type { AiReviewConfig, Session } from "../types/api";
+import type { AiReviewConfig, Session, SessionReviewConfig } from "../types/api";
 import styles from "./Settings.module.css";
 import { promptPath } from "./settingsTabs";
 
@@ -23,6 +23,113 @@ const FALLBACK: AiReviewConfig = {
  *  The endpoint, key, model and timeout used to share this component; they moved to
  *  `AiEndpointSetup` (Settings → AI → Endpoint & model), which every AI feature uses. These
  *  fields keep their commit-on-change / commit-on-blur behaviour. */
+const DEPTH_FALLBACK: SessionReviewConfig = {
+  recognise_prompts: true,
+  decision_context: "standard",
+};
+
+/** How deeply a session is read before a decision (#1086 Phase 2): the `session_review` block.
+ *
+ *  Its own block and its own save, never folded into `ai_review` — that block carries the
+ *  endpoint key and its host binding, and nothing here should share that write path. Same
+ *  commit-on-change shape as the rest of this page, and the same refresh of the shared config
+ *  context after a save, so a remount never shows the pre-save value (#667). */
+export function SessionReviewDepth() {
+  const cfgBlock = useConfig()?.session_review;
+  const refreshConfig = useConfigRefresh();
+  const [block, setBlock] = useState<SessionReviewConfig>(cfgBlock ?? DEPTH_FALLBACK);
+  const [synced, setSynced] = useState(cfgBlock);
+  if (cfgBlock !== synced) {
+    setSynced(cfgBlock);
+    if (cfgBlock) setBlock(cfgBlock);
+  }
+  const [error, setError] = useState<string | null>(null);
+  // ONE save at a time (review 5180): with overlapping saves, an older request that failed would
+  // restore ITS snapshot over a newer request that succeeded. The controls are disabled while a
+  // save is in flight, so there is never a second request whose answer could be overtaken.
+  const [saving, setSaving] = useState(false);
+
+  const save = async (partial: Partial<SessionReviewConfig>) => {
+    if (saving) return;
+    setError(null);
+    setSaving(true);
+    const before = block;
+    setBlock({ ...block, ...partial });
+    try {
+      const out = await api.setPrefs({ session_review: partial });
+      const echoed = out?.session_review as SessionReviewConfig | undefined;
+      if (echoed) setBlock(echoed);
+    } catch (e) {
+      // A refused save must not LOOK saved: show the last known value now, and re-read the
+      // server's authoritative block below rather than trusting the local snapshot alone.
+      setBlock(before);
+      setError(e instanceof ApiError ? e.message : "Couldn’t save — please try again.");
+    } finally {
+      setSaving(false);
+      refreshConfig();
+    }
+  };
+
+  return (
+    <div className={styles.aiField} data-testid="session-review-depth">
+      <span className={styles.aiFieldLabel}>Reading sessions</span>
+      {error && (
+        <p className={styles.err} role="alert">
+          {error}
+        </p>
+      )}
+      <label className={styles.aiToggle}>
+        <input
+          type="checkbox"
+          checked={block.recognise_prompts}
+          disabled={saving}
+          onChange={(e) => void save({ recognise_prompts: e.currentTarget.checked })}
+        />
+        <span>Recognise questions and choices</span>
+      </label>
+      <p className={styles.hint}>
+        Reads the live screen for numbered options, yes/no prompts and permission
+        requests, so a session that needs you says what kind of answer it is waiting
+        for, and the orchestrator can see the options.
+      </p>
+      <span className={styles.aiFieldLabel} id="decision-context-label">
+        Decision context
+      </span>
+      <div
+        className={styles.modeRow}
+        role="radiogroup"
+        aria-labelledby="decision-context-label"
+      >
+        <label className={styles.modeOpt}>
+          <input
+            type="radio"
+            name="decision-context"
+            checked={block.decision_context === "standard"}
+            disabled={saving}
+          onChange={() => void save({ decision_context: "standard" })}
+          />
+          Standard
+        </label>
+        <label className={styles.modeOpt}>
+          <input
+            type="radio"
+            name="decision-context"
+            checked={block.decision_context === "deep"}
+            disabled={saving}
+          onChange={() => void save({ decision_context: "deep" })}
+          />
+          Deep
+        </label>
+      </div>
+      <p className={styles.hint}>
+        {block.decision_context === "deep"
+          ? "Deep: before it suggests an answer, the orchestrator also reads the end of the conversation and what was already done or refused — for the few sessions a decision is about, not the whole list."
+          : "Standard: the orchestrator reads where each session stands now, why it needs you, and what its screen is waiting on."}
+      </p>
+    </div>
+  );
+}
+
 export function AiReviewSettings() {
   const cfgBlock = useConfig()?.ai_review;
   // Rides on the in-app prompt link so the #155 "Back to sessions" target survives the hop.
@@ -160,6 +267,8 @@ export function AiReviewSettings() {
           bounded request per session — no streaming.
         </p>
       </div>
+
+      <SessionReviewDepth />
 
       <div className={styles.aiField}>
         <p className={styles.hint}>

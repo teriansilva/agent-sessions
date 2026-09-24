@@ -1386,6 +1386,61 @@ def set_pulse(patch: dict, path: Path | None = None) -> dict:
     return new
 
 
+# --- Session review: how deeply a session is read before a decision (#1086 Phase 2) ------------
+# Its own block, deliberately NOT inside `ai_review`: that block carries the endpoint key and its
+# origin binding (`key_origin_violation`, evaluated inside `set_ai_review`'s merge), and nothing
+# here has any business sharing that write path. Holds no secret. Writes merge under `_mutate`.
+SESSION_REVIEW_CONTEXTS: tuple[str, ...] = ("standard", "deep")
+_SESSION_REVIEW_DEFAULTS: dict[str, object] = {
+    # Read the live screen for numbered options, yes/no prompts and permission requests, name the
+    # kind on the Needs you list, and hand the menu to the orchestrator's decision pass.
+    "recognise_prompts": True,
+    # How much the standalone decision pass reads per session: `standard` = the current-state line,
+    # the review's reason and the screen's prompt; `deep` adds the transcript tail and this
+    # session's earlier operator decisions.
+    "decision_context": "standard",
+}
+
+
+def get_session_review(path: Path | None = None) -> dict:
+    """The stored `session_review` block with defaults applied. Read-lenient: never throws."""
+    raw = _load(path or _default_path()).get("session_review")
+    return _merge_session_review(dict(_SESSION_REVIEW_DEFAULTS), raw)
+
+
+def _merge_session_review(base: dict, raw: object) -> dict:
+    if isinstance(raw, dict):
+        if isinstance(raw.get("recognise_prompts"), bool):
+            base["recognise_prompts"] = raw["recognise_prompts"]
+        if raw.get("decision_context") in SESSION_REVIEW_CONTEXTS:
+            base["decision_context"] = raw["decision_context"]
+    return base
+
+
+def validate_session_review_patch(patch: object) -> str | None:
+    """Write-strict: a 422 reason, or None. Unknown keys are refused so a typo cannot no-op."""
+    if not isinstance(patch, dict):
+        return "session_review must be an object"
+    unknown = set(patch) - set(_SESSION_REVIEW_DEFAULTS)
+    if unknown:
+        return f"unknown session_review fields: {sorted(unknown)}"
+    if "recognise_prompts" in patch and not isinstance(patch["recognise_prompts"], bool):
+        return "session_review.recognise_prompts must be a boolean"
+    if "decision_context" in patch and patch["decision_context"] not in SESSION_REVIEW_CONTEXTS:
+        return f"session_review.decision_context must be one of {list(SESSION_REVIEW_CONTEXTS)}"
+    return None
+
+
+def set_session_review(patch: dict, path: Path | None = None) -> dict:
+    """Merge a VALIDATED partial block under the prefs lock (`_mutate`) and return the result."""
+
+    def merge(stored: object) -> dict:
+        current = _merge_session_review(dict(_SESSION_REVIEW_DEFAULTS), stored)
+        return _merge_session_review(current, patch)
+
+    return _mutate("session_review", merge, path)
+
+
 # --- Pulse orchestrator (#726 Phase 1) -------------------------------------------------
 # Pulse gains agency: it decides what each session needs and — at the operator's autonomy
 # tier — drives them. Reuses the `ai_review` gateway like `pulse`/`auto_sort`, so it holds no
@@ -1494,7 +1549,12 @@ DEFAULT_ORCH_NUDGE = (
 DEFAULT_ORCH_PROMPT = (
     "You manage a developer's running AI-coding sessions. You are given a digest of their "
     "current sessions: id, engine, project, title, state, a summary of what the session is "
-    "doing, whether it is flagged as needing the user, and how long since its last activity.\n"
+    "doing, its current_state (where it stands now \u2014 prefer this over the summary), whether "
+    "it is flagged as needing the user and why (needs_user_reason), and how long since its last "
+    "activity. When present: prompt is what the screen is waiting on (confirm, choice, question "
+    "or open); menu is the numbered menu on screen, with the option numbers you may choose; "
+    "transcript_tail is the end of the conversation; prior_outcomes are actions already "
+    "delivered or rejected for that session \u2014 do not re-propose what was just rejected.\n"
     "For each session that needs something, choose ONE action:\n"
     "  continue  — the agent stopped mid-task and should simply carry on.\n"
     "  choose    — the agent is at a numbered prompt and one option is clearly correct; give "

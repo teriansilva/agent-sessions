@@ -803,6 +803,15 @@ export interface ForgeConfig {
   configured: boolean;
 }
 
+/** Session review depth (#1086 Phase 2) — its own prefs block, never inside `ai_review`. */
+export interface SessionReviewConfig {
+  /** Read the screen for numbered options, yes/no and permission prompts. */
+  recognise_prompts: boolean;
+  /** `deep` adds a bounded transcript tail and earlier outcomes for the sessions a decision is
+   *  about; `standard` reads the current-state line, the reason and the screen's prompt. */
+  decision_context: "standard" | "deep";
+}
+
 export interface AppConfig {
   /** CSRF token bound to the session cookie; sent as X-CSRF-Token on mutations. */
   csrf: string;
@@ -899,6 +908,8 @@ export interface AppConfig {
   /** Pulse recent-work overview (#441 Phase 3): opt-in background scan + window/depth;
    *  reuses the ai_review endpoint for synthesis (no secret). */
   pulse?: PulseConfig;
+  /** How deeply a session is read before a decision (#1086 Phase 2). No secret. */
+  session_review?: SessionReviewConfig;
   orchestrator?: OrchestratorConfig;
   /** The mission playbooks (#883), so Settings can edit them (#892). Normalized server-side, so
    *  this is exactly the shape `POST /api/prefs` accepts back. */

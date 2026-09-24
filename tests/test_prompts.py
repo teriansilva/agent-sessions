@@ -103,7 +103,7 @@ EXPECTED_DEFAULT_SHA = {
     # #1069: Ask covers missions too — both stages name the mission kind and its content.
     "ask_catalog": "4a0cadec55d2678b",
     "ask_verify": "2ea52d623aa35336",
-    "orchestrator_pass": "5f8a224cfa4fbb82",
+    "orchestrator_pass": "8d4e95045fb09670",  # #1086 P2: the deeper digest fields
     "chat_route": "35bb285bc0ad1005",
     "chat_instruct": "eea6dcf1ca69e6f3",
     # #983 P3: the optional `draft` field, the direction flag and the checked facts per objective.

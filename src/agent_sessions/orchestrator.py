@@ -285,13 +285,51 @@ def _eligible_ids(working_keys: set[str] | None, busy_keys: set[str] | None = No
     return cards
 
 
-def _digest_entry(card: dict, now: float) -> dict:
+# Deeper decision context (#1086 Phase 2). Bounded per field and per pass: a richer digest is
+# only worth anything if a sweep over forty sessions stays a bounded read.
+STATE_LINE_MAX = 300
+REASON_MAX = 280
+MENU_OPTIONS_MAX = 9
+MENU_LABEL_MAX = 120
+DEEP_SESSIONS_MAX = 8  # sessions per pass that get the Deep extras (flagged / at a prompt first)
+DEEP_TRANSCRIPT_CHARS = 1500
+PRIOR_OUTCOMES_MAX = 3
+_PRIOR_OUTCOME_STATES = frozenset({"delivered", "rejected"})
+
+
+def _state_line(recap: str) -> str:
+    """The recap's CURRENT-STATE line: its LAST non-empty line, by the recap prompt's contract.
+
+    The digest used to send the recap's first 300 characters, while the recap prompt puts where
+    things stand on its last line — so the decision pass read how the session STARTED (#1018).
+    """
+    lines = [ln.strip() for ln in (recap or "").splitlines() if ln.strip()]
+    return lines[-1] if lines else ""
+
+
+def _digest_menu(menu: object) -> dict | None:
+    """The screen's parsed menu (`screen_menus`), trimmed for the digest. Agent text, capped."""
+    if not isinstance(menu, dict):
+        return None
+    options = []
+    for o in (menu.get("options") or [])[:MENU_OPTIONS_MAX]:
+        if isinstance(o, dict) and isinstance(o.get("n"), int):
+            options.append({"n": o["n"], "label": _clamp(o.get("label"), MENU_LABEL_MAX)})
+    if not options:
+        return None
+    return {"question": _clamp(menu.get("question"), MENU_LABEL_MAX), "options": options}
+
+
+def _digest_entry(card: dict, now: float, extras: dict | None = None) -> dict:
     """The trimmed per-session view the model sees. Bounded fields only, never internal keys,
-    never a raw transcript — transcripts are pulled per-session as *evidence*, after a
-    proposal names one, exactly as ``pulse_chat`` Stage 2 does."""
+    never a raw transcript by default — transcripts are pulled per-session as *evidence*, after a
+    proposal names one, exactly as ``pulse_chat`` Stage 2 does. ``extras`` (from
+    :func:`_digest_extras`) adds what the Session review settings allow: the screen's prompt and
+    menu, and at Deep a bounded transcript tail and this session's earlier outcomes."""
     project = card.get("project") or {}
-    summary = str(card.get("_ai_recap") or card.get("ai_summary") or "")[:SUMMARY_MAX]
-    return {
+    recap = str(card.get("_ai_recap") or "")
+    summary = str(card.get("ai_summary") or recap or "")[:SUMMARY_MAX]
+    entry = {
         "id": card["id"],
         "engine": card.get("engine", ""),
         "title": _clamp(card.get("title"), TITLE_MAX),
@@ -299,8 +337,95 @@ def _digest_entry(card: dict, now: float) -> dict:
         "state": card.get("state", ""),
         "needs_user": bool(card.get("intervention_required")),
         "summary": summary,
+        "current_state": _clamp(_state_line(recap), STATE_LINE_MAX),
         "age_hours": round((now - float(card.get("last_activity") or now)) / 3600, 1),
     }
+    reason = card.get("intervention_reason")
+    if card.get("intervention_required") and isinstance(reason, str) and reason.strip():
+        entry["needs_user_reason"] = _clamp(reason, REASON_MAX)
+    for k, v in (extras or {}).items():
+        if v not in (None, "", [], {}):
+            entry[k] = v
+    return entry
+
+
+def _prior_outcomes(latest: dict[str, dict], session_id: str, now: float) -> list[dict]:
+    """The last few settled outcomes for this session — what was already done or refused."""
+    rows = [
+        r
+        for r in latest.values()
+        if r.get("session_id") == session_id and r.get("state") in _PRIOR_OUTCOME_STATES
+    ]
+    rows.sort(key=lambda r: float(r.get("ts") or 0), reverse=True)
+    return [
+        {
+            "verb": r.get("verb", ""),
+            "outcome": r.get("state", ""),
+            "age_hours": round((now - float(r.get("ts") or now)) / 3600, 1),
+            "rationale": _clamp(r.get("rationale"), RATIONALE_MAX),
+        }
+        for r in rows[:PRIOR_OUTCOMES_MAX]
+    ]
+
+
+def _digest_extras(cards: list[dict], now: float, review_cfg: dict) -> dict[str, dict]:
+    """Per-session extras the Session review settings allow. Blocking (screen + ledger reads).
+
+    * ``recognise_prompts`` — the screen's prompt class and `screen_menus` menu, per session.
+    * ``decision_context == "deep"`` — for at most ``DEEP_SESSIONS_MAX`` sessions, the ones that
+      are flagged or stopped at a prompt first: a bounded transcript tail and their earlier
+      outcomes. Deeper evidence is fetched for the sessions a decision is about, never re-read
+      across the whole fleet every pass (#1018).
+    Every failure is an absent field, never an error: a pass must not die on one unreadable screen.
+    """
+    recognise = bool(review_cfg.get("recognise_prompts", True))
+    deep = review_cfg.get("decision_context") == "deep"
+    out: dict[str, dict] = {c["id"]: {} for c in cards}
+    prompts_seen: dict[str, str] = {}
+    if recognise:
+        for c in cards:
+            try:
+                observed = observed_prompt_for(engines.physical_key(c["id"]))
+            except Exception:  # noqa: BLE001 — an unreadable screen is simply not described
+                log.debug("digest: screen unreadable for %s", c["id"], exc_info=True)
+                continue
+            prompts_seen[c["id"]] = str(observed.get("prompt_class") or "")
+            out[c["id"]]["prompt"] = prompts_seen[c["id"]]
+            menu = _digest_menu(observed.get("menu"))
+            if menu:
+                out[c["id"]]["menu"] = menu
+    if deep:
+        ranked = sorted(
+            cards,
+            key=lambda c: (
+                not c.get("intervention_required"),
+                prompts_seen.get(c["id"], "open") == "open",
+            ),
+        )
+        try:
+            latest = ledger.latest_by_id()
+        except Exception:  # noqa: BLE001
+            latest = {}
+        for c in ranked[:DEEP_SESSIONS_MAX]:
+            try:
+                # TRANSCRIPT ONLY: `review.gather_input` mixes in the live screen and the compose
+                # draft, which would read the screen even with recognition off and present it as
+                # the conversation (review 5180).
+                tail = review.transcript_tail(c["id"], DEEP_TRANSCRIPT_CHARS)
+                if tail.strip():
+                    out[c["id"]]["transcript_tail"] = _clean_evidence(tail)
+            except Exception:  # noqa: BLE001 — no transcript is an honest absence
+                log.debug("digest: no transcript tail for %s", c["id"], exc_info=True)
+            prior = _prior_outcomes(latest, c["id"], now)
+            if prior:
+                out[c["id"]]["prior_outcomes"] = prior
+    return out
+
+
+def _build_digest(cards: list[dict], now: float) -> dict:
+    """The model's input for one pass. Blocking — run it with ``asyncio.to_thread``."""
+    extras = _digest_extras(cards, now, prefs.get_session_review())
+    return {"sessions": [_digest_entry(c, now, extras.get(c["id"])) for c in cards]}
 
 
 # A rationale that opens by quoting the title back. Measured on the live store: 4 of 200 began
@@ -650,7 +775,7 @@ async def run_pass(
     start = (offset or 0) % total if total else 0
     slice_ = (cards + cards)[start : start + DIGEST_MAX] if total > DIGEST_MAX else cards
     sent = {c["id"]: c for c in slice_}
-    payload = {"sessions": [_digest_entry(c, now) for c in slice_]}
+    payload = await asyncio.to_thread(_build_digest, slice_, now)
     obj = await review.complete_json(
         [
             {"role": "system", "content": prompts.effective("orchestrator_pass")},
