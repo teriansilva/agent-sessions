@@ -406,6 +406,13 @@ def run_git_write(
     ).decode("utf-8", "replace")
 
 
+class GitExitError(GitError):
+    """git RAN and exited non-zero — its own answer, as opposed to a refusal before it was spawned
+    (an unverifiable hooks directory, git missing) or a timeout. Callers that translate "git said
+    no" into a domain message catch this, never the base class, or they relabel every other
+    failure too: an unsafe runtime directory read as "that is not a valid branch name"."""
+
+
 #: A stdin payload is a symlink target or a small blob, never a stream. Bounded well under the
 #: pipe buffer so the single `write` below cannot deadlock against a child that is not reading.
 MAX_STDIN = 32 * 1024
@@ -530,7 +537,7 @@ def _run_argv(
             if p is not None:
                 p.close()
     if proc.returncode != 0:
-        raise GitError(redact(bytes(err).decode("utf-8", "replace").strip()) or "git failed")
+        raise GitExitError(redact(bytes(err).decode("utf-8", "replace").strip()) or "git failed")
     if truncated and require_complete:
         # A SECURITY decision must never be taken on a partial read. `git config --list` past the
         # cap silently dropped a url-specific `sslVerify=false`, and the refusal that depends on
@@ -659,10 +666,13 @@ def check_ref_format(repo: Repo, branch: str) -> None:
     itself (measured — every call failed). It is safe to omit precisely because
     :func:`validate_ref` has already run, and it refuses anything that does not *start* with an
     alphanumeric — so a name that could be read as an option never reaches this line.
+
+    Only git's own non-zero exit is a verdict on the NAME. Any other failure (the hooks directory
+    refused, a timeout) propagates with its own message rather than blaming the branch.
     """
     try:
         run_git_write(repo, ["check-ref-format", f"refs/heads/{branch}"])
-    except GitError:
+    except GitExitError:
         raise FsError("that is not a valid branch name", status=422) from None
 
 
@@ -5352,6 +5362,7 @@ __all__ = [
     "MAX_MESSAGE",
     "MAX_PATHS",
     "NET_TIMEOUT_S",
+    "GitExitError",
     "check_ref_format",
     "destination_digest",
     "PENDING",

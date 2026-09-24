@@ -3975,3 +3975,32 @@ def test_network_writes_work_inside_a_LINKED_WORKTREE(root, monkeypatch):
     assert not os.path.isdir(
         os.path.join(per_worktree, "objects")
     ), "a second object store was built beside the real one"
+
+
+def test_a_refused_hooks_directory_is_not_reported_as_a_bad_branch_name(
+    repo, tmp_path, monkeypatch
+):
+    """RED before the fix: `check_ref_format` caught EVERY GitError, so a runtime directory the
+    hooks check refused (here: a group-writable parent, the default under a `umask 002` install)
+    surfaced as "that is not a valid branch name" on a switch to `main`. The real refusal — with
+    its `chmod` hint — must reach the operator instead."""
+    parent = tmp_path / "rt"
+    parent.mkdir()
+    parent.chmod(0o775)
+    monkeypatch.setenv("AGENT_SESSIONS_RUNTIME_DIR", str(parent / "pty"))
+    monkeypatch.setattr(ptybridge, "_DIR_READY_FOR", None, raising=False)
+
+    with pytest.raises(FsError) as e:
+        gitwrite.git_switch(str(repo), "other", None, None, _dirty_fp(repo))
+    assert "not a valid branch name" not in str(e.value)
+    assert "refusing to run git" in str(e.value)
+    assert "group-writable" in str(e.value)
+
+
+def test_a_name_git_itself_rejects_is_still_a_bad_branch_name(repo):
+    """The shape filter passes `feature/.hidden`; git's `check-ref-format` does not (a component
+    may not start with a dot). That verdict — and only that one — is the 422 about the name."""
+    with pytest.raises(FsError) as e:
+        gitwrite.git_switch(str(repo), "feature/.hidden", None, None, _dirty_fp(repo))
+    assert e.value.status == 422
+    assert "not a valid branch name" in str(e.value)

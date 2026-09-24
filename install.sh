@@ -675,6 +675,10 @@ migrate_env() {
   # Idempotent and non-destructive — existing keys win.
   [ -f "$ENVF" ] || return 0
   mkdir -p "$PREFIX/pty"   # ws-PTY dtach sockets live here
+  # 0700, not whatever the operator's umask left: under a `umask 002` login `mkdir -p` makes it
+  # 0775, and the app refuses every git-panel write beneath a group-writable ancestor (the hooks
+  # directory lives in here). Re-applied on every run so an existing install is repaired too.
+  chmod 700 "$PREFIX/pty" || log "warning: could not chmod 700 $PREFIX/pty"
   umask 077
   _env_set_if_absent AGENT_SESSIONS_WEB_DIST "$CURRENT/src/web/dist"
   _env_set_if_absent AGENT_SESSIONS_RUNTIME_DIR "$PREFIX/pty"
@@ -1349,6 +1353,9 @@ main() {
   # correctly treats a retry-after-failure as still-fresh.
   FRESH=1; [ -L "$CURRENT" ] && [ -e "$CURRENT" ] && FRESH=0
   mkdir -p "$PREFIX"
+  # Never group/other-writable, whatever the umask: the runtime directory below it must have no
+  # ancestor another account could swap, or the git panel refuses to run git at all.
+  chmod go-w "$PREFIX" || log "warning: could not remove group/other write from $PREFIX"
   adopt_persisted_bind    # re-run: a persisted bind in the env file wins (no silent revert to localhost)
   adopt_persisted_channel # re-run: a persisted (UI-chosen) channel wins the same way (#538)
   choose_host             # fresh interactive install: offer to bind a chosen address / all interfaces

@@ -650,6 +650,11 @@ def test_installer_migrates_existing_env_to_react(tmp_path):
     # installer wouldn't actually point an existing deployment at the built dist.
     home = tmp_path / "prefix"
     home.mkdir()
+    # What a `umask 002` login left behind on the author's install: both group-writable, which
+    # made the git panel refuse every write (reported as "that is not a valid branch name").
+    home.chmod(0o775)
+    (home / "pty").mkdir()
+    (home / "pty").chmod(0o775)
     envf = home / "env"
     envf.write_text(
         "AGENT_SESSIONS_USERNAME=marcus\n"
@@ -689,6 +694,9 @@ def test_installer_migrates_existing_env_to_react(tmp_path):
     assert text.count("AGENT_SESSIONS_SECRET_KEY=") == 1
     assert oct(envf.stat().st_mode & 0o777) == "0o600"  # still locked down
     assert (home / "pty").is_dir()
+    # …and an upgrade repairs a group-writable prefix / runtime dir.
+    assert home.stat().st_mode & 0o022 == 0, oct(home.stat().st_mode)
+    assert oct((home / "pty").stat().st_mode & 0o777) == "0o700"
     # No new password printed (credentials kept).
     assert "password:" not in r.stdout
 
