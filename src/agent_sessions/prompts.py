@@ -1,8 +1,8 @@
 """The AI prompt registry (#824) — every system prompt this app sends, declared in one place.
 
-Every system prompt goes to the one configured AI endpoint (``review.complete_json``) — fifteen
-of them as of #1088, which added the objective judge (#956 removed the unrendered overview
-banner). Three were operator-editable
+Every system prompt goes to the one configured AI endpoint (``review.complete_json``) — eighteen
+of them: #1088 added the objective judge, #1086 the work recap, and #1090 the two template
+prompts (#956 removed the unrendered overview banner). Three were operator-editable
 through their feature's prefs block; the rest were module constants, so changing how a recap
 reads meant editing Python and shipping a release. This module owns all of them: their text,
 their bounds, and where each one is stored.
@@ -75,6 +75,42 @@ _RECAP = (
     "for the leading action verb and backticks for file names, commands and identifiers "
     '\u2014 no other markdown. Reply with ONLY a JSON object: {"recap": "<chronological '
     'recap, max ~900 chars, one step per line>"}.'
+)
+
+_TEMPLATE_SUGGEST = (
+    "You help a developer decide which reusable message templates to write. You are given the "
+    "messages THEY typed to their AI coding agents recently (never the agents' replies), "
+    "de-duplicated, each with how many times and in how many sessions it was sent, plus the "
+    "names of the templates and variables they already have. Find instructions they keep "
+    "retyping with small variations, and literal values they keep pasting (a host, a URL, a "
+    "command). Propose at most 8 suggestions, most useful first, and none that duplicates an "
+    "existing template or variable.\n"
+    "A TEMPLATE suggestion is one reusable message: its body generalises the repeated "
+    "instruction, with {{field}} slots (lowercase letters, digits and _) for the parts that "
+    "change, and one entry in fields per slot. A VARIABLE suggestion is one repeated literal "
+    "worth defining once; if it looks like a password, token or other credential, set secret "
+    "to true and leave value empty — never repeat a credential.\n"
+    "Only suggest what the messages actually show; count is how many messages it would have "
+    "replaced. Reply with ONLY a JSON object of this exact shape: "
+    '{"suggestions": [{"kind": "template", "name": str, "reason": str, "count": int, '
+    '"body": str, "fields": [{"name": str, "label": str, "default": str}]} | '
+    '{"kind": "variable", "name": str, "reason": str, "count": int, "value": str, '
+    '"secret": bool}]}. Use an empty list when nothing repeats.'
+)
+
+_TEMPLATE_WRITE = (
+    "You write ONE reusable message template for a developer who sends instructions to AI coding "
+    "agents. You are given their REQUEST (what the template is for), the names of the templates "
+    "they already have, and the names of their library variables.\n"
+    "The body is a clear, complete instruction to a coding agent. Put a {{field}} slot (lowercase "
+    "letters, digits and _) wherever a part changes from one use to the next, and list each slot "
+    "once in fields with a short label and, if useful, a default. Where one of the library "
+    "variables fits, use its name as the slot. A slot for a password, token or other credential "
+    "is marked secret and has no default. Never write a credential anywhere.\n"
+    "Choose a short name that is not one of the existing template names, and a one-sentence "
+    "description. Reply with ONLY a JSON object of this exact shape: "
+    '{"name": str, "description": str, "body": str, '
+    '"fields": [{"name": str, "label": str, "default": str, "secret": bool}]}.'
 )
 
 _HANDOFF = (
@@ -406,6 +442,40 @@ REGISTRY: tuple[Prompt, ...] = (
         max_chars=prefs.AUTO_SORT_PROMPT_MAX,
         block="auto_sort",
         field="prompt",
+    ),
+    Prompt(
+        id="template_suggest",
+        group="Templates",
+        label="Template suggestions",
+        description=(
+            "Reads the messages you typed to your agents (never their replies, secrets removed "
+            "first) and proposes templates and variables to write. Drafts only — nothing is "
+            "saved until you save it."
+        ),
+        contract='{"suggestions": [{"kind": "template", "name": str, "reason": str, '
+        '"count": int, "body": str, "fields": [{"name": str, "label": str, "default": str}]} | '
+        '{"kind": "variable", "name": str, "reason": str, "count": int, "value": str, '
+        '"secret": bool}]}',
+        default=_TEMPLATE_SUGGEST,
+        max_chars=4000,
+        block=BLOCK,
+        field="template_suggest",
+    ),
+    Prompt(
+        id="template_write",
+        group="Templates",
+        label="Write a template",
+        description=(
+            "Drafts one template from what you ask for in \u201cWrite me a template "
+            "for\u2026\u201d. Only your request and the names of your templates and variables "
+            "are sent. The draft opens in the editor; nothing is saved until you save it."
+        ),
+        contract='{"name": str, "description": str, "body": str, '
+        '"fields": [{"name": str, "label": str, "default": str, "secret": bool}]}',
+        default=_TEMPLATE_WRITE,
+        max_chars=4000,
+        block=BLOCK,
+        field="template_write",
     ),
     Prompt(
         id="pulse_session_line",

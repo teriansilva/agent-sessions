@@ -175,6 +175,57 @@ export interface TemplateVariableLimits {
   secret_min: number;
 }
 
+/** One AI suggestion (#1090 Phase 3) — a DRAFT, validated server-side like a save. A `variable`
+ *  marked `secret` never carries a value: the operator types it into the new-secret form. */
+export type TemplateSuggestion =
+  | {
+      id: string;
+      kind: "template";
+      name: string;
+      reason: string;
+      count: number;
+      body: string;
+      fields: { name: string; label: string; default: string }[];
+    }
+  | {
+      id: string;
+      kind: "variable";
+      name: string;
+      reason: string;
+      count: number;
+      value: string;
+      secret: boolean;
+    };
+
+/** The last analysis, minus dismissals. */
+/** "Write me a template for …" (#1090): one draft, never stored — it opens in the editor. */
+export interface TemplateDraft {
+  name: string;
+  description: string;
+  body: string;
+  fields: Pick<TemplateField, "name" | "label" | "default" | "source" | "kind">[];
+}
+
+export interface TemplateSuggestionsResult {
+  generated_at: number | null;
+  stats: {
+    messages?: number;
+    distinct?: number;
+    sessions?: number;
+    /** Messages left out because they showed a credential trigger — never sent, not redacted. */
+    withheld?: number;
+    days?: number;
+  };
+  dropped: number;
+  suggestions: TemplateSuggestion[];
+}
+
+/** `GET /api/templates/suggestions`: `result` is `null` until the first analysis. */
+export interface TemplateSuggestionsResponse {
+  result: TemplateSuggestionsResult | null;
+  configured: boolean;
+}
+
 /** `POST /api/templates/{id}/send` (#1090 Phase 2): only the MASKED text comes back. */
 export interface TemplateSendResult {
   masked: string;

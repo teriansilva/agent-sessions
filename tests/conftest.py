@@ -322,6 +322,10 @@ def _isolate_prefs(tmp_path, monkeypatch) -> None:
         "AGENT_SESSIONS_TEMPLATE_SECRETS_KEY",
         str(tmp_path / ".config" / "agent-sessions" / "template-secrets.key"),
     )
+    monkeypatch.setenv(
+        "AGENT_SESSIONS_TEMPLATE_SUGGESTIONS",
+        str(tmp_path / ".config" / "agent-sessions" / "template-suggestions.json"),
+    )
     # The session sidecar (#1054's leak: authfence, maintenance-prune, kimi and nudge-harness
     # tests wrote the operator's real metadata.json), the projects store, the pulse cache and the
     # VAPID identity all default under the real `$HOME` too, and `tmp_home` is opt-in. Same

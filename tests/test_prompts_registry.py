@@ -29,6 +29,8 @@ FIXTURES = Path(__file__).parent / "fixtures" / "prompt_guard"
 # copy-pasted id (the failure the structural check alone cannot see) fails here.
 EXPECTED_SITES = {
     ("autosort.py", "auto_sort"),
+    ("template_suggest.py", "template_suggest"),
+    ("template_suggest.py", "template_write"),
     ("handoff.py", "handoff_brief"),
     ("orchestrator.py", "orchestrator_pass"),
     ("orchestrator_chat.py", "chat_route"),

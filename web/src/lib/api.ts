@@ -57,6 +57,9 @@ import type {
   TemplateInput,
   TemplatesResponse,
   TemplateSendResult,
+  TemplateSuggestionsResponse,
+  TemplateDraft,
+  TemplateSuggestionsResult,
   TemplateVariable,
   TemplateVariablesResponse,
   TwoFactorEnrollment,
@@ -265,12 +268,14 @@ async function mutateJson<T>(
   method: "POST" | "PUT" | "PATCH" | "DELETE",
   path: string,
   body?: unknown,
+  signal?: AbortSignal,
 ): Promise<T> {
   const r = await apiFetch(path, {
     method,
     credentials: "same-origin",
     headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
     body: body === undefined ? undefined : JSON.stringify(body),
+    ...(signal ? { signal } : {}),
   });
   if (r.status === 401 || r.status === 403) await authGate(r);
   if (!r.ok) {
@@ -565,6 +570,15 @@ export const api = {
       values,
       expected_updated_at: expectedUpdatedAt,
     }),
+  /** AI-suggested templates (#1090 Phase 3). Analysis runs ONLY on this request — never in the
+   *  background. `signal` lets the page stop waiting; the server may still finish and store it. */
+  templateSuggestions: () =>
+    getJsonWithDetail<TemplateSuggestionsResponse>("/api/templates/suggestions"),
+  suggestTemplates: (signal?: AbortSignal) =>
+    mutateJson<TemplateSuggestionsResult>("POST", "/api/templates/suggest", undefined, signal),
+  dismissSuggestion: (id: string) => postVoid(`/api/templates/suggestions/${enc(id)}/dismiss`),
+  writeTemplate: (request: string, signal?: AbortSignal) =>
+    mutateJson<{ template: TemplateDraft }>("POST", "/api/templates/write", { request }, signal),
   /** The template variables library (#1090): values a `source: "library"` field takes by name.
    *  Same fencing as a template; the name is the identity (no rename). A DELETE refused because
    *  templates still use the variable is a 409 whose `record.dependants` lists them. */

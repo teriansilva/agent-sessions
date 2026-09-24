@@ -29,6 +29,10 @@ vi.mock("../lib/api", async () => {
       createTemplateVariable: vi.fn(),
       updateTemplateVariable: vi.fn(),
       deleteTemplateVariable: vi.fn(),
+      templateSuggestions: vi.fn(() => Promise.resolve({ result: null, configured: true })),
+      suggestTemplates: vi.fn(),
+      dismissSuggestion: vi.fn(() => Promise.resolve()),
+      writeTemplate: vi.fn(),
       // Thumbnails go through the seam, never a native <img src> (Home Free tunnel, #907 review).
       uploadBlob: vi.fn(() => Promise.resolve(new Blob([new Uint8Array([137, 80, 78, 71])]))),
     },
@@ -630,4 +634,220 @@ test("REPLACE starts empty — the old value is never in the browser — and sen
   await userEvent.type(input, "a-brand-new-secret");
   await userEvent.click(screen.getByRole("button", { name: /^save db_pass$/i }));
   expect(vmocked.updateTemplateVariable).toHaveBeenCalledWith("db_pass", "a-brand-new-secret", 5);
+});
+
+// ---- SUGGESTED (#1090 Phase 3) -------------------------------------------------------------------
+
+const SUGGESTION_RESULT = {
+  generated_at: 1,
+  stats: { messages: 212, distinct: 90, sessions: 41, days: 30 },
+  dropped: 1,
+  suggestions: [
+    {
+      id: "aaaaaaaaaaaaaaaa",
+      kind: "template" as const,
+      name: "Fix review notes",
+      reason: "You sent a variant of this 17 times.",
+      count: 17,
+      body: "Read the latest review on {{pr}}, fix every note, push.",
+      fields: [{ name: "pr", label: "PR", default: "" }],
+    },
+    {
+      id: "bbbbbbbbbbbbbbbb",
+      kind: "variable" as const,
+      name: "staging_host",
+      reason: "Appears in 23 messages.",
+      count: 23,
+      value: "staging.acme.test",
+      secret: false,
+    },
+    {
+      id: "cccccccccccccccc",
+      kind: "variable" as const,
+      name: "deploy_token",
+      reason: "Looks like a credential you paste.",
+      count: 4,
+      value: "",
+      secret: true,
+    },
+  ],
+};
+
+function renderSuggested() {
+  return render(
+    <MemoryRouter initialEntries={["/templates?tab=suggested"]}>
+      <Routes>
+        <Route path="/templates" element={<Templates />} />
+        <Route path="/templates/new" element={<ShowEditorState />} />
+        <Route path="/settings/*" element={<p>settings route</p>} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+function ShowEditorState() {
+  const loc = useLocation();
+  return <pre>editor state {JSON.stringify(loc.state)}</pre>;
+}
+
+test("SUGGESTED starts honest: nothing is analysed until ANALYSE, which then shows the drafts", async () => {
+  mocked.templates.mockResolvedValue({ templates: [], limits: LIMITS });
+  vmocked.suggestTemplates.mockResolvedValue(SUGGESTION_RESULT);
+  renderSuggested();
+  expect(await screen.findByText(/what template should you write/i)).toBeInTheDocument();
+  expect(vmocked.suggestTemplates).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole("button", { name: /analyse my messages/i }));
+  const list = await screen.findByRole("list", { name: /^suggestions$/i });
+  expect(within(list).getAllByRole("listitem")).toHaveLength(3);
+  expect(screen.getByText(/from 212 messages · 41 sessions · last 30 days/i)).toBeInTheDocument();
+  expect(screen.getByRole("tab", { name: /suggested 3/i })).toHaveAttribute("aria-selected", "true");
+  expect(screen.getByText(/looks like a credential — its value is not kept/i)).toBeInTheDocument();
+  expect(screen.getByText(/1 proposal was left out/i)).toBeInTheDocument();
+});
+
+test("OPEN IN EDITOR hands the draft to a NEW template as its prefill — nothing is saved", async () => {
+  mocked.templates.mockResolvedValue({ templates: [], limits: LIMITS });
+  vmocked.templateSuggestions.mockResolvedValue({ result: SUGGESTION_RESULT, configured: true });
+  renderSuggested();
+  await userEvent.click(await screen.findByRole("button", { name: /open fix review notes in the editor/i }));
+  const state = await screen.findByText(/editor state/);
+  expect(state.textContent).toContain('"name":"Fix review notes"');
+  expect(state.textContent).toContain('"body":"Read the latest review on {{pr}}, fix every note, push."');
+  expect(state.textContent).toContain('"source":"template"');
+  expect(mocked.createTemplate).not.toHaveBeenCalled();
+});
+
+test("ADD TO LIBRARY opens the new-variable form prefilled; a secret opens NEW SECRET with no value", async () => {
+  mocked.templates.mockResolvedValue({ templates: [], limits: LIMITS });
+  vmocked.templateSuggestions.mockResolvedValue({ result: SUGGESTION_RESULT, configured: true });
+  const { unmount } = renderSuggested();
+  await userEvent.click(await screen.findByRole("button", { name: /add staging_host to the library/i }));
+  const form = await screen.findByRole("form", { name: /new variable/i });
+  expect(within(form).getByPlaceholderText("staging_host")).toHaveValue("staging_host");
+  expect(within(form).getByPlaceholderText("staging.acme.test")).toHaveValue("staging.acme.test");
+  expect(vmocked.createTemplateVariable).not.toHaveBeenCalled();
+  unmount();
+
+  renderSuggested();
+  await userEvent.click(await screen.findByRole("button", { name: /add deploy_token to the library/i }));
+  const secret = await screen.findByRole("form", { name: /new secret/i });
+  expect(within(secret).getByPlaceholderText("staging_host")).toHaveValue("deploy_token");
+  expect(within(secret).getByPlaceholderText("stored encrypted")).toHaveValue("");
+});
+
+test("DISMISS removes a card for good; a failed dismiss puts it back and says so", async () => {
+  mocked.templates.mockResolvedValue({ templates: [], limits: LIMITS });
+  vmocked.templateSuggestions.mockResolvedValue({ result: SUGGESTION_RESULT, configured: true });
+  renderSuggested();
+  await userEvent.click(await screen.findByRole("button", { name: /dismiss staging_host/i }));
+  expect(vmocked.dismissSuggestion).toHaveBeenCalledWith("bbbbbbbbbbbbbbbb");
+  expect(screen.queryByText("{{staging_host}}")).toBeNull();
+  expect(screen.getByRole("tab", { name: /suggested 2/i })).toBeInTheDocument();
+  vmocked.dismissSuggestion.mockRejectedValueOnce(new ApiError(500, "store failed"));
+  await userEvent.click(screen.getByRole("button", { name: /dismiss fix review notes/i }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(/store failed/i);
+  expect(screen.getByText("Fix review notes")).toBeInTheDocument();
+});
+
+test("a dismiss that fails after a newer analysis never puts its card into that result (#1110 review)", async () => {
+  mocked.templates.mockResolvedValue({ templates: [], limits: LIMITS });
+  vmocked.templateSuggestions.mockResolvedValue({ result: SUGGESTION_RESULT, configured: true });
+  let fail!: (e: unknown) => void;
+  vmocked.dismissSuggestion.mockImplementationOnce(
+    () => new Promise<void>((_resolve, reject) => (fail = reject)),
+  );
+  vmocked.suggestTemplates.mockResolvedValueOnce(SUGGESTION_RESULT);
+  renderSuggested();
+  await userEvent.click(await screen.findByRole("button", { name: /dismiss staging_host/i }));
+  expect(screen.queryByText("{{staging_host}}")).toBeNull();
+  await userEvent.click(screen.getByRole("button", { name: /analyse again/i }));
+  expect(await screen.findByRole("tab", { name: /suggested 3/i })).toBeInTheDocument();
+  fail(new ApiError(500, "store failed"));
+  expect(await screen.findByRole("alert")).toHaveTextContent(/store failed/i);
+  expect(screen.getAllByText("{{staging_host}}")).toHaveLength(1);
+  expect(screen.getByRole("tab", { name: /suggested 3/i })).toBeInTheDocument();
+});
+
+test("WRITE ME A TEMPLATE FOR… needs no analysis: the request's draft opens in the editor, library slots intact", async () => {
+  mocked.templates.mockResolvedValue({ templates: [], limits: LIMITS });
+  vmocked.writeTemplate.mockResolvedValue({
+    template: {
+      name: "Migrate staging",
+      description: "Run the migrations on staging.",
+      body: "ssh {{staging_host}} and migrate {{app}}",
+      fields: [
+        { name: "staging_host", label: "Host", default: "", source: "library", kind: "text" },
+        { name: "app", label: "App", default: "api", source: "template", kind: "text" },
+      ],
+    },
+  });
+  renderSuggested();
+  const box = await screen.findByLabelText(/write me a template for/i);
+  expect(vmocked.suggestTemplates).not.toHaveBeenCalled();
+  await userEvent.type(box, "run the migrations on staging");
+  await userEvent.click(screen.getByRole("button", { name: /write it/i }));
+  expect(vmocked.writeTemplate).toHaveBeenCalledWith("run the migrations on staging", expect.anything());
+  const state = await screen.findByText(/editor state/);
+  expect(state.textContent).toContain('"name":"Migrate staging"');
+  expect(state.textContent).toContain('"source":"library"');
+  expect(vmocked.suggestTemplates).not.toHaveBeenCalled();
+  expect(mocked.createTemplate).not.toHaveBeenCalled();
+});
+
+test("a refused request says why and stays on the tab", async () => {
+  mocked.templates.mockResolvedValue({ templates: [], limits: LIMITS });
+  vmocked.writeTemplate.mockRejectedValueOnce(
+    new ApiError(422, "Your request looks like it contains a password or token. Describe it with a {{placeholder}} instead — nothing was sent."),
+  );
+  renderSuggested();
+  await userEvent.type(await screen.findByLabelText(/write me a template for/i), "use password=x");
+  await userEvent.click(screen.getByRole("button", { name: /write it/i }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(/nothing was sent/i);
+  expect(screen.queryByText(/editor state/)).toBeNull();
+});
+
+test("no AI endpoint: says so and links to Settings; nothing can be analysed", async () => {
+  mocked.templates.mockResolvedValue({ templates: [], limits: LIMITS });
+  vmocked.templateSuggestions.mockResolvedValue({ result: null, configured: false });
+  renderSuggested();
+  expect(await screen.findByText(/no ai endpoint set up/i)).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: /open settings/i })).toHaveAttribute(
+    "href",
+    "/settings/ai-endpoint",
+  );
+  expect(screen.queryByRole("button", { name: /analyse/i })).toBeNull();
+});
+
+test("a failed analysis keeps the previous suggestions and says why; STOP WAITING only stops waiting", async () => {
+  mocked.templates.mockResolvedValue({ templates: [], limits: LIMITS });
+  vmocked.templateSuggestions.mockResolvedValue({ result: SUGGESTION_RESULT, configured: true });
+  vmocked.suggestTemplates.mockRejectedValueOnce(new ApiError(502, "Analysis failed — endpoint returned HTTP 502"));
+  renderSuggested();
+  await userEvent.click(await screen.findByRole("button", { name: /analyse again/i }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(/HTTP 502.*previous suggestions are kept/i);
+  expect(screen.getByText("Fix review notes")).toBeInTheDocument();
+
+  vmocked.suggestTemplates.mockImplementationOnce(
+    (signal?: AbortSignal) =>
+      new Promise((_r, reject) => signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")))),
+  );
+  await userEvent.click(screen.getByRole("button", { name: /analyse again/i }));
+  expect(await screen.findByText(/analysing your recent messages/i)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: /stop waiting/i }));
+  expect(await screen.findByText(/stopped waiting/i)).toBeInTheDocument();
+  expect(screen.getByText("Fix review notes")).toBeInTheDocument();
+});
+
+test("a suggestion's variable draft belongs to one visit: leaving the tab and coming back is a clean form (#1110 review)", async () => {
+  mocked.templates.mockResolvedValue({ templates: [], limits: LIMITS });
+  vmocked.templateSuggestions.mockResolvedValue({ result: SUGGESTION_RESULT, configured: true });
+  renderSuggested();
+  await userEvent.click(await screen.findByRole("button", { name: /add staging_host to the library/i }));
+  expect(await screen.findByRole("form", { name: /new variable/i })).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("tab", { name: /suggested/i }));
+  await userEvent.click(await screen.findByRole("tab", { name: /variables/i }));
+  await userEvent.click((await screen.findAllByRole("button", { name: /new variable/i }))[0]);
+  const form = screen.getByRole("form", { name: /new variable/i });
+  expect(within(form).getByPlaceholderText("staging_host")).toHaveValue("");
+  expect(within(form).getByPlaceholderText("staging.acme.test")).toHaveValue("");
 });

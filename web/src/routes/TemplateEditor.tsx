@@ -110,7 +110,18 @@ function TemplateEditorFor() {
   // during render), so clearing the entry's state below cannot take the payload away again.
   const [prefill] = useState(() =>
     isNew
-      ? (location.state as { prefill?: { body: string; images: TemplateImage[] } } | null)?.prefill
+      ? (
+          location.state as {
+            prefill?: {
+              body: string;
+              images: TemplateImage[];
+              // A suggestion (#1090 Phase 3) also carries these; "Save as template" does not.
+              name?: string;
+              description?: string;
+              fields?: TemplateField[];
+            };
+          } | null
+        )?.prefill
       : undefined,
   );
   // Consumed ONCE: the history entry's state is replaced the moment the form has taken it, so
@@ -122,7 +133,16 @@ function TemplateEditorFor() {
   }, [prefill, navigate, location.pathname]);
 
   const [form, setForm] = useState<Form>(() =>
-    prefill ? { ...EMPTY, body: prefill.body, images: prefill.images } : EMPTY,
+    prefill
+      ? {
+          ...EMPTY,
+          name: prefill.name ?? "",
+          description: prefill.description ?? "",
+          body: prefill.body,
+          fields: prefill.fields ?? [],
+          images: prefill.images,
+        }
+      : EMPTY,
   );
   // What the form holds RIGHT NOW, for code that runs after an await (the save fence below).
   const formRef = useRef(form);
@@ -162,7 +182,11 @@ function TemplateEditorFor() {
   );
   const [error, setError] = useState("");
   const [note, setNote] = useState(
-    prefill ? "Prefilled from a sent message — give it a name and save." : "",
+    prefill
+      ? prefill.name
+        ? "Prefilled from a suggestion — check it, then save."
+        : "Prefilled from a sent message — give it a name and save."
+      : "",
   );
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);

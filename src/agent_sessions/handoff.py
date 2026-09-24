@@ -282,7 +282,14 @@ def build_quick_seed(
     # goes to the browser as the preview and then into ANOTHER agent — possibly another vendor's
     # — without passing `review._post_chat`, so it is redacted here, once, before anything is
     # rendered or measured (independent review of #1105). The AI mode goes through `_post_chat`.
-    secrets = template_secrets.redaction_values()
+    try:
+        secrets = template_secrets.redaction_values()
+    except template_secrets.RedactionUnavailable as e:
+        # Fail closed, and SAY so (independent review of #1105): a bare 500 left the operator
+        # guessing. Nothing is built, previewed or sent.
+        raise HandoffError(
+            503, f"{e} — secrets could not be redacted, so nothing was prepared"
+        ) from None
     if secrets:
         texts = [(role, template_secrets.redact_text(text, secrets)) for role, text in texts]
     tail = texts[-SEED_MAX_TURNS:]

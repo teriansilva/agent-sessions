@@ -58,6 +58,7 @@ const submitKey = (e: KeyboardEvent<HTMLTextAreaElement>) =>
 const rowsFor = (v: string) => Math.min(6, Math.max(1, v.split("\n").length));
 
 export function VariablesPanel({
+  prefill,
   variables,
   limits,
   creating,
@@ -69,12 +70,14 @@ export function VariablesPanel({
   /** The header's NEW VARIABLE / NEW SECRET opens the create row; the panel closes it. */
   creating: CreatingKind;
   onCreatingChange: (open: CreatingKind) => void;
+  /** A suggestion's draft (#1090 Phase 3), read once when the panel mounts. */
+  prefill?: { name: string; value: string } | null;
   /** Re-read the library; resolves to whether it succeeded (a caller never claims "reloaded"
    *  over a failed reload — the gallery's rule, Hermes on #907). */
   reload: () => Promise<boolean>;
 }) {
-  const [draftName, setDraftName] = useState("");
-  const [draftValue, setDraftValue] = useState("");
+  const [draftName, setDraftName] = useState(() => prefill?.name ?? "");
+  const [draftValue, setDraftValue] = useState(() => prefill?.value ?? "");
   const [editing, setEditing] = useState<Editing | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");

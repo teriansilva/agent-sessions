@@ -4,6 +4,7 @@ import { Copy, Pencil, Plus, Search, Send, Trash2 } from "lucide-react";
 import { ConfirmDialog } from "../components/templates/ConfirmDialog";
 import { SessionChooserModal } from "../components/templates/SessionChooserModal";
 import { UploadImage } from "../components/templates/UploadImage";
+import { SuggestionsPanel } from "../components/templates/SuggestionsPanel";
 import { VariablesPanel, type CreatingKind } from "../components/templates/VariablesPanel";
 import { api, ApiError } from "../lib/api";
 import type {
@@ -47,11 +48,17 @@ export default function Templates() {
   const navigate = useNavigate();
   const location = useLocation();
   const [params, setParams] = useSearchParams();
-  const tab = params.get("tab") === "variables" ? "variables" : "templates";
+  const tabParam = params.get("tab");
+  const tab: "templates" | "variables" | "suggested" =
+    tabParam === "variables" || tabParam === "suggested" ? tabParam : "templates";
   const [variables, setVariables] = useState<TemplateVariable[] | null>(null);
   const [varLimits, setVarLimits] = useState<TemplateVariableLimits>(VARIABLE_LIMITS_FALLBACK);
   const [varError, setVarError] = useState("");
   const [creatingVar, setCreatingVar] = useState<CreatingKind>(null);
+  // ADD TO LIBRARY from a suggestion (#1090 Phase 3): the new-variable form opens prefilled. The
+  // panel reads it once when it mounts on the Variables tab.
+  const [varPrefill, setVarPrefill] = useState<{ name: string; value: string } | null>(null);
+  const [suggestedCount, setSuggestedCount] = useState<number | null>(null);
   const [templates, setTemplates] = useState<Template[] | null>(null);
   const [limits, setLimits] = useState<TemplateLimits | null>(null);
   const [error, setError] = useState("");
@@ -119,8 +126,11 @@ export default function Templates() {
     void loadVariables();
   }, [loadVariables]);
 
-  const showTab = (next: "templates" | "variables") => {
-    setParams(next === "variables" ? { tab: "variables" } : {}, { replace: true });
+  const showTab = (next: "templates" | "variables" | "suggested") => {
+    // A suggestion's draft belongs to the ONE visit it opened the form for: leaving the tab drops
+    // it, so coming back never resurrects an old suggestion (independent review of #1110).
+    if (next !== "variables") setVarPrefill(null);
+    setParams(next === "templates" ? {} : { tab: next }, { replace: true });
   };
 
   const tagCounts = useMemo(() => {
@@ -299,14 +309,43 @@ export default function Templates() {
         >
           Variables <span className={styles.chipN}>{variables?.length ?? "–"}</span>
         </button>
+        <button
+          type="button"
+          role="tab"
+          id="tpl-tab-suggested"
+          aria-selected={tab === "suggested"}
+          aria-controls="tpl-tabpanel"
+          className={`${styles.tabBtn} ${tab === "suggested" ? styles.tabOn : ""}`}
+          onClick={() => showTab("suggested")}
+        >
+          Suggested <span className={styles.chipN}>{suggestedCount ?? "–"}</span>
+        </button>
       </div>
 
-      <div
-        id="tpl-tabpanel"
-        role="tabpanel"
-        aria-labelledby={tab === "variables" ? "tpl-tab-variables" : "tpl-tab-templates"}
-      >
-        {tab === "variables" ? (
+      <div id="tpl-tabpanel" role="tabpanel" aria-labelledby={`tpl-tab-${tab}`}>
+        {tab === "suggested" ? (
+          <SuggestionsPanel
+            onCountChange={setSuggestedCount}
+            onOpenTemplate={(draft) =>
+              navigate("/templates/new", {
+                state: {
+                  prefill: {
+                    name: draft.name,
+                    description: draft.description,
+                    body: draft.body,
+                    fields: draft.fields.map((f) => ({ ...f, required: false })),
+                    images: [],
+                  },
+                },
+              })
+            }
+            onAddVariable={(sug) => {
+              setVarPrefill({ name: sug.name, value: sug.secret ? "" : sug.value });
+              setCreatingVar(sug.secret ? "secret" : "text");
+              showTab("variables");
+            }}
+          />
+        ) : tab === "variables" ? (
           <>
             {varError && (
               <p className={styles.err} role="alert">
@@ -326,6 +365,7 @@ export default function Templates() {
             {variables === null && !varError && <p className={styles.state}>Loading…</p>}
             {variables !== null && (
               <VariablesPanel
+                prefill={varPrefill}
                 variables={variables}
                 limits={varLimits}
                 creating={creatingVar}

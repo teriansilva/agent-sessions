@@ -6,6 +6,10 @@
   ``expected_updated_at``: a stale edit is 409 carrying the current record, and nothing is written
 * ``DELETE /api/templates/{id}?expected_updated_at=…`` — the same fence
 * ``POST   /api/templates/{id}/used``       — bump the usage counters (never ``updated_at``)
+* ``GET    /api/templates/suggestions``      — the last AI suggestion analysis (#1090 Phase 3)
+* ``POST   /api/templates/suggest``          — run one analysis now (never in the background)
+* ``POST   /api/templates/suggestions/{sid}/dismiss`` — hide one suggestion for good
+* ``POST   /api/templates/write``            — "write me a template for …": one draft, not stored
 * ``POST   /api/templates/{id}/send``       — render + deliver server-side (#1090 Phase 2): the
   only path for a template with a secret field; answers with the MASKED text only
 
@@ -36,7 +40,7 @@ import asyncio
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
-from .. import session_input, template_secrets, template_send
+from .. import review, session_input, template_secrets, template_send, template_suggest
 from .. import template_vars as vstore
 from .. import templates as store
 from .upload import NO_STORE
@@ -171,6 +175,82 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
             raise _err(404, "unknown template") from None
         except store.TemplateConflict as e:
             return _conflict(e)
+        return Response(status_code=204, headers=NO_STORE)
+
+    # ---- AI suggestions (#1090, Phase 3) ------------------------------------------------------
+
+    @app.get("/api/templates/suggestions")
+    async def template_suggestions(_user: str = Depends(logged_in)) -> JSONResponse:
+        """The last analysis minus dismissals (``null`` if never analysed), and whether the AI
+        endpoint is configured — so the tab can say "set one up" before anyone presses Analyse."""
+        result = await asyncio.to_thread(template_suggest.current)
+        configured = True
+        try:
+            review._require_config()
+        except review.NotConfiguredError:
+            configured = False
+        return _json({"result": result, "configured": configured})
+
+    @app.post("/api/templates/suggest")
+    async def suggest_templates(
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """Run one analysis NOW (never in the background). A failure keeps the previous result."""
+        try:
+            return _json(await template_suggest.analyse())
+        except template_suggest.AlreadyRunning:
+            raise _err(409, "An analysis is already running") from None
+        except review.NotConfiguredError:
+            raise _err(409, "No AI endpoint is set up — add one in Settings → AI") from None
+        except template_secrets.RedactionUnavailable as e:
+            raise _err(503, f"{e} — nothing was sent to the AI endpoint") from None
+        except template_suggest.StoreUnreadable as e:
+            raise _err(503, f"{e} — it was left as it is") from None
+        except review.ReviewError as e:
+            raise _err(502, f"Analysis failed — {e}") from None
+
+    @app.post("/api/templates/write")
+    async def write_template(
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """ "Write me a template for …": one draft, returned and never stored."""
+        try:
+            body = await request.json()
+        except ValueError:
+            raise _err(422, "invalid JSON") from None
+        text = body.get("request") if isinstance(body, dict) else None
+        try:
+            return _json({"template": await template_suggest.write(text)})
+        except template_suggest.RequestRefused as e:
+            raise _err(422, str(e)) from None
+        except template_suggest.AlreadyRunning:
+            raise _err(409, "A template is already being written") from None
+        except review.NotConfiguredError:
+            raise _err(409, "No AI endpoint is set up — add one in Settings → AI") from None
+        except template_secrets.RedactionUnavailable as e:
+            raise _err(503, f"{e} — nothing was sent to the AI endpoint") from None
+        except template_suggest.DraftInvalid as e:
+            raise _err(
+                502, f"The AI's draft was not a template this app can save ({e}) — try rephrasing"
+            ) from None
+        except review.ReviewError as e:
+            raise _err(502, f"Writing failed — {e}") from None
+
+    @app.post("/api/templates/suggestions/{sid}/dismiss")
+    async def dismiss_suggestion(
+        sid: str,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> Response:
+        try:
+            await asyncio.to_thread(template_suggest.dismiss, sid)
+        except ValueError:
+            raise _err(404, "unknown suggestion") from None
+        except template_suggest.StoreUnreadable as e:
+            raise _err(503, f"{e} — it was left as it is") from None
         return Response(status_code=204, headers=NO_STORE)
 
     @app.post("/api/templates/{tid}/send")

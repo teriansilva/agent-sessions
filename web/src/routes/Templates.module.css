@@ -778,6 +778,18 @@
 }
 
 /* --- mobile reflow ---------------------------------------------------------------- */
+/* The narrowest phones: three labelled tabs with counts need ~350px at the desktop spacing, and
+   the page hides horizontal overflow, so the last one was clipped rather than scrolled (#1110
+   review). Tighter spacing, never a smaller hit target (the 44px height below still applies). */
+@media (max-width: 420px) {
+  .tabs {
+    gap: 0;
+  }
+  .tabBtn {
+    padding: 0 7px;
+    letter-spacing: 0.05em;
+  }
+}
 @media (max-width: 800px) {
   .page {
     padding: 14px 12px 28px;

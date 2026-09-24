@@ -29,7 +29,8 @@ import os
 import re
 import sqlite3
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 # --- common conversation model -------------------------------------------------------------
@@ -46,11 +47,30 @@ class Turn:
     ``role``: "user" | "assistant" | "system" | "tool".
     ``kind``: "text" (a message) | "tool" (a one-line tool-call summary) | "result"
     (a truncated tool result). The renderer styles by ``kind``/``role``; everything else is text.
+    ``ts``: when the engine recorded the message (epoch seconds), or ``None`` where it does not say.
+    Set on text turns; it plays no part in equality, so a Turn compares by what it renders.
     """
 
     role: str
     text: str
     kind: str = "text"
+    ts: float | None = field(default=None, compare=False, repr=False)
+
+
+def _when(value: object) -> float | None:
+    """An engine's record time as epoch seconds — an ISO-8601 string, or a number in seconds or
+    milliseconds — or ``None`` when it is absent or unreadable."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return value / 1000 if value > 1e11 else float(value)
+    if isinstance(value, str) and value:
+        try:
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return dt.timestamp() if dt.tzinfo is not None else None
+    return None
 
 
 def _short(value: object, limit: int = _ARG_MAX) -> str:
@@ -494,7 +514,7 @@ def claude_turns_from_jsonl(path: Path, *, max_messages: int = DEFAULT_MAX_MESSA
                 continue
             bt = b.get("type")
             if bt == "text" and (b.get("text") or "").strip():
-                turns.append(Turn(role, b["text"].strip(), "text"))
+                turns.append(Turn(role, b["text"].strip(), "text", _when(o.get("timestamp"))))
             elif bt == "tool_use":
                 inp = b.get("input") if isinstance(b.get("input"), dict) else {}
                 arg = (
@@ -613,7 +633,7 @@ def _codex_turns_from_records(recs: list[dict]) -> list[Turn]:
             # `# AGENTS.md instructions` block (#670). Shared predicate with the provider's
             # title fallback so the two surfaces can't drift.
             if text and not is_injected_context(text):
-                turns.append(Turn(role, text, "text"))
+                turns.append(Turn(role, text, "text", _when(o.get("timestamp"))))
         elif pt == "function_call":
             arg = p.get("arguments") or p.get("name", "")
             turns.append(Turn("assistant", f"{p.get('name', 'tool')}({_short(arg)})", "tool"))
@@ -717,7 +737,7 @@ def _kimi_turns_from_wire(recs: list[dict]) -> list[Turn]:
                 text = _kimi_input_text(o.get("input"))
                 if text:
                     flush()  # close the previous assistant turn before the new user turn
-                    turns.append(Turn("user", text, "text"))
+                    turns.append(Turn("user", text, "text", _when(o.get("time"))))
             elif rtype == "context.append_loop_event":
                 event = o.get("event")
                 if not isinstance(event, dict):
@@ -807,7 +827,9 @@ register_growth("kimi", _path_growth(kimi_wire_path))
 # --- opencode -----------------------------------------------------------------------------
 
 
-def _opencode_message_turns(role: str, part_rows: list[tuple]) -> list[Turn]:
+def _opencode_message_turns(
+    role: str, part_rows: list[tuple], ts: float | None = None
+) -> list[Turn]:
     """One opencode message's parts → Turns. text → message; tool → one-line summary;
     step-start/step-finish/reasoning are omitted (chrome / hidden thinking)."""
     r = "user" if role == "user" else "assistant"
@@ -819,7 +841,7 @@ def _opencode_message_turns(role: str, part_rows: list[tuple]) -> list[Turn]:
             continue
         pt = p.get("type")
         if pt == "text" and (p.get("text") or "").strip():
-            turns.append(Turn(r, p["text"].strip(), "text"))
+            turns.append(Turn(r, p["text"].strip(), "text", ts))
         elif pt == "tool":
             st = p.get("state") if isinstance(p.get("state"), dict) else {}
             arg = st.get("input") if isinstance(st, dict) else ""
@@ -859,13 +881,16 @@ def _opencode_turns_strict(native_id: str, home: Path) -> list[Turn]:
         turns: list[Turn] = []
         for mid, mdata in rows:
             try:
-                role = (json.loads(mdata) or {}).get("role", "assistant")
+                meta = json.loads(mdata) or {}
+                role = meta.get("role", "assistant")
+                created = meta.get("time")
+                ts = _when(created.get("created")) if isinstance(created, dict) else None
             except (ValueError, TypeError):
-                role = "assistant"
+                role, ts = "assistant", None
             parts = conn.execute(
                 "SELECT data FROM part WHERE message_id=? ORDER BY id", (mid,)
             ).fetchall()
-            turns.extend(_opencode_message_turns(role, parts))
+            turns.extend(_opencode_message_turns(role, parts, ts))
         return turns
     finally:
         conn.close()
@@ -1032,7 +1057,7 @@ def _gemini_turns_from_jsonl(path: Path, *, max_messages: int = DEFAULT_MAX_MESS
         if t == "user":
             text = _gemini_text(o.get("content"))
             if text:
-                turns.append(Turn("user", text, "text"))
+                turns.append(Turn("user", text, "text", _when(o.get("timestamp"))))
         elif t == "gemini":
             text = _gemini_text(o.get("content"))
             if text:
@@ -1073,7 +1098,7 @@ def _antigravity_turns_from_jsonl(
         if t == "USER_INPUT":
             text = antigravity._user_request_text(o.get("content"))
             if text:
-                turns.append(Turn("user", text, "text"))
+                turns.append(Turn("user", text, "text", _when(o.get("created_at"))))
         elif t == "PLANNER_RESPONSE":
             content = o.get("content")
             if isinstance(content, str) and content.strip():

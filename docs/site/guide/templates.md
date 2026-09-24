@@ -136,6 +136,69 @@ What you see instead of the value:
   restarts. After that it is no longer known, so a transcript that still contains it is sent as it
   is. If you rotate a leaked credential, it is safest to also archive the sessions it was sent to.
 
+### Suggested templates: what should you write?
+
+The **Suggested** tab asks your AI endpoint to help you write templates, in two ways.
+
+**Write me a template for…** — describe the template you want ("reviewing a pull request against
+our guidelines") and press **Write it**. The AI drafts one, and it opens in the editor as a new
+template, with `{{fields}}` for the parts that change and your library variables where they fit.
+Only your request and the names of your templates and variables are sent — no messages, no values.
+A request that looks like it contains a password or token is refused before anything is sent: use a
+`{{placeholder}}` instead. Nothing is saved until you save it in the editor.
+
+**Analyse my messages** reads what you typed to your agents over the last 30 days, newest first,
+and proposes:
+
+- **templates** for instructions you keep retyping with small changes, with `{{fields}}` for the
+  parts that change;
+- **variables** for values you keep pasting, such as a host, a URL or a command.
+
+It runs **only when you press Analyse**; nothing runs in the background. Every suggestion is a
+draft:
+
+- **Open in editor** starts a new template with the draft filled in.
+- **Add to library** opens the new-variable form filled in.
+- **Dismiss** hides a suggestion for good, even if a later analysis proposes it again.
+
+Nothing is saved until you save it yourself.
+
+What is sent, and what is not:
+
+- Only the messages **you** typed in the last 30 days, never the agents' replies. That is the
+  date of each message: an old session you resumed today contributes only what you typed in it
+  recently. Only from sessions inside your project
+  folders (roots and exclusions), and not from sessions you archived in BattleLab, whatever the
+  engine. At most 60 sessions and 400
+  distinct messages; identical messages are sent once, with how often you sent them.
+- Your stored secrets are removed before anything leaves BattleLab. If they cannot be read,
+  nothing is sent.
+- A message that looks like it holds a credential is **left out entirely** — not redacted, not
+  sent. The same goes for a template description (the template's name is still sent). It is left
+  out if it shows any of:
+  - a `password=`, `PGPASSWORD=` or `token:` style setting;
+  - a password inside a URL, or in `curl -u user:pass`;
+  - `mysql -p…`, `sshpass -p …` or `--password …`;
+  - an `Authorization` header, a bearer token or a private key block;
+  - a long random-looking string;
+  - "the password is …".
+
+  The analysis says how many messages were left out. This is a pattern match, not a guarantee: a
+  password written in prose with nothing around it ("log in with admin / hunter2") is not
+  recognised, so keep real credentials in stored secrets.
+- Text an agent wrote is never sent, even when it arrives as your turn. That covers Claude's
+  "continued from a previous conversation" summary and a handoff's seed.
+- A suggested variable that looks like a credential arrives **without its value**. You type it
+  into the new-secret form yourself.
+- The model's reply is checked like anything you could have typed. A suggestion that is not valid
+  as a template or variable, that duplicates one you already have, or that contains one of your
+  stored secrets or anything shaped like a credential, is left out. Only the checked
+  suggestions are kept, in `~/.config/agent-sessions/template-suggestions.json` (0600), never the
+  raw reply.
+
+It needs the AI endpoint from **Settings → AI**. You can change the instruction it uses under
+**Settings → AI → Prompts** ("Template suggestions").
+
 ### The preview is exactly what the agent receives
 
 **What the agent receives** shows the instructions with each field's default filled in, followed by

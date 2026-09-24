@@ -674,3 +674,35 @@ test("a field set to Secret drops its default, previews a mask, and saves kind=s
     kind: "secret",
   });
 });
+
+test("a suggestion's draft lands with its name, description and fields — and is saved only on SAVE (#1090 Phase 3)", async () => {
+  mocked.createTemplate.mockResolvedValue(tpl({ id: "fix-review-notes", name: "Fix review notes" }));
+  const router = makeRouter([
+    {
+      pathname: "/templates/new",
+      state: {
+        prefill: {
+          name: "Fix review notes",
+          description: "You sent a variant of this 17 times.",
+          body: "Read the latest review on {{pr}}, fix every note, push.",
+          fields: [
+            { name: "pr", label: "PR", default: "", required: false, source: "template", kind: "text" },
+          ],
+          images: [],
+        },
+      },
+    },
+  ]);
+  render(<RouterProvider router={router} />);
+  expect(await screen.findByLabelText(/^name/i)).toHaveValue("Fix review notes");
+  expect(screen.getByText(/prefilled from a suggestion/i)).toBeInTheDocument();
+  expect(screen.getByLabelText(/field 1 name/i)).toHaveValue("pr");
+  expect(mocked.createTemplate).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+  await waitFor(() => expect(mocked.createTemplate).toHaveBeenCalledTimes(1));
+  expect(mocked.createTemplate.mock.calls[0][0]).toMatchObject({
+    name: "Fix review notes",
+    description: "You sent a variant of this 17 times.",
+    fields: [{ name: "pr", label: "PR" }],
+  });
+});
