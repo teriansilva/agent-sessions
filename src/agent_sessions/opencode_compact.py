@@ -20,15 +20,33 @@ import uuid
 from pathlib import Path
 
 from . import discover, maintenance, opencode_admission
-from .engines import base
 
 PROC = Path("/proc")
 SCAN_SECONDS = 2.0
 SQL_TIMEOUT = 0.5
 
 
-def database_path() -> Path:
-    return Path(base._opencode_db()).expanduser().resolve()
+def targets() -> list[str]:
+    """Every engine this maintenance kind can compact (#853 P3)."""
+    return opencode_admission.maintained_engines()
+
+
+def _target(engine: str | None = None):
+    """The provider whose store is compacted: ``engine`` when it selects this kind, else — when
+    no engine is named — the default target. An engine that does not select it is None, never
+    silently another engine's store."""
+    from . import engines
+
+    eid = engine if engine is not None else opencode_admission.maintained_engine()
+    return engines.get(eid) if eid in targets() else None
+
+
+def database_path(engine: str | None = None) -> Path:
+    prov = _target(engine)
+    db = prov.store_path("db") if prov is not None else None
+    if db is None:
+        raise FileNotFoundError("no engine selects store maintenance")
+    return Path(db).expanduser().resolve()
 
 
 def _size(path: Path, *, optional: bool = False) -> int:
@@ -59,7 +77,7 @@ def sqlite_temp_dir() -> Path:
     raise OSError("no writable SQLite temporary directory")
 
 
-def holders(path: Path) -> dict:
+def holders(path: Path, engine: str | None = None) -> dict:
     """Observe DB/WAL/SHM descriptors and OpenCode launch command lines; unknown stays busy.
 
     Compare inode identities, including aliases, and do not omit our own process: a concurrent
@@ -77,8 +95,11 @@ def holders(path: Path) -> dict:
             targets.add((st.st_dev, st.st_ino))
         except FileNotFoundError:
             continue
-    binary = discover.resolve("opencode") or base.OPENCODE_BIN
-    binaries = {os.fsencode(binary), os.fsencode(os.path.realpath(binary))}
+    prov = _target(engine)
+    binary = (
+        (discover.resolve(prov.engine_id) or prov.manifest.binary.name) if prov is not None else ""
+    )
+    binaries = {os.fsencode(binary), os.fsencode(os.path.realpath(binary))} if binary else set()
     try:
         processes = list(PROC.iterdir())
     except OSError:
@@ -124,7 +145,9 @@ def _connect(path: Path, *, write: bool) -> sqlite3.Connection:
     return con
 
 
-def measure(path: Path | None = None, *, admission_held: bool = False) -> dict:
+def measure(
+    path: Path | None = None, *, engine: str | None = None, admission_held: bool = False
+) -> dict:
     """Report every independently measurable blocker. Never promote missing data to zero."""
     out: dict = {
         "available": False,
@@ -140,7 +163,7 @@ def measure(path: Path | None = None, *, admission_held: bool = False) -> dict:
         out["blockers"].append({"code": code, "detail": detail})
 
     try:
-        path = path or database_path()
+        path = path or database_path(engine)
         st = path.stat()
         if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid():
             block("database", "The database must be a regular file owned by this user.")
@@ -155,7 +178,7 @@ def measure(path: Path | None = None, *, admission_held: bool = False) -> dict:
 
     if not admission_held:
         try:
-            gate = opencode_admission.acquire(exclusive=True)
+            gate = opencode_admission.acquire(engine=engine, exclusive=True)
             if gate is None:
                 block("admission", "An OpenCode launch or compaction is in progress.")
             else:
@@ -163,7 +186,7 @@ def measure(path: Path | None = None, *, admission_held: bool = False) -> dict:
         except OSError:
             block("admission_unknown", "OpenCode launch admission could not be checked.")
     try:
-        out["holders"] = holders(path)
+        out["holders"] = holders(path, engine)
         if out["holders"]["pids"]:
             block("held", "Processes are using the OpenCode database or launching OpenCode.")
         if out["holders"]["unknown"]:
@@ -217,7 +240,10 @@ def measure(path: Path | None = None, *, admission_held: bool = False) -> dict:
 class Worker:
     """Thread-owned mutation and connection lifetime, with a safe cross-thread interrupt."""
 
-    def __init__(self):
+    def __init__(self, engine: str | None = None):
+        #: The engine whose store this worker compacts — carried through admission, holders,
+        #: measurement and the VACUUM itself, so every step is about the same database.
+        self.engine = engine
         self.stop = threading.Event()
         self._mutex = threading.Lock()
         self._connection: sqlite3.Connection | None = None
@@ -242,7 +268,7 @@ class Worker:
         gate = None
         con = None
         try:
-            gate = opencode_admission.acquire(exclusive=True)
+            gate = opencode_admission.acquire(engine=self.engine, exclusive=True)
             if gate is None:
                 result["blockers"] = [
                     {
@@ -251,8 +277,8 @@ class Worker:
                     }
                 ]
                 return result
-            path = database_path()
-            info = measure(path, admission_held=True)
+            path = database_path(self.engine)
+            info = measure(path, engine=self.engine, admission_held=True)
             result["blockers"] = info["blockers"]
             if not info["available"]:
                 return result
@@ -342,15 +368,17 @@ class Service:
     def snapshot(self) -> dict | None:
         return copy.deepcopy(self.job)
 
-    async def start(self) -> tuple[bool, dict]:
+    async def start(self, engine: str | None = None) -> tuple[bool, dict]:
         if self.closing:
             raise maintenance.MaintenanceBusy({"job": "shutdown", "started_at": None})
         # Claim before publishing/replacing a job, without yielding between the two.
         loop = asyncio.get_running_loop()
         ready = loop.create_future()
-        worker = Worker()
+        target = engine if engine is not None else opencode_admission.maintained_engine()
+        worker = Worker(target)
         job = {
             "id": uuid.uuid4().hex,
+            "engine": target,
             "state": "checking",
             "started_at": time.time(),
             "finished_at": None,

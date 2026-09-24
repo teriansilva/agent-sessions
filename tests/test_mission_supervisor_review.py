@@ -2019,7 +2019,12 @@ def test_an_IDLE_opencode_session_does_NOT_move_the_mark(tmp_path, monkeypatch):
 
 
 # =============================================================================== r9, finding 3
-@pytest.mark.parametrize("engine", ["claude", "codex", "kimi", "gemini", "antigravity", "opencode"])
+@pytest.mark.parametrize(
+    "engine",
+    __import__("agent_sessions.engines", fromlist=["x"]).ids_where(
+        lambda m: m.transcript_kind != "none"
+    ),
+)
 def test_EVERY_adapter_engine_has_a_growth_signal(engine):
     """The registry silently excluded antigravity, which fell back to the capped renderer and
     reproduced the exact false stall the registry exists to prevent.
@@ -2030,7 +2035,7 @@ def test_EVERY_adapter_engine_has_a_growth_signal(engine):
     from agent_sessions import transcript
 
     assert transcript.adapter_for(engine) is not None, "fixture names an engine with no adapter"
-    assert engine in transcript._GROWTH, (
+    assert transcript.growth_for(engine) is not None, (
         f"{engine} has a transcript adapter but no growth signal, so its stall detection falls "
         "back to the capped renderer"
     )

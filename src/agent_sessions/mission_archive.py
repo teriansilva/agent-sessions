@@ -261,7 +261,7 @@ async def _teardown_effect(mission_id: str, session_key: str, token: str | None)
     # Background-agent guard (#631): with our own master gone, a live process STILL holding this
     # transcript is a Claude background agent we don't manage. Moving its open JSONL would make
     # the file diverge between the live and archive trees — refuse rather than corrupt.
-    if prov.engine_id == "claude" and transcript_owner.transcript_is_owned(native):
+    if transcript_owner.owned_elsewhere(prov, native):
         await missions.run_admitted(
             lambda: missions.settle_session_archive(
                 mission_id,

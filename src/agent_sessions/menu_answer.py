@@ -45,8 +45,13 @@ import uuid
 from . import actuator, engines, orchestrator, screen_menus, scrollback
 from . import orchestrator_ledger as ledger
 
-#: Engines whose captured menu rendering proves the digit alone submits.
-DIGIT_SUBMITS: frozenset[str] = frozenset({"claude"})
+
+def digit_submits(engine: str) -> bool:
+    """Does this engine's captured menu rendering prove the digit alone submits? The manifest's
+    `terminal.menu_digit_submits` (#853 P3)."""
+    term = engines.terminal_of(engine)
+    return term is not None and term.menu_digit_submits
+
 
 #: What the escalation becomes once answered: terminal, with a reason that names the answer.
 ANSWERED_OUTCOME = "answered_by_operator"
@@ -151,7 +156,7 @@ def prepare(escalation_id: str, option: object, label: object) -> tuple[dict, di
             "observed_at": time.time(),
         },
     }
-    if engine in DIGIT_SUBMITS:
+    if digit_submits(engine):
         rec["submit"] = "digit"
     for k in ("mission_id", "engine", "title", "project", "project_id"):
         if esc.get(k) is not None:

@@ -10,6 +10,7 @@ version = "1"
 name = "codex"
 env_var = "AGENT_SESSIONS_CODEX_BIN"
 search_paths = ["~/.codex/bin", "~/.local/bin"]
+search_npm_global = true  # vendor installs it with `npm i -g`; `doctor` also looks in npm's global bin
 
 [session_id]
 pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"

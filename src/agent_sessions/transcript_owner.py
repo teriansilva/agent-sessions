@@ -29,7 +29,30 @@ import os
 log = logging.getLogger("agent_sessions.transcript_owner")
 
 
-def _cmdline_owns(args: list[str], uuid: str, jsonl_name: str) -> bool:
+def _owning_binaries() -> frozenset[str]:
+    """The binary names whose argv can own a transcript: every engine whose manifest declares
+    `capabilities.owns_transcript` (#853 P3) — its `binary.name` and aliases. Never listed."""
+    from . import engines
+
+    names: set[str] = set()
+    for eid in engines.ids_where(lambda m: m.can("owns_transcript")):
+        m = engines.manifest_of(eid)
+        names.update((m.binary.name, *m.binary.aliases))
+    return frozenset(names)
+
+
+def owned_elsewhere(prov, native: str) -> bool:
+    """The archive/launch guard (#631), in one place: does ANOTHER live process own this session's
+    transcript? Only asked for an engine that declares `owns_transcript`; every other engine's
+    answer is no without touching `/proc`."""
+    from . import engines
+
+    return engines.owns_transcript(prov) and transcript_is_owned(native)
+
+
+def _cmdline_owns(
+    args: list[str], uuid: str, jsonl_name: str, binaries: frozenset[str] | None = None
+) -> bool:
     """True if a ``claude`` argv references this session's transcript: ``--session-id <uuid>``
     or ``--resume <…/<uuid>.jsonl>`` — the PATH form a background-agent fork uses to resume its
     parent, NOT a bare ``--resume <uuid>``, which is exactly how THIS app resumes (so the probe
@@ -38,7 +61,8 @@ def _cmdline_owns(args: list[str], uuid: str, jsonl_name: str) -> bool:
         return False
     # Only a claude process counts (honour "a claude argv") — guards against a wild flag match
     # from some unrelated program that happens to carry a ``--resume``/``--session-id`` token.
-    if not any(os.path.basename(a) == "claude" for a in args if a):
+    names = _owning_binaries() if binaries is None else binaries
+    if not any(os.path.basename(a) in names for a in args if a):
         return False
     for flag, value in zip(args, args[1:], strict=False):
         if flag == "--session-id" and value == uuid:
@@ -64,6 +88,7 @@ def transcript_is_owned(uuid: str, *, proc_root: str = "/proc") -> bool:
     a ``claude`` argv references it. Pure ``/proc`` reads; no shell. Fail-open: returns ``False``
     on any probe error (and logs)."""
     jsonl_name = f"{uuid}.jsonl"
+    binaries = _owning_binaries()
     try:
         pids = [n for n in os.listdir(proc_root) if n.isdigit()]
     except OSError:
@@ -75,7 +100,7 @@ def transcript_is_owned(uuid: str, *, proc_root: str = "/proc") -> bool:
         try:
             with open(f"{base}/cmdline", "rb") as fh:
                 args = [a for a in fh.read().decode("utf-8", "replace").split("\0") if a]
-            if _cmdline_owns(args, uuid, jsonl_name):
+            if _cmdline_owns(args, uuid, jsonl_name, binaries):
                 log.debug("transcript %s owned by pid %s (argv)", jsonl_name, pid)
                 return True
         except OSError:

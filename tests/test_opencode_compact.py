@@ -44,7 +44,7 @@ def idle(monkeypatch):
     monkeypatch.setattr(
         compact,
         "holders",
-        lambda _: {
+        lambda _path, _engine=None: {
             "pids": [],
             "unknown": False,
             "unknown_processes": 0,
@@ -266,7 +266,7 @@ def test_real_test_owned_file_holder_is_seen(database, tmp_path, monkeypatch):
 
 
 def test_all_blockers_reported_together_and_mutation_refused(database, monkeypatch):
-    monkeypatch.setattr(compact, "holders", lambda _: {"pids": [42], "unknown": True})
+    monkeypatch.setattr(compact, "holders", lambda _p, _e=None: {"pids": [42], "unknown": True})
     monkeypatch.setattr(compact.shutil, "disk_usage", lambda _: SimpleNamespace(free=0))
     before = database.read_bytes()
     out = compact.measure()
@@ -443,13 +443,22 @@ def test_compaction_api_auth_csrf_strict_body_and_unknown_job(auth_cfg, fake_jso
         {"confirm": False},
         {"confirm": "true"},
         {"confirm": True, "path": "/foreign.db"},
+        # #853 P3: a target may be named, but only an engine that selects the compaction kind —
+        # never an arbitrary engine's store, and never a non-string.
+        {"confirm": True, "engine": "claude"},
+        {"confirm": True, "engine": "../opencode"},
+        {"confirm": True, "engine": 1},
     ):
         assert c.post(url, json=body, headers=headers).status_code == 422
+    assert c.get(url + "?engine=claude").status_code == 422
+    assert c.get(url).json()["targets"] == ["opencode"]
+    assert c.get(url + "?engine=opencode").status_code == 200
     assert c.get(url).json()["job"] is None
     assert c.get(url + "?job_id=old-job").status_code == 404
     refused = c.post(url, json={"confirm": True}, headers=headers)
     assert refused.status_code == 409
     assert refused.json()["job"]["result"]["blockers"][0]["code"] == "missing"
+    assert refused.json()["job"]["engine"] == "opencode"
 
 
 @pytest.mark.anyio
@@ -470,7 +479,7 @@ async def test_202_job_polling_is_stable_and_busy_prevents_resubmission(monkeypa
                 return {"state": "done", "vacuum": "done", "checkpoint": "deferred"}
 
     monkeypatch.setattr(compact, "Worker", Worker)
-    monkeypatch.setattr(compact, "measure", lambda: {"available": False, "blockers": []})
+    monkeypatch.setattr(compact, "measure", lambda **_kw: {"available": False, "blockers": []})
     app = FastAPI()
     routes.register(app, logged_in=lambda: "test", csrf_guard=lambda: None)
     async with httpx.AsyncClient(

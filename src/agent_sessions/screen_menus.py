@@ -154,10 +154,18 @@ def _claude(lines: list[str]) -> Menu | None:
     text = _clean(" ".join(question), QUESTION_MAX)
     if not text:
         return None
-    return {"engine": "claude", "question": text, "options": answers}  # type: ignore[typeddict-item]
+    return {"engine": "", "question": text, "options": answers}  # type: ignore[typeddict-item]
 
 
-_PARSERS = {"claude": _claude}
+#: Menu parsers, by the manifest's `terminal.menu` KIND (#853 P3).
+_PARSERS = {"claude-numbered": _claude}
+
+
+def _parser_for(engine: str):
+    from . import engines
+
+    term = engines.terminal_of(engine)
+    return _PARSERS.get(term.menu) if term is not None else None
 
 
 def parse(screen: str, engine: str) -> Menu | None:
@@ -166,13 +174,16 @@ def parse(screen: str, engine: str) -> Menu | None:
     ``screen`` is the rendered frame ``scrollback.live_tail_text`` returns. Trailing blank lines are
     ignored; nothing else is forgiven. An engine with no captured rendering always yields ``None``.
     """
-    fn = _PARSERS.get(engine)
+    fn = _parser_for(engine)
     if fn is None or not isinstance(screen, str) or not screen.strip():
         return None
     lines = [line.rstrip() for line in screen.splitlines()]
     while lines and not lines[-1]:
         lines.pop()
-    return fn(lines)
+    menu = fn(lines)
+    if menu is not None:
+        menu["engine"] = engine  # the parser is a kind; which engine it read for is the caller's
+    return menu
 
 
 def recognises(screen: str) -> bool:
@@ -182,7 +193,12 @@ def recognises(screen: str) -> bool:
     parser anchors on its own engine's chrome, so asking all of them cannot turn one engine's output
     into another's menu.
     """
-    return any(parse(screen, engine) is not None for engine in _PARSERS)
+    from . import engines
+
+    return any(
+        parse(screen, eid) is not None
+        for eid in engines.ids_where(lambda m: m.runtime == "pty" and m.terminal.menu != "none")
+    )
 
 
 def engine_of(session_key: str) -> str:

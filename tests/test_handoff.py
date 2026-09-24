@@ -134,7 +134,9 @@ def test_quick_keeps_the_newest_turn_when_both_paths_are_enormous(fake_jsonl, mo
 
     turns = [transcript.Turn(role="user", text="THE NEWEST TURN", kind="text")]
     monkeypatch.setattr(transcript, "adapter_for", lambda e: (lambda native, home: turns))
-    monkeypatch.setitem(transcript._LOCATORS, "claude", lambda native, home: _nested_path(4089))
+    monkeypatch.setitem(
+        transcript._LOCATORS, "claude-jsonl", lambda native, home: _nested_path(4089)
+    )
 
     seed, meta = handoff.build_quick_seed(
         "claude", _SRC, cwd=_nested_path(4089), include_source_ref=True
@@ -169,7 +171,7 @@ def test_a_long_workdir_cannot_starve_the_transcript_locator(fake_jsonl, monkeyp
         lambda e: (lambda native, home: [transcript.Turn(role="user", text="hi", kind="text")]),
     )
     loc = _nested_path(6000) + "/the-real-transcript.jsonl"
-    monkeypatch.setitem(transcript._LOCATORS, "claude", lambda native, home: loc)
+    monkeypatch.setitem(transcript._LOCATORS, "claude-jsonl", lambda native, home: loc)
 
     seed, _ = handoff.build_quick_seed(
         "claude", _SRC, cwd=_nested_path(6000), include_source_ref=True
@@ -237,7 +239,9 @@ def test_the_header_can_never_take_more_than_its_share_of_the_cap(fake_jsonl, mo
     monkeypatch.setattr(handoff, "SEED_CAP_BYTES", 1024)
     turns = [transcript.Turn(role="user", text="PAYLOAD", kind="text")]
     monkeypatch.setattr(transcript, "adapter_for", lambda e: (lambda native, home: turns))
-    monkeypatch.setitem(transcript._LOCATORS, "claude", lambda native, home: _nested_path(9000))
+    monkeypatch.setitem(
+        transcript._LOCATORS, "claude-jsonl", lambda native, home: _nested_path(9000)
+    )
 
     seed, meta = handoff.build_quick_seed(
         "claude", _SRC, cwd=_nested_path(9000), include_source_ref=True
@@ -1618,7 +1622,9 @@ def test_ai_seed_keeps_its_state_when_both_paths_are_enormous(fake_jsonl, monkey
     from agent_sessions import review, transcript
 
     monkeypatch.setattr(review, "complete_json", _fake_complete(_AI_OBJ))
-    monkeypatch.setitem(transcript._LOCATORS, "claude", lambda native, home: _nested_path(4089))
+    monkeypatch.setitem(
+        transcript._LOCATORS, "claude-jsonl", lambda native, home: _nested_path(4089)
+    )
 
     seed, meta = asyncio.run(
         handoff.build_ai_seed("claude", _SRC, cwd=_nested_path(4089), include_source_ref=True)
@@ -1641,7 +1647,7 @@ def test_ai_locator_resolution_does_not_block_the_event_loop(fake_jsonl, monkeyp
         time.sleep(0.25)  # stands in for the glob + sqlite probe
         return "/store/x.jsonl"
 
-    monkeypatch.setitem(transcript._LOCATORS, "claude", _slow_locator)
+    monkeypatch.setitem(transcript._LOCATORS, "claude-jsonl", _slow_locator)
 
     async def _drive():
         beats: list[float] = []
@@ -2108,7 +2114,7 @@ def test_source_location_is_fail_soft_when_a_locator_raises(fake_jsonl, tmp_home
     def boom(native, home):
         raise OSError("store on fire")
 
-    monkeypatch.setitem(transcript._LOCATORS, "claude", boom)
+    monkeypatch.setitem(transcript._LOCATORS, "claude-jsonl", boom)
     assert transcript.source_location("claude", _SRC, tmp_home) is None
 
 
@@ -2130,7 +2136,7 @@ def test_seed_omits_the_location_when_it_cannot_resolve(fake_jsonl, monkeypatch)
     (which needs no lookup) still stands."""
     from agent_sessions import transcript
 
-    monkeypatch.setitem(transcript._LOCATORS, "claude", lambda n, h: None)
+    monkeypatch.setitem(transcript._LOCATORS, "claude-jsonl", lambda n, h: None)
     seed, _ = handoff.build_quick_seed("claude", _SRC, include_source_ref=True)
     assert f"- session: claude:{_SRC}" in seed
     assert "- transcript:" not in seed
@@ -2214,7 +2220,7 @@ def test_source_reference_uses_the_same_logical_id_the_transcript_was_read_from(
     )
     monkeypatch.setitem(
         transcript._LOCATORS,
-        "claude",
+        "claude-jsonl",
         lambda native, home: f"/store/{native}.jsonl" if native == real else None,
     )
 

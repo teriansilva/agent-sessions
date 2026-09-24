@@ -946,9 +946,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                             # app-owned master), so the JSONL is still open — report the member
                             # failed and leave it in the live tree (mirrors the single-session
                             # archive's 409). The batch stays retryable; the rest archive.
-                            if prov.engine_id == "claude" and transcript_owner.transcript_is_owned(
-                                native
-                            ):
+                            if transcript_owner.owned_elsewhere(prov, native):
                                 results.append(
                                     {
                                         "id": key,
@@ -1351,7 +1349,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # don't manage. ``prov.archive`` would ``shutil.move`` its open JSONL out from under it,
         # so the file diverges between the live + archive trees — refuse instead. Claude-only:
         # background agents (and the ``<uuid>.jsonl`` transcript) are a Claude concept.
-        if prov.engine_id == "claude" and transcript_owner.transcript_is_owned(native):
+        if transcript_owner.owned_elsewhere(prov, native):
             raise HTTPException(
                 status_code=409, detail="session is a running background agent — not archivable"
             )
@@ -1453,9 +1451,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                             )
                         # Background-agent guard (#631): never move a Claude transcript a live
                         # process still owns — skip it, exactly as single/project archive do.
-                        if prov.engine_id == "claude" and transcript_owner.transcript_is_owned(
-                            native
-                        ):
+                        if transcript_owner.owned_elsewhere(prov, native):
                             skipped += 1
                             continue
                         prov.archive(native)

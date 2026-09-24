@@ -193,6 +193,10 @@ class Binary:
     env_var: str | None
     search_paths: tuple[str, ...]
     version_flag: str | None
+    #: Also look in npm's global bin dir (`npm prefix -g`/bin) — `doctor`'s discovery only, for CLIs
+    #: whose vendor installs them with `npm i -g` (codex, gemini). Never consulted at launch: the
+    #: launcher execs what `doctor` wrote to the env file, or a `search_paths` hit (§2b).
+    search_npm_global: bool = False
 
 
 @dataclass(frozen=True)
@@ -219,6 +223,9 @@ class Store:
     layout: str
     read_only: bool
     paths: Mapping[str, str]
+    #: Per-path env overrides (`store.path_env`): a named path an operator or a test can point
+    #: elsewhere without moving the whole root (opencode's `AGENT_SESSIONS_OPENCODE_DB`/`_LOG`).
+    path_env: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -284,6 +291,8 @@ class Install:
 class Manifest:
     contract: int
     identity: Identity
+    #: `runtime.kind` (#853 §7). Every consumer that needs a terminal asks this first.
+    runtime: str
     binary: Binary
     session_id: SessionId
     store: Store | None
@@ -517,10 +526,27 @@ def parse(doc: Any, *, source: str = "", digest: str | None = None) -> Manifest:
         for i, p in enumerate(r.strs("search_paths", max_items=8))
     )
     version_flag = r.str("version_flag", None, one_of=kinds.VERSION_FLAGS)
+    npm_global = r.bool("search_npm_global")
     r.done()
     if name != identity.id and name not in aliases:
         raise ManifestError("binary.name", "must be the plugin id or one of binary.aliases")
-    binary = Binary(name, aliases, env_var, search, version_flag)
+    binary = Binary(name, aliases, env_var, search, version_flag, npm_global)
+
+    # `runtime` (#853 §7): how a session of this engine runs. Absent means `pty`, which is every
+    # engine that exists, so contract 1 needs no migration. The set holds only what this build can
+    # run; a manifest naming anything else is refused rather than half-run.
+    r = top.table("runtime", required=False)
+    runtime = "pty"
+    if r is not None:
+        raw_rt = r.raw("kind", "pty")
+        if raw_rt not in kinds.RUNTIME_KINDS:
+            raise ManifestError(
+                "runtime.kind",
+                f"{raw_rt!r} needs a newer BattleLab "
+                f"(this build runs {sorted(kinds.RUNTIME_KINDS)})",
+            )
+        runtime = raw_rt
+        r.done()
 
     r = top.table("session_id")
     sid = SessionId(
@@ -547,8 +573,18 @@ def parse(doc: Any, *, source: str = "", digest: str | None = None) -> Manifest:
                     )
                 paths[k] = relative_path(pr.raw(k), f"store.paths.{k}")
             pr.done()
+        path_env: dict[str, str] = {}
+        er = r.table("path_env", required=False)
+        if er is not None:
+            for k in list(er.t):
+                if k not in paths:
+                    raise ManifestError(
+                        f"store.path_env.{k}", "must name a declared store.paths entry"
+                    )
+                path_env[k] = er.str(k, pattern=_ENV_DIR_RE)
+            er.done()
         r.done()
-        store = Store(root, env_override, layout, read_only, paths)
+        store = Store(root, env_override, layout, read_only, paths, path_env)
 
     r = top.table("launch")
     launch = _launch(r)
@@ -673,6 +709,7 @@ def parse(doc: Any, *, source: str = "", digest: str | None = None) -> Manifest:
     m = Manifest(
         contract=contract,
         identity=identity,
+        runtime=runtime,
         binary=binary,
         session_id=sid,
         store=store,

@@ -1228,27 +1228,30 @@ def test_a_non_finite_timestamp_does_not_500_the_panel():
     assert rows[0]["stale"] is False
 
 
-def test_the_probes_honour_the_pinned_binary_not_PATH(monkeypatch):
+def test_the_probes_honour_the_pinned_binary_not_PATH(monkeypatch, engine_bin):
     """`AGENT_SESSIONS_CLAUDE_BIN` / `AGENT_SESSIONS_AGY_BIN` decide which binary this host runs.
 
     An operator who pins the launcher away from a stale or untrusted PATH entry must not find
-    the probe executing that entry every 15 minutes instead — `shutil.which` in here would
-    quietly reintroduce exactly the binary they excluded.
+    the probe executing that entry every 15 minutes instead. #853 P3: the probe asks the
+    LAUNCHER (manifest + provenance), so it runs exactly the file a launch would, and a PATH hit
+    can never stand in for it.
     """
-    from agent_sessions.engines import base
-
     seen = {}
     monkeypatch.setattr(au, "_run", lambda argv, **kw: (seen.update(argv=argv), (0, ""))[1])
-    monkeypatch.setattr(base, "CLAUDE_BIN", "/opt/pinned/claude")
-    monkeypatch.setattr(base, "AGY_BIN", "/opt/pinned/agy")
-    # `agent_usage` no longer imports `shutil` at all — that absence IS the fix, and the two
-    # constants above are the only source of a probe's binary.
+    pinned = engine_bin("claude", "antigravity")
     assert not hasattr(au, "shutil"), "a PATH lookup here would bypass the pin"
 
     au.probe_claude()
-    assert seen["argv"][0] == "/opt/pinned/claude"
+    assert seen["argv"][0] == pinned
     au.probe_agy()
-    assert seen["argv"][0] == "/opt/pinned/agy"
+    assert seen["argv"][0] == pinned
+
+
+def test_a_probe_with_no_launchable_binary_says_so_and_runs_nothing(monkeypatch, no_engine_bin):
+    ran = []
+    monkeypatch.setattr(au, "_run", lambda argv, **kw: (ran.append(argv), (0, ""))[1])
+    rep = au.probe_claude()
+    assert ran == [] and rep.error == "claude not found" and rep.engine == "claude"
 
 
 def test_a_stored_token_payload_cannot_500_the_panel():

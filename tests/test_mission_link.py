@@ -230,6 +230,13 @@ def test_INVARIANT_4_an_AMBIGUOUS_reconcile_leaves_the_binding_exactly_where_it_
     class _Prov:
         engine_id = "opencode"
 
+        # #853 P3: capability answers come from the manifest; a fake carries its engine's real one.
+        @property
+        def manifest(self):
+            from agent_sessions.engines import registry as _registry
+
+            return _registry._BY_ID[self.engine_id].manifest  # the REAL roster: tests patch `get`
+
         def reconcile_new_session(self, cwd, snapshot):
             # TWO launches landed in this cwd inside the window.
             return ["ses_aaa", "ses_bbb"]
@@ -275,6 +282,13 @@ def test_INVARIANT_4_an_UNAMBIGUOUS_reconcile_binds_the_key_it_was_GIVEN(store):
 
     class _Prov:
         engine_id = "opencode"
+
+        # #853 P3: capability answers come from the manifest; a fake carries its engine's real one.
+        @property
+        def manifest(self):
+            from agent_sessions.engines import registry as _registry
+
+            return _registry._BY_ID[self.engine_id].manifest  # the REAL roster: tests patch `get`
 
         def reconcile_new_session(self, cwd, snapshot):
             return "ses_real"

@@ -43,7 +43,7 @@ STORE_KINDS: dict[str, type] = {
 }
 
 
-def _build_roster() -> list[base.EngineProvider]:
+def _build_roster(first_party_dir: Path | None = None) -> list[base.EngineProvider]:
     """The live roster: every IN-TREE manifest, in `display.order` (#853 P2).
 
     Local manifests never reach this list — `load_first_party()` does not read them — until install
@@ -53,7 +53,7 @@ def _build_roster() -> list[base.EngineProvider]:
     """
     from ..plugins import load_first_party
 
-    loaded = load_first_party()
+    loaded = load_first_party(first_party_dir=first_party_dir)
     for key, why in loaded.problems.items():
         log.error("engine manifest %s did not load: %s", key, why)
     roster: list[base.EngineProvider] = []
@@ -84,6 +84,35 @@ _BARE_ID_ENGINE: str | None = next(
 )
 
 
+#: Callbacks run after every `reload` — for the few consumers that keep a VIEW of the roster
+#: (`agent_usage.REPORTERS`, its panel list). Registering one is how a consumer stays conformant.
+_RELOAD_LISTENERS: list[Callable[[], None]] = []
+
+
+def on_reload(fn: Callable[[], None]) -> Callable[[], None]:
+    _RELOAD_LISTENERS.append(fn)
+    return fn
+
+
+def reload(first_party_dir: Path | None = None) -> None:
+    """Rebuild the roster from the manifests — the RELOAD BOUNDARY of #853 (P3: app start; P6
+    adds an explicit action). Never mid-request: callers are app start and tests.
+
+    ``first_party_dir`` is the loader's existing test seam; the live app never passes it, so no
+    runtime path can load a manifest from anywhere but the in-tree `plugins/first_party/`.
+    """
+    global _PROVIDERS, _BY_ID, _BARE_ID_ENGINE
+    roster = _build_roster(first_party_dir)
+    _PROVIDERS = roster
+    _BY_ID = {p.engine_id: p for p in roster}
+    _BARE_ID_ENGINE = next(
+        (p.engine_id for p in roster if p.manifest.session_id.legacy_bare_id), None
+    )
+    invalidate_scan_cache()
+    for fn in list(_RELOAD_LISTENERS):
+        fn()
+
+
 def launchable_bin(prov: base.EngineProvider | None) -> str | None:
     """The binary a launch of this engine would exec, or None when it cannot launch.
 
@@ -110,6 +139,111 @@ def present_providers() -> list[base.EngineProvider]:
 
 def get(engine_id: str) -> base.EngineProvider | None:
     return _BY_ID.get(engine_id)
+
+
+# --- the manifest, asked (#853 P3) ---------------------------------------------------------------
+#
+# Every consumer that used to name an engine asks one of these instead. They take an engine id, a
+# session key (`<engine>:<native>`) or a provider, so a caller holding any of the three never has
+# to parse or look anything up itself. An unknown engine answers like an engine that declares
+# nothing: default-deny, never an exception on a hot path.
+
+
+def manifest_of(ref):
+    """The loaded manifest for an engine id, a session key or a provider — or None."""
+    if ref is None:
+        return None
+    if isinstance(ref, str):
+        ref = _BY_ID.get(ref.split(":", 1)[0])
+    return getattr(ref, "manifest", None)
+
+
+def engine_ids() -> list[str]:
+    """The roster, in display order. The ONE list of engines; nothing else keeps its own."""
+    return [p.engine_id for p in _PROVIDERS]
+
+
+def ids_where(pred: Callable) -> list[str]:
+    """Engine ids (roster order) whose manifest satisfies ``pred``."""
+    return [p.engine_id for p in _PROVIDERS if pred(p.manifest)]
+
+
+def is_agent(ref) -> bool:
+    """Is there an agent behind this engine? `identity.kind == "terminal"` (the plain shell, #636)
+    has none — nothing may be handed off from or to it, and no input may be authored for it."""
+    m = manifest_of(ref)
+    return m is not None and m.identity.kind == "agent"
+
+
+def owns_transcript(ref) -> bool:
+    """`capabilities.owns_transcript`: another process of this engine may be writing the SAME
+    transcript (a claude background-agent fork), so archive/launch must ask `transcript_owner`."""
+    m = manifest_of(ref)
+    return m is not None and m.can("owns_transcript")
+
+
+def is_pty(ref) -> bool:
+    """Does a session of this engine run as a binary under `dtach` (#853 §7)?"""
+    m = manifest_of(ref)
+    return m is not None and m.runtime == "pty"
+
+
+def require_pty(ref) -> None:
+    """The shared terminal-runtime guard. Every terminal-only path (launch, attach, scrollback
+    repaint, ready rule, menus, raw-TTY repair, admission, unattended start) calls this rather
+    than assuming a terminal exists — an engine of another runtime is refused, never treated as
+    one."""
+    m = manifest_of(ref)
+    if m is None:
+        raise base.EngineError("unknown engine")
+    if m.runtime != "pty":
+        raise base.EngineError(f"{m.id} does not run in a terminal (runtime {m.runtime!r})")
+
+
+def terminal_of(ref):
+    """The manifest's `terminal` block, or None for an unknown or non-`pty` engine — so a
+    terminal-only consumer that asks gets "nothing special", never another runtime's settings."""
+    m = manifest_of(ref)
+    return m.terminal if m is not None and m.runtime == "pty" else None
+
+
+def store_for_engine(engine_id: str, name: str | None = None, home: Path | None = None) -> Path:
+    """``engine_id``'s OWN store (or named path), from its manifest. Raises `EngineError` when it
+    declares none — a reader must then find nothing, never fall back to another engine's store."""
+    import os
+
+    from ..plugins.provider import store_location
+
+    m = manifest_of(engine_id)
+    got = (
+        store_location(m, home=home or Path.home(), env=os.environ, name=name)
+        if m is not None
+        else None
+    )
+    if got is None:
+        raise base.EngineError(f"{engine_id} declares no store path {name!r}")
+    return got
+
+
+def store_for_layout(layout: str, name: str | None = None, home: Path | None = None) -> Path:
+    """The store (or its named path) of the engine whose manifest selects ``layout``.
+
+    A store kind and its transcript adapter are shaped by one LAYOUT, not by one engine id, so
+    that is what they ask by. Resolved at call time against the live environment, so an env
+    override set by a test or the operator is honoured exactly as the provider honours it.
+    """
+    import os
+
+    from ..plugins.provider import store_location
+
+    for p in _PROVIDERS:
+        m = p.manifest
+        if m.store is not None and m.store.layout == layout:
+            got = store_location(m, home=home or Path.home(), env=os.environ, name=name)
+            if got is not None:
+                return got
+            raise base.EngineError(f"store layout {layout!r} declares no path {name!r}")
+    raise base.EngineError(f"no loaded engine uses store layout {layout!r}")
 
 
 def supports_orchestrator_input(prov: base.EngineProvider | None) -> bool:

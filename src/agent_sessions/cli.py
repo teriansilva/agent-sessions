@@ -76,7 +76,7 @@ def main(argv: list[str] | None = None) -> int:
         from . import discover
 
         found = discover.discover()
-        for name in discover.ENGINES:
+        for name in discover.engine_ids():
             path = found[name]
             print(f"  {name:9} {('→ ' + path) if path else '— not found'}")
         if not args.dry_run:

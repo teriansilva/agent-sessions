@@ -247,15 +247,21 @@ def _has_store_record(prov, native: str, cwd: str) -> bool:
     return store_record_state(prov, native) == "found"
 
 
-#: Start-evidence adapters, by engine id (#916). An engine with no entry here falls back to the
-#: transcript store — which is correct for any engine whose store record predates the first turn,
-#: and is why this is a registry rather than a rewrite of `_has_store_record`.
+#: Start-evidence adapters, by the manifest's `unattended.start_evidence` KIND (#916, #853 P3).
+#: An engine with no entry here falls back to the transcript store — which is correct for any
+#: engine whose store record predates the first turn, and is why this is a registry rather than a
+#: rewrite of `_has_store_record`.
 #:
 #: **`ClaudeProvider.scan()` is deliberately NOT widened into a registry reader.** `scan()` answers
 #: "what sessions exist" for the sidebar, the lookup route and every other consumer; redefining
 #: transcript existence to mean "a process started" would change that answer everywhere for the
 #: benefit of one caller. Two sources, two questions, one boundary.
-_START_EVIDENCE = {"claude": start_evidence.claude_start_state}
+_START_EVIDENCE = {"claude-sessions": start_evidence.claude_start_state}
+
+
+def _start_evidence_adapter(prov):
+    m = getattr(prov, "manifest", None)
+    return _START_EVIDENCE.get(m.start_evidence) if m is not None else None
 
 
 async def _await_start_evidence(
@@ -296,7 +302,7 @@ async def _await_start_evidence(
             return state, str(detail or "")
 
     else:
-        adapter = _START_EVIDENCE.get(prov.engine_id)
+        adapter = _start_evidence_adapter(prov)
     deadline = time.monotonic() + timeout
     last_state, last_detail = "", ""
     while time.monotonic() < deadline:
@@ -542,6 +548,10 @@ async def dispatch(
     prov = engines.get(engine)
     if prov is None:
         raise DispatchError(f"unknown engine {engine!r}")
+    try:
+        engines.require_pty(prov)  # a headless launch is a dtach master (#853 §7)
+    except engines.EngineError as e:
+        raise DispatchError(str(e)) from None
     # THE SAME GATE THE HANDOFF PICKER USES, not a second copy. `shell` is refused here because a
     # brief seeded into a bare `bash -l` is EXECUTED, and an engine with no seed support cannot be
     # briefed at all — so dispatching to it would produce a session nobody asked for.

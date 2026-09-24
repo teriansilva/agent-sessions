@@ -22,6 +22,9 @@ layout = "opencode-sqlite"
 [store.paths]
 db = "opencode.db"
 log = "log/opencode.log"
+[store.path_env]
+db = "AGENT_SESSIONS_OPENCODE_DB"
+log = "AGENT_SESSIONS_OPENCODE_LOG"
 
 [launch]
 resume = { kind = "positional-dir", flag = "--session" }  # bypass is config-side for opencode

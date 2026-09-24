@@ -112,6 +112,32 @@ def read_record(state_dir: Path | None, plugin_id: str) -> provenance.Record | N
     return provenance.Record(**doc)
 
 
+def store_location(
+    manifest: Manifest, *, home: Path, env: Mapping[str, str], name: str | None = None
+) -> Path | None:
+    """Where a manifest's store — or one of its named paths — is on this host (#853 P3).
+
+    The ONE resolver: the provider, its store kind and the transcript adapters all come here, so a
+    store location has a single source (the manifest) instead of a manifest field and a parallel
+    helper that could disagree. Env overrides win: `store.path_env` for a named path, then
+    `store.env_override` for the root.
+    """
+    s = manifest.store
+    if s is None:
+        return None
+    if name is not None:
+        if name not in s.paths:
+            return None
+        var = s.path_env.get(name)
+        if var and env.get(var):
+            return Path(env[var])
+    if s.env_override and env.get(s.env_override):
+        root = Path(env[s.env_override])
+    else:
+        root = home / s.root[2:] if s.root.startswith("~/") else Path(s.root)
+    return root if name is None else root / s.paths[name]
+
+
 class PluginProvider:
     """Satisfies `engines.base.EngineProvider` from a validated manifest."""
 
@@ -186,19 +212,10 @@ class PluginProvider:
         return self._home if self._home is not None else Path.home()
 
     def store_root(self) -> Path | None:
-        s = self.manifest.store
-        if s is None:
-            return None
-        if s.env_override and self.env.get(s.env_override):
-            return Path(self.env[s.env_override])
-        return self.home / s.root[2:] if s.root.startswith("~/") else Path(s.root)
+        return store_location(self.manifest, home=self.home, env=self.env)
 
     def store_path(self, name: str) -> Path | None:
-        root = self.store_root()
-        s = self.manifest.store
-        if root is None or s is None or name not in s.paths:
-            return None
-        return root / s.paths[name]
+        return store_location(self.manifest, home=self.home, env=self.env, name=name)
 
     # --- the entrypoint (§2b) ------------------------------------------------------------------
 

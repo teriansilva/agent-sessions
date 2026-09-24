@@ -55,6 +55,11 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
     compact = opencode_compact.Service(runner)
     app.state.opencode_compaction = compact
 
+    def _measure_all() -> dict:
+        # Every engine that selects the compaction kind (#853 P3), each measured against its own
+        # database and admission lock. `compact` stays the default target for existing clients.
+        return {eid: opencode_compact.measure(engine=eid) for eid in opencode_compact.targets()}
+
     def _busy(e: maintenance.MaintenanceBusy) -> JSONResponse:
         return JSONResponse({"detail": maintenance.BUSY_DETAIL, "busy": e.info}, status_code=409)
 
@@ -62,8 +67,14 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
     async def prune_dry_run(_user: str = Depends(logged_in)) -> JSONResponse:
         categories = await asyncio.to_thread(maintenance.dry_run_caches)
         database = await asyncio.to_thread(opencode_compact.measure)
+        every = await asyncio.to_thread(_measure_all)
         return JSONResponse(
-            {"categories": categories, "compact": database, "runner": runner.busy_info()}
+            {
+                "categories": categories,
+                "compact": database,
+                "compact_targets": every,
+                "runner": runner.busy_info(),
+            }
         )
 
     @app.get("/api/maintenance/compact")
@@ -76,8 +87,18 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
             return JSONResponse(
                 {"detail": "Compaction job is no longer available."}, status_code=404
             )
-        info = await asyncio.to_thread(opencode_compact.measure)
-        return JSONResponse({"compact": info, "job": job, "runner": runner.busy_info()})
+        engine = request.query_params.get("engine")
+        if engine is not None and engine not in opencode_compact.targets():
+            return _unprocessable("engine is not a compaction target")
+        info = await asyncio.to_thread(opencode_compact.measure, engine=engine)
+        return JSONResponse(
+            {
+                "compact": info,
+                "targets": opencode_compact.targets(),
+                "job": job,
+                "runner": runner.busy_info(),
+            }
+        )
 
     @app.post("/api/maintenance/compact")
     async def compact_start(
@@ -86,10 +107,17 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         _csrf: None = Depends(csrf_guard),
     ) -> JSONResponse:
         body = await _object_body(request)
-        if body is None or set(body) != {"confirm"} or body["confirm"] is not True:
-            return _unprocessable('body must be exactly {"confirm": true}')
+        if (
+            body is None
+            or set(body) not in ({"confirm"}, {"confirm", "engine"})
+            or body["confirm"] is not True
+        ):
+            return _unprocessable('body must be {"confirm": true} with an optional "engine"')
+        engine = body.get("engine")
+        if engine is not None and engine not in opencode_compact.targets():
+            return _unprocessable("engine is not a compaction target")
         try:
-            accepted, job = await compact.start()
+            accepted, job = await compact.start(engine)
         except maintenance.MaintenanceBusy as e:
             return _busy(e)
         return JSONResponse(

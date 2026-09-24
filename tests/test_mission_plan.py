@@ -148,6 +148,8 @@ def test_SHELL_is_never_offered_as_a_dispatch_target(monkeypatch):
         def __init__(self, eid, seed):
             self.engine_id = eid
             self.supports_seed_start = seed
+            # #853 P3: capability answers come from the manifest; carry the real one.
+            self.manifest = engines.get(eid).manifest
 
         def is_present(self):
             return True
@@ -167,6 +169,14 @@ def test_an_UNINSTALLED_engine_is_not_offered(monkeypatch):
 
     class P:
         engine_id = "codex"
+
+        # #853 P3: capability answers come from the manifest; a fake carries its engine's real one.
+        @property
+        def manifest(self):
+            from agent_sessions.engines import registry as _registry
+
+            return _registry._BY_ID[self.engine_id].manifest  # the REAL roster: tests patch `get`
+
         supports_seed_start = True
 
         def is_present(self):

@@ -1423,3 +1423,68 @@ def test_versioned_interpreter_names_are_forbidden(name):
 @pytest.mark.parametrize("name", ["gemini", "claude", "codex", "shellcheck-free", "geminicli"])
 def test_ordinary_agent_names_are_not_caught_by_the_suffix_rule(name):
     assert not kinds.is_forbidden_entrypoint(name)
+
+
+# --- #853 P3: runtime, per-path env overrides, npm-global discovery -------------------------------
+
+
+def test_runtime_absent_means_pty_for_every_first_party_manifest():
+    for e in SEVEN:
+        assert parse(doc(e)).runtime == "pty", e
+
+
+def test_runtime_pty_can_be_stated_explicitly():
+    d = doc()
+    d["runtime"] = {"kind": "pty"}
+    assert parse(d).runtime == "pty"
+
+
+@pytest.mark.parametrize("kind", ["chat", "api", "", "PTY", 1, None])
+def test_a_runtime_this_build_cannot_run_is_refused_not_half_run(kind):
+    """An API-only runtime is #853 P9; until its reviewed code lands, naming it is refused with a
+    reason — never loaded as if it were a terminal engine."""
+    d = doc()
+    d["runtime"] = {"kind": kind}
+    with pytest.raises(ManifestError, match="runtime.kind"):
+        parse(d)
+
+
+def test_an_unknown_runtime_field_is_refused():
+    d = doc()
+    d["runtime"] = {"kind": "pty", "endpoint": "https://x"}
+    with pytest.raises(ManifestError):
+        parse(d)
+
+
+def test_a_manifest_with_an_unrunnable_runtime_fails_soft_with_its_reason(tmp_path):
+    """The loader surfaces the refusal for that plugin and keeps the others (the API/UI path)."""
+    local = tmp_path / "plugins"
+    (local / "zeta").mkdir(parents=True)
+    d = doc()
+    d["identity"]["id"] = "zeta"
+    d["binary"].update(name="zeta", env_var="AGENT_SESSIONS_ZETA_BIN")
+    d["runtime"] = {"kind": "chat"}
+    (local / "zeta" / "plugin.json").write_text(json.dumps(d))
+    got = load_all(local_dir=local, state_dir=tmp_path / "state")
+    assert "zeta" not in got.providers and "needs a newer BattleLab" in str(got.problems)
+    assert "claude" in got.providers
+
+
+def test_path_env_must_name_a_declared_path_and_a_valid_variable():
+    d = doc("opencode")
+    d["store"]["path_env"] = {"secrets": "AGENT_SESSIONS_X"}
+    with pytest.raises(ManifestError, match="store.path_env.secrets"):
+        parse(d)
+    d = doc("opencode")
+    d["store"]["path_env"] = {"db": "LD_PRELOAD"}
+    with pytest.raises(ManifestError):
+        parse(d)
+
+
+def test_search_npm_global_is_a_boolean():
+    d = doc("codex")
+    assert parse(d).binary.search_npm_global is True
+    assert parse(doc("claude")).binary.search_npm_global is False
+    d["binary"]["search_npm_global"] = "yes"
+    with pytest.raises(ManifestError):
+        parse(d)

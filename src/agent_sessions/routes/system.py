@@ -32,6 +32,7 @@ from .. import (
     update,
 )
 from ..auth import AuthConfig, current_csrf, session_uid
+from ..plugins import kinds
 from ..version import get_version
 
 
@@ -211,18 +212,18 @@ def register(
 
     @app.get("/api/engines")
     async def list_engines(_: str = Depends(logged_in)) -> JSONResponse:
-        # Discovery for the Settings "Connected agents" section: every known provider
-        # with whether the CLI is installed + whether this host can start a new session +
-        # the resolved binary path (or null). Authed; GET, so no CSRF.
+        # The roster the SPA renders from (#853 P3): every engine the app knows, in display
+        # order, with what its manifest declares and what this host can do with it. Nothing
+        # client-side keeps its own copy of any of this. Authed; GET, so no CSRF.
         def row(p: engines.EngineProvider) -> dict:
             # What a launch would exec (#853 P2) — the launcher's own answer, not a PATH probe.
             bin_path = engines.launchable_bin(p)
             can_start = bool(bin_path and getattr(p, "supports_new", False))
-            # Handoff-target capability (#597): the ONE source both the modal's engine
-            # tiles and the server-side prepare rejection consume, so a disabled tile can
-            # never disagree with what the server would accept. `seed_reason` is the
-            # user-facing why-not (null when supported).
-            can_seed, seed_reason = handoff.seed_start_state(p, present=bin_path is not None)
+            # Handoff-target capability (#597): the ONE source both the modal's engine tiles and
+            # the server-side prepare rejection consume, so a disabled tile can never disagree
+            # with what the server would accept. `seed_reason` is the user-facing why-not.
+            can_seed, seed_reason = handoff.handoff_target_state(p, present=bin_path is not None)
+            m = p.manifest
             return {
                 "id": p.engine_id,
                 "present": bin_path is not None,
@@ -230,6 +231,31 @@ def register(
                 "supports_seed_start": can_seed,
                 "seed_reason": seed_reason,
                 "bin": bin_path,
+                # --- from the manifest -------------------------------------------------------
+                "label": m.identity.label,
+                "kind": m.identity.kind,
+                # How a session of this engine runs (#853 §7). The SPA picks the session surface
+                # from it; `pty` is the only runtime this build has.
+                "runtime": m.runtime,
+                "display": {
+                    "name": m.display.name,
+                    "badge": m.display.badge,
+                    "accent": m.display.accent,
+                    "id_prefix": m.display.id_prefix,
+                    "order": m.display.order,
+                },
+                "capabilities": {c: m.can(c) for c in kinds.CAPABILITIES},
+                "session_id": {"mint": m.session_id.mint},
+                "models": [
+                    {"id": x.id, "context_window": x.context_window, "aliases": list(x.aliases)}
+                    for x in m.models
+                ],
+                "usage": {"source": m.usage.source},
+                "terminal": {"repaint": m.terminal.repaint},
+                # Lifecycle (#853 P3): `active` for every loaded engine; `retiring` is added with
+                # the removal work, and is distinct from `present` (which is about the binary).
+                "status": "active",
+                "status_reason": None,
             }
 
         rows = await asyncio.to_thread(lambda: [row(p) for p in engines.all_providers()])

@@ -68,15 +68,17 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         except engines.EngineError:
             raise HTTPException(status_code=404, detail="unknown session") from None
         source_key = f"{prov.engine_id}:{native}"
-        if prov.engine_id == "shell":
-            raise HTTPException(status_code=422, detail="shell sessions cannot be handed off")
+        if not engines.is_agent(prov):
+            raise HTTPException(
+                status_code=422, detail=f"{prov.engine_id} sessions cannot be handed off"
+            )
         # Target capability — the SAME source /api/engines serves the UI tiles from, so a
         # disabled tile and this rejection can never disagree.
         tprov = engines.get(target_engine)
         if tprov is None:
             raise HTTPException(status_code=404, detail="unknown engine")
         present = bool(await asyncio.to_thread(engines.launchable_bin, tprov))
-        ok, reason = handoff.seed_start_state(tprov, present=present)
+        ok, reason = handoff.handoff_target_state(tprov, present=present)
         if not ok:
             raise HTTPException(status_code=422, detail=f"target engine unavailable: {reason}")
         # Source must be a scanned, in-scope session — the resume path's scope rule

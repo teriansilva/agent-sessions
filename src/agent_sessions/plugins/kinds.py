@@ -26,6 +26,11 @@ CONTRACT_CURRENT = 1
 #: termios, because typed "continue" into a bare shell is executed as a command.
 IDENTITY_KINDS = frozenset({"agent", "terminal"})
 
+#: `runtime.kind` (#853 §7). `pty`: a binary under `dtach`, shown through xterm — every engine
+#: today. An API-only runtime (BattleLab's own turn loop, no binary, no terminal) is #853 P9 and
+#: joins this set only with the reviewed code that runs it; until then naming it is refused.
+RUNTIME_KINDS = frozenset({"pty"})
+
 #: `session_id.mint`. `pinned`: BattleLab mints the id before launch (claude, gemini, shell).
 #: `adopt`: the engine mints its own and the new-session path reconciles a `new-<uuid>`
 #: placeholder to it afterwards (opencode, codex, antigravity, kimi — `RECONCILE_ENGINES`).

@@ -56,6 +56,14 @@ class FakeLate:
     """A late-id engine that declares every capability, backed by in-memory state."""
 
     engine_id = "kimi"
+
+    # #853 P3: capability answers come from the manifest; a fake carries its engine's real one.
+    @property
+    def manifest(self):
+        from agent_sessions.engines import registry as _registry
+
+        return _registry._BY_ID[self.engine_id].manifest  # the REAL roster: tests patch `get`
+
     id_pattern = base._KIMI_SESSION_RE
     supports_seed_start = True
     new_session_reconciles = True
@@ -149,7 +157,7 @@ def prov(monkeypatch, work):
             return []
         return [types.SimpleNamespace(role="user", kind="text", text=text)]
 
-    monkeypatch.setitem(transcript._ADAPTERS, "kimi", adapter)
+    monkeypatch.setitem(transcript._ADAPTERS, "kimi-wire", adapter)
     monkeypatch.setattr(headless_dispatch, "START_POLL_S", 0.01)
     return p
 
@@ -686,6 +694,14 @@ def test_the_MISSION_picker_drops_an_incapable_late_id_engine_and_the_HANDOFF_pi
 ):
     class Late:
         engine_id = "kimi"
+
+        # #853 P3: capability answers come from the manifest; a fake carries its engine's real one.
+        @property
+        def manifest(self):
+            from agent_sessions.engines import registry as _registry
+
+            return _registry._BY_ID[self.engine_id].manifest  # the REAL roster: tests patch `get`
+
         supports_seed_start = True
         new_session_reconciles = True
 

@@ -799,9 +799,7 @@ def test_ws_opencode_placeholder_passes_validation_on_new(
     # argv-build (bare-name bin → 4500) to prove validation passed without needing a real
     # opencode/dtach. The launch cwd must be a pickable project.
     from agent_sessions import scanner
-    from agent_sessions.engines import opencode
 
-    monkeypatch.setattr(opencode.discover, "resolve", lambda engine_id: None)
     monkeypatch.setenv("AGENT_SESSIONS_OPENCODE_BIN", "opencode")  # bare → refused → 4500
     cwd = next(iter(scanner.pickable_projects()))
     c = _client(auth_cfg)
@@ -1045,10 +1043,8 @@ def test_ws_opencode_resume_real_id_with_aliased_dead_master(
     # 4500 on a bare-name bin), not 4404 — which is what would happen if `native` were
     # overwritten to the placeholder before the resume scan.
     from agent_sessions import metadata
-    from agent_sessions.engines import opencode
 
     OC_TOP = "ses_aaaaaaaaaaaaaaaaaaaaaaaa"  # the scanned opencode session in opencode_db
-    monkeypatch.setattr(opencode.discover, "resolve", lambda engine_id: None)
     monkeypatch.setenv("AGENT_SESSIONS_OPENCODE_BIN", "opencode")  # bare → refused → 4500
     metadata.set_alias(_OC_PLACEHOLDER, f"opencode:{OC_TOP}")  # placeholder → real
     c = _client(auth_cfg)
@@ -1066,9 +1062,7 @@ def test_ws_opencode_placeholder_launch_failure_releases_lock(
     # placeholder: the launch lock was released, so the 2nd attempt LAUNCHes again (4500),
     # not BUSY (4409).
     from agent_sessions import scanner
-    from agent_sessions.engines import opencode
 
-    monkeypatch.setattr(opencode.discover, "resolve", lambda engine_id: None)
     monkeypatch.setenv("AGENT_SESSIONS_OPENCODE_BIN", "opencode")  # bare → refused → 4500
     cwd = next(iter(scanner.pickable_projects()))
     c = _client(auth_cfg)
@@ -2277,9 +2271,7 @@ def test_early_opencode_launch_rejection_releases_admission(
     fake_jsonl, opencode_db, auth_cfg, monkeypatch
 ):
     from agent_sessions import opencode_admission, scanner
-    from agent_sessions.engines import opencode
 
-    monkeypatch.setattr(opencode.discover, "resolve", lambda _: None)
     monkeypatch.setenv("AGENT_SESSIONS_OPENCODE_BIN", "bare-bin")
     cwd = next(iter(scanner.pickable_projects()))
     c = _client(auth_cfg)

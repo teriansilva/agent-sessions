@@ -1981,9 +1981,21 @@ def get_agent_budgets(path: Path | None = None) -> dict:
     return _coerce_agent_budgets(_load(path or _default_path()).get("agent_budgets"))
 
 
-def validate_agent_budgets_patch(patch: object) -> str | None:
+def _budget_engine_ids(path: Path | None = None) -> set[str]:
+    """Engine ids a budget write may name (#853 P3): every loaded engine with an agent behind it,
+    PLUS every id already stored. The second half is the retirement rule — a removed engine's
+    budget stays in prefs, inert, and the operator can still edit or clear it; re-adding the
+    engine brings it back unchanged. It is never deleted for being unknown."""
+    from . import engines
+
+    stored = get_agent_budgets(path).get("engines") or {}
+    return set(engines.ids_where(lambda m: m.identity.kind == "agent")) | set(stored)
+
+
+def validate_agent_budgets_patch(patch: object, path: Path | None = None) -> str | None:
     """Server-side schema check for a partial `agent_budgets` write: an error string (→ 422) or
-    None. Unknown keys are rejected so a typo can't silently no-op."""
+    None. Unknown keys are rejected so a typo can't silently no-op — and so is an engine id that
+    is neither a loaded agent nor already stored (#853 P3)."""
     if not isinstance(patch, dict):
         return "agent_budgets must be an object"
     unknown = set(patch) - set(_AGENT_BUDGET_DEFAULTS)
@@ -2006,9 +2018,12 @@ def validate_agent_budgets_patch(patch: object) -> str | None:
         engines = patch["engines"]
         if not isinstance(engines, dict):
             return "agent_budgets.engines must be an object"
+        known = _budget_engine_ids(path)
         for engine, cfg in engines.items():
             if not isinstance(engine, str) or not engine:
                 return "agent_budgets.engines keys must be engine ids"
+            if engine not in known:
+                return f"agent_budgets.engines.{engine}: no such agent"
             if not isinstance(cfg, dict):
                 return f"agent_budgets.engines.{engine} must be an object"
             extra = set(cfg) - set(_ENGINE_BUDGET_KEYS)

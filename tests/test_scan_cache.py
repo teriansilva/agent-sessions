@@ -208,6 +208,13 @@ def test_reconcile_new_session_invalidates_scan_cache(monkeypatch, tmp_home):
     class FakeProv:
         engine_id = "opencode"
 
+        # #853 P3: capability answers come from the manifest; a fake carries its engine's real one.
+        @property
+        def manifest(self):
+            from agent_sessions.engines import registry as _registry
+
+            return _registry._BY_ID[self.engine_id].manifest  # the REAL roster: tests patch `get`
+
         def reconcile_new_session(self, cwd, snapshot):
             return "ses_real123"  # a real id appears on the first poll
 

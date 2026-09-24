@@ -41,8 +41,39 @@ class Admission:
         self.release()
 
 
-def acquire(*, exclusive: bool) -> Admission | None:
-    path = sessionlock.lock_dir() / "maintenance-opencode.lock"
+def maintained_engines() -> list[str]:
+    """EVERY engine whose store the compaction kind maintains — each one whose manifest selects
+    `maintenance = ["sqlite-vacuum"]` (#853 P3), in roster order. Each has its own database and
+    its own admission lock; none is ever dropped for not being first."""
+    from . import engines
+
+    return engines.ids_where(lambda m: "sqlite-vacuum" in m.maintenance)
+
+
+def maintained_engine() -> str | None:
+    """The DEFAULT compaction target (the first in roster order) — what a request that names no
+    engine means, which keeps the pre-P3 endpoints' single-target shape working."""
+    ids = maintained_engines()
+    return ids[0] if ids else None
+
+
+def admits(engine: str) -> bool:
+    """Does a launch of ``engine`` take shared admission? Its manifest says so
+    (`launch.admission = "sqlite-store-shared"`), never its id."""
+    from . import engines
+
+    m = engines.manifest_of(engine)
+    return m is not None and m.launch.admission == "sqlite-store-shared"
+
+
+def acquire(engine: str | None = None, *, exclusive: bool) -> Admission | None:
+    """Take ``engine``'s admission lock (default: the maintained engine). One lock file per engine,
+    `maintenance-<id>.lock` — which for opencode is the name it has always had, so an instance
+    running the previous build and this one still fence each other."""
+    engine = engine or maintained_engine()
+    if engine is None:
+        raise OSError("no engine selects store maintenance")
+    path = sessionlock.lock_dir() / f"maintenance-{engine}.lock"
     fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
     try:
         st = os.fstat(fd)
@@ -59,9 +90,11 @@ def acquire(*, exclusive: bool) -> Admission | None:
 
 async def for_launch(engine: str) -> Admission | None:
     """Take shared admission off-loop, reclaiming an acquisition abandoned by its caller."""
-    if engine != "opencode":
+    if not admits(engine):
         return None
-    task = asyncio.get_running_loop().run_in_executor(None, partial(acquire, exclusive=False))
+    task = asyncio.get_running_loop().run_in_executor(
+        None, partial(acquire, engine=engine, exclusive=False)
+    )
     try:
         guard = await asyncio.shield(task)
     except asyncio.CancelledError:

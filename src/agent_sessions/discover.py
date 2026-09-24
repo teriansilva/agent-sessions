@@ -1,8 +1,8 @@
 """Engine autodiscovery (#65 Phase 3).
 
-Probe for the agent CLIs (claude, opencode, codex, gemini) and resolve each to a path
-with a defined precedence: an explicit ``AGENT_SESSIONS_*_BIN`` (kept only if it still
-executes) > ``PATH`` > known install dirs (+ the npm global bin for gemini-cli). The
+Probe for every engine's CLI and resolve each to a path with a defined precedence: an explicit
+``AGENT_SESSIONS_*_BIN`` (kept only if it still executes) > ``PATH`` > the manifest's
+``binary.search_paths`` (+ the npm global bin where ``binary.search_npm_global``). The
 ``doctor`` command writes ONLY the ``*_BIN`` lines of the app env file — everything
 else in the file is preserved.
 """
@@ -17,40 +17,43 @@ from pathlib import Path
 
 from . import envfile
 
-ENGINES = ("claude", "opencode", "codex", "gemini", "antigravity", "kimi", "shell")
 
-# Engines whose CLI binary name differs from the engine id. antigravity's binary is ``agy`` and the
-# shell engine's binary is ``bash`` (#636); every other engine's binary matches its id. The
-# PATH/dir probe AND the env var key derive from the *binary* name, so antigravity's knob is
-# ``AGENT_SESSIONS_AGY_BIN`` and shell's is ``AGENT_SESSIONS_BASH_BIN`` (matches ``base.BASH_BIN``).
-_BIN_NAME: dict[str, str] = {"antigravity": "agy", "shell": "bash"}
+def _manifest(name: str):
+    from . import engines
 
-# Command name on PATH + known install dirs to probe as a last resort.
-_DIRS: dict[str, list[str]] = {
-    "claude": ["~/.local/bin"],
-    "opencode": ["~/.opencode/bin", "~/.local/bin"],
-    "codex": ["~/.codex/bin", "~/.local/bin"],
-    "gemini": ["~/.local/bin"],
-    # agy is a single Go binary from the curl installer (not npm); it lands in ~/.local/bin.
-    "antigravity": ["~/.local/bin"],
-    # kimi's curl installer drops a single native binary in ~/.kimi-code/bin and only appends that
-    # dir to the shell rc — so a service started before the rc was re-sourced won't see it on PATH,
-    # making this dir probe the one that usually resolves it. NOT in _NPM_GLOBAL_ENGINES: upstream
-    # ships an npm fallback for musl hosts, but its executable path is unverified here (#714).
-    "kimi": ["~/.kimi-code/bin", "~/.local/bin"],
-    # bash is a base system binary — PATH resolves it; the extra dirs cover a non-PATH shell.
-    "shell": ["/bin", "/usr/bin"],
-}
+    m = engines.manifest_of(name)
+    if m is None:
+        raise KeyError(name)
+    return m
 
-_NPM_GLOBAL_ENGINES = frozenset({"codex", "gemini"})
+
+def engine_ids() -> list[str]:
+    """Every engine `doctor` looks for: the roster, in display order (#853 P3). No list here."""
+    from . import engines
+
+    return engines.engine_ids()
 
 
 def _bin_name(name: str) -> str:
-    return _BIN_NAME.get(name, name)
+    """The CLI's binary name — the manifest's `binary.name` (antigravity's is `agy`, shell's is
+    `bash`). The PATH/dir probe and the env var key both derive from it."""
+    return _manifest(name).binary.name
+
+
+def _search_dirs(name: str) -> list[str]:
+    """Known install dirs to probe as a last resort: the manifest's `binary.search_paths`."""
+    return list(_manifest(name).binary.search_paths)
+
+
+def _searches_npm_global(name: str) -> bool:
+    return _manifest(name).binary.search_npm_global
 
 
 def envvar(name: str) -> str:
-    return f"AGENT_SESSIONS_{_bin_name(name).upper()}_BIN"
+    """The `*_BIN` knob `doctor` writes — the manifest's `binary.env_var`, which is also the one
+    the launcher reads (§2b), so the two can never name different variables."""
+    m = _manifest(name)
+    return m.binary.env_var or f"AGENT_SESSIONS_{m.binary.name.upper()}_BIN"
 
 
 def default_env_path() -> Path:
@@ -88,8 +91,8 @@ def resolve(name: str, env: Mapping[str, str] | None = None) -> str | None:
     on_path = shutil.which(binary)
     if on_path:
         return on_path
-    dirs = list(_DIRS[name])
-    if name in _NPM_GLOBAL_ENGINES:
+    dirs = _search_dirs(name)
+    if _searches_npm_global(name):
         npm = _npm_global_bin()
         if npm:
             dirs.append(npm)
@@ -102,7 +105,7 @@ def resolve(name: str, env: Mapping[str, str] | None = None) -> str | None:
 
 def discover(env: Mapping[str, str] | None = None) -> dict[str, str | None]:
     env = os.environ if env is None else env
-    return {name: resolve(name, env) for name in ENGINES}
+    return {name: resolve(name, env) for name in engine_ids()}
 
 
 def write_env_bins(env_path: Path, bins: Mapping[str, str | None]) -> None:

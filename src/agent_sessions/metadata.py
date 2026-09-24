@@ -14,13 +14,22 @@ from __future__ import annotations
 import fcntl
 import json
 import os
-import re
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, fields
 from pathlib import Path
 
-_CLAUDE_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+def _legacy_bare_engine():
+    """``(engine_id, id_pattern)`` of the ONE engine whose manifest claims `legacy_bare_id` — the
+    engine every pre-multi-engine bare key belongs to (#853 P3) — or None when no loaded manifest
+    claims it, in which case bare keys are left exactly as they are rather than guessed at."""
+    from .engines import registry
+
+    eid = registry._BARE_ID_ENGINE
+    prov = registry.get(eid) if eid else None
+    return (eid, prov.id_pattern) if prov is not None else None
+
 
 # Reserved top-level key in the sidecar JSON for the placeholder→real session-id alias
 # map (#127). It's NOT a session row: ``load`` skips it, so it never leaks into the
@@ -70,7 +79,7 @@ def validate_color(color: object, *, fail_soft: bool = False) -> str:
 
 
 def _normalize_keys(data: dict) -> tuple[dict, bool]:
-    """Map pre-multi-engine bare-UUID keys to ``claude:<uuid>``.
+    """Map pre-multi-engine bare-UUID keys to ``<legacy engine>:<uuid>`` (``claude:<uuid>``).
 
     Returns ``(normalized, changed)``. Already-qualified keys (containing ``:``)
     and non-UUID keys are left untouched, so this is a no-op for current data. The
@@ -78,11 +87,16 @@ def _normalize_keys(data: dict) -> tuple[dict, bool]:
     """
     out: dict = {}
     changed = False
+    legacy = _legacy_bare_engine()
     for k, v in data.items():
         if k == _ALIAS_KEY:
             out[k] = v
             continue
-        nk = f"claude:{k}" if (":" not in k and _CLAUDE_UUID_RE.match(k)) else k
+        nk = (
+            f"{legacy[0]}:{k}"
+            if (legacy is not None and ":" not in k and legacy[1].fullmatch(k))
+            else k
+        )
         changed = changed or nk != k
         out[nk] = v
     return out, changed

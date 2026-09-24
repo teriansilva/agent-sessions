@@ -366,6 +366,9 @@ def register(
             # The opencode new-session placeholder (``new-<uuid>``) is a valid id ONLY on
             # the new=1 launch path (#127); resume/attach still requires the native shape.
             prov, native = engines.parse_key(sid, allow_new_placeholder=is_new)
+            # Everything below is a dtach master and a PTY (#853 §7): an engine that does not
+            # run in a terminal is refused here, never treated as one.
+            engines.require_pty(prov)
         except engines.EngineError:
             return await reject(4404)
 
@@ -641,7 +644,7 @@ def register(
                 # "currently running as a background agent" and exit instantly, relaunch-looping.
                 # Refuse with a terminal code so the client shows "not attachable" instead of
                 # retrying. Claude-only (background agents are a Claude concept).
-                if prov.engine_id == "claude" and transcript_owner.transcript_is_owned(native):
+                if transcript_owner.owned_elsewhere(prov, native):
                     return await reject(4404)
                 try:
                     launch = await asyncio.to_thread(  # off the loop, as above

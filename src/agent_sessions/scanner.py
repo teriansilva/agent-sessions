@@ -574,7 +574,7 @@ def pickable_projects(
         out = {c for c in out if project_dirs.in_scope(c, roots=roots, exclusions=exclusions)}
     else:
         # Unscoped (today): session cwds ∪ ~/claude subdirs, then drop the exclusions below.
-        _scan_root_subdirs((home / "claude").resolve(), out)
+        _scan_root_subdirs((home / "claude").resolve(), out)  # kind-data: ~/claude workspace
         if exclusions:
             out = {c for c in out if not any(project_dirs.path_within(c, e) for e in exclusions)}
     return sorted(out)

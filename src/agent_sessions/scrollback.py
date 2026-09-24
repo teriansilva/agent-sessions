@@ -1318,13 +1318,20 @@ def _resume_payload(key: str, have: int) -> tuple[bytes, int]:
 
 # Clean-load clear sequence (#227): cursor home + clear screen + clear scrollback.
 _CLEAN_LOAD_CLEAR = b"\x1b[H\x1b[2J\x1b[3J"
-# Agents whose TUI repaint emits CSI 3J (erase scrollback) as part of a full-screen clear.
+# An agent whose TUI repaint emits CSI 3J (erase scrollback) as part of a full-screen clear.
 # Codex's ratatui (#600); Kimi's ink-style TUI (#1038 — verified in a live session's ring:
 # 95 wipes, each deleting the entire BattleLab scrollback above the frame and, mid-stream,
 # dragging the client's viewport off the live tail via the browser's scrollTop clamp).
-_WIPE_REPAINT_ENGINES = frozenset({"codex", "kimi"})
+# Which engines do it is the manifest's `terminal.repaint = "wipe"` (#853 P3), not a list here.
 _AGENT_SCROLLBACK_ERASE = b"\x1b[3J"
 _SANITIZE_CARRY: dict[str, bytes] = {}
+
+
+def _wipes_on_repaint(key: str) -> bool:
+    from . import engines
+
+    term = engines.terminal_of(key)
+    return term is not None and term.repaint == "wipe"
 
 
 def sanitize_live_output(key: str, data: bytes) -> bytes:
@@ -1339,7 +1346,7 @@ def sanitize_live_output(key: str, data: bytes) -> bytes:
     read from the live dtach PTY stream — both consumers (the attached pump in ``webterm`` and the
     headless drain in ``session_stream``) call it before any buffering or fan-out.
     """
-    if key.split(":", 1)[0] not in _WIPE_REPAINT_ENGINES:
+    if not _wipes_on_repaint(key):
         _SANITIZE_CARRY.pop(key, None)
         return data
     src = _SANITIZE_CARRY.pop(key, b"") + data
@@ -1416,14 +1423,12 @@ def _in_alt_screen(buf: bytes) -> bool:
 # Fresh-load scroll-up from the engine's saved conversation transcript (#242). On by default;
 # AGENT_SESSIONS_TRANSCRIPT_SCROLLBACK=0 falls back to raw-byte clean-load everywhere.
 _TRANSCRIPT_SCROLLBACK = (os.environ.get("AGENT_SESSIONS_TRANSCRIPT_SCROLLBACK", "1") or "1") != "0"
-# Engine id → display label for the "⏺ <label>" assistant marker.
-_ENGINE_LABEL = {
-    "claude": "Claude",
-    "codex": "Codex",
-    "gemini": "Gemini",
-    "opencode": "opencode",
-    "kimi": "Kimi",
-}
+
+
+def _assistant_label(prov) -> str:
+    """The "⏺ <label>" assistant marker: the manifest's `identity.label` (#853 P3)."""
+    m = getattr(prov, "manifest", None)
+    return m.identity.label if m is not None else prov.engine_id
 
 
 def _transcript_payload(buf_key: str, cols: int, rows: int = 24) -> tuple[bytes, int] | None:
@@ -1461,7 +1466,7 @@ def _transcript_payload(buf_key: str, cols: int, rows: int = 24) -> tuple[bytes,
     try:
         turns = adapter(native, Path.home())
         body, boundary = transcript.render_with_boundary(
-            turns, cols, assistant_label=_ENGINE_LABEL.get(prov.engine_id, prov.engine_id)
+            turns, cols, assistant_label=_assistant_label(prov)
         )
     except Exception:
         return None

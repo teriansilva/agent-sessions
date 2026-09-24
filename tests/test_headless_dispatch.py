@@ -23,6 +23,7 @@ import time
 import pytest
 
 from agent_sessions import (
+    engines,
     handoff,
     headless_dispatch,
     headless_seed,
@@ -36,6 +37,12 @@ class FakeProv:
     engine_id = "claude"
     supports_seed_start = True
     new_session_reconciles = False
+    # #853 P3: every capability answer comes from the manifest, so a fake stands in for the real
+    # engine by carrying ITS engine's real manifest (subclasses below switch `engine_id`).
+
+    @property
+    def manifest(self):
+        return engines.registry._BY_ID[self.engine_id].manifest  # tests patch `engines.get`
 
     def __init__(self, rows=None):
         self.rows = rows if rows is not None else []
@@ -195,7 +202,7 @@ def _stub_started(monkeypatch, started=True, *, on_read=None):
         return (start_evidence.FOUND, "") if started else (start_evidence.ABSENT, "no entry")
 
     monkeypatch.setattr(headless_dispatch, "_has_store_record", _store)
-    monkeypatch.setitem(headless_dispatch._START_EVIDENCE, "claude", _adapter)
+    monkeypatch.setitem(headless_dispatch._START_EVIDENCE, "claude-sessions", _adapter)
 
 
 def _stub_spawn(monkeypatch, *, returncode=0, make_socket=True):

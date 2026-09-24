@@ -95,12 +95,31 @@ _REASON_NOT_INSTALLED = "not installed"
 def seed_start_state(prov, *, present: bool) -> tuple[bool, str | None]:
     """``(supported, reason)`` for ``prov`` as a handoff *target*. ``reason`` is ``None``
     exactly when supported. The single capability source for /api/engines and the routes."""
-    if getattr(prov, "engine_id", "") == "shell":
+    from . import engines
+
+    # From the manifest (#853 P3): an engine with no agent behind it (`identity.kind =
+    # "terminal"`) is never seeded. Mission dispatch shares this answer, so it is about SEEDING
+    # only; whether an engine is offered as a handoff target is `handoff_target_state`.
+    if not engines.is_agent(prov):
         return False, _REASON_NOT_AGENT
     if not getattr(prov, "supports_seed_start", False):
         return False, _REASON_NO_SEED
     if not present:
         return False, _REASON_NOT_INSTALLED
+    return True, None
+
+
+def handoff_target_state(prov, *, present: bool) -> tuple[bool, str | None]:
+    """``(supported, reason)`` for ``prov`` as a handoff TARGET: seedable (above) AND declaring
+    `capabilities.handoff_target`. The source for the handoff route and `/api/engines`."""
+    from . import engines
+
+    ok, why = seed_start_state(prov, present=present)
+    if not ok:
+        return ok, why
+    m = engines.manifest_of(prov)
+    if m is None or not m.can("handoff_target"):
+        return False, _REASON_NO_SEED
     return True, None
 
 

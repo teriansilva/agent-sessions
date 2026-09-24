@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from agent_sessions import engines
 from agent_sessions.main import create_app
+from agent_sessions.plugins import kinds
 
 
 def _client(cfg):
@@ -56,7 +57,34 @@ def test_engines_lists_all_providers(auth_cfg, fake_jsonl, tmp_home, monkeypatch
             "supports_seed_start",
             "seed_reason",
             "bin",
+            # #853 P3 — the roster the SPA renders from, read from each manifest.
+            "label",
+            "kind",
+            "runtime",
+            "display",
+            "capabilities",
+            "session_id",
+            "models",
+            "usage",
+            "terminal",
+            "status",
+            "status_reason",
         }
+        m = engines.get(e["id"]).manifest
+        assert e["label"] == m.identity.label and e["kind"] == m.identity.kind
+        assert e["runtime"] == "pty"
+        assert e["display"] == {
+            "name": m.display.name,
+            "badge": m.display.badge,
+            "accent": m.display.accent,
+            "id_prefix": m.display.id_prefix,
+            "order": m.display.order,
+        }
+        assert e["capabilities"] == {c: m.can(c) for c in kinds.CAPABILITIES}
+        assert e["session_id"] == {"mint": m.session_id.mint}
+        assert e["usage"] == {"source": m.usage.source}
+        assert e["terminal"] == {"repaint": m.terminal.repaint}
+        assert (e["status"], e["status_reason"]) == ("active", None)
         assert isinstance(e["present"], bool)
         assert isinstance(e["supports_new"], bool)
         # Handoff-target capability (#597): bool + a reason exactly when unsupported.
@@ -84,14 +112,17 @@ def test_engines_marks_binary_only_opencode_installed(auth_cfg, tmp_home, monkey
     _login(c, auth_cfg)
     d = c.get("/api/engines").json()
     opencode = next(e for e in d["engines"] if e["id"] == "opencode")
-    assert opencode == {
+    assert {k: opencode[k] for k in ("id", "present", "supports_new", "supports_seed_start")} == {
         "id": "opencode",
         "present": True,
         "supports_new": True,
         "supports_seed_start": True,
-        "seed_reason": None,
-        "bin": str(oc_bin),
     }
+    assert opencode["seed_reason"] is None and opencode["bin"] == str(oc_bin)
+    # The roster order and display come from the manifests, not from the SPA (#853 P3).
+    assert [e["id"] for e in d["engines"]] == engines.engine_ids()
+    assert opencode["display"]["id_prefix"] == "ses_"
+    assert opencode["session_id"]["mint"] == "adopt"
 
 
 def test_engines_requires_auth(auth_cfg):

@@ -416,6 +416,14 @@ def test_a_seed_the_store_no_longer_knows_is_unknown(store):
 
 class _Prov:
     engine_id = "claude"
+
+    # #853 P3: capability answers come from the manifest; a fake carries its engine's real one.
+    @property
+    def manifest(self):
+        from agent_sessions.engines import registry as _registry
+
+        return _registry._BY_ID[self.engine_id].manifest  # the REAL roster: tests patch `get`
+
     supports_seed_start = True
     new_session_reconciles = False
 
@@ -451,7 +459,9 @@ def launcher(store, monkeypatch):
         lambda *a, **k: (headless_dispatch.engine_auth.AUTHENTICATED, "stubbed"),
     )
     monkeypatch.setitem(
-        headless_dispatch._START_EVIDENCE, "claude", lambda n, c, **k: (start_evidence.FOUND, "")
+        headless_dispatch._START_EVIDENCE,
+        "claude-sessions",
+        lambda n, c, **k: (start_evidence.FOUND, ""),
     )
 
     class P:
@@ -473,7 +483,7 @@ def _launch(monkeypatch, deliver, *, started=True):
     if not started:
         monkeypatch.setitem(
             headless_dispatch._START_EVIDENCE,
-            "claude",
+            "claude-sessions",
             lambda n, c, **k: (start_evidence.ABSENT, "no entry"),
         )
     monkeypatch.setattr(headless_seed, "deliver", deliver)

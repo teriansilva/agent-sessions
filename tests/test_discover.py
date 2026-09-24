@@ -32,7 +32,9 @@ def test_resolve_path_then_known_dir(tmp_path, monkeypatch):
     assert discover.resolve("opencode", {}) == "/usr/bin/opencode"
     # …and with nothing on PATH, a known dir is used.
     monkeypatch.setattr(discover.shutil, "which", lambda _n: None)
-    monkeypatch.setattr(discover, "_DIRS", {"opencode": [str(tmp_path)]})
+    monkeypatch.setattr(
+        discover, "_search_dirs", lambda name: [str(tmp_path)] if name == "opencode" else []
+    )
     found = _make_exec(tmp_path / "opencode")
     assert discover.resolve("opencode", {}) == found
 
@@ -44,7 +46,9 @@ def test_resolve_codex_checks_npm_global_bin(tmp_path, monkeypatch):
     found = _make_exec(npm_prefix / "bin" / "codex")
 
     monkeypatch.setattr(discover.shutil, "which", lambda n: "/usr/bin/npm" if n == "npm" else None)
-    monkeypatch.setattr(discover, "_DIRS", {**discover._DIRS, "codex": ["/nonexistent"]})
+    monkeypatch.setattr(
+        discover, "_search_dirs", lambda name, _d=["/nonexistent"]: _d if name == "codex" else []
+    )
     monkeypatch.setattr(
         discover.subprocess,
         "run",
@@ -56,7 +60,7 @@ def test_resolve_codex_checks_npm_global_bin(tmp_path, monkeypatch):
 
 def test_resolve_not_found_is_none(monkeypatch):
     monkeypatch.setattr(discover.shutil, "which", lambda _n: None)
-    monkeypatch.setattr(discover, "_DIRS", {"codex": ["/nonexistent"]})
+    monkeypatch.setattr(discover, "_search_dirs", lambda name: ["/nonexistent"])
     assert discover.resolve("codex", {}) is None
 
 
@@ -74,7 +78,11 @@ def test_antigravity_known_dir_and_not_npm_global(tmp_path, monkeypatch):
     # nothing on PATH -> the ~/.local/bin probe finds `agy`; antigravity is NOT npm-global, so the
     # npm prefix is never consulted (the curl installer drops a single binary in ~/.local/bin).
     monkeypatch.setattr(discover.shutil, "which", lambda _n: None)
-    monkeypatch.setattr(discover, "_DIRS", {**discover._DIRS, "antigravity": [str(tmp_path)]})
+    monkeypatch.setattr(
+        discover,
+        "_search_dirs",
+        lambda name, _d=[str(tmp_path)]: _d if name == "antigravity" else [],
+    )
 
     def _boom(*_a, **_kw):
         raise AssertionError("npm prefix must not be consulted for antigravity")
@@ -82,7 +90,7 @@ def test_antigravity_known_dir_and_not_npm_global(tmp_path, monkeypatch):
     monkeypatch.setattr(discover, "_npm_global_bin", _boom)
     found = _make_exec(tmp_path / "agy")
     assert discover.resolve("antigravity", {}) == found
-    assert "antigravity" not in discover._NPM_GLOBAL_ENGINES
+    assert not discover._searches_npm_global("antigravity")
 
 
 def test_kimi_env_knob_and_install_dir(tmp_path, monkeypatch):
@@ -91,7 +99,7 @@ def test_kimi_env_knob_and_install_dir(tmp_path, monkeypatch):
     assert discover.envvar("kimi") == "AGENT_SESSIONS_KIMI_BIN"
     # The installer's own dir must be probed — a service started before the shell rc was
     # re-sourced won't see ~/.kimi-code/bin on PATH.
-    assert "~/.kimi-code/bin" in discover._DIRS["kimi"]
+    assert "~/.kimi-code/bin" in discover._search_dirs("kimi")
     explicit = _make_exec(tmp_path / "kimi")
     assert discover.resolve("kimi", {"AGENT_SESSIONS_KIMI_BIN": explicit}) == explicit
     monkeypatch.setattr(
@@ -106,7 +114,9 @@ def test_kimi_known_dir_and_not_npm_global(tmp_path, monkeypatch):
     # npm-global: upstream ships an npm fallback for musl, but its path is unverified (#714), so
     # the npm prefix must never be consulted.
     monkeypatch.setattr(discover.shutil, "which", lambda _n: None)
-    monkeypatch.setattr(discover, "_DIRS", {**discover._DIRS, "kimi": [str(tmp_path)]})
+    monkeypatch.setattr(
+        discover, "_search_dirs", lambda name, _d=[str(tmp_path)]: _d if name == "kimi" else []
+    )
 
     def _boom(*_a, **_kw):
         raise AssertionError("npm prefix must not be consulted for kimi")
@@ -114,7 +124,7 @@ def test_kimi_known_dir_and_not_npm_global(tmp_path, monkeypatch):
     monkeypatch.setattr(discover, "_npm_global_bin", _boom)
     found = _make_exec(tmp_path / "kimi")
     assert discover.resolve("kimi", {}) == found
-    assert "kimi" not in discover._NPM_GLOBAL_ENGINES
+    assert not discover._searches_npm_global("kimi")
 
 
 def test_write_env_bins_preserves_others_and_is_0600(tmp_path):
@@ -180,7 +190,7 @@ def test_doctor_cli_dry_run_does_not_write(tmp_path, monkeypatch):
 def test_shell_engine_env_knob_keys_on_bash_binary(tmp_path, monkeypatch):
     # The shell engine's binary is `bash`, not `shell` (#636): the env knob is
     # AGENT_SESSIONS_BASH_BIN and the PATH probe looks up `bash`, matching base.BASH_BIN.
-    assert "shell" in discover.ENGINES
+    assert "shell" in discover.engine_ids()
     assert discover.envvar("shell") == "AGENT_SESSIONS_BASH_BIN"
     explicit = _make_exec(tmp_path / "bash")
     assert discover.resolve("shell", {"AGENT_SESSIONS_BASH_BIN": explicit}) == explicit
@@ -188,4 +198,4 @@ def test_shell_engine_env_knob_keys_on_bash_binary(tmp_path, monkeypatch):
         discover.shutil, "which", lambda n: "/usr/bin/bash" if n == "bash" else None
     )
     assert discover.resolve("shell", {}) == "/usr/bin/bash"
-    assert "shell" not in discover._NPM_GLOBAL_ENGINES
+    assert not discover._searches_npm_global("shell")

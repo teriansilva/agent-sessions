@@ -339,17 +339,48 @@ def render_with_boundary(
 # Signature: (native_id, home) -> list[Turn]. `home` is injectable for testing. Bounded by
 # `max_messages` inside each adapter so a huge transcript never balloons.
 TranscriptAdapter = Callable[[str, Path], list[Turn]]
+#: Every registry below is keyed by the manifest's `transcript.kind` (#853 P3), never an engine id:
+#: an adapter is a KIND — reviewed code shaped by one store format — and which engine reads through
+#: it is that engine's manifest's business. Callers still ask by engine id.
 _ADAPTERS: dict[str, TranscriptAdapter] = {}
 
 
-def register_adapter(engine_id: str, adapter: TranscriptAdapter) -> None:
-    """Register an engine's transcript adapter (keyed by the engines.py engine id)."""
-    _ADAPTERS[engine_id] = adapter
+def _kind(engine_id: str) -> str | None:
+    from . import engines
+
+    m = engines.manifest_of(engine_id)
+    return m.transcript_kind if m is not None and m.transcript_kind != "none" else None
+
+
+def register_adapter(kind: str, adapter: TranscriptAdapter) -> None:
+    """Register the adapter for a `transcript.kind`."""
+    _ADAPTERS[kind] = adapter
+
+
+def _scoped(fn, engine_id: str, empty):
+    """Run a kind's reader AGAINST ``engine_id``'s OWN store (#853 P3): the kind is shared, the
+    store is not. A store the engine does not declare reads as nothing, never as another's."""
+    from .engines import base
+
+    if fn is None:
+        return None
+
+    def call(native_id: str, home: Path):
+        with base.store_scope(engine_id):
+            try:
+                return fn(native_id, home)
+            except base.EngineError:
+                return empty
+
+    call.__wrapped__ = fn  # type: ignore[attr-defined]
+    return call
 
 
 def adapter_for(engine_id: str) -> TranscriptAdapter | None:
-    """The registered adapter for ``engine_id``, or ``None`` (→ caller keeps the raw-byte path)."""
-    return _ADAPTERS.get(engine_id)
+    """The adapter ``engine_id``'s manifest selects, reading ``engine_id``'s store — or ``None``
+    (→ the raw-byte path)."""
+    k = _kind(engine_id)
+    return _scoped(_ADAPTERS.get(k), engine_id, []) if k else None
 
 
 # A STRICT reader is the same read with one difference: it RAISES where the adapter above degrades
@@ -361,14 +392,30 @@ def adapter_for(engine_id: str) -> TranscriptAdapter | None:
 _STRICT_ADAPTERS: dict[str, TranscriptAdapter] = {}
 
 
-def register_strict_adapter(engine_id: str, adapter: TranscriptAdapter) -> None:
-    """Register the read for ``engine_id`` that raises instead of returning ``[]`` on failure."""
-    _STRICT_ADAPTERS[engine_id] = adapter
+def register_strict_adapter(kind: str, adapter: TranscriptAdapter) -> None:
+    """Register the read for a `transcript.kind` that raises instead of returning ``[]``."""
+    _STRICT_ADAPTERS[kind] = adapter
 
 
 def strict_adapter_for(engine_id: str) -> TranscriptAdapter | None:
-    """The strict reader for ``engine_id`` when one is registered, else its ordinary adapter."""
-    return _STRICT_ADAPTERS.get(engine_id) or adapter_for(engine_id)
+    """The strict reader when ``engine_id``'s manifest declares `transcript.strict`, else its
+    ordinary adapter."""
+    from . import engines
+
+    m = engines.manifest_of(engine_id)
+    k = _kind(engine_id)
+    strict = _STRICT_ADAPTERS.get(k) if k and m is not None and m.transcript_strict else None
+    if strict is None:
+        return adapter_for(engine_id)
+    from .engines import base
+
+    def call(native_id: str, home: Path):
+        # No EngineError → [] here: a STRICT read must raise rather than read as empty.
+        with base.store_scope(engine_id):
+            return strict(native_id, home)
+
+    call.__wrapped__ = strict  # type: ignore[attr-defined]
+    return call
 
 
 # Where an engine keeps a session's FULL transcript, as an agent-readable location string (#716).
@@ -385,21 +432,22 @@ SourceLocator = Callable[[str, Path], str | None]
 _LOCATORS: dict[str, SourceLocator] = {}
 
 
-def register_locator(engine_id: str, locator: SourceLocator) -> None:
-    """Register an engine's transcript locator (keyed by the engines.py engine id)."""
-    _LOCATORS[engine_id] = locator
+def register_locator(kind: str, locator: SourceLocator) -> None:
+    """Register the locator for a `transcript.kind`."""
+    _LOCATORS[kind] = locator
 
 
 def locator_for(engine_id: str) -> SourceLocator | None:
-    """The registered locator for ``engine_id``, or ``None`` (engine can't be located)."""
-    return _LOCATORS.get(engine_id)
+    """The locator ``engine_id``'s manifest selects, or ``None`` (engine can't be located)."""
+    k = _kind(engine_id)
+    return _scoped(_LOCATORS.get(k), engine_id, None) if k else None
 
 
 def source_location(engine_id: str, native_id: str, home: Path) -> str | None:
     """Where ``engine_id``'s session ``native_id`` keeps its full transcript, or ``None`` when the
     session doesn't resolve / the engine has no locator. Fail-soft by construction: a locator that
     raises yields ``None``, so an unreadable or corrupt store can never break a handoff."""
-    fn = _LOCATORS.get(engine_id)
+    fn = locator_for(engine_id)
     if fn is None:
         return None
     try:
@@ -414,9 +462,14 @@ GrowthMark = Callable[[str, Path], "int | None"]
 _GROWTH: dict[str, GrowthMark] = {}
 
 
-def register_growth(engine_id: str, fn: GrowthMark) -> None:
-    """Register an engine's growth signal (keyed by the engines.py engine id)."""
-    _GROWTH[engine_id] = fn
+def register_growth(kind: str, fn: GrowthMark) -> None:
+    """Register the growth signal for a `transcript.kind`."""
+    _GROWTH[kind] = fn
+
+
+def growth_for(engine_id: str) -> GrowthMark | None:
+    k = _kind(engine_id)
+    return _scoped(_GROWTH.get(k), engine_id, None) if k else None
 
 
 def growth_mark(engine_id: str, native_id: str, home: Path) -> int | None:
@@ -436,7 +489,7 @@ def growth_mark(engine_id: str, native_id: str, home: Path) -> int | None:
     Fail-soft by construction: any error yields ``None`` and the caller treats the session as
     unmeasurable rather than stalled.
     """
-    fn = _GROWTH.get(engine_id)
+    fn = growth_for(engine_id)
     if fn is None:
         return None
     try:
@@ -539,7 +592,14 @@ def claude_jsonl_path(native_id: str, home: Path) -> Path | None:
     ``projects-archive`` for archived sessions), or ``None``. The cwd-encoded project dir isn't
     known from the id alone, so glob — but for the EXACT ``<id>.jsonl`` filename, so the match is
     always that one session and never a same-prefix neighbour."""
-    for root in (home / ".claude" / "projects", home / ".claude" / "projects-archive"):
+    from .engines import base
+
+    for name in ("sessions", "archive"):
+        # The `claude-projects` store's named paths — the requesting engine's own when scoped.
+        try:
+            root = base._store("claude-projects", name, home)
+        except base.EngineError:
+            continue
         try:
             match = next(root.glob(f"*/{native_id}.jsonl"), None)
         except OSError:
@@ -555,9 +615,9 @@ def _claude_adapter(native_id: str, home: Path) -> list[Turn]:
     return claude_turns_from_jsonl(path) if path is not None else []
 
 
-register_adapter("claude", _claude_adapter)
-register_locator("claude", _path_locator(claude_jsonl_path))
-register_growth("claude", _path_growth(claude_jsonl_path))
+register_adapter("claude-jsonl", _claude_adapter)
+register_locator("claude-jsonl", _path_locator(claude_jsonl_path))
+register_growth("claude-jsonl", _path_growth(claude_jsonl_path))
 
 
 def _read_tail(path: Path) -> bytes:
@@ -651,9 +711,9 @@ def _codex_adapter(native_id: str, home: Path) -> list[Turn]:
     return _codex_turns_from_records(_jsonl_dicts(_read_tail(path)))[-DEFAULT_MAX_MESSAGES:]
 
 
-register_adapter("codex", _codex_adapter)
-register_locator("codex", _path_locator(codex_rollout_path))
-register_growth("codex", _path_growth(codex_rollout_path))
+register_adapter("codex-rollout", _codex_adapter)
+register_locator("codex-rollout", _path_locator(codex_rollout_path))
+register_growth("codex-rollout", _path_growth(codex_rollout_path))
 
 
 # --- kimi ---------------------------------------------------------------------------------
@@ -819,9 +879,9 @@ def _kimi_adapter(native_id: str, home: Path) -> list[Turn]:
     return _kimi_cap(_kimi_turns_from_wire(recs))
 
 
-register_adapter("kimi", _kimi_adapter)
-register_locator("kimi", _path_locator(kimi_wire_path))
-register_growth("kimi", _path_growth(kimi_wire_path))
+register_adapter("kimi-wire", _kimi_adapter)
+register_locator("kimi-wire", _path_locator(kimi_wire_path))
+register_growth("kimi-wire", _path_growth(kimi_wire_path))
 
 
 # --- opencode -----------------------------------------------------------------------------
@@ -999,10 +1059,10 @@ def _opencode_growth(native_id: str, home: Path) -> int | None:
         conn.close()
 
 
-register_adapter("opencode", _opencode_adapter)
-register_strict_adapter("opencode", _opencode_turns_strict)
-register_locator("opencode", _opencode_locator)
-register_growth("opencode", _opencode_growth)
+register_adapter("opencode-sqlite", _opencode_adapter)
+register_strict_adapter("opencode-sqlite", _opencode_turns_strict)
+register_locator("opencode-sqlite", _opencode_locator)
+register_growth("opencode-sqlite", _opencode_growth)
 
 
 # --- gemini -------------------------------------------------------------------------------
@@ -1058,7 +1118,7 @@ def _gemini_turns_from_jsonl(path: Path, *, max_messages: int = DEFAULT_MAX_MESS
             text = _gemini_text(o.get("content"))
             if text:
                 turns.append(Turn("user", text, "text", _when(o.get("timestamp"))))
-        elif t == "gemini":
+        elif t == "gemini":  # kind-data: gemini's own chat record type
             text = _gemini_text(o.get("content"))
             if text:
                 turns.append(Turn("assistant", text, "text"))
@@ -1070,9 +1130,9 @@ def _gemini_adapter(native_id: str, home: Path) -> list[Turn]:
     return _gemini_turns_from_jsonl(path) if path is not None else []
 
 
-register_adapter("gemini", _gemini_adapter)
-register_locator("gemini", _path_locator(gemini_chat_path))
-register_growth("gemini", _path_growth(gemini_chat_path))
+register_adapter("gemini-chat", _gemini_adapter)
+register_locator("gemini-chat", _path_locator(gemini_chat_path))
+register_growth("gemini-chat", _path_growth(gemini_chat_path))
 
 
 # --- antigravity (agy) --------------------------------------------------------------------
@@ -1136,6 +1196,6 @@ def _antigravity_growth(native_id: str, home: Path) -> int | None:
         return None
 
 
-register_adapter("antigravity", _antigravity_adapter)
-register_locator("antigravity", _antigravity_locator)
-register_growth("antigravity", _antigravity_growth)
+register_adapter("antigravity-brain", _antigravity_adapter)
+register_locator("antigravity-brain", _antigravity_locator)
+register_growth("antigravity-brain", _antigravity_growth)

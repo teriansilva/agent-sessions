@@ -10,7 +10,6 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from .. import discover
 from .. import metadata as _metadata
 from ..scanner import Session, is_ephemeral_cwd
 from . import base
@@ -359,7 +358,8 @@ class OpenCodeProvider:
         owner = getattr(self, "owner", None)
         if owner is not None:
             return owner.entrypoint_path()
-        return discover.resolve(self.engine_id) or base.OPENCODE_BIN
+        # A kind never picks a binary itself (#853 P3): unattached, there is nothing to exec.
+        raise base.EngineError(f"{self.engine_id}: no entrypoint — the store kind is not attached")
 
     def store_present(self) -> bool:
         """Does this engine's store exist? Presence of the BINARY is the provider's question

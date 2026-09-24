@@ -37,6 +37,13 @@ class FakeSession:
 class FakeProvider:
     engine_id = "claude"
 
+    # #853 P3: capability answers come from the manifest; a fake carries its engine's real one.
+    @property
+    def manifest(self):
+        from agent_sessions.engines import registry as _registry
+
+        return _registry._BY_ID[self.engine_id].manifest  # the REAL roster: tests patch `get`
+
     def __init__(self):
         self.rows = {}
 

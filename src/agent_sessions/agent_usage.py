@@ -50,6 +50,7 @@ from pathlib import Path
 
 from . import procgroup
 from .atomicjson import atomic_write_json, json_write_lock, read_json_doc
+from .engines import registry as _registry
 
 log = logging.getLogger("agent_sessions.agent_usage")
 
@@ -280,6 +281,35 @@ def _kill(proc: subprocess.Popen, code: int, message: str) -> tuple[int, str]:
     return code, message
 
 
+# --- which engine a reporter KIND serves (#853 P3) ----------------------------------------------
+#
+# A reporter is a kind: shaped by one vendor's CLI output or store, selected by a manifest's
+# `usage.kind`. It never names an engine itself; the engine is whichever manifest selected it.
+
+
+def _engine_for(kind: str) -> str:
+    from . import engines
+
+    ids = engines.ids_where(lambda m: m.usage.kind == kind)
+    return ids[0] if ids else kind
+
+
+def _probe_binary(engine: str) -> str | None:
+    """The binary a probe runs: the LAUNCHER's answer (manifest + provenance, never PATH). An
+    operator who pins `AGENT_SESSIONS_*_BIN` away from a stale or untrusted PATH entry must not
+    find the probe executing that entry every 15 minutes instead."""
+    from . import engines
+
+    return engines.launchable_bin(engines.get(engine))
+
+
+def _binary_name(engine: str) -> str:
+    from . import engines
+
+    m = engines.manifest_of(engine)
+    return m.binary.name if m is not None else engine
+
+
 #: ``Current session: 5% used · resets Aug 26, 1:10pm (Europe/Bucharest)``
 #: ``Current week (all models): 31% used · resets Aug 30, 5pm (Europe/Bucharest)``
 #: ``Current week (Fable): 0% used``
@@ -290,7 +320,7 @@ _CLAUDE_LINE = re.compile(
 )
 
 
-def parse_claude_usage(text: str, now: float | None = None) -> Report:
+def parse_claude_usage(text: str, now: float | None = None, *, engine: str | None = None) -> Report:
     """Parse ``claude -p "/usage"``.
 
     Only the quota lines are read. The rest of that output is a behavioural breakdown ("97% of your
@@ -299,6 +329,7 @@ def parse_claude_usage(text: str, now: float | None = None) -> Report:
     of thing that should not end up in a stored artifact.
     """
     now = time.time() if now is None else now
+    engine = engine or _engine_for("claude-cli-probe")
     windows: list[Window] = []
     for m in _CLAUDE_LINE.finditer(text):
         label = " ".join(m.group("label").split())
@@ -315,8 +346,8 @@ def parse_claude_usage(text: str, now: float | None = None) -> Report:
             )
         )
     if not windows:
-        return Report(engine="claude", source=SOURCE_PLAN, at=now, error="no quota lines in output")
-    return Report(engine="claude", source=SOURCE_PLAN, windows=windows, at=now)
+        return Report(engine=engine, source=SOURCE_PLAN, at=now, error="no quota lines in output")
+    return Report(engine=engine, source=SOURCE_PLAN, windows=windows, at=now)
 
 
 def _parse_human_reset(text: str | None, now: float) -> float | None:
@@ -361,13 +392,14 @@ _AGY_ROW = re.compile(
 )
 
 
-def parse_agy_usage(text: str, now: float | None = None) -> Report:
+def parse_agy_usage(text: str, now: float | None = None, *, engine: str | None = None) -> Report:
     """Parse ``agy -p "/usage"`` — tab-separated, and stated as **remaining**, not used.
 
     The inversion matters: every other engine here reports what it has spent, and rendering a
     "100% remaining" row as "100% used" would put a fresh account at the top of the alarm list.
     """
     now = time.time() if now is None else now
+    engine = engine or _engine_for("agy-cli-probe")
     windows: list[Window] = []
     for m in _AGY_ROW.finditer(text):
         label = f"{m.group('family').strip()} · {m.group('label').strip()}"
@@ -383,10 +415,8 @@ def parse_agy_usage(text: str, now: float | None = None) -> Report:
             )
         )
     if not windows:
-        return Report(
-            engine="antigravity", source=SOURCE_PLAN, at=now, error="no quota rows in output"
-        )
-    return Report(engine="antigravity", source=SOURCE_PLAN, windows=windows, at=now)
+        return Report(engine=engine, source=SOURCE_PLAN, at=now, error="no quota rows in output")
+    return Report(engine=engine, source=SOURCE_PLAN, windows=windows, at=now)
 
 
 def _parse_iso(text: str) -> float | None:
@@ -398,16 +428,12 @@ def _parse_iso(text: str) -> float | None:
         return None
 
 
-def probe_claude(binary: str | None = None) -> Report:
-    # `base.CLAUDE_BIN`, read at CALL time — not `shutil.which`. The repo's contract is that
-    # `AGENT_SESSIONS_CLAUDE_BIN` pins which binary this host runs, and an operator who pins the
-    # launcher away from a stale or untrusted PATH entry must not find the probe executing that
-    # entry every 15 minutes instead. Call time, so an override is picked up live.
-    from .engines import base
-
-    exe = binary or base.CLAUDE_BIN
+def probe_claude(binary: str | None = None, *, engine: str | None = None) -> Report:
+    engine = engine or _engine_for("claude-cli-probe")
+    exe = binary or _probe_binary(engine)
     if not exe:
-        return Report(engine="claude", source=SOURCE_PLAN, at=time.time(), error="claude not found")
+        name = _binary_name(engine)
+        return Report(engine=engine, source=SOURCE_PLAN, at=time.time(), error=f"{name} not found")
     # `--no-session-persistence` (claude ≥ 2.1, `--print` only): the probe leaves **no
     # transcript**. Without it every sweep wrote a JSONL file — ~35,000 a year at this cadence —
     # that the scanner then had to stat and open on every pass merely to hide again. Verified on
@@ -416,27 +442,25 @@ def probe_claude(binary: str | None = None) -> Report:
     # The scanner's `sdk-cli` filter stays, and is no longer load-bearing for this feature: it
     # covers the transcripts already on disk and any other SDK-driven `claude -p` on the host.
     code, out = _run([exe, "--no-session-persistence", "-p", "/usage"])
-    report = parse_claude_usage(out)
+    report = parse_claude_usage(out, engine=engine)
     if code != 0 and not report.windows:
-        report.error = f"claude -p /usage exited {code}"
+        report.error = f"{_binary_name(engine)} -p /usage exited {code}"
     return report
 
 
-def probe_agy(binary: str | None = None) -> Report:
-    from .engines import base
-
-    exe = binary or base.AGY_BIN  # the same binary contract as claude, above
+def probe_agy(binary: str | None = None, *, engine: str | None = None) -> Report:
+    engine = engine or _engine_for("agy-cli-probe")
+    exe = binary or _probe_binary(engine)  # the same binary contract as claude, above
     if not exe:
-        return Report(
-            engine="antigravity", source=SOURCE_PLAN, at=time.time(), error="agy not found"
-        )
+        name = _binary_name(engine)
+        return Report(engine=engine, source=SOURCE_PLAN, at=time.time(), error=f"{name} not found")
     code, out = _run([exe, "-p", "/usage"])
-    report = parse_agy_usage(out)
+    report = parse_agy_usage(out, engine=engine)
     if code != 0 and not report.windows:
         # Measured while building this: an eligibility check that needs the network fails with
         # `dial tcp … connect: network is unreachable`. A probe is an external call and this is
         # what one looks like when it goes wrong — keep the last good figures, say why.
-        report.error = _first_line(out) or f"agy -p /usage exited {code}"
+        report.error = _first_line(out) or f"{_binary_name(engine)} -p /usage exited {code}"
     return report
 
 
@@ -451,7 +475,9 @@ def _first_line(text: str) -> str:
 # --- file-backed reporters (no subprocess) ------------------------------------------------------
 
 
-def read_codex_rate_limits(home: Path | None = None, *, now: float | None = None) -> Report:
+def read_codex_rate_limits(
+    home: Path | None = None, *, now: float | None = None, engine: str | None = None
+) -> Report:
     """codex writes its own quota into every rollout; the newest one wins.
 
     A tail read of one file — codex states `used_percent`, the window length, when it resets and
@@ -463,6 +489,7 @@ def read_codex_rate_limits(home: Path | None = None, *, now: float | None = None
     # real `resets_at` is a TIME BOMB: it passes until that moment arrives, then fails for
     # everyone, on a test that is about parsing rather than about the clock.
     now = time.time() if now is None else now
+    engine = engine or _engine_for("codex-rollout-field")
     try:
         # `rglob`, not a `*/*/*/` glob: the date nesting is codex's business, not ours, and a
         # hardcoded depth would fail SILENTLY if it ever changed — every codex row would just
@@ -474,7 +501,7 @@ def read_codex_rate_limits(home: Path | None = None, *, now: float | None = None
             reverse=True,
         )[:5]
     except OSError as exc:
-        return Report(engine="codex", source=SOURCE_PLAN, at=now, error=str(exc))
+        return Report(engine=engine, source=SOURCE_PLAN, at=now, error=str(exc))
     expired = 0
     for path in files:
         got = _last_rate_limits(path)
@@ -508,7 +535,7 @@ def read_codex_rate_limits(home: Path | None = None, *, now: float | None = None
         if windows:
             plan = limits.get("plan_type")
             return Report(
-                engine="codex",
+                engine=engine,
                 source=SOURCE_PLAN,
                 windows=windows,
                 plan=plan if isinstance(plan, str) else None,
@@ -518,7 +545,7 @@ def read_codex_rate_limits(home: Path | None = None, *, now: float | None = None
                 checked_at=now,
             )
     return Report(
-        engine="codex",
+        engine=engine,
         source=SOURCE_PLAN,
         at=now,
         checked_at=now,
@@ -588,7 +615,9 @@ def _last_rate_limits(path: Path) -> tuple[dict, float] | None:
 OPENCODE_WINDOW_DAYS = 7
 
 
-def read_opencode_tokens(home: Path | None = None, *, days: int = OPENCODE_WINDOW_DAYS) -> Report:
+def read_opencode_tokens(
+    home: Path | None = None, *, days: int = OPENCODE_WINDOW_DAYS, engine: str | None = None
+) -> Report:
     """Aggregate opencode's own token records over the last ``days``.
 
     Read **read-only** from its database, which is the same guarantee the opencode provider already
@@ -599,6 +628,7 @@ def read_opencode_tokens(home: Path | None = None, *, days: int = OPENCODE_WINDO
     from .engines import base
 
     now = time.time()
+    engine = engine or _engine_for("opencode-store-query")
     db = base._opencode_db(home or Path.home())
     since_ms = int((now - days * 86400) * 1000)
     totals = {"in": 0, "out": 0, "cache_read": 0, "cache_write": 0}
@@ -609,7 +639,7 @@ def read_opencode_tokens(home: Path | None = None, *, days: int = OPENCODE_WINDO
         # minutes where waiting out a brief write lock beats losing the row.
         conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2.0)
     except sqlite3.Error as exc:
-        return Report(engine="opencode", source=SOURCE_TOKENS, at=now, error=str(exc))
+        return Report(engine=engine, source=SOURCE_TOKENS, at=now, error=str(exc))
     try:
         # `part` carries (id, message_id, session_id, time_created, time_updated, data) — the
         # record's type is inside `data`, so the filter is a LIKE on the blob plus a real check
@@ -642,10 +672,10 @@ def read_opencode_tokens(home: Path | None = None, *, days: int = OPENCODE_WINDO
     except sqlite3.Error as exc:
         # Fail soft, exactly like the provider: a locked or half-migrated database costs this
         # engine's row, never the sweep.
-        return Report(engine="opencode", source=SOURCE_TOKENS, at=now, error=str(exc))
+        return Report(engine=engine, source=SOURCE_TOKENS, at=now, error=str(exc))
     finally:
         conn.close()
-    return Report(engine="opencode", source=SOURCE_TOKENS, tokens=totals, window_days=days, at=now)
+    return Report(engine=engine, source=SOURCE_TOKENS, tokens=totals, window_days=days, at=now)
 
 
 def _int(v: object) -> int:
@@ -662,18 +692,51 @@ def _int(v: object) -> int:
 
 # --- the collection ------------------------------------------------------------------------------
 
-#: engine → how it answers. An engine absent from here reports nothing and falls back to the
-#: operator's manual counter; adding one is a single entry.
-REPORTERS: dict[str, object] = {
-    "claude": probe_claude,
-    "antigravity": probe_agy,
-    "codex": read_codex_rate_limits,
-    "opencode": read_opencode_tokens,
+#: `usage.kind` → the built-in reporter that implements it. Adding a kind is reviewed code; which
+#: engines USE one is their manifests' business (#853 P3).
+KIND_REPORTERS: dict[str, object] = {
+    "claude-cli-probe": probe_claude,
+    "agy-cli-probe": probe_agy,
+    "codex-rollout-field": read_codex_rate_limits,
+    "opencode-store-query": read_opencode_tokens,
 }
 
-#: Engines that run an agent but answer nothing — a manual counter is the only option. `shell` is
-#: deliberately absent from every list here: no agent, no usage, no row.
-MANUAL_ONLY: tuple[str, ...] = ("kimi", "gemini")
+
+def _reporter_for(eid: str, fn):
+    """``fn`` reporting for ``eid`` and reading ``eid``'s OWN store (#853 P3, Hermes on PR #1127):
+    a reporter kind is shared by every engine that selects it, the store it reads is not."""
+    from .engines import base
+
+    def call(**kw):
+        with base.store_scope(eid):
+            return fn(engine=eid, **kw)
+
+    call.__wrapped__ = fn  # type: ignore[attr-defined]
+    return call
+
+
+def _build_reporters() -> dict[str, object]:
+    from . import engines
+
+    return {
+        eid: _reporter_for(eid, KIND_REPORTERS[engines.manifest_of(eid).usage.kind])
+        for eid in engines.ids_where(lambda m: m.usage.kind in KIND_REPORTERS)
+    }
+
+
+def _manual_only() -> tuple[str, ...]:
+    from . import engines
+
+    return tuple(engines.ids_where(lambda m: m.usage.source == "manual"))
+
+
+#: engine → how it answers, built from the roster: every engine whose manifest selects a reporter
+#: kind. An engine absent from here reports nothing and falls back to the operator's manual counter.
+REPORTERS: dict[str, object] = _build_reporters()
+
+#: Engines that run an agent but answer nothing — a manual counter is the only option
+#: (`usage.source = "manual"`). An agentless engine (`shell`) is in no list here: no usage, no row.
+MANUAL_ONLY: tuple[str, ...] = _manual_only()
 
 
 def refresh(
@@ -830,9 +893,30 @@ def load(path: Path | None = None) -> dict:
 
 # --- what a percentage MEANS, per source ---------------------------------------------------------
 
-#: The engines a usage panel lists, in display order. `shell` is deliberately absent throughout:
-#: it launches a login shell with no agent, so it has no usage to have an opinion about.
-ENGINES: tuple[str, ...] = ("claude", "codex", "antigravity", "opencode", "kimi", "gemini")
+
+def _panel_engines() -> tuple[str, ...]:
+    from . import engines
+
+    return tuple(engines.ids_where(lambda m: m.identity.kind == "agent"))
+
+
+#: The engines a usage panel lists: every engine with an AGENT behind it, in roster order (#853 P3).
+#: An agentless engine (`identity.kind = "terminal"`, the shell) has no usage to have an opinion
+#: about, so it has no row.
+ENGINES: tuple[str, ...] = _panel_engines()
+
+
+def _on_roster_reload() -> None:
+    """Keep this module's roster VIEWS current across a reload (#853 P3). `REPORTERS` is updated
+    in place, so a reference taken before the reload still sees the new roster."""
+    global MANUAL_ONLY, ENGINES
+    REPORTERS.clear()
+    REPORTERS.update(_build_reporters())
+    MANUAL_ONLY = _manual_only()
+    ENGINES = _panel_engines()
+
+
+_registry.on_reload(_on_roster_reload)
 
 
 def billable(tokens: dict | None) -> int:

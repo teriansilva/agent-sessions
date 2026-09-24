@@ -192,13 +192,19 @@ class _PaintRule(NamedTuple):
 
 _BY_BYTES = _PaintRule(_painted_by_bytes, _observed_by_bytes)
 
-#: Engines whose "painted" is NOT the byte rule, keyed on the session key's engine prefix
-#: (`claude:<uuid>`) — `_painted` is handed a key, not a provider. Anything absent: `_BY_BYTES`.
-_PAINTED: dict[str, _PaintRule] = {"claude": _PaintRule(_painted_claude, _observed_claude)}
+#: First-paint rules that are NOT the byte rule, keyed by the manifest's `terminal.ready` KIND
+#: (#853 P3). `_painted` is handed a session key; the engine prefix finds the manifest. Anything
+#: else — including an unknown engine — is `_BY_BYTES`.
+_PAINTED: dict[str, _PaintRule] = {
+    "claude-first-paint": _PaintRule(_painted_claude, _observed_claude)
+}
 
 
 def _rule(key: str) -> _PaintRule:
-    return _PAINTED.get(key.split(":", 1)[0], _BY_BYTES)
+    from . import engines
+
+    term = engines.terminal_of(key)
+    return _PAINTED.get(term.ready, _BY_BYTES) if term is not None else _BY_BYTES
 
 
 def _painted(key: str) -> bool:

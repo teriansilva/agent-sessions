@@ -28,6 +28,15 @@ _REAL_LAUNCH_MASTER_STATE = oc._launch_master_state
 
 
 @pytest.fixture(autouse=True)
+def bare_kind_binary(monkeypatch):
+    """These tests drive the opencode store KIND directly, unattached to its manifest. #853 P3
+    removed the kind's own PATH fallback — a kind never picks a binary; in the app its provider's
+    provenance-checked entrypoint does — so a bare kind gets a fixed stand-in here. Nothing in
+    this file is about binary resolution."""
+    monkeypatch.setattr(oc.OpenCodeProvider, "_bin", lambda self: "/opt/test/bin/opencode")
+
+
+@pytest.fixture(autouse=True)
 def master_alive(monkeypatch):
     """This launch's own dtach master, as `start_evidence` probes it. Alive unless a test says
     otherwise; the tests that are about it set it explicitly."""

@@ -10,9 +10,9 @@ picks it up. The package ``__init__`` re-exports them as ``engines.CLAUDE_BIN`` 
 
 from __future__ import annotations
 
-import os
+import contextlib
+import contextvars
 import re
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -50,108 +50,84 @@ _KIMI_SESSION_RE = re.compile(
     r"^session_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
 
-# --- engine binaries ------------------------------------------------------------------------
-# NO LAUNCH READS THESE (#853 P2). Every session launch resolves its binary from the engine's
-# manifest through `plugins.provenance` (env override or `search_paths`, never PATH). What still
-# reads them are the non-launch callers the P3 sweep retires: the usage probes (`agent_usage`) and
-# opencode compaction (`opencode_compact`). Do not add a new reader.
-# Engine binaries are commonly off the login PATH (npm-global, ~/.codex, …), so an
-# explicit env override is the reliable launch mechanism; PATH lookup is a fallback.
-
-CLAUDE_BIN = os.environ.get("AGENT_SESSIONS_CLAUDE_BIN") or shutil.which("claude") or "claude"
-OPENCODE_BIN = (
-    os.environ.get("AGENT_SESSIONS_OPENCODE_BIN") or shutil.which("opencode") or "opencode"
-)
-CODEX_BIN = os.environ.get("AGENT_SESSIONS_CODEX_BIN") or shutil.which("codex") or "codex"
-GEMINI_BIN = os.environ.get("AGENT_SESSIONS_GEMINI_BIN") or shutil.which("gemini") or "gemini"
-# Antigravity's binary is ``agy`` (not ``antigravity``), so the env knob is keyed on the binary
-# name — ``AGENT_SESSIONS_AGY_BIN`` — to match what operators type and what ``doctor`` writes.
-AGY_BIN = os.environ.get("AGENT_SESSIONS_AGY_BIN") or shutil.which("agy") or "agy"
-# bash backs the shell engine (#636). Keyed on the *binary* name (``AGENT_SESSIONS_BASH_BIN``, so
-# discover's binary-name convention lines up) and resolved to a concrete path so the pty bridge
-# gets a real argv[0], never a bare name that ptybridge would reject.
-BASH_BIN = os.environ.get("AGENT_SESSIONS_BASH_BIN") or shutil.which("bash") or "/bin/bash"
-# Kimi Code (#714). The native installer drops a single binary at ``~/.kimi-code/bin/kimi``, which
-# is off the login PATH until the shell rc is re-sourced — so the env override matters more here
-# than for npm-global engines. Binary name == engine id, so no ``discover._BIN_NAME`` entry.
-KIMI_BIN = os.environ.get("AGENT_SESSIONS_KIMI_BIN") or shutil.which("kimi") or "kimi"
-
-
 # --- per-engine store locations (env-overridable) -------------------------------------------
+#
+# Each is a thin, patchable name over the ONE resolver (#853 P3): the location comes from the
+# manifest whose `store.layout` this is — its root, `store.env_override` and `store.path_env` —
+# never from a second copy kept here. Keyed by LAYOUT (kind vocabulary), not by engine id.
+# ``home`` defaults to ``Path.home()``; it is injectable so the transcript adapters can resolve the
+# SAME store under a test home, while an env override — when set — still wins for both.
 
 
-# ``home`` defaults to ``Path.home()`` (providers call these with no args); it's injectable so the
-# transcript adapters can resolve the SAME store under a test home, while the env override — when
-# set — still wins for both providers and adapters (single source of truth for the path contract).
+#: The engine a reusable reader KIND is currently reading for (#853 P3, Hermes on PR #1127). A
+#: transcript adapter or usage reporter is shaped by a store FORMAT, and more than one engine may
+#: select it; the store it reads must be the requesting engine's, never whichever engine happens to
+#: own the layout. The dispatch points (`transcript.adapter_for` & co, `agent_usage.REPORTERS`)
+#: set this around the call; outside a scope, a store kind reading its own layout resolves as
+#: before.
+_STORE_SCOPE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "store_scope", default=None
+)
+
+
+@contextlib.contextmanager
+def store_scope(engine_id: str | None):
+    token = _STORE_SCOPE.set(engine_id)
+    try:
+        yield
+    finally:
+        _STORE_SCOPE.reset(token)
+
+
+def _store(layout: str, name: str | None = None, home: Path | None = None) -> Path:
+    from . import registry
+
+    scoped = _STORE_SCOPE.get()
+    if scoped is not None:
+        return registry.store_for_engine(scoped, name, home)
+    return registry.store_for_layout(layout, name, home)
+
+
 def _gemini_tmp_dir(home: Path | None = None) -> Path:
-    return Path(
-        os.environ.get("AGENT_SESSIONS_GEMINI_TMP_DIR")
-        or ((home or Path.home()) / ".gemini" / "tmp")
-    )
+    return _store("gemini-tmp", home=home)
 
 
 # agy (Antigravity CLI) state lives under ``~/.gemini/antigravity-cli/`` — NOT ``~/.antigravity/``
-# (verified against agy 1.0.8; the issue's guessed path was wrong). Conversations live in
-# ``conversations/<uuid>.db`` (SQLite) and transcripts in ``brain/<uuid>/**/transcript.jsonl``;
-# the provider + transcript adapter derive those subpaths from this single root.
+# (verified against agy 1.0.8). Conversations live in ``conversations/<uuid>.db`` (SQLite) and
+# transcripts in ``brain/<uuid>/**/transcript.jsonl``; the kind + adapter derive those from here.
 def _antigravity_dir(home: Path | None = None) -> Path:
-    return Path(
-        os.environ.get("AGENT_SESSIONS_ANTIGRAVITY_DIR")
-        or ((home or Path.home()) / ".gemini" / "antigravity-cli")
-    )
+    return _store("antigravity-cli", home=home)
 
 
 def _kimi_dir(home: Path | None = None) -> Path:
-    """Kimi Code's state root (#714) — ``~/.kimi-code``.
-
-    Everything the provider reads hangs off this one root: the ``session_index.jsonl`` fast path
-    at the top level, and the nested session dirs at ``sessions/wd_<slug>_<hash>/session_<uuid>/``
-    (a per-workdir bucket, *then* the session — one level deeper than a flat store). Single source
-    of truth for the path contract, so a future transcript adapter resolves the same store under a
-    test home.
-    """
-    return Path(os.environ.get("AGENT_SESSIONS_KIMI_DIR") or ((home or Path.home()) / ".kimi-code"))
+    """Kimi Code's state root (#714). Everything the kind reads hangs off it: the
+    ``session_index.jsonl`` fast path, and ``sessions/wd_<slug>_<hash>/session_<uuid>/``."""
+    return _store("kimi-code", home=home)
 
 
 def _codex_sessions_dir(home: Path | None = None) -> Path:
-    return Path(
-        os.environ.get("AGENT_SESSIONS_CODEX_SESSIONS_DIR")
-        or ((home or Path.home()) / ".codex" / "sessions")
-    )
+    return _store("codex-rollouts", home=home)
 
 
 def _opencode_db(home: Path | None = None) -> str:
-    return os.environ.get("AGENT_SESSIONS_OPENCODE_DB") or str(
-        (home or Path.home()) / ".local" / "share" / "opencode" / "opencode.db"
-    )
+    return str(_store("opencode-sqlite", "db", home))
 
 
 def _opencode_log(home: Path | None = None) -> Path:
     """opencode's structured log — the START artifact for an unattended launch (#1050).
 
     Its SQLite store cannot answer "did an agent start": measured on 2026-09-21, a launched,
-    painted, ready opencode wrote **no** ``session`` row for 45 s with nothing typed, which is
-    #916's deadlock exactly (the record waits on the turn, the turn waits on the brief, the brief
-    waits on the record). This file gets a ``creating instance`` line carrying the launch
-    directory ~1.8 s in, with nothing typed.
-
-    Env-overridable so tests never read the operator's real log.
+    painted, ready opencode wrote **no** ``session`` row for 45 s with nothing typed (#916's
+    deadlock). This file gets a ``creating instance`` line carrying the launch directory ~1.8 s in.
+    Env-overridable (`store.path_env.log`) so tests never read the operator's real log.
     """
-    return Path(
-        os.environ.get("AGENT_SESSIONS_OPENCODE_LOG")
-        or ((home or Path.home()) / ".local" / "share" / "opencode" / "log" / "opencode.log")
-    )
+    return _store("opencode-sqlite", "log", home)
 
 
 def _shell_dir(home: Path | None = None) -> Path:
-    """Per-session record store for the shell engine (#636). A plain shell has no native engine
-    store to scan, so ``ShellProvider`` persists one JSON record per session here (``scan`` globs
-    it). ``home``-injectable and env-overridable so tests root it under a ``mktemp`` home and
-    NEVER touch the real ``~/.claude`` (per the repo's test rule)."""
-    return Path(
-        os.environ.get("AGENT_SESSIONS_SHELL_DIR")
-        or ((home or Path.home()) / ".claude" / "shell-sessions")
-    )
+    """Per-session record store for the shell engine (#636): no native store to scan, so the kind
+    keeps one JSON record per session here. Env-overridable so tests never touch real state."""
+    return _store("shell-records", home=home)
 
 
 # --- contract -------------------------------------------------------------------------------
