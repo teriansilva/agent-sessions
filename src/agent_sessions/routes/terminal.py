@@ -487,7 +487,10 @@ def register(
                     if lock is not None:
                         lock.release()
                     return await reject(4404)
-                launch = prov.launch_argv(native, cwd=cwd, bypass=True)
+                # No launch argv on ATTACH: `dtach -a` never execs the agent, and building one
+                # would make attaching to a LIVE master depend on the binary still resolving
+                # (#853 P2 — a removed or updated binary must never strand a running session).
+                launch = None
             elif is_new:
                 # Start a FRESH session with this client-generated id, in a picker cwd.
                 # The new-session picker offers two sources, so the launch must accept BOTH or a
@@ -550,9 +553,17 @@ def register(
                     # and a `None` (failed baseline read) still disables reconciliation below.
                     new_snapshot = await asyncio.to_thread(prov.snapshot_session_ids, new_cwd)
                 try:
-                    launch = prov.new_launch_argv(native, cwd=new_cwd, bypass=bypass)
+                    # OFF the loop: provenance walks every directory up to the binary (#853 P2),
+                    # and on a host with networked user lookups that must not stall every stream.
+                    launch = await asyncio.to_thread(
+                        prov.new_launch_argv, native, cwd=new_cwd, bypass=bypass
+                    )
                 except NotImplementedError:
                     return await reject(4404)  # engine can't pin a new-session id
+                except engines.EngineError:
+                    # No binary, or one provenance refuses (#853 §2b): the same terminal code a
+                    # misconfigured launch has always had.
+                    return await reject(4500)
                 cwd = new_cwd
                 # Auto-include the launch cwd in `included` mode (#335): now that the new-session
                 # request has PASSED validation (cwd is a real pickable project) and the launch is
@@ -632,7 +643,12 @@ def register(
                 # retrying. Claude-only (background agents are a Claude concept).
                 if prov.engine_id == "claude" and transcript_owner.transcript_is_owned(native):
                     return await reject(4404)
-                launch = prov.launch_argv(native, cwd=match.cwd, bypass=True)
+                try:
+                    launch = await asyncio.to_thread(  # off the loop, as above
+                        prov.launch_argv, native, cwd=match.cwd, bypass=True
+                    )
+                except engines.EngineError:
+                    return await reject(4500)  # no binary / refused by provenance (#853 §2b)
                 cwd = match.cwd
             try:
                 # Mode-explicit dtach (#165): on ATTACH the server has already verified

@@ -16,14 +16,14 @@ pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 mint = "pinned"
 
 [store]
-root = "~/.gemini"
+root = "~/.gemini/tmp"
 env_override = "AGENT_SESSIONS_GEMINI_TMP_DIR"
 layout = "gemini-tmp"
 
 [launch]
 resume = { kind = "flag", flag = "--resume" }
 new = { kind = "pin-flag", flag = "--session-id" }
-bypass = ["--yolo", "--skip-trust"]
+bypass = ["--yolo", "--skip-trust"]  # auto-approve tools + skip the workspace-trust prompt
 
 [capabilities]
 resume = true
@@ -39,6 +39,7 @@ kind = "gemini-chat"
 source = "manual"
 
 [display]
+order = 40
 name = "gemini"
 badge = "gm"
 accent = "blue"

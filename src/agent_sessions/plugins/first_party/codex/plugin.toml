@@ -13,20 +13,18 @@ search_paths = ["~/.codex/bin", "~/.local/bin"]
 
 [session_id]
 pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-mint = "adopt"
+mint = "adopt"  # codex mints its own rollout uuid; new sessions reconcile a new-<uuid> placeholder (#315)
 
 [store]
-root = "~/.codex"
+root = "~/.codex/sessions"
 env_override = "AGENT_SESSIONS_CODEX_SESSIONS_DIR"
 layout = "codex-rollouts"
-[store.paths]
-sessions = "sessions"
 
 [launch]
 resume = { kind = "subcommand", subcommand = "resume" }
-new = { kind = "cwd-flag", flag = "--cd" }
+new = { kind = "cwd-flag", flag = "--cd" }  # the rollout records this cwd; the reconcile diff filters on it
 bypass = ["--dangerously-bypass-approvals-and-sandbox"]
-bypass_on = "new"
+bypass_on = "new"  # resume has no per-launch bypass flag (sandbox/approvals are config-driven)
 
 [capabilities]
 resume = true
@@ -48,6 +46,7 @@ kind = "codex-rollout-field"
 repaint = "wipe"
 
 [display]
+order = 30
 name = "codex"
 badge = "cx"
 accent = "green"

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 from .. import archive as _archive
@@ -22,15 +21,16 @@ class ClaudeProvider:
 
     engine_id = "claude"
     id_pattern = base._CLAUDE_UUID_RE
-    supports_new = True  # ws new-session via new_launch_argv
-    supports_orchestrator_input = True  # a TUI agent that reads a prompt (#726)
-    expects_raw_tty = True  # ratatui/Ink TUI: its PTY must stay raw (#804)
-    # Cross-engine handoff target (#597): a fresh claude TUI accepts the seed as a bracketed
-    # paste on its PTY input (never argv — the shell-free/no-argv-seed contract).
-    supports_seed_start = True
+
+    def store_present(self) -> bool:
+        """Does this engine's store exist? Presence of the BINARY is the provider's question
+        (its provenance-checked entrypoint, #853 §2b) — never a PATH lookup here."""
+        return (Path.home() / ".claude" / "projects").is_dir()
 
     def is_present(self) -> bool:
-        return (Path.home() / ".claude" / "projects").is_dir() or shutil.which("claude") is not None
+        """Kind-level presence is the STORE only. Whether the binary is there is the owning
+        provider's question, answered through provenance — never a PATH lookup (#853 §2b)."""
+        return self.store_present()
 
     def scan(self) -> list[Session]:
         # scanner is Claude-only today; filter defensively so this stays correct
@@ -90,22 +90,6 @@ class ClaudeProvider:
             # A one-shot transcript is not a session, so it is not an ARCHIVED session either.
             return "not-archived" if headless else "archived"
         return "not-archived"
-
-    def launch_argv(self, native_id, *, cwd, bypass):
-        # Resume command for the per-session PTY bridge (issue #49); cwd is set by the
-        # launcher, not an argv arg here.
-        argv = [base.CLAUDE_BIN, "--resume", native_id]
-        if bypass:
-            argv.append("--dangerously-skip-permissions")
-        return argv
-
-    def new_launch_argv(self, native_id, *, cwd, bypass):
-        # Start a *new* claude session with our pre-generated id (`--session-id`),
-        # so the bridge can key it before claude has written its JSONL.
-        argv = [base.CLAUDE_BIN, "--session-id", native_id]
-        if bypass:
-            argv.append("--dangerously-skip-permissions")
-        return argv
 
     def archive(self, native_id):
         # Move the JSONL into the archive tree AND record the archived flag in the

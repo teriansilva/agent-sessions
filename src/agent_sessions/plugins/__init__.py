@@ -7,8 +7,11 @@ loader that reads manifests from two places:
 - **local**: `<plugins home>/<id>/plugin.toml` — the operator's directory, trust level `local`.
 
 Loading is **fail-soft per plugin**: one invalid manifest becomes a `problems` entry naming the
-field, and every other plugin loads. Nothing here is wired into `engines.registry` yet — the seven
-provider classes remain the runtime roster until P2 replaces each one behind its equivalence test.
+field, and every other plugin loads.
+
+**The live roster reads `load_first_party()` only** (#853 P2). Local manifests stay unwired until
+install (P5) and operator confirmation (P6) exist: without them, the only way a local plugin could
+run would be an unconfirmed file drop.
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ __all__ = [
     "PluginProvider",
     "kinds",
     "load_all",
+    "load_first_party",
     "load_file",
     "parse",
     "plugin_state_home",
@@ -172,6 +176,31 @@ def _load_dir(
             result.problems[key] = f"could not be loaded ({type(e).__name__})"
 
 
+def _ordered(result: LoadResult) -> LoadResult:
+    result.providers = dict(
+        sorted(result.providers.items(), key=lambda kv: (kv[1].manifest.display.order, kv[0]))
+    )
+    return result
+
+
+def load_first_party(
+    *,
+    first_party_dir: Path | None = None,
+    env: Mapping[str, str] | None = None,
+    home: Path | None = None,
+) -> LoadResult:
+    """The in-tree manifests only, in roster order — what `engines.registry` is built from."""
+    result = LoadResult()
+    fp = first_party_dir or FIRST_PARTY_DIR
+    try:
+        state = _usable_state_dir(plugin_state_home(env), fp, plugins_home(env))
+    except (OSError, RuntimeError) as e:
+        result.problems["plugins"] = f"cannot locate the plugin state directory ({e})"
+        state = None
+    _load_dir(fp, provenance.FIRST_PARTY, result, env, home, state)
+    return _ordered(result)
+
+
 def load_all(
     *,
     first_party_dir: Path | None = None,
@@ -193,4 +222,4 @@ def load_all(
     _load_dir(fp, provenance.FIRST_PARTY, result, env, home, state)
     if loc is not None:
         _load_dir(loc, provenance.LOCAL, result, env, home, state)
-    return result
+    return _ordered(result)

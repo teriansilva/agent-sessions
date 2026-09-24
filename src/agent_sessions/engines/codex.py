@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 from pathlib import Path
 
 from .. import metadata as _metadata
@@ -214,19 +213,16 @@ class CodexProvider:
 
     engine_id = "codex"
     id_pattern = base._CODEX_UUID_RE
-    supports_new = True  # new-session via launch-then-reconcile (#315)
-    supports_orchestrator_input = True  # a TUI agent that reads a prompt (#726)
-    expects_raw_tty = True  # ratatui/Ink TUI: its PTY must stay raw (#804)
-    # codex (like opencode) mints its OWN session id at launch — there is no caller-chosen
-    # ``--session-id`` flag — so new-session launches under a ``new-<uuid>`` placeholder and
-    # reconciles to the real rollout uuid afterwards, rather than pinning the id like claude.
-    new_session_reconciles = True
-    # Cross-engine handoff target (#597): the fresh codex TUI accepts the seed as a bracketed
-    # paste on its PTY input (never argv).
-    supports_seed_start = True
+
+    def store_present(self) -> bool:
+        """Does this engine's store exist? Presence of the BINARY is the provider's question
+        (its provenance-checked entrypoint, #853 §2b) — never a PATH lookup here."""
+        return base._codex_sessions_dir().is_dir()
 
     def is_present(self) -> bool:
-        return base._codex_sessions_dir().is_dir() or shutil.which("codex") is not None
+        """Kind-level presence is the STORE only. Whether the binary is there is the owning
+        provider's question, answered through provenance — never a PATH lookup (#853 §2b)."""
+        return self.store_present()
 
     def _meta(self, path: Path, *, checked: bool = False) -> tuple[str, str] | None:
         """``(cwd, first_user_message)`` from one rollout file. Single pass, best-effort.
@@ -392,24 +388,6 @@ class CodexProvider:
         except OSError:
             return None
         return None
-
-    def launch_argv(self, native_id, *, cwd, bypass):
-        # codex resumes by uuid; cwd is set by the launcher. No documented per-launch
-        # bypass flag (sandbox/approvals are config / -c driven), so none is added.
-        return [base.CODEX_BIN, "resume", native_id]
-
-    def new_launch_argv(self, native_id, *, cwd, bypass):
-        # Start a *fresh* codex session in `cwd`. codex mints its own rollout uuid (no
-        # ``--session-id``), which the reconcile step discovers afterwards by diffing the
-        # rollout files (#315). `native_id` here is the client-minted ``new-<uuid>``
-        # placeholder the bridge keys the socket/lock by; codex never sees it. `--cd` sets
-        # codex's working dir (its rollout records that cwd, which the reconcile diff filters on).
-        argv = [base.CODEX_BIN, "--cd", cwd]
-        if bypass:
-            # Honor the modal's permission-bypass choice (default on): run without the
-            # approval/sandbox gate, matching the picker's "skip permission prompts".
-            argv.append("--dangerously-bypass-approvals-and-sandbox")
-        return argv
 
     def _rollout_uuids_in_cwd(self, cwd: str) -> set[str] | None:
         """The set of codex rollout uuids whose recorded ``cwd`` == ``cwd`` (#315), or

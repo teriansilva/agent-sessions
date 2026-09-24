@@ -101,11 +101,11 @@ def test_ws_resume_rejected_outside_roots(fake_jsonl, auth_cfg, monkeypatch):
 def test_ws_resume_allowed_when_no_roots(fake_jsonl, auth_cfg, monkeypatch):
     # Empty roots ⇒ unscoped (today's behaviour): the scanned session clears the resume gate and
     # only fails later on the unresolvable bare binary (4500) — proving it passed the scope check.
-    from agent_sessions import engines, prefs, project_dirs
+    from agent_sessions import prefs, project_dirs
 
     monkeypatch.setattr(project_dirs, "effective_roots", lambda: [])
     monkeypatch.setattr(prefs, "get_folder_exclusions", lambda path=None: [])
-    monkeypatch.setattr(engines.base, "CLAUDE_BIN", "claude")  # bare name → 4500 past the gate
+    monkeypatch.setenv("AGENT_SESSIONS_CLAUDE_BIN", "claude")  # bare name → 4500 past the gate
     c = _client(auth_cfg)
     headers = _login_headers(c, auth_cfg)
     assert _close_code(c, f"/ws/term/{_GOOD}", headers) == 4500
@@ -131,9 +131,8 @@ def test_ws_new_session_rejected_outside_roots(auth_cfg, tmp_home, monkeypatch):
 def test_ws_closes_on_unresolvable_binary(fake_jsonl, auth_cfg, monkeypatch):
     # A valid, authed, scanned session whose engine binary resolved to a bare name
     # (not an absolute path) must close deterministically (4500). Regression for #51.
-    from agent_sessions import engines
 
-    monkeypatch.setattr(engines.base, "CLAUDE_BIN", "claude")  # bare name → PtyBridgeError
+    monkeypatch.setenv("AGENT_SESSIONS_CLAUDE_BIN", "claude")  # bare name → refused → 4500
     c = _client(auth_cfg)
     headers = _login_headers(c, auth_cfg)
     code = _close_code(c, "/ws/term/claude:11111111-1111-1111-1111-111111111111", headers)
@@ -220,10 +219,11 @@ def test_attach_replay_grace_suppresses_working_stamp(monkeypatch):
     webterm._SUPPRESS_OUTPUT_UNTIL.clear()
 
 
-def test_claude_new_launch_argv_honors_bypass():
+def test_claude_new_launch_argv_honors_bypass(engine_bin):
     # Hermes PR #56: the bypass choice must actually affect the launch, not be ignored.
     from agent_sessions import engines
 
+    engine_bin("claude")
     p = engines.get("claude")
     u = "11111111-1111-1111-1111-111111111111"
     assert "--dangerously-skip-permissions" in p.new_launch_argv(u, cwd="/x", bypass=True)
@@ -253,10 +253,10 @@ def test_ws_releases_launch_lock_on_launch_failure(fake_jsonl, auth_cfg, monkeyp
     # A LAUNCH that then fails to build argv (4500) must release the launch lock —
     # otherwise the id would be wedged BUSY until the app restarts. No master was
     # spawned, so transfer() closes the last fd and the lock frees.
-    from agent_sessions import engines, sessionlock
+    from agent_sessions import sessionlock
 
     key = _GOOD
-    monkeypatch.setattr(engines.base, "CLAUDE_BIN", "claude")  # bare name → PtyBridgeError → 4500
+    monkeypatch.setenv("AGENT_SESSIONS_CLAUDE_BIN", "claude")  # bare name → refused → 4500
     c = _client(auth_cfg)
     headers = _login_headers(c, auth_cfg)
     assert _close_code(c, f"/ws/term/{key}", headers) == 4500
@@ -798,11 +798,11 @@ def test_ws_opencode_placeholder_passes_validation_on_new(
     # LAUNCH path (it would 4404 if parse_key rejected it). We force the launch to fail at
     # argv-build (bare-name bin → 4500) to prove validation passed without needing a real
     # opencode/dtach. The launch cwd must be a pickable project.
-    from agent_sessions import engines, scanner
+    from agent_sessions import scanner
     from agent_sessions.engines import opencode
 
     monkeypatch.setattr(opencode.discover, "resolve", lambda engine_id: None)
-    monkeypatch.setattr(engines.base, "OPENCODE_BIN", "opencode")  # bare → PtyBridgeError → 4500
+    monkeypatch.setenv("AGENT_SESSIONS_OPENCODE_BIN", "opencode")  # bare → refused → 4500
     cwd = next(iter(scanner.pickable_projects()))
     c = _client(auth_cfg)
     headers = _login_headers(c, auth_cfg)
@@ -834,9 +834,9 @@ def test_ws_new_claude_accepts_browsable_home_dir(fake_jsonl, auth_cfg, monkeypa
     # #457: a new-session cwd the ~/ folder picker can browse to (a real dir under $HOME) but
     # that isn't yet a pickable project must PASS validation, not 4404. Force the launch to fail
     # at argv-build (bare-name bin → 4500) to prove validation passed without a real claude/dtach.
-    from agent_sessions import engines, scanner
+    from agent_sessions import scanner
 
-    monkeypatch.setattr(engines.base, "CLAUDE_BIN", "claude")  # bare → PtyBridgeError → 4500
+    monkeypatch.setenv("AGENT_SESSIONS_CLAUDE_BIN", "claude")  # bare → refused → 4500
     browsed = fake_jsonl / "fresh-proj"  # real $HOME subdir, no sessions → not pickable
     browsed.mkdir()
     assert str(browsed) not in set(scanner.pickable_projects(home=fake_jsonl))
@@ -862,10 +862,10 @@ def test_ws_codex_placeholder_passes_validation_on_new(fake_jsonl, auth_cfg, mon
     # codex new-session (#315): the new-<uuid> placeholder passes the ws id gate AND the
     # reconciling-provider placeholder guard on new=1, reaching LAUNCH (forced to 4500 via a
     # bare bin) — proving validation accepted it without needing a real codex/dtach.
-    from agent_sessions import engines, scanner
+    from agent_sessions import scanner
 
     monkeypatch.setenv("AGENT_SESSIONS_CODEX_SESSIONS_DIR", str(tmp_path / "cdx"))  # empty baseline
-    monkeypatch.setattr(engines.base, "CODEX_BIN", "codex")  # bare → PtyBridgeError → 4500
+    monkeypatch.setenv("AGENT_SESSIONS_CODEX_BIN", "codex")  # bare → refused → 4500
     cwd = next(iter(scanner.pickable_projects()))
     c = _client(auth_cfg)
     headers = _login_headers(c, auth_cfg)
@@ -1044,12 +1044,12 @@ def test_ws_opencode_resume_real_id_with_aliased_dead_master(
     # attaching by the real id must RESUME the scanned opencode session (reach launch →
     # 4500 on a bare-name bin), not 4404 — which is what would happen if `native` were
     # overwritten to the placeholder before the resume scan.
-    from agent_sessions import engines, metadata
+    from agent_sessions import metadata
     from agent_sessions.engines import opencode
 
     OC_TOP = "ses_aaaaaaaaaaaaaaaaaaaaaaaa"  # the scanned opencode session in opencode_db
     monkeypatch.setattr(opencode.discover, "resolve", lambda engine_id: None)
-    monkeypatch.setattr(engines.base, "OPENCODE_BIN", "opencode")  # bare → PtyBridgeError → 4500
+    monkeypatch.setenv("AGENT_SESSIONS_OPENCODE_BIN", "opencode")  # bare → refused → 4500
     metadata.set_alias(_OC_PLACEHOLDER, f"opencode:{OC_TOP}")  # placeholder → real
     c = _client(auth_cfg)
     headers = _login_headers(c, auth_cfg)
@@ -1065,11 +1065,11 @@ def test_ws_opencode_placeholder_launch_failure_releases_lock(
     # CancelledError must NOT bypass lock.transfer(). Proven by reconnecting to the same
     # placeholder: the launch lock was released, so the 2nd attempt LAUNCHes again (4500),
     # not BUSY (4409).
-    from agent_sessions import engines, scanner
+    from agent_sessions import scanner
     from agent_sessions.engines import opencode
 
     monkeypatch.setattr(opencode.discover, "resolve", lambda engine_id: None)
-    monkeypatch.setattr(engines.base, "OPENCODE_BIN", "opencode")  # bare → PtyBridgeError → 4500
+    monkeypatch.setenv("AGENT_SESSIONS_OPENCODE_BIN", "opencode")  # bare → refused → 4500
     cwd = next(iter(scanner.pickable_projects()))
     c = _client(auth_cfg)
     headers = _login_headers(c, auth_cfg)
@@ -1861,12 +1861,12 @@ def test_ws_attach_allowed_for_a_fresh_session_when_no_boundary_is_configured(
     The sibling below is the other half: once the operator HAS configured a boundary, the same
     unidentifiable attach fails closed.
     """
-    from agent_sessions import engines, prefs, project_dirs
+    from agent_sessions import prefs, project_dirs
     from agent_sessions.routes import terminal as terminal_route
 
     monkeypatch.setattr(project_dirs, "effective_roots", lambda: [])
     monkeypatch.setattr(prefs, "get_folder_exclusions", lambda path=None: [])
-    monkeypatch.setattr(engines.base, "CLAUDE_BIN", "claude")
+    monkeypatch.setenv("AGENT_SESSIONS_CLAUDE_BIN", "claude")
 
     async def _attach(_engine, _native):
         return terminal_route.sessions.ATTACH, None
@@ -1915,14 +1915,14 @@ def test_ws_attach_refuses_an_unknown_row_once_a_boundary_is_configured(
     The gap this closes: launch a session, change roots or exclude its cwd before its transcript
     is scannable, then reconnect while the master is still live.
     """
-    from agent_sessions import engines, prefs, project_dirs
+    from agent_sessions import prefs, project_dirs
     from agent_sessions.routes import terminal as terminal_route
 
     monkeypatch.setattr(project_dirs, "effective_roots", lambda: [])
     monkeypatch.setattr(
         prefs, "get_folder_exclusions", lambda path=None: ["/home/user/claude/repo/a"]
     )
-    monkeypatch.setattr(engines.base, "CLAUDE_BIN", "claude")
+    monkeypatch.setenv("AGENT_SESSIONS_CLAUDE_BIN", "claude")
 
     async def _attach(_engine, _native):
         return terminal_route.sessions.ATTACH, None
@@ -1956,7 +1956,7 @@ def test_ws_attach_resolution_runs_off_the_event_loop(fake_jsonl, auth_cfg, monk
 
     monkeypatch.setattr(project_dirs, "effective_roots", lambda: [])
     monkeypatch.setattr(prefs, "get_folder_exclusions", lambda path=None: [])
-    monkeypatch.setattr(engines.base, "CLAUDE_BIN", "claude")
+    monkeypatch.setenv("AGENT_SESSIONS_CLAUDE_BIN", "claude")
 
     loop_thread: list[threading.Thread] = []
     resolve_thread: list[threading.Thread] = []
@@ -2035,7 +2035,7 @@ def test_ws_attach_and_resume_make_no_full_walk(fake_jsonl, auth_cfg, monkeypatc
 
     monkeypatch.setattr(project_dirs, "effective_roots", lambda: [])
     monkeypatch.setattr(prefs, "get_folder_exclusions", lambda path=None: ["/nowhere/excluded"])
-    monkeypatch.setattr(engines.base, "CLAUDE_BIN", "claude")
+    monkeypatch.setenv("AGENT_SESSIONS_CLAUDE_BIN", "claude")
     monkeypatch.setattr(terminal_route.transcript_owner, "transcript_is_owned", lambda _n: False)
     _stop_at_the_bridge(monkeypatch)
 
@@ -2068,7 +2068,7 @@ def test_ws_refuses_a_session_whose_cwd_became_excluded_despite_a_warm_snapshot(
     exclusions: list[str] = []
     monkeypatch.setattr(project_dirs, "effective_roots", lambda: [])
     monkeypatch.setattr(prefs, "get_folder_exclusions", lambda path=None: list(exclusions))
-    monkeypatch.setattr(engines.base, "CLAUDE_BIN", "claude")
+    monkeypatch.setenv("AGENT_SESSIONS_CLAUDE_BIN", "claude")
     monkeypatch.setattr(terminal_route.transcript_owner, "transcript_is_owned", lambda _n: False)
     _stop_at_the_bridge(monkeypatch)
     engines.set_scan_cache_ttl(30.0)
@@ -2134,7 +2134,7 @@ def test_ws_new_session_does_not_stall_the_loop_behind_a_cold_walk(
 
 
 def test_ws_new_session_snapshot_runs_off_the_loop_before_launch(
-    fake_jsonl, tmp_home, auth_cfg, monkeypatch
+    fake_jsonl, tmp_home, auth_cfg, monkeypatch, engine_bin
 ):
     """#991 (ii): the mint-its-own-id pre-launch snapshot (`snapshot_session_ids`, a recursive
     rollout walk for codex) runs off the event loop, still BEFORE the launch argv is built, and a
@@ -2146,20 +2146,24 @@ def test_ws_new_session_snapshot_runs_off_the_loop_before_launch(
     monkeypatch.setenv("AGENT_SESSIONS_CODEX_SESSIONS_DIR", str(tmp_home / "cdx"))
     cwd = tmp_home / "claude" / "codex-proj"
     cwd.mkdir(parents=True)
-    real_new_argv = engines.CodexProvider.new_launch_argv
+    # #853 P2: the live provider is the manifest-built one; the kind's hooks are bound onto it at
+    # attach time, so the spies go on that instance (patching the kind's class would miss them).
+    engine_bin("codex")
+    prov = engines.get("codex")
+    real_new_argv = prov.new_launch_argv
 
     for baseline in (set(), None):
         order: list[str] = []
         reconciles: list[tuple] = []
 
-        def slow_snapshot(self, _cwd, baseline=baseline, order=order):
+        def slow_snapshot(_cwd, baseline=baseline, order=order):
             order.append("snapshot")
             time.sleep(0.5)
             return baseline
 
-        def recording_new_argv(self, native_id, *, cwd, bypass, order=order):
+        def recording_new_argv(native_id, *, cwd, bypass, order=order):
             order.append("new_launch_argv")
-            return real_new_argv(self, native_id, cwd=cwd, bypass=bypass)
+            return real_new_argv(native_id, cwd=cwd, bypass=bypass)
 
         def fake_reconcile(*args, reconciles=reconciles):
             reconciles.append(args)
@@ -2169,8 +2173,8 @@ def test_ws_new_session_snapshot_runs_off_the_loop_before_launch(
 
             return _noop()
 
-        monkeypatch.setattr(engines.CodexProvider, "snapshot_session_ids", slow_snapshot)
-        monkeypatch.setattr(engines.CodexProvider, "new_launch_argv", recording_new_argv)
+        monkeypatch.setattr(prov, "snapshot_session_ids", slow_snapshot)
+        monkeypatch.setattr(prov, "new_launch_argv", recording_new_argv)
         monkeypatch.setattr(main, "_reconcile_new_session", fake_reconcile)
         beats: list[float] = []
         _dispatch_as(monkeypatch, "LAUNCH", beats=beats)
@@ -2272,11 +2276,11 @@ def test_opencode_launch_refused_4502_during_compaction(fake_jsonl, opencode_db,
 def test_early_opencode_launch_rejection_releases_admission(
     fake_jsonl, opencode_db, auth_cfg, monkeypatch
 ):
-    from agent_sessions import engines, opencode_admission, scanner
+    from agent_sessions import opencode_admission, scanner
     from agent_sessions.engines import opencode
 
     monkeypatch.setattr(opencode.discover, "resolve", lambda _: None)
-    monkeypatch.setattr(engines.base, "OPENCODE_BIN", "bare-bin")
+    monkeypatch.setenv("AGENT_SESSIONS_OPENCODE_BIN", "bare-bin")
     cwd = next(iter(scanner.pickable_projects()))
     c = _client(auth_cfg)
     assert (

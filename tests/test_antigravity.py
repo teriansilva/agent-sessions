@@ -151,15 +151,18 @@ def test_scan_failsoft_skips_garbage_and_non_uuid(agy):
     assert all(s.cwd for s in sessions)
 
 
-def test_launch_argv_resume_and_bypass():
-    prov = engines.AntigravityProvider()
+def test_launch_argv_resume_and_bypass(engine_bin):
+    # #853 P2: argv comes from the live (manifest-built) provider; argv[0] is the
+    # provenance-checked entrypoint named by AGENT_SESSIONS_AGY_BIN.
+    b = engine_bin("antigravity")
+    prov = engines.get("antigravity")
     assert prov.launch_argv(_UUID, cwd="/x", bypass=False) == [
-        engines.AGY_BIN,
+        b,
         "--conversation",
         _UUID,
     ]
     assert prov.launch_argv(_UUID, cwd="/x", bypass=True) == [
-        engines.AGY_BIN,
+        b,
         "--conversation",
         _UUID,
         "--dangerously-skip-permissions",
@@ -171,22 +174,25 @@ def _write_cache(root, cwd_to_uuid):
     (root / "cache" / "last_conversations.json").write_text(json.dumps(cwd_to_uuid))
 
 
-def test_new_session_launch_then_reconcile_supported():
+def test_new_session_launch_then_reconcile_supported(engine_bin):
     # agy now supports new sessions via launch-then-reconcile (#449), like codex.
-    prov = engines.AntigravityProvider()
+    b = engine_bin("antigravity")
+    prov = engines.get("antigravity")
     assert prov.supports_new is True
     assert prov.new_session_reconciles is True
     # Fresh launch: no `--conversation` (agy mints the id); bypass → --dangerously-skip-permissions.
-    assert prov.new_launch_argv("new-x", cwd="/x", bypass=False) == [engines.AGY_BIN]
-    assert prov.new_launch_argv("new-x", cwd="/x", bypass=True) == [
-        engines.AGY_BIN,
+    placeholder = f"new-{_UUID}"
+    assert prov.new_launch_argv(placeholder, cwd="/x", bypass=False) == [b]
+    assert prov.new_launch_argv(placeholder, cwd="/x", bypass=True) == [
+        b,
         "--dangerously-skip-permissions",
     ]
 
 
-def test_present_and_supports_new_gates_new_session_picker(agy):
-    # The new-session dropdown lists providers that are present + supports_new (#449).
-    prov = engines.AntigravityProvider()
+def test_present_and_supports_new_gates_new_session_picker(agy, no_engine_bin):
+    # The new-session dropdown lists providers that are present + supports_new (#449). No binary
+    # resolves here, so presence rests on the agy store dir alone.
+    prov = engines.get("antigravity")
     assert prov.is_present() is True  # the agy fixture dir exists
     assert prov.supports_new is True
 

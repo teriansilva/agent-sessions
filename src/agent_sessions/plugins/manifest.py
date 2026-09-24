@@ -266,6 +266,8 @@ class Display:
     badge: str
     accent: str
     id_prefix: str | None
+    #: Roster position — scan and display order. Lower first; ties break on id.
+    order: int = 500
 
 
 @dataclass(frozen=True)
@@ -632,6 +634,7 @@ def parse(doc: Any, *, source: str = "", digest: str | None = None) -> Manifest:
         badge=r.str("badge", pattern=_BADGE_RE, max_len=3),
         accent=r.str("accent", one_of=kinds.ACCENT_TOKENS),
         id_prefix=r.str("id_prefix", None, pattern=_PREFIX_RE, max_len=17),
+        order=r.int("order", 500, lo=0, hi=999),
     )
     r.done()
 

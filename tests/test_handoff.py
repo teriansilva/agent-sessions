@@ -20,7 +20,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from agent_sessions import discover, engines, handoff, metadata
+from agent_sessions import engines, handoff, metadata
 from agent_sessions.main import create_app
 
 _SRC = "11111111-1111-1111-1111-111111111111"  # fake_jsonl session in /home/user/claude/repo-a
@@ -53,8 +53,12 @@ def _hdr(csrf, cfg):
 
 
 def _present_all(monkeypatch):
-    """Pretend every engine binary is installed (capability tests isolate the flag logic)."""
-    monkeypatch.setattr(discover, "resolve", lambda e: f"/usr/bin/{e}")
+    """Pretend every engine binary is launchable (capability tests isolate the flag logic).
+
+    Patches the ONE source the UI and the handoff check share (#853 P2), never a PATH probe."""
+    monkeypatch.setattr(
+        engines, "launchable_bin", lambda p: f"/usr/bin/{p.engine_id}" if p else None
+    )
 
 
 # ---- seed builder ---------------------------------------------------------------------------
@@ -303,7 +307,8 @@ def test_api_engines_carries_the_capability_and_reason(auth_cfg, tmp_home, monke
 # ---- transport: the seed never touches argv ----------------------------------------------------
 
 
-def test_seed_never_appears_in_any_launch_argv(fake_jsonl):
+def test_seed_never_appears_in_any_launch_argv(fake_jsonl, engine_bin):
+    engine_bin("claude", "codex", "opencode")  # #853 §2b: argv[0] must resolve to be built at all
     sentinel = "first message on repo-a"  # the seed body's distinctive content
     seed, _ = handoff.build_quick_seed("claude", _SRC, title=sentinel)
     assert sentinel in seed
@@ -552,7 +557,7 @@ def test_prepare_rejects_unsupported_targets(auth_cfg, fake_jsonl, monkeypatch):
 
 
 def test_prepare_rejects_uninstalled_target(auth_cfg, fake_jsonl, monkeypatch):
-    monkeypatch.setattr(discover, "resolve", lambda e: None)
+    monkeypatch.setattr(engines, "launchable_bin", lambda p: None)
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
     r = _prepare(c, csrf, auth_cfg)
@@ -647,7 +652,7 @@ def test_commit_unknown_or_expired_handle_404(auth_cfg, tmp_home):
 # ---- ws launch integration ---------------------------------------------------------------------
 
 
-def test_ws_new_session_redeems_the_handoff_seed(auth_cfg, fake_jsonl, monkeypatch):
+def test_ws_new_session_redeems_the_handoff_seed(auth_cfg, fake_jsonl, monkeypatch, engine_bin):
     """The committed handoff's ws launch passes the seed source to the PTY bridge (never
     argv) and arms exactly one spawn watch; the dead-master watch then aborts the handoff
     with no dangling sidecar link (the spawn-failure acceptance case)."""
@@ -679,7 +684,7 @@ def test_ws_new_session_redeems_the_handoff_seed(auth_cfg, fake_jsonl, monkeypat
     monkeypatch.setattr(
         ptybridge, "launch_argv", lambda *, engine, session_id, launch_argv: ["/bin/true"]
     )
-    monkeypatch.setattr(engines.base, "CLAUDE_BIN", "/bin/true")
+    engine_bin("claude")  # #853 §2b: a provenance-acceptable entrypoint, via the env var
 
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
@@ -2448,15 +2453,13 @@ def _await_watch_done(ws):
 
 
 def test_ws_handoff_launches_in_the_decided_cwd_pinned_id_model(
-    auth_cfg, fake_jsonl, monkeypatch, tmp_home
+    auth_cfg, fake_jsonl, monkeypatch, tmp_home, engine_bin
 ):
     """The committed handoff's ws launch puts the DECIDED cwd (the project's default folder,
     not the adopted source's raw cwd) on the bridge — and a reconnect never spawns a second
     master (fresh is one-shot)."""
-    from agent_sessions import engines as engines_mod
-
     _present_all(monkeypatch)
-    monkeypatch.setattr(engines_mod.base, "CLAUDE_BIN", "/bin/true")
+    engine_bin("claude")  # #853 §2b: a provenance-acceptable entrypoint, via the env var
     captured = _ws_launch_fixture(monkeypatch)
     p, folder = _project_in(tmp_home)
     metadata.patch(f"claude:{_FOLDER_SESSION}", project_id=p.id)
@@ -2480,17 +2483,16 @@ def test_ws_handoff_launches_in_the_decided_cwd_pinned_id_model(
 
 
 def test_ws_handoff_launches_in_the_decided_cwd_mint_own_id_model(
-    auth_cfg, fake_jsonl, monkeypatch, tmp_home
+    auth_cfg, fake_jsonl, monkeypatch, tmp_home, engine_bin
 ):
     """Same decision for a mint-own-id engine (kimi): the ws launches under the
     placeholder with the decided cwd on the bridge; the store read failing (no kimi
     state under the tmp home) skips reconciliation, so the placeholder serves — and the
     spawn count stays one across a reconnect."""
-    from agent_sessions import engines as engines_mod
     from agent_sessions import sessions as sessions_mod
 
     _present_all(monkeypatch)
-    monkeypatch.setattr(engines_mod.base, "KIMI_BIN", "/bin/true")
+    engine_bin("kimi")  # #853 §2b: a provenance-acceptable entrypoint, via the env var
     captured = _ws_launch_fixture(monkeypatch)
     p, folder = _project_in(tmp_home)
     metadata.patch(f"claude:{_FOLDER_SESSION}", project_id=p.id)

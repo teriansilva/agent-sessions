@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 
 from .. import metadata as _metadata
@@ -39,12 +38,16 @@ class GeminiProvider:
 
     engine_id = "gemini"
     id_pattern = base._GEMINI_UUID_RE
-    supports_new = True  # new session with a pinned id via `gemini --session-id <uuid>`
-    supports_orchestrator_input = True  # a TUI agent that reads a prompt (#726)
-    expects_raw_tty = True  # ratatui/Ink TUI: its PTY must stay raw (#804)
+
+    def store_present(self) -> bool:
+        """Does this engine's store exist? Presence of the BINARY is the provider's question
+        (its provenance-checked entrypoint, #853 §2b) — never a PATH lookup here."""
+        return base._gemini_tmp_dir().is_dir()
 
     def is_present(self) -> bool:
-        return base._gemini_tmp_dir().is_dir() or shutil.which("gemini") is not None
+        """Kind-level presence is the STORE only. Whether the binary is there is the owning
+        provider's question, answered through provenance — never a PATH lookup (#853 §2b)."""
+        return self.store_present()
 
     def _project_map(self) -> dict[str, str]:
         """``projectHash -> cwd`` from ``tmp/project-map.json`` (best-effort, fail-soft)."""
@@ -168,24 +171,6 @@ class GeminiProvider:
         return base.checked_rows(
             sorted(paths), lambda p: self._row(p, pmap, checked=True), engine_id=self.engine_id
         )
-
-    def launch_argv(self, native_id, *, cwd, bypass):
-        # gemini resumes by uuid, scoped to the cwd's project chats dir (set by the
-        # launcher). `bypass` maps to gemini's "open straight in" flags: --yolo
-        # (auto-approve tools, mirrors claude's --dangerously-skip-permissions) and
-        # --skip-trust (skip the workspace-trust prompt).
-        argv = [base.GEMINI_BIN, "--resume", native_id]
-        if bypass:
-            argv += ["--yolo", "--skip-trust"]
-        return argv
-
-    def new_launch_argv(self, native_id, *, cwd, bypass):
-        # Start a *new* gemini session with our pre-generated id so the bridge can key it
-        # before gemini has written its chat file.
-        argv = [base.GEMINI_BIN, "--session-id", native_id]
-        if bypass:
-            argv += ["--yolo", "--skip-trust"]
-        return argv
 
     def archive(self, native_id):
         # gemini chat logs stay read-only; archive flag rides the engine-agnostic sidecar.

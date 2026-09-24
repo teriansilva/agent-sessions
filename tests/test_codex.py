@@ -75,10 +75,12 @@ def test_codex_scan_failsoft_on_garbage(codex_root):
     assert all(s.cwd for s in sessions)  # never an empty-cwd row
 
 
-def test_codex_launch_argv():
-    prov = engines.CodexProvider()
+def test_codex_launch_argv(engine_bin):
+    # #853 P2: argv from the manifest-built provider; argv[0] = AGENT_SESSIONS_CODEX_BIN's file.
+    b = engine_bin("codex")
+    prov = engines.get("codex")
     argv = prov.launch_argv("019e2ba1-1590-7003-8e4a-51ab62cec96e", cwd="/x", bypass=True)
-    assert argv == [engines.CODEX_BIN, "resume", "019e2ba1-1590-7003-8e4a-51ab62cec96e"]
+    assert argv == [b, "resume", "019e2ba1-1590-7003-8e4a-51ab62cec96e"]
 
 
 def test_parse_key_routes_codex():
@@ -90,24 +92,22 @@ def test_parse_key_routes_codex():
         engines.parse_key("codex:not-a-uuid")
 
 
-def test_launch_argv_contract_all_present_providers():
-    # every provider exposes launch_argv returning a non-empty argv list
+def test_launch_argv_contract_all_present_providers(engine_bin):
+    # every provider exposes launch_argv returning a non-empty argv list of plain strings
+    engine_bin()
+    uuid = "019e2ba1-1590-7003-8e4a-51ab62cec96e"
+    native = {"opencode": "ses_abcd1234", "kimi": f"session_{uuid}"}
     for prov in engines.all_providers():
-        argv = prov.launch_argv(
-            "ses_abcd1234"
-            if prov.engine_id == "opencode"
-            else "019e2ba1-1590-7003-8e4a-51ab62cec96e",
-            cwd="/tmp/x",
-            bypass=False,
-        )
+        argv = prov.launch_argv(native.get(prov.engine_id, uuid), cwd="/tmp/x", bypass=False)
         assert isinstance(argv, list) and argv and all(isinstance(a, str) for a in argv)
 
 
-def test_claude_launch_argv_bypass_flag():
+def test_claude_launch_argv_bypass_flag(engine_bin):
+    b = engine_bin("claude")
     prov = engines.get("claude")
     uuid = "019e2ba1-1590-7003-8e4a-51ab62cec96e"
     assert prov.launch_argv(uuid, cwd="/x", bypass=False) == [
-        engines.CLAUDE_BIN,
+        b,
         "--resume",
         uuid,
     ]
@@ -121,20 +121,21 @@ _U2 = "019e2ba1-1590-7003-8e4a-51ab62cec002"
 
 
 def test_codex_supports_new_and_reconciles():
-    prov = engines.CodexProvider()
+    prov = engines.get("codex")
     assert prov.supports_new is True
     assert getattr(prov, "new_session_reconciles", False) is True
 
 
-def test_codex_new_launch_argv_cd_and_bypass():
-    prov = engines.CodexProvider()
-    assert prov.new_launch_argv("new-x", cwd="/work", bypass=False) == [
-        engines.CODEX_BIN,
+def test_codex_new_launch_argv_cd_and_bypass(engine_bin):
+    b = engine_bin("codex")
+    prov = engines.get("codex")
+    assert prov.new_launch_argv(f"new-{_U1}", cwd="/work", bypass=False) == [
+        b,
         "--cd",
         "/work",
     ]
-    argv = prov.new_launch_argv("new-x", cwd="/work", bypass=True)
-    assert argv[:3] == [engines.CODEX_BIN, "--cd", "/work"]
+    argv = prov.new_launch_argv(f"new-{_U1}", cwd="/work", bypass=True)
+    assert argv[:3] == [b, "--cd", "/work"]
     assert "--dangerously-bypass-approvals-and-sandbox" in argv
 
 
@@ -211,11 +212,10 @@ def test_codex_new_placeholder_recognized_and_parses(codex_root):
         engines.parse_key(key)  # NOT accepted on resume/attach
 
 
-def test_codex_present_gates_new_session_advertisement(codex_root, monkeypatch):
-    import agent_sessions.engines.codex as cdx
-
-    monkeypatch.setattr(cdx.shutil, "which", lambda _b: None)  # no codex on PATH
-    prov = engines.CodexProvider()
+def test_codex_present_gates_new_session_advertisement(codex_root, no_engine_bin):
+    # no_engine_bin: no AGENT_SESSIONS_CODEX_BIN and nothing under $HOME's search_paths, so no
+    # codex entrypoint resolves (#853 §2b — PATH is never consulted).
+    prov = engines.get("codex")
     assert prov.is_present() is False  # absent store + no bin → not advertised
     _write_rollout(codex_root, uuid=_U1, cwd="/work", first_user="hi")
     assert prov.is_present() is True and prov.supports_new is True  # present → advertised

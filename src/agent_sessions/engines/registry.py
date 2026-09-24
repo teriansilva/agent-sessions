@@ -29,18 +29,74 @@ from .shell import ShellProvider
 
 log = logging.getLogger("agent_sessions.engines")
 
-# Order is scan/display order; a provider only surfaces when present. Shell is last — the agent
-# engines lead, and the always-present plain terminal (#636) trails them.
-_PROVIDERS: list[base.EngineProvider] = [
-    ClaudeProvider(),
-    OpenCodeProvider(),
-    CodexProvider(),
-    GeminiProvider(),
-    AntigravityProvider(),
-    KimiProvider(),
-    ShellProvider(),
-]
+#: `store.layout` → the in-tree store kind that implements it (#853 P2). A kind is behaviour only —
+#: scanning, lookup, reconcile, the unattended hooks. Identity, argv, capabilities and the binary
+#: come from the engine's manifest (`plugins/first_party/<id>/plugin.toml`).
+STORE_KINDS: dict[str, type] = {
+    "claude-projects": ClaudeProvider,
+    "opencode-sqlite": OpenCodeProvider,
+    "codex-rollouts": CodexProvider,
+    "gemini-tmp": GeminiProvider,
+    "antigravity-cli": AntigravityProvider,
+    "kimi-code": KimiProvider,
+    "shell-records": ShellProvider,
+}
+
+
+def _build_roster() -> list[base.EngineProvider]:
+    """The live roster: every IN-TREE manifest, in `display.order` (#853 P2).
+
+    Local manifests never reach this list — `load_first_party()` does not read them — until install
+    and operator confirmation exist (P5/P6). An in-tree manifest that fails to load is a build
+    defect, not an operator error, so it is logged loudly and its engine is left out rather than
+    taking the whole roster down (the fail-soft rule every store reader already follows).
+    """
+    from ..plugins import load_first_party
+
+    loaded = load_first_party()
+    for key, why in loaded.problems.items():
+        log.error("engine manifest %s did not load: %s", key, why)
+    roster: list[base.EngineProvider] = []
+    if not loaded.providers:
+        # Never a silent empty sidebar: with no manifests every id fails `parse_key` and every
+        # session 404s, so this is logged at the loudest level the app has.
+        log.critical("no engine manifests loaded — the roster is EMPTY (%s)", loaded.problems)
+    for prov in loaded.providers.values():
+        layout = prov.manifest.store.layout if prov.manifest.store else None
+        kind = STORE_KINDS.get(layout)
+        if kind is None:
+            log.error(
+                "engine manifest %s names store layout %r with no kind", prov.engine_id, layout
+            )
+            continue
+        roster.append(prov.attach_kind(kind()))
+    return roster
+
+
+# Order is scan/display order (`display.order` in each manifest); a provider only surfaces when
+# present. Shell is last — the agent engines lead, and the always-present plain terminal (#636)
+# trails them.
+_PROVIDERS: list[base.EngineProvider] = _build_roster()
 _BY_ID: dict[str, base.EngineProvider] = {p.engine_id: p for p in _PROVIDERS}
+#: The one engine whose ids may arrive without an `engine:` prefix (pre-multi-engine bookmarks).
+_BARE_ID_ENGINE: str | None = next(
+    (p.engine_id for p in _PROVIDERS if p.manifest.session_id.legacy_bare_id), None
+)
+
+
+def launchable_bin(prov: base.EngineProvider | None) -> str | None:
+    """The binary a launch of this engine would exec, or None when it cannot launch.
+
+    The ONE answer the UI and the launcher share (#853 P2): Settings, the new-session picker and
+    the handoff check ask the provider — provenance, never a PATH lookup — so an engine is never
+    offered that the launcher would then refuse. It walks directories, so call it OFF the loop.
+    """
+    if prov is None:
+        return None
+    try:
+        return prov.entrypoint_path()
+    except base.EngineError:
+        return None
 
 
 def all_providers() -> list[base.EngineProvider]:
@@ -459,7 +515,7 @@ def is_new_session_placeholder(raw: str) -> bool:
     engine_id, _, native = raw.partition(":")
     prov = _BY_ID.get(engine_id)
     return bool(getattr(prov, "new_session_reconciles", False)) and bool(
-        base._NEW_PLACEHOLDER_RE.match(native)
+        base._NEW_PLACEHOLDER_RE.fullmatch(native)
     )
 
 
@@ -488,15 +544,19 @@ def parse_key(raw: str, *, allow_new_placeholder: bool = False) -> tuple[base.En
         if prov is None:
             raise base.EngineError(f"unknown engine: {engine_id!r}")
     else:
-        prov = _BY_ID["claude"]
+        prov = _BY_ID.get(_BARE_ID_ENGINE or "")
+        if prov is None:
+            raise base.EngineError("an engine-qualified id is required")
         native = raw
+    # `fullmatch`, never `match`: every pattern ends in `$`, and `$` also matches just before a
+    # trailing newline, so `match` accepted `<uuid>\n` as a valid id (found by #853 P2's matrix).
     if (
         allow_new_placeholder
         and getattr(prov, "new_session_reconciles", False)
-        and base._NEW_PLACEHOLDER_RE.match(native)
+        and base._NEW_PLACEHOLDER_RE.fullmatch(native)
     ):
         return prov, native
-    if not prov.id_pattern.match(native):
+    if not prov.id_pattern.fullmatch(native):
         raise base.EngineError(f"bad {prov.engine_id} id: {native!r}")
     return prov, native
 

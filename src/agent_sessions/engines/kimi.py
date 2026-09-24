@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import json
 import math
-import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -271,23 +270,16 @@ class KimiProvider:
 
     engine_id = "kimi"
     id_pattern = base._KIMI_SESSION_RE
-    supports_new = True
-    supports_orchestrator_input = True  # a TUI agent that reads a prompt (#726)
-    expects_raw_tty = True  # ratatui/Ink TUI: its PTY must stay raw (#804)
-    # Kimi mints its own ``session_<uuid>`` at launch — ``-S/--session`` only *resumes*, there is
-    # no caller-supplied id flag — so new-session launches under a ``new-<uuid>`` placeholder and
-    # reconciles to the real id afterwards (same shape as codex/antigravity).
-    new_session_reconciles = True
-    # Cross-engine handoff target (#720 Phase 3): a fresh Kimi TUI accepts the seed as a bracketed
-    # paste on its PTY input (never argv). PROVEN against a real authenticated session — replicating
-    # webterm's readiness gate (DECSET 2004 armed + a ≥2KB first paint + a quiet window), a
-    # multi-line ``ESC[200~ … ESC[201~ CR`` paste was consumed as ONE submitted ``turn.prompt``
-    # with newlines intact. So the codex "arms 2004 then eats stdin" race (which the gate exists to
-    # catch) can't strand a Kimi seed. Delivery + timing stay the engine-agnostic webterm.py gate.
-    supports_seed_start = True
+
+    def store_present(self) -> bool:
+        """Does this engine's store exist? Presence of the BINARY is the provider's question
+        (its provenance-checked entrypoint, #853 §2b) — never a PATH lookup here."""
+        return base._kimi_dir().is_dir()
 
     def is_present(self) -> bool:
-        return base._kimi_dir().is_dir() or shutil.which("kimi") is not None
+        """Kind-level presence is the STORE only. Whether the binary is there is the owning
+        provider's question, answered through provenance — never a PATH lookup (#853 §2b)."""
+        return self.store_present()
 
     # --- store reading ----------------------------------------------------------------------
     # Resolution lives in the module-level `_index_rows` / `_walk_session_dirs` / `_meta` /
@@ -358,23 +350,6 @@ class KimiProvider:
         return self._row(native_id, session_dir) if session_dir is not None else None
 
     # --- launch -----------------------------------------------------------------------------
-
-    def launch_argv(self, native_id, *, cwd, bypass):
-        # ``-S <id>`` resumes that session; cwd is applied by the pty bridge as the child's working
-        # dir, never interpolated into argv (shell-free contract).
-        argv = [base.KIMI_BIN, "-S", native_id]
-        if bypass:
-            argv.append("-y")  # --yolo: auto-approve every action
-        return argv
-
-    def new_launch_argv(self, native_id, *, cwd, bypass):
-        # A *fresh* session in ``cwd``. Kimi mints its own ``session_<uuid>`` (no ``--session-id``
-        # equivalent), discovered by the reconcile diff afterwards. ``native_id`` is the client's
-        # ``new-<uuid>`` placeholder that keys the socket/lock — Kimi never sees it.
-        argv = [base.KIMI_BIN]
-        if bypass:
-            argv.append("-y")
-        return argv
 
     # --- new-session reconciliation ---------------------------------------------------------
 

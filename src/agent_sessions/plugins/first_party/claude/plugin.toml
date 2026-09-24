@@ -15,7 +15,7 @@ version_flag = "--version"
 
 [session_id]
 pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-mint = "pinned"
+mint = "pinned"  # `--session-id` lets BattleLab key the socket before claude writes its JSONL
 legacy_bare_id = true
 
 [store]
@@ -35,9 +35,9 @@ resume = true
 new = true
 archive = true
 handoff_target = true
-seed_start = true
+seed_start = true  # handoff target (#597): the seed arrives as a bracketed paste, never argv
 orchestrator_input = true
-raw_tty = true
+raw_tty = true  # Ink TUI: its PTY must stay raw (#804)
 owns_transcript = true
 
 [transcript]
@@ -57,6 +57,7 @@ menu_digit_submits = true
 start_evidence = "claude-sessions"
 
 [display]
+order = 10
 name = "claude"
 badge = "cc"
 accent = "amber"

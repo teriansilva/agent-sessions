@@ -350,31 +350,37 @@ def test_reconcile_adopts_v2_session_walk_only(kimi_home):
 # --- launch argv ------------------------------------------------------------------------------
 
 
-def test_launch_argv_resumes_by_id(kimi_home, monkeypatch):
-    monkeypatch.setattr(engines.base, "KIMI_BIN", "/opt/kimi/bin/kimi")
-    assert _provider().launch_argv(_SID, cwd="/home/u/proj", bypass=False) == [
-        "/opt/kimi/bin/kimi",
+# #853 P2: argv is the manifest-built provider's (`engines.get("kimi")`); argv[0] is the
+# provenance-checked file AGENT_SESSIONS_KIMI_BIN names, never `base.KIMI_BIN`.
+
+
+def test_launch_argv_resumes_by_id(kimi_home, engine_bin):
+    b = engine_bin("kimi")
+    assert engines.get("kimi").launch_argv(_SID, cwd="/home/u/proj", bypass=False) == [
+        b,
         "-S",
         _SID,
     ]
 
 
-def test_launch_argv_bypass_adds_yolo(kimi_home, monkeypatch):
-    monkeypatch.setattr(engines.base, "KIMI_BIN", "/opt/kimi/bin/kimi")
-    assert _provider().launch_argv(_SID, cwd="/home/u/proj", bypass=True)[-1] == "-y"
+def test_launch_argv_bypass_adds_yolo(kimi_home, engine_bin):
+    engine_bin("kimi")
+    assert engines.get("kimi").launch_argv(_SID, cwd="/home/u/proj", bypass=True)[-1] == "-y"
 
 
-def test_new_launch_argv_does_not_pin_an_id(kimi_home, monkeypatch):
+def test_new_launch_argv_does_not_pin_an_id(kimi_home, engine_bin):
     """Kimi has no ``--session-id``; the placeholder must never leak into argv."""
-    monkeypatch.setattr(engines.base, "KIMI_BIN", "/opt/kimi/bin/kimi")
-    argv = _provider().new_launch_argv("new-1234", cwd="/home/u/proj", bypass=False)
-    assert argv == ["/opt/kimi/bin/kimi"]
-    assert "new-1234" not in argv
+    b = engine_bin("kimi")
+    placeholder = "new-12345678-1234-1234-1234-123456789abc"
+    argv = engines.get("kimi").new_launch_argv(placeholder, cwd="/home/u/proj", bypass=False)
+    assert argv == [b]
+    assert placeholder not in argv
 
 
-def test_launch_argv_is_a_literal_list_no_shell(kimi_home):
+def test_launch_argv_is_a_literal_list_no_shell(kimi_home, engine_bin):
     """Shell-free guarantee: argv is a literal list, never a command string."""
-    argv = _provider().launch_argv(_SID, cwd="/home/u/proj", bypass=True)
+    engine_bin("kimi")
+    argv = engines.get("kimi").launch_argv(_SID, cwd="/home/u/proj", bypass=True)
     assert isinstance(argv, list)
     assert all(isinstance(a, str) for a in argv)
     assert not any(tok in " ".join(argv) for tok in ("&&", "|", ";", "$("))

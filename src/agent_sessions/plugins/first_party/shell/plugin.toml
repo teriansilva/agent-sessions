@@ -5,7 +5,7 @@ id = "shell"
 label = "Shell"
 publisher = "battlelab"
 version = "1"
-kind = "terminal"
+kind = "terminal"  # no agent (#636): the validator refuses orchestrator input, raw TTY and seeding
 
 [binary]
 name = "bash"
@@ -23,7 +23,7 @@ env_override = "AGENT_SESSIONS_SHELL_DIR"
 layout = "shell-records"
 
 [launch]
-resume = { kind = "fresh" }
+resume = { kind = "fresh" }  # a relaunch is a fresh shell; there is no transcript to restore
 new = { kind = "bare" }
 base_args = ["-l"]
 
@@ -33,6 +33,7 @@ new = true
 archive = true
 
 [display]
+order = 90
 name = "shell"
 badge = "sh"
 accent = "slate"

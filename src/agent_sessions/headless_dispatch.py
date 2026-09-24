@@ -597,7 +597,7 @@ async def dispatch(
     # The executable the launcher will actually exec, not whatever `PATH` resolves — a probe of a
     # different binary answers a question about a different process.
     try:
-        probe_bin = str(prov.new_launch_argv("preflight", cwd=cwd, bypass=False)[0])
+        probe_bin = str(prov.entrypoint_path())
     except Exception:  # noqa: BLE001
         probe_bin = engine
 
@@ -700,6 +700,9 @@ async def dispatch(
                 engine=engine, session_id=native, launch_argv=launch, detached=True
             )
         except ValueError as e:
+            raise DispatchError(str(e)) from None
+        except engines.EngineError as e:
+            # No binary, or one provenance refuses (#853 §2b). Nothing was spawned.
             raise DispatchError(str(e)) from None
         except ptybridge.PtyBridgeError as e:
             # NOTHING HAS BEEN SPAWNED, so this is a dispatch that did not happen rather than a

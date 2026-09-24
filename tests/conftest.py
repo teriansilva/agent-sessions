@@ -523,6 +523,75 @@ def _isolate_scan_cache() -> None:
     scancache.clear()
 
 
+@pytest.fixture(autouse=True)
+def _reset_engine_entrypoints() -> None:
+    """Forget every live provider's resolved entrypoint before each test (#853 §2b).
+
+    `PluginProvider` caches its resolution keyed on the env override and the install record —
+    not on $HOME, which is constant in production. Tests move $HOME (`tmp_home`, `no_engine_bin`),
+    so without this an entrypoint resolved under the operator's real `~/.local/bin` by an earlier
+    test would keep launching in a later one: the pass/fail of a launch test would depend on
+    test order and on what this host has installed.
+    """
+    from agent_sessions import engines
+
+    for p in engines.all_providers():
+        if hasattr(p, "_cached"):
+            p._cached = None
+
+
+@pytest.fixture
+def engine_bin(tmp_path, monkeypatch):
+    """#853 P2: point engines' manifest `binary.env_var` at a provenance-acceptable fake agent.
+
+    argv[0] resolves only from that env var or the manifest's `search_paths` under $HOME, never
+    PATH and never `engines.base.*_BIN`. `engine_bin("claude", "codex")` wires the named engines
+    (all seven when none is named) to one operator-owned `0755` file and returns argv[0] exactly as
+    the launcher will see it — the real, symlink-free path.
+    """
+    from agent_sessions import engines
+
+    b = tmp_path / "engine-bin" / "agent"
+
+    def make(*engine_ids: str) -> str:
+        if not b.exists():
+            b.parent.mkdir(parents=True, exist_ok=True)
+            # 0755 regardless of the runner's umask: provenance refuses a directory another user
+            # could write, and whether a 0775 one counts depends on the host's group layout.
+            b.parent.chmod(0o755)
+            b.write_bytes(b"#!/bin/true\n")
+            b.chmod(0o755)
+        for e in engine_ids or [p.engine_id for p in engines.all_providers()]:
+            monkeypatch.setenv(engines.get(e).manifest.binary.env_var, str(b))
+        return os.path.realpath(b)
+
+    return make
+
+
+@pytest.fixture
+def no_engine_bin(tmp_path, monkeypatch):
+    """#853 P2: make every engine's entrypoint unlaunchable — the replacement for the pre-P2 idiom
+    of patching `base.*_BIN` to a bare name.
+
+    The agent engines get no env override and a $HOME whose `search_paths` hold nothing, so their
+    `launch_argv` raises `EngineError("<engine>: no binary found")`. `shell` searches the system
+    `/bin` / `/usr/bin`, which a test cannot empty, so its override names a file that does not
+    exist and provenance refuses it (`EngineError("shell: refusing to launch — …")`). A $HOME
+    already under this test's tmp dir (e.g. `tmp_home`) is kept — it is empty of binaries.
+    """
+    from agent_sessions import engines
+
+    for p in engines.all_providers():
+        monkeypatch.delenv(p.manifest.binary.env_var, raising=False)
+    monkeypatch.setenv(engines.get("shell").manifest.binary.env_var, str(tmp_path / "no-bash"))
+    home = Path(os.environ.get("HOME", "/"))
+    if not home.is_relative_to(tmp_path):
+        home = tmp_path / "no-engine-home"
+        home.mkdir(exist_ok=True)
+        monkeypatch.setenv("HOME", str(home))
+    return home
+
+
 @pytest.fixture
 def tmp_home(tmp_path, monkeypatch) -> Path:
     """Pretend the user's ``$HOME`` is an empty tmp dir."""
@@ -711,3 +780,37 @@ def every_session_held(monkeypatch) -> None:
     from agent_sessions import notifications
 
     monkeypatch.setattr(notifications, "decision_surfaces", lambda: _EverySession())
+
+
+@pytest.fixture(autouse=True)
+def _isolate_plugin_dirs(tmp_path, monkeypatch) -> None:
+    """No test reads or writes the operator's real plugin or plugin-state directories (#853).
+
+    The live providers read install/confirmation records from `plugin_state_home()`, which would
+    otherwise be `~/.local/share/agent-sessions/plugin-state` on the host running the suite."""
+    monkeypatch.setenv("AGENT_SESSIONS_PLUGINS_DIR", str(tmp_path / "_plugins"))
+    monkeypatch.setenv("AGENT_SESSIONS_PLUGIN_STATE_DIR", str(tmp_path / "_plugin-state"))
+    # The live providers fixed their state dir when the registry was imported (at collection,
+    # before this fixture ran), so point each of them here too — otherwise a record the host
+    # happens to hold would decide a test's outcome (independent review of PR #1115).
+    from agent_sessions import engines
+
+    for p in engines.all_providers():
+        if hasattr(p, "state_dir"):
+            monkeypatch.setattr(p, "state_dir", tmp_path / "_plugin-state")
+
+
+@pytest.fixture(autouse=True)
+def _no_host_engine_binaries(tmp_path, monkeypatch) -> None:
+    """No test may launch through the HOST's real agent binaries (#853 P2).
+
+    Every engine's `binary.env_var` points at a path that does not exist, so a test that forgot
+    `engine_bin` fails the same way here as on a CI runner — instead of passing locally because
+    `~/.local/bin/claude` happens to resolve (twice a false green on PR #1115). `engine_bin` and
+    `no_engine_bin` override this per test."""
+    from agent_sessions import engines
+
+    for p in engines.all_providers():
+        var = getattr(getattr(getattr(p, "manifest", None), "binary", None), "env_var", None)
+        if var:
+            monkeypatch.setenv(var, str(tmp_path / "_no-host-binary" / var.lower()))

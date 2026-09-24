@@ -9,11 +9,11 @@ version = "1"
 [binary]
 name = "kimi"
 env_var = "AGENT_SESSIONS_KIMI_BIN"
-search_paths = ["~/.kimi-code/bin", "~/.local/bin"]
+search_paths = ["~/.kimi-code/bin", "~/.local/bin"]  # the installer only appends ~/.kimi-code/bin to the shell rc
 
 [session_id]
 pattern = "^session_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-mint = "adopt"
+mint = "adopt"  # ids are session_<uuid>, minted by kimi (#714)
 
 [store]
 root = "~/.kimi-code"
@@ -44,6 +44,7 @@ source = "manual"
 repaint = "wipe"
 
 [display]
+order = 60
 name = "kimi"
 badge = "ki"
 accent = "magenta"

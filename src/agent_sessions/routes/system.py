@@ -16,7 +16,6 @@ from fastapi.responses import JSONResponse, Response
 from .. import (
     aitasks,
     analytics,
-    discover,
     engines,
     handoff,
     mission_directions,
@@ -215,7 +214,8 @@ def register(
         # with whether the CLI is installed + whether this host can start a new session +
         # the resolved binary path (or null). Authed; GET, so no CSRF.
         def row(p: engines.EngineProvider) -> dict:
-            bin_path = discover.resolve(p.engine_id)
+            # What a launch would exec (#853 P2) — the launcher's own answer, not a PATH probe.
+            bin_path = engines.launchable_bin(p)
             can_start = bool(bin_path and getattr(p, "supports_new", False))
             # Handoff-target capability (#597): the ONE source both the modal's engine
             # tiles and the server-side prepare rejection consume, so a disabled tile can
@@ -231,7 +231,8 @@ def register(
                 "bin": bin_path,
             }
 
-        return JSONResponse({"engines": [row(p) for p in engines.all_providers()]})
+        rows = await asyncio.to_thread(lambda: [row(p) for p in engines.all_providers()])
+        return JSONResponse({"engines": rows})
 
     @app.get("/api/ai/activity")
     async def ai_activity(_: str = Depends(logged_in)) -> JSONResponse:
@@ -383,6 +384,15 @@ def register(
         # the wizard, while any pref already set or ≥1 scanned session is treated as onboarded
         # so an upgrade never regresses into onboarding. Fail-safe to onboarded on a scan error
         # so a transient fault can't trap a returning user in the wizard.
+        # Which engines can start a new session: the launcher's own answer (#853 P2), resolved
+        # OFF the loop because provenance walks directories.
+        new_session_engines = await asyncio.to_thread(
+            lambda: [
+                p.engine_id
+                for p in engines.all_providers()
+                if getattr(p, "supports_new", False) and engines.launchable_bin(p)
+            ]
+        )
         onboarded_explicit = prefs.get_onboarded()
         if onboarded_explicit is not None:
             onboarded_val = onboarded_explicit
@@ -421,11 +431,7 @@ def register(
                 # Usage analytics (#1009): the decision and whether this server allows it at all.
                 # Never the install id or the day's budget.
                 "analytics": analytics.public_state(),
-                "new_session_engines": [
-                    p.engine_id
-                    for p in engines.all_providers()
-                    if getattr(p, "supports_new", False) and discover.resolve(p.engine_id)
-                ],
+                "new_session_engines": new_session_engines,
                 "terminal_backend": "ws",
                 "must_change_password": must_change["v"],
                 # "single-user" | "none" — lets the SPA hide login/logout UI when there

@@ -10,11 +10,11 @@ version = "1"
 name = "agy"
 aliases = ["agy"]
 env_var = "AGENT_SESSIONS_AGY_BIN"
-search_paths = ["~/.local/bin"]
+search_paths = ["~/.local/bin"]  # single Go binary from the curl installer
 
 [session_id]
 pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-mint = "adopt"
+mint = "adopt"  # agy has no flag to pin a conversation id (#449)
 
 [store]
 root = "~/.gemini/antigravity-cli"
@@ -42,6 +42,7 @@ kind = "agy-cli-probe"
 probe_token = "/usage"
 
 [display]
+order = 50
 name = "antigravity"
 badge = "ag"
 accent = "lime"

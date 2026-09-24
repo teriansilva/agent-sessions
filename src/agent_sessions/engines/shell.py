@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import shutil
 import time
 from pathlib import Path
 
@@ -42,17 +41,16 @@ class ShellProvider:
 
     engine_id = "shell"
     id_pattern = base._SHELL_UUID_RE
-    supports_new = True  # ws new-session via new_launch_argv; pinned id (no reconcile)
-    # NEVER orchestrator-actuable (#726): this is a bare `bash -l` with no agent, so a
-    # server-authored "continue" nudge would be EXECUTED as a shell command. The registry
-    # predicate already default-denies; this is explicit so the reason is at the site.
-    supports_orchestrator_input = False
-    expects_raw_tty = False  # bash -l is cooked BY DESIGN between commands (#804)
+
+    def store_present(self) -> bool:
+        """Does this engine's store exist? Presence of the BINARY is the provider's question
+        (its provenance-checked entrypoint, #853 §2b) — never a PATH lookup here."""
+        return base._shell_dir().is_dir()
 
     def is_present(self) -> bool:
-        # Always usable where bash exists (effectively every Linux host); also present when the
-        # record store has rows so archived shell sessions still list even on an odd host.
-        return shutil.which("bash") is not None or base._shell_dir().is_dir()
+        """Kind-level presence is the STORE only. Whether the binary is there is the owning
+        provider's question, answered through provenance — never a PATH lookup (#853 §2b)."""
+        return self.store_present()
 
     # --- record store ----------------------------------------------------------------------
 
@@ -177,19 +175,6 @@ class ShellProvider:
         return row if row is not None and row.uuid == native_id else None
 
     # --- launch ----------------------------------------------------------------------------
-
-    def launch_argv(self, native_id: str, *, cwd: str, bypass: bool) -> list[str]:
-        # A plain interactive login shell as a LITERAL argv: the bash binary as argv[0] plus a
-        # literal login flag — never a command string handed to an interpreter (the repo's
-        # shell-free launcher contract). cwd is the pty bridge's job; `bypass` is meaningless for
-        # a shell (no permission model) and ignored.
-        return [base.BASH_BIN, "-l"]
-
-    def new_launch_argv(self, native_id: str, *, cwd: str, bypass: bool) -> list[str]:
-        # Pinned id: the caller's UUID is only our bookkeeping key; a fresh shell needs no id
-        # passed to bash. Same literal argv as resume — a relaunch is a fresh shell (there is no
-        # transcript to restore), which is the honest behaviour for a bare terminal.
-        return self.launch_argv(native_id, cwd=cwd, bypass=bypass)
 
     # --- archive (engine-agnostic sidecar, like gemini/codex/opencode) ---------------------
 

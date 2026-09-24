@@ -55,8 +55,10 @@ where = ["src"]
 # `pip install .` (the deploy shape) produces a package with only the .py
 # modules, and the app raises jinja2 TemplateNotFound at runtime. Editable
 # installs accidentally work because they read straight from the source tree.
+# The in-tree engine manifests (#853 P2) are package data for the same reason: the live roster is
+# built from them, so a wheel without them starts with no engines at all.
 [tool.setuptools.package-data]
-agent_sessions = ["templates/*.html"]
+agent_sessions = ["templates/*.html", "plugins/first_party/*/plugin.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -303,19 +303,6 @@ class OpenCodeProvider:
 
     engine_id = "opencode"
     id_pattern = base._SES_RE
-    # opencode can't pin a new-session id (``opencode --session`` only *continues*; there
-    # is no create-returning-id). So new-session uses launch-then-reconcile (#127): launch
-    # ``opencode <dir>`` (mints its own ``ses_…``) under a client-minted ``new-<uuid>``
-    # placeholder, then diff opencode.db to find the new ``ses_…`` for that cwd and record
-    # a persisted placeholder→real alias. The ws route + alias layer do the reconcile; the
-    # provider only supplies the snapshot/diff primitives and the new-launch argv.
-    supports_new = True
-    supports_orchestrator_input = True  # a TUI agent that reads a prompt (#726)
-    expects_raw_tty = True  # ratatui/Ink TUI: its PTY must stay raw (#804)
-    new_session_reconciles = True  # mints its own id → placeholder/reconcile flow (#127/#315)
-    # Cross-engine handoff target (#597): the fresh opencode TUI accepts the seed as a
-    # bracketed paste on its PTY input (never argv).
-    supports_seed_start = True
 
     def _query_rows(self) -> list:
         """Read top-level opencode sessions, RAISING ``sqlite3.Error`` on a real read
@@ -367,12 +354,22 @@ class OpenCodeProvider:
     def _bin(self) -> str:
         # The service may have started before opencode was installed/doctor rewrote env.
         # Resolve dynamically so ~/.opencode/bin/opencode still launches as an absolute argv[0].
+        # Through the provider's provenance-checked entrypoint (#853 §2b) whenever this kind is
+        # attached to one — `unattended_launch` and the auth probe exec this path.
+        owner = getattr(self, "owner", None)
+        if owner is not None:
+            return owner.entrypoint_path()
         return discover.resolve(self.engine_id) or base.OPENCODE_BIN
 
+    def store_present(self) -> bool:
+        """Does this engine's store exist? Presence of the BINARY is the provider's question
+        (its provenance-checked entrypoint, #853 §2b) — never a PATH lookup here."""
+        return self._db_readable()
+
     def is_present(self) -> bool:
-        # A fresh opencode install has a CLI before it has an opencode.db. Treat either a
-        # launchable binary or a readable DB as enough for the provider to participate.
-        return discover.resolve(self.engine_id) is not None or self._db_readable()
+        """Kind-level presence is the STORE only. Whether the binary is there is the owning
+        provider's question, answered through provenance — never a PATH lookup (#853 §2b)."""
+        return self.store_present()
 
     def _row(self, record) -> Session | None:
         """One row from one ``OPENCODE_SCHEMA`` record, or ``None`` if it is not listable. Shared by
@@ -443,21 +440,6 @@ class OpenCodeProvider:
         except sqlite3.Error:
             return None
         return self._row(record) if record is not None else None
-
-    def launch_argv(self, native_id, *, cwd, bypass):
-        # opencode resumes a session by id within its project dir. `bypass` is
-        # accepted only for interface parity (permissions are config-side).
-        return [self._bin(), cwd, "--session", native_id]
-
-    def new_launch_argv(self, native_id, *, cwd, bypass):
-        # Start a *fresh* opencode session in `cwd`. We deliberately pass NO `--session`:
-        # ``opencode <dir>`` mints its own ``ses_…`` id, which the reconcile step (DB-diff)
-        # discovers afterwards. `native_id` here is the client-minted ``new-<uuid>``
-        # placeholder the bridge keys the socket/lock by; opencode never sees it. `bypass`
-        # is config-side for opencode, so it doesn't change the argv (interface parity) — which
-        # is exactly why an UNATTENDED launch does not come through here: `unattended_launch`
-        # below is the one that turns `bypass=False` into an enforced policy (#1050).
-        return [self._bin(), cwd]
 
     def unattended_launch(self, native_id, *, cwd, bypass, env):
         """``(argv, env_overrides)`` for an unattended launch — the one place ``bypass`` is honoured

@@ -29,7 +29,7 @@ import asyncio
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from .. import discover, engines, handoff, metadata, prefs, project_dirs, projects, review
+from .. import engines, handoff, metadata, prefs, project_dirs, projects, review
 
 _MODES = {"quick", "ai"}  # "ai" (Phase 2) degrades to "quick" when the endpoint is absent
 
@@ -75,7 +75,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         tprov = engines.get(target_engine)
         if tprov is None:
             raise HTTPException(status_code=404, detail="unknown engine")
-        ok, reason = handoff.seed_start_state(tprov, present=bool(discover.resolve(target_engine)))
+        present = bool(await asyncio.to_thread(engines.launchable_bin, tprov))
+        ok, reason = handoff.seed_start_state(tprov, present=present)
         if not ok:
             raise HTTPException(status_code=422, detail=f"target engine unavailable: {reason}")
         # Source must be a scanned, in-scope session — the resume path's scope rule

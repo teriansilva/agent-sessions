@@ -23,7 +23,6 @@ from pathlib import Path
 
 import pytest
 
-from agent_sessions import engines
 from agent_sessions.engines.base import EngineError
 from agent_sessions.plugins import (
     ManifestError,
@@ -35,7 +34,7 @@ from agent_sessions.plugins import (
 )
 from agent_sessions.plugins import manifest as manifest_mod
 
-FIXTURES = Path(__file__).parent / "fixtures" / "plugins"
+FIXTURES = Path(__file__).parent.parent / "src" / "agent_sessions" / "plugins" / "first_party"
 SEVEN = ("claude", "opencode", "codex", "gemini", "antigravity", "kimi", "shell")
 UUID = "0190a3b2-1c2d-7e3f-8a9b-0c1d2e3f4a5b"
 NATIVE = {
@@ -288,54 +287,14 @@ def test_binary_name_must_be_the_id_or_a_declared_alias():
 
 # --- 2. argv parity with today's provider classes -------------------------------------------------
 
-_BIN_ATTR = {
-    "claude": "CLAUDE_BIN",
-    "opencode": None,  # resolved via discover; patched below
-    "codex": "CODEX_BIN",
-    "gemini": "GEMINI_BIN",
-    "antigravity": "AGY_BIN",
-    "kimi": "KIMI_BIN",
-    "shell": "BASH_BIN",
-}
+# The per-engine argv parity against the provider classes lived here in P1. Since P2 the classes
+# no longer carry argv at all, so the contract is the GOLDEN table in test_engine_equivalence.py,
+# recorded from the classes immediately before the data moved.
 
 
 @pytest.fixture
 def fake_bin(tmp_path):
     return exe(tmp_path / "bin" / "agent")
-
-
-@pytest.mark.parametrize("engine", SEVEN)
-@pytest.mark.parametrize("bypass", [True, False])
-def test_manifest_argv_matches_the_provider_class(engine, bypass, fake_bin, monkeypatch, tmp_path):
-    m = parse(doc(engine))
-    env = {m.binary.env_var: str(fake_bin)}
-    plugin = PluginProvider(
-        m, trust=provenance.FIRST_PARTY, root=tmp_path / "plugins" / engine, env=env
-    )
-
-    cls = engines.get(engine)
-    if _BIN_ATTR[engine]:
-        monkeypatch.setattr(engines.base, _BIN_ATTR[engine], str(fake_bin))
-    else:
-        monkeypatch.setattr(type(cls), "_bin", lambda self: str(fake_bin))
-    cwd = str(tmp_path / "proj")
-
-    native = NATIVE[engine]
-    assert plugin.launch_argv(native, cwd=cwd, bypass=bypass) == cls.launch_argv(
-        native, cwd=cwd, bypass=bypass
-    )
-    new_id = PLACEHOLDER if m.session_id.mint == "adopt" else native
-    assert plugin.new_launch_argv(new_id, cwd=cwd, bypass=bypass) == cls.new_launch_argv(
-        new_id, cwd=cwd, bypass=bypass
-    )
-    for attr in ("supports_new", "supports_orchestrator_input", "expects_raw_tty"):
-        assert getattr(plugin, attr) == bool(getattr(cls, attr, False)), attr
-    assert plugin.supports_seed_start == bool(getattr(cls, "supports_seed_start", False))
-    assert plugin.new_session_reconciles == bool(getattr(cls, "new_session_reconciles", False))
-    # Same body; the manifest compiles its trailing anchor as `\Z` (no match before a newline).
-    assert m.session_id.pattern.pattern.removesuffix(r"\Z") == cls.id_pattern.pattern.removesuffix(
-        "$"
-    )
 
 
 def test_adopt_mint_takes_only_the_placeholder(fake_bin, tmp_path):

@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import sqlite3
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -187,16 +186,16 @@ class AntigravityProvider:
 
     engine_id = "antigravity"
     id_pattern = base._ANTIGRAVITY_UUID_RE
-    # agy mints its OWN conversation id at launch — no caller-chosen flag — so new sessions launch
-    # fresh under a ``new-<uuid>`` placeholder and reconcile to the real id afterwards, exactly like
-    # codex/opencode (#315 / #449). Resume still pins the existing id via ``--conversation``.
-    supports_new = True
-    supports_orchestrator_input = True  # a TUI agent that reads a prompt (#726)
-    expects_raw_tty = True  # ratatui/Ink TUI: its PTY must stay raw (#804)
-    new_session_reconciles = True
+
+    def store_present(self) -> bool:
+        """Does this engine's store exist? Presence of the BINARY is the provider's question
+        (its provenance-checked entrypoint, #853 §2b) — never a PATH lookup here."""
+        return base._antigravity_dir().is_dir()
 
     def is_present(self) -> bool:
-        return base._antigravity_dir().is_dir() or shutil.which("agy") is not None
+        """Kind-level presence is the STORE only. Whether the binary is there is the owning
+        provider's question, answered through provenance — never a PATH lookup (#853 §2b)."""
+        return self.store_present()
 
     def _row(
         self,
@@ -287,27 +286,6 @@ class AntigravityProvider:
             return None
         root = base._antigravity_dir()
         return self._row(root, root / "conversations" / f"{native_id}.db", _cwd_by_id(root))
-
-    def launch_argv(self, native_id, *, cwd, bypass):
-        # agy resumes a conversation by its global UUID (verified: `agy --conversation <uuid>`).
-        # `bypass` maps to `--dangerously-skip-permissions` (auto-approve tool calls); agy has no
-        # separate workspace-trust flag, unlike gemini's `--skip-trust`.
-        argv = [base.AGY_BIN, "--conversation", native_id]
-        if bypass:
-            argv.append("--dangerously-skip-permissions")
-        return argv
-
-    def new_launch_argv(self, native_id, *, cwd, bypass):
-        # Start a *fresh* agy conversation in `cwd` (the launcher sets the process cwd, which agy
-        # records as the workspace — same as resume). agy mints its own conversation uuid (no flag
-        # to pin one), discovered afterwards by `reconcile_new_session` diffing the cwd's
-        # conversations (#449, codex #315). `native_id` is the client-minted `new-<uuid>`
-        # placeholder the bridge keys the socket/lock by; agy never sees it. `bypass` maps to
-        # `--dangerously-skip-permissions` (auto-approve tool calls), as in `launch_argv`.
-        argv = [base.AGY_BIN]
-        if bypass:
-            argv.append("--dangerously-skip-permissions")
-        return argv
 
     def _conversation_uuids_in_cwd(self, cwd: str) -> set[str] | None:
         """The set of agy conversation uuids whose resolved cwd == ``cwd`` (#449), or ``None`` if

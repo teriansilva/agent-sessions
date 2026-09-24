@@ -82,20 +82,22 @@ def test_gemini_scan_failsoft_on_garbage(gemini_tmp):
     assert all(s.cwd for s in sessions)
 
 
-def test_gemini_launch_argv_resume_and_bypass():
-    prov = engines.GeminiProvider()
+def test_gemini_launch_argv_resume_and_bypass(engine_bin):
+    b = engine_bin("gemini")
+    prov = engines.get("gemini")
     sid = "96fb77fc-9c1a-4453-b27b-d78d8012dd2c"
-    assert prov.launch_argv(sid, cwd="/x", bypass=False) == [engines.GEMINI_BIN, "--resume", sid]
+    assert prov.launch_argv(sid, cwd="/x", bypass=False) == [b, "--resume", sid]
     bypass = prov.launch_argv(sid, cwd="/x", bypass=True)
-    assert bypass[:3] == [engines.GEMINI_BIN, "--resume", sid]
+    assert bypass[:3] == [b, "--resume", sid]
     assert "--yolo" in bypass and "--skip-trust" in bypass
 
 
-def test_gemini_new_launch_argv_pins_session_id():
-    prov = engines.GeminiProvider()
+def test_gemini_new_launch_argv_pins_session_id(engine_bin):
+    b = engine_bin("gemini")
+    prov = engines.get("gemini")
     sid = "96fb77fc-9c1a-4453-b27b-d78d8012dd2c"
     assert prov.new_launch_argv(sid, cwd="/x", bypass=False) == [
-        engines.GEMINI_BIN,
+        b,
         "--session-id",
         sid,
     ]

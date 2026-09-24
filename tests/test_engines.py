@@ -33,10 +33,10 @@ def test_scan_all_returns_claude_sessions(fake_jsonl):
     assert all(r.engine == "claude" for r in rows)
 
 
-def test_absent_provider_drops_out(tmp_home, monkeypatch):
-    # No ~/.claude/projects under tmp_home and no claude on PATH → claude absent.
-    monkeypatch.delenv("AGENT_SESSIONS_OPENCODE_BIN", raising=False)
-    monkeypatch.setattr(engines.shutil, "which", lambda _name: None)
+def test_absent_provider_drops_out(tmp_home, no_engine_bin):
+    # No store under tmp_home and no entrypoint resolving for any engine (no env override, nothing
+    # under $HOME's search_paths, shell's override refused) → every provider is absent (#853 §2b:
+    # presence = store OR a provenance-checked binary; PATH is never consulted).
     assert engines.present_providers() == []
     assert engines.scan_all() == []
 
@@ -82,21 +82,22 @@ def test_parse_key_rejects_bad_ids(bad):
 # ---- Claude provider launch argv (ws PTY bridge) ------------------------------
 
 
-def test_claude_launch_argv_resume(monkeypatch):
-    monkeypatch.setattr(engines.base, "CLAUDE_BIN", "claude")
-    argv = engines.ClaudeProvider().launch_argv(_U1, cwd="/tmp/x", bypass=True)
-    assert argv == ["claude", "--resume", _U1, "--dangerously-skip-permissions"]
-    assert engines.ClaudeProvider().launch_argv(_U1, cwd="/tmp/x", bypass=False) == [
-        "claude",
+def test_claude_launch_argv_resume(engine_bin):
+    b = engine_bin("claude")
+    prov = engines.get("claude")
+    argv = prov.launch_argv(_U1, cwd="/tmp/x", bypass=True)
+    assert argv == [b, "--resume", _U1, "--dangerously-skip-permissions"]
+    assert prov.launch_argv(_U1, cwd="/tmp/x", bypass=False) == [
+        b,
         "--resume",
         _U1,
     ]
 
 
-def test_claude_new_launch_argv(monkeypatch):
-    monkeypatch.setattr(engines.base, "CLAUDE_BIN", "claude")
-    argv = engines.ClaudeProvider().new_launch_argv(_U1, cwd="/tmp/x", bypass=True)
-    assert argv == ["claude", "--session-id", _U1, "--dangerously-skip-permissions"]
+def test_claude_new_launch_argv(engine_bin):
+    b = engine_bin("claude")
+    argv = engines.get("claude").new_launch_argv(_U1, cwd="/tmp/x", bypass=True)
+    assert argv == [b, "--session-id", _U1, "--dangerously-skip-permissions"]
 
 
 def test_claude_archive_moves_the_jsonl(fake_jsonl):
@@ -173,11 +174,18 @@ def test_opencode_binary_without_db_is_present_and_launchable(tmp_home, monkeypa
     oc.parent.mkdir(parents=True)
     oc.write_text("#!/bin/sh\n")
     oc.chmod(0o755)
+    # #853 §2b: provenance refuses a binary in a group/other-writable dir; pin the modes the
+    # operator's real install has rather than inheriting this host's umask.
+    for d in (oc.parent, oc.parent.parent):
+        d.chmod(0o755)
 
-    prov = engines.OpenCodeProvider()
+    prov = engines.get("opencode")
     assert prov.is_present() is True
     assert prov.scan() == []
-    assert prov.new_launch_argv("new-x", cwd="/tmp/proj", bypass=True) == [str(oc), "/tmp/proj"]
+    assert prov.new_launch_argv(f"new-{_U1}", cwd="/tmp/proj", bypass=True) == [
+        str(oc),
+        "/tmp/proj",
+    ]
 
 
 def test_opencode_fail_soft_corrupt_db(tmp_home, monkeypatch):
@@ -205,38 +213,38 @@ def test_opencode_archive_unarchive_via_sidecar(tmp_path, monkeypatch):
     assert engines._metadata.get(f"opencode:{_OC_TOP}").archived is False
 
 
-def test_opencode_launch_argv(monkeypatch):
-    from agent_sessions.engines import opencode as opencode_mod
-
-    monkeypatch.setattr(opencode_mod.discover, "resolve", lambda _name: None)
-    monkeypatch.setattr(engines.base, "OPENCODE_BIN", "opencode")
-    argv = engines.OpenCodeProvider().launch_argv(_OC_TOP, cwd="/tmp/other", bypass=True)
-    assert argv == ["opencode", "/tmp/other", "--session", _OC_TOP]
+def test_opencode_launch_argv(engine_bin):
+    b = engine_bin("opencode")
+    argv = engines.get("opencode").launch_argv(_OC_TOP, cwd="/tmp/other", bypass=True)
+    assert argv == [b, "/tmp/other", "--session", _OC_TOP]
 
 
-def test_supports_new_agrees_with_new_launch_argv():
+def test_supports_new_agrees_with_new_launch_argv(engine_bin):
     # Invariant (#64 review): /api/config advertises new_session_engines from
     # supports_new, and the ws new-session path calls new_launch_argv. A provider that
     # claims supports_new but whose new_launch_argv raises NotImplementedError would
     # offer a new-session option that closes the ws with 4404. Keep the two in lockstep.
+    # The id is whatever the ws route hands a new launch: the client-minted `new-<uuid>`
+    # placeholder for a reconcile engine, a pinned id of the engine's own shape otherwise.
+    engine_bin()
+    uuid = "00000000-0000-0000-0000-000000000000"
     for prov in engines.all_providers():
         if not getattr(prov, "supports_new", False):
             continue
-        argv = prov.new_launch_argv("00000000-0000-0000-0000-000000000000", cwd="/tmp", bypass=True)
+        native = f"new-{uuid}" if prov.new_session_reconciles else uuid
+        argv = prov.new_launch_argv(native, cwd="/tmp", bypass=True)
         assert isinstance(argv, list) and argv, f"{prov.engine_id} new_launch_argv must yield argv"
 
 
-def test_opencode_advertises_new_session_via_reconcile(monkeypatch):
+def test_opencode_advertises_new_session_via_reconcile(engine_bin):
     # #127: opencode now supports new-session via launch-then-reconcile. supports_new is
     # True and new_launch_argv yields a bare `opencode <dir>` (NO --session: opencode
     # mints its own id, which the reconcile discovers).
-    from agent_sessions.engines import opencode as opencode_mod
-
-    monkeypatch.setattr(opencode_mod.discover, "resolve", lambda _name: None)
-    p = engines.OpenCodeProvider()
+    b = engine_bin("opencode")
+    p = engines.get("opencode")
     assert p.supports_new is True
-    argv = p.new_launch_argv("new-x", cwd="/tmp/proj", bypass=True)
-    assert argv == [engines.OPENCODE_BIN, "/tmp/proj"]
+    argv = p.new_launch_argv(f"new-{_U1}", cwd="/tmp/proj", bypass=True)
+    assert argv == [b, "/tmp/proj"]
     assert "--session" not in argv  # never pins an id; opencode creates a fresh one
 
 
@@ -299,9 +307,12 @@ def _write_shell_record(tmp_home: Path, sid: str, cwd: str, created_at: float = 
     (d / f"{sid}.json").write_text(json.dumps({"id": sid, "cwd": cwd, "created_at": created_at}))
 
 
-def test_shell_present_when_bash_on_path(tmp_home, monkeypatch):
-    monkeypatch.setattr(engines.shutil, "which", lambda n: "/usr/bin/bash" if n == "bash" else None)
-    assert engines.ShellProvider().is_present() is True
+def test_shell_present_when_bash_exists(tmp_home, monkeypatch):
+    # No shell record store yet (a fresh tmp home) — the terminal is still offered, because the
+    # manifest's `search_paths` (/bin, /usr/bin) find bash. Never a PATH lookup (#853 §2b).
+    monkeypatch.delenv("AGENT_SESSIONS_BASH_BIN", raising=False)
+    assert not engines.ShellProvider().is_present()  # the kind only knows its store
+    assert engines.get("shell").is_present() is True
 
 
 def test_parse_key_shell():
@@ -354,22 +365,22 @@ def test_shell_record_path_rejects_non_uuid(tmp_home):
     assert not (tmp_home / ".claude" / "shell-sessions").exists()
 
 
-def test_shell_launch_argv_is_a_literal_login_shell(monkeypatch):
+def test_shell_launch_argv_is_a_literal_login_shell(engine_bin):
     # The shell-free launcher contract: a literal argv (bash binary + login flag), NEVER a
     # command string handed to an interpreter (no "-c").
-    monkeypatch.setattr(engines.base, "BASH_BIN", "/usr/bin/bash")
-    argv = engines.ShellProvider().launch_argv(_SHELL_U, cwd="/tmp/x", bypass=True)
-    assert argv == ["/usr/bin/bash", "-l"]
+    b = engine_bin("shell")
+    argv = engines.get("shell").launch_argv(_SHELL_U, cwd="/tmp/x", bypass=True)
+    assert argv == [b, "-l"]
     assert "-c" not in argv
 
 
-def test_shell_new_launch_argv_is_pinned_and_matches_resume(monkeypatch):
-    monkeypatch.setattr(engines.base, "BASH_BIN", "/usr/bin/bash")
-    p = engines.ShellProvider()
+def test_shell_new_launch_argv_is_pinned_and_matches_resume(engine_bin):
+    b = engine_bin("shell")
+    p = engines.get("shell")
     assert p.supports_new is True
     assert getattr(p, "new_session_reconciles", False) is False  # pinned id, no reconcile
     new = p.new_launch_argv(_SHELL_U, cwd="/tmp/x", bypass=False)
-    assert new == p.launch_argv(_SHELL_U, cwd="/tmp/x", bypass=True) == ["/usr/bin/bash", "-l"]
+    assert new == p.launch_argv(_SHELL_U, cwd="/tmp/x", bypass=True) == [b, "-l"]
 
 
 def test_shell_placeholder_is_rejected_by_parse_key(tmp_home):

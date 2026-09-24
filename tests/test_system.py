@@ -264,3 +264,41 @@ def test_system_sessions_ignores_non_dtach_sock_lookalike(
     finally:
         proc.kill()
         proc.wait(timeout=5)
+
+
+def test_every_availability_route_agrees_with_the_launcher(
+    auth_cfg, fake_jsonl, tmp_home, monkeypatch
+):
+    """#853 P2: `/api/engines`, `/api/config.new_session_engines` and the handoff target check
+    must give the launcher's answer (`engines.launchable_bin`) — a binary only on PATH is NOT
+    offered by any of them, and becomes offered everywhere once the manifest's env var names it.
+    Route-level, so a consumer quietly rewired back to a PATH probe turns this red."""
+    gemini_on_path = tmp_home / "pathonly" / "gemini"
+    gemini_on_path.parent.mkdir(parents=True)
+    gemini_on_path.parent.chmod(0o755)
+    gemini_on_path.write_bytes(b"#!/bin/true\n")
+    gemini_on_path.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{gemini_on_path.parent}:/usr/bin:/bin")
+    monkeypatch.delenv("AGENT_SESSIONS_GEMINI_BIN", raising=False)
+    engines.get("gemini")._cached = None
+
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+
+    def views():
+        rows = {r["id"]: r for r in c.get("/api/engines").json()["engines"]}
+        cfg = c.get("/api/config").json()
+        return rows["gemini"], "gemini" in cfg["new_session_engines"]
+
+    row, offered = views()
+    assert (row["present"], row["bin"], row["supports_new"], offered) == (False, None, False, False)
+
+    monkeypatch.setenv("AGENT_SESSIONS_GEMINI_BIN", str(gemini_on_path))
+    row, offered = views()
+    assert (row["present"], row["bin"], row["supports_new"], offered) == (
+        True,
+        str(gemini_on_path),
+        True,
+        True,
+    )
+    assert engines.launchable_bin(engines.get("gemini")) == row["bin"]

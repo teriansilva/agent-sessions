@@ -565,23 +565,39 @@ def test_launch_site_inventory_requires_review_when_another_route_can_spawn():
     import ast
     from collections import Counter
 
-    from agent_sessions import engines, headless_dispatch, webterm
+    from agent_sessions import engines, headless_dispatch, plugins, webterm
 
     root = Path(compact.__file__).parent
     consumers = Counter()
     for path in root.rglob("*.py"):
-        if "engines" in path.relative_to(root).parts:
-            continue  # providers build argv; they do not execute it
+        parts = path.relative_to(root).parts
+        if "engines" in parts or "plugins" in parts:
+            # Providers build argv and resolve the entrypoint (#853 P2: the store kinds under
+            # engines/, the manifest-built `PluginProvider` + provenance under plugins/); they do
+            # not execute it — pinned for plugins/ below.
+            continue
         tree = ast.parse(path.read_text())
+        watched = ("launch_argv", "new_launch_argv", "entrypoint_path")
         for call in ast.walk(tree):
-            if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute):
-                if call.func.attr in ("launch_argv", "new_launch_argv"):
-                    consumers[str(path.relative_to(root)), call.func.attr] += 1
+            if not isinstance(call, ast.Call):
+                continue
+            if isinstance(call.func, ast.Attribute) and call.func.attr in watched:
+                consumers[str(path.relative_to(root)), call.func.attr] += 1
+            # A method REFERENCE handed to a runner — `asyncio.to_thread(prov.launch_argv, …)`,
+            # the off-loop form (#853 P2) — is the same consumer and must still be counted.
+            for arg in call.args:
+                if isinstance(arg, ast.Attribute) and arg.attr in watched:
+                    consumers[str(path.relative_to(root)), arg.attr] += 1
     assert consumers == {
-        ("routes/terminal.py", "launch_argv"): 3,
+        # resume's provider argv + `ptybridge.launch_argv`. ATTACH builds no launch argv any more
+        # (#853 P2: `dtach -a` never execs the agent), so it is no longer a consumer.
+        ("routes/terminal.py", "launch_argv"): 2,
         ("routes/terminal.py", "new_launch_argv"): 1,
         ("headless_dispatch.py", "launch_argv"): 1,
-        ("headless_dispatch.py", "new_launch_argv"): 2,
+        ("headless_dispatch.py", "new_launch_argv"): 1,
+        # The preflight probe asks for the provenance-checked binary directly instead of reading
+        # argv[0] off a throwaway `new_launch_argv` (#853 §2b) — the same consumer, renamed.
+        ("headless_dispatch.py", "entrypoint_path"): 1,
     }
     for module, name in ((webterm, "create_subprocess_exec"), (headless_dispatch, "_popen")):
         tree = ast.parse(Path(module.__file__).read_text())
@@ -602,6 +618,15 @@ def test_launch_site_inventory_requires_review_when_another_route_can_spawn():
         for n in node.names
     ]
     assert "subprocess" not in imports
+    # Since #853 P2 the live opencode provider is a manifest-built `PluginProvider` wrapping that
+    # kind: the provider, provenance and manifest code are argv/path-only too.
+    for path in Path(plugins.__file__).parent.glob("*.py"):
+        tree = ast.parse(path.read_text())
+        mods = [
+            n.name for node in ast.walk(tree) if isinstance(node, ast.Import) for n in node.names
+        ]
+        mods += [node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
+        assert "subprocess" not in mods, path.name
 
 
 @pytest.mark.anyio

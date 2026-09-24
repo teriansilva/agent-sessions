@@ -14,18 +14,17 @@ search_paths = ["~/.opencode/bin", "~/.local/bin"]
 
 [session_id]
 pattern = "^ses_[A-Za-z0-9]+$"
-mint = "adopt"
+mint = "adopt"  # opencode mints its own ses_ id (#127)
 
 [store]
 root = "~/.local/share/opencode"
-env_override = "AGENT_SESSIONS_OPENCODE_DIR"
 layout = "opencode-sqlite"
 [store.paths]
 db = "opencode.db"
 log = "log/opencode.log"
 
 [launch]
-resume = { kind = "positional-dir", flag = "--session" }
+resume = { kind = "positional-dir", flag = "--session" }  # bypass is config-side for opencode
 new = { kind = "positional-dir" }
 admission = "sqlite-store-shared"
 
@@ -50,6 +49,7 @@ kind = "opencode-store-query"
 start_evidence = "opencode-log"
 
 [display]
+order = 20
 name = "opencode"
 badge = "oc"
 accent = "teal"

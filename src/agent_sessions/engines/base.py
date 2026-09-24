@@ -51,6 +51,10 @@ _KIMI_SESSION_RE = re.compile(
 )
 
 # --- engine binaries ------------------------------------------------------------------------
+# NO LAUNCH READS THESE (#853 P2). Every session launch resolves its binary from the engine's
+# manifest through `plugins.provenance` (env override or `search_paths`, never PATH). What still
+# reads them are the non-launch callers the P3 sweep retires: the usage probes (`agent_usage`) and
+# opencode compaction (`opencode_compact`). Do not add a new reader.
 # Engine binaries are commonly off the login PATH (npm-global, ~/.codex, …), so an
 # explicit env override is the reliable launch mechanism; PATH lookup is a fallback.
 
@@ -153,8 +157,8 @@ def _shell_dir(home: Path | None = None) -> Path:
 # --- contract -------------------------------------------------------------------------------
 
 
-class EngineError(RuntimeError):
-    """Unknown engine, malformed native id, or an operation the engine refuses."""
+# Defined in a leaf module so `plugins` can raise it without importing this package (#853 P2).
+from ..engine_errors import EngineError  # noqa: E402, F401 — re-exported
 
 
 @runtime_checkable

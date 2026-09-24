@@ -4,10 +4,17 @@ Everything engine-specific comes from the manifest: the id shape, the argv (asse
 launch *kind*, never taken from the manifest as a list), the capability flags (default-deny), the
 store location. The entrypoint comes from `provenance`, re-verified before every argv is handed out.
 
-Store READERS are built-in kinds registered by layout (`register_layout`). P1 ships the contract
-with none registered: a plugin whose layout has no reader yet lists no rows (and says so through
-`scan_problem`), exactly as a missing store would. P2 registers the seven layouts as it re-expresses
-each engine, one equivalence-tested engine at a time.
+**Data from the manifest, behaviour from a store kind** (#853 §4, P2). A kind is reviewed in-tree
+code shaped by one store layout — scanning claude's JSONL projects, reading opencode's SQLite,
+reconciling a late-minted id. `attach_kind` binds one to the provider and exposes exactly the
+optional hooks in `KIND_HOOKS` that the kind implements: no `__getattr__`, so a kind can never
+silently widen the provider's surface, and `getattr(prov, "lookup", None)` keeps meaning "this
+engine can". A kind reaches the binary only through its owner's `entrypoint_path()`, so every exec
+passes provenance (§2b).
+
+Store readers can also be plain functions registered by layout (`register_layout`); a plugin with
+neither a kind nor a reader lists no rows and says so through `scan_problem()`, exactly as a missing
+store would.
 """
 
 from __future__ import annotations
@@ -19,7 +26,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from .. import metadata as _metadata
-from ..engines.base import EngineError
+from ..engine_errors import EngineError
 from . import provenance
 from .manifest import ArgvStep, Manifest
 
@@ -27,6 +34,21 @@ _NEW_PLACEHOLDER_RE = re.compile(
     r"^new-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
 _RECORD_MAX = 16 * 1024
+
+#: Optional behaviour a store kind may implement, exposed on the provider only when implemented.
+KIND_HOOKS = (
+    "scan_checked",
+    "lookup",
+    "archive_state",
+    "snapshot_session_ids",
+    "reconcile_new_session",
+    "unattended_launch",
+    "unattended_preflight",
+    "start_evidence",
+    "bind_session",
+    "on_new_session",
+    "on_new_session_failed",
+)
 
 #: layout kind → reader(provider) -> list[Session]. Built-in code only; see module docstring.
 _LAYOUT_READERS: dict[str, Callable[[PluginProvider], list]] = {}
@@ -52,6 +74,12 @@ def read_record(state_dir: Path | None, plugin_id: str) -> provenance.Record | N
     if state_dir is None:
         return None
     p = state_dir / f"{plugin_id}.json"
+    # No record means nothing is granted, so there is nothing to verify: an absent record must never
+    # block a launch because some directory ABOVE the state dir fails the ownership walk (a CI
+    # runner with another primary group did exactly that to every engine). A record that EXISTS is
+    # walked and fails closed. A record appearing after this check is only read below, verified.
+    if not os.path.lexists(p):
+        return None
     try:
         fd, _ = provenance.open_verified(str(p))
     except FileNotFoundError:
@@ -108,6 +136,7 @@ class PluginProvider:
         self._env = env
         self._home = home
         self._cached: tuple[tuple, provenance.Entrypoint] | None = None
+        self.kind = None
 
         m = manifest
         self.engine_id = m.id
@@ -119,6 +148,32 @@ class PluginProvider:
         self.expects_raw_tty = m.can("raw_tty")
         self.supports_seed_start = m.can("seed_start")
         self.new_session_reconciles = m.session_id.mint == "adopt"
+
+    def attach_kind(self, kind) -> PluginProvider:
+        """Bind the store kind that implements this engine's behaviour.
+
+        The kind's own native shape must agree with the manifest: a kind is engine-shaped (claude's
+        scanner only yields claude rows), so a manifest that names a different id or id pattern is
+        a wiring error, refused here rather than discovered as an empty sidebar.
+        """
+        if getattr(kind, "engine_id", self.engine_id) != self.engine_id:
+            raise ValueError(
+                f"store kind {type(kind).__name__} is not for engine {self.engine_id!r}"
+            )
+        kpat = getattr(kind, "id_pattern", None)
+        # Compare the pattern BODIES: the manifest compiles its trailing anchor as `\Z`, the
+        # kinds' legacy patterns end in `$`.
+        if kpat is not None and kpat.pattern.removesuffix(
+            "$"
+        ) != self.id_pattern.pattern.removesuffix(r"\Z"):
+            raise ValueError(f"store kind {type(kind).__name__} disagrees on the id pattern")
+        self.kind = kind
+        kind.owner = self
+        for hook in KIND_HOOKS:
+            fn = getattr(kind, hook, None)
+            if callable(fn):
+                setattr(self, hook, fn)
+        return self
 
     # --- environment ---------------------------------------------------------------------------
 
@@ -185,6 +240,10 @@ class PluginProvider:
         self._cached = (key, ep) if ep is not None else None
         return ep
 
+    def entrypoint_path(self) -> str:
+        """The absolute, provenance-checked path the launcher will exec. Raises `EngineError`."""
+        return self._entry_path()
+
     def _entry_path(self) -> str:
         try:
             ep = self.entrypoint()
@@ -197,22 +256,29 @@ class PluginProvider:
     # --- EngineProvider ------------------------------------------------------------------------
 
     def is_present(self) -> bool:
-        root = self.store_root()
-        if root is not None and root.is_dir():
-            return True
+        store_present = getattr(self.kind, "store_present", None)
+        if callable(store_present):
+            if store_present():
+                return True
+        else:
+            root = self.store_root()
+            if root is not None and root.is_dir():
+                return True
         try:
             return self.entrypoint() is not None
         except provenance.ProvenanceError:
             return False
 
     def scan(self) -> list:
+        if self.kind is not None:
+            return self.kind.scan()
         reader = _LAYOUT_READERS.get(self.manifest.store.layout) if self.manifest.store else None
         if reader is None:
             return []
         return reader(self)
 
     def scan_problem(self) -> str | None:
-        if self.manifest.store is None:
+        if self.kind is not None or self.manifest.store is None:
             return None
         if self.manifest.store.layout not in _LAYOUT_READERS:
             return f"store layout {self.manifest.store.layout!r} has no reader in this build yet"
@@ -272,8 +338,14 @@ class PluginProvider:
 
     def archive(self, native_id: str) -> None:
         self._check_native(native_id)
+        if self.kind is not None:
+            self.kind.archive(native_id)  # claude's kind also moves the JSONL
+            return
         _metadata.patch(f"{self.engine_id}:{native_id}", archived=True)
 
     def unarchive(self, native_id: str) -> None:
         self._check_native(native_id)
+        if self.kind is not None:
+            self.kind.unarchive(native_id)
+            return
         _metadata.patch(f"{self.engine_id}:{native_id}", archived=False)
