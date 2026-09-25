@@ -654,7 +654,9 @@ async def test_shutdown_interrupt_does_not_block_the_loop_behind_connection_clos
     monkeypatch.setattr(compact, "Worker", Worker)
     service = compact.Service(maintenance.Runner())
     await service.start()
-    assert closing.is_set()
+    # `start()` returns on `ready(True)`; the worker sets `closing` on its own thread right after,
+    # so wait for it rather than assert it already happened (a loaded CI runner lost that race).
+    assert await asyncio.to_thread(closing.wait, 5)
     shutdown = asyncio.create_task(service.shutdown())
     try:
         assert await asyncio.to_thread(service.worker.stop.wait, 5)
