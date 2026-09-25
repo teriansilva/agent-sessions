@@ -401,3 +401,93 @@ def test_consent_then_config_fetch_sends_one_report(auth_cfg, umami):
         json.loads(umami.requests[0].content)["payload"]["id"]
         == (prefs.analytics_state()["install_id"])
     )
+
+
+def test_a_report_cancelled_before_it_starts_releases_the_in_flight_claim(umami):
+    """#1153: `note_active` claims `_in_flight`, then schedules the send on the running loop. If
+    that loop shuts down before the task ever runs — a server stopping, or a per-request test
+    loop closing under load — `_run` (whose `finally` releases the claim) never executes. The
+    claim then stays set for the life of the process, and every later config fetch returns
+    early: the day's report is never sent."""
+    prefs.set_analytics_consent(True)
+
+    async def scheduled_then_cancelled():
+        analytics.note_active()
+        assert analytics._in_flight
+        for task in list(analytics._tasks):
+            task.cancel()  # before its first step: `_run` never starts
+        await asyncio.sleep(0)
+
+    asyncio.run(scheduled_then_cancelled())
+    assert analytics._in_flight is False
+    # …so the next config fetch starts the report after all.
+    asyncio.run(_note_and_settle())
+    assert len(umami.requests) == 1
+
+
+async def _note_and_settle():
+    analytics.note_active()
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        if not analytics._in_flight and not analytics._tasks:
+            break
+
+
+def test_a_report_cancelled_while_QUEUED_behind_a_busy_executor_releases_the_claim(umami):
+    """Hermes 5292: the coroutine can hand `_run` to the executor and suspend while the job is
+    still queued; cancelling then drops the queued job, so `_run` never runs its `finally`."""
+    import concurrent.futures
+
+    prefs.set_analytics_consent(True)
+    busy = threading.Event()
+
+    async def queued_then_cancelled():
+        loop = asyncio.get_running_loop()
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        loop.set_default_executor(pool)
+        loop.run_in_executor(pool, busy.wait, 10)  # the one worker is occupied
+        analytics.note_active()
+        await asyncio.sleep(0.05)  # the dispatch has submitted `_run`; it waits in the queue
+        tasks = list(analytics._tasks)
+        assert tasks and analytics._in_flight
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        busy.set()
+
+    asyncio.run(queued_then_cancelled())
+    assert analytics._in_flight is False and umami.requests == []
+    asyncio.run(_note_and_settle())
+    assert len(umami.requests) == 1
+
+
+def test_a_report_cancelled_while_its_worker_RUNS_keeps_the_claim_until_it_finishes(umami):
+    prefs.set_analytics_consent(True)
+    on_wire, release = threading.Event(), threading.Event()
+
+    def hold():
+        on_wire.set()
+        release.wait(10)
+
+    umami.before_answer = hold
+
+    async def cancelled_mid_send():
+        analytics.note_active()
+        assert await asyncio.to_thread(on_wire.wait, 5)  # the worker is inside the send
+        tasks = list(analytics._tasks)
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        # The worker still owns the claim: a second report must not start beside it.
+        assert analytics._in_flight is True
+        analytics.note_active()
+        assert analytics._tasks == set()
+        release.set()
+        for _ in range(250):
+            await asyncio.sleep(0.02)
+            if not analytics._in_flight:
+                break
+
+    asyncio.run(cancelled_mid_send())
+    assert analytics._in_flight is False
+    assert len(umami.requests) == 1

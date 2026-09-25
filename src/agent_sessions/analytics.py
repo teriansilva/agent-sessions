@@ -129,15 +129,48 @@ def note_active() -> None:
             if _last_attempt is not None and time.monotonic() - _last_attempt < RETRY_SPACING_S:
                 return
             _in_flight = True
-        task = loop.create_task(asyncio.to_thread(_run))
+        # The claim belongs to the WORKER, not the coroutine (#1153, Hermes 5292): `_run` marks
+        # this token before it does anything, and releases the claim in its own `finally`. If it
+        # never starts — the task cancelled before its first step, or the executor future cancelled
+        # while still queued behind busy workers — `settle` releases it instead, and marks the token
+        # so a worker that picks the job up after all does nothing.
+        token = _Dispatch()
+        task = loop.create_task(asyncio.to_thread(_run, token))
         _tasks.add(task)
-        task.add_done_callback(_tasks.discard)
+        task.add_done_callback(lambda t: _settle(t, token))
     except Exception:  # noqa: BLE001 — analytics must never break the config route
         log.exception("usage analytics: could not start a report")
 
 
-def _run() -> None:
+class _Dispatch:
+    """One scheduled report: whether its worker ran, or was abandoned before it could."""
+
+    __slots__ = ("abandoned", "ran")
+
+    def __init__(self) -> None:
+        self.ran = False
+        self.abandoned = False
+
+
+def _settle(task: asyncio.Future, token: _Dispatch) -> None:
+    """Done callback of the dispatch task: release the claim iff its worker never started."""
     global _in_flight
+    _tasks.discard(task)
+    with _lock:
+        if not token.ran:
+            # Nothing else will release it: left set, every later `note_active` would return
+            # early and the day's report would never be sent.
+            token.abandoned = True
+            _in_flight = False
+
+
+def _run(token: _Dispatch | None = None) -> None:
+    global _in_flight
+    if token is not None:
+        with _lock:
+            if token.abandoned:
+                return  # its claim was already released; a newer one may exist — leave it alone
+            token.ran = True
     try:
         send_once()
     except Exception:  # noqa: BLE001
