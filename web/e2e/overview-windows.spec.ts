@@ -324,6 +324,12 @@ async function freshFitGrid(log: SockLog, key: string): Promise<[number, number]
 }
 
 test.describe("desktop workspace", () => {
+  // Every test here opens real map windows with live terminal sockets — xterm mounts, repaint
+  // waits, pointer and keyboard drives per window. On the shared runner under load they failed
+  // as 30 s TIMEOUTS, never on an assertion (31 shard runs since Sep 23 — #1158 has the
+  // inventory); the budget is the spec's, like the eight-xterm cap test's own 180 s below.
+  test.describe.configure({ timeout: 90_000 });
+
   // eslint-disable-next-line no-empty-pattern -- Playwright requires the destructuring form
   test.beforeEach(async ({}, testInfo) => {
     test.skip(testInfo.project.name === "mobile", "desktop-only workspace (#208)");
