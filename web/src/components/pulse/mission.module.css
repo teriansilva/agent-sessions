@@ -726,6 +726,8 @@
   color: var(--text-1);
   font-family: var(--font-mono);
   font-size: 12px;
+  /* A squeezed state clips — read as clipped, not chopped mid-glyph (#1133). */
+  text-overflow: ellipsis;
 }
 .newMissionProject:focus-visible {
   outline: 2px solid var(--accent);
@@ -734,10 +736,17 @@
 /* The checklist picker (#1061) takes the project picker's look but sizes to its longest option: a
    playbook label is the operator's own text, and "Checklist: Ship a P…" clipped at 180px. */
 .newMissionPlaybook {
-  /* Never shrunk below its text on a wide box — the project picker gives way first; a narrow box
-     gives the picker a row of its own (below). */
-  flex: 0 0 auto;
+  /* It GIVES WAY like the project picker when the row is tight (#1133): with an AI endpoint the
+     "No checklist — AI writes the objectives" option is wider than any playbook name, and an
+     unshrinkable picker overflowed its squeezed lead onto the Template button — the row needs
+     ~734px against a landing box capped at 720px, and the project picker was already pinned at
+     its 96px floor to absorb it. The 96px floor here is the project picker's; a wide box still
+     sizes the picker to its longest option (capped at 300px), and the narrow-box wrap branch
+     (below) still gives it a row of its own. */
+  flex: 0 1 auto;
+  min-width: 96px;
   max-width: 300px;
+  text-overflow: ellipsis;
 }
 /* The line under the box saying what the chosen checklist means (#1061). */
 .playbookNote {

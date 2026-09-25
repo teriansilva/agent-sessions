@@ -465,3 +465,51 @@ test("the checklist is chosen per mission: default pre-selected, the pick is wha
   await expect.poll(() => creates.length).toBe(1);
   expect(creates[0]).toMatchObject({ instruction: "tidy the readme", project_id: "p1", playbook_id: ":none" });
 });
+
+test("the AI 'No checklist' label gives way in the footer, never onto Template", async ({
+  page,
+}, testInfo) => {
+  // #1133. With an AI endpoint the closed label is "No checklist — AI writes the objectives"
+  // (#1088) — wider than any playbook name, and wider than what the landing leaves beside
+  // Template: the box caps at 720px, the lead is squeezed (min-width: 0) and the picker used to
+  // refuse to shrink, so it overflowed its lead 22px ONTO the Template button. It gives way like
+  // the project picker now. The single-row branch only exists above the 660px container
+  // breakpoint (the wrapped branch gives the picker a row of its own), so this is a desktop-width
+  // assertion.
+  test.skip(testInfo.project.name !== "desktop", "the collision is the single-row footer branch, a >660px box");
+  await setup(page, {
+    config: {
+      ai_review: { configured: true },
+      mission_playbooks: {
+        default_id: ":none",
+        revision: 1,
+        playbooks: [{ id: "pr", label: "Ship a PR", objectives: [] }],
+      },
+    },
+  });
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto(MISSION_PATH);
+  const pick = page.getByTestId("new-mission-playbook");
+  await expect(pick).toHaveValue(":none");
+
+  const rects = await page.evaluate(() => {
+    const r = (t: string) =>
+      document.querySelector(`[data-testid="${t}"]`)!.getBoundingClientRect();
+    return {
+      pick: r("new-mission-playbook"),
+      template: r("new-mission-template"),
+      foot: r("composer-foot"),
+      start: r("new-mission-start"),
+      scrollW: document.documentElement.scrollWidth,
+    };
+  });
+  // The branch this pins: ONE footer row — picker and Template share it. (On the wrapped branch
+  // the horizontal ranges legitimately overlap; it is a different row.)
+  expect(Math.abs(rects.pick.y - rects.template.y)).toBeLessThan(2);
+  // No collision: the picker's right edge stops short of Template's left edge …
+  expect(rects.pick.right).toBeLessThanOrEqual(rects.template.x + 0.5);
+  // … and nothing leaves the footer or the page.
+  expect(rects.template.right).toBeLessThanOrEqual(rects.foot.right + 0.5);
+  expect(rects.start.right).toBeLessThanOrEqual(rects.foot.right + 0.5);
+  expect(rects.scrollW).toBeLessThanOrEqual(1280);
+});
