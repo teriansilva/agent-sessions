@@ -14,7 +14,13 @@
  *  interval and stops the moment it settles. All three cadences write the mission row, which is
  *  why they all go through `installMission` and its ticket.
  */
-import { act, renderHook, waitFor } from "@testing-library/react";
+import {
+  act,
+  configure,
+  getConfig,
+  renderHook,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { api } from "../../lib/api";
@@ -74,7 +80,19 @@ function turnDetail(turn: unknown) {
   return detail("done", turn);
 }
 
+// `waitFor` waits in REAL time, 1 s by default, while the hook's polls ride timers that advance with
+// real time (`shouldAdvanceTime`). Under a loaded CI host the poll → read → commit chain takes longer
+// than that, and three tests here failed as `waitFor` giving up rather than on a wrong value (#1001).
+// The budget is raised for this file only; no assertion changes. The ENCLOSING test deadline is
+// raised with it — Vitest's default 5 s would otherwise cut every wait off before its 10 s (Hermes
+// 5267). This is wall-clock tolerance for a loaded host, not the deterministic sequencing #1001 asks
+// for.
+const WAIT_MS = 10_000;
+vi.setConfig({ testTimeout: 2 * WAIT_MS });
+const defaultAsyncTimeout = getConfig().asyncUtilTimeout;
+
 beforeEach(() => {
+  configure({ asyncUtilTimeout: WAIT_MS });
   vi.useFakeTimers({ shouldAdvanceTime: true });
   vi.mocked(api.missionContext).mockResolvedValue(CTX as never);
   vi.mocked(api.missionObjectives).mockResolvedValue({ objectives: [] });
@@ -83,6 +101,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
+  configure({ asyncUtilTimeout: defaultAsyncTimeout });
 });
 
 test("a PENDING objective list is re-read on its own fast cadence", async () => {
@@ -831,4 +850,10 @@ test("while the OBJECTIVES are pending too, the plan rides their poll instead of
   expect(lists).toBeGreaterThanOrEqual(5);
   // Each objectives tick reads the row once and the list once.
   expect(rows).toBeLessThanOrEqual(lists + 1);
+});
+
+test("a result arriving after Vitest's default 5 s deadline is still accepted (Hermes 5267)", async () => {
+  let ready = false;
+  setTimeout(() => (ready = true), 6_000);
+  await waitFor(() => expect(ready).toBe(true));
 });
