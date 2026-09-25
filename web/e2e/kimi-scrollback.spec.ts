@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 // #1038 — Kimi's own repaint cycle wipes the scrollback and pins the view off the live tail.
 //
@@ -147,6 +147,89 @@ window.WebSocket = class {
 };
 `;
 
+/** Mobile reader setup shared by the tail-jump cases: attach, touch-scroll to the very top of the
+ *  transcript, let kimi repaint underneath, and check the reading position held. */
+async function readAtTopThroughRepaints(page: Page) {
+  await page.addInitScript(KIMI_READ_WS);
+  await page.goto("/s/kimi/live-read");
+
+  const viewport = page.locator(".xterm-viewport");
+  await expect(viewport).toBeVisible();
+  await expect(page.locator(".xterm-screen")).toContainText("kimi transcript");
+  await expect
+    .poll(
+      async () => viewport.evaluate((el) => el.scrollHeight - el.clientHeight),
+      { timeout: 5000 },
+    )
+    .toBeGreaterThan(100);
+
+  // The operator scrolls up into the transcript (real touch drags over the capture surface —
+  // the momentum fling walks the reader toward the top; bounded buffer, so it gets there).
+  const dragDownOverTouchSurface = () =>
+    page.locator("[data-touch-surface]").evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      const cx = Math.round(r.x + r.width / 2);
+      const touch = (y: number) =>
+        new Touch({
+          identifier: 1,
+          target: el,
+          clientX: cx,
+          clientY: Math.round(y),
+        });
+      const fire = (type: string, y: number) =>
+        el.dispatchEvent(
+          new TouchEvent(type, {
+            cancelable: true,
+            bubbles: true,
+            touches: type === "touchend" ? [] : [touch(y)],
+          }),
+        );
+      let y = r.y + r.height * 0.25;
+      fire("touchstart", y);
+      for (let i = 0; i < 12; i++) {
+        y += r.height * 0.05;
+        fire("touchmove", y);
+      }
+      fire("touchend", y);
+    });
+  // Keep dragging until the reader is at the top: on a loaded runner one fling covers less
+  // ground, and six fixed attempts ran out before the top (#1108). The check is unchanged.
+  let atTop = false;
+  for (let attempt = 0; attempt < 20 && !atTop; attempt++) {
+    await dragDownOverTouchSurface();
+    await page.waitForTimeout(250);
+    atTop = await viewport.evaluate((el) => el.scrollTop === 0);
+  }
+  expect(atTop, "the reader reached the top of the transcript").toBe(true);
+
+  // While they read, kimi keeps repainting. The frames must not push the reader off the top,
+  // and the content they scrolled up to see must still exist — pre-fix the repaint's ESC[3J
+  // deleted exactly these lines mid-read; the strip keeps them.
+  await page.evaluate(() => {
+    (
+      window as unknown as { __startKimiCycles: () => void }
+    ).__startKimiCycles();
+  });
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          () => (window as unknown as { __kimiDone: boolean }).__kimiDone,
+        ),
+      { timeout: 15000 },
+    )
+    .toBe(true);
+  await page.waitForTimeout(400);
+  expect(
+    await viewport.evaluate((el) => el.scrollTop),
+    "frames pushed the top-anchored reader down",
+  ).toBe(0);
+  await expect(page.locator(".xterm-screen")).toContainText(
+    "kimi transcript 0 ",
+  );
+  return viewport;
+}
+
 test.describe("kimi live-stream scrollback (#1038)", () => {
   test("streaming kimi repaints never move the viewport off the tail (no user input)", async ({
     page,
@@ -161,10 +244,13 @@ test.describe("kimi live-stream scrollback (#1038)", () => {
 
     const viewport = page.locator(".xterm-viewport");
     await expect(viewport).toBeVisible();
-    await expect(page.locator(".xterm-screen")).toContainText("kimi transcript");
+    await expect(page.locator(".xterm-screen")).toContainText(
+      "kimi transcript",
+    );
     await expect
       .poll(
-        async () => viewport.evaluate((el) => el.scrollHeight - el.clientHeight),
+        async () =>
+          viewport.evaluate((el) => el.scrollHeight - el.clientHeight),
         { timeout: 5000 },
       )
       .toBeGreaterThan(100); // the attach replay produced scrollback
@@ -204,7 +290,9 @@ test.describe("kimi live-stream scrollback (#1038)", () => {
     });
 
     const samples = await page.evaluate(
-      () => (window as unknown as { __samples: { gap: number; fab: boolean }[] }).__samples,
+      () =>
+        (window as unknown as { __samples: { gap: number; fab: boolean }[] })
+          .__samples,
     );
     // The sampler must have covered the stream, not just the end state.
     expect(samples.length).toBeGreaterThan(CYCLES);
@@ -217,10 +305,16 @@ test.describe("kimi live-stream scrollback (#1038)", () => {
     // drift pins the viewport at the TOP (gap ≈ the whole buffer, thousands of px).
     const maxGap = Math.max(...samples.map((s) => s.gap));
     const clientHeight = await viewport.evaluate((el) => el.clientHeight);
-    expect(maxGap, "viewport left the tail mid-stream").toBeLessThanOrEqual(clientHeight);
+    expect(maxGap, "viewport left the tail mid-stream").toBeLessThanOrEqual(
+      clientHeight,
+    );
     // Settled state: at the tail, and the wipe-and-regrow never armed the history loader.
     await expect
-      .poll(async () => viewport.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop))
+      .poll(async () =>
+        viewport.evaluate(
+          (el) => el.scrollHeight - el.clientHeight - el.scrollTop,
+        ),
+      )
       .toBeLessThanOrEqual(160);
     // THE DETERMINISTIC WITNESS: the scrollback the cycles produced is still there. Pre-fix
     // every repaint cycle's ESC[3J deletes everything above the screen, so the scroll area
@@ -234,86 +328,25 @@ test.describe("kimi live-stream scrollback (#1038)", () => {
       scrollbackPx,
       "kimi's repaint cycles deleted the scrollback instead of accumulating it",
     ).toBeGreaterThan(120_000);
-    expect(historyCalls, "no history fetch without a user scroll to the top").toEqual([]);
+    expect(
+      historyCalls,
+      "no history fetch without a user scroll to the top",
+    ).toEqual([]);
   });
 
   test("a reading position survives kimi repaints, and the tail jump resumes following", async ({
     page,
   }, testInfo) => {
     test.skip(testInfo.project.name !== "mobile", "touch-only behavior");
-    await page.addInitScript(KIMI_READ_WS);
-    await page.goto("/s/kimi/live-read");
-
-    const viewport = page.locator(".xterm-viewport");
-    await expect(viewport).toBeVisible();
-    await expect(page.locator(".xterm-screen")).toContainText("kimi transcript");
-    await expect
-      .poll(
-        async () => viewport.evaluate((el) => el.scrollHeight - el.clientHeight),
-        { timeout: 5000 },
-      )
-      .toBeGreaterThan(100);
-
-    // The operator scrolls up into the transcript (real touch drags over the capture surface —
-    // the momentum fling walks the reader toward the top; bounded buffer, so it gets there).
-    const dragDownOverTouchSurface = () =>
-      page.locator("[data-touch-surface]").evaluate((el) => {
-        const r = el.getBoundingClientRect();
-        const cx = Math.round(r.x + r.width / 2);
-        const touch = (y: number) =>
-          new Touch({ identifier: 1, target: el, clientX: cx, clientY: Math.round(y) });
-        const fire = (type: string, y: number) =>
-          el.dispatchEvent(
-            new TouchEvent(type, {
-              cancelable: true,
-              bubbles: true,
-              touches: type === "touchend" ? [] : [touch(y)],
-            }),
-          );
-        let y = r.y + r.height * 0.25;
-        fire("touchstart", y);
-        for (let i = 0; i < 12; i++) {
-          y += r.height * 0.05;
-          fire("touchmove", y);
-        }
-        fire("touchend", y);
-      });
-    let atTop = false;
-    for (let attempt = 0; attempt < 6 && !atTop; attempt++) {
-      await dragDownOverTouchSurface();
-      await page.waitForTimeout(250);
-      atTop = await viewport.evaluate((el) => el.scrollTop === 0);
-    }
-    expect(atTop, "the reader reached the top of the transcript").toBe(true);
-
-    // While they read, kimi keeps repainting. The frames must not push the reader off the top,
-    // and the content they scrolled up to see must still exist — pre-fix the repaint's ESC[3J
-    // deleted exactly these lines mid-read; the strip keeps them.
-    await page.evaluate(() => {
-      (window as unknown as { __startKimiCycles: () => void }).__startKimiCycles();
-    });
-    await expect
-      .poll(
-        () =>
-          page.evaluate(
-            () => (window as unknown as { __kimiDone: boolean }).__kimiDone,
-          ),
-        { timeout: 15000 },
-      )
-      .toBe(true);
-    await page.waitForTimeout(400);
-    expect(
-      await viewport.evaluate((el) => el.scrollTop),
-      "frames pushed the top-anchored reader down",
-    ).toBe(0);
-    await expect(page.locator(".xterm-screen")).toContainText("kimi transcript 0 ");
+    const viewport = await readAtTopThroughRepaints(page);
 
     // One tap on the ↓ FAB jumps back to the tail; following resumes.
     await page.locator('button[aria-label="Scroll to bottom"]').tap();
     await expect
-      .poll(
-        async () =>
-          viewport.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop),
+      .poll(async () =>
+        viewport.evaluate(
+          (el) => el.scrollHeight - el.clientHeight - el.scrollTop,
+        ),
       )
       .toBeLessThanOrEqual(160);
     // …and following actually RESUMED: one more frame arrives after the jump and the view
@@ -324,8 +357,42 @@ test.describe("kimi live-stream scrollback (#1038)", () => {
     });
     await page.waitForTimeout(400);
     await expect(
-      await viewport.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop),
+      await viewport.evaluate(
+        (el) => el.scrollHeight - el.clientHeight - el.scrollTop,
+      ),
     ).toBeLessThanOrEqual(160);
-    await expect(page.locator(".xterm-screen")).toContainText("kimi live 5 row 39");
+    await expect(page.locator(".xterm-screen")).toContainText(
+      "kimi live 5 row 39",
+    );
+  });
+
+  test("output arriving in the same task as the tail jump is followed, not thrown back", async ({
+    page,
+  }, testInfo) => {
+    // #1108: `scrollToBottom()` moves xterm's buffer at once but its DOM viewport only on the next
+    // render. Output landing inside that gap read "buffer at tail, DOM not" as a reader off the
+    // tail: it restored the old reading position (back to the top) or declined to follow (one
+    // frame short). Tapping ↓ and delivering the next frame in ONE task puts the write inside
+    // the gap every time, instead of only when a loaded runner happened to delay the render.
+    test.skip(testInfo.project.name !== "mobile", "touch-only behavior");
+    const viewport = await readAtTopThroughRepaints(page);
+    await page.evaluate(() => {
+      (
+        document.querySelector(
+          'button[aria-label="Scroll to bottom"]',
+        ) as HTMLButtonElement
+      ).click();
+      (window as unknown as { __kimiOneMore: () => void }).__kimiOneMore();
+    });
+    await expect
+      .poll(async () =>
+        viewport.evaluate(
+          (el) => el.scrollHeight - el.clientHeight - el.scrollTop,
+        ),
+      )
+      .toBeLessThanOrEqual(160);
+    await expect(page.locator(".xterm-screen")).toContainText(
+      "kimi live 5 row 39",
+    );
   });
 });

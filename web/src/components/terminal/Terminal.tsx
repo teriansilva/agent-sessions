@@ -305,6 +305,9 @@ export function Terminal({
   const [appTailUnknown, setAppTailUnknown] = useState(false);
   const appTailUnknownRef = useRef(false);
   const jumpToTailRef = useRef<(notches: number) => void>(() => {});
+  // #1108: the reader's saved scrollback position lives inside the socket effect; the ↓ FAB
+  // (outside it) marks the tail as requested before it moves the buffer (see scrollToTail).
+  const requestTailRef = useRef<() => void>(() => {});
   // Auto copy-on-select "Copied" toast (#554): 0 = hidden, else a monotonic tick used as the
   // element key so each copy restarts the fade animation. Set by the mouseup copy-on-settle handler.
   // #554 copy-on-select toast; `ok` false = the clipboard write failed (insecure origin) (#617).
@@ -602,7 +605,21 @@ export function Terminal({
       const deadPx = SCROLL_DEAD_ZONE * Math.max(1, rowHeight);
       return vpEl.scrollHeight - vpEl.clientHeight - vpEl.scrollTop <= deadPx;
     };
+    // #1108: the ↓ jump asked for the tail and xterm's DOM viewport has not caught up yet. While
+    // set, a buffer/DOM disagreement is that lag, never a reader off the tail: no anchor is
+    // recorded and output follows. Cleared once the DOM reports the tail, the buffer leaves it,
+    // or the operator scrolls.
+    let tailRequested = false;
+    const settleTailRequest = () => {
+      if (!tailRequested) return;
+      const buf = term.buffer.active;
+      if (buf.baseY - buf.viewportY > SCROLL_DEAD_ZONE || computeDomAtBottom())
+        tailRequested = false;
+    };
     const computeAtBottom = () => {
+      // #1108: a requested tail the DOM has not reached yet is still the tail.
+      settleTailRequest();
+      if (tailRequested) return true;
       const buf = term.buffer?.active;
       if (!buf) return true;
       return (
@@ -922,6 +939,7 @@ export function Terminal({
       return target instanceof Node && !!area?.contains(target);
     };
     const armHistory = () => {
+      tailRequested = false; // a real gesture takes the viewport back from the ↓ jump (#1108)
       if (!sawOutput) return;
       userScrolled = true;
       initialTailLock = false;
@@ -972,7 +990,9 @@ export function Terminal({
       if (selectionActive) {
         if (restoreSelectionPin()) return;
       }
-      if (
+      settleTailRequest();
+      if (tailRequested) readerAnchor = null;
+      else if (
         sawOutput &&
         !selectionActive &&
         term.buffer.active.type === "normal" &&
@@ -1504,6 +1524,10 @@ export function Terminal({
     });
     stopMomentumRef.current = stopMomentum;
     jumpToTailRef.current = jumpToTail;
+    requestTailRef.current = () => {
+      readerAnchor = null;
+      tailRequested = true;
+    };
 
     // Attach once the grid is stable (see connectWhenStable) — NOT synchronously, or a still-
     // settling panel makes the post-connect resize wipe the transcript scroll-up (the race).
@@ -1529,6 +1553,7 @@ export function Terminal({
       detachTouch();
       stopMomentumRef.current = () => {};
       jumpToTailRef.current = () => {}; // #559: a stale FAB click must not wheel a disposed socket
+      requestTailRef.current = () => {};
       document.removeEventListener("touchend", onDocTouchEnd, true);
       document.removeEventListener("mouseup", copyOnSelectSettle);
       if (copiedHideTimer != null) clearTimeout(copiedHideTimer);
@@ -1640,6 +1665,15 @@ export function Terminal({
     // #584: the user asked for the tail — resolve the fresh-attach "unknown" state so the FAB clears.
     setAppTailUnknown(false);
     appTailUnknownRef.current = false;
+    // #1108: `scrollToBottom()` moves xterm's buffer at once, but `.xterm-viewport` catches up
+    // only on xterm's next render. In between, buffer and DOM disagree, and both onScrolled and
+    // the output path read "buffer at tail, DOM not" as a reader sitting off the tail: they
+    // recorded the old position as an anchor and restored it on the next chunk (back to the top),
+    // or declined to follow (left one frame short). Mark the tail as REQUESTED first, so that
+    // gap reads as what it is. Don't write `.xterm-viewport.scrollTop` here either: xterm owns it,
+    // and a direct write (the first cut of this fix) still left the view one frame short on a
+    // loaded runner.
+    requestTailRef.current();
     termRef.current?.scrollToBottom();
     setAtBottom(true);
   }, []);
