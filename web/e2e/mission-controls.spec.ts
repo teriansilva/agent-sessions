@@ -3378,6 +3378,10 @@ test("an OLDER refresh cannot resurrect a row after a NEWER one failed", async (
   // PHASES, not a request count: the console reads the list more than once while settling, and a
   // counted fixture starts failing under the operator's feet.
   let phase: "ok" | "hold" | "fail" = "ok";
+  // The create is the marker between the settling's own refused reads and the newer authoritative
+  // one this test needs before it releases the stale answer (#1156).
+  let createSeen = false;
+  let refusedAfterCreate = false;
   await mockMissions(page, {
     missions: missionList([ALPHA, BRAVO]),
     mission: { ...MISSION, state: "done", events: [], events_next_seq: null },
@@ -3395,12 +3399,24 @@ test("an OLDER refresh cannot resurrect a row after a NEWER one failed", async (
       heldSeen = true;
       await heldStale;
     } else if (phase === "fail") {
+      // Only a read refused AFTER the create proves the newest issued generation has moved past
+      // the held one — the fence's precondition. Whether the settling's own reads were refused
+      // proves nothing about it.
+      if (createSeen) refusedAfterCreate = true;
       return r.fulfill({
         status: 500,
         json: { detail: "the store could not be read" },
       });
     }
     return r.fulfill({ json: missionList([ALPHA, BRAVO]) });
+  });
+  // The create itself, marked so the refusal that follows it can be told apart from the
+  // settling's own refusals. Registered after `mockMissions` and falling through, so the create
+  // still answers with the shape the console expects.
+  await page.route("**/api/missions", async (r) => {
+    if (r.request().method() !== "POST") return r.fallback();
+    createSeen = true;
+    return r.fallback();
   });
   await page.route("**/api/missions/*/archive", (r) =>
     r.fulfill({ json: { ...MISSION, id: "msn_a", archived_at: 1 } }),
@@ -3421,7 +3437,14 @@ test("an OLDER refresh cannot resurrect a row after a NEWER one failed", async (
   await page.getByTestId("new-mission-instruction").fill("start something");
   await page.getByTestId("new-mission-project").selectOption("p1");
   await page.getByTestId("new-mission-start").click();
-  await expect.poll(() => phase, { timeout: 10_000 }).toBe("fail");
+  // THE REFUSAL ITSELF, not the phase flag (#1156): `phase` flipped to "fail" when the HELD read
+  // arrived, so polling it proved nothing about the newer read — and under a starved runner the
+  // test could release the stale answer before the app had issued anything newer, making the
+  // fence's CORRECT acceptance of it read as a defect. A read refused after the create is the
+  // precondition the fence needs: the newest ISSUED generation has moved past the held one.
+  await expect
+    .poll(() => refusedAfterCreate, { timeout: 10_000 })
+    .toBe(true);
 
   releaseStale?.();
   await page.waitForTimeout(750);
