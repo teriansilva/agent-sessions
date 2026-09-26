@@ -2,7 +2,9 @@ import { ArrowLeftRight, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
-import { isActive } from "../../app/engineRoster";
+import { useConfig } from "../../app/config";
+import { isActive, resolveDefault } from "../../app/engineRoster";
+import { unavailableDefaultNotice } from "../../lib/agentDefaults";
 import { api, ApiError } from "../../lib/api";
 import type { EngineInfo, HandoffMode } from "../../types/api";
 import styles from "./HandoffModal.module.css";
@@ -38,6 +40,8 @@ export function HandoffModal({
   returnFocusTo?: HTMLElement | null;
 }) {
   const navigate = useNavigate();
+  // The operator's default agent (#1128) — the default target when it can take a handoff.
+  const storedDefault = useConfig()?.agent_defaults?.default_engine ?? null;
   const [tiles, setTiles] = useState<EngineInfo[] | null>(null);
   const [target, setTarget] = useState<string | null>(null);
   const [mode, setMode] = useState<HandoffMode>("quick");
@@ -78,6 +82,10 @@ export function HandoffModal({
   } | null>(null);
   const [committing, setCommitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [unavailable, setUnavailable] = useState<{
+    stored: string;
+    fallback: string | null;
+  } | null>(null);
   // An INFO line explaining why a fresh seed is being prepared (expired handle) — kept
   // SEPARATE from `error` so a failure of that re-prepare surfaces the authoritative
   // `prepError` instead of being masked by a reassuring message (#703 review follow-up).
@@ -166,8 +174,18 @@ export function HandoffModal({
     return () => document.removeEventListener("keydown", onKey);
   }, [dismiss]);
 
-  // Engine tiles from the server capability source. Default target: the first seed-capable
-  // engine that isn't the source (same-engine handoff is allowed, just not the default).
+  // The stored default seeds the INITIAL selection only (Hermes on #1163): a config refresh that
+  // lands while the dialog is open — a Defaults save elsewhere — must never re-run discovery and
+  // swap the target out from under a choice or an edited brief, past the discard guard. So it is
+  // read through a ref, and discovery does not depend on it.
+  const storedDefaultRef = useRef(storedDefault);
+  useEffect(() => {
+    storedDefaultRef.current = storedDefault;
+  }, [storedDefault]);
+
+  // Engine tiles from the server capability source. Default target: the operator's stored default
+  // agent when it is eligible for a handoff and is not the source (#1128); otherwise the first
+  // seed-capable engine that isn't the source (same-engine handoff is allowed, just not the default).
   useEffect(() => {
     let alive = true;
     api
@@ -180,9 +198,23 @@ export function HandoffModal({
         const list = r.engines.filter((e) => e.kind === "agent" && isActive(e));
         setTiles(list);
         const enabled = list.filter((e) => e.supports_seed_start);
-        const def = enabled.find((e) => e.id !== engine) ?? enabled[0];
+        const storedDefault = storedDefaultRef.current;
+        const stored = resolveDefault(list, storedDefault, "handoff");
+        const def =
+          (stored.engine === storedDefault && storedDefault !== engine
+            ? enabled.find((e) => e.id === storedDefault)
+            : undefined) ??
+          enabled.find((e) => e.id !== engine) ??
+          enabled[0];
         if (def) setTarget(String(def.id));
         else setError("No engine on this host can accept a handoff yet.");
+        // Say so when the stored default is not the one in effect (#1128) — but not when it is
+        // simply the SOURCE: not defaulting to yourself is by design, not an unavailable default.
+        setUnavailable(
+          stored.unavailableDefault && stored.unavailableDefault !== engine
+            ? { stored: stored.unavailableDefault, fallback: def ? String(def.id) : null }
+            : null,
+        );
       })
       .catch(() => alive && setError("Couldn't load the engine list."));
     return () => {
@@ -378,6 +410,11 @@ export function HandoffModal({
                 </button>
               ))}
             </div>
+          )}
+          {unavailable && (
+            <p className={styles.hint} role="status">
+              {unavailableDefaultNotice(unavailable.stored, unavailable.fallback, "handoff")}
+            </p>
           )}
         </div>
 

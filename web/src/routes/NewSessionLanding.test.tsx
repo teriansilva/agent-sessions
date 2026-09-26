@@ -3,9 +3,11 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
 import { ConfigCtx } from "../app/config";
+import { setRoster } from "../app/engineRoster";
+import fixture from "../test/roster.fixture.json";
 import { api } from "../lib/api";
 import { mintNewSessionId } from "../lib/newSession";
-import type { AppConfig } from "../types/api";
+import type { AppConfig, EngineInfo } from "../types/api";
 import { NewSessionLanding } from "./NewSessionLanding";
 
 const navigateMock = vi.fn();
@@ -293,4 +295,77 @@ test("a starred project with no default folder falls through to the legacy cwd (
   expect(
     (screen.getByLabelText("Launch folder") as HTMLInputElement).value,
   ).toBe("/legacy");
+});
+
+// ---- the stored agent defaults (#1128) --------------------------------------------------------------
+
+const FIXTURE = fixture.engines as EngineInfo[];
+
+async function startAndReadFresh(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  return navigateMock.mock.calls[0] as [string, { state: { fresh: unknown } }];
+}
+
+test("the form starts from the stored default agent and bypass (#1128)", async () => {
+  const user = userEvent.setup();
+  renderLanding(["claude", "codex"], {
+    agent_defaults: { default_engine: "codex", bypass: false },
+  });
+  await screen.findByRole("combobox", { name: "Project" });
+  expect(
+    (screen.getByRole("combobox", { name: "Agent" }) as HTMLSelectElement)
+      .value,
+  ).toBe("codex");
+  expect(
+    screen.getByRole("checkbox", { name: /skip permission prompts/i }),
+  ).not.toBeChecked();
+  expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  const [path, opts] = await startAndReadFresh(user);
+  expect(path).toMatch(/^\/s\/codex\//);
+  expect(opts.state.fresh).toEqual({ cwd: "/a", bypass: false });
+});
+
+test("the operator can still change both for this session (#1128)", async () => {
+  const user = userEvent.setup();
+  renderLanding(["claude", "codex"], {
+    agent_defaults: { default_engine: "codex", bypass: false },
+  });
+  await screen.findByRole("combobox", { name: "Project" });
+  await user.selectOptions(
+    screen.getByRole("combobox", { name: "Agent" }),
+    "claude",
+  );
+  await user.click(
+    screen.getByRole("checkbox", { name: /skip permission prompts/i }),
+  );
+  const [path, opts] = await startAndReadFresh(user);
+  expect(path).toMatch(/^\/s\/claude\//);
+  expect(opts.state.fresh).toEqual({ cwd: "/a", bypass: true });
+});
+
+test("bypass stays on when the server sends no agent defaults (#1128)", async () => {
+  const user = userEvent.setup();
+  renderLanding(["claude"]);
+  await screen.findByRole("combobox", { name: "Project" });
+  const [, opts] = await startAndReadFresh(user);
+  expect(opts.state.fresh).toEqual({ cwd: "/a", bypass: true });
+});
+
+test("a default that is not installed falls back visibly, never silently (#1128)", async () => {
+  setRoster(
+    FIXTURE.map((e) =>
+      e.id === "gemini" ? { ...e, present: false, bin: null } : e,
+    ),
+  );
+  renderLanding(["claude", "codex"], {
+    agent_defaults: { default_engine: "gemini", bypass: true },
+  });
+  await screen.findByRole("combobox", { name: "Project" });
+  expect(screen.getByRole("status")).toHaveTextContent(
+    "Your default, Gemini CLI, is not installed — new sessions use Claude Code until it is. Your choice is kept.",
+  );
+  expect(
+    (screen.getByRole("combobox", { name: "Agent" }) as HTMLSelectElement)
+      .value,
+  ).toBe("claude");
 });

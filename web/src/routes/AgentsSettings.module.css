@@ -1,0 +1,637 @@
+/* Settings → AGENTS (#853 P4, #1128): the roster, an agent's own page, and the defaults.
+ *
+ * Tokens only, no radius except the LEDs, no gradients (docs/design.md §9). Every card, chip and row
+ * that can hold a long string (a binary path, a loader error) carries `min-width: 0` and wraps with
+ * `overflow-wrap: anywhere`, so nothing here scrolls sideways at 320px (§7). Interactive rows and
+ * buttons hold the 44px floor (§8). The engine's own accent arrives as `--eng`, set inline from the
+ * roster (`engineColor`), always a `--engine-*` token. */
+
+/* The agents pages want more room than the 640px settings column: a roster is a grid. */
+.wide {
+  max-width: 1100px;
+}
+
+.head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  margin-bottom: 12px;
+}
+.headText {
+  min-width: 0;
+  flex: 1 1 280px;
+}
+.headLink {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+  text-decoration: none;
+}
+:root[data-theme="light"] .headLink {
+  color: var(--brand);
+}
+.headLink:hover {
+  text-decoration: underline;
+}
+.headLink:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.summary {
+  margin: 0 0 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.summary b {
+  color: var(--text-2);
+}
+
+/* A failed load: the last good list stays, and this says so. Degraded, not critical (§7). */
+.stale {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--status-degraded);
+  border-left-width: 3px;
+  background: var(--surface-3);
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+/* ---- roster ---- */
+.grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+  gap: 14px;
+}
+.card {
+  position: relative;
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  padding: 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--eng, var(--border));
+}
+.dim .name,
+.dim .badge {
+  opacity: 0.6;
+}
+.bad {
+  border-color: var(--status-down);
+  border-left-color: var(--status-down);
+}
+.ctop {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.badge {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid var(--eng, var(--text-3));
+  color: var(--eng, var(--text-3));
+  background: var(--surface-3);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.badgeNone {
+  --eng: var(--text-3);
+  border-style: dashed;
+}
+.badgeSm {
+  width: 30px;
+  height: 30px;
+  font-size: 11px;
+}
+.name {
+  flex: 1 1 120px;
+  min-width: 0;
+}
+.name h3,
+.heroTitle {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.heroTitle {
+  font-size: 18px;
+}
+.name span {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+.state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.state_up {
+  color: var(--ok-text);
+}
+.state_idle {
+  color: var(--text-2);
+}
+.state_deg {
+  color: var(--warn-text);
+}
+.state_down {
+  color: var(--danger-text);
+  border-color: var(--status-down);
+}
+.chips {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+.chip {
+  padding: 3px 7px;
+  border: 1px solid var(--line-strong);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+/* Undeclared: struck through AND dashed, and "(off)" for a screen reader — never colour alone. */
+.chipOff {
+  color: var(--text-3);
+  border-style: dashed;
+  text-decoration: line-through;
+}
+.chipRt {
+  color: var(--text);
+  border-color: var(--text-3);
+}
+.path {
+  margin: 0;
+  padding: 7px 9px;
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.empty {
+  padding: 12px 14px;
+  border: 1px dashed var(--border);
+  font-size: 12.5px;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.empty b {
+  display: block;
+  margin-bottom: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.note {
+  margin: 0;
+  padding: 8px 10px;
+  border-left: 2px solid var(--status-degraded);
+  background: var(--surface-3);
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.plain {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.err {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--surface-3);
+  border: 1px solid var(--status-down);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--danger-text);
+  overflow-wrap: anywhere;
+}
+.meterNone {
+  margin: 0;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-2);
+}
+.acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.acts a {
+  text-decoration: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+/* ---- an agent's own page ---- */
+.detail {
+  max-width: 1100px;
+  margin: 0 auto;
+}
+/* The one white frame per view (docs/design.md §7): the agent this page is about. */
+.hero::before,
+.hero::after {
+  border-color: var(--text-1);
+  width: 16px;
+  height: 16px;
+}
+.cols {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 18px;
+  align-items: start;
+}
+.cols > * {
+  min-width: 0;
+}
+.detail .cols > section {
+  margin: 0 0 18px;
+  max-width: none;
+}
+.kv {
+  margin: 0;
+  border-top: 1px solid var(--line);
+}
+.kvRow {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+.kvRow dt {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.kvRow dd {
+  margin: 0;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.kvRow dd small {
+  display: block;
+  margin-top: 3px;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.caps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+.cap {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.capOff span:first-child {
+  color: var(--text-3);
+}
+.on,
+.off {
+  flex: none;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.on {
+  color: var(--ok-text);
+}
+.off {
+  color: var(--text-3);
+}
+.models {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.models li {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.models small {
+  display: block;
+  color: var(--text-2);
+}
+
+/* ---- defaults ---- */
+.label {
+  margin: 0 0 8px;
+  padding: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.pick {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  align-content: start;
+}
+.opt {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  min-width: 0;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  cursor: pointer;
+}
+.opt:has(input:checked) {
+  border-color: var(--text-2);
+}
+.opt:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+/* A square radio: the design system has no radius outside the LEDs. */
+.opt input[type="radio"] {
+  flex: none;
+  appearance: none;
+  margin: 0;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-content: center;
+  border: 1.5px solid var(--text-3);
+  background: transparent;
+  border-radius: 0;
+}
+.opt input[type="radio"]::after {
+  content: "";
+  width: 8px;
+  height: 8px;
+  background: transparent;
+}
+.opt input[type="radio"]:checked {
+  border-color: var(--text);
+}
+.opt input[type="radio"]:checked::after {
+  background: var(--text);
+}
+.optGone {
+  border-style: dashed;
+  background: transparent;
+  cursor: default;
+}
+.optGone .optLabel,
+.optGone .badge {
+  opacity: 0.55;
+}
+.optLabel {
+  flex: 1;
+  min-width: 0;
+  font-size: 13.5px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.optLabel small {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+.warn {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--status-degraded);
+  border-left-width: 3px;
+  background: var(--surface-3);
+  font-size: 13px;
+  color: var(--text);
+}
+.warn :global(.hud-led) {
+  margin-top: 6px;
+}
+.warn b {
+  display: block;
+  margin-bottom: 3px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--warn-text);
+}
+.side {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+.side .label {
+  margin: 6px 0 0;
+}
+.tog {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  cursor: pointer;
+}
+.togText {
+  flex: 1;
+  min-width: 0;
+}
+.togText b {
+  display: block;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.togText small {
+  font-size: 12px;
+  color: var(--text-2);
+}
+.togState {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+/* The switch: a square track and a square thumb. The whole row is the 44px hit area. */
+.switch {
+  flex: none;
+  appearance: none;
+  position: relative;
+  margin: 0;
+  width: 52px;
+  height: 28px;
+  border: 1px solid var(--border);
+  background: var(--surface-3);
+  border-radius: 0;
+  cursor: pointer;
+}
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  background: var(--text-3);
+}
+.switch:checked {
+  border-color: var(--text-1);
+}
+.switch:checked::after {
+  left: 27px;
+  background: var(--text-1);
+}
+.switch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.where {
+  margin: 0;
+  border-top: 1px solid var(--line);
+}
+.where div {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+.where dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+}
+.saveRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  margin-top: 6px;
+}
+.saveRow button {
+  font-family: var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.saved {
+  font-size: 12px;
+  color: var(--ok-text);
+}
+
+@media (max-width: 800px) {
+  .cols,
+  .caps {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .kvRow {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 3px;
+  }
+  .opt {
+    min-height: 44px;
+  }
+  .acts > * {
+    flex: 1;
+  }
+}

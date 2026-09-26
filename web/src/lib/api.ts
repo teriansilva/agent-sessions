@@ -5,6 +5,7 @@ import { uploadStoredName } from "./templateMessage";
 import type {
   AgentCounts,
   AgentBudgets,
+  AgentDefaults,
   AgentUsageResponse,
   AiActivity,
   AnalyticsState,
@@ -12,6 +13,7 @@ import type {
   AutoSortReport,
   DirectionPreview,
   DraftAttachment,
+  EngineDetail,
   EnginesResponse,
   Evidence,
   EvidenceKind,
@@ -416,6 +418,15 @@ export const api = {
   agents: () => getJson<AgentCounts>("/api/agents"),
   /** Discovery: every known engine provider with presence / new-session / bin path. */
   engines: () => getJson<EnginesResponse>("/api/engines"),
+  /** One engine's manifest detail (#853 P4) — the Agents page. A 404 means no such agent. */
+  engineDetail: (id: string) =>
+    getJson<EngineDetail>(`/api/engines/${encodeURIComponent(id)}`),
+  /** Save a PARTIAL `agent_defaults` block (#1128). Send only the fields that changed: the
+   *  server merges, so a bypass-only save leaves the stored default engine exactly as it is. */
+  setAgentDefaults: (patch: Partial<AgentDefaults>) =>
+    mutateJson<{ agent_defaults: AgentDefaults }>("POST", "/api/prefs", {
+      agent_defaults: patch,
+    }),
 
   /** Per-agent usage + budgets (#839). The GET never probes — it serves the last answers,
    *  each labelled with when it was taken. */

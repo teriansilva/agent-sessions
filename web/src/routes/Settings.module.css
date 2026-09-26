@@ -73,6 +73,10 @@
   text-transform: uppercase;
   color: var(--text-3, var(--text-muted));
 }
+/* The AGENTS pages are wider than a settings column (#1128); the crumb lines up with them. */
+.crumbWide {
+  max-width: 1100px;
+}
 .crumb b {
   color: var(--text-2, var(--text));
   font-weight: 600;
@@ -109,6 +113,11 @@
   color: var(--text-2, var(--text));
   text-decoration: none;
   border-left: 2px solid transparent;
+}
+/* An agent's own page (#1128), listed under Roster while it is the page on screen. */
+.navSub {
+  padding-left: 22px;
+  text-transform: none;
 }
 .navLink:hover {
   color: var(--text);

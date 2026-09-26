@@ -5,7 +5,13 @@ import { MAP_PATH, useMapWindows } from "../app/workspaceWindows";
 import { FolderPickerModal } from "../components/FolderPickerModal";
 import { api } from "../lib/api";
 import { mintNewSessionId } from "../lib/newSession";
-import { engineName, mintsOwnId, useEngineRoster } from "../app/engineRoster";
+import {
+  engineName,
+  mintsOwnId,
+  resolveDefault,
+  useEngineRoster,
+} from "../app/engineRoster";
+import { unavailableDefaultNotice } from "../lib/agentDefaults";
 import { owningProjectId } from "../lib/projectTree";
 import { shortCwd } from "../lib/format";
 import type { ProjectEntity } from "../types/api";
@@ -32,11 +38,21 @@ export function NewSessionLanding() {
   const returnToMap =
     (location.state as { returnTo?: string } | null)?.returnTo === MAP_PATH;
   const [engineChoice, setEngineChoice] = useState("");
-  const [bypass, setBypass] = useState(true);
+  // `null` = untouched: the stored default applies (#1128), and `true` — today's behaviour — until
+  // the config has loaded. The operator's choice on this form always wins, for this session.
+  const [bypassChoice, setBypass] = useState<boolean | null>(null);
+  const bypass = bypassChoice ?? config?.agent_defaults?.bypass ?? true;
 
   const roster = useEngineRoster();
   const engines = config?.new_session_engines ?? [];
-  const engine = engineChoice || engines[0] || "";
+  // The stored default agent, resolved through THE resolver (#1128): used when it can start a new
+  // session here, else the first engine that can — and the notice below says so.
+  const defaultChoice = resolveDefault(
+    roster.engines.filter((e) => engines.includes(e.id)),
+    config?.agent_defaults?.default_engine,
+    "new",
+  );
+  const engine = engineChoice || defaultChoice.engine || engines[0] || "";
 
   // Project entities own the default launch folder (#448). projectChoice === null = untouched
   // (use the default selection); "" = no project; else an entity id.
@@ -185,6 +201,15 @@ export function NewSessionLanding() {
               ))}
             </select>
           </label>
+        )}
+
+        {roster.loaded && defaultChoice.unavailableDefault && (
+          <p className={styles.hint} role="status">
+            {unavailableDefaultNotice(
+              defaultChoice.unavailableDefault,
+              defaultChoice.engine,
+            )}
+          </p>
         )}
 
         {/* Project FIRST (#448): it owns the default launch folder below. */}

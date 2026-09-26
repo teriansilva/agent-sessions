@@ -13,7 +13,8 @@ import { beforeEach, expect, test, vi } from "vitest";
 import { ConfigCtx, ConfigRefreshCtx } from "../app/config";
 import { OverviewPrefsProvider } from "../app/OverviewPrefsContext";
 import { api } from "../lib/api";
-import type { AgentUsageResponse, AppConfig } from "../types/api";
+import type { AgentUsageResponse, AppConfig, EngineInfo } from "../types/api";
+import fixture from "../test/roster.fixture.json";
 import type { ThemeId } from "../theme/themes";
 import { ThemeCtx } from "../theme/themeStore";
 import { AccentCtx } from "../theme/accentStore";
@@ -131,6 +132,7 @@ function renderSettings(
               <Routes>
                 <Route path="/settings" element={<Settings />} />
                 <Route path="/settings/:tab" element={<Settings />} />
+                <Route path="/settings/agents/:agent" element={<Settings />} />
               </Routes>
               <LocationProbe />
             </OverviewPrefsProvider>
@@ -191,16 +193,16 @@ beforeEach(() => {
     auth_mode: "single-user",
     two_factor_enabled: false,
   });
+  // The manifest-generated roster, with claude at a real path and codex not installed.
   vi.mocked(api.engines).mockResolvedValue({
-    engines: [
-      {
-        id: "claude",
-        present: true,
-        supports_new: true,
-        bin: "/usr/local/bin/claude",
-      },
-      { id: "codex", present: false, supports_new: false, bin: null },
-    ],
+    engines: (fixture.engines as EngineInfo[]).map((e) =>
+      e.id === "claude"
+        ? { ...e, bin: "/usr/local/bin/claude" }
+        : e.id === "codex"
+          ? { ...e, present: false, bin: null }
+          : e,
+    ),
+    problems: [],
   });
   vi.mocked(api.agentUsage).mockResolvedValue({
     budgets: { threshold_pct: 90, notify: true, engines: {} },
@@ -405,7 +407,8 @@ test.each([
   ["ai-playbooks", ["Mission checklists"]],
   ["ai-prompts", ["Prompts"]],
   ["ai-activity", ["AI activity"]],
-  ["agents", ["Connected agents"]],
+  ["agents", ["Agents"]],
+  ["agents-defaults", ["Defaults"]],
   ["security", ["Two-factor authentication", "Account"]],
   ["updates", ["Updates"]],
   ["analytics", ["Usage analytics"]],
@@ -425,7 +428,7 @@ test.each([
 
 test("the registry and the pages agree: every section id renders something", () => {
   // A registry entry with no body in Settings.tsx would be a nav link to a blank page.
-  expect(SETTINGS_SECTIONS).toHaveLength(17);
+  expect(SETTINGS_SECTIONS).toHaveLength(18);
 });
 
 // ---- Usage analytics (#1009) ----------------------------------------------------------------
@@ -714,18 +717,30 @@ test("an invalid custom hex is rejected (no setAccent) and the field resets", as
 
 // ---- System tab ----
 
-test("renders the Connected agents section with each engine + new-session badge", async () => {
+test("the roster renders a card per engine: its state, its path and its capabilities (#1128)", async () => {
   renderSettings("dark", "#ffb000", "/settings/agents");
+  expect(screen.getByRole("heading", { name: "Agents" })).toBeInTheDocument();
+  await waitFor(() =>
+    expect(screen.getByText("/usr/local/bin/claude")).toBeInTheDocument(),
+  );
+  const claude = screen.getByRole("heading", { name: "Claude Code" })
+    .closest("li")!;
+  expect(within(claude).getByText("Present")).toBeInTheDocument();
+  expect(within(claude).getByText(/Runtime \/\/ terminal/i)).toBeInTheDocument();
+  const codex = screen.getByRole("heading", { name: "Codex" }).closest("li")!;
+  // An absent engine says so, and shows no path it does not have.
+  expect(within(codex).getByText("Absent")).toBeInTheDocument();
+  expect(within(codex).getByText(/not installed on this host/i)).toBeInTheDocument();
+  // Undeclared capabilities are shown OFF, not hidden: gemini is no handoff target.
+  const gemini = screen.getByRole("heading", { name: "Gemini CLI" })
+    .closest("li")!;
+  const caps = within(gemini).getByRole("list", { name: /capabilities/ });
+  expect(within(caps).getByText(/handoff target/)).toHaveTextContent("(off)");
+  expect(within(caps).getByText(/^resume$/)).toBeInTheDocument();
+  // Each card links to the agent's own page.
   expect(
-    screen.getByRole("heading", { name: "Connected agents" }),
-  ).toBeInTheDocument();
-  await waitFor(() => expect(screen.getByText("claude")).toBeInTheDocument());
-  expect(screen.getByText("codex")).toBeInTheDocument();
-  // present engine shows its resolved bin + a "can start new" badge
-  expect(screen.getByText("/usr/local/bin/claude")).toBeInTheDocument();
-  expect(screen.getByText(/can start new/i)).toBeInTheDocument();
-  // absent engine shows "not found"
-  expect(screen.getByText("not found")).toBeInTheDocument();
+    within(claude).getByRole("link", { name: /details for claude code/i }),
+  ).toHaveAttribute("href", "/settings/agents/claude");
 });
 
 test("shows what an agent has spent on the row that already names it (#839)", async () => {

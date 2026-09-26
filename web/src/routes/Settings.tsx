@@ -19,8 +19,6 @@ import {
   useEffect,
   useMemo,
   useRef,
-  type Dispatch,
-  type SetStateAction,
   useState,
 } from "react";
 import {
@@ -38,8 +36,7 @@ import {
   consentSaveError,
   saveAnalyticsConsent,
 } from "../lib/analyticsConsent";
-import { engineName, humanBytes, humanDuration, shortCwd } from "../lib/format";
-import { stalenessNote, tone, usageCaption } from "../lib/agentUsage";
+import { humanBytes, humanDuration, shortCwd } from "../lib/format";
 import {
   buildProjectTree,
   flattenTree,
@@ -47,6 +44,7 @@ import {
 } from "../lib/projectTree";
 import { FolderPickerModal } from "../components/FolderPickerModal";
 import { AiActivityPanel } from "./AiActivityPanel";
+import { AgentDefaultsPage, AgentDetail, AgentsRoster } from "./AgentsSettings";
 import { AiEndpointSetup } from "./AiEndpointSetup";
 import { AiReviewSettings } from "./AiReviewSettings";
 import { ForgeSettings } from "./ForgeSettings";
@@ -79,10 +77,7 @@ import { useTermSize } from "../theme/termSizeStore";
 import { THEME_LIST } from "../theme/themes";
 import { useTheme } from "../theme/themeStore";
 import type {
-  AgentUsageResponse,
-  AgentUsageRow,
   AnalyticsState,
-  EngineInfo,
   ProjectEntity,
   SystemInfo,
   TwoFactorEnrollment,
@@ -96,6 +91,8 @@ import {
 } from "../lib/aiEndpointStatus";
 import { useIsMobile } from "../lib/useIsMobile";
 import {
+  AGENT_DEFAULTS_SEGMENT,
+  agentPath,
   DEFAULT_SETTINGS_SECTION,
   isSettingsSection,
   legacySettingsTarget,
@@ -114,7 +111,7 @@ import { UpdateWhatsNew } from "../components/updates/UpdateWhatsNew";
 import { SOURCE_URL } from "../lib/links";
 import { whatsNewLabel } from "../whatsnew/due";
 import { useOpenWhatsNew } from "../whatsnew/WhatsNewContext";
-import { useEngineRoster } from "../app/engineRoster";
+import { engineLabel, useEngineRoster } from "../app/engineRoster";
 
 const BUY_ME_A_COFFEE = "https://buymeacoffee.com/teriansilva";
 // AGPL-3.0 §13: a network-served build must offer its users the Corresponding Source. The
@@ -158,7 +155,14 @@ function EndpointLed() {
  *  registry. Links, not an ARIA tablist — each section is its own URL, so this is navigation
  *  between pages and the browser's own Tab order and history apply. The router state (the #155
  *  `returnTo`) rides along, so the back link survives every section switch. */
-function SettingsNav({ active }: { active: SettingsSectionId }) {
+function SettingsNav({
+  active,
+  agentId = null,
+}: {
+  active: SettingsSectionId;
+  /** On an agent's own page (#1128): the agent, listed under Roster as the current page. */
+  agentId?: string | null;
+}) {
   const location = useLocation();
   return (
     <nav className={styles.nav} aria-label="Settings">
@@ -183,11 +187,23 @@ function SettingsNav({ active }: { active: SettingsSectionId }) {
                     to={settingsPath(s.id)}
                     state={location.state}
                     className={styles.navLink}
-                    aria-current={s.id === active ? "page" : undefined}
+                    aria-current={
+                      s.id === active && !agentId ? "page" : undefined
+                    }
                   >
                     <span data-section-label="">{s.label}</span>
                     {s.id === "ai-endpoint" && <EndpointLed />}
                   </Link>
+                  {s.id === "agents" && agentId && (
+                    <Link
+                      to={agentPath(agentId)}
+                      state={location.state}
+                      className={`${styles.navLink} ${styles.navSub}`}
+                      aria-current="page"
+                    >
+                      <span>· {engineLabel(agentId)}</span>
+                    </Link>
+                  )}
                 </li>
               ))}
             </ul>
@@ -262,468 +278,6 @@ function SettingsIndex({ returnTo }: { returnTo: string }) {
           );
         })}
       </nav>
-    </div>
-  );
-}
-
-/** Connected agents (discovery): every known engine with a presence dot, a "can start
- *  new" badge, and the resolved binary path. */
-/** Connected agents + what each one has spent (#839).
- *
- *  One list, not two. The operator's question — "how much of this agent is left?" — is about
- *  the same row that already says whether the agent is installed, and splitting it into a second
- *  panel would make them scan two lists for one answer.
- *
- *  The section never probes on render: it shows the last answers, each labelled with when it was
- *  taken, and asking again is an explicit button. A settings page that spawns six CLIs when you
- *  open it is a settings page that hangs.
- */
-function ConnectedAgents() {
-  // Re-render when the engine roster lands or changes (#853 P4): this renders agent names,
-  // badges or colours, which come from the roster, not from a client-side list.
-  useEngineRoster();
-  const [engines, setEngines] = useState<EngineInfo[] | null>(null);
-  const [usage, setUsage] = useState<AgentUsageResponse | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
-
-  useEffect(() => {
-    let alive = true;
-    api
-      .engines()
-      .then((d) => alive && setEngines(d.engines))
-      .catch(() => {
-        /* unauthenticated/offline — leave it blank */
-      });
-    api
-      .agentUsage()
-      .then((d) => alive && setUsage(d))
-      .catch(() => {
-        /* usage is additive: the agent list still renders without it */
-      });
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  const rows = usage?.agents ?? [];
-  const byEngine = new Map(rows.map((r) => [r.engine, r]));
-  const budgets = usage?.budgets;
-  const threshold = budgets?.threshold_pct ?? 90;
-
-  // Saves are **serialized**, not merely sequence-numbered.
-  //
-  // Every save returns the WHOLE snapshot, so two in flight are last-response-wins: tick the
-  // checkbox, type a limit, and whichever PATCH the network answers last decides what the panel
-  // shows. A client-side counter cannot fix that, because request-START order is not server
-  // SETTLEMENT order — partial PATCHes merge under the server's lock, so the request that
-  // started first can settle last and carry the newest authoritative document. Discarding it as
-  // "superseded" would throw away the only correct snapshot.
-  //
-  // One at a time removes the question: each PATCH is sent only after the previous has settled,
-  // so the last response IS the newest state, by construction.
-  const chain = useRef<Promise<unknown>>(Promise.resolve());
-
-  // The numeric fields are CONTROLLED, with the operator's in-progress text held here and
-  // dropped once the server has answered. Uncontrolled inputs cannot be reconciled at all: a
-  // rejected save, or an authoritative newer snapshot, would leave the box showing a number the
-  // server never accepted, with nothing on screen able to correct it.
-  // A field's in-progress text, and who owns it.
-  //
-  // Three things have to be true at once and none of them can be inferred from the rendered
-  // snapshot, because saves queue:
-  //
-  //  * the box shows what the operator last typed, not what the server last said;
-  //  * a blur is compared against the latest value ASKED for, so "change away then back" is not
-  //    mistaken for a no-op while the change-away is still in flight;
-  //  * when a request settles, it clears only what IT submitted — a stale response must not drag
-  //    the box back, and a failed one must not release a field a newer request has claimed.
-  //
-  // Ownership is a **revision token**, not the value. Matching values are not proof of ownership:
-  // queue 80 → 70 → 80 and the first 80's failure sees the newest intent is also 80, releases the
-  // third request's claim, and the operator's next choice then compares equal to the stored
-  // snapshot — no compensating PATCH, and the queued 80 becomes the durable value. Tokens have no
-  // ABA problem by construction.
-  const [draft, setDraft] = useState<Record<string, string>>({});
-  const fieldValue = (key: string, stored: number) =>
-    draft[key] ?? (stored ? String(stored) : "");
-  const rev = useRef(0);
-  const owner = useRef<Record<string, number>>({});
-  const intent = useRef<Record<string, number>>({});
-  const intended = (key: string, stored: number) =>
-    intent.current[key] ?? stored;
-
-  /** Record that this request now speaks for these fields, and return its token. */
-  function claim(values: Record<string, number>): number {
-    const token = ++rev.current;
-    for (const [k, v] of Object.entries(values)) {
-      owner.current[k] = token;
-      intent.current[k] = v;
-    }
-    return token;
-  }
-
-  /** Hand the fields back — only those this request still owns.
-   *
-   *  Success and failure do the same thing here, which is the point: either way this request is
-   *  finished speaking for the field, so the box goes back to rendering the server's value and
-   *  the next blur is compared against it. Releasing on failure is also what makes a rejected
-   *  save retryable with the same number; without it the retry compares equal to the failed
-   *  request's own intent and is never sent. */
-  function release(token: number, fields: string[]) {
-    const mine = fields.filter((k) => owner.current[k] === token);
-    if (!mine.length) return;
-    for (const k of mine) {
-      delete owner.current[k];
-      delete intent.current[k];
-    }
-    setDraft((d) => {
-      if (!mine.some((k) => k in d)) return d;
-      const out = { ...d };
-      for (const k of mine) delete out[k];
-      return out;
-    });
-  }
-
-  /** Discard a field's in-progress TEXT, and nothing else.
-   *
-   *  Used for input the server would refuse, so nothing is sent for it — which is exactly why
-   *  it must not touch `owner`/`intent`: those describe what has been **asked of the server**,
-   *  and typing something invalid asks nothing. An earlier version cleared them too, on the
-   *  stated assumption that no request could be outstanding. That assumption was wrong — saves
-   *  are serialized, so one is frequently still queued — and it lost the claim: submit 80, then
-   *  type an invalid 0 before it settles; the box snaps back to the stored 90, but with the 80's
-   *  claim erased, accepting that 90 compares equal to the stored snapshot and queues nothing.
-   *  The outstanding 80 then lands as the durable value.
-   *
-   *  Leaving the claim alone makes that case work: the box shows 90, `intended` still reads 80,
-   *  so blurring 90 is a real change and a compensating PATCH goes out. */
-  const dropDraft = (key: string) =>
-    setDraft((d) => {
-      if (!(key in d)) return d;
-      const out = { ...d };
-      delete out[key];
-      return out;
-    });
-
-  function save(
-    patch: Parameters<typeof api.setAgentBudgets>[0],
-    /** field → the numeric value THIS request is asking for. */
-    values: Record<string, number> = {},
-  ): Promise<void> {
-    const token = claim(values);
-    const fields = Object.keys(values);
-    const run = chain.current.then(
-      async () => {
-        setErr("");
-        try {
-          setUsage(await api.setAgentBudgets(patch));
-        } catch (e) {
-          // The server names what it refused and why; showing "failed" instead would leave the
-          // operator to guess which field it disliked (#834).
-          setErr(e instanceof Error ? e.message : "could not save");
-        } finally {
-          release(token, fields);
-        }
-      },
-      () => undefined,
-    );
-    chain.current = run;
-    return run;
-  }
-
-  async function refresh() {
-    setErr("");
-    setBusy(true);
-    // Behind the same chain: a refresh returns a full snapshot too, so it must not overtake a
-    // save that has not settled yet.
-    const run = chain.current.then(
-      async () => {
-        try {
-          setUsage(await api.agentUsageRefresh());
-        } catch (e) {
-          setErr(e instanceof Error ? e.message : "could not refresh");
-        }
-      },
-      () => undefined,
-    );
-    chain.current = run;
-    await run;
-    setBusy(false);
-  }
-
-  return (
-    <section className={styles.section} aria-labelledby="agents-h">
-      <h2 id="agents-h">Connected agents</h2>
-      <p className={styles.hint}>
-        The AI-coding CLIs BattleLab can discover on this host, and what each
-        one has spent. Percentages marked <em>plan</em> come from the agent
-        itself; the rest are counted against a limit you set.
-      </p>
-
-      {budgets && (
-        <div className={styles.budgetBar}>
-          <label className={styles.budgetField}>
-            Alert at
-            <input
-              type="number"
-              min={1}
-              max={100}
-              value={fieldValue("threshold", threshold)}
-              className={styles.budgetPct}
-              aria-label="Alert threshold, percent"
-              onChange={(e) => {
-                // Read the value BEFORE the updater runs: `currentTarget` is null by the time
-                // React invokes a deferred state updater.
-                const v = e.currentTarget.value;
-                setDraft((d) => ({ ...d, threshold: v }));
-              }}
-              onBlur={(e) => {
-                const text = e.currentTarget.value;
-                const v = Math.round(Number(text));
-                if (
-                  Number.isFinite(v) &&
-                  v >= 1 &&
-                  v <= 100 &&
-                  v !== intended("threshold", threshold)
-                ) {
-                  void save({ threshold_pct: v }, { threshold: v });
-                } else {
-                  // Not a value the server would take — snap back rather than leave the box
-                  // showing a number that was never persisted.
-                  dropDraft("threshold");
-                }
-              }}
-            />
-            %
-          </label>
-          <label className={styles.budgetToggle}>
-            <input
-              type="checkbox"
-              // Same pending-intent rule as the numeric fields, and for the same reason: saves
-              // queue, so a checkbox controlled purely by the server snapshot still shows the
-              // OLD value while a PATCH is in flight. Two quick clicks then both computed
-              // `!oldValue` and enqueued the same write twice — the second toggle was silently
-              // lost. The draft holds what the operator has actually asked for.
-              checked={
-                draft.notify !== undefined
-                  ? draft.notify === "1"
-                  : budgets.notify
-              }
-              onChange={(e) => {
-                const next = e.currentTarget.checked;
-                // The draft carries the pending intent for the checkbox exactly as it does for
-                // the numeric fields, so two quick clicks send off-then-on rather than the same
-                // write twice. `save` claims the field, so the settling request releases it.
-                setDraft((d) => ({ ...d, notify: next ? "1" : "0" }));
-                void save({ notify: next }, { notify: next ? 1 : 0 });
-              }}
-            />
-            Notify me
-          </label>
-          <button
-            type="button"
-            className={styles.budgetRefresh}
-            onClick={() => void refresh()}
-            disabled={busy}
-          >
-            {busy ? "Asking…" : "Ask the agents"}
-          </button>
-        </div>
-      )}
-      {err && (
-        <p className={styles.budgetError} role="alert">
-          {err}
-        </p>
-      )}
-
-      {engines === null ? (
-        <p className={styles.hint}>…</p>
-      ) : (
-        <ul className={styles.agents} aria-label="Connected agents">
-          {engines.map((e) => (
-            <li key={e.id} className={styles.agent}>
-              <div className={styles.agentHead}>
-                <span
-                  className={`${styles.dot} ${e.present ? styles.dotOn : styles.dotOff}`}
-                  aria-hidden="true"
-                />
-                <span className={styles.agentName}>{engineName(e.id)}</span>
-                <span className={styles.agentState}>
-                  {e.present ? "installed" : "not found"}
-                </span>
-                {e.supports_new && (
-                  <span className={styles.newBadge}>can start new</span>
-                )}
-                <span className={styles.agentBin}>{e.bin ?? "—"}</span>
-              </div>
-              {/* NOT gated on `e.present`: that flag means "a binary is on PATH", and codex
-                  reports its quota from its own rollout store with no binary needed — gating
-                  on it hid the meter on exactly the host this was screenshotted on. Any engine
-                  reaching this list is already `is_present()` (binary OR store); `shell` has no
-                  row here at all because it is absent from `ENGINES`. */}
-              {byEngine.has(e.id) && (
-                <AgentUsageMeter
-                  row={byEngine.get(e.id)!}
-                  threshold={threshold}
-                  present={e.present}
-                  onSave={save}
-                  fieldValue={fieldValue}
-                  setDraft={setDraft}
-                  dropDraft={dropDraft}
-                  intended={intended}
-                  setIntent={(k, v) => {
-                    intent.current[k] = v;
-                  }}
-                />
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
-  );
-}
-
-/** One agent's meter + whichever inputs its source actually needs.
- *
- *  A `plan` agent gets no inputs at all — it reports a real quota against a real plan, and
- *  offering a "limit" box there would invite the operator to configure a number the agent
- *  already knows better. */
-function AgentUsageMeter({
-  row,
-  threshold,
-  present,
-  onSave,
-  fieldValue,
-  setDraft,
-  dropDraft,
-  intended,
-  setIntent,
-}: {
-  row: AgentUsageRow;
-  threshold: number;
-  /** Whether a binary was found on PATH — NOT whether there is usage to show. */
-  present: boolean;
-  onSave: (
-    p: {
-      engines: Record<string, { limit_tokens?: number; manual_used?: number }>;
-    },
-    values: Record<string, number>,
-  ) => void;
-  fieldValue: (key: string, stored: number) => string;
-  setDraft: Dispatch<SetStateAction<Record<string, string>>>;
-  /** Discard this field's in-progress text — never its outstanding claim. */
-  dropDraft: (key: string) => void;
-  /** The value this field was most recently asked to be — not what the snapshot renders. */
-  intended: (key: string, stored: number) => number;
-  setIntent: (key: string, value: number) => void;
-}) {
-  const pct = row.used_pct;
-  const t = tone(pct, threshold);
-  const note = stalenessNote(row);
-  const width = pct === null ? 0 : Math.max(0, Math.min(100, pct));
-
-  return (
-    <div className={styles.usage}>
-      <div className={styles.usageRow}>
-        <div
-          className={`${styles.meter} ${styles[`meter_${t}`]}`}
-          role="meter"
-          aria-valuenow={pct ?? undefined}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-label={`${row.engine} usage`}
-        >
-          <span className={styles.meterFill} style={{ width: `${width}%` }} />
-        </div>
-        <span className={`${styles.usagePct} ${styles[`pct_${t}`]}`}>
-          {pct === null ? "—" : `${Math.round(pct)}%`}
-        </span>
-        <span className={styles.usageSource}>{row.source}</span>
-      </div>
-      <p className={styles.usageCaption}>
-        {/* "codex · not found · 21% of its weekly plan" reads as a contradiction without this.
-            Both halves are true: the rollouts on this host record real usage, and the binary
-            isn't installed any more. Say which one the number came from. */}
-        {!present && pct !== null && row.source !== "manual" && (
-          <span className={styles.usageStale}>from its stored history · </span>
-        )}
-        {usageCaption(row)}
-        {note && <span className={styles.usageStale}> · {note}</span>}
-      </p>
-      {row.source !== "plan" && (
-        <div className={styles.usageInputs}>
-          <label className={styles.budgetField}>
-            Limit
-            <input
-              type="number"
-              min={0}
-              step={1000}
-              value={fieldValue(`${row.engine}:limit_tokens`, row.limit_tokens)}
-              placeholder="tokens"
-              className={styles.budgetTokens}
-              aria-label={`${row.engine} token limit`}
-              onChange={(e) => {
-                const v = e.currentTarget.value;
-                setDraft((d) => ({ ...d, [`${row.engine}:limit_tokens`]: v }));
-              }}
-              onBlur={(e) => {
-                const text = e.currentTarget.value;
-                const v = Math.round(Number(text) || 0);
-                if (
-                  v !==
-                    intended(`${row.engine}:limit_tokens`, row.limit_tokens) &&
-                  v >= 0
-                ) {
-                  setIntent(`${row.engine}:limit_tokens`, v);
-                  onSave(
-                    { engines: { [row.engine]: { limit_tokens: v } } },
-                    { [`${row.engine}:limit_tokens`]: v },
-                  );
-                } else {
-                  dropDraft(`${row.engine}:limit_tokens`);
-                }
-              }}
-            />
-          </label>
-          {row.source !== "tokens" && (
-            <label className={styles.budgetField}>
-              Used
-              <input
-                type="number"
-                min={0}
-                step={1000}
-                value={fieldValue(`${row.engine}:manual_used`, row.manual_used)}
-                placeholder="tokens"
-                className={styles.budgetTokens}
-                aria-label={`${row.engine} tokens used`}
-                onChange={(e) => {
-                  const v = e.currentTarget.value;
-                  setDraft((d) => ({ ...d, [`${row.engine}:manual_used`]: v }));
-                }}
-                onBlur={(e) => {
-                  const text = e.currentTarget.value;
-                  const v = Math.round(Number(text) || 0);
-                  if (
-                    v !==
-                      intended(`${row.engine}:manual_used`, row.manual_used) &&
-                    v >= 0
-                  ) {
-                    setIntent(`${row.engine}:manual_used`, v);
-                    onSave(
-                      { engines: { [row.engine]: { manual_used: v } } },
-                      { [`${row.engine}:manual_used`]: v },
-                    );
-                  } else {
-                    dropDraft(`${row.engine}:manual_used`);
-                  }
-                }}
-              />
-            </label>
-          )}
-        </div>
-      )}
     </div>
   );
 }
@@ -2450,8 +2004,20 @@ export function Settings() {
   // Canonical section from the URL (#956): /settings/:section. On desktop, bare /settings and
   // unknown sections replace-redirect to the first section; on a phone bare /settings IS the
   // index. State rides along every hop so the #155 back link survives.
-  const { tab } = useParams<{ tab: string }>();
+  const { tab: tabParam, agent } = useParams<{ tab: string; agent: string }>();
+  // `/settings/agents/:agent` (#1128) is the Defaults page or one agent's own page; both live in
+  // the AGENTS group, under the roster's URL.
+  const tab =
+    agent === undefined
+      ? tabParam
+      : agent === AGENT_DEFAULTS_SEGMENT
+        ? "agents-defaults"
+        : "agents";
+  const agentId =
+    agent !== undefined && agent !== AGENT_DEFAULTS_SEGMENT ? agent : null;
   const isMobile = useIsMobile();
+  // The crumb and the sidebar name an agent by its roster label.
+  useEngineRoster();
 
   useEffect(() => {
     let alive = true;
@@ -2469,6 +2035,16 @@ export function Settings() {
   const legacy = legacySettingsTarget(tab, location.hash);
   if (legacy) {
     return <Navigate to={legacy} replace state={location.state} />;
+  }
+  if (agent === undefined && tab === "agents-defaults") {
+    // Canonical form is /settings/agents/defaults.
+    return (
+      <Navigate
+        to={settingsPath("agents-defaults")}
+        replace
+        state={location.state}
+      />
+    );
   }
   if (tab === undefined && isMobile) {
     return <SettingsIndex returnTo={returnTo} />;
@@ -2498,10 +2074,10 @@ export function Settings() {
       {isMobile ? (
         <header className={styles.head}>
           <Link
-            to={SETTINGS_PATH}
+            to={agentId ? settingsPath("agents") : SETTINGS_PATH}
             state={location.state}
             className={styles.back}
-            aria-label="Back to settings"
+            aria-label={agentId ? "Back to agents" : "Back to settings"}
           >
             <ArrowLeft size={18} />
           </Link>
@@ -2519,13 +2095,15 @@ export function Settings() {
             </Link>
             <h1>Settings</h1>
           </header>
-          <SettingsNav active={section} />
+          <SettingsNav active={section} agentId={agentId} />
         </aside>
       )}
 
       <div className={isMobile ? styles.panel : styles.page}>
-        <p className={styles.crumb}>
-          {crumb} // <b>{meta.label}</b>
+        <p
+          className={`${styles.crumb} ${meta.group === "agents" ? styles.crumbWide : ""}`}
+        >
+          {crumb} // <b>{agentId ? engineLabel(agentId) : meta.label}</b>
         </p>
         {section === "appearance" && (
           <>
@@ -2618,9 +2196,8 @@ export function Settings() {
                 Terminal font
               </h3>
               <p className={styles.hint}>
-                The face every agent renders in — claude, opencode, codex, gemini,
-                antigravity, kimi and a plain shell all share one terminal, so this is one
-                choice, not one per engine. Faces this device doesn&rsquo;t have are greyed
+                The face every agent renders in — every agent and the plain shell share one
+                terminal, so this is one choice, not one per engine. Faces this device doesn&rsquo;t have are greyed
                 out rather than quietly falling back. Saved per device, like the size below.
               </p>
               <div
@@ -2950,7 +2527,9 @@ export function Settings() {
         {section === "ai-prompts" && <PromptsSettings />}
         {section === "ai-activity" && <AiActivityPanel />}
 
-        {section === "agents" && <ConnectedAgents />}
+        {section === "agents" &&
+          (agentId ? <AgentDetail id={agentId} /> : <AgentsRoster />)}
+        {section === "agents-defaults" && <AgentDefaultsPage />}
         {section === "security" && <SecurityPanel />}
         {section === "updates" && <UpdatesCard />}
         {section === "analytics" && <AnalyticsCard />}
@@ -2988,8 +2567,8 @@ export function Settings() {
               </p>
               <p className={styles.hint}>Command &amp; Code</p>
               <p className={styles.blurb}>
-                The mobile-first organizer for your AI-coding sessions — claude,
-                opencode, codex, gemini, antigravity and kimi, all in one place.
+                The mobile-first organizer for your AI-coding sessions — every agent you
+                run, all in one place.
               </p>
               <dl className={styles.meta}>
                 <dt>Version</dt>

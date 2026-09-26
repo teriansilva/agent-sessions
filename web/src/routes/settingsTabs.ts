@@ -12,6 +12,7 @@ export const SETTINGS_PATH = "/settings";
 export const SETTINGS_GROUPS = [
   { id: "general", label: "General" },
   { id: "ai", label: "AI" },
+  { id: "agents", label: "Agents" },
   { id: "system", label: "System" },
   { id: "about", label: "About" },
 ] as const;
@@ -29,7 +30,10 @@ export const SETTINGS_SECTIONS = [
   { id: "ai-playbooks", label: "Checklists", group: "ai" },
   { id: "ai-prompts", label: "Prompts", group: "ai" },
   { id: "ai-activity", label: "Activity", group: "ai" },
-  { id: "agents", label: "Agents & usage", group: "system" },
+  // AGENTS (#853 P4, #1128): the roster keeps the `/settings/agents` URL it had as "Agents &
+  // usage"; each agent's own page is `/settings/agents/<id>` (`agentPath`), not a registry entry.
+  { id: "agents", label: "Roster", group: "agents" },
+  { id: "agents-defaults", label: "Defaults", group: "agents" },
   { id: "security", label: "Security", group: "system" },
   { id: "updates", label: "Updates", group: "system" },
   { id: "analytics", label: "Usage analytics", group: "system" },
@@ -62,12 +66,28 @@ export function settingsGroup(id: SettingsGroupId) {
   return SETTINGS_GROUPS.find((g) => g.id === id)!;
 }
 
+/** Sections whose URL is not simply `/settings/<id>`. Defaults lives UNDER the roster
+ *  (`/settings/agents/defaults`), beside each agent's own page. */
+const SECTION_PATHS: Partial<Record<SettingsSectionId, string>> = {
+  "agents-defaults": `${SETTINGS_PATH}/agents/defaults`,
+};
+
 /** The URL of a section, or of the Settings root (`/settings`) when none is given. `hash` may be
  *  passed with or without its leading `#`. */
 export function settingsPath(id?: SettingsSectionId, hash?: string): string {
-  const base = id ? `${SETTINGS_PATH}/${id}` : SETTINGS_PATH;
+  const base = id
+    ? (SECTION_PATHS[id] ?? `${SETTINGS_PATH}/${id}`)
+    : SETTINGS_PATH;
   if (!hash) return base;
   return `${base}${hash.startsWith("#") ? hash : `#${hash}`}`;
+}
+
+/** The second segment under `/settings/agents/` that is the Defaults page, not an agent id. */
+export const AGENT_DEFAULTS_SEGMENT = "defaults";
+
+/** One agent's own page (#853 P4): `/settings/agents/<id>`. */
+export function agentPath(engineId: string): string {
+  return `${SETTINGS_PATH}/agents/${encodeURIComponent(engineId)}`;
 }
 
 /** The hash that deep-links one prompt row on the Prompts page: `#prompt-<id>`. */

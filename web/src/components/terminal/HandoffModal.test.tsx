@@ -8,10 +8,11 @@ import {
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
+import { ConfigCtx } from "../../app/config";
 import { api, ApiError } from "../../lib/api";
 import { HandoffModal } from "./HandoffModal";
 import rosterFixture from "../../test/roster.fixture.json";
-import type { EngineInfo } from "../../types/api";
+import type { AppConfig, EngineInfo } from "../../types/api";
 
 // Hand-off modal (#597, Phase 1): tiles come from /api/engines' supports_seed_start (the
 // server-shared capability source), prepare backs the preview, commit navigates to the
@@ -631,3 +632,90 @@ test("toggling the source reference asks before discarding a dirty edit", async 
     screen.getByRole("checkbox", { name: /reference the source session/i }),
   ).not.toBeChecked();
 });
+
+// ---- the stored default agent (#1128) ---------------------------------------------------------------
+
+function renderWithDefault(defaultEngine: string) {
+  vi.mocked(api.engines).mockResolvedValue({
+    engines: (rosterFixture.engines as EngineInfo[]).filter((e) =>
+      ["claude", "codex", "gemini", "kimi", "shell"].includes(e.id),
+    ),
+  } as never);
+  const config = {
+    csrf: "x",
+    new_session_engines: [],
+    terminal_backend: "ws",
+    agent_defaults: { default_engine: defaultEngine, bypass: true },
+  } as AppConfig;
+  return render(
+    <ConfigCtx.Provider value={config}>
+      <MemoryRouter>
+        <HandoffModal
+          sessionId="claude:11111111-1111-1111-1111-111111111111"
+          engine="claude"
+          title="Fix the auth race"
+          onClose={() => {}}
+        />
+      </MemoryRouter>
+    </ConfigCtx.Provider>,
+  );
+}
+
+test("the stored default agent is the default target when it can take a handoff (#1128)", async () => {
+  renderWithDefault("kimi");
+  const kimi = await screen.findByRole("radio", { name: /kimi/i });
+  await waitFor(() => expect(kimi).toHaveAttribute("aria-checked", "true"));
+});
+
+test("a config refresh while the dialog is open never swaps the chosen target (Hermes on #1163)", async () => {
+  const view = renderWithDefault("kimi");
+  const codex = await screen.findByRole("radio", { name: /codex/i });
+  await waitFor(() =>
+    expect(screen.getByRole("radio", { name: /kimi/i })).toHaveAttribute("aria-checked", "true"),
+  );
+  await userEvent.click(codex);
+  await waitFor(() => expect(codex).toHaveAttribute("aria-checked", "true"));
+  const discoveries = vi.mocked(api.engines).mock.calls.length;
+  // A Defaults save elsewhere lands: the stored default is now gemini.
+  view.rerender(
+    <ConfigCtx.Provider
+      value={
+        {
+          csrf: "x",
+          new_session_engines: [],
+          terminal_backend: "ws",
+          agent_defaults: { default_engine: "gemini", bypass: true },
+        } as AppConfig
+      }
+    >
+      <MemoryRouter>
+        <HandoffModal
+          sessionId="claude:11111111-1111-1111-1111-111111111111"
+          engine="claude"
+          title="Fix the auth race"
+          onClose={() => {}}
+        />
+      </MemoryRouter>
+    </ConfigCtx.Provider>,
+  );
+  await new Promise((r) => setTimeout(r, 50));
+  expect(vi.mocked(api.engines).mock.calls.length).toBe(discoveries);
+  expect(screen.getByRole("radio", { name: /codex/i })).toHaveAttribute("aria-checked", "true");
+});
+
+test.each([
+  // Not defaulting to the source is by design, so it is not announced as an unavailable default.
+  ["it is the source", "claude", false],
+  ["it cannot take a handoff", "gemini", true],
+  ["it is not loaded at all", "retired-agent", true],
+])(
+  "the default target falls back to today's rule when %s, and says so only when it is unavailable (#1128)",
+  async (_why, stored, announced) => {
+    renderWithDefault(stored);
+    const codex = await screen.findByRole("radio", { name: /codex/i });
+    await waitFor(() => expect(codex).toHaveAttribute("aria-checked", "true"));
+    const notice = screen.queryByText(/your default, .* handoffs use .* until it is/i);
+    if (announced) expect(notice).toBeInTheDocument();
+    else expect(screen.queryByText(/your default/i)).toBeNull();
+  },
+);

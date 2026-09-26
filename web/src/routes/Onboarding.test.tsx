@@ -345,7 +345,7 @@ test("tour mode shows the slideshow and Done closes it", async () => {
       </ConfigCtx.Provider>
     </MemoryRouter>,
   );
-  expect(screen.getByText(/six engines, one deck/i)).toBeInTheDocument();
+  expect(screen.getByText(/every agent, one deck/i)).toBeInTheDocument();
   expect(screen.getByText("1 / 10")).toBeInTheDocument();
   // 10 slides (#971 refresh): Mission control, then Files/git/editing and Templates, then the rest.
   const next = () => userEvent.click(screen.getByRole("button", { name: /^next$/i }));

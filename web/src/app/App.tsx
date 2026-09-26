@@ -660,6 +660,8 @@ function Layout() {
                   same component, which replace-redirects to the first tab (state preserved). */}
                   <Route path="/settings" element={<Settings />} />
                   <Route path="/settings/:tab" element={<Settings />} />
+                  {/* #1128: an agent's own page, and the agent Defaults, under the roster. */}
+                  <Route path="/settings/agents/:agent" element={<Settings />} />
                   <Route path="/overview" element={<Overview />} />
                   <Route path={MISSION_PATH} element={<MissionControl />} />
                   <Route path={LEGACY_MISSION_PATH} element={<LegacyMissionRedirect />} />

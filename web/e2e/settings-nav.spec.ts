@@ -224,7 +224,7 @@ test.describe("phone", () => {
       [settingsPath(), "Settings"],
       [settingsPath("ai-mission-control"), "Orchestrator"],
       [settingsPath("ai-endpoint"), "Connection"],
-      [settingsPath("agents"), "Connected agents"],
+      [settingsPath("agents"), "Agents"],
     ];
     for (const theme of ["dark", "light"]) {
       // localStorage needs a real origin (about:blank throws), so land on the app first.

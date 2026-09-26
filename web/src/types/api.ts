@@ -1025,6 +1025,11 @@ export interface AppConfig {
    *  deleted or archived default degrades silently rather than erroring. "" / absent = no
    *  preference. Supersedes `default_project`. */
   default_project_id?: string;
+  /** The agent defaults for NEW sessions (#853 P4, #1128). `default_engine` is the operator's
+   *  choice as stored — it may name an agent that is not installed now, which is why every picker
+   *  resolves it through `resolveDefault` rather than reading it directly. `bypass` is the new-
+   *  session form's starting value; each session can still change it. Absent on an older server. */
+  agent_defaults?: AgentDefaults;
   /** Legacy preferred new-session start directory (#335 Phase 2), superseded by
    *  `default_project_id`. Retained as the fallback for a start directory no project has adopted
    *  (the migration cannot map it to an id), and as Onboarding's seed. With a project selected
@@ -1225,6 +1230,46 @@ export interface AgentUsageResponse {
   agents: AgentUsageRow[];
   budgets: AgentBudgets;
   refreshing?: boolean;
+}
+
+/** `/api/config.agent_defaults` and the `agent_defaults` block of `POST /api/prefs` (#1128). */
+export interface AgentDefaults {
+  default_engine: string | null;
+  bypass: boolean;
+}
+
+/** `GET /api/engines/{id}` (#853 P4): one engine as its manifest declares it — the Agents detail
+ *  page. Read-only; 404 for an id the loaded roster does not have. */
+export interface EngineDetail {
+  id: string;
+  label: string;
+  publisher: string;
+  version: string | null;
+  contract: number | string;
+  /** `in-tree` (shipped with BattleLab) or `local`. */
+  source: string;
+  kind: string;
+  runtime: string;
+  binary: { name: string; env_var: string | null; search_paths: string[] };
+  /** How the binary was found (or why not): `state` is e.g. `adopted`, `absent`, `refused`. */
+  provenance: {
+    state: string;
+    via: string | null;
+    path: string | null;
+    note: string | null;
+  };
+  store: {
+    root: string;
+    resolved: string | null;
+    layout: string;
+    read_only: boolean;
+  } | null;
+  launch: { resume: string; new: string | null; admission: string | null };
+  transcript: { kind: string | null; strict: boolean };
+  usage: { source: string; kind: string | null };
+  capabilities: Record<string, boolean>;
+  models: { id: string; context_window: number | null; aliases: string[] }[];
+  maintenance: string[];
 }
 
 export interface EnginesResponse {
