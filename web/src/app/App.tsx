@@ -47,6 +47,7 @@ import { OverviewPrefsProvider } from "./OverviewPrefsContext";
 import { OverviewSessionsProvider } from "./OverviewSessionsContext";
 import { SessionsProvider } from "./SessionsContext";
 import { WorkspaceProvider } from "./WorkspaceContext";
+import { EngineRosterProvider } from "./EngineRosterProvider";
 import { useSessionsStore } from "./sessionsStore";
 import { useAgentCounts } from "./useAgentCounts";
 import {
@@ -768,6 +769,9 @@ export default function App() {
   );
   return (
     <ConfigProvider>
+      {/* The engine roster (#853 P4): every agent-facing surface reads it; loaded once, above
+          the router, so a navigation never refetches it. */}
+      <EngineRosterProvider>
       <ThemeProvider>
         <AccentProvider>
           <TermSizeProvider>
@@ -793,6 +797,7 @@ export default function App() {
           </TermSizeProvider>
         </AccentProvider>
       </ThemeProvider>
+      </EngineRosterProvider>
     </ConfigProvider>
   );
 }

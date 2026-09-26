@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { mockRoster } from "./roster";
 
 // #636: the plain-terminal "shell" engine. Real browser, backend mocked so the landing renders
 // without a server. Runs on both the desktop and mobile Playwright projects.
@@ -33,6 +34,7 @@ async function mockBackend(
   await page.route("**/api/version", (r) =>
     r.fulfill({ json: { version: "test" } }),
   );
+  await mockRoster(page);
 }
 
 test("shell Start opens a bare-uuid /s/shell/<uuid>, not a new- placeholder (#636)", async ({

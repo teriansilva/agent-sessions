@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { mockRoster } from "./roster";
 
 // #597 follow-up: the terminal header's "Session brief" (Recap) and "Hand off…" are mirrored
 // into the sidebar row's ⋯ context menu, so both are reachable without opening the session
@@ -114,6 +115,7 @@ async function setup(page: Page, project: string): Promise<void> {
     }),
   );
 
+  await mockRoster(page, { only: ["claude", "codex", "gemini", "shell"] }); // the manifest-generated roster (#853 P4)
   await page.goto("/");
   // Desktop renders the sidebar as a grid column; mobile hides it behind the drawer toggle.
   if (project === "mobile") {

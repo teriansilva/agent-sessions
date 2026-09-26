@@ -10,6 +10,7 @@ import { engineBadge, relTime } from "../../lib/format";
 import type { PulseNotification } from "../../types/api";
 import styles from "./NotificationBell.module.css";
 import { MISSION_PATH } from "../../lib/missionLink";
+import { useEngineRoster } from "../../app/engineRoster";
 
 const POLL_MS = 60_000;
 
@@ -31,6 +32,9 @@ function targetPath(n: PulseNotification): string {
  *  the whole feature is that the operator can intervene in one tap, not that they read a
  *  summary and go hunting. */
 export function NotificationBell() {
+  // Re-render when the engine roster lands or changes (#853 P4): this renders agent names,
+  // badges or colours, which come from the roster, not from a client-side list.
+  useEngineRoster();
   const [items, setItems] = useState<PulseNotification[]>([]);
   const [unread, setUnread] = useState(0);
   /** Recently decided rows, projected back as history with NO controls (#852). Bounded by the

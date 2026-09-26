@@ -78,6 +78,7 @@ import { HeadActions, type HeadAction } from "./HeadActions";
 import { SessionRecapModal } from "./SessionRecapModal";
 import styles from "./Terminal.module.css";
 import { missionLink } from "../../lib/missionLink";
+import { isAgent, useEngineRoster } from "../../app/engineRoster";
 
 // #554: how long the auto copy-on-select "Copied" toast stays up (matches the CSS fade).
 const COPIED_TOAST_MS = 1200;
@@ -186,6 +187,9 @@ export function Terminal({
   /** React 19 passes `ref` as an ordinary prop; the handle is `TerminalHandle`. */
   ref?: Ref<TerminalHandle>;
 }) {
+  // Re-render when the engine roster lands or changes (#853 P4): this renders agent names,
+  // badges or colours, which come from the roster, not from a client-side list.
+  useEngineRoster();
   const hostRef = useRef<HTMLDivElement>(null);
   const fabRef = useRef<HTMLButtonElement>(null);
   // Halts an in-flight touch-momentum glide (set by attachTouchScroll). The FAB's jump-to-
@@ -1642,7 +1646,9 @@ export function Terminal({
   const [handoffTrigger, setHandoffTrigger] = useState<HTMLElement | null>(
     null,
   );
-  const canHandoff = engine !== "shell" && !actionNative.startsWith("new-");
+  // An engine with no agent behind it (the plain shell, `kind = "terminal"` in its manifest —
+  // #853 P4) has nothing to hand off; read from the roster, never an id.
+  const canHandoff = isAgent(engine) && !actionNative.startsWith("new-");
   const scrollToTail = useCallback(() => {
     // Kill any in-flight touch-momentum glide FIRST: without this, a tap on the FAB while the
     // scroll-up fling is still decaying scrolls to the tail for one frame and is then dragged

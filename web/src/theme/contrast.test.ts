@@ -262,3 +262,42 @@ for (const [name, selector] of Object.entries(THEMES)) {
     }
   });
 }
+
+// --- engine accents (#853 P4) ---
+// A chip/badge/border colour, not body text: held to >=3:1 (WCAG non-text contrast) on every
+// ground a chip sits on, and never equal to a status hue or the brand accent — an agent's colour
+// must not read as "healthy", "down" or "clickable".
+const ENGINE_ACCENTS = ["amber", "teal", "green", "blue", "lime", "magenta", "slate"];
+
+for (const [name, selector] of Object.entries(THEMES)) {
+  test(`${name}: every engine accent reads on the chip grounds (>=3:1)`, () => {
+    const root = block(":root {");
+    const themed = block(selector);
+    const pick = (n: string) => token(themed.includes(`--${n}:`) ? themed : root, n);
+    for (const a of ENGINE_ACCENTS) {
+      for (const ground of ["bg-1", "bg-2"]) {
+        expect(
+          ratio(pick(`engine-${a}`), pick(ground)),
+          `${name} --engine-${a} on --${ground}`,
+        ).toBeGreaterThanOrEqual(3);
+      }
+    }
+  });
+
+  test(`${name}: no engine accent is a status hue or the brand accent`, () => {
+    const root = block(":root {");
+    const themed = block(selector);
+    const pick = (n: string) => token(themed.includes(`--${n}:`) ? themed : root, n);
+    const reserved = [
+      "status-up",
+      "status-degraded",
+      "status-down",
+      "status-unknown",
+      "status-draft",
+      "accent",
+    ].map((n) => pick(n).toLowerCase());
+    for (const a of ENGINE_ACCENTS) {
+      expect(reserved, `${name} --engine-${a}`).not.toContain(pick(`engine-${a}`).toLowerCase());
+    }
+  });
+}

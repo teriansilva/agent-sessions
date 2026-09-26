@@ -34,40 +34,10 @@ export function displayProjectName(
   return names?.[cwd]?.trim() || shortCwd(cwd);
 }
 
-export function engineBadge(engine: string): string {
-  return engine === "opencode"
-    ? "oc"
-    : engine === "codex"
-      ? "cx"
-      : engine === "gemini"
-        ? "gm"
-        : engine === "antigravity"
-          ? "ag" // agy
-          : engine === "kimi"
-            ? "ki" // Kimi Code (#714)
-            : engine === "shell"
-              ? "sh" // plain terminal, no agent (#636)
-              : "cc";
-}
-
-/** Per-engine accent for the overview chips (tuned for the dark HUD canvas). */
-export function engineColor(engine: string): string {
-  return engine === "opencode"
-    ? "#4fd1c5" // teal
-    : engine === "codex"
-      ? "#7ee787" // green
-      : engine === "gemini"
-        ? "#7aa2ff" // blue
-        : engine === "antigravity"
-          ? // lime — agy. It was violet until #948 removed hard-coded purple from the app; lime is
-            // the widest gap left between codex green and claude amber.
-            "#c5e15a"
-          : engine === "kimi"
-            ? "#f472b6" // magenta — Kimi Code (#714)
-            : engine === "shell"
-              ? "#8b98a5" // neutral slate — a plain terminal, deliberately NOT a vivid "agent" hue
-              : "#d98a5c"; // claude — amber
-}
+// Engine appearance comes from the roster (#853 P4) — the three per-engine ladders that lived
+// here (badge, colour, name; Kimi had no name branch) are gone. Re-exported so existing imports
+// keep working; a component that renders them subscribes with `useEngineRoster()`.
+export { engineBadge, engineColor, engineName } from "../app/engineRoster";
 
 /** Deterministic per-project accent (#285): FNV-1a over the project key (entity id, or the
  *  cwd for a folder ref) → golden-angle hue. `light-dark()` picks the theme-appropriate
@@ -81,23 +51,6 @@ export function projectColor(key: string): string {
   }
   const hue = Math.round(((h >>> 0) * 137.508) % 360);
   return `light-dark(hsl(${hue} 55% 40%), hsl(${hue} 60% 58%))`;
-}
-
-/** Human display name for an engine id (sidebar uses short badges; cards want the name). */
-export function engineName(engine: string): string {
-  return engine === "opencode"
-    ? "opencode"
-    : engine === "codex"
-      ? "codex"
-      : engine === "gemini"
-        ? "gemini"
-        : engine === "antigravity"
-          ? "antigravity"
-          : engine === "claude"
-            ? "claude"
-            : engine === "shell"
-              ? "shell"
-              : engine;
 }
 
 /** Humanize a byte count to a compact GB/MB string (binary units). */

@@ -93,6 +93,8 @@ export interface CompactMeasurement {
 }
 export interface CompactJob {
   id: string;
+  /** The engine whose store this job compacts (#853 P4). Absent from an older server. */
+  engine?: string;
   state:
     | "checking"
     | "vacuum"
@@ -113,6 +115,8 @@ export interface CompactJob {
 }
 export interface CompactInfo {
   compact: CompactMeasurement;
+  /** Every engine whose store can be compacted (#853 P4). Absent from an older server. */
+  targets?: string[];
   job: CompactJob | null;
   runner: { job: string; started_at: number | null } | null;
 }
@@ -1173,15 +1177,20 @@ export const api = {
   // and share one server-side runner, so a submission while any maintenance job runs is a 409
   // (`ApiError.status`) whose body names the running job — refused, not queued.
   /** Poll a known job, or discover the latest. Unknown/replaced/restarted ids return 404. */
-  compactInfo: (jobId?: string) =>
-    getJson<CompactInfo>(
-      `/api/maintenance/compact${jobId ? `?job_id=${encodeURIComponent(jobId)}` : ""}`,
-    ),
-  compact: () =>
+  // `engine` names WHICH store to compact (#853 P3/P4: every engine whose manifest selects the
+  // sqlite-vacuum kind is a target); omitted, the server uses its default target.
+  compactInfo: (jobId?: string, engine?: string) => {
+    const q = new URLSearchParams();
+    if (jobId) q.set("job_id", jobId);
+    if (engine) q.set("engine", engine);
+    const qs = q.toString();
+    return getJson<CompactInfo>(`/api/maintenance/compact${qs ? `?${qs}` : ""}`);
+  },
+  compact: (engine?: string) =>
     mutateJson<Pick<CompactInfo, "job" | "runner">>(
       "POST",
       "/api/maintenance/compact",
-      { confirm: true },
+      engine ? { confirm: true, engine } : { confirm: true },
     ),
   /** What a cache prune would remove now, per category, plus the runner's busy state. */
   pruneInfo: () =>

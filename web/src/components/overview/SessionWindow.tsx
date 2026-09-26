@@ -9,6 +9,8 @@ import type { TemplateDraft } from "../terminal/Compose";
 import { Terminal } from "../terminal/Terminal";
 import styles from "./sessionWindow.module.css";
 import { clampRect, type Rect, type Size } from "./workspace";
+import { useEngineRoster } from "../../app/engineRoster";
+import { RuntimeGate } from "../terminal/RuntimeGate";
 
 /** One floating session window on the Overview map (#208).
  *
@@ -81,6 +83,9 @@ export const SessionWindow = memo(function SessionWindow({
    *  row from. The ⋯ stays VISIBLE and disabled with this reason rather than vanishing. */
   menuDisabledReason?: string;
 }) {
+  // Re-render when the engine roster lands or changes (#853 P4): this renders agent names,
+  // badges or colours, which come from the roster, not from a client-side list.
+  useEngineRoster();
   const [dragging, setDragging] = useState(false);
   // The template picker and "Save as template" leave through the ROUTER, never a document
   // navigation: a full unload could abort the draft flush the composer issues on the way out —
@@ -242,27 +247,29 @@ export const SessionWindow = memo(function SessionWindow({
         </span>
       </div>
       <div className={styles.body}>
-        <Terminal
-          engine={engine}
-          id={id}
-          // Transport (`engine`/`id`) frozen, ACTIONS follow the converge — the same two
-          // identities the record keeps, handed to the pane under the name it already uses.
-          rowKey={actionKey}
-          fresh={fresh}
-          // The converge lands on the WORKSPACE, never on this component's own identity: the
-          // pane must keep its frozen `key` or React would remount it and tear down the socket
-          // of a session that just launched (#127). What changes is the record's `actionKey`.
-          onReconcileId={(sid) => onReconcile(wkey, sid)}
-          onRole={(r) => onRole(wkey, r)}
-          onOpenGallery={onOpenGallery}
-          onSaveAsTemplate={onSaveAsTemplate}
-          // Decision 3 (#208): the Files panel is SessionView's sibling pane, not part of the
-          // terminal, so it does not come into a window. The trigger stays VISIBLE and disabled
-          // with the reason — the same treatment a cwd-less session gets (#783) — rather than
-          // vanishing, which would read as a glitch.
-          onToggleFiles={() => {}}
-          filesDisabledReason="Open this session full screen to browse its files"
-        />
+        <RuntimeGate engine={engine}>
+          <Terminal
+            engine={engine}
+            id={id}
+            // Transport (`engine`/`id`) frozen, ACTIONS follow the converge — the same two
+            // identities the record keeps, handed to the pane under the name it already uses.
+            rowKey={actionKey}
+            fresh={fresh}
+            // The converge lands on the WORKSPACE, never on this component's own identity: the
+            // pane must keep its frozen `key` or React would remount it and tear down the socket
+            // of a session that just launched (#127). What changes is the record's `actionKey`.
+            onReconcileId={(sid) => onReconcile(wkey, sid)}
+            onRole={(r) => onRole(wkey, r)}
+            onOpenGallery={onOpenGallery}
+            onSaveAsTemplate={onSaveAsTemplate}
+            // Decision 3 (#208): the Files panel is SessionView's sibling pane, not part of the
+            // terminal, so it does not come into a window. The trigger stays VISIBLE and disabled
+            // with the reason — the same treatment a cwd-less session gets (#783) — rather than
+            // vanishing, which would read as a glitch.
+            onToggleFiles={() => {}}
+            filesDisabledReason="Open this session full screen to browse its files"
+          />
+        </RuntimeGate>
       </div>
       <button
         type="button"

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 
-import { createScrollEraseStripper, WIPE_REPAINT_ENGINES } from "./scrollErase";
+import { resetRoster, wipesOnRepaint } from "../app/engineRoster";
+import { createScrollEraseStripper } from "./scrollErase";
 
 /** #600 (codex) / #1038 (kimi): the live-stream CSI 3J strip, extracted from Terminal.tsx with
  *  its across-chunk carry. The server applies the identical filter (scrollback.sanitize_live_output);
@@ -8,12 +9,19 @@ import { createScrollEraseStripper, WIPE_REPAINT_ENGINES } from "./scrollErase";
 
 const WIPE = "\x1b[3J";
 
-describe("WIPE_REPAINT_ENGINES", () => {
+describe("which engines wipe on repaint comes from the roster (#853 P4)", () => {
   test("codex and kimi strip; every other engine passes through", () => {
-    expect([...WIPE_REPAINT_ENGINES].sort()).toEqual(["codex", "kimi"]);
-    for (const other of ["claude", "opencode", "gemini", "antigravity", "shell"]) {
-      expect(WIPE_REPAINT_ENGINES.has(other)).toBe(false);
-    }
+    // From the manifests' `terminal.repaint` via the generated roster fixture — not a client set.
+    const all = ["claude", "opencode", "codex", "gemini", "antigravity", "kimi", "shell"];
+    expect(all.filter(wipesOnRepaint)).toEqual(["codex", "kimi"]);
+  });
+
+  test("an unknown engine, or no roster yet, passes through untouched", () => {
+    const s = createScrollEraseStripper();
+    const bytes = new TextEncoder().encode(`${WIPE}x`);
+    expect(s.strip("zeta", true, bytes)).toEqual(bytes);
+    resetRoster();
+    expect(s.strip("codex", true, bytes)).toEqual(bytes);
   });
 });
 

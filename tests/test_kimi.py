@@ -432,23 +432,24 @@ def test_reconcile_ignores_new_session_in_another_cwd(kimi_home):
 
 
 def test_reconcile_engines_lockstep_with_frontend():
-    """#454 guard: a provider with ``new_session_reconciles`` missing from the frontend's
-    ``RECONCILE_ENGINES`` mints a bare UUID and the launch 4404s. Assert the backend flag matches
-    the checked-in frontend set."""
-    src = (
-        __import__("pathlib").Path(__file__).resolve().parents[1]
-        / "web"
-        / "src"
-        / "lib"
-        / "newSession.ts"
-    ).read_text(encoding="utf-8")
+    """#454 guard, made structural by #853 P4: the frontend keeps NO reconcile set of its own — it
+    asks the roster (`session_id.mint`, served from each manifest) — so a client list can no longer
+    drift from the server's `new_session_reconciles`. Pin both halves: `newSession.ts` has no
+    engine set and reads `mintsOwnId`, and the roster the web tests render with agrees with the
+    server for every engine."""
+    import json
+    from pathlib import Path
+
+    web = Path(__file__).resolve().parents[1] / "web" / "src"
+    src = (web / "lib" / "newSession.ts").read_text(encoding="utf-8")
+    assert "RECONCILE_ENGINES" not in src and "new Set(" not in src
+    assert "mintsOwnId" in src
+    fixture = json.loads((web / "test" / "roster.fixture.json").read_text(encoding="utf-8"))
+    web_adopt = {e["id"] for e in fixture["engines"] if e["session_id"]["mint"] == "adopt"}
     backend = {
         p.engine_id for p in engines.all_providers() if getattr(p, "new_session_reconciles", False)
     }
-    for engine in backend:
-        assert (
-            f'"{engine}"' in src.split("RECONCILE_ENGINES")[1].split(")")[0]
-        ), f"{engine} reconciles server-side but is missing from RECONCILE_ENGINES"
+    assert web_adopt == backend
 
 
 # --- archive ----------------------------------------------------------------------------------

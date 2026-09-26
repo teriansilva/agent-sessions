@@ -532,7 +532,7 @@ test("agent mode: one cluster per engine, labelled + colored by engine", () => {
     project: "opencode",
     count: 1,
   });
-  expect(colorOf(groups["group:agent:opencode"])).toBe("#4fd1c5"); // engine accent flows to the cue
+  expect(colorOf(groups["group:agent:opencode"])).toBe("var(--engine-teal)"); // accent → the cue
 });
 
 test("agent mode has no hierarchy edges — every engine group is a root (#424)", () => {

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { mockRoster } from "./roster";
 
 // #559: the scroll-to-bottom (↓) FAB reached parity with codex only for sessions where xterm keeps
 // its own scrollback. claude (and any mouse-tracking TUI) owns its OWN scroll — xterm's buffer never
@@ -54,6 +55,7 @@ test("mouse-tracking session (desktop): wheel-up reveals the ↓ FAB; clicking i
 }, testInfo) => {
   test.skip(testInfo.project.name === "mobile", "desktop wheel path");
   await page.addInitScript(fakeWs(MOUSE_TRACKING));
+  await mockRoster(page); // the manifest-generated roster (#853 P4)
   await page.goto("/s/claude/mtrack-fab-desktop");
   await waitForPaint(page);
 
@@ -87,6 +89,7 @@ test("mouse-tracking session (mobile): a scroll-up drag reveals the ↓ FAB; tap
 }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "touch path");
   await page.addInitScript(fakeWs(MOUSE_TRACKING));
+  await mockRoster(page); // the manifest-generated roster (#853 P4)
   await page.goto("/s/claude/mtrack-fab-mobile");
   await waitForPaint(page);
 

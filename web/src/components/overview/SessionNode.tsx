@@ -11,6 +11,7 @@ import {
 import type { SessionNodeData } from "../../lib/overviewGraph";
 import { HudFrame } from "../hud/HudFrame";
 import { useOverviewActions } from "./overviewActions";
+import { useEngineRoster } from "../../app/engineRoster";
 
 /** A session chip inside a project cluster — at information parity with the sidebar list row
  *  (#424 Phase 4): a working/idle LED, the title, an intervention "!" badge, the AI summary,
@@ -25,6 +26,9 @@ import { useOverviewActions } from "./overviewActions";
  *  session menu, and it must never open a window or start a drag — hence `nodrag` and a stopped
  *  click. Right-click anywhere on the chip opens the same menu (the canvas's `onNodeContextMenu`). */
 export function SessionNode({ data }: NodeProps) {
+  // Re-render when the engine roster lands or changes (#853 P4): this renders agent names,
+  // badges or colours, which come from the roster, not from a client-side list.
+  useEngineRoster();
   const { session, active, working, selected, folderLabel, opened } =
     data as SessionNodeData;
   const { openSessionMenu } = useOverviewActions();

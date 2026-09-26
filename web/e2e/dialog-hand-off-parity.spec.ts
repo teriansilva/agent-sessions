@@ -18,6 +18,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { missionRow } from "./mission-console";
 import { setupBench } from "./terminal/harness";
+import { mockRoster } from "./roster";
 
 const ENGINE = "claude";
 const UUID = "cccccccc-1111-2222-3333-444444444444";
@@ -221,6 +222,7 @@ for (const theme of ["dark", "light"] as const) {
     test.setTimeout(90_000);
     const mobile = testInfo.project.name === "mobile";
     await stub(page, theme);
+    await mockRoster(page, { only: ["claude", "codex"] }); // the manifest-generated roster (#853 P4)
     await page.goto("/");
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
 
@@ -269,6 +271,7 @@ for (const theme of ["dark", "light"] as const) {
     await page.keyboard.press("Escape");
     await expect(move).toBeHidden();
 
+    await mockRoster(page, { only: ["claude", "codex"] }); // the manifest-generated roster (#853 P4)
     await page.goto("/settings/projects");
     await page.getByRole("button", { name: "Rename ~/proj" }).click();
     const rename = page.getByRole("dialog", { name: "Rename project" });

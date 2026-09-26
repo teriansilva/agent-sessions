@@ -5,6 +5,7 @@ import { MAP_PATH, useMapWindows } from "../app/workspaceWindows";
 import { FolderPickerModal } from "../components/FolderPickerModal";
 import { api } from "../lib/api";
 import { mintNewSessionId } from "../lib/newSession";
+import { engineName, mintsOwnId, useEngineRoster } from "../app/engineRoster";
 import { owningProjectId } from "../lib/projectTree";
 import { shortCwd } from "../lib/format";
 import type { ProjectEntity } from "../types/api";
@@ -33,6 +34,7 @@ export function NewSessionLanding() {
   const [engineChoice, setEngineChoice] = useState("");
   const [bypass, setBypass] = useState(true);
 
+  const roster = useEngineRoster();
   const engines = config?.new_session_engines ?? [];
   const engine = engineChoice || engines[0] || "";
 
@@ -115,11 +117,15 @@ export function NewSessionLanding() {
     }
   };
 
-  const canStart = Boolean(engine && cwd);
+  // Nothing launches on a guessed capability (#853 P4): until the roster says whether this engine
+  // pins or adopts its id, Start waits. `roster` is read so this re-evaluates when it lands.
+  const mintKnown = roster.loaded && mintsOwnId(engine) !== undefined;
+  const canStart = Boolean(engine && cwd && mintKnown);
 
   const start = () => {
     if (!canStart) return;
     const id = mintNewSessionId(engine);
+    if (!id) return;
     const fresh = { cwd, bypass };
     // Back to the map as a window, when that is where this came from AND the workspace has room
     // under the operator's cap. The request is queued on the workspace and drained by the canvas
@@ -174,7 +180,7 @@ export function NewSessionLanding() {
             >
               {engines.map((id) => (
                 <option key={id} value={id}>
-                  {id}
+                  {engineName(id)}
                 </option>
               ))}
             </select>

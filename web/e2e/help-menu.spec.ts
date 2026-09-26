@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { DOCS_HOME_URL } from "../src/lib/links";
+import { mockRoster } from "./roster";
 
 /** Help — in the operator menu since #1085, the `?` menu before (#987) — and the setup wizard's docs
  *  links, in a real browser (desktop + mobile).
@@ -63,6 +64,7 @@ test("the operator menu carries Settings and Help: first item focused, arrows mo
   page,
 }) => {
   await setup(page);
+  await mockRoster(page, { only: ["claude"] }); // the manifest-generated roster (#853 P4)
   await page.goto("/");
   const t = trigger(page);
   await expect(t).toHaveAttribute("aria-haspopup", "menu");
@@ -102,6 +104,7 @@ test("a second click closes it, a double-click does not leave it open, and an ou
   page,
 }) => {
   await setup(page);
+  await mockRoster(page, { only: ["claude"] }); // the manifest-generated roster (#853 P4)
   await page.goto("/");
   const t = trigger(page);
 
@@ -123,6 +126,7 @@ test("a second click closes it, a double-click does not leave it open, and an ou
 
 test("Tab and Shift+Tab leave the menu: it closes and focus is back on the tile", async ({ page }) => {
   await setup(page);
+  await mockRoster(page, { only: ["claude"] }); // the manifest-generated roster (#853 P4)
   await page.goto("/");
   const t = trigger(page);
 
@@ -139,6 +143,7 @@ test("Intro tour opens the tour, What's new opens the dialog, Settings opens Set
   page,
 }) => {
   await setup(page);
+  await mockRoster(page, { only: ["claude"] }); // the manifest-generated roster (#853 P4)
   await page.goto("/");
 
   await trigger(page).click();
@@ -163,6 +168,7 @@ test("Intro tour opens the tour, What's new opens the dialog, Settings opens Set
 
 test("Documentation opens the docs home in a new tab with no opener", async ({ page }) => {
   await setup(page);
+  await mockRoster(page, { only: ["claude"] }); // the manifest-generated roster (#853 P4)
   await page.goto("/");
   await trigger(page).click();
   const docs = helpMenu(page).getByRole("menuitem", { name: "Documentation (opens in a new tab)" });
@@ -182,6 +188,7 @@ test("measured: 44px rows, and the panel sits inside the viewport under the tile
   page,
 }) => {
   await setup(page);
+  await mockRoster(page, { only: ["claude"] }); // the manifest-generated roster (#853 P4)
   await page.goto("/");
   const t = trigger(page);
   await t.click();
@@ -202,6 +209,7 @@ test("the setup wizard's Welcome and Launch steps link the docs in a new tab and
   page,
 }) => {
   await setup(page, { onboarded: false });
+  await mockRoster(page, { only: ["claude"] }); // the manifest-generated roster (#853 P4)
   await page.goto("/");
   const wizard = page.getByRole("dialog", { name: "Set up BattleLab" });
   await expect(wizard.getByRole("heading", { name: "Welcome to BattleLab" })).toBeVisible();

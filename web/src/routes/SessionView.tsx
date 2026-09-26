@@ -15,6 +15,7 @@ import {
   savePanelState,
 } from "../components/files/filePanelState";
 import type { FreshSession } from "../lib/termUrl";
+import { RuntimeGate } from "../components/terminal/RuntimeGate";
 
 /** Session view at "/s/:engine/:id" — the URL is the single source of truth for which
  *  session is open (deep-linkable, refresh-safe). When arrived at from the new-session
@@ -251,41 +252,43 @@ export function SessionView() {
   return (
     <div className={panel.sessionRow} ref={rowRef}>
       <div className={panel.sessionTerm}>
-        <Terminal
-          ref={termRef}
-          key={sessionKey}
-          engine={shown.engine}
-          id={shown.id}
-          // The identity stays FROZEN (`key`/`engine`/`id`) so the live socket survives the
-          // converge; `rowKey` carries the id the URL has settled on, purely so the header can
-          // find the row — which only ever exists under the real id (#867).
-          rowKey={liveKey}
-          fresh={fresh}
-          onReconcileId={onReconcileId}
-          onSaveAsTemplate={onSaveAsTemplate}
-          onOpenGallery={onOpenGallery}
-          // Only the full-screen route passes this: a session already IN a window must not
-          // offer to window itself (#936).
-          onToMap={
-            workspace &&
-            !isMobile &&
-            workspace.hostable !== false &&
-            !isNewSessionPlaceholder(liveKey)
-              ? onToMap
-              : undefined
-          }
-          filesOpen={filesOpen}
-          // Always present, even before the cwd resolves: #783 pins a VISIBLE DISABLED trigger
-          // during reconciliation. Dropping the action made it vanish and reappear, which reads
-          // as a glitch rather than as "not ready yet".
-          filesDisabledReason={
-            cwd ? undefined : "This session has not reported a folder yet"
-          }
-          onToggleFiles={(trigger?: HTMLElement | null) => {
-            setFilesTrigger(trigger ?? null);
-            setFilesOpen(!filesOpen);
-          }}
-        />
+        <RuntimeGate engine={shown.engine}>
+          <Terminal
+            ref={termRef}
+            key={sessionKey}
+            engine={shown.engine}
+            id={shown.id}
+            // The identity stays FROZEN (`key`/`engine`/`id`) so the live socket survives the
+            // converge; `rowKey` carries the id the URL has settled on, purely so the header can
+            // find the row — which only ever exists under the real id (#867).
+            rowKey={liveKey}
+            fresh={fresh}
+            onReconcileId={onReconcileId}
+            onSaveAsTemplate={onSaveAsTemplate}
+            onOpenGallery={onOpenGallery}
+            // Only the full-screen route passes this: a session already IN a window must not
+            // offer to window itself (#936).
+            onToMap={
+              workspace &&
+              !isMobile &&
+              workspace.hostable !== false &&
+              !isNewSessionPlaceholder(liveKey)
+                ? onToMap
+                : undefined
+            }
+            filesOpen={filesOpen}
+            // Always present, even before the cwd resolves: #783 pins a VISIBLE DISABLED trigger
+            // during reconciliation. Dropping the action made it vanish and reappear, which reads
+            // as a glitch rather than as "not ready yet".
+            filesDisabledReason={
+              cwd ? undefined : "This session has not reported a folder yet"
+            }
+            onToggleFiles={(trigger?: HTMLElement | null) => {
+              setFilesTrigger(trigger ?? null);
+              setFilesOpen(!filesOpen);
+            }}
+          />
+        </RuntimeGate>
       </div>
       {filesOpen && cwd && (
         <FilePanel

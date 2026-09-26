@@ -1,14 +1,17 @@
-/** Engines that mint their OWN session id and launch under a `new-<uuid>` placeholder the ws
- *  `new=1` path reconciles to the real id (#127/#315/#449) — opencode, codex, antigravity
- *  (`agy`), and kimi (#714, whose `-S/--session` only resumes: there is no id-pinning flag).
- *  Must stay in lockstep with the providers' server-side `new_session_reconciles` flag:
- *  a reconcile-engine missing here mints a bare UUID and the launch fails `parse_key` →
- *  reject(4404) "session not found" (the #454 regression). Every other engine pins the
- *  client-minted UUID directly (claude, gemini). */
-const RECONCILE_ENGINES = new Set(["opencode", "codex", "antigravity", "kimi"]);
+import { mintsOwnId } from "../app/engineRoster";
 
-/** Mint the new-session id for an engine (#163). */
-export function mintNewSessionId(engine: string): string {
+/** Mint the new-session id for an engine (#163), or `null` while that is not yet KNOWABLE.
+ *
+ *  An engine that mints its OWN id (`session_id.mint = "adopt"` in its manifest — opencode, codex,
+ *  antigravity, kimi today) launches under a `new-<uuid>` placeholder that the ws `new=1` path
+ *  reconciles to the real id (#127/#315/#449); every other engine pins the client-minted UUID.
+ *  The answer comes from the engine roster (#853 P4), never a client-side set: that set drifting
+ *  from the server is the #454 regression (a bare UUID for a reconcile engine fails `parse_key`
+ *  → 4404). Before the roster has loaded — or for an engine it does not list — the honest answer
+ *  is "not yet", and the caller must WAIT rather than guess. */
+export function mintNewSessionId(engine: string): string | null {
+  const own = mintsOwnId(engine);
+  if (own === undefined) return null;
   const uuid = crypto.randomUUID();
-  return RECONCILE_ENGINES.has(engine) ? `new-${uuid}` : uuid;
+  return own ? `new-${uuid}` : uuid;
 }

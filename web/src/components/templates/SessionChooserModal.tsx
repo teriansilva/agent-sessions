@@ -8,6 +8,7 @@ import { sessionStatus } from "../../lib/sessionStatus";
 import type { Session, Template } from "../../types/api";
 import { useInertBehind } from "./useInertBehind";
 import styles from "./TemplatePickerModal.module.css";
+import { useEngineRoster } from "../../app/engineRoster";
 
 /** USE on a gallery card (#905 P3): pick a session, land in its pane with the template staged,
  *  and the composer's picker opens on it. The rows are the sidebar's own store — the page the
@@ -23,6 +24,9 @@ export function SessionChooserModal({
   onClose: () => void;
   returnFocusTo?: HTMLElement | null;
 }) {
+  // Re-render when the engine roster lands or changes (#853 P4): this renders agent names,
+  // badges or colours, which come from the roster, not from a client-side list.
+  useEngineRoster();
   const navigate = useNavigate();
   const { sessions } = useSessionsStore();
   const closeRef = useRef<HTMLButtonElement>(null);

@@ -2,6 +2,7 @@ import { ArrowLeftRight, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
+import { isActive } from "../../app/engineRoster";
 import { api, ApiError } from "../../lib/api";
 import type { EngineInfo, HandoffMode } from "../../types/api";
 import styles from "./HandoffModal.module.css";
@@ -173,7 +174,10 @@ export function HandoffModal({
       .engines()
       .then((r) => {
         if (!alive) return;
-        const list = r.engines.filter((e) => e.id !== "shell");
+        // Agents only (#853 P4): the plain shell has no agent to receive a brief. Which tile is
+        // ENABLED is the server's `supports_seed_start` — the same source its prepare checks.
+        // A retiring engine (#1126) is listed but takes no new work, so it is never a target.
+        const list = r.engines.filter((e) => e.kind === "agent" && isActive(e));
         setTiles(list);
         const enabled = list.filter((e) => e.supports_seed_start);
         const def = enabled.find((e) => e.id !== engine) ?? enabled[0];

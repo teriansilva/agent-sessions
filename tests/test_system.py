@@ -45,7 +45,7 @@ def test_engines_lists_all_providers(auth_cfg, fake_jsonl, tmp_home, monkeypatch
     r = c.get("/api/engines")
     assert r.status_code == 200
     d = r.json()
-    assert set(d) == {"engines"}
+    assert set(d) == {"engines", "problems"} and d["problems"] == []
     ids = {e["id"] for e in d["engines"]}
     # every registered provider is reported, present or not
     assert ids == {p.engine_id for p in engines.all_providers()}

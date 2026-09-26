@@ -18,8 +18,9 @@
  *  boundary can split the sequence — and a partial that never completes passes through verbatim
  *  (only complete wipe sequences are ever dropped). */
 
-/** Engines whose TUI repaint erases scrollback as part of a full-screen clear. */
-export const WIPE_REPAINT_ENGINES: ReadonlySet<string> = new Set(["codex", "kimi"]);
+// Which engines do it is the manifest's `terminal.repaint = "wipe"`, served on the roster (#853
+// P4) — this used to be a second copy of the server's set, the #454 drift shape.
+import { wipesOnRepaint } from "../app/engineRoster";
 
 const SCROLLBACK_ERASE = new Uint8Array([0x1b, 0x5b, 0x33, 0x4a]); // CSI 3J
 
@@ -38,7 +39,9 @@ export function createScrollEraseStripper(): ScrollEraseStripper {
     carry = new Uint8Array(0);
   };
   const strip = (engine: string, live: boolean, bytes: Uint8Array): Uint8Array => {
-    if (!live || !WIPE_REPAINT_ENGINES.has(engine)) {
+    // Before the roster loads no engine "wipes on repaint", so nothing is stripped here — the
+    // server's `sanitize_live_output` already strips these bytes; this is the belt to its braces.
+    if (!live || !wipesOnRepaint(engine)) {
       reset();
       return bytes;
     }

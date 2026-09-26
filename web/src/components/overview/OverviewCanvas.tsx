@@ -74,6 +74,7 @@ import {
   WINDOW_CAP_MIN,
 } from "./workspace";
 import "./overview.css";
+import { useEngineRoster } from "../../app/engineRoster";
 
 // Stable identity (module scope) so React Flow doesn't re-register node types each render.
 const nodeTypes = { projectGroup: ProjectGroupNode, session: SessionNode };
@@ -457,6 +458,10 @@ function OverviewCanvasInner({
     [openSig],
   );
 
+  // The engine roster (#853 P4) colours and names the chips; it is a dependency so they update
+  // when it lands. It changes only at load — never per gesture — so it cannot re-orphan the
+  // node measurements the way a per-rect array identity did (#936).
+  const roster = useEngineRoster();
   const { nodes, edges } = useMemo(
     () =>
       buildOverview(effectiveSessions, {
@@ -470,7 +475,11 @@ function OverviewCanvasInner({
         projects,
         openIds,
       }),
+    // `roster` is read by buildOverview through the roster store (engineColor/engineName), which
+    // the linter cannot see; it is a real dependency — the chips must recolour when it lands.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [
+      roster,
       effectiveSessions,
       groupBy,
       includeArchived,

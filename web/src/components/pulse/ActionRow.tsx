@@ -19,6 +19,7 @@ import {
   isEscalation,
   sessionPath,
 } from "../../lib/orchestratorAction";
+import { useEngineRoster } from "../../app/engineRoster";
 
 /** Status colour is load-bearing (docs/design.md): amber `degraded` means "needs a decision",
  *  red `down` is reserved for genuine failure. An escalation is NOT an incident. */
@@ -162,6 +163,9 @@ export function ActionRow({
    *  than offering a dead control. */
   onEditDraft?: (a: OrchestratorAction) => void;
 }) {
+  // Re-render when the engine roster lands or changes (#853 P4): this renders agent names,
+  // badges or colours, which come from the roster, not from a client-side list.
+  useEngineRoster();
   const delivering = (deliveringVerbs ?? DELIVERING_FALLBACK).has(action.verb);
   const [busy, setBusy] = useState<"" | "approve" | "reject">("");
   const [note, setNote] = useState<string | null>(null);

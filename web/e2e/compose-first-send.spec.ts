@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { mockRoster } from "./roster";
 import { throttleIfAsked } from "./browserTiming";
 
 // #533: the first compose Send into a FRESH session raced the agent's boot — the clear/paste/
@@ -79,6 +80,7 @@ test("first compose Send into a fresh session waits for the agent's first paint 
   await page.route("**/api/version", (r) =>
     r.fulfill({ json: { version: "test" } }),
   );
+  await mockRoster(page);
   await page.route(/\/api\/sessions(\?.*)?$/, (r) =>
     r.fulfill({
       json: {
@@ -189,6 +191,7 @@ test("fresh Codex send waits for boot output to go quiet before using fallback r
   await page.route("**/api/version", (r) =>
     r.fulfill({ json: { version: "test" } }),
   );
+  await mockRoster(page);
   await page.route(/\/api\/sessions(\?.*)?$/, (r) =>
     r.fulfill({
       json: {

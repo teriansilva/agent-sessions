@@ -109,6 +109,17 @@
     "Segoe UI",
     system-ui,
     sans-serif;
+  /* Engine accents (#853 P4). A manifest names one of these by TOKEN (`display.accent`), never
+     a hex, so an agent can only ever take a colour the design system has. Distinct from the
+     status hues and the brand accent; slate is the neutral for a shell or an unknown engine.
+     Held to >=3:1 on the chip grounds by contrast.test.ts. */
+  --engine-amber: #d98a5c;
+  --engine-teal: #4fd1c5;
+  --engine-green: #7ee787;
+  --engine-blue: #7aa2ff;
+  --engine-lime: #c5e15a;
+  --engine-magenta: #f472b6;
+  --engine-slate: #8b98a5;
 }
 
 /* Theme presets (#211). The bare :root above is the DARK default (no attribute needed); the
@@ -152,6 +163,17 @@
   --syn-type: #8fd3c7;
   --syn-property: #b9bec7;
   --syn-punct: #a7abb3;
+  /* Engine accents (#853 P4). A manifest names one of these by TOKEN (`display.accent`), never
+     a hex, so an agent can only ever take a colour the design system has. Distinct from the
+     status hues and the brand accent; slate is the neutral for a shell or an unknown engine.
+     Held to >=3:1 on the chip grounds by contrast.test.ts. */
+  --engine-amber: #d98a5c;
+  --engine-teal: #4fd1c5;
+  --engine-green: #7ee787;
+  --engine-blue: #7aa2ff;
+  --engine-lime: #c5e15a;
+  --engine-magenta: #f472b6;
+  --engine-slate: #8b98a5;
 }
 :root[data-theme="light"] {
   color-scheme: light;
@@ -205,4 +227,12 @@
   --syn-type: #1d6b61;
   --syn-property: #41454d;
   --syn-punct: #41454d;
+  /* Engine accents (#853 P4) — darker on the light ground, same names. */
+  --engine-amber: #a8591f;
+  --engine-teal: #0f7c73;
+  --engine-green: #1f7a33;
+  --engine-blue: #2f5fd0;
+  --engine-lime: #5f7a00;
+  --engine-magenta: #b3246f;
+  --engine-slate: #5b6672;
 }

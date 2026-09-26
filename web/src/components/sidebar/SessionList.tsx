@@ -33,6 +33,7 @@ import { FiltersBar } from "./Filters";
 import { RowMenu } from "./RowMenu";
 import { sessionPeers, useSessionMenu } from "../sessions/useSessionMenu";
 import styles from "./SessionList.module.css";
+import { useEngineRoster } from "../../app/engineRoster";
 
 /** Activity since the last successful review makes the summary stale (#356): the AI's
  *  one-liner describes an older state, so the row exposes the review's age instead of
@@ -153,6 +154,9 @@ function Row({
   onNavigate,
   rowRef,
 }: RowProps) {
+  // Re-render when the engine roster lands or changes (#853 P4): this renders agent names,
+  // badges or colours, which come from the roster, not from a client-side list.
+  useEngineRoster();
   // Inline editor (#551): the row's title (Rename) OR its custom tag (Set tag…) share one
   // input row. "none" = not editing; `draft` holds whichever value is being edited.
   const [editMode, setEditMode] = useState<"none" | "title" | "tag">("none");

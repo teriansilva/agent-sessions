@@ -1,4 +1,5 @@
 import { expect, type Locator, type Page, test } from "@playwright/test";
+import { mockRoster } from "./roster";
 
 /** The map as a workspace (#936) — the parts of it a DOM emulator structurally cannot see.
  *
@@ -78,6 +79,7 @@ async function mockApp(
     }),
   );
   await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
+  await mockRoster(page);
   // The single-session lookup a pane makes for its own row (#867). Which key it names is the
   // observable proof of finding 1: a converged window must ask for the RECONCILED id, not the
   // `new-<uuid>` it still transports on.

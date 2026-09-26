@@ -30,6 +30,7 @@ import rowStyles from "../sidebar/SessionList.module.css";
 import { HandoffModal } from "../terminal/HandoffModal";
 import { SessionRecapModal } from "../terminal/SessionRecapModal";
 import { AdoptToMissionModal } from "./AdoptToMissionModal";
+import { isAgent, useEngineRoster } from "../../app/engineRoster";
 
 /** What a surface wires into the session menu. The sidebar backs these with its list's in-place
  *  row patches; the Overview map backs them with the same api calls plus a map refetch (#968). */
@@ -98,6 +99,9 @@ export function useSessionMenu(
    *  may no longer exist (#968 review). Review now stays disabled until it settles. */
   opts: { reviewInFlight?: boolean } = {},
 ): SessionMenu {
+  // Re-render when the engine roster lands or changes (#853 P4): this renders agent names,
+  // badges or colours, which come from the roster, not from a client-side list.
+  useEngineRoster();
   const [busy, setBusy] = useState(false);
   const [reviewing, setReviewing] = useState(false);
   // "Move to project" picker (#424 Phase 5b) — the keyboard path for drag-to-reassign.
@@ -166,7 +170,8 @@ export function useSessionMenu(
       },
     },
   ];
-  if (s.engine !== "shell") {
+  // Only an engine with an agent behind it can be handed off (#853 P4 — the roster, not an id).
+  if (isAgent(s.engine)) {
     primary.push({
       key: "handoff",
       label: "Hand off…",

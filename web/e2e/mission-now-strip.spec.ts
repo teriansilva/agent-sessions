@@ -14,6 +14,7 @@ import {
   mockMissions,
   openMissionRail,
 } from "./mission-console";
+import { mockRoster } from "./roster";
 
 const T = 1_700_000_000;
 
@@ -99,6 +100,7 @@ async function openConsole(
     n += 1;
     return r.fulfill({ json: now() });
   });
+  await mockRoster(page); // the manifest-generated roster (#853 P4)
   await page.goto("/mission");
   await openMissionRail(page);
   await page

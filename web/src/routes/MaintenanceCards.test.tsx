@@ -409,3 +409,39 @@ test("malformed compaction data never crashes Settings or enables a mutation", a
     screen.getByRole("button", { name: "Compact database" }),
   ).toBeDisabled();
 });
+
+test("a card for ANOTHER engine's store names that engine in every line, confirmation included (#853 P4)", async () => {
+  // A second manifest-defined compaction target: the heading, the hint and the CONFIRMATION must
+  // all name the store the POST will compact — never a hardcoded engine (Hermes on #1134).
+  const { getRoster, setRoster } = await import("../app/engineRoster");
+  const opencode = getRoster().engines.find((e) => e.id === "opencode")!;
+  setRoster([...getRoster().engines, { ...opencode, id: "zeta", label: "Zeta Agent" }]);
+  vi.mocked(api.compactInfo).mockResolvedValue(compactInfo());
+  vi.mocked(api.compact).mockResolvedValue({
+    job: { ...compactJob(), engine: "zeta" },
+    runner: { job: "opencode_compact", started_at: 1 },
+  });
+  render(<CompactDatabase engine="zeta" />);
+  expect(await screen.findByRole("heading", { name: "Zeta Agent database" })).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "Compact database" }));
+  expect(screen.getByText(/Compact the Zeta Agent database/)).toBeVisible();
+  expect(screen.queryByText(/OpenCode/)).toBeNull();
+  await userEvent.click(screen.getByRole("button", { name: "Confirm compaction" }));
+  expect(api.compact).toHaveBeenCalledWith("zeta");
+  expect(api.compactInfo).toHaveBeenCalledWith(undefined, "zeta");
+});
+
+test("the default card discovers every target from its OWN response — no extra request (#853 P4)", async () => {
+  const { CompactDatabases } = await import("./MaintenanceCards");
+  const { getRoster, setRoster } = await import("../app/engineRoster");
+  const opencode = getRoster().engines.find((e) => e.id === "opencode")!;
+  setRoster([...getRoster().engines, { ...opencode, id: "zeta", label: "Zeta Agent" }]);
+  vi.mocked(api.compactInfo).mockResolvedValue({ ...compactInfo(), targets: ["opencode", "zeta"] });
+  render(<CompactDatabases />);
+  expect(await screen.findByRole("heading", { name: "opencode database" })).toBeVisible();
+  expect(await screen.findByRole("heading", { name: "Zeta Agent database" })).toBeVisible();
+  // One request per card, and the default card's is exactly the pre-P4 call.
+  expect(vi.mocked(api.compactInfo).mock.calls[0]).toEqual([undefined]);
+  expect(vi.mocked(api.compactInfo)).toHaveBeenCalledWith(undefined, "zeta");
+  expect(vi.mocked(api.compactInfo)).toHaveBeenCalledTimes(2);
+});

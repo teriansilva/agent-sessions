@@ -369,8 +369,13 @@ def test_api_engines_marks_a_retiring_engine_and_refuses_it_as_a_handoff_target(
     roster.remove()
     c = _client(auth_cfg)
     _login_headers(c, auth_cfg)
-    rows = {e["id"]: e for e in c.get("/api/engines").json()["engines"]}
+    listing = c.get("/api/engines").json()
+    rows = {e["id"]: e for e in listing["engines"]}
+    assert listing["problems"] == []  # #853 P4's diagnostics ride beside the retiring row
     z = rows[ZETA]
+    # Listed, so its read-only detail resolves too, and says it is retiring (#1128 × #1126).
+    d = c.get(f"/api/engines/{ZETA}")
+    assert d.status_code == 200 and d.json()["status"] == "retiring", d.text
     assert z["status"] == "retiring" and z["status_reason"].startswith("agent removed")
     assert z["present"] is False and z["supports_new"] is False
     assert z["supports_seed_start"] is False and z["seed_reason"] == "agent removed"
@@ -390,6 +395,7 @@ def test_api_engines_marks_a_retiring_engine_and_refuses_it_as_a_handoff_target(
     finally:
         pretend_live_off.undo()
     assert ZETA not in rows, "a tombstoned engine is not listed; only its refusals remember it"
+    assert c.get(f"/api/engines/{ZETA}").status_code == 404
 
 
 # --- the recorded roster is INPUT -----------------------------------------------------------------

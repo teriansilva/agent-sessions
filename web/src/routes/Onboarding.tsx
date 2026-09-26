@@ -17,6 +17,7 @@ import { consentSaveError, saveAnalyticsConsent } from "../lib/analyticsConsent"
 import { DOCS_HOME_URL } from "../lib/links";
 import { EnableLoginDetails } from "../components/EnableLoginDetails";
 import { mintNewSessionId } from "../lib/newSession";
+import { mintsOwnId, useEngineRoster } from "../app/engineRoster";
 import type { EngineInfo, Folder, TwoFactorEnrollment } from "../types/api";
 import styles from "./Onboarding.module.css";
 import { AiEndpointSetup } from "./AiEndpointSetup";
@@ -195,6 +196,11 @@ export function Onboarding({
   const config = useConfig();
   const navigate = useNavigate();
   const [step, setStep] = useState<Step>("welcome");
+  // The SHARED roster decides whether a launch can mint its id (#853 P4, Hermes on #1134): this
+  // wizard's own engine discovery can succeed while the roster is still loading or failed, and a
+  // Launch button that is enabled but cannot mint would do nothing on click. One predicate drives
+  // both the button and the click, and the wait says why.
+  const roster = useEngineRoster();
 
   // Agents (Connected agents step).
   const [engines, setEngines] = useState<EngineInfo[] | null>(null);
@@ -357,8 +363,19 @@ export function Onboarding({
     setStep("tour");
   };
 
+  const launchReady = !!engine && roster.loaded && mintsOwnId(engine) !== undefined;
+  const launchWait = !engine
+    ? null
+    : !roster.loaded
+      ? roster.status === "failed"
+        ? "Couldn’t load the agent list — retrying. Launch becomes available when it loads."
+        : "Loading the agent list…"
+      : mintsOwnId(engine) === undefined
+        ? "This agent isn’t in the loaded agent list, so a session can’t be started for it."
+        : null;
   const launch = async () => {
-    if (!engine || !effectiveCwd) return;
+    // The engine's id mode must be KNOWN before anything is minted (#853 P4, #454).
+    if (!engine || !effectiveCwd || !launchReady) return;
     setBusy(true);
     try {
       await api.completeOnboarding(newestRelease()?.version);
@@ -366,7 +383,7 @@ export function Onboarding({
       /* non-fatal */
     }
     onClose();
-    const id = mintNewSessionId(engine);
+    const id = mintNewSessionId(engine) ?? "";
     navigate(`/s/${engine}/${id}`, {
       state: { fresh: { cwd: effectiveCwd, bypass } },
     });
@@ -902,6 +919,11 @@ export function Onboarding({
               cover every feature — and the ? in the top bar brings back the tour,
               the docs and What's new at any time.
             </p>
+            {launchWait && (
+              <p className={styles.note} role="status">
+                {launchWait}
+              </p>
+            )}
             <Foot>
               <button type="button" className={styles.ghost} onClick={finish}>
                 Finish without launching
@@ -918,7 +940,7 @@ export function Onboarding({
                 type="button"
                 className={`${styles.pri} shine`}
                 onClick={launch}
-                disabled={busy || !engine || !effectiveCwd}
+                disabled={busy || !engine || !effectiveCwd || !launchReady}
               >
                 ⮞ Launch session
               </button>

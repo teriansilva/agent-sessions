@@ -4,6 +4,7 @@ semantics, and archived-entity visibility."""
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from agent_sessions.main import create_app
@@ -13,6 +14,17 @@ _SID_1 = "claude:11111111-1111-1111-1111-111111111111"
 _SID_2 = "claude:22222222-2222-2222-2222-222222222222"
 _SID_3 = "claude:33333333-3333-3333-3333-333333333333"
 _OC_TOP = "opencode:ses_aaaaaaaaaaaaaaaaaaaaaaaa"  # cwd /home/user/claude (conftest)
+
+
+@pytest.fixture(autouse=True)
+def _no_host_wide_owner_probe(monkeypatch):
+    """#1124: `transcript_is_owned` scans EVERY process on the host, and the fixed ids these tests
+    share with ten other files let a sibling xdist worker's fake agent "own" this test's transcript
+    — archive then answers `failed`. Nothing here is about the #631 background-agent guard (its
+    own tests pin it), so the probe is stubbed to "not owned" for this file only."""
+    from agent_sessions import transcript_owner
+
+    monkeypatch.setattr(transcript_owner, "transcript_is_owned", lambda *a, **k: False)
 
 
 def _client(cfg):

@@ -10,6 +10,8 @@ import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
 import { api, ApiError } from "../../lib/api";
 import { HandoffModal } from "./HandoffModal";
+import rosterFixture from "../../test/roster.fixture.json";
+import type { EngineInfo } from "../../types/api";
 
 // Hand-off modal (#597, Phase 1): tiles come from /api/engines' supports_seed_start (the
 // server-shared capability source), prepare backs the preview, commit navigates to the
@@ -34,41 +36,13 @@ vi.mock("react-router-dom", async (importOriginal) => {
   return { ...orig, useNavigate: () => mockNavigate };
 });
 
+// The roster GENERATED from the manifests (#853 P4) — never a hand-written copy — narrowed to the
+// four engines these tests drive: two seed-capable agents, one agent without a seed start, and
+// the agentless shell.
 const ENGINES = {
-  engines: [
-    {
-      id: "claude",
-      present: true,
-      supports_new: true,
-      supports_seed_start: true,
-      seed_reason: null,
-      bin: "/bin/claude",
-    },
-    {
-      id: "codex",
-      present: true,
-      supports_new: true,
-      supports_seed_start: true,
-      seed_reason: null,
-      bin: "/bin/codex",
-    },
-    {
-      id: "gemini",
-      present: true,
-      supports_new: true,
-      supports_seed_start: false,
-      seed_reason: "no seed-capable start yet",
-      bin: "/bin/gemini",
-    },
-    {
-      id: "shell",
-      present: true,
-      supports_new: true,
-      supports_seed_start: false,
-      seed_reason: "not an agent engine",
-      bin: "/bin/bash",
-    },
-  ],
+  engines: (rosterFixture.engines as EngineInfo[]).filter((e) =>
+    ["claude", "codex", "gemini", "shell"].includes(e.id),
+  ),
 };
 
 const PREPARED = {

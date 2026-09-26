@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { clickHeadAction } from "./headActions";
 import { setupBench } from "./terminal/harness";
+import { mockRoster } from "./roster";
 
 // Real-browser coverage for the cross-engine handoff modal (#597, Phase 1): the "Hand off"
 // control in the terminal header opens a modal with a capability-driven engine picker, the
@@ -85,6 +86,7 @@ test.beforeEach(async ({ page }) => {
 test("hand-off control opens the modal; picker + preview render; confirm lands on the new session (#597)", async ({
   page,
 }) => {
+  await mockRoster(page, { only: ["claude", "codex", "gemini", "shell"] }); // the manifest-generated roster (#853 P4)
   await page.goto(`/s/${ENGINE}/${UUID}`);
 
   // The header control (absent on origin/main — the red→green gate). `clickHeadAction` asserts it
@@ -127,6 +129,7 @@ test("hand-off control opens the modal; picker + preview render; confirm lands o
 test("Escape closes the hand-off modal and returns focus to the trigger (#597)", async ({
   page,
 }) => {
+  await mockRoster(page, { only: ["claude", "codex", "gemini", "shell"] }); // the manifest-generated roster (#853 P4)
   await page.goto(`/s/${ENGINE}/${UUID}`);
   // The trigger is the chip inline, or the menu's trigger when it lives in a menu — the item
   // unmounts with the menu, so that is where focus has to come back to.
@@ -139,6 +142,7 @@ test("Escape closes the hand-off modal and returns focus to the trigger (#597)",
 });
 
 test("backdrop click closes the hand-off modal (#597)", async ({ page }) => {
+  await mockRoster(page, { only: ["claude", "codex", "gemini", "shell"] }); // the manifest-generated roster (#853 P4)
   await page.goto(`/s/${ENGINE}/${UUID}`);
   await clickHeadAction(page, /hand off session/i);
   const dialog = page.getByRole("dialog", { name: /hand off/i });
@@ -190,6 +194,7 @@ test("AI summary mode prepares an AI seed, and an edit is what gets handed off (
     });
   });
 
+  await mockRoster(page, { only: ["claude", "codex", "gemini", "shell"] }); // the manifest-generated roster (#853 P4)
   await page.goto(`/s/${ENGINE}/${UUID}`);
   await clickHeadAction(page, /hand off session/i);
   const dialog = page.getByRole("dialog", { name: /hand off/i });
@@ -227,6 +232,7 @@ test("a degraded AI handoff tells the user it fell back to the quick tail (#597 
       },
     }),
   );
+  await mockRoster(page, { only: ["claude", "codex", "gemini", "shell"] }); // the manifest-generated roster (#853 P4)
   await page.goto(`/s/${ENGINE}/${UUID}`);
   await clickHeadAction(page, /hand off session/i);
   const dialog = page.getByRole("dialog", { name: /hand off/i });
@@ -259,6 +265,7 @@ test("the source-reference toggle re-prepares and adds the transcript locator (#
     });
   });
 
+  await mockRoster(page, { only: ["claude", "codex", "gemini", "shell"] }); // the manifest-generated roster (#853 P4)
   await page.goto(`/s/${ENGINE}/${UUID}`);
   await clickHeadAction(page, /hand off session/i);
   const dialog = page.getByRole("dialog", { name: /hand off/i });

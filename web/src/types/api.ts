@@ -1,12 +1,14 @@
 // Types mirroring the existing FastAPI `/api/*` contract (backend is unchanged).
 
-export type EngineId =
-  "claude" | "opencode" | "codex" | "gemini" | "antigravity" | "kimi" | "shell";
+/** An engine id (#853 P4). A plain string: the roster is RUNTIME data from `/api/engines`, and
+ *  the client keeps no list of its own — adding or removing an agent is a manifest, not an edit
+ *  here. Kept as a named alias so call sites say what the string means. */
+export type EngineId = string;
 
 export interface Session {
   /** engine-qualified identity, e.g. "claude:<uuid>" — the URL + socket + lock key */
   id: string;
-  engine: EngineId | string;
+  engine: EngineId;
   uuid: string;
   short_uuid: string;
   cwd: string;
@@ -342,7 +344,7 @@ export type PulseState = "needs_you" | "in_flight" | "recently_active" | "idle";
 export interface PulseCard {
   /** Engine-qualified session key ("engine:uuid") — also the jump target. */
   id: string;
-  engine: EngineId | string;
+  engine: EngineId;
   title: string;
   cwd: string;
   project: ProjectRef;
@@ -1121,8 +1123,21 @@ export interface TwoFactorEnrollment {
 }
 
 /** One engine provider's discovery status (Settings → Connected agents). */
+/** The capability booleans a manifest declares — all default-deny server-side. */
+export interface EngineCapabilities {
+  resume: boolean;
+  new: boolean;
+  archive: boolean;
+  handoff_target: boolean;
+  seed_start: boolean;
+  orchestrator_input: boolean;
+  raw_tty: boolean;
+  owns_transcript: boolean;
+}
+
+/** One roster row (#853 P3/P4): the binary's state on this host + what the manifest declares. */
 export interface EngineInfo {
-  id: EngineId | string;
+  id: EngineId;
   present: boolean;
   supports_new: boolean;
   /** Handoff-target capability (#597) — THE capability source the handoff modal's engine
@@ -1131,6 +1146,34 @@ export interface EngineInfo {
   /** Why the engine can't be a handoff target (null exactly when it can). */
   seed_reason: string | null;
   bin: string | null;
+  // --- from the manifest (#853 P3) ---
+  label: string;
+  /** `agent` — a coding agent; `terminal` — the plain shell, no agent behind it. */
+  kind: "agent" | "terminal" | string;
+  /** How a session runs (#853 §7). `pty` is the only runtime this build has. */
+  runtime: "pty" | string;
+  display: {
+    name: string;
+    badge: string;
+    /** A token name, never a hex: rendered as `var(--engine-<accent>)`. */
+    accent: string;
+    id_prefix: string | null;
+    order: number;
+  };
+  capabilities: EngineCapabilities;
+  session_id: { mint: "pinned" | "adopt" | string };
+  models: { id: string; context_window: number | null; aliases: string[] }[];
+  usage: { source: "plan" | "tokens" | "manual" | "none" | string };
+  terminal: { repaint: "none" | "wipe" | string };
+  /** `retiring` (#1126 PR B): manifest gone, live sessions attach-only. Absent ⇒ active. */
+  status?: "active" | "retiring" | string;
+  status_reason?: string | null;
+}
+
+/** A manifest that failed to load (#853 P4) — diagnostics only, never an engine. */
+export interface EngineProblem {
+  source: string;
+  error: string;
 }
 
 /** One agent's usage, as the agent itself reports it (#839).
@@ -1186,6 +1229,7 @@ export interface AgentUsageResponse {
 
 export interface EnginesResponse {
   engines: EngineInfo[];
+  problems?: EngineProblem[];
 }
 
 /** Host/system info (Settings → System). Every field is fail-soft server-side, so any

@@ -1,5 +1,6 @@
 import { expect, type Locator, type Page, test, type WebSocketRoute } from "@playwright/test";
 import { throttleIfAsked } from "./browserTiming";
+import { mockRoster } from "./roster";
 
 /** The map's window workspace (#208) — the acceptance matrix, in a real browser.
  *
@@ -221,6 +222,7 @@ async function wideDesktop(page: Page) {
 }
 
 async function openMap(page: Page) {
+  await mockRoster(page); // the manifest-generated roster (#853 P4)
   await page.goto("/overview");
   await expect(chip(page, 1)).toBeVisible();
 }
@@ -839,6 +841,7 @@ test.describe("desktop workspace", () => {
     // to prevent, so the chip does what it always did instead.
     await mockApp(page);
     await page.setViewportSize({ width: 801, height: 620 });
+    await mockRoster(page); // the manifest-generated roster (#853 P4)
     await page.goto("/overview");
     await expect(chip(page, 1)).toBeVisible();
     const layer = page.locator("[data-window-layer]");
@@ -908,6 +911,7 @@ test.describe("desktop workspace", () => {
       projects: [],
     });
     await page.setViewportSize({ width: 1680, height: 1000 });
+    await mockRoster(page); // the manifest-generated roster (#853 P4)
     await page.goto("/overview");
     const chipA = page.locator(".tr-overview .tr-ov-chip", {
       hasText: "Relayout claude 1",
@@ -960,6 +964,7 @@ page,
 }, testInfo) => {
 test.skip(testInfo.project.name !== "mobile", "the mobile half of the split");
 await mockApp(page);
+await mockRoster(page); // the manifest-generated roster (#853 P4)
 await page.goto("/overview");
 await expect(chip(page, 1)).toBeVisible();
 await expect(page.locator("[data-window-layer]")).toHaveCount(0);

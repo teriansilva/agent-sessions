@@ -7,12 +7,13 @@ import {
   relTime,
 } from "./format";
 
-// #636: the plain-terminal "shell" engine gets its own badge / neutral accent / name, and any
-// unknown engine still falls through to the claude default (the helpers never throw).
+// #636: the plain-terminal "shell" engine gets its own badge / neutral accent / name. Since #853 P4
+// all of it comes from the roster, and an unknown engine falls back to the NEUTRAL slate and its
+// own id — no longer to claude's look, which made an unknown agent read as claude.
 describe("engine presentation — shell (#636)", () => {
   test("shell badge/color/name", () => {
     expect(engineBadge("shell")).toBe("sh");
-    expect(engineColor("shell")).toBe("#8b98a5"); // neutral slate — deliberately not a vivid hue
+    expect(engineColor("shell")).toBe("var(--engine-slate)"); // a token, never a hex (#853 P4)
     expect(engineName("shell")).toBe("shell");
   });
 
@@ -24,8 +25,8 @@ describe("engine presentation — shell (#636)", () => {
   });
 
   test("an unknown engine falls through without throwing", () => {
-    expect(engineBadge("mystery")).toBe("cc");
-    expect(engineColor("mystery")).toBe("#d98a5c");
+    expect(engineBadge("mystery")).toBe("my");
+    expect(engineColor("mystery")).toBe("var(--engine-slate)");
     expect(engineName("mystery")).toBe("mystery");
   });
 });

@@ -43,6 +43,11 @@ STORE_KINDS: dict[str, type] = {
 }
 
 
+#: Why a manifest did not load, by loader key — surfaced read-only on `/api/engines` (#853 P4) so
+#: a broken plugin is visible on the Agents page instead of only in the journal. Never executable.
+LOAD_PROBLEMS: dict[str, str] = {}
+
+
 def _build_roster(first_party_dir: Path | None = None) -> list[base.EngineProvider]:
     """The live roster: every IN-TREE manifest, in `display.order` (#853 P2).
 
@@ -54,6 +59,8 @@ def _build_roster(first_party_dir: Path | None = None) -> list[base.EngineProvid
     from ..plugins import load_first_party
 
     loaded = load_first_party(first_party_dir=first_party_dir)
+    LOAD_PROBLEMS.clear()
+    LOAD_PROBLEMS.update(loaded.problems)
     for key, why in loaded.problems.items():
         log.error("engine manifest %s did not load: %s", key, why)
     roster: list[base.EngineProvider] = []

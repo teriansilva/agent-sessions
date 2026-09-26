@@ -6,6 +6,7 @@
 // no real dtach, no runtime dir, no real session — it cannot reach prod/staging. `attachTripwires`
 // fails the test if any un-mocked request or a real WebSocket ever escapes.
 import { type Page, expect } from "@playwright/test";
+import { mockRoster } from "../roster";
 
 export interface BenchSession {
   engine: string;
@@ -83,9 +84,8 @@ function mockApi(page: Page, sessions: BenchSession[]) {
   page.route("**/api/version", (r) =>
     r.fulfill({ json: { version: "bench" } }),
   );
-  page.route("**/api/engines", (r) =>
-    r.fulfill({ json: { engines: ["claude"] } }),
-  );
+  // The manifest-generated roster (#853 P4): badges, handoff gating and id modes come from it.
+  void mockRoster(page);
   page.route("**/api/system", (r) => r.fulfill({ json: {} }));
   page.route(/\/api\/folders(\?.*)?$/, (r) =>
     r.fulfill({ json: { folders: [{ cwd: "/home/u/proj", label: "proj" }] } }),

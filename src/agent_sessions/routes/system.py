@@ -82,6 +82,10 @@ def _preflight_prefs(payload: dict) -> None:
 
     if "theme" in payload and payload["theme"] not in prefs.THEMES:
         raise bad("unknown theme")
+    if "agent_defaults" in payload:
+        err = prefs.validate_agent_defaults_patch(payload["agent_defaults"])
+        if err is not None:
+            raise bad(err)
     if "accent" in payload and not prefs.is_valid_accent(payload["accent"]):
         raise bad("invalid accent")
     if "term_font_size" in payload and not prefs.is_valid_term_font_size(payload["term_font_size"]):
@@ -270,7 +274,79 @@ def register(
         rows = await asyncio.to_thread(
             lambda: [row(p) for p in [*engines.all_providers(), *engines.retiring_providers()]]
         )
-        return JSONResponse({"engines": rows})
+        # Manifests that failed to load (#853 P4): diagnostics only, SEPARATE from `engines`, so
+        # nothing that lists engines can ever offer one. First-party-only today, so a problem
+        # here is a build defect in an in-tree manifest.
+        problems = [
+            {"source": k, "error": v} for k, v in sorted(engines.registry.LOAD_PROBLEMS.items())
+        ]
+        return JSONResponse({"engines": rows, "problems": problems})
+
+    @app.get("/api/engines/{engine_id}")
+    async def engine_detail(engine_id: str, _: str = Depends(logged_in)) -> JSONResponse:
+        # One engine, as its manifest declares it (#853 P4) — what the Agents detail page shows.
+        # Read-only, and nothing a client sends becomes a path: the id is looked up in the
+        # loaded roster and anything else is a 404. A RETIRING engine is listed, so its detail
+        # resolves too (read-only: `get_any` grants no new work).
+        prov = engines.get_any(engine_id)
+        if prov is None:
+            raise HTTPException(status_code=404, detail="unknown engine")
+
+        def detail() -> dict:
+            m = prov.manifest
+            try:
+                ep = prov.entrypoint()
+                prov_state = (
+                    {"state": ep.state, "via": ep.via, "path": ep.path, "note": ep.note or None}
+                    if ep is not None
+                    else {"state": "absent", "via": None, "path": None, "note": None}
+                )
+            except Exception as e:  # noqa: BLE001 — a refusal is a finding to SHOW, not a 500
+                prov_state = {"state": "refused", "via": None, "path": None, "note": str(e)}
+            store = m.store
+            root = prov.store_root()
+            return {
+                "id": m.id,
+                "label": m.identity.label,
+                "publisher": m.identity.publisher,
+                "version": m.identity.version,
+                "contract": m.contract,
+                "source": "in-tree" if prov.trust == "first-party" else "local",
+                "kind": m.identity.kind,
+                "runtime": m.runtime,
+                "status": "retiring" if engines.is_retiring(prov) else "active",
+                "binary": {
+                    "name": m.binary.name,
+                    "env_var": m.binary.env_var,
+                    "search_paths": list(m.binary.search_paths),
+                },
+                "provenance": prov_state,
+                "store": (
+                    {
+                        "root": store.root,
+                        "resolved": str(root) if root is not None else None,
+                        "layout": store.layout,
+                        "read_only": store.read_only,
+                    }
+                    if store is not None
+                    else None
+                ),
+                "launch": {
+                    "resume": m.launch.resume.kind,
+                    "new": m.launch.new.kind if m.launch.new else None,
+                    "admission": m.launch.admission,
+                },
+                "transcript": {"kind": m.transcript_kind, "strict": m.transcript_strict},
+                "usage": {"source": m.usage.source, "kind": m.usage.kind},
+                "capabilities": {c: m.can(c) for c in kinds.CAPABILITIES},
+                "models": [
+                    {"id": x.id, "context_window": x.context_window, "aliases": list(x.aliases)}
+                    for x in m.models
+                ],
+                "maintenance": list(m.maintenance),
+            }
+
+        return JSONResponse(await asyncio.to_thread(detail))
 
     @app.get("/api/ai/activity")
     async def ai_activity(_: str = Depends(logged_in)) -> JSONResponse:
@@ -487,6 +563,9 @@ def register(
                 # Per-user UI theme (#109). The SPA applies this at load so a non-default
                 # choice carries across devices; localStorage is the device cache.
                 "theme": prefs.get_theme(),
+                # What a NEW session starts with (#853 P4): the default engine (or null) and the
+                # permission-bypass default. Starting values only; the form may still differ.
+                "agent_defaults": prefs.get_agent_defaults(),
                 # Brand accent (#211 Phase 2): #rrggbb driving --accent + the xterm cursor.
                 # Applied at load like the theme; localStorage is the device cache.
                 "accent": prefs.get_accent(),
@@ -635,6 +714,12 @@ def register(
             if payload["theme"] not in prefs.THEMES:
                 raise HTTPException(status_code=422, detail="unknown theme")
             out["theme"] = prefs.set_theme(payload["theme"])
+        if "agent_defaults" in payload:
+            # #853 P4: the default engine + permission-bypass default for NEW sessions.
+            err = prefs.validate_agent_defaults_patch(payload["agent_defaults"])
+            if err is not None:
+                raise HTTPException(status_code=422, detail=err)
+            out["agent_defaults"] = prefs.set_agent_defaults(payload["agent_defaults"])
         if "accent" in payload:
             if not prefs.is_valid_accent(payload["accent"]):
                 raise HTTPException(status_code=422, detail="invalid accent")

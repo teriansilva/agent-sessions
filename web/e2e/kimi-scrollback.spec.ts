@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { mockRoster } from "./roster";
 
 // #1038 — Kimi's own repaint cycle wipes the scrollback and pins the view off the live tail.
 //
@@ -231,6 +232,11 @@ async function readAtTopThroughRepaints(page: Page) {
 }
 
 test.describe("kimi live-stream scrollback (#1038)", () => {
+  // The client strips kimi's repaint wipes only once the roster says kimi wipes (#853 P4).
+  test.beforeEach(async ({ page }) => {
+    await mockRoster(page);
+  });
+
   test("streaming kimi repaints never move the viewport off the tail (no user input)", async ({
     page,
   }) => {

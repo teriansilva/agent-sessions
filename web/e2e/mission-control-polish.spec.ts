@@ -10,6 +10,7 @@
  *  controls sit relative to each other, and a wrapped control can still leave a row count of one.
  */
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import { mockRoster } from "./roster";
 import {
   MISSION,
   missionList,
@@ -542,16 +543,7 @@ async function handOffReference(page: Page) {
       },
     }),
   );
-  await page.route("**/api/engines", (r) =>
-    r.fulfill({
-      json: {
-        engines: [
-          { id: "claude", present: true, supports_new: true, supports_seed_start: true, seed_reason: null, bin: "/bin/claude" },
-          { id: "codex", present: true, supports_new: true, supports_seed_start: true, seed_reason: null, bin: "/bin/codex" },
-        ],
-      },
-    }),
-  );
+  await mockRoster(page, { only: ["claude", "codex"] });
   await page.route("**/api/handoff/prepare", (r) =>
     r.fulfill({
       json: { handle: "h-p1", preview: "# Handoff", meta: { mode: "quick", turns: 1, bytes: 9, cap: 8192 } },

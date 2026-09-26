@@ -2,8 +2,10 @@ import { Archive, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError, type CompactInfo, type CompactJob } from "../lib/api";
 import styles from "./Settings.module.css";
+import { engineLabel, useEngineRoster } from "../app/engineRoster";
 
-/** Settings → Maintenance (#993): archive missions, prune caches, and compact the OpenCode database.
+/** Settings → Maintenance (#993): archive missions, prune caches, and compact each engine store that
+ *  selects the sqlite-vacuum maintenance kind (#853 P4 — opencode's database today).
  *
  *  Both cards show a dry run before anything runs, confirm in place naming the side effects, and
  *  report skips and failures on their own lines rather than folding them into a success. The
@@ -574,23 +576,26 @@ export function PruneCard() {
         <p className={styles.hint}>Nothing to prune right now.</p>
       )}
       {result && <ResultLines lines={result} />}
-      <CompactDatabase />
+      <CompactDatabases />
     </section>
   );
 }
 
 const COMPACT_JOB_KEY = "tr-maintenance-compact-job";
-function rememberedJob(): string | undefined {
+/** One remembered job per compaction target (#853 P4), so two cards never clear each other's.
+ *  The default target keeps the original key. */
+const jobKey = (engine?: string) => (engine ? `${COMPACT_JOB_KEY}:${engine}` : COMPACT_JOB_KEY);
+function rememberedJob(engine?: string): string | undefined {
   try {
-    return sessionStorage.getItem(COMPACT_JOB_KEY) || undefined;
+    return sessionStorage.getItem(jobKey(engine)) || undefined;
   } catch {
     return undefined;
   }
 }
-function rememberJob(id?: string) {
+function rememberJob(id?: string, engine?: string) {
   try {
-    if (id) sessionStorage.setItem(COMPACT_JOB_KEY, id);
-    else sessionStorage.removeItem(COMPACT_JOB_KEY);
+    if (id) sessionStorage.setItem(jobKey(engine), id);
+    else sessionStorage.removeItem(jobKey(engine));
   } catch {
     /* Storage is optional; identity still lives in this mounted card. */
   }
@@ -649,10 +654,48 @@ function usableCompactInfo(r: CompactInfo): boolean {
  *  navigation and polling; 404 is an explicit lost result, never a different job's success.
  *  A lost POST response is uncertain and must be refreshed, never automatically resubmitted.
  *  Only a GET started after that outcome may reconcile it; older responses cannot clear it. */
-export function CompactDatabase() {
+/** The server retains ONE compaction job for the app; a card shows it only when it is THIS card's
+ *  store (#853 P4). An older server's job names no engine and is shown as before. */
+function ownJob(j: CompactJob | null, engine?: string): CompactJob | null {
+  return j && engine && j.engine && j.engine !== engine ? null : j;
+}
+
+export function CompactDatabases() {
+  // One card per engine whose store the compaction kind maintains (#853 P4), labelled from the
+  // roster. The DEFAULT target's card asks first, exactly as the single card always did — so the
+  // one-target case makes the same requests as before — and its answer names every target
+  // (`targets`); a card is added for each of the others. Nothing here names an engine.
+  const [targets, setTargets] = useState<string[]>([]);
+  return (
+    <>
+      <CompactDatabase onTargets={setTargets} />
+      {targets.slice(1).map((t) => (
+        <CompactDatabase key={t} engine={t} />
+      ))}
+    </>
+  );
+}
+
+export function CompactDatabase({
+  engine,
+  onTargets,
+}: {
+  engine?: string;
+  /** The default card reports the server's target list, so its parent can add the others. */
+  onTargets?: (targets: string[]) => void;
+} = {}) {
+  useEngineRoster();
+  // Every line naming the store — heading, running line, hint, CONFIRMATION — comes from the SAME
+  // target the POST names (#853 P4, Hermes on #1134): a card must never confirm one engine's
+  // database and compact another's. An older server names no target; its only one was opencode's.
+  // The default card compacts the server's default target — the first it lists, once it has said.
+  const [defaultTarget, setDefaultTarget] = useState<string | undefined>(undefined);
+  const target = engine ?? defaultTarget;
+  const who = target ? engineLabel(target) : "OpenCode";
+
   const [info, setInfo] = useState<CompactInfo | null>(null);
   const [job, setJob] = useState<CompactJob | null>(null);
-  const wanted = useRef(rememberedJob());
+  const wanted = useRef(rememberedJob(engine));
   const statusEpoch = useRef(0);
   const [reload, setReload] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -665,17 +708,22 @@ export function CompactDatabase() {
     let cancelled = false;
     const epoch = statusEpoch.current;
     const stale = () => cancelled || epoch !== statusEpoch.current;
-    api
-      .compactInfo(wanted.current)
+    (engine ? api.compactInfo(wanted.current, engine) : api.compactInfo(wanted.current))
       .then((r) => {
         if (stale()) return;
         if (!usableCompactInfo(r))
           throw new Error("Incomplete database measurement");
-        setInfo(r);
-        setJob(r.job);
-        if (r.job) {
-          wanted.current = r.job.id;
-          rememberJob(r.job.id);
+        const first = r.targets?.[0];
+        if (!engine) {
+          setDefaultTarget(first);
+          onTargets?.(r.targets ?? []);
+        }
+        const mine = ownJob(r.job, engine ?? first);
+        setInfo({ ...r, job: mine });
+        setJob(mine);
+        if (mine) {
+          wanted.current = mine.id;
+          rememberJob(mine.id, engine);
         }
         setError(null);
         setUncertain(false);
@@ -690,7 +738,7 @@ export function CompactDatabase() {
           );
           setJob(null);
           wanted.current = undefined;
-          rememberJob();
+          rememberJob(undefined, engine);
         }
         setError(
           "Couldn’t refresh the database status. Refresh before trying again; a running job continues on the server.",
@@ -699,7 +747,7 @@ export function CompactDatabase() {
     return () => {
       cancelled = true;
     };
-  }, [reload]);
+  }, [reload, engine, onTargets]);
 
   const running = jobRunning(job);
   const runner = info?.runner;
@@ -737,11 +785,11 @@ export function CompactDatabase() {
     setConfirming(false);
     setNotice(null);
     try {
-      const r = await api.compact();
+      const r = engine ? await api.compact(engine) : await api.compact();
       if (!r.job?.id || !usableCompactJob(r.job))
         throw new Error("Missing compaction job");
       wanted.current = r.job.id;
-      rememberJob(r.job.id);
+      rememberJob(r.job.id, engine);
       setJob(r.job);
       setInfo(null);
       setReload((n) => n + 1);
@@ -751,7 +799,7 @@ export function CompactDatabase() {
           "Compaction was refused. Refreshing the current blockers and maintenance job.",
         );
         wanted.current = undefined;
-        rememberJob();
+        rememberJob(undefined, engine);
         setInfo(null);
         setReload((n) => n + 1);
       } else {
@@ -773,7 +821,7 @@ export function CompactDatabase() {
   if (running)
     lines.push({
       tone: "attention",
-      text: `${job?.state === "checkpoint" ? "Finishing the WAL checkpoint" : job?.state === "checking" ? "Checking database availability" : "Compacting the database"}… BattleLab’s OpenCode launches are unavailable; retry when maintenance finishes.`,
+      text: `${job?.state === "checkpoint" ? "Finishing the WAL checkpoint" : job?.state === "checking" ? "Checking database availability" : "Compacting the database"}… BattleLab’s ${who} launches are unavailable; retry when maintenance finishes.`,
     });
   if (result?.vacuum === "done") {
     lines.push({
@@ -804,9 +852,11 @@ export function CompactDatabase() {
   for (const b of result?.blockers ?? [])
     lines.push({ tone: "attention", text: b.detail });
 
+  // Labelled from the roster (#853 P4), never a hardcoded product name.
+  const title = `${who} database`;
   return (
-    <div className={styles.databaseSection} aria-label="OpenCode database">
-      <h3 className={styles.subhead}>OpenCode database</h3>
+    <div className={styles.databaseSection} aria-label={title}>
+      <h3 className={styles.subhead}>{title}</h3>
       <dl className={styles.databaseStats}>
         <div>
           <dt>Size</dt>
@@ -846,20 +896,20 @@ export function CompactDatabase() {
         </p>
       )}
       <p className={styles.hint}>
-        Reclaims pages freed by OpenCode; session history is kept. While
-        compacting, BattleLab won’t start OpenCode sessions. OpenCode started
+        Reclaims pages freed by {who}; session history is kept. While
+        compacting, BattleLab won’t start {who} sessions. {who} started
         outside BattleLab may report “database busy”; SQLite keeps the file
         consistent.
       </p>
       {confirmOpen ? (
         <div>
           <p className={styles.confirmText}>
-            Compact the OpenCode database ({compactBytes(c.reclaimable_bytes!)}{" "}
+            Compact the {who} database ({compactBytes(c.reclaimable_bytes!)}{" "}
             reclaimable)?
           </p>
           <p className={styles.hint}>
             Availability and disk space are checked again before compaction.
-            OpenCode launches from BattleLab will be unavailable until it
+            {who} launches from BattleLab will be unavailable until it
             finishes.
           </p>
           <div className={styles.confirmRow}>

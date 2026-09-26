@@ -6,6 +6,7 @@ import {
   mockMissions,
   openMissionRail,
 } from "./mission-console";
+import { mockRoster } from "./roster";
 
 /** THE TOP BAR'S nav, not "a link called Missions" (#1058).
  *
@@ -111,6 +112,7 @@ test("section buttons share the brand row and keep their own declared typography
   // short-screen test's below; the assertions are unchanged.
   test.setTimeout(120_000);
   await setupSections(page);
+  await mockRoster(page); // the manifest-generated roster (#853 P4)
   await page.goto("/mission");
   await selectMission(page, "Mission layout");
   await expect(page.getByTestId("console-title")).toHaveText("Mission layout");
@@ -207,6 +209,7 @@ test("ordinary buttons and section links glitch without losing hit areas (#946)"
 }) => {
   await setupSections(page);
   await page.emulateMedia({ reducedMotion: "no-preference" });
+  await mockRoster(page); // the manifest-generated roster (#853 P4)
   await page.goto("/mission");
   await selectMission(page, "Mission layout");
   await expect(page.getByTestId("console-title")).toHaveText("Mission layout");
@@ -294,6 +297,7 @@ test("ambient and press feedback reach ordinary controls and respect reduced mot
   });
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await setupSections(page);
+  await mockRoster(page); // the manifest-generated roster (#853 P4)
   await page.goto("/mission");
   await selectMission(page, "Mission layout");
   await expect(page.getByTestId("console-title")).toHaveText("Mission layout");
@@ -350,6 +354,7 @@ test("compact header keeps drawer and notification anchors reachable (#946)", as
   await setupSections(page);
   for (const width of [320, 800, 801]) {
     await page.setViewportSize({ width, height: 740 });
+    await mockRoster(page); // the manifest-generated roster (#853 P4)
     await page.goto("/mission");
     await selectMission(page, "Mission layout");
     await expect(page.getByTestId("console-title")).toHaveText(
@@ -402,6 +407,7 @@ test("sections restore mission search in both navigation directions", async ({
   isMobile,
 }) => {
   await setupSections(page);
+  await mockRoster(page); // the manifest-generated roster (#853 P4)
   await page.goto("/mission");
   await expect(
     barLink(page, "Sessions"),
@@ -470,6 +476,7 @@ test("Context comes first and details collapse inside a fixed workspace", async 
   page,
 }) => {
   await setupSections(page);
+  await mockRoster(page); // the manifest-generated roster (#853 P4)
   await page.goto("/mission");
   await selectMission(page, "Mission layout");
   await expect(page.getByTestId("console-title")).toHaveText("Mission layout");
@@ -510,6 +517,7 @@ for (const width of [1600, 1400, 1280, 801, 800, 412, 375]) {
     test.skip(info.project.name !== "desktop", "Explicit viewport matrix");
     await page.setViewportSize({ width, height: 950 });
     await setupSections(page);
+    await mockRoster(page); // the manifest-generated roster (#853 P4)
     await page.goto("/mission");
     await selectMission(page, "Mission layout");
     await expect(page.getByTestId("console-title")).toHaveText(
@@ -587,6 +595,7 @@ test("a late search cannot replace the filtered result or the open mission", asy
       },
     });
   });
+  await mockRoster(page); // the manifest-generated roster (#853 P4)
   await page.goto("/mission");
   await selectMission(page, "Mission layout");
   await expect(page.getByTestId("console-title")).toHaveText("Mission layout");
@@ -645,6 +654,7 @@ for (const initial of ["draft", "planned"]) {
       launches++;
       return r.fulfill({ status: 500, json: { detail: "Unexpected launch" } });
     });
+    await mockRoster(page); // the manifest-generated roster (#853 P4)
     await page.goto("/mission");
     await selectMission(page);
     await expect(page.getByTestId("mission-begin")).toBeEnabled();
@@ -706,6 +716,7 @@ test("Begin confirms one saved launch and stays disabled until its result is rea
       json: { state, session_key: "claude:worker", reason: "" },
     });
   });
+  await mockRoster(page); // the manifest-generated roster (#853 P4)
   await page.goto("/mission");
   await selectMission(page);
   await page.getByTestId("mission-begin").click();
@@ -761,6 +772,7 @@ test("mission project/state filters compose with search and keep distinct projec
     const url = new URL(request.url());
     if (url.pathname === "/api/missions") queries.push(url.searchParams);
   });
+  await mockRoster(page); // the manifest-generated roster (#853 P4)
   await page.goto("/mission");
   await openMissionRail(page);
   const project = page.getByRole("combobox", {
@@ -873,6 +885,7 @@ test("maximum mission titles keep the composer reachable on short screens", asyn
     state = phase;
     for (const width of [375, 412, 800, 1280]) {
       await page.setViewportSize({ width, height: 540 });
+      await mockRoster(page); // the manifest-generated roster (#853 P4)
       await page.goto("/mission");
       await selectMission(page);
       await expect(page.getByTestId("console-title")).toHaveText(title.trim());
@@ -916,6 +929,7 @@ test("maximum mission titles keep the composer reachable on short screens", asyn
     }),
   );
   await page.setViewportSize({ width: 375, height: 540 });
+  await mockRoster(page); // the manifest-generated roster (#853 P4)
   await page.goto("/mission");
   await selectMission(page);
   await expect(page.getByTestId("console-title")).toHaveText(title);
@@ -940,6 +954,7 @@ test("an empty mission search on the landing names the filter, and clearing it r
   // says it is scoped to the current filters and offers the way back, and once cleared — with no
   // filter and nothing needing the operator — the preview is absent rather than claiming anything.
   await setupSections(page);
+  await mockRoster(page); // the manifest-generated roster (#853 P4)
   await page.goto("/mission");
   await openMissionRail(page);
   await page
@@ -998,6 +1013,7 @@ test("a selected later-page mission is not declared outside its matching filters
       },
     });
   });
+  await mockRoster(page); // the manifest-generated roster (#853 P4)
   await page.goto("/mission");
   await openMissionRail(page);
   await page

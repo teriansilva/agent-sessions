@@ -1976,6 +1976,72 @@ def _coerce_agent_budgets(raw: object) -> dict:
     return out
 
 
+# --- agent defaults (#853 P4) ---------------------------------------------------------------------
+#
+# What a NEW session starts with, stored once for every picker: the default engine and the
+# permission-bypass default. Both are STARTING values — the new-session form (or a handoff) can
+# still choose differently for itself, and changing a default never rewrites a mission plan or a
+# stored session. Strict on write (422, never coerce), lenient on read, like `term_font_size`.
+
+AGENT_DEFAULTS_KEYS = ("default_engine", "bypass")
+_ENGINE_ID_SHAPE = re.compile(r"\A[a-z][a-z0-9-]{0,23}\Z")
+
+
+def coerce_agent_defaults(raw: object) -> dict:
+    """The stored block with defaults applied. Never raises: an edited file cannot strand the
+    form. `bypass` defaults to True — today's `useState(true)` — so storing nothing changes
+    nothing."""
+    raw = raw if isinstance(raw, dict) else {}
+    eid = raw.get("default_engine")
+    bypass = raw.get("bypass")
+    return {
+        "default_engine": eid if isinstance(eid, str) and _ENGINE_ID_SHAPE.match(eid) else None,
+        "bypass": bypass if isinstance(bypass, bool) else True,
+    }
+
+
+def get_agent_defaults(path: Path | None = None) -> dict:
+    return coerce_agent_defaults(_load(path or _default_path()).get("agent_defaults"))
+
+
+def validate_agent_defaults_patch(patch: object, path: Path | None = None) -> str | None:
+    """A 422 detail, or None. `bypass` is a real JSON boolean only (a string or number is refused,
+    never coerced). `default_engine` is `null` or a loaded engine that can start a new session —
+    OR the id already stored: an absent engine's stored choice is kept writable (so saving an
+    unrelated field never has to drop it) exactly like a removed engine's budget. A NEW unknown id
+    is still refused."""
+    if not isinstance(patch, dict):
+        return "agent_defaults must be an object"
+    unknown = set(patch) - set(AGENT_DEFAULTS_KEYS)
+    if unknown:
+        return f"unknown agent_defaults fields: {sorted(unknown)}"
+    if "bypass" in patch and not isinstance(patch["bypass"], bool):
+        return "agent_defaults.bypass must be a boolean"
+    if "default_engine" in patch:
+        eid = patch["default_engine"]
+        if eid is not None:
+            from . import engines
+
+            startable = set(engines.ids_where(lambda m: m.can("new")))
+            stored = get_agent_defaults(path)["default_engine"]
+            if not isinstance(eid, str) or (eid not in startable and eid != stored):
+                return "agent_defaults.default_engine must be an engine that can start a session"
+    return None
+
+
+def set_agent_defaults(patch: dict, path: Path | None = None) -> dict:
+    """Merge a VALIDATED partial block under the prefs lock; unmentioned fields are kept."""
+
+    def merge(raw):
+        cur = coerce_agent_defaults(raw)
+        for k in AGENT_DEFAULTS_KEYS:
+            if k in patch:
+                cur[k] = patch[k]
+        return cur
+
+    return _mutate("agent_defaults", merge, path)
+
+
 def get_agent_budgets(path: Path | None = None) -> dict:
     """The stored `agent_budgets` block with defaults applied and every field coerced (#839)."""
     return _coerce_agent_budgets(_load(path or _default_path()).get("agent_budgets"))

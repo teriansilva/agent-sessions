@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page, type Route } from "@playwright/test";
 import { settingsPath } from "../src/routes/settingsTabs";
+import { mockRoster } from "./roster";
 
 // #993 increment 1: Settings → Maintenance gains "Archive old missions" and "Prune". The network
 // is mocked so the page renders without a backend; every assertion is on what a real browser
@@ -147,6 +148,7 @@ test("dry-run counts render and both confirms name their side effects (#993)", a
       });
     },
   });
+  await mockRoster(page); // the manifest-generated roster (#853 P4)
   await page.goto(settingsPath("maintenance"));
   const prune = card(page, "Prune");
 
@@ -201,6 +203,7 @@ test("empty states disable the actions (#993)", async ({ page }) => {
         json: { eligible: 0, sessions: 0, live_sessions: 0, unresolved: [], runner: null },
       }),
   });
+  await mockRoster(page); // the manifest-generated roster (#853 P4)
   await page.goto(settingsPath("maintenance"));
   await expect(page.getByText("Nothing to prune right now.")).toBeVisible();
   await expect(page.getByRole("button", { name: /prune selected/i })).toBeDisabled();
@@ -219,6 +222,7 @@ test("a failed dry run shows an error with Retry, and nothing runs (#993)", asyn
     },
     missionsGet: (route) => route.fulfill({ status: 500, json: { detail: "boom" } }),
   });
+  await mockRoster(page); // the manifest-generated roster (#853 P4)
   await page.goto(settingsPath("maintenance"));
   await expect(page.getByText(/couldn’t measure the caches \(dry run failed\)/i)).toBeVisible();
   await expect(page.getByText(/couldn’t count missions \(dry run failed\)/i)).toBeVisible();
@@ -245,6 +249,7 @@ test("a busy runner refuses with retry copy rather than queueing (#993)", async 
     missionsGet: (route) =>
       route.fulfill({ json: { ...MISSIONS_INFO, runner: { job: "prune", started_at: 1 } } }),
   });
+  await mockRoster(page); // the manifest-generated roster (#853 P4)
   await page.goto(settingsPath("maintenance"));
   const missions = card(page, "Archive old missions");
   await expect(
@@ -289,6 +294,7 @@ test("the cards recover on their own once the running job ends (#993)", async ({
       });
     },
   });
+  await mockRoster(page); // the manifest-generated roster (#853 P4)
   await page.goto(settingsPath("maintenance"));
   const prune = card(page, "Prune");
   const missions = card(page, "Archive old missions");
@@ -330,6 +336,7 @@ test("a category that could not be measured is never submitted as zero (#993)", 
       });
     },
   });
+  await mockRoster(page); // the manifest-generated roster (#853 P4)
   await page.goto(settingsPath("maintenance"));
   const prune = card(page, "Prune");
   await expect(page.getByTestId("prune-count-stale_sockets")).toHaveText("couldn’t measure");
@@ -397,6 +404,7 @@ for (const theme of ["dark", "light"]) {
               },
       });
     });
+    await mockRoster(page); // the manifest-generated roster (#853 P4)
     await page.goto(settingsPath("maintenance"));
     await page.evaluate(
       (t) => document.documentElement.setAttribute("data-theme", t),
@@ -483,6 +491,7 @@ test("a pre-submission refresh cannot reconcile a lost compaction response", asy
       },
     });
   });
+  await mockRoster(page); // the manifest-generated roster (#853 P4)
   await page.goto(settingsPath("maintenance"));
   const database = page.locator('[aria-label="OpenCode database"]');
   const start = database.getByRole("button", {
@@ -552,6 +561,7 @@ test("compaction presents every blocker and recovers after refresh", async ({
         : COMPACT_INFO,
     }),
   );
+  await mockRoster(page); // the manifest-generated roster (#853 P4)
   await page.goto(settingsPath("maintenance"));
   const database = page.locator('[aria-label="OpenCode database"]');
   await expect(

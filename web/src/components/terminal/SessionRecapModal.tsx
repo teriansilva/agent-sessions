@@ -14,6 +14,7 @@ import { sessionStatus, type SessionStatusBase } from "../../lib/sessionStatus";
 import type { ProjectRef } from "../../types/api";
 import styles from "./SessionRecapModal.module.css";
 import { useFocusContainment } from "../pulse/useModalDrawer";
+import { useEngineRoster } from "../../app/engineRoster";
 
 /** Session-brief modal (#481): the recap icon in the terminal header opens this. Re-entering a
  *  session, this is where you find out what it IS and what happened in it without scrolling the
@@ -77,6 +78,9 @@ export function SessionRecapModal({
   /** The element that opened the modal — focus returns here on close. */
   returnFocusTo?: HTMLElement | null;
 }) {
+  // Re-render when the engine roster lands or changes (#853 P4): this renders agent names,
+  // badges or colours, which come from the roster, not from a client-side list.
+  useEngineRoster();
   // Local copy so "Review now" refreshes the modal in place; seeded from the row the header
   // already has. The store/sidebar reconverge on their own poll.
   const [state, setState] = useState<{

@@ -16,6 +16,7 @@ import { openMissionDetails } from "./mission-console";
  * never on a DOM proxy for either.
  */
 import { expect, test, type Page } from "@playwright/test";
+import { mockRoster } from "./roster";
 
 import {
   MISSION,
@@ -66,6 +67,7 @@ const OVERVIEW = {
 
 async function stub(page: Page) {
   await page.route("**/api/config", (r) => r.fulfill({ json: CONFIG }));
+  await mockRoster(page);
   await page.route("**/api/version", (r) =>
     r.fulfill({ json: { version: "test" } }),
   );

@@ -1,0 +1,286 @@
+{
+  "_comment": "Generated from src/agent_sessions/plugins/first_party/*/plugin.toml (#853 P4). tests/test_web_roster_fixture.py fails if it drifts from the manifests; host-state fields (present, bin) are fixed.",
+  "engines": [
+    {
+      "id": "claude",
+      "present": true,
+      "supports_new": true,
+      "supports_seed_start": true,
+      "seed_reason": null,
+      "bin": "/fixture/bin/claude",
+      "label": "Claude Code",
+      "kind": "agent",
+      "runtime": "pty",
+      "display": {
+        "name": "claude",
+        "badge": "cc",
+        "accent": "amber",
+        "id_prefix": null,
+        "order": 10
+      },
+      "capabilities": {
+        "resume": true,
+        "new": true,
+        "archive": true,
+        "handoff_target": true,
+        "seed_start": true,
+        "orchestrator_input": true,
+        "raw_tty": true,
+        "owns_transcript": true
+      },
+      "session_id": {
+        "mint": "pinned"
+      },
+      "models": [],
+      "usage": {
+        "source": "plan"
+      },
+      "terminal": {
+        "repaint": "none"
+      },
+      "status": "active",
+      "status_reason": null
+    },
+    {
+      "id": "opencode",
+      "present": true,
+      "supports_new": true,
+      "supports_seed_start": true,
+      "seed_reason": null,
+      "bin": "/fixture/bin/opencode",
+      "label": "opencode",
+      "kind": "agent",
+      "runtime": "pty",
+      "display": {
+        "name": "opencode",
+        "badge": "oc",
+        "accent": "teal",
+        "id_prefix": "ses_",
+        "order": 20
+      },
+      "capabilities": {
+        "resume": true,
+        "new": true,
+        "archive": true,
+        "handoff_target": true,
+        "seed_start": true,
+        "orchestrator_input": true,
+        "raw_tty": true,
+        "owns_transcript": false
+      },
+      "session_id": {
+        "mint": "adopt"
+      },
+      "models": [],
+      "usage": {
+        "source": "tokens"
+      },
+      "terminal": {
+        "repaint": "none"
+      },
+      "status": "active",
+      "status_reason": null
+    },
+    {
+      "id": "codex",
+      "present": true,
+      "supports_new": true,
+      "supports_seed_start": true,
+      "seed_reason": null,
+      "bin": "/fixture/bin/codex",
+      "label": "Codex",
+      "kind": "agent",
+      "runtime": "pty",
+      "display": {
+        "name": "codex",
+        "badge": "cx",
+        "accent": "green",
+        "id_prefix": null,
+        "order": 30
+      },
+      "capabilities": {
+        "resume": true,
+        "new": true,
+        "archive": true,
+        "handoff_target": true,
+        "seed_start": true,
+        "orchestrator_input": true,
+        "raw_tty": true,
+        "owns_transcript": false
+      },
+      "session_id": {
+        "mint": "adopt"
+      },
+      "models": [],
+      "usage": {
+        "source": "plan"
+      },
+      "terminal": {
+        "repaint": "wipe"
+      },
+      "status": "active",
+      "status_reason": null
+    },
+    {
+      "id": "gemini",
+      "present": true,
+      "supports_new": true,
+      "supports_seed_start": false,
+      "seed_reason": "no seed-capable start yet",
+      "bin": "/fixture/bin/gemini",
+      "label": "Gemini CLI",
+      "kind": "agent",
+      "runtime": "pty",
+      "display": {
+        "name": "gemini",
+        "badge": "gm",
+        "accent": "blue",
+        "id_prefix": null,
+        "order": 40
+      },
+      "capabilities": {
+        "resume": true,
+        "new": true,
+        "archive": true,
+        "handoff_target": false,
+        "seed_start": false,
+        "orchestrator_input": true,
+        "raw_tty": true,
+        "owns_transcript": false
+      },
+      "session_id": {
+        "mint": "pinned"
+      },
+      "models": [],
+      "usage": {
+        "source": "manual"
+      },
+      "terminal": {
+        "repaint": "none"
+      },
+      "status": "active",
+      "status_reason": null
+    },
+    {
+      "id": "antigravity",
+      "present": true,
+      "supports_new": true,
+      "supports_seed_start": false,
+      "seed_reason": "no seed-capable start yet",
+      "bin": "/fixture/bin/agy",
+      "label": "Antigravity",
+      "kind": "agent",
+      "runtime": "pty",
+      "display": {
+        "name": "antigravity",
+        "badge": "ag",
+        "accent": "lime",
+        "id_prefix": null,
+        "order": 50
+      },
+      "capabilities": {
+        "resume": true,
+        "new": true,
+        "archive": true,
+        "handoff_target": false,
+        "seed_start": false,
+        "orchestrator_input": true,
+        "raw_tty": true,
+        "owns_transcript": false
+      },
+      "session_id": {
+        "mint": "adopt"
+      },
+      "models": [],
+      "usage": {
+        "source": "plan"
+      },
+      "terminal": {
+        "repaint": "none"
+      },
+      "status": "active",
+      "status_reason": null
+    },
+    {
+      "id": "kimi",
+      "present": true,
+      "supports_new": true,
+      "supports_seed_start": true,
+      "seed_reason": null,
+      "bin": "/fixture/bin/kimi",
+      "label": "Kimi Code",
+      "kind": "agent",
+      "runtime": "pty",
+      "display": {
+        "name": "kimi",
+        "badge": "ki",
+        "accent": "magenta",
+        "id_prefix": "session_",
+        "order": 60
+      },
+      "capabilities": {
+        "resume": true,
+        "new": true,
+        "archive": true,
+        "handoff_target": true,
+        "seed_start": true,
+        "orchestrator_input": true,
+        "raw_tty": true,
+        "owns_transcript": false
+      },
+      "session_id": {
+        "mint": "adopt"
+      },
+      "models": [],
+      "usage": {
+        "source": "manual"
+      },
+      "terminal": {
+        "repaint": "wipe"
+      },
+      "status": "active",
+      "status_reason": null
+    },
+    {
+      "id": "shell",
+      "present": true,
+      "supports_new": true,
+      "supports_seed_start": false,
+      "seed_reason": "not an agent engine",
+      "bin": "/fixture/bin/bash",
+      "label": "Shell",
+      "kind": "terminal",
+      "runtime": "pty",
+      "display": {
+        "name": "shell",
+        "badge": "sh",
+        "accent": "slate",
+        "id_prefix": null,
+        "order": 90
+      },
+      "capabilities": {
+        "resume": true,
+        "new": true,
+        "archive": true,
+        "handoff_target": false,
+        "seed_start": false,
+        "orchestrator_input": false,
+        "raw_tty": false,
+        "owns_transcript": false
+      },
+      "session_id": {
+        "mint": "pinned"
+      },
+      "models": [],
+      "usage": {
+        "source": "none"
+      },
+      "terminal": {
+        "repaint": "none"
+      },
+      "status": "active",
+      "status_reason": null
+    }
+  ],
+  "problems": []
+}

@@ -8,6 +8,10 @@ import { applySWUpdate } from "./swUpdate";
 // Mock the whole API surface the shell touches on load so render is deterministic.
 vi.mock("../lib/api", () => ({
   api: {
+    // The engine roster (#853 P4) — the generated fixture, as the server would serve it.
+    engines: vi
+      .fn()
+      .mockImplementation(async () => (await import("../test/roster.fixture.json")).default),
     config: vi
       .fn()
       .mockResolvedValue({

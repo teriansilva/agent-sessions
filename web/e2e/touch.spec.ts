@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { mockRoster } from "./roster";
 
 // Verifies the headline fix in a REAL touch browser: a one-finger drag over the
 // terminal scrolls its scrollback. Drives the real Terminal component, but stubs the
@@ -135,6 +136,12 @@ async function dragIntoScrollback(
   }
   return scrollMetrics(viewport);
 }
+
+// Codex's clear-scrollback repaint is stripped client-side only once the roster says codex
+// wipes (#853 P4), so every spec here serves it.
+test.beforeEach(async ({ page }) => {
+  await mockRoster(page);
+});
 
 test("one-finger drag scrolls the terminal scrollback", async ({
   page,

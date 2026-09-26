@@ -4,6 +4,7 @@
  *  prompt class while waiting, the recap's age. It never guesses at intent: "quiet" is not "done",
  *  and "not observed" is not "quiet" (the server has seen no output, so it cannot say). */
 import type { MissionNowSession } from "../../types/api";
+import { idPrefix } from "../../app/engineRoster";
 
 /** Missions whose sessions can be doing something. Everything else shows no strip. */
 export const LIVE_STATES: ReadonlySet<string> = new Set([
@@ -61,6 +62,9 @@ export function recapPhrase(s: MissionNowSession): string | null {
 /** `claude:3f2a…` → `claude · 3f2a`. The strip names sessions by engine and a short id. */
 export function sessionLabel(key: string): string {
   const [engine, id] = key.includes(":") ? key.split(/:(.*)/s, 2) : ["", key];
-  const short = (id ?? "").replace(/^(ses_|session_)/, "").slice(0, 4);
+  // The engine's native-id prefix (`ses_`, `session_`) comes from its manifest (#853 P4).
+  const prefix = engine ? idPrefix(engine) : "";
+  const raw = id ?? "";
+  const short = (prefix && raw.startsWith(prefix) ? raw.slice(prefix.length) : raw).slice(0, 4);
   return engine ? `${engine} · ${short}` : short;
 }

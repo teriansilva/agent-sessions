@@ -9,6 +9,7 @@ import type { MissionListRow, Session, SessionMissionRef } from "../../types/api
 import { useFocusContainment } from "../pulse/useModalDrawer";
 import dlg from "../HudDialog.module.css";
 import styles from "./AdoptToMissionModal.module.css";
+import { useEngineRoster } from "../../app/engineRoster";
 
 /** States the store refuses an adoption into — `_adopt_tx`: "reopen it before adopting". */
 const TERMINAL_STATES = new Set(["done", "failed", "abandoned"]);
@@ -58,6 +59,9 @@ export function AdoptToMissionModal({
    *  replaced by Open mission, and can fold into "…" (#953 review). */
   resolveReturnFocus?: () => HTMLElement | null;
 }) {
+  // Re-render when the engine roster lands or changes (#853 P4): this renders agent names,
+  // badges or colours, which come from the roster, not from a client-side list.
+  useEngineRoster();
   const [query, setQuery] = useState("");
   const [debounced, setDebounced] = useState("");
   const [rows, setRows] = useState<MissionListRow[] | null>(null);

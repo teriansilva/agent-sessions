@@ -205,6 +205,29 @@ test("Launch is enabled and launches with the discovered folder as the fallback 
   );
 });
 
+test("with the SHARED roster unavailable, Launch is disabled and says why — never an enabled no-op (#853 P4)", async () => {
+  // The wizard's own engine discovery succeeds; the roster that decides the id mode has not
+  // loaded. An enabled Launch would click through to nothing (Hermes on #1134).
+  const { markRosterFailed, resetRoster, setRoster, getRoster } = await import(
+    "../app/engineRoster"
+  );
+  const loaded = getRoster().engines;
+  renderWizard();
+  await gotoLaunchStep();
+  await finishTourToLaunch();
+  resetRoster();
+  markRosterFailed();
+  const launchBtn = await screen.findByRole("button", { name: /launch session/i });
+  await waitFor(() => expect(launchBtn).toBeDisabled());
+  expect(screen.getByRole("status")).toHaveTextContent(/Couldn’t load the agent list/);
+  await userEvent.click(launchBtn);
+  expect(mockNavigate).not.toHaveBeenCalled();
+  expect(api.completeOnboarding).not.toHaveBeenCalled();
+  // …and it becomes available the moment the roster lands.
+  act(() => setRoster(loaded));
+  await waitFor(() => expect(launchBtn).toBeEnabled());
+});
+
 test("an explicitly chosen folder wins over the discovered-folder fallback — #681", async () => {
   vi.mocked(api.folders).mockResolvedValue({
     folders: [

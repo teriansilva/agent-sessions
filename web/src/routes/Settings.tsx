@@ -114,6 +114,7 @@ import { UpdateWhatsNew } from "../components/updates/UpdateWhatsNew";
 import { SOURCE_URL } from "../lib/links";
 import { whatsNewLabel } from "../whatsnew/due";
 import { useOpenWhatsNew } from "../whatsnew/WhatsNewContext";
+import { useEngineRoster } from "../app/engineRoster";
 
 const BUY_ME_A_COFFEE = "https://buymeacoffee.com/teriansilva";
 // AGPL-3.0 §13: a network-served build must offer its users the Corresponding Source. The
@@ -278,6 +279,9 @@ function SettingsIndex({ returnTo }: { returnTo: string }) {
  *  open it is a settings page that hangs.
  */
 function ConnectedAgents() {
+  // Re-render when the engine roster lands or changes (#853 P4): this renders agent names,
+  // badges or colours, which come from the roster, not from a client-side list.
+  useEngineRoster();
   const [engines, setEngines] = useState<EngineInfo[] | null>(null);
   const [usage, setUsage] = useState<AgentUsageResponse | null>(null);
   const [busy, setBusy] = useState(false);

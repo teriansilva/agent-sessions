@@ -20,6 +20,7 @@ import {
   recapPhrase,
   sessionLabel,
 } from "./missionNow";
+import { useEngineRoster } from "../../app/engineRoster";
 
 const DOT: Record<string, string> = {
   producing: styles.nowProducing,
@@ -36,6 +37,8 @@ interface Reading {
 }
 
 export function MissionNowStrip({ missionId }: { missionId: string }) {
+  // `sessionLabel` strips each engine's id prefix from the roster (#853 P4): re-render when it lands.
+  useEngineRoster();
   const [reading, setReading] = useState<Reading | null>(null);
   const mine = reading?.id === missionId ? reading : null;
   const now = mine?.now ?? null;
