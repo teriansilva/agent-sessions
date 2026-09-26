@@ -392,7 +392,11 @@ def test_consent_then_config_fetch_sends_one_report(auth_cfg, umami):
     assert c.post("/api/prefs", json={"analytics_consent": True}, headers=hdr).status_code == 200
     for _ in range(3):
         assert c.get("/api/config").status_code == 200
-    for _ in range(100):
+    # #1151: the report is written by a BACKGROUND thread; 2s of polling (the old budget)
+    # outlives it on a calm host but not on the CPU-starved shared runner, where the thread
+    # can be descheduled for far longer (observed in CI: `assert 0 == 1` on a green test).
+    # The loop still exits the moment the report lands — the budget only bounds the wait.
+    for _ in range(750):  # 15s
         if prefs.analytics_state().get("last_sent_day") == TODAY:
             break
         threading.Event().wait(0.02)

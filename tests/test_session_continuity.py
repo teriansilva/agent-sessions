@@ -42,12 +42,13 @@ def _runtime(tmp_path, monkeypatch):
 # A longer deadline cannot mask a regression, because the invariant is one-directional: a
 # master that died with its spawner never comes back to life, so polling can only remove false
 # NEGATIVES. On an idle host every wait below returns on its first poll and costs nothing.
-_STARTUP_TIMEOUT_S = 10.0
+_STARTUP_TIMEOUT_S = 30.0
 # How long to WAIT for a survival condition to become true — a ceiling, never the invariant. On
-# the shared runner (load 70-100, #1107) a live master can take seconds to accept a connection;
-# every check below passes the moment the condition holds, so a large ceiling costs nothing
-# when the invariant holds and still fails (bounded) when it does not.
-_SURVIVAL_TIMEOUT_S = 30.0
+# the shared runner (load 70-200 under concurrent PR waves, #1107 → #1151) a live master can take
+# a long time to come up or accept a connection while the host is CPU-starved; every check below
+# passes the moment the condition holds, so a large ceiling costs nothing when the invariant
+# holds and still fails (bounded) when it does not.
+_SURVIVAL_TIMEOUT_S = 120.0
 
 
 def _wait_until(pred, timeout: float, interval: float = 0.05) -> bool:

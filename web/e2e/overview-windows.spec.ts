@@ -209,11 +209,47 @@ async function dragWindow(page: Page, n: number, to: { x: number; y: number }) {
   await page.mouse.up();
 }
 
-/** Park a window so a later chip click (or a click into the other window) is not intercepted.
- *  Two default-size windows cannot both be reachable in a 1280px shell — one covering the other
- *  is correct windowing, so the multi-window tests widen the viewport and park deliberately. */
-async function parkAt(page: Page, n: number, x: number, y: number) {
-  await dragWindow(page, n, { x, y });
+/** Seed the workspace store so both windows RESTORE at disjoint rects (#1151).
+ *
+ *  Parking by mouse is not a reliable SETUP tool on the shared runner: the parks must land two
+ *  windows side by side, and observed CI behavior ranged from bursts landing a load-dependent
+ *  FRACTION of the aim (windows overlapping, every later click into either terminal
+ *  "intercepted by pointer events" for the full timeout) to parks applying no delta at all.
+ *  What the tests need is not the gesture — it is two windows that do not cover each other,
+ *  placed deterministically on any host. Which is exactly what the workspace's own RESTORE
+ *  path provides from storage: seeded rects, no pointer involved, the same open transition
+ *  (same sockets, same rows) as any other window. The drag-SUBJECT tests keep using the
+ *  mouse, and the raw `dragWindow` stays for them. */
+async function seedTwoWindows(page: Page) {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "tr-overview-workspace",
+      JSON.stringify([
+        {
+          key: "claude:s1",
+          engine: "claude",
+          id: "s1",
+          title: "Window session 1",
+          x: 40,
+          y: 680,
+          w: 720,
+          h: 480,
+          z: 1,
+        },
+        {
+          key: "claude:s2",
+          engine: "claude",
+          id: "s2",
+          title: "Window session 2",
+          x: 1200,
+          y: 680,
+          w: 720,
+          h: 480,
+          z: 2,
+        },
+      ]),
+    );
+  });
 }
 
 /** The multi-window tests need room for two 720px windows side by side. */
@@ -365,12 +401,10 @@ test.describe("desktop workspace", () => {
   }) => {
     const log = await mockApp(page);
     await wideDesktop(page);
+    await seedTwoWindows(page);
     await openMap(page);
-
-    await chip(page, 1).click();
-    await parkAt(page, 1, 400, 900); // park low-left, so chip 2 stays clickable
-    await chip(page, 2).click();
-    await parkAt(page, 2, 1500, 900);
+    await expect(win(page, 1)).toBeVisible();
+    await expect(win(page, 2)).toBeVisible();
     await expect.poll(() => log.conns.length).toBe(2);
     expect(live(log)).toBe(2);
 
@@ -395,12 +429,10 @@ test.describe("desktop workspace", () => {
   }) => {
     const log = await mockApp(page);
     await wideDesktop(page);
+    await seedTwoWindows(page);
     await openMap(page);
-
-    await chip(page, 1).click();
-    await parkAt(page, 1, 400, 900);
-    await chip(page, 2).click();
-    await parkAt(page, 2, 1500, 900);
+    await expect(win(page, 1)).toBeVisible();
+    await expect(win(page, 2)).toBeVisible();
     await expect.poll(() => log.conns.length).toBe(2);
 
     await win(page, 2).locator("[data-window-fullscreen]").click();
@@ -450,12 +482,10 @@ test.describe("desktop workspace", () => {
   test("input lands only in the focused window", async ({ page }) => {
     const log = await mockApp(page);
     await wideDesktop(page);
+    await seedTwoWindows(page);
     await openMap(page);
-
-    await chip(page, 1).click();
-    await parkAt(page, 1, 400, 900);
-    await chip(page, 2).click();
-    await parkAt(page, 2, 1500, 900);
+    await expect(win(page, 1)).toBeVisible();
+    await expect(win(page, 2)).toBeVisible();
     await expect.poll(() => log.conns.length).toBe(2);
 
     // Focus window 1 by pressing inside its terminal, then type.
@@ -476,12 +506,10 @@ test.describe("desktop workspace", () => {
   test("two terminals select and scroll independently", async ({ page }) => {
     await mockApp(page);
     await wideDesktop(page);
+    await seedTwoWindows(page);
     await openMap(page);
-
-    await chip(page, 1).click();
-    await parkAt(page, 1, 400, 900);
-    await chip(page, 2).click();
-    await parkAt(page, 2, 1500, 900);
+    await expect(win(page, 1)).toBeVisible();
+    await expect(win(page, 2)).toBeVisible();
 
     // Selection: drag across window 1's screen. xterm paints its selection as real DOM, so a
     // second pane picking it up would be visible here — this is the document-level listener
