@@ -5,7 +5,9 @@
  * Desktop (>800px): 320px sidebar column; the single command-bar toggle collapses it
  *   (.app.collapsed → pane full-width). Mobile (≤800px): the sidebar is an off-canvas drawer;
  *   the command bar carries the hamburger. No rounded corners anywhere — the brackets are the
- *   corner treatment (only LEDs/dots stay circular). */
+ *   corner treatment (only LEDs/dots stay circular).
+ * Settings (#1129) is the one route with NO sidebar at any width (.app.noSidebar): the aside
+ * is hidden in place — mounted, never unmounted — and the grid collapses to the pane. */
 .app {
   --app-header-height: 52px;
   display: grid;
@@ -40,10 +42,21 @@
    * blur the terminal/canvas reliably. Same class of fix as keeping the canvas inside .app. */
   isolation: isolate;
 }
+/* Settings (#1129): the utility surface renders WITHOUT the session sidebar at EVERY width —
+ * both of its viewport forms (the docked column and the mobile off-canvas drawer) come from
+ * this one aside. The rule is unconditional and the aside stays MOUNTED: `display: none` is
+ * the identical DOM state a desktop-collapsed sidebar already produces, so #1007's
+ * sidebar-continuity contract holds across a Settings visit — the list's rows, cursor and
+ * poll survive, and returning to a session restores them with no remount fetch. The desktop
+ * grid collapse to the pane shares the collapsed rule below. */
+.app.noSidebar .sidebar {
+  display: none;
+}
 /* Collapsed (desktop only — mobile uses the off-canvas drawer, scoped below): no sidebar
  * column, pane full-width. */
 @media (min-width: 801px) {
-  .app.collapsed {
+  .app.collapsed,
+  .app.noSidebar {
     grid-template-columns: 1fr;
     grid-template-areas:
       "topbar"

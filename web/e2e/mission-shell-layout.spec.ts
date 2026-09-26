@@ -66,6 +66,14 @@ async function stub(page: Page, rows: unknown[] = []) {
   await page.route("**/api/pulse/orchestrator", (r) =>
     r.fulfill({ status: 500, json: { detail: "off" } }),
   );
+  // The templates gallery is one of the modal-contract example routes below — its own
+  // fetches resolve here so the shell (not a failed page) is what the test exercises.
+  await page.route(/\/api\/templates(\?.*)?$/, (r) =>
+    r.fulfill({ json: { templates: [], limits: { name_max: 120 } } }),
+  );
+  await page.route(/\/api\/template-variables(\?.*)?$/, (r) =>
+    r.fulfill({ json: { variables: [], limits: { name_max: 120 } } }),
+  );
   await mockMissions(page, { missions: missionList(rows) });
 }
 
@@ -542,12 +550,14 @@ test.describe("the phone gets the same one rail, through the shell (#940)", () =
   /** THE CONTRACT IS APP-WIDE, so it is asserted off `/` as well (#940 review).
    *
    *  `/` was the only non-mission route covered, and it is the one route whose pane is the new-
-   *  session landing — the lightest content in the app. A session pane and the settings form are
-   *  where the background actually has focusable content to leak into, which is what makes them
-   *  the interesting cases rather than extra ones. */
+   *  session landing — the lightest content in the app. A session pane and the templates gallery
+   *  are where the background actually has focusable content to leak into, which is what makes
+   *  them the interesting cases rather than extra ones. (Settings carried the second example
+   *  until #1129 removed the session sidebar from that route — drawer included — so it no longer
+   *  has a drawer to be modal; the gallery replaced it.) */
   for (const [name, path] of [
     ["a session pane", "/s/claude/11111111-2222-3333-4444-555555555555"],
-    ["settings", "/settings"],
+    ["the templates gallery", "/templates"],
   ] as const) {
     test(`the drawer is modal on ${name} too`, async ({ page }, testInfo) => {
       test.skip(testInfo.project.name !== "mobile", "phone shell");

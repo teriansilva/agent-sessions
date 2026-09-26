@@ -152,6 +152,10 @@ const rows = (page: Page) =>
 async function openDrawer(page: Page, project: string) {
   if (project !== "mobile") return;
   if (await page.locator(".app.navOpen").count()) return;
+  // #1129: Settings carries NO session sidebar at any width — no drawer and no toggle there.
+  // The navigation helpers below (`openSettingsFromMenu`, `openMapFromNav`) drive the top bar,
+  // which is the path the shell offers on that route now, so opening nothing is correct.
+  if (!(await page.locator("header .navToggle").count())) return;
   await page.locator("header .navToggle").click();
   await expect(page.locator(".app.navOpen")).toHaveCount(1);
 }

@@ -346,6 +346,39 @@ test.each([
   },
 );
 
+// --- Settings has no session sidebar (#1129) ----------------------------------------------------
+
+// The shell carries the session sidebar on every work route; Settings is the utility surface
+// that drops it (#1129) — and it drops it HIDDEN, never unmounted: the aside (and its
+// SessionList) stay in the tree because the sidebar's rows, cursor and poll must survive a
+// Settings visit exactly as they survive a collapsed one (#1007). jsdom applies no CSS, so what
+// is asserted here is the derivation — the class, the standing-down toggle, the still-mounted
+// list — while `e2e/settings-no-sidebar.spec.ts` pins the visible result in a real browser.
+test("Settings renders without the session sidebar: noSidebar class, no toggle, list still mounted (#1129)", async () => {
+  window.history.replaceState(null, "", "/settings");
+  const { container } = render(<App />);
+  await screen.findByRole("radiogroup", { name: "Order" }); // the shell's sidebar is mounted
+  const app = container.querySelector(".app") as HTMLElement;
+  expect(app).toHaveClass("noSidebar");
+  // The operator's own collapse pref must be untouched by the route change.
+  expect(app).not.toHaveClass("collapsed");
+  // No control for a surface that does not exist there.
+  expect(container.querySelector("header .navToggle")).toBeNull();
+  // Hidden, not unmounted.
+  expect(container.querySelector("aside.sidebar")).not.toBeNull();
+});
+
+test("a work route keeps the sidebar and its toggle — the removal is Settings-specific (#1129)", async () => {
+  window.history.replaceState(null, "", "/");
+  const { container } = render(<App />);
+  expect(
+    await screen.findByRole("button", { name: "Collapse session list" }),
+  ).toBeInTheDocument();
+  const app = container.querySelector(".app") as HTMLElement;
+  expect(app).not.toHaveClass("noSidebar");
+  expect(container.querySelector("aside.sidebar")).not.toBeNull();
+});
+
 // --- Footer version surface (#661) --------------------------------------------------------------
 
 test("the footer shows the running version as a hud tag (#661)", async () => {

@@ -59,6 +59,7 @@ import {
   WIDTH_STEP,
 } from "./sidebarWidth";
 import { ASK_PATH, LEGACY_MISSION_PATH, MISSION_PATH } from "../lib/routes";
+import { SETTINGS_PATH } from "../routes/settingsTabs";
 import { OperatorMenu } from "../components/shell/OperatorMenu";
 import { SectionNav } from "../components/shell/SectionNav";
 import {
@@ -100,6 +101,8 @@ const LEGACY_VIEW_KEY = "tr-sidebar-view";
  *  - Mobile (≤800px): the sidebar is an off-canvas drawer the same toggle opens, and the
  *    topbar's overview/settings actions collapse into the drawer. The drawer auto-closes after
  *    navigating.
+ *  Settings (#1129) is the one route that renders WITHOUT the sidebar at every width — it is a
+ *  utility surface, not a work section (#1058) — and its toggle stands down with the surface.
  *  The session lives in the URL (/s/:engine/:id); "/" is the new-session landing. */
 function Layout() {
   const [navOpen, setNavOpen] = useState(false);
@@ -239,6 +242,20 @@ function Layout() {
     location.pathname === MISSION_PATH ||
     location.pathname === LEGACY_MISSION_PATH;
   const railInSidebar = missionRoute;
+  /** SETTINGS RENDERS WITHOUT THE SESSION SIDEBAR (#1129), at every width. Settings is a
+   *  utility surface, not a work section (#1058) — the shell carries no session list there in
+   *  either of its two viewport forms: not the docked column, not the off-canvas drawer (the
+   *  toggle stands down with the surface, so a dead control can't silently mutate the
+   *  persisted desktop collapse pref from a route with no sidebar).
+   *
+   *  The aside STAYS MOUNTED — `.app.noSidebar` only hides it, the identical DOM state a
+   *  desktop-collapsed sidebar already produces — because `SessionList` renders outside
+   *  `<Routes>` on purpose (#1007's continuity contract): the list's rows, cursor and 15 s
+   *  poll survive a Settings visit, and returning to a session restores them with no remount
+   *  fetch. Pinned red-vs-green by `e2e/settings-no-sidebar.spec.ts`. */
+  const settingsRoute =
+    location.pathname === SETTINGS_PATH ||
+    location.pathname.startsWith(`${SETTINGS_PATH}/`);
   /** Which of the five work sections the current route belongs to, `null` on Settings (#1058).
    *  One derivation, read by the top bar's nav and the drawer's copy of it. */
   const section = activeSection(location.pathname);
@@ -373,6 +390,7 @@ function Layout() {
     navOpen ? "navOpen" : "",
     collapsed ? "collapsed" : "",
     resizing ? "resizing" : "",
+    settingsRoute ? "noSidebar" : "",
   ]
     .filter(Boolean)
     .join(" ");
@@ -390,24 +408,29 @@ function Layout() {
           blurred by the panels' backdrop-filter. Inside, the frosted panels blur it. (#211) */}
         <DataFlowCanvas />
         <header className="hud-topbar" ref={headerRef}>
-          <button
-            type="button"
-            className="navToggle"
-            ref={navToggleRef}
-            aria-label={
-              railInSidebar
-                ? surfaceOpen
-                  ? "Collapse mission list"
-                  : "Open mission list"
-                : surfaceOpen
-                  ? "Collapse session list"
-                  : "Open session list"
-            }
-            aria-expanded={surfaceOpen}
-            onClick={toggle}
-          >
-            {surfaceOpen ? <PanelLeftClose size={18} /> : <Menu size={18} />}
-          </button>
+          {/* No toggle on Settings (#1129): the surface it drives does not exist there in
+              either viewport form, and a live hamburger on a settings page would only mutate
+              the persisted collapse pref for nothing. */}
+          {!settingsRoute && (
+            <button
+              type="button"
+              className="navToggle"
+              ref={navToggleRef}
+              aria-label={
+                railInSidebar
+                  ? surfaceOpen
+                    ? "Collapse mission list"
+                    : "Open mission list"
+                  : surfaceOpen
+                    ? "Collapse session list"
+                    : "Open session list"
+              }
+              aria-expanded={surfaceOpen}
+              onClick={toggle}
+            >
+              {surfaceOpen ? <PanelLeftClose size={18} /> : <Menu size={18} />}
+            </button>
+          )}
           <span className="hud-brand">
             <span className="mk" aria-hidden="true">
               ◢
@@ -586,9 +609,9 @@ function Layout() {
           </footer>
         </aside>
         {/* Desktop sidebar resize handle (#507): a focusable separator in the gutter between the
-          sidebar and pane panels. Not rendered on mobile (the drawer is fixed-width) or while
-          collapsed (no sidebar to size). */}
-        {!isMobile && !collapsed && (
+          sidebar and pane panels. Not rendered on mobile (the drawer is fixed-width), while
+          collapsed (no sidebar to size), or on Settings (#1129 — no sidebar there either). */}
+        {!isMobile && !collapsed && !settingsRoute && (
           <div
             className="sidebar-resize"
             role="separator"
