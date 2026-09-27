@@ -38,8 +38,9 @@ fails keeps the last figures and says so, with a **Retry**.
 
 ## Needs you and Ask
 
-The middle of the page is **Ask**: your recent work, the **Needs you** list with its actions
-(approve, reply, dismiss), and the Ask field. The Dashboard only arranges them around the tiles.
+The middle of the page is [Ask](/guide/ask): your recent work, the **Needs you** list with its
+actions (approve, reply, dismiss), and the Ask field. The Dashboard only arranges them around the
+tiles; how each behaves is on the Ask page.
 
 ## On a phone
 

@@ -342,7 +342,7 @@ relocated — out of mission control entirely, into its own section:
 |---|---|
 | A session card in the grid | A mission row in the rail |
 | The banner | The mission's own recap stream |
-| The Ask box | Its own section, `/ask` |
+| The Ask box | [Ask](/guide/ask), in the middle of the [Dashboard](/guide/dashboard) (`/dashboard`) |
 | A session no mission owns | Adopted from the session itself — its row menu or its pane header |
 
 Deliberately unchanged: the **terminal**, the **sidebar**, and the **per-session recap** — which is

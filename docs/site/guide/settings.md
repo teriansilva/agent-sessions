@@ -57,6 +57,11 @@ Periodic review on or off, how often it runs, and the list of sessions excluded 
 exclude one from its row actions in the sidebar). **Review now** on a session works whenever the
 endpoint is configured, even with periodic review off. See [AI review](/guide/ai-review).
 
+**Reading sessions** sets how deeply a session is read before a decision, and whether you are told:
+*Recognise questions and choices* (on), *Decision context* Standard | Deep (Standard), and *Notify
+me when a session needs me* (on). A notification is taken back when the session stops needing you,
+with one exception described under [Notifications](/guide/notifications). See [Ask](/guide/ask#settings).
+
 ### Auto-sort · `ai-auto-sort`
 
 When enabled, sessions that belong to no project are classified against your existing projects and

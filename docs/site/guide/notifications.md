@@ -19,6 +19,35 @@ Notifications retire themselves when the thing they were about resolves: entries
 are cleared once that action reaches a terminal state, so the bell does not keep showing you a
 question that has already been answered.
 
+## Sessions that need you
+
+For a session no mission holds, there is exactly **one** notification per time it starts needing
+you, an *episode*. It is the same list as [Ask → Needs you](/guide/ask#needs-you): a session that
+isn't on that list never notifies. The episode is remembered across restarts, so the same
+situation is never announced twice, and clearing the bell doesn't bring it back.
+
+When the session stops needing you (answered in its terminal, its decision settled, dismissed on
+Ask, archived, or taken into a mission), the notification is **taken back**. The bell row goes on
+the next check: straight away after a settlement, a dismissal or an archive, otherwise within a
+minute. On a device you subscribed, the push is closed the next time BattleLab is open there, or when
+the next notification arrives, whichever comes first. A push that arrives late, after its session
+already stopped needing you, is checked with BattleLab first and closed straight away without a
+sound. If the device can't reach BattleLab at that moment, the push is shown and closed later.
+BattleLab never sends a push that only takes something back: browsers penalise pushes that show nothing, and would eventually replace them with
+a generic notice of their own. Each episode's push carries its own tag, so taking one back never
+closes another, and never closes a mission's own notifications. If the list can't be read, nothing
+is taken back: unknown is not "nobody".
+
+**One exception.** When BattleLab can't read which sessions a mission holds, it can't tell whether
+a waiting session is yours or a mission's, so it announces it the way mission control does. That
+notification's bell row clears when its decision settles, but its device notification isn't taken
+back, just like a mission's own. Only that fallback behaves this way.
+
+The row says what kind of stop it is (*Asks you to choose*, *Waiting for your approval*, *Asks you
+a question*, *Stopped — take a look*). That text is fixed and never written by a model. Turn the
+whole thing off in Settings → Session review → *Notify me when a session needs me*. Doing so takes
+back any that are open. Sessions inside a mission are announced by mission control, as before.
+
 ## Web push
 
 You can subscribe the browser for push, so an escalation reaches your phone with BattleLab closed.
@@ -40,5 +69,5 @@ events — the exact failure the dedupe exists to prevent.
 :::
 
 ::: info Verified against
-Commit `218cf3a` — `src/agent_sessions/notifications.py § NOTIFY_MAX, TITLE_MAX, BODY_MAX, assert_pushable_endpoint, retire_for_actions`.
+Commit `218cf3a` — `src/agent_sessions/notifications.py § NOTIFY_MAX, TITLE_MAX, BODY_MAX, assert_pushable_endpoint, retire_for_actions`; #1086 Phase 4 — `notifications.py § sync_needs_you, KIND_REASON, episode_tag`, `needs_you_notify.py`, `webpush.py § build_payload, CLOSE_MAX`, `web/src/swPush.ts`.
 :::
