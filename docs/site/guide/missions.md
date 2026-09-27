@@ -80,8 +80,8 @@ A mission carries a checklist, and the point is that it is written **before** th
 argued about after. "The agent said it's done" is a report about one turn; an objective list is a
 set of facts.
 
-Objectives come from a **checklist** — an operator-authored template list, edited in **Settings →
-AI → Checklists** and chosen per mission on the new-mission form. The shipped `Ship a change`
+Objectives come from a **checklist** — an operator-authored template list, edited in **Missions →
+Checklists** (the chevron beside Missions in the top bar) and chosen per mission on the new-mission form. The shipped `Ship a change`
 checklist gates on: a branch exists, a PR is open, checks are green, it has been reviewed, it is
 merged. The shipped `Investigate` checklist gates on *a finding is written down*, which the
 supervisor judges (below); *you have confirmed it* stays yours to settle and does not gate.
@@ -230,7 +230,7 @@ mission, such as `PR #{pr} checks are {checks} on {branch}. Open the failing che
   the time it is approved or sent automatically, including an edit to the global nudge, it is not
   sent. A re-probe that finds the same facts changes nothing, so a proposal waits for you as long
   as its facts hold and are fresh. A nudge without a direction never goes stale on a re-probe.
-- **Where you write one.** In **Settings → AI → Checklists**, each objective has a **Direction**
+- **Where you write one.** In **Missions → Checklists**, each objective has a **Direction**
   field. Tap a fact chip to insert a placeholder that objective's check can fill. The preview shows
   the text filled with example facts, and an unknown placeholder is refused there in the same words a
   save uses. For a single mission, use an objective's ⋯ → **Edit direction**. You can keep the copy,

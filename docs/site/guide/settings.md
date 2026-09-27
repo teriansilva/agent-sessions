@@ -87,13 +87,12 @@ Three panels, everything that tunes [Mission control](/guide/missions):
   is open" or "checks are green" are checked. Read-only; the token is stored server-side. Without
   one, forge objectives read as *unknown* rather than failed.
 
-### Checklists · `ai-playbooks`
+### Checklists (moved to Missions)
 
-The checklists a new mission starts with, and which one is the default — the shipped default is
-**Ship a change**. (The section's address still says `ai-playbooks`, the name these had before.) Objectives with a probe are
-checked by the server; **Supervisor judges** objectives are judged from what the mission's sessions
-produced, and count only at or above your confidence setting; the rest you settle yourself. The whole set saves at once, and a refused save
-shows the server's reason word for word.
+The checklists a new mission starts with are no longer a Settings page: they live under **Missions →
+Checklists** (the chevron beside Missions in the top bar), next to the console that uses them — see
+the [missions guide](/guide/missions). The old address, `/settings/ai-playbooks`, still works and
+redirects there.
 
 ### Prompts · `ai-prompts`
 
