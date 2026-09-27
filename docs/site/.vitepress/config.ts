@@ -139,6 +139,7 @@ export default defineConfig({
           { text: "Dashboard", link: "/guide/dashboard" },
           { text: "Ask", link: "/guide/ask" },
           { text: "Engines", link: "/guide/engines" },
+          { text: "Write a manifest", link: "/guide/plugins" },
           { text: "Sessions", link: "/guide/sessions" },
           { text: "Terminal", link: "/guide/terminal" },
           { text: "Projects", link: "/guide/projects" },

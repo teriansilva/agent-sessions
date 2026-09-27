@@ -17,10 +17,19 @@ does not remove, so the two cannot drift apart.
 
 ## What it does not touch
 
-**Your agents' own data.** Claude Code's `~/.claude/`, Codex's `~/.codex/`, opencode's database,
-Gemini's `~/.gemini/`, Kimi's `~/.kimi-code/` — BattleLab reads those stores, and for every engine
-except Claude it never writes to them at all. Uninstalling the organizer does not remove the
-conversations it was organizing.
+**Your agents' own data.** Each engine's own store stays where it is:
+
+<!-- BEGIN generated:engine-stores -->
+- **Claude Code** — `~/.claude`
+- **opencode** — `~/.local/share/opencode`
+- **Codex** — `~/.codex/sessions`
+- **Gemini CLI** — `~/.gemini/tmp`
+- **Antigravity** — `~/.gemini/antigravity-cli`
+- **Kimi Code** — `~/.kimi-code`
+<!-- END generated:engine-stores -->
+
+BattleLab reads those stores, and for every engine except Claude Code it never writes to them at
+all. Uninstalling the organizer does not remove the conversations it was organizing.
 
 Your working directories are untouched too. BattleLab never owned them; it launched agents inside
 them.

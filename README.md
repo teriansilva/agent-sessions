@@ -69,15 +69,22 @@ The engines handle their own conversation persistence — BattleLab reads each t
 history (read-only) for the sidebar, and "resume" always means launching **that tool's own
 resume command** under the app's `dtach` PTY. What differs per engine:
 
-| Engine | Sessions read from | Resume command | New session from the app | Archive |
-|---|---|---|---|---|
-| Claude Code | `~/.claude/projects/**/*.jsonl` | `claude --resume <uuid>` | ✓ | moves the JSONL to `projects-archive/` + sidecar flag |
-| Codex | `~/.codex/sessions/**/rollout-*.jsonl` | `codex resume <uuid>` | ✓ (launch, then adopt the id codex mints) | sidecar only |
-| opencode | `~/.local/share/opencode/opencode.db` (SQLite, **read-only**) | `opencode <dir> --session <ses_id>` | ✓ | sidecar only — the DB is never written |
-| Gemini CLI | `~/.gemini/tmp/<project>/chats/session-*.jsonl` | `gemini --resume <uuid>` (in the session's cwd) | ✓ (pinned id via `--session-id`) | sidecar only |
-| Antigravity (`agy`) | `~/.gemini/antigravity-cli/` (SQLite + transcript JSONL, **read-only**) | `agy --conversation <uuid>` | ✓ | sidecar only |
-| Kimi Code | `~/.kimi-code/` (`session_index.jsonl` + nested `sessions/wd_*/session_<uuid>/`, **read-only**) | `kimi -S session_<uuid>` | ✓ (launch, then adopt the id kimi mints) | sidecar only |
-| Plain shell | the app's own tiny per-session record (no native store) | reattach to the live PTY | ✓ | sidecar |
+<!-- BEGIN generated:engine-table -->
+| Engine | Binary · override | Sessions read from · override | Resume | New session | Permission bypass |
+|---|---|---|---|---|---|
+| **Claude Code** (`claude`) | `claude` · `AGENT_SESSIONS_CLAUDE_BIN` | `~/.claude` | `claude --resume <id>` | `claude --session-id <id>` — pinned id | `--dangerously-skip-permissions` |
+| **opencode** (`opencode`) | `opencode` · `AGENT_SESSIONS_OPENCODE_BIN` | `~/.local/share/opencode` · `AGENT_SESSIONS_OPENCODE_DB`, `AGENT_SESSIONS_OPENCODE_LOG` | `opencode <dir> --session <id>` | `opencode <dir>`, then adopt the id it mints | — |
+| **Codex** (`codex`) | `codex` · `AGENT_SESSIONS_CODEX_BIN` | `~/.codex/sessions` · `AGENT_SESSIONS_CODEX_SESSIONS_DIR` | `codex resume <id>` | `codex --cd <dir>`, then adopt the id it mints | `--dangerously-bypass-approvals-and-sandbox` (new sessions only) |
+| **Gemini CLI** (`gemini`) | `gemini` · `AGENT_SESSIONS_GEMINI_BIN` | `~/.gemini/tmp` · `AGENT_SESSIONS_GEMINI_TMP_DIR` | `gemini --resume <id>` | `gemini --session-id <id>` — pinned id | `--yolo` `--skip-trust` |
+| **Antigravity** (`antigravity`) | `agy` · `AGENT_SESSIONS_AGY_BIN` | `~/.gemini/antigravity-cli` · `AGENT_SESSIONS_ANTIGRAVITY_DIR` | `agy --conversation <id>` | `agy`, then adopt the id it mints | `--dangerously-skip-permissions` |
+| **Kimi Code** (`kimi`) | `kimi` · `AGENT_SESSIONS_KIMI_BIN` | `~/.kimi-code` · `AGENT_SESSIONS_KIMI_DIR` | `kimi -S <id>` | `kimi`, then adopt the id it mints | `-y` |
+| **Shell** (`shell`) | `bash` · `AGENT_SESSIONS_BASH_BIN` | `~/.claude/shell-sessions` · `AGENT_SESSIONS_SHELL_DIR` | a fresh process — nothing to resume | `bash -l` — pinned id | — |
+<!-- END generated:engine-table -->
+
+The table is generated from the engines' manifests (`src/agent_sessions/plugins/first_party/`) by
+`scripts/gen-engine-docs`. Archive is a flag in BattleLab's own sidecar for every engine except
+Claude Code, whose archive also moves the JSONL to `projects-archive/`; every other engine's
+store is only ever read (opencode's SQLite database is opened read-only).
 
 Common to every row: the session runs under a `dtach` PTY with a single-writer lock — close the
 tab and the process keeps running; reattach mid-stream. For the agent engines, a reboot is also
@@ -135,7 +142,7 @@ agent-sessions 0.3.1 installed.
 ~/.config/systemd/user/agent-sessions.service
 ```
 
-Re-running the installer is **idempotent**: it builds a new release dir, flips `current`, keeps the prior releases (3 by default) for rollback, and **leaves existing credentials untouched**. It also runs `agent-sessions doctor` each time to (re)discover installed agent CLIs (claude/codex/opencode/gemini/agy) and record their paths in `env`.
+Re-running the installer is **idempotent**: it builds a new release dir, flips `current`, keeps the prior releases (3 by default) for rollback, and **leaves existing credentials untouched**. It also runs `agent-sessions doctor` each time to (re)discover the installed agent CLIs — every engine in the [per-engine table](#per-engine-support) — and record their paths in `env`.
 
 Install-time knobs (env vars): `AGENT_SESSIONS_CHANNEL` (`stable` tags — default — or `main`), `AGENT_SESSIONS_HOST`/`_PORT`/`_ORIGIN`, `AGENT_SESSIONS_HOME`, `AGENT_SESSIONS_REF` (pin an exact tag/branch/sha), `AGENT_SESSIONS_NO_SERVICE=1` (install without touching systemd).
 

@@ -19,7 +19,7 @@ bind a different address (a detected LAN IP, or all interfaces) behind a securit
   `apt-get`/`dnf` install it — one of only two optional, prompted sudo steps (the other is opening
   the firewall port for a non-localhost [bind](#bind-address)).
 - A reverse proxy (e.g. nginx) terminating TLS in front of the app.
-- The agent CLIs you want to manage (Claude Code, opencode, codex, gemini, antigravity/`agy`, Kimi Code/`kimi`) installed on the host;
+- The agent CLIs you want to manage installed on the host — any of the engines in the README's [per-engine table](README.md#per-engine-support);
   the installer's `doctor` step discovers their paths automatically.
 
 ## Install
