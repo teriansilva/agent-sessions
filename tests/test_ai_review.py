@@ -436,6 +436,53 @@ def test_manual_review_409_when_unconfigured(auth_cfg, fake_jsonl, tmp_home, mon
     assert r.status_code == 409
 
 
+def test_manual_review_422_when_the_model_finds_no_work(
+    auth_cfg, ai_prefs, fake_jsonl, monkeypatch
+):
+    """Review now on a session with nothing to describe says so, and writes nothing."""
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    monkeypatch.setattr(review, "_TRANSPORT", _chat_transport({"insufficient": True}))
+    r = c.post(
+        f"/api/sessions/{SID}/review",
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 422
+    assert "no work" in r.json()["detail"]
+    m = metadata.get(SID)
+    assert m.reviewed_at is None and m.ai_summary == "" and m.review_fingerprint in ("", None)
+
+
+def test_recap_only_refusal_keeps_the_new_summary_and_the_old_recap(
+    auth_cfg, ai_prefs, fake_jsonl, monkeypatch
+):
+    """Summary and recap are independent passes (#481). A TAIL refusal writes nothing (422 above);
+    a RECAP-only refusal leaves the summary it followed in place and the last good recap
+    untouched — the route succeeds."""
+    metadata.patch(SID, ai_recap="**Fixed** the build.")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        system = json.loads(request.content)["messages"][0]["content"]
+        body = (
+            {"insufficient": True}
+            if "returning to a coding-agent session" in system
+            else _ok_result(title="Fix tests")
+        )
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(body)}}]})
+
+    monkeypatch.setattr(review, "_TRANSPORT", httpx.MockTransport(handler))
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = c.post(
+        f"/api/sessions/{SID}/review",
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 200
+    m = metadata.get(SID)
+    assert m.ai_summary == "Editing tests" and m.reviewed_at is not None
+    assert m.ai_recap == "**Fixed** the build."
+
+
 def test_manual_review_unknown_session_404(auth_cfg, ai_prefs):
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
@@ -748,6 +795,25 @@ def test_unreconciled_placeholder_still_reviews_live_only(ai_prefs, fake_jsonl):
     assert "## Transcript" not in text
 
 
+def test_require_transcript_refuses_a_transcript_engine_with_no_turn(ai_prefs, fake_jsonl):
+    """The background sweep's form (`require_transcript=True`): a screen alone is not reviewable
+    for an engine that keeps a transcript — it is the agent's splash, before any turn. The
+    default form above still gathers it (manual "Review now", the objective judge's context)."""
+    placeholder = "opencode:new-bbbbbbbb-1111-2222-3333-444444444444"
+    webterm._buffer_append(placeholder, b"booting opencode\r\n")
+    with pytest.raises(review.ReviewError):
+        review.gather_input(placeholder, 24000, require_transcript=True)
+    shell = "shell:bbbbbbbb-1111-2222-3333-444444444444"
+    webterm._buffer_append(shell, b"$ ls\r\n")
+    text, _ = review.gather_input(shell, 24000, require_transcript=True)
+    assert "$ ls" in text
+    # The engine is read off the key prefix, so an unaliased placeholder still resolves to its
+    # engine; a bare id fails closed (assumed to keep a transcript).
+    assert review.keeps_transcript(placeholder) is True
+    assert review.keeps_transcript("11111111-1111-1111-1111-111111111111") is True
+    assert review.keeps_transcript(shell) is False
+
+
 def test_session_context_names_the_engine_and_grounds_idleness(ai_prefs, fake_jsonl):
     webterm._buffer_append(LIVE_ONLY_SID, b"compiling\r\n")
     text, _ = review.gather_input(LIVE_ONLY_SID, 24000)
@@ -887,3 +953,23 @@ def test_gather_input_shell_with_no_screen_still_raises(ai_prefs, fake_jsonl):
     # still raises, exactly like any other engine.
     with pytest.raises(review.ReviewError):
         review.gather_input("shell:11111111-2222-3333-4444-555555555555", 24000)
+
+
+# ---- the model refuses to brief on no work (prompts.INSUFFICIENT_CLAUSE) ---------------------
+
+
+def test_insufficient_reply_persists_nothing_and_keeps_the_last_brief(ai_prefs, fake_jsonl):
+    """`{"insufficient": true}` is the model saying the session shows no work yet. It must never
+    become a brief — the last good one stands, and a session with none stays unreviewed."""
+    metadata.patch(SID, ai_summary="Earlier real work", ai_recap="**Fixed** the build.")
+    with pytest.raises(review.InsufficientInputError):
+        review._shape_guard({"insufficient": True})
+    with pytest.raises(review.InsufficientInputError):
+        review._recap_shape_guard({"insufficient": True})
+    m = metadata.get(SID)
+    assert m.ai_summary == "Earlier real work" and m.ai_recap == "**Fixed** the build."
+    # A normal reply that merely carries the key as false is still a review.
+    ok = review._shape_guard(
+        {"insufficient": False, "summary": "x", "title": "t", "intervention_required": False}
+    )
+    assert ok["summary"] == "x"

@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
-import { api } from "../../lib/api";
+import { api, ApiError } from "../../lib/api";
 import { SessionRecapModal } from "./SessionRecapModal";
 
 function renderModal(
@@ -280,6 +280,19 @@ test("'Review now' raising intervention shows it on the dot immediately (#745)",
       }),
     ).toHaveClass("attention"),
   );
+});
+
+test("'Review now' on a session with no work says so and keeps the last brief", async () => {
+  // 422 = the model answered {"insufficient": true}: nothing was written server-side.
+  vi.spyOn(api, "reviewNow").mockRejectedValue(
+    new ApiError(422, "nothing to review yet: the session shows no work"),
+  );
+  renderModal();
+  await userEvent.click(screen.getByRole("button", { name: /review now/i }));
+  expect(
+    await screen.findByText("Nothing to review yet — the session hasn't done any work."),
+  ).toBeInTheDocument();
+  expect(screen.queryByText(/review failed/i)).not.toBeInTheDocument();
 });
 
 test("a review-excluded session shows the excluded state and disables Review now (#481)", () => {

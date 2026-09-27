@@ -102,6 +102,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
                 fields = await review.run_review(key)
         except review.NotConfiguredError as e:
             raise HTTPException(status_code=409, detail=str(e)) from None
+        except review.InsufficientInputError as e:
+            # The model found no work to describe; nothing was written, the last brief stands.
+            raise HTTPException(status_code=422, detail=str(e)) from None
         except review.ReviewError as e:
             raise HTTPException(status_code=502, detail=str(e)) from None
         # The new DISPLAY title rides along so the sidebar row can update in place

@@ -306,11 +306,16 @@ def test_catalog_lists_every_prompt_without_leaking_storage(auth_cfg, tmp_home):
             "default",
             "is_default",
         }
-        # The guard rides as its OWN field — never folded into the editable text.
+        # The guard (and any locked reply rule) rides as its OWN field — never folded into the
+        # editable text.
+        locked = prompts.get(r["id"]).locked
         if r["guarded"]:
-            assert r["guard_suffix"] == prompts.GUARD_CLAUSE
+            assert r["guard_suffix"].endswith(prompts.GUARD_CLAUSE)
             assert prompts.GUARD_CLAUSE not in r["value"]
-        else:
+        if locked:
+            assert r["guard_suffix"].startswith(locked)
+            assert locked not in r["value"]
+        if not r["guarded"] and not locked:
             assert r["guard_suffix"] is None
 
 
@@ -321,7 +326,9 @@ def test_patch_saves_and_resets(auth_cfg, tmp_home):
         assert r.status_code == 200
         assert r.json()["value"] == "Three lines, past tense."
         assert r.json()["is_default"] is False
-        assert prompts.effective("session_recap") == "Three lines, past tense."
+        assert prompts.effective("session_recap") == (
+            f"Three lines, past tense.\n{prompts.INSUFFICIENT_CLAUSE}"
+        )
 
         r = _patch(c, auth_cfg, csrf, "session_recap", {"reset": True})
         assert r.status_code == 200
@@ -364,3 +371,33 @@ def test_routes_require_a_session_and_the_csrf_token(auth_cfg, tmp_home):
         )
         assert r.status_code == 403
         assert prompts.is_default("session_recap")
+
+
+# ---- the session reviewer's locked refusal rule -------------------------------------------
+
+
+@pytest.mark.parametrize("pid", ["tail_review", "session_recap"])
+def test_review_prompts_always_end_with_the_insufficient_rule(tmp_home, pid):
+    """The reply the server parses (`{"insufficient": true}`) must survive an operator's own
+    wording of the prompt — the live install's tail prompt is customised, and without the rule
+    the model wrote a brief about its splash-screen input ("no prior context available")."""
+    clause = prompts.INSUFFICIENT_CLAUSE
+    assert prompts.effective(pid).endswith(clause)
+    assert prompts.guard_suffix(pid) == clause
+
+    prompts.set_value(pid, "Summarise the session in one line.")
+    eff = prompts.effective(pid)
+    assert eff == f"Summarise the session in one line.\n{clause}"
+    assert eff in prompts.effective_set()
+
+    # An operator who pasted the clause into their own text gets it once, last — never twice,
+    # and never with their later text able to contradict it.
+    prompts.set_value(pid, f"{clause}\nAlways write a brief, whatever you see.")
+    eff = prompts.effective(pid)
+    assert eff.count(clause) == 1 and eff.endswith(clause)
+    assert clause not in prompts.editable(pid)
+
+
+def test_unlocked_prompts_are_unchanged(tmp_home):
+    assert prompts.guard_suffix("pulse_session_line") is None
+    assert prompts.INSUFFICIENT_CLAUSE not in prompts.effective("pulse_session_line")

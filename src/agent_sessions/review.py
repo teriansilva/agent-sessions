@@ -143,6 +143,14 @@ class MalformedReplyError(ReviewError):
     after the former — can."""
 
 
+class InsufficientInputError(ReviewError):
+    """The model answered ``{"insufficient": true}`` (``prompts.INSUFFICIENT_CLAUSE``): the
+    session shows no work to describe yet. Raised by the shape guard of whichever pass refused, and
+    that pass persists nothing: a TAIL refusal aborts the review (no summary, no ``reviewed_at``;
+    Review now → 422), while a RECAP refusal is absorbed by ``run_review``'s best-effort recap
+    handler — the summary just written stands and the last good recap is kept."""
+
+
 class ModelsUnsupportedError(ReviewError):
     """The endpoint answered but cannot list models (404/405, or a body that is not a model
     list) — distinct from a rejection, because the URL and key can still be right (#956)."""
@@ -409,8 +417,30 @@ def judge_sources(key: str, transcript_max: int, screen_max: int) -> tuple[str, 
     return tail, screen or "", has_transcript
 
 
+def keeps_transcript(key: str) -> bool:
+    """Does ``key``'s engine keep a transcript (register a transcript adapter)?
+
+    Read off the key's ENGINE PREFIX rather than through ``parse_key``, because the case that
+    matters is a just-launched ``<engine>:new-<uuid>`` placeholder with no alias yet, which
+    ``parse_key`` rejects. FAIL CLOSED: anything unresolvable — including a bare, unprefixed id
+    (the pre-multi-engine form, which only a transcript-keeping engine ever used) — is assumed to
+    keep one, like :func:`judge_sources`.
+    """
+    if ":" not in key:
+        return True
+    engine_id = key.split(":", 1)[0]
+    try:
+        return transcript.adapter_for(engine_id) is not None
+    except Exception:
+        return True
+
+
 def gather_input(
-    key: str, max_input_chars: int, aliases: dict[str, str] | None = None
+    key: str,
+    max_input_chars: int,
+    aliases: dict[str, str] | None = None,
+    *,
+    require_transcript: bool = False,
 ) -> tuple[str, str]:
     """Build ``(review_input, fingerprint)`` for a session: a session-context header, the
     transcript tail, the rendered terminal screen, and any unsent compose-box draft — with the
@@ -419,7 +449,12 @@ def gather_input(
     to the engine's own id (#611). The screen and the draft are framed as PENDING (#560) so a
     typed-but-unsent instruction is never read as completed work. Raises :class:`ReviewError`
     when there is nothing at all to review (no transcript adapter output AND no observed PTY
-    output — a draft alone is supplementary).
+    output — a draft alone is supplementary). With ``require_transcript`` it also raises for an
+    engine that keeps a transcript but has none yet: the background sweep passes it, because a
+    session reviewed before its first turn is reviewed on the agent's splash screen, and the model
+    writes a brief about its own missing input ("no prior context available") that then stands
+    until a later sweep reaches the session again. ``shell`` keeps no transcript, so its screen
+    is always its evidence.
 
     The fingerprint is a hash of the assembled input — it changes exactly when the reviewable
     content changes, the property the Phase-2 scheduler's change-detection needs (timestamp quirks
@@ -440,6 +475,8 @@ def gather_input(
     live_text = scrollback.live_tail_text(phys_key, _screen_budget(max_input_chars))
     if not transcript_text and not live_text:
         raise ReviewError("nothing to review: no transcript and no live terminal output")
+    if require_transcript and not transcript_text and keeps_transcript(key):
+        raise ReviewError("nothing to review yet: the conversation has no turn")
     body = _assemble(
         key,
         max_input_chars,
@@ -575,6 +612,8 @@ def _shape_guard(obj: dict) -> dict:
     """Server-owned shape guard + length caps: the model's output is DATA, nothing more.
     Missing/garbage fields fail the review (drop, keep the last good result) rather than
     persisting junk."""
+    if obj.get("insufficient") is True:
+        raise InsufficientInputError("nothing to review yet: the session shows no work")
     summary = obj.get("summary")
     title = obj.get("title")
     required = obj.get("intervention_required")
@@ -654,6 +693,8 @@ def _recap_shape_guard(obj: dict, source: str = "") -> str:
     despite the prompt (#744 — the client's ``<ol>`` owns the ordinal), drops blank lines, and
     caps total length to ``RECAP_MAX``. A missing / empty recap raises ``ReviewError``
     (drop → keep the last good value)."""
+    if obj.get("insufficient") is True:
+        raise InsufficientInputError("nothing to recap yet: the session shows no work")
     recap = obj.get("recap")
     if not isinstance(recap, str) or not recap.strip():
         raise ReviewError("recap response missing usable text")

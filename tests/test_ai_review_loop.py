@@ -234,10 +234,12 @@ def test_failed_review_persists_nothing_and_is_retried(ai_prefs, fake_jsonl, mon
 
 
 def test_sweep_caps_and_spaces_endpoint_calls(ai_prefs, fake_jsonl, monkeypatch):
+    # `shell:` keys throughout the cap/order tests: their screen IS their evidence, whereas a
+    # screen-only claude session is one the sweep deliberately waits on (no first turn yet).
     # 5 changed sessions, cap 4: exactly SWEEP_CAP SESSIONS reviewed (each = 2 endpoint calls,
     # summary + recap, #481), reviewed strictly one session at a time with CALL_SPACING_S between
     # sessions — a sweep can't stampede the endpoint.
-    keys = [f"claude:aaaaaaa{i}-0000-0000-0000-00000000000{i}" for i in range(5)]
+    keys = [f"shell:aaaaaaa{i}-0000-0000-0000-00000000000{i}" for i in range(5)]
     for k in keys:
         webterm._buffer_append(k, f"agent output for {k}\r\n".encode())
     calls = []
@@ -344,14 +346,14 @@ def test_never_reviewed_session_is_not_starved_by_noisy_older_ones(
     calls = []
     monkeypatch.setattr(review, "_TRANSPORT", _chat_transport(calls))
 
-    noisy = [f"claude:{i}{i}{i}{i}{i}{i}{i}{i}-1111-1111-1111-111111111111" for i in range(1, 6)]
+    noisy = [f"shell:{i}{i}{i}{i}{i}{i}{i}{i}-1111-1111-1111-111111111111" for i in range(1, 6)]
     for i, key in enumerate(noisy):
         webterm._buffer_append(key, f"busy agent {i} output\r\n".encode())
         # Already reviewed a moment ago, and still changing (their frames differ every sweep).
         metadata.patch(key, reviewed_at=1000.0 + i, review_fingerprint="stale")
     assert len(noisy) > ai_review_loop.SWEEP_CAP
 
-    fresh = "claude:99999999-9999-9999-9999-999999999999"
+    fresh = "shell:99999999-9999-9999-9999-999999999999"
     webterm._buffer_append(fresh, b"the user just sent their first message\r\n")
     assert metadata.get(fresh).reviewed_at is None
 
@@ -365,7 +367,7 @@ def test_never_reviewed_session_is_not_starved_by_noisy_older_ones(
 def test_sweep_rotates_through_the_stalest_sessions(ai_prefs, fake_jsonl, monkeypatch):
     calls = []
     monkeypatch.setattr(review, "_TRANSPORT", _chat_transport(calls))
-    keys = [f"claude:{i}{i}{i}{i}{i}{i}{i}{i}-2222-2222-2222-222222222222" for i in range(1, 6)]
+    keys = [f"shell:{i}{i}{i}{i}{i}{i}{i}{i}-2222-2222-2222-222222222222" for i in range(1, 6)]
     for i, key in enumerate(keys):
         webterm._buffer_append(key, f"output {i}\r\n".encode())
         metadata.patch(key, reviewed_at=2000.0 + i, review_fingerprint="stale")
@@ -374,6 +376,41 @@ def test_sweep_rotates_through_the_stalest_sessions(ai_prefs, fake_jsonl, monkey
     reviewed, _ = _sweep(_FakeRegistry([_row(k) for k in reversed(keys)]))
     # The four stalest (lowest reviewed_at) go first — not the four first in the registry.
     assert set(reviewed) == set(keys[: ai_review_loop.SWEEP_CAP])
+
+
+def test_sweep_waits_for_the_first_turn_of_a_transcript_engine(ai_prefs, fake_jsonl, monkeypatch):
+    """The screenshot bug: the launch kick swept a just-created opencode session ~3 s in, before
+    the user's first message existed and before its placeholder had an alias. All the model had
+    was the agent's splash spinner, so it wrote a brief about its own missing input ("no prior
+    context available") — and that brief stood through the whole first task, because a session
+    reviewed a moment ago sorts LAST in the rotation. An engine that keeps a transcript is not
+    reviewable by the sweep until that transcript has a turn."""
+    calls = []
+    monkeypatch.setattr(review, "_TRANSPORT", _chat_transport(calls))
+    splash = [
+        "opencode:new-abb97165-f018-4b38-a778-3d0a3f946f57",  # unreconciled placeholder
+        "claude:99999999-9999-9999-9999-999999999999",  # claude writes no JSONL before a turn
+    ]
+    for key in splash:
+        webterm._buffer_append(key, b"\xe2\x96\x88\xe2\x96\x88 loading\r\n")
+    reviewed, failures = _sweep(_FakeRegistry([_row(k, engine=k.split(":")[0]) for k in splash]))
+    assert (reviewed, failures) == ([], 0)
+    assert calls == []
+    assert all(metadata.get(k).reviewed_at is None for k in splash)
+
+    # Once the conversation has a turn, the same session is reviewed.
+    webterm._buffer_append(SID, b"working\r\n")
+    assert _sweep(_FakeRegistry([_row(SID)])) == ([SID], 0)
+
+
+def test_sweep_still_reviews_a_shell_on_its_screen(ai_prefs, fake_jsonl, monkeypatch):
+    """`shell` keeps no transcript (#636): its screen is its evidence and the gate never
+    applies to it."""
+    calls = []
+    monkeypatch.setattr(review, "_TRANSPORT", _chat_transport(calls))
+    key = "shell:12345678-1234-1234-1234-123456789abc"
+    webterm._buffer_append(key, b"$ make test\r\n3 failed\r\n")
+    assert _sweep(_FakeRegistry([_row(key, engine="shell")])) == ([key], 0)
 
 
 def test_candidates_orders_never_reviewed_before_stalest(ai_prefs, fake_jsonl):
@@ -449,6 +486,64 @@ def _failing_transport(calls: list):
     return httpx.MockTransport(handler)
 
 
+def test_sweep_insufficient_reply_is_neither_a_review_nor_a_failure(
+    ai_prefs, fake_jsonl, monkeypatch
+):
+    """`{"insufficient": true}` (prompts.INSUFFICIENT_CLAUSE): nothing is persisted, and the
+    sweep does not count it as a failure — failures drive the loop's backoff, and the endpoint
+    answered fine."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        content = json.dumps({"insufficient": True})
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+    monkeypatch.setattr(review, "_TRANSPORT", httpx.MockTransport(handler))
+    assert _sweep(_FakeRegistry([_row(SID)])) == ([], 0)
+    m = metadata.get(SID)
+    assert m.reviewed_at is None and not m.ai_summary and not m.ai_recap
+
+
+def test_insufficient_sessions_do_not_starve_a_reviewed_session_with_new_work(
+    ai_prefs, fake_jsonl, monkeypatch
+):
+    """Hermes on #1131: `SWEEP_CAP` idle shells whose every review comes back
+    `{"insufficient": true}` persist nothing, so they stay never-reviewed. With the attempt only a
+    TIE-BREAK they sorted first on every sweep and took every attempt; a session reviewed earlier
+    that then did new work was never reached. It must be reached within a bounded number."""
+    ai_review_loop._LAST_ATTEMPT.clear()
+    monkeypatch.setattr(ai_review_loop, "CALL_SPACING_S", 0)
+    idle = [f"shell:{i}{i}{i}{i}{i}{i}{i}{i}-3333-3333-3333-333333333333" for i in range(1, 5)]
+    assert len(idle) == ai_review_loop.SWEEP_CAP
+    for key in idle:
+        webterm._buffer_append(key, b"$ \r\n")
+    busy = "shell:99999999-3333-3333-3333-333333333333"
+    webterm._buffer_append(busy, b"$ make test\r\n3 failed\r\n")
+    metadata.patch(busy, reviewed_at=1000.0, review_fingerprint="stale")
+
+    attempted: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        user = json.loads(request.content)["messages"][1]["content"]
+        if "3 failed" in user:
+            attempted.append(busy)
+            body = {"summary": "Tests failing", "title": "t", "intervention_required": False}
+            if (
+                "returning to a coding-agent session"
+                in json.loads(request.content)["messages"][0]["content"]
+            ):
+                body = {"recap": "**Ran** `make test`."}
+        else:
+            body = {"insufficient": True}
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(body)}}]})
+
+    monkeypatch.setattr(review, "_TRANSPORT", httpx.MockTransport(handler))
+    reg = _FakeRegistry([_row(k, engine="shell") for k in [*idle, busy]])
+    for _ in range(2):
+        _sweep(reg)
+    assert busy in attempted, "a reviewed session with new work was starved by idle ones"
+    assert metadata.get(busy).ai_summary == "Tests failing"
+
+
 def test_failing_never_reviewed_sessions_do_not_starve_the_rest(ai_prefs, fake_jsonl, monkeypatch):
     """A failed review persists nothing (#356), so `reviewed_at` never advances and the same
     never-reviewed sessions sort first on every sweep. With SWEEP_CAP=4 and five failing
@@ -458,7 +553,7 @@ def test_failing_never_reviewed_sessions_do_not_starve_the_rest(ai_prefs, fake_j
     monkeypatch.setattr(review, "_TRANSPORT", _failing_transport(calls))
     monkeypatch.setattr(ai_review_loop, "CALL_SPACING_S", 0)
 
-    keys = [f"claude:{i}{i}{i}{i}{i}{i}{i}{i}-7777-7777-7777-777777777777" for i in range(1, 6)]
+    keys = [f"shell:{i}{i}{i}{i}{i}{i}{i}{i}-7777-7777-7777-777777777777" for i in range(1, 6)]
     for i, key in enumerate(keys):
         webterm._buffer_append(key, f"dirty output {i}\r\n".encode())
     assert len(keys) == ai_review_loop.SWEEP_CAP + 1

@@ -110,16 +110,27 @@ async def sweep(registry) -> tuple[list[str], int]:
 
 
 # Wall-clock of the last review ATTEMPT per key, successful or not. In-memory and best-effort:
-# it only orders a sweep, so losing it on restart costs nothing. This is the secondary sort key
-# and it is what keeps a FAILING session from monopolising the cap — `reviewed_at` alone cannot,
-# because a failed review deliberately persists nothing (the #356 staleness contract), so the
-# stalest sessions stay the stalest forever and are retried ahead of everyone else on every sweep.
+# it only orders a sweep, so losing it on restart costs nothing. It feeds BOTH sort keys (see
+# `_sort_key`): the primary one as `max(reviewed_at, attempt)`, and the tie-break on its own. That
+# is what keeps a session whose attempts persist nothing (a failed review, the #356 staleness
+# contract, or an `{"insufficient": true}` refusal) from monopolising the cap — `reviewed_at` alone
+# never advances for it, so it would stay the stalest and be retried ahead of everyone for ever.
 _LAST_ATTEMPT: dict[str, float] = {}
 
 
 def _sort_key(key: str, meta) -> tuple[float, float]:
+    """When the session was last SERVED — its last persisted review or its last attempt, whichever
+    is later — then the attempt alone as a tie-break.
+
+    The attempt has to count at the PRIMARY level. As a secondary key it only ordered sessions
+    within one `reviewed_at` bucket, so a never-reviewed session (`-inf`) whose attempts persist
+    nothing — a down endpoint, or a model answering `{"insufficient": true}` for an idle shell —
+    stayed ahead of every reviewed session for ever: four of them took all `SWEEP_CAP` attempts
+    on every sweep and a reviewed session with new work was never reached (Hermes on #1131).
+    """
     reviewed = float("-inf") if meta.reviewed_at is None else float(meta.reviewed_at)
-    return (reviewed, _LAST_ATTEMPT.get(key, float("-inf")))
+    attempted = _LAST_ATTEMPT.get(key, float("-inf"))
+    return (max(reviewed, attempted), attempted)
 
 
 def _candidates(registry) -> list[tuple[str, object]]:
@@ -139,8 +150,9 @@ def _candidates(registry) -> list[tuple[str, object]]:
     ``reviewed_at`` alone is not enough, though: a review that FAILS persists nothing, so the
     session's ``reviewed_at`` never advances and it sorts first again next sweep. Four
     never-reviewed sessions against a down endpoint would retry each other forever and the fifth
-    would never be attempted. ``_LAST_ATTEMPT`` breaks that tie — an attempted-and-failed session
-    yields to one that has not been tried yet.
+    would never be attempted. So an attempt counts as service too (``_sort_key``): a session
+    attempted without a persisted result sorts by that attempt, behind anything not tried since —
+    never-tried sessions, and reviewed sessions whose last review is older.
     """
     out: list[tuple[str, object]] = []
     live: set[str] = set()
@@ -185,10 +197,14 @@ async def _sweep(registry, cfg: dict) -> tuple[list[str], int]:
         # the same input it already reviewed. Nothing to review / a gather error just
         # skips the session (fail-soft, no endpoint call either way).
         try:
-            _, fingerprint = await asyncio.to_thread(review.gather_input, key, max_chars, aliases)
+            _, fingerprint = await asyncio.to_thread(
+                review.gather_input, key, max_chars, aliases, require_transcript=True
+            )
         except Exception:
             # Includes ReviewError("nothing to review") — common for fresh/quiet
-            # sessions; never worth an endpoint call, never worth log spam.
+            # sessions; never worth an endpoint call, never worth log spam. Also the session
+            # whose engine keeps a transcript but has no turn yet: its screen is a splash, and a
+            # review of it is a brief about missing input that outlives the first real turn.
             log.debug("ai-review: no reviewable input for %s — skipping", key, exc_info=True)
             continue
         # The recap (#481) carries an INDEPENDENT fingerprint over the WHOLE-session transcript,
@@ -222,6 +238,11 @@ async def _sweep(registry, cfg: dict) -> tuple[list[str], int]:
         except review.NotConfiguredError:
             # Config cleared mid-sweep — nothing further can succeed this pass.
             break
+        except review.InsufficientInputError:
+            # The model found no work to describe (prompts.INSUFFICIENT_CLAUSE). Nothing was
+            # written and the endpoint is fine, so it is neither a failure nor a backoff reason;
+            # the attempt stamp above moves the session behind every session served before it.
+            log.debug("ai-review: %s shows no work to describe yet", key)
         except review.ReviewError as e:
             # Fail-soft (#356): run_review persisted nothing, the session stays
             # "changed" and is retried next sweep. Message is operator-safe (no key).

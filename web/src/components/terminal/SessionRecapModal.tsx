@@ -166,11 +166,15 @@ export function SessionRecapModal({
         reviewedAt: r.reviewed_at,
       });
     } catch (e) {
-      // 409 = unconfigured; anything else = the review failed and the last good result stays.
+      // 409 = unconfigured; 422 = the model found no work to describe yet; anything else = the
+      // review failed. In every case the last good result stays.
+      const status = e instanceof ApiError ? e.status : 0;
       setError(
-        e instanceof ApiError && e.status === 409
+        status === 409
           ? "AI review isn't configured — set it up in Settings → AI → Endpoint & model."
-          : "Review failed — showing the last result.",
+          : status === 422
+            ? "Nothing to review yet — the session hasn't done any work."
+            : "Review failed — showing the last result.",
       );
     } finally {
       setReviewing(false);

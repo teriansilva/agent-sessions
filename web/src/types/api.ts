@@ -273,8 +273,8 @@ export interface AiReviewConfig {
 
 /** One row of the prompt catalog (#824) — `GET /api/prompts`.
  *
- *  `value` is what the operator typed and `guard_suffix` is the clause the SERVER appends to
- *  a guarded prompt at call time: separate fields on purpose, so the editor never contains
+ *  `value` is what the operator typed and `guard_suffix` is the text the SERVER appends at
+ *  call time (the guard clause and/or a locked reply rule): separate fields on purpose, so the editor never contains
  *  text the operator cannot change (and a client that echoed it back would have it stripped
  *  server-side anyway). Storage bindings are deliberately absent — the client edits by id. */
 export interface PromptEntry {
