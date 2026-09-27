@@ -136,6 +136,7 @@ export default defineConfig({
         text: "Guide",
         collapsed: false,
         items: [
+          { text: "Dashboard", link: "/guide/dashboard" },
           { text: "Engines", link: "/guide/engines" },
           { text: "Sessions", link: "/guide/sessions" },
           { text: "Terminal", link: "/guide/terminal" },

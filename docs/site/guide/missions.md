@@ -7,7 +7,8 @@ It is the `/mission` route (`/pulse` redirects there), and it used to be a dashb
 work" banner, and a separate Ask box. That told you what mattered and then handed you off to a
 terminal to act. The console replaces all three with a shape you already know — a rail of missions
 on the left, one thread in the middle, and the mission's own detail beside it. Ask was not folded
-into the console: it is its own section at `/ask`, first in the top bar's section nav.
+into the console: it lives on the [Dashboard](/guide/dashboard) (`/dashboard`; `/ask` still works), first in the top
+bar's section nav.
 
 ## A mission is the unit of work
 
