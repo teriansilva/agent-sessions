@@ -263,6 +263,100 @@ for (const [name, selector] of Object.entries(THEMES)) {
   });
 }
 
+// -------------------------------------------------------- the window chrome's project tint
+//
+// The window bar's ground is `color-mix(in srgb, var(--proj) 16%, var(--glass-strong))`
+// (#1109) — and BOTH ingredients are not plain hex: `--glass-strong` is a low-alpha veil and
+// `--proj` may be a `light-dark()` pair (projectColor) or an operator-chosen hex. So the test
+// composites the whole stack the way the browser does — mix, then the veil's alpha over the
+// window's own --bg-1 — and holds the bar's text tokens AA on the result, per theme, across
+// representative project colours (the extremes included: white for dark, black for light).
+
+const CHROME_CSS = readFileSync(
+  resolve(process.cwd(), "src/components/overview/sessionWindow.module.css"),
+  "utf8",
+).replace(/\/\*[\s\S]*?\*\//g, "");
+
+function parseRgba(v: string): [number, number, number, number] {
+  const hex = v.match(/^#([0-9a-fA-F]{6})$/);
+  if (hex) {
+    const n = parseInt(hex[1], 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255, 1];
+  }
+  const m = v.match(/rgba?\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)(?:[\s,/]+([\d.]+))?\s*\)/);
+  expect(m, `colour value ${v}`).not.toBeNull();
+  return [Number(m![1]), Number(m![2]), Number(m![3]), m![4] === undefined ? 1 : Number(m![4])];
+}
+
+/** hsl → srgb hex (projectColor's shape). */
+function hslHex(h: number, s: number, l: number): string {
+  const a = (s / 100) * Math.min(l / 100, 1 - l / 100);
+  const f = (n: number) => {
+    const k = (n + h / 30) % 12;
+    const v = l / 100 - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+    return Math.round(255 * v);
+  };
+  return `#${[f(0), f(8), f(4)].map((v) => v.toString(16).padStart(2, "0")).join("")}`;
+}
+
+for (const [name, selector] of Object.entries(THEMES)) {
+  test(`${name}: window-chrome text meets WCAG AA on the project-tinted ground`, () => {
+    // The strength the CSS actually ships — the test reads it rather than assuming it, so a
+    // changed mix has to be re-signed here.
+    const pct = Number(
+      CHROME_CSS.match(/color-mix\(in srgb,\s*var\(--proj\)\s*(\d+)%/)?.[1] ?? "",
+    );
+    expect(pct, "the chrome's --proj mix percentage is declared").toBeGreaterThan(0);
+    // The tint is background-only, so the TEXT tokens must carry legibility on it: the
+    // informational run (engine badge, project chip, time) is overridden to --text-2 on a
+    // tinted chrome (Terminal.module.css) — muted --text-3 measures ~2.6:1 on a 16% amber
+    // tint over the dark ground, below even the shipped pane's ~3.9:1 for the same run.
+    // This pairing rule and the assertion below must hold together.
+    const TERM_CSS = readFileSync(
+      resolve(process.cwd(), "src/components/terminal/Terminal.module.css"),
+      "utf8",
+    ).replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(
+      TERM_CSS.match(
+        /:global\(\[data-tinted="true"\]\)\s*\.headEng,\s*:global\(\[data-tinted="true"\]\)\s*\.headMeta\s*{\s*color:\s*var\(--text-2\)/,
+      ),
+      "the tinted chrome's informational run reads --text-2").not.toBeNull();
+    const themed = block(selector);
+    const pick = (n: string) => rawToken(themed.includes(`--${n}:`) ? themed : block(":root {"), n);
+    const bg1 = parseRgba(pick("bg-1"));
+    const [gr, gg, gb, ga] = parseRgba(pick("glass-strong"));
+    const text2 = pick("text-2");
+
+    // Representative --proj values: operator hexes (the seeded fixtures' amber/blue), both
+    // extremes, and projectColor's own generated pairs (dark for dark, light for light).
+    const projColors = [
+      "#ffb000",
+      "#3b9eff",
+      "#ffffff",
+      "#000000",
+      hslHex(208, 60, 58),
+      hslHex(30, 55, 40),
+    ];
+
+    for (const proj of projColors) {
+      const p = parseRgba(proj.startsWith("#") ? proj : "#000000");
+      // color-mix(in srgb, proj p%, glass-strong) — premultiplied alpha, then composited over
+      // the window's bg-1 (the chrome bar sits on it, opaque).
+      const outA = (pct / 100) * 1 + (1 - pct / 100) * ga;
+      const overBg = [0, 1, 2]
+        .map((i) =>
+          Math.round(
+            ((p[i] * (pct / 100) + [gr, gg, gb][i] * ga * (1 - pct / 100)) / outA) * outA +
+              bg1[i] * (1 - outA),
+          ),
+        )
+        .map((v) => Math.min(255, Math.max(0, v)));
+      const ground = `#${overBg.map((v) => v.toString(16).padStart(2, "0")).join("")}`;
+      expect(ratio(text2, ground), `${name} --text-2 on tint(${proj})`).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+}
+
 // --- engine accents (#853 P4) ---
 // A chip/badge/border colour, not body text: held to >=3:1 (WCAG non-text contrast) on every
 // ground a chip sits on, and never equal to a status hue or the brand accent — an agent's colour

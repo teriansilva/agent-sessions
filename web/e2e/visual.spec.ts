@@ -64,6 +64,37 @@ async function login(ctx: BrowserContext): Promise<boolean> {
   }
 }
 
+/** Open the first session chip as a window (#1109: the consolidated chrome only exists on an
+ *  OPEN window, and a capture that only visits a route cannot show it).
+ *
+ *  Expand-all first, ungated: the seeded map starts with its clusters collapsed, and the
+ *  area's own `waitFor` (a visible chip) must resolve at EVERY format. The window-open half is
+ *  skipped below the width a window can be hosted at — there the map (correctly) navigates
+ *  instead, and the shot keeps the honest plain-map state at that format. Waits for the
+ *  window's own terminal so the shot shows it live, not mid-mount. */
+async function prepareOpenFirstWindow(page: Page): Promise<void> {
+  // Wait for the toolbar first: this prepare runs right after `domcontentloaded`, before the
+  // SPA has fetched its config or rendered the map — a presence-checked click there is a
+  // silent no-op and the area's own chip wait times out against a still-collapsed map.
+  const expand = page.getByRole("button", { name: /expand all/i });
+  await expand.waitFor({ state: "visible", timeout: 15_000 }).catch(() => {});
+  if (await expand.isVisible().catch(() => false)) await expand.click();
+  const w = page.viewportSize()?.width ?? 0;
+  if (w < 1000) return;
+  const chip = page.locator(".tr-overview .tr-ov-chip").first();
+  if (!(await chip.isVisible().catch(() => false))) return;
+  await chip.click();
+  await page
+    .locator("[data-session-window] .xterm-screen")
+    .first()
+    .waitFor({ timeout: 15_000 });
+}
+
+/** Run the entry's declared interaction, if any, between `goto` and `waitFor`. */
+async function runPrepare(page: Page, p: VisualPath): Promise<void> {
+  if (p.prepare === "open-first-window") await prepareOpenFirstWindow(page);
+}
+
 test("visual capture", async ({ browser }, info) => {
   // Needs a real running app + creds. Skip in the default `test:e2e` run (static preview,
   // no backend → no server /login form); it runs via `npm run visual` / CI Phase 3 with
@@ -161,6 +192,7 @@ test("visual capture", async ({ browser }, info) => {
           waitUntil: "domcontentloaded",
           timeout: 20000,
         });
+        await runPrepare(page, p);
         await waitForReady(page, p);
         // Guard against the demoapp "login-redirect screenshot" quirk: an authed area that
         // rendered the server /login form means auth didn't take — fail the shot rather than

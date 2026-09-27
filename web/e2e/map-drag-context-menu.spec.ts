@@ -415,11 +415,20 @@ test.describe("desktop", () => {
 
     const btn = w2.locator("[data-window-menu]");
     await expect(btn).toBeVisible();
-    await expect(btn).toHaveAttribute("aria-disabled", "true");
+    // #1109: off the map the ⋯ is NOT disabled any more — the row-dependent SESSION actions
+    // withdrew, but the pane actions (the window's own fold) never needed the map's row, so
+    // the control stays live and opens the pane-only menu. The reason is on the title.
+    await expect(btn).not.toHaveAttribute("aria-disabled", "true");
     await expect(btn).toHaveAttribute("title", /isn't on the map/);
-    // Forced: Playwright refuses an aria-disabled target, which is the state being asserted.
-    await btn.click({ force: true });
-    await page.waitForTimeout(200);
+    await btn.click();
+    const paneMenu = page.getByRole("menu", { name: "Pane actions" });
+    await expect(paneMenu).toBeVisible();
+    // Nothing that reads the row is reachable here. (At this window's width every chip fits,
+    // so the pane group is legitimately empty — the fold test in
+    // overview-window-chrome.spec.ts pins the carried items at a width that folds.)
+    await expect(paneMenu.getByRole("menuitem", { name: /Rename session/i })).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(paneMenu).toBeHidden();
     await expect(menu(page)).toHaveCount(0);
   });
   test("a Review now in flight is never sent twice — not after the menu closes and reopens, nor after another session's menu replaces it", async ({
@@ -564,9 +573,14 @@ test.describe("desktop", () => {
 
     await selectLayout(page, "folders");
     await expect(chip(page, 1)).toHaveCount(0);
-    await expect(btn).toHaveAttribute("aria-disabled", "true");
-    await btn.click({ force: true });
-    await page.waitForTimeout(200);
+    // #1109: off the map the ⋯ is not disabled — it opens the pane-only menu now (the session
+    // actions withdrew with the row). The review-in-flight guard below is about the SESSION
+    // action, which this menu no longer carries, so the pane menu opening is expected here.
+    await expect(btn).not.toHaveAttribute("aria-disabled", "true");
+    await btn.click();
+    await expect(page.getByRole("menu", { name: "Pane actions" })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("menu", { name: "Pane actions" })).toBeHidden();
     await expect(menu(page)).toHaveCount(0);
 
     // Back in Projects, collapsing Alpha hides the chip but not the session: the ⋯ stays live.

@@ -30,8 +30,23 @@ export interface RowMenuItem {
   data?: Record<`data-${string}`, string | number>;
 }
 
-/** Items list may include "separator" markers between logical groups. */
-export type RowMenuEntry = RowMenuItem | "separator";
+/** A labelled group header inside a menu (#1109): the merged window ⋯ menu separates its two
+ *  item sources — the session's own actions and the pane's folded head actions — with a small
+ *  HUD-voice label rather than an ambiguous rule. Non-interactive, aria-hidden (the groups'
+ *  items carry their own names). */
+export interface RowMenuGroup {
+  group: string;
+}
+
+/** Items list may include "separator" markers between logical groups and `RowMenuGroup`
+ *  headers naming them. */
+export type RowMenuEntry = RowMenuItem | "separator" | RowMenuGroup;
+
+/** True when an entry is NOT an actionable item (a separator marker or a group label) — the
+ *  roving-focus arithmetic must skip both. Module-local: only the render below reads it. */
+function isMenuNonItem(entry: RowMenuEntry): entry is "separator" | RowMenuGroup {
+  return typeof entry === "string" || "group" in entry;
+}
 
 /** Where the popover opens (#968).
  *  - `element`: under that element, right-aligned, flipped above when there is no room below —
@@ -112,7 +127,17 @@ export function MenuPopover({
       right = window.innerWidth - (left + menuW);
       top = y + menuH <= window.innerHeight - EDGE ? y : y - menuH;
     }
-    menu.style.setProperty("--rm-top", `${Math.max(EDGE, top)}px`);
+    // Vertical clamp (#1109 review): when the menu fits NEITHER above nor below the anchor
+    // (a short viewport, or a Session+Pane merged menu opened near the bottom of a panned
+    // map), the fallback below used to run the menu's tail past the viewport — with the
+    // text-size controls unreachable and nothing visible to dismiss by. The CSS caps the
+    // menu at the viewport's height (scrolling inside), so this clamp always has room; the
+    // menu never starts above EDGE and never ends past the bottom edge.
+    const maxTop = Math.max(EDGE, window.innerHeight - EDGE - menuH);
+    menu.style.setProperty(
+      "--rm-top",
+      `${Math.min(Math.max(EDGE, top), maxTop)}px`,
+    );
     // Both horizontal edges (#968 review). The sidebar's ⋯ always sat far from the left edge, so
     // only the right inset was clamped; a ⋯ on a panned map chip can sit anywhere, and a menu
     // right-aligned under one near the left edge started off-screen. `right` may not exceed the
@@ -251,10 +276,22 @@ export function MenuPopover({
                 />
               );
             }
+            if ("group" in entry) {
+              return (
+                <div
+                  key={`grp-${i}`}
+                  className={styles.groupLabel}
+                  aria-hidden="true"
+                  data-menu-group={entry.group}
+                >
+                  {entry.group}
+                </div>
+              );
+            }
             // Roving-focus slot: position among action items only (separators skipped).
             const idx = items
               .slice(0, i)
-              .filter((it) => it !== "separator").length;
+              .filter((it) => !isMenuNonItem(it)).length;
             return (
               <button
                 key={entry.key}

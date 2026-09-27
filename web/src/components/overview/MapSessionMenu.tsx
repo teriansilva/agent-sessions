@@ -4,7 +4,11 @@ import {
   type SessionMenuHandlers,
   useSessionMenu,
 } from "../sessions/useSessionMenu";
-import { type MenuAnchor, MenuPopover } from "../sidebar/RowMenu";
+import {
+  type RowMenuEntry,
+  type MenuAnchor,
+  MenuPopover,
+} from "../sidebar/RowMenu";
 import { SessionTextDialog } from "./SessionTextDialog";
 
 /** The Overview map's ONE session menu (#968) — the sidebar row's menu (`useSessionMenu`), opened
@@ -14,7 +18,13 @@ import { SessionTextDialog } from "./SessionTextDialog";
  *  popover on purpose: an item like Session brief closes the menu and opens a dialog in the same
  *  press, and that dialog's state lives in this component — unmounting on menu-close would take
  *  the dialog with it. So `onDone` fires only once the menu is closed, no dialog is open, no
- *  rename/tag dialog is up, and no mutation is still running. */
+ *  rename/tag dialog is up, and no mutation is still running.
+ *
+ *  A WINDOW's ⋯ opens this same menu with `paneItems` (#1109): the pane head actions its chips'
+ *  measured fold could not fit, appended as a labelled second group after the session items —
+ *  one menu per window, never two. The session group keeps `useSessionMenu`'s items verbatim
+ *  (the list that must not fork); the pane group is the host's own fold, deduped BY THE HOST
+ *  against the session group so one modal is never named twice. */
 export function MapSessionMenu({
   session,
   anchor,
@@ -22,6 +32,7 @@ export function MapSessionMenu({
   onMenuClose,
   onDone,
   reviewInFlight,
+  paneItems,
 }: {
   /** The live row while the session is on the map, else the row captured when the menu opened —
    *  a dialog already open keeps naming its session after a refetch drops the chip. */
@@ -37,6 +48,9 @@ export function MapSessionMenu({
   /** A review of this session is running — tracked by the canvas per session key, so it survives
    *  this host closing, or being replaced by another session's menu (#968 review). */
   reviewInFlight: boolean;
+  /** The window's folded pane actions (#1109), already converted to menu entries and deduped
+   *  against the session group by the host. Chips that fit never appear here. */
+  paneItems?: RowMenuEntry[];
 }) {
   const [editMode, setEditMode] = useState<"none" | "title" | "tag">("none");
   const [editReturnFocus, setEditReturnFocus] = useState<HTMLElement | null>(null);
@@ -52,6 +66,14 @@ export function MapSessionMenu({
     { reviewInFlight },
   );
   const { busy, dialogOpen, reviewing, runBusy } = menu;
+
+  // The merged item list: the session group first (labelled), then the window's pane group.
+  // The session items' own `pushGroup` separators stand; a leading separator is never added,
+  // and an empty pane group adds nothing at all.
+  const items: RowMenuEntry[] = [{ group: "Session" }, ...menu.items];
+  if (paneItems?.length) {
+    items.push("separator", { group: "Pane" }, ...paneItems);
+  }
 
   const idle =
     !anchor && !dialogOpen && editMode === "none" && !busy && !reviewing;
@@ -76,7 +98,7 @@ export function MapSessionMenu({
     <>
       {anchor && (
         <MenuPopover
-          items={menu.items}
+          items={items}
           title={session.title || session.short_uuid}
           anchor={anchor}
           onClose={onMenuClose}

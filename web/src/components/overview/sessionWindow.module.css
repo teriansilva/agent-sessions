@@ -42,6 +42,22 @@
   cursor: grab;
   touch-action: none;
   user-select: none;
+  /* The facts run's collapse ladder (#1109) is keyed on a container named `panelhead` — the
+     same container-name the pane's own bar declares — so ONE set of rules (Terminal.module.css,
+     shared through HeadFacts' classes) governs both bars. The chrome's extra ladder rules are
+     scoped to `[data-window-head]` so the pane never inherits them. */
+  container: panelhead / inline-size;
+}
+
+/* The project tint (#1109): a subtle mix of `--proj` (set inline on .win when the row carries a
+ * project entity) into the chrome ground, both themes — the same `color-mix` treatment the
+ * pane's project chip uses, kept LOW so the bar's text tokens stay on a near-neutral ground.
+ * 14% is the bottom of the issue's ≈14–18% band, chosen because it is where the WORST case
+ * (a white project colour over the dark ground) still holds --text-2 at ≥4.5:1 — pinned, with
+ * the composite math, by contrast.test.ts. No project entity → no `--proj` → the plain chrome
+ * ground. */
+.win[data-tinted] .head {
+  background: color-mix(in srgb, var(--proj) 14%, var(--glass-strong));
 }
 
 .dragging .head {
@@ -58,12 +74,16 @@
   color: var(--text-3);
 }
 
-.eng {
-  padding: 2px 5px;
-  font-size: 10px;
-  letter-spacing: 0.1em;
-  color: var(--accent);
-  border: 1px solid var(--line-strong);
+/* The facts run (HeadFacts, #1109): fixed, measured — the fold's `reservePx` reads its width,
+   and it yields through the shared container ladder rather than by flex pressure. */
+.facts {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  max-width: 60%;
+  overflow: hidden;
 }
 
 .title {
@@ -71,6 +91,16 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The slot the pane's action chips portal into (#1109). The chips inside keep their own
+   HeadActions wrapper (a flex row with the pane's 6px gap); the slot is the fold's viewport
+   neighbour — `flex: none` so it sizes to content and never competes with the title. */
+.actionsSlot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  min-width: 0;
 }
 
 /* Inherited from the pane's own #184/#293 role frame — the window only mirrors it. */
@@ -104,15 +134,6 @@
   color: var(--accent);
 }
 
-/* The session-menu ⋯ while its session is off the map (#968): dimmed, not hidden — its title
-   carries the reason, and a control that vanishes explains nothing. */
-.btns button[aria-disabled="true"],
-.btns button[aria-disabled="true"]:hover {
-  color: var(--text-3);
-  opacity: 0.4;
-  cursor: default;
-}
-
 .btns button:focus-visible,
 .resize:focus-visible {
   outline: 1px solid var(--accent);
@@ -132,6 +153,43 @@
    through every intermediate width (#227/#349). */
 .body > :global(*) {
   height: 100%;
+}
+
+/* ---- the file drawer over the pane (#1109) ------------------------------------------------
+ * The drawer OVERLAYS the terminal, it never squeezes it: the agent's grid is a fact the
+ * operator set by resizing the window (and the font size pref), and a drawer opening must not
+ * march the agent through refits. `panelMode(bodyW)` decides dock vs sheet with the SAME
+ * arithmetic the full-screen pane uses — only the placement differs (right-anchored overlay
+ * here, flex sibling there). The drawer lives in the window's own DOM, never a map node, so
+ * nothing here is touched by React Flow's zoom transform. */
+
+/* Dock: right-anchored, shrink-wrapped around the panel's own gutter + column. */
+.drawerDock {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: stretch;
+  z-index: 8; /* above the terminal's touch overlay (6) and FAB (7), below every modal */
+  background: var(--bg-1);
+  border-left: 1px solid var(--line);
+  box-shadow: -12px 0 28px rgb(0 0 0 / 35%);
+}
+
+/* Sheet: the whole window body, above the terminal — FilePanel renders its scrim + sheet
+ * INLINE here (`contained`), never portalled to <body>: a window-contained sheet covers its
+ * window, not the workspace. */
+.drawerSheet {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+}
+
+.drawerSheet > :global(*) {
+  min-height: 0;
 }
 
 .resize {

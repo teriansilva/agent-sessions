@@ -963,7 +963,12 @@ async def test_a_STALLED_binder_cannot_hold_the_dispatch_past_its_budget(
     elapsed = _time.monotonic() - t0
     assert out.ok is False and out.bound_key == "", "a late answer was bound"
     assert "did not answer within the binding budget" in out.reason
-    assert elapsed < 2.0, f"the dispatch waited {elapsed:.2f}s on a stalled binder"
+    # The ceiling must stay UNDER the stall's own 3.0s sleep — the point is that the dispatch
+    # returns BEFORE the late answer could ever arrive — but the wall-clock slack above the
+    # 0.3s budget is scheduler time, not mechanism time: on the CPU-starved shared runner
+    # (#1151) a correctly-timed give-up has measured 2.58s wall-clock. 2.9 keeps the proof
+    # (below the stall) while absorbing starvation.
+    assert elapsed < 2.9, f"the dispatch waited {elapsed:.2f}s on a stalled binder"
     assert torn_down == [out.key]
     freed = sessionlock.acquire(headless_dispatch._admission_key("kimi", str(work)))
     assert freed is not None, "the folder's admission flock outlived the dispatch"

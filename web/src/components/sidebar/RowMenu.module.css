@@ -47,6 +47,11 @@
   right: var(--rm-right, 0);
   z-index: 51;
   min-width: 208px;
+  /* #1109 review: a merged Session+Pane menu can exceed the space any placement has, so the
+     menu itself is bounded by the viewport and scrolls — the placement clamp above then keeps
+     it fully on screen at any anchor. */
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
   background: var(--surface-2, var(--panel));
   border: 1px solid var(--border);
   border-radius: 0;
@@ -120,6 +125,19 @@
   height: 1px;
   background: var(--border-subtle);
   margin: 4px 0;
+}
+
+/* A labelled group header inside a menu (#1109) — the merged window ⋯ menu's "Session" and
+ * "Pane" runs. HUD-voice: tiny mono uppercase, muted, no hit target of its own. */
+.groupLabel {
+  padding: 8px 14px 3px;
+  font: 600 9.5px/1.3 var(--font-mono, ui-monospace, monospace);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* A destructive item (#967): the label and its icon in the text-safe failure red, on hover and

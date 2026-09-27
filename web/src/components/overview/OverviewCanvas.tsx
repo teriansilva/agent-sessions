@@ -52,7 +52,7 @@ import {
 } from "../../lib/overviewGraph";
 import { useIsMobile } from "../../lib/useIsMobile";
 import type { ProjectRef, Session } from "../../types/api";
-import type { MenuAnchor } from "../sidebar/RowMenu";
+import type { MenuAnchor, RowMenuEntry } from "../sidebar/RowMenu";
 import { MapSessionMenu } from "./MapSessionMenu";
 import {
   applyPins,
@@ -765,11 +765,13 @@ function OverviewCanvasInner({
     anchor: MenuAnchor | null;
     opener: HTMLElement | null;
     row: Session;
+    /** A WINDOW's folded pane actions (#1109), captured at open. Chips' menus carry none. */
+    paneItems: RowMenuEntry[];
   } | null>(null);
   const openSessionMenu = useCallback(
-    (key: string, anchor: MenuAnchor, opener: HTMLElement | null) => {
+    (key: string, anchor: MenuAnchor, opener: HTMLElement | null, paneItems: RowMenuEntry[] = []) => {
       const row = rowsRef.current.find((s) => s.id === key);
-      if (row) setMenuTarget({ key, anchor, opener, row });
+      if (row) setMenuTarget({ key, anchor, opener, row, paneItems });
     },
     [],
   );
@@ -808,9 +810,14 @@ function OverviewCanvasInner({
   // A window's ⋯ names its TRANSPORT key; the menu acts on the session the server knows, which is
   // the window's `actionKey` after a converge (#867).
   const openWindowMenu = useCallback(
-    (wkey: string, anchor: MenuAnchor, opener: HTMLElement | null) => {
+    (
+      wkey: string,
+      anchor: MenuAnchor,
+      opener: HTMLElement | null,
+      paneItems: RowMenuEntry[] = [],
+    ) => {
       const w = windowsRef.current.find((x) => x.key === wkey);
-      if (w) openSessionMenu(w.actionKey, anchor, opener);
+      if (w) openSessionMenu(w.actionKey, anchor, opener, paneItems);
     },
     [openSessionMenu],
   );
@@ -1204,6 +1211,7 @@ function OverviewCanvasInner({
             onMenuClose={onMenuClose}
             onDone={onMenuDone}
             reviewInFlight={reviewingKeys.has(menuTarget.key)}
+            paneItems={menuTarget.paneItems}
           />
         )}
       </div>

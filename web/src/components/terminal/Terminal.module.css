@@ -534,6 +534,57 @@
   }
 }
 
+/* On a TINTED chrome (#1109) the informational run reads --text-2, not the muted --text-3:
+ * on a coloured ground the muted voice falls under AA (measured ~2.7:1 for text-3 on the
+ * shipped 14% amber tint over the dark ground, where the same run on the pane's own bar is
+ * ~3.9:1) — the tint is background-only, so the text tokens must carry the legibility. The
+ * window is the only tinted surface (`data-tinted` is set by SessionWindow), and the grip
+ * glyph beside this run is decorative (aria-hidden), so no informational text is left on the
+ * muted token there. contrast.test.ts pins --text-2 on the tinted ground for both themes. */
+:global([data-tinted="true"]) .headEng,
+:global([data-tinted="true"]) .headMeta {
+  color: var(--text-2);
+}
+
+/* The window chrome's facts yield EARLIER than the pane's ladder (#1109): the chrome bar also
+   carries the title, the action chips and the window buttons, so the relative time goes first —
+   below the pane's own 520px rule, scoped to the chrome head so the pane's bar is untouched. */
+@container panelhead (max-width: 700px) {
+  :global([data-window-head]) .headUpdated {
+    display: none;
+  }
+}
+
+/* The session's custom tag (#551), rendered by HeadFacts where a caller asks for it (#1109):
+   today only a map window's chrome (whose bar has no sidebar beside it, so it carries every
+   fact). The sidebar's .summaryTag colour treatment — accent mixed toward --text so it stays
+   readable in BOTH themes — on the mission tag's bordered metrics, so one session's tag reads
+   the same shape as its mission tag. `pre` keeps the tag's own spacing/emoji intact. */
+.headTag {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 160px;
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 15px;
+  color: color-mix(in srgb, var(--accent) 64%, var(--text));
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  padding: 0 4px;
+  overflow: hidden;
+  white-space: pre;
+  text-overflow: ellipsis;
+}
+/* It yields before the actions do (#1109 Risks), and only a window chrome shows it — the
+   chrome head declares the same `panelhead` container, so this rule is inert in the pane. */
+@container panelhead (max-width: 640px) {
+  :global([data-window-head]) .headTag {
+    display: none;
+  }
+}
+
 /* ONE ACTIONS MENU ON A SMALL SCREEN (#948 P6). At the shell's ≤800px breakpoint every head action
  * moves into a single labelled menu, so the bar is a 44px row with a 44px trigger whatever the
  * pointer class — the trigger is the only control on it, and it is a finger's target. */

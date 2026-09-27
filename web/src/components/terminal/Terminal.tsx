@@ -14,23 +14,17 @@ import {
   Crosshair,
 } from "lucide-react";
 import {
-  type CSSProperties,
   type Ref,
+  type RefObject,
   useCallback,
   useEffect,
   useImperativeHandle,
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { api } from "../../lib/api";
-import {
-  engineBadge,
-  engineName,
-  projectColor,
-  relTime,
-  shortCwd,
-} from "../../lib/format";
 import { createBootReadyGate } from "../../lib/bootReady";
 import { getBrowserFp, getTabId } from "../../lib/browserFp";
 import { getDeviceLabel } from "../../lib/deviceLabel";
@@ -75,6 +69,7 @@ import { Compose, type ComposeHandle, type TemplateDraft } from "./Compose";
 import { draftSessionKey } from "../../lib/draftSessionKey";
 import { HandoffModal } from "./HandoffModal";
 import { HeadActions, type HeadAction } from "./HeadActions";
+import { HeadFacts } from "./HeadFacts";
 import { SessionRecapModal } from "./SessionRecapModal";
 import styles from "./Terminal.module.css";
 import { missionLink } from "../../lib/missionLink";
@@ -96,26 +91,6 @@ function statusText(s: TermStatus): string {
       return s.reason;
     case "connected":
       return "";
-  }
-}
-
-/** Persistent HUD panel-header readout (#211 4c): the LED class for the reusable .hud-led
- *  primitive plus its label. Distinct from statusText (the transient corner overlay) — this one
- *  is always present so the terminal panel always declares its link state.
- *
- *  #744: the label is no longer PRINTED beside the LED (the old "STATUS // LIVE" run spent seven
- *  characters restating the dot). It moved to the LED's accessible name + tooltip instead of
- *  being deleted — link state must never be carried by colour alone. */
-function headStatus(s: TermStatus): { label: string; led: string } {
-  switch (s.kind) {
-    case "connected":
-      return { label: "LIVE", led: "up" };
-    case "connecting":
-      return { label: "CONNECTING", led: "" };
-    case "reconnecting":
-      return { label: "RECONNECTING", led: "" };
-    case "rejected":
-      return { label: "OFFLINE", led: "down" };
   }
 }
 
@@ -147,6 +122,12 @@ export function Terminal({
   onToggleFiles,
   filesDisabledReason,
   onRole,
+  suppressHead,
+  headActionsSlot,
+  headOverflowRef,
+  headReservePx,
+  headBarRef,
+  onTermStatus,
   ref,
 }: {
   engine: string;
@@ -184,6 +165,32 @@ export function Terminal({
    *  window chrome shows READ-ONLY). Read-only signal — the pane keeps rendering its own
    *  banner and Take over button; nothing about ownership moves out here. */
   onRole?: (role: TermRole) => void;
+  /** Publish the pane's socket status to a host that renders the LED for it (#1109: the window
+   *  chrome carries the facts run, and the LED is this pane's attachment state, which only the
+   *  pane knows). Named `onTermStatus`, NOT `onStatus`: TermSocket's own config option inside
+   *  the socket effect is called `onStatus`, and a prop by that name shadowed it badly enough
+   *  that the React compiler refused to optimize the component. Ref-held like `onRole`, so an
+   *  unstable closure never re-keys the socket. */
+  onTermStatus?: (status: TermStatus) => void;
+  /** Suppress this pane's own `panelHead` (#1109) — a map window's chrome bar carries the
+   *  header instead, so a window never shows two stacked bars. The full-screen pane NEVER sets
+   *  it. The modals the head actions open (recap, hand off, adopt) stay mounted here: their
+   *  triggers simply render wherever `headActionsSlot` points. */
+  suppressHead?: boolean;
+  /** With `suppressHead`: the DOM node the action chips portal into — a slot the window's
+   *  chrome bar provides. Absent → the chips render nowhere (the one frame before the chrome's
+   *  slot element exists; the window opens with a socket connecting anyway). */
+  headActionsSlot?: HTMLElement | null;
+  /** With `suppressHead`: the host's ref the chips' measured fold publishes through
+   *  (`HeadActions` `foldInto: "external"`), so the chrome's single ⋯ menu carries whatever
+   *  overflowed, read at menu-open time. */
+  headOverflowRef?: { current: HeadAction[] };
+  /** With `suppressHead`: the bar width the chips must leave for everything else on the
+   *  chrome bar (facts run, title, window buttons). See `HeadActions.reservePx`. */
+  headReservePx?: number;
+  /** With `suppressHead`: the chrome BAR the chips' fold budgets against — the chips portal
+   *  into a slot, so the default parent measurement would measure the slot, not the bar. */
+  headBarRef?: RefObject<HTMLElement | null>;
   /** React 19 passes `ref` as an ordinary prop; the handle is `TerminalHandle`. */
   ref?: Ref<TerminalHandle>;
 }) {
@@ -275,7 +282,12 @@ export function Terminal({
   // `id` left it hidden for the entire life of a converged opencode/codex session, because that
   // id keeps its `new-` prefix forever.
   const actionNative = actionKey.slice(actionKey.indexOf(":") + 1);
-  const [status, setStatus] = useState<TermStatus>({ kind: "connecting" });
+  // #1109: the socket status is also PUBLISHED to a host that renders the LED for this pane
+  // (the window chrome) — through the SAME write, not a second effect: the React compiler
+  // refuses the component outright when `status` is both an effect dep and a HeadFacts prop,
+  // and one write is the honest shape anyway. The publish itself is the `setStatus` wrapper
+  // by the onRole idiom below.
+  const [status, setStatusRaw] = useState<TermStatus>({ kind: "connecting" });
   const [coarse] = useState(
     () => window.matchMedia?.("(pointer: coarse)")?.matches ?? false,
   );
@@ -337,6 +349,20 @@ export function Terminal({
   useEffect(() => {
     onRoleRef.current = onRole;
   });
+  // Same ref idiom for `onTermStatus` (#1109): a host that renders the LED for this pane reads
+  // it through a ref, so an unstable closure cannot re-key the socket. The PUBLISH rides the
+  // status write itself (`setStatus` below), not a second effect on `status`: the React
+  // compiler refuses the component outright when `status` is both an effect dependency and a
+  // HeadFacts prop, and one write is the honest shape anyway — the host's own initial state
+  // matches this pane's opening state, so "connecting" needs no publish.
+  const onTermStatusRef = useRef(onTermStatus);
+  useEffect(() => {
+    onTermStatusRef.current = onTermStatus;
+  });
+  const setStatus = useCallback((s: TermStatus) => {
+    setStatusRaw(s);
+    onTermStatusRef.current?.(s);
+  }, []);
   // Read-only take-over banner (#293/#434, flag on): the active viewer's identity when this
   // tab is a read-only secondary — it opened a session already active elsewhere, or it was
   // taken over mid-session. null = we're the owner / not gated. The PTY stream keeps flowing
@@ -1601,40 +1627,10 @@ export function Terminal({
   }, [theme, accent, termFontSize, termFontFamily]);
 
   const text = statusText(status);
-  const head = headStatus(status);
   // #284: use the server-resolved display title only (manual rename → AI title → meaningful
   // first message, else ""). Never fall back to the RAW first message, or a stray "a" / "."
   // leaks into the panel header — drop straight to the short id.
   const title = row?.title || `${id.slice(0, 8)}…`;
-  // Header meta run (#744): the same facts the sidebar row carries — project and how stale the
-  // session is. A folder ref's `name` is the FULL cwd by server contract (projects.resolve), so
-  // clients shorten it themselves; an adopted project keeps its entity name + colour dot.
-  // `?? ""` is not defensive clutter: the pane header is now fed by a LOOKUP as well as the
-  // sidebar's list (#867), so a row can arrive from a source this component does not control.
-  // `shortCwd(undefined)` throws, and a throw here is caught by the route's error boundary and
-  // replaces the WHOLE session — live terminal included — with "we couldn't load this part of
-  // the app". A header that cannot name its project must degrade to a blank chip, never take
-  // the session down with it.
-  const projectLabel = row
-    ? row.project.kind === "project"
-      ? (row.project.name ?? "")
-      : shortCwd(row.project.name ?? row.cwd ?? "")
-    : "";
-  // The chip's tooltip is the FULL launch folder, not a repeat of the label it sits on (#867).
-  // The visible text is either an entity name or a shortened cwd, so "which folder is this
-  // actually in" had no answer anywhere in the pane — you had to open the file panel to find
-  // out. An adopted project keeps its name on the first line and gains the folder under it.
-  const projectTitle = row
-    ? row.project.kind === "project"
-      ? `${row.project.name ?? ""}\n${row.cwd ?? ""}`
-      : (row.cwd ?? "")
-    : "";
-  const projectStyle =
-    row?.project.kind === "project"
-      ? ({
-          "--proj": row.project.color || projectColor(row.project.id),
-        } as CSSProperties)
-      : undefined;
   // Session-brief modal (#481): the recap icon in the header opens it; the trigger element is
   // captured at click time so focus returns to it on close (no ref read during render).
   const [recapOpen, setRecapOpen] = useState(false);
@@ -1682,7 +1678,12 @@ export function Terminal({
     requestTailRef.current();
     termRef.current?.scrollToBottom();
     setAtBottom(true);
-  }, []);
+    // Setters in the dep array are semantically inert (React guarantees they are stable) —
+    // they are declared for the React compiler's inference (#1109): with the chrome-slot
+    // portal added to this component, the compiler's inferred deps for this callback include
+    // the setters it writes, and an empty manual array reads as an unpreservable
+    // memoization, which skips optimizing the whole component.
+  }, [setAppScrolledUp, setAppTailUnknown, setAtBottom]);
   // Manual repaint (#485): force the agent to redraw its current frame via the published
   // rows−1→rows nudge — recovers a mid-session blank/fragment (a winch-repaint TUI that cleared
   // its viewport and went quiet) WITHOUT killing the process. Non-destructive, unlike RESTART.
@@ -1726,7 +1727,8 @@ export function Terminal({
     // connect carries ?force=1, demoting the prior owner on the server (#184).
     forceNextConnectRef.current = true;
     setTakeoverEpoch((n) => n + 1);
-  }, []);
+    // See scrollToTail above: declared for the compiler's inferred deps, semantically inert.
+  }, [setTakeoverEpoch]);
   // Order: Files leads (the new primary affordance); Repaint stays ahead of the fold because
   // burying the recovery control when the screen is blank would be the wrong trade.
   // An array LITERAL with conditional entries, not an imperative `push` — mutating an array during
@@ -1901,65 +1903,44 @@ export function Terminal({
           project, relative update time — mirroring what the sidebar row shows for this session,
           then the action buttons. The session title is deliberately absent: it is the sidebar's
           job and the session brief's, and the 26px bar reads better carrying facts the sidebar
-          can't repeat next to the live pane (which project, how stale). */}
-      <div className={styles.panelHead}>
-        <span className={styles.headLeft}>
-          <span
-            className={`${styles.headLed} hud-led ${head.led}`}
-            role="img"
-            aria-label={`status: ${head.label.toLowerCase()}`}
-            title={head.label}
-          />
-          <span className={styles.headEng} title={engineName(engine)}>
-            {engineBadge(engine)}
+          can't repeat next to the live pane (which project, how stale).
+          #1109: the facts run is the shared `HeadFacts` component — a map window's chrome renders
+          the SAME run, and `suppressHead` removes this bar entirely there so a window never
+          shows two stacked bars. The actions either stay here (the pane's own fold) or portal
+          into the window chrome's slot, whose single ⋯ menu carries the overflow. */}
+      {!suppressHead && (
+        <div className={styles.panelHead} data-panel-head="">
+          <span className={styles.headLeft}>
+            <HeadFacts engine={engine} status={status} row={row} />
           </span>
-          {row?.mission ? (
-            <span
-              className={styles.headMission}
-              title={`Mission: ${row.mission.title} (${row.mission.state})`}
-              data-testid="head-mission-tag"
-            >
-              <Crosshair size={9} aria-hidden="true" />
-              <span className={styles.headMissionText}>{row.mission.title}</span>
-            </span>
-          ) : null}
-          {row && (
-            <span className={styles.headMeta}>
-              {projectLabel && (
-                <span
-                  className={styles.headProject}
-                  style={projectStyle}
-                  title={projectTitle}
-                >
-                  {row.project.kind === "project" && (
-                    <span
-                      className={styles.headProjectDot}
-                      aria-hidden="true"
-                    />
-                  )}
-                  {projectLabel}
-                </span>
-              )}
-              {/* Drops first as the pane narrows (see .headUpdated) — it carries the separator
-                  with it, so the project never trails a dangling "·". */}
-              <span className={styles.headUpdated}>
-                {projectLabel ? " · " : ""}
-                {relTime(row.last_mtime)}
-              </span>
-            </span>
-          )}
-        </span>
-        {/* Actions with measured overflow (#783). A fourth labelled button breaks the header's
-            own measured contract (see Terminal.module.css), so trailing actions fold into a "…"
-            menu that still carries full labels — the KeyBar idiom, not an icon-only shrink. */}
-        <HeadActions
-          className={styles.headActions}
-          btnClassName={styles.restartBtn}
-          labelClassName={styles.headActionLabel}
-          actions={headActions}
-          collapsed={isMobile}
-        />
-      </div>
+          {/* Actions with measured overflow (#783). A fourth labelled button breaks the header's
+              own measured contract (see Terminal.module.css), so trailing actions fold into a "…"
+              menu that still carries full labels — the KeyBar idiom, not an icon-only shrink. */}
+          <HeadActions
+            className={styles.headActions}
+            btnClassName={styles.restartBtn}
+            labelClassName={styles.headActionLabel}
+            actions={headActions}
+            collapsed={isMobile}
+          />
+        </div>
+      )}
+      {suppressHead &&
+        headActionsSlot &&
+        createPortal(
+          <HeadActions
+            className={styles.headActions}
+            btnClassName={styles.restartBtn}
+            labelClassName={styles.headActionLabel}
+            actions={headActions}
+            collapsed={isMobile}
+            reservePx={headReservePx}
+            foldInto="external"
+            overflowRef={headOverflowRef}
+            barRef={headBarRef}
+          />,
+          headActionsSlot,
+        )}
       {adoptOpen && row && (
         <AdoptToMissionModal
           session={row}

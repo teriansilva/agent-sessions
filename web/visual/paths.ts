@@ -26,6 +26,10 @@ export type VisualPath = {
   waitFor: WaitFor;
   /** Needs the seeded `must_change` account / fixtures (Phase 2). Skipped until seeded. */
   seeded?: boolean;
+  /** An interaction to run after `goto`, before `waitFor` (#1109): the consolidated window
+   *  chrome only exists on an OPEN window, and a capture that only visits a route cannot show
+   *  it. The one shipped step opens the first session chip as a window. */
+  prepare?: "open-first-window";
 };
 
 /** Screen formats — every area is captured at each (the operator asked for several). */
@@ -118,6 +122,19 @@ export const VISUAL_PATHS: VisualPath[] = [
       timeoutMs: 8000,
       reason: "React Flow lays out nodes after the sessions fetch resolves",
     },
+  },
+  {
+    group: "authed",
+    path: "/overview",
+    name: "overview-window",
+    description:
+      "Session Overview map with an open window — the ONE consolidated, project-tinted chrome bar carrying the facts run, the chips and the single ⋯ (#1109)",
+    requireAuth: "admin",
+    // The map is the readiness gate; the prepare step below then opens the window and waits
+    // for ITS terminal — a window-scoped waitFor would time out on the narrow formats, where
+    // the map (correctly) refuses to host one and the shot keeps the plain map.
+    waitFor: { selector: ".tr-overview .tr-ov-chip", timeoutMs: 15000 },
+    prepare: "open-first-window",
   },
   {
     group: "authed",

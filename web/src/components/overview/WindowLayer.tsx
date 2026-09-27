@@ -16,8 +16,11 @@ import {
   tetherPath,
 } from "./workspace";
 
-/** Why a window's ⋯ is disabled: its menu reads the session's row from the map, and the row is
- *  not there (#968). Shown as the control's title, so the state explains itself. */
+/** Why a window's session items are unavailable: its menu reads the session's row from the map,
+ *  and the row is not there (#968). #1109 refines this from "the whole ⋯ is disabled" to "only
+ *  the row-dependent session actions are": the ⋯ stays enabled and opens the PANE actions only
+ *  (its own fold — Repaint, Files, text size), which never needed the row. The reason is shown
+ *  as the control's title, so the state explains itself. */
 const OFF_MAP_REASON =
   "This session isn't on the map right now — change the map filter or open it full screen";
 
@@ -191,7 +194,7 @@ export function WindowLayer({
             onMenu={onMenu}
             // A primitive, so a refetch that leaves this window's session on the map re-renders
             // nothing inside the memoized window.
-            menuDisabledReason={
+            offMapReason={
               onMenu && isOnMap && !isOnMap(w.actionKey) ? OFF_MAP_REASON : undefined
             }
           />

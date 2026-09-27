@@ -1,7 +1,8 @@
 import { MoreHorizontal } from "lucide-react";
 import { createPortal } from "react-dom";
-import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import menu from "../files/filePanel.module.css";
+import { foldCount } from "./headActionsFold";
 
 export interface HeadAction {
   id: string;
@@ -23,6 +24,8 @@ export interface HeadAction {
 
 const GAP = 6; // matches .headActions gap
 
+
+
 /** Pane-head actions with measurement-driven overflow (#783).
  *
  *  **At the shell's ≤800px breakpoint there is no measuring (#948 P6).** `collapsed` puts every
@@ -41,8 +44,15 @@ const GAP = 6; // matches .headActions gap
  *
  *  The menu is portalled to <body> because `.terminal-pane` is `overflow: hidden` — the same
  *  reason KeyBar portals its own. KeyBar supplies the measurement and portal pattern only; the
- *  menu a11y (focus-in, arrow keys, Esc, focus return, roving `menuitem`) is implemented here. */
-export function HeadActions({ actions, className, btnClassName, labelClassName, collapsed = false }: {
+ *  menu a11y (focus-in, arrow keys, Esc, focus return, roving `menuitem`) is implemented here.
+ *
+ *  **A map window folds into ITS chrome's ⋯ instead (#1109).** `foldInto: "external"` renders no
+ *  "…" trigger and no portal menu of its own — the window bar already carries exactly one ⋯, the
+ *  one that opens the merged session+pane menu — and publishes whatever overflowed through
+ *  `overflowRef` after every commit, so the chrome reads the CURRENT fold at menu-open time
+ *  without a single extra render. The chips that fit stay chips; the rest are reachable only
+ *  through that one menu, which is the point: a window never shows two menus. */
+export function HeadActions({ actions, className, btnClassName, labelClassName, collapsed = false, reservePx, foldInto = "self", overflowRef, barRef }: {
   actions: HeadAction[];
   className: string;
   btnClassName: string;
@@ -54,6 +64,26 @@ export function HeadActions({ actions, className, btnClassName, labelClassName, 
    *  the operator asked for the header to become a context menu there. Wider panes, touch or not,
    *  keep the measured fold below. */
   collapsed?: boolean;
+  /** The width, in px, the bar must still hold BESIDES the chips — identity run, title, fixed
+   *  buttons. The pane's own bar is modelled by the built-in default (LED + engine box + the
+   *  bar's padding; the meta run is the designated shrink absorber there). A window's chrome bar
+   *  passes a MEASURED reserve instead (#1109): its facts run is `flex: none`, so its width is a
+   *  fact, and the title + window buttons + grip are constants the chrome owns. Folding late
+   *  would clip the title; folding a little early is the safe direction. */
+  reservePx?: number;
+  /** Where the overflow goes. `"self"` (default): this component renders its own "…" trigger +
+   *  portal menu, exactly as shipped. `"external"` (#1109): a host that carries the ONE merged
+   *  menu itself — no trigger, no menu here, and the overflow published via `overflowRef`. */
+  foldInto?: "self" | "external";
+  /** With `foldInto: "external"`: the host's ref to read the overflowed actions from, updated
+   *  after every commit so a menu built at open time is never stale. */
+  overflowRef?: { current: HeadAction[] };
+  /** The BAR the fold budgets against. Default is this wrapper's parent — true in the pane,
+   *  where the wrapper sits directly under `.panelHead`; a window's chips sit in a dedicated
+   *  slot span instead, so the host passes its bar (`[data-window-head]`) explicitly (#1109).
+   *  The observer watches the same element: observing the slot would measure the fold's own
+   *  output, an unstable feedback loop. */
+  barRef?: RefObject<HTMLElement | null>;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const moreRef = useRef<HTMLButtonElement>(null);
@@ -91,35 +121,23 @@ export function HeadActions({ actions, className, btnClassName, labelClassName, 
       if (kids.length === actions.length) {
         widths.current = kids.map((k) => k.offsetWidth);
       }
-      const bar = el.parentElement?.clientWidth ?? 0;
+      const bar = barRef?.current?.clientWidth ?? el.parentElement?.clientWidth ?? 0;
       if (!bar || widths.current.length !== actions.length) return;
       // Budget = the whole bar minus the irreducible left identity (LED + engine box) and the
       // bar's own padding. Per Terminal.module.css the meta run absorbs ALL shrink, so the
       // actions may legitimately take everything else — an earlier `bar * 0.66` guess collapsed
       // the head at 412px where all four chips fit comfortably, needlessly burying Recap and
-      // Hand off behind the menu on every phone.
-      const IDENTITY_W = 54; // LED + engine box
+      // Hand off behind the menu on every phone. A window's chrome bar passes a measured
+      // `reservePx` instead (#1109): its facts run is fixed-width, its title and window buttons
+      // are constants, and the fold must budget for them or it would clip the title.
+      const IDENTITY_W = reservePx ?? 54; // LED + engine box (the pane model)
       const PAD = 20;
       const avail = bar - IDENTITY_W - PAD;
-      const MORE_W = 34; // the "…" chip, reserved only when something will actually overflow
-      const total = widths.current.reduce((a, b) => a + b, 0) + GAP * (actions.length - 1);
-      if (total <= avail) {
-        setFit((prev) =>
-          prev.sig === sig && prev.n === actions.length && prev.w === bar
-            ? prev
-            : { sig, n: actions.length, w: bar },
-        );
-        return;
-      }
-      let used = 0;
-      let fitCount = 0;
-      for (let i = 0; i < actions.length; i++) {
-        const next = used + widths.current[i] + (i ? GAP : 0);
-        if (next + GAP + MORE_W > avail) break;
-        used = next;
-        fitCount++;
-      }
-      const next = Math.max(1, fitCount);
+      // The "…" chip is reserved only when something will actually overflow — and only when THIS
+      // component renders the trigger at all. `foldInto: "external"` folds into a menu the host
+      // owns, mounted outside this slot's flow, so nothing here is reserved for it.
+      const MORE_W = foldInto === "external" ? 0 : 34;
+      const next = foldCount(widths.current, avail, GAP, MORE_W);
       setFit((prev) =>
         prev.sig === sig && prev.n === next && prev.w === bar ? prev : { sig, n: next, w: bar },
       );
@@ -127,13 +145,22 @@ export function HeadActions({ actions, className, btnClassName, labelClassName, 
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
-    if (el.parentElement) ro.observe(el.parentElement);
+    const watched = barRef?.current ?? el.parentElement;
+    if (watched) ro.observe(watched);
     return () => ro.disconnect();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sig, collapsed]);
+  }, [sig, collapsed, reservePx]);
 
   const inline = actions.slice(0, visible);
   const overflow = actions.slice(visible);
+
+  // The host's fold is published after EVERY commit, unconditionally: the chrome builds its menu
+  // from this ref at open time, so it must name the actions that are actually folded right now.
+  // A ref write never re-renders, so this cannot loop — it is what makes the merged menu read
+  // current state (disabled flips, a Repaint that just became possible) with no render coupling.
+  useEffect(() => {
+    if (overflowRef) overflowRef.current = actions.slice(visible);
+  });
 
   const place = useCallback(() => {
     const r = moreRef.current?.getBoundingClientRect();
@@ -243,7 +270,10 @@ export function HeadActions({ actions, className, btnClassName, labelClassName, 
           <span className={labelClassName}>{a.label}</span>
         </button>
       ))}
-      {overflow.length > 0 && (
+      {/* The fold trigger lives HERE only in the self-hosted case. `foldInto: "external"` (#1109)
+          leaves the overflow to the host's single ⋯ menu — a window must never render a second
+          "…" chip beside its chrome's own. */}
+      {overflow.length > 0 && foldInto === "self" && (
         <>
           <button
             ref={moreRef}

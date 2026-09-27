@@ -30,9 +30,10 @@ export type SessionStatusInput = SessionStatusBase &
  *  (grey).
  *
  *  Extracted from `SessionList` in #744 so the sidebar row and the session brief resolve the SAME
- *  state from the SAME row. This is deliberately NOT the terminal's `headStatus()`, which answers
- *  a different question — whether THIS browser's socket is attached (`LIVE` / `OFFLINE`). Socket
- *  `LIVE` is not "agent working", and the two must never be shown through one dot. */
+ *  state from the SAME row. This is deliberately NOT the pane's `headStatus()` (HeadFacts.tsx,
+ *  #1109), which answers a different question — whether THIS browser's socket is attached
+ *  (`LIVE` / `OFFLINE`). Socket `LIVE` is not "agent working", and the two must never be shown
+ *  through one dot. */
 export function sessionStatus(s: SessionStatusInput): SessionStatus {
   if (s.intervention_required && !s.review_excluded) {
     return {

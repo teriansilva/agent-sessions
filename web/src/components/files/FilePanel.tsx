@@ -43,6 +43,9 @@ export function FilePanel({
   onClose,
   returnFocusTo,
   onSendPath,
+  contained = false,
+  sheetKeyScopeActive = true,
+  persistOpen = true,
 }: {
   sessionKey: string;
   cwd: string;
@@ -53,6 +56,25 @@ export function FilePanel({
   /** Absolute path → the compose draft (#792). Owned by SessionView, which is the only place
    *  holding both the session cwd and a handle that reaches Compose. */
   onSendPath?: (path: string) => void;
+  /** Contained sheet (#1109): the host is a map window's body, and the sheet renders INSIDE it
+   *  — inline, never portalled to <body>, no page scroll lock. A window-contained sheet covers
+   *  its window, not the workspace; the phone reasons the portal exists for (the coarse-pointer
+   *  touch layer, the modal z-band) do not apply to a desktop-only window's own DOM. */
+  contained?: boolean;
+  /** With `contained`: does THIS panel's window own the keyboard right now? A map window's
+   *  background sheet must not touch the document — two windows' sheets each install a
+   *  capture-phase keydown listener, and ungated, Escape in one closes BOTH (Hermes on
+   *  #1109: focus inside the second window's sheet, both drawers vanished). `false` → the
+   *  sheet installs NO document listener; its own in-sheet controls keep working, and the
+   *  keys belong to whatever window IS active. The full-screen pane never passes it (it is
+   *  the only pane on the page — always active). */
+  sheetKeyScopeActive?: boolean;
+  /** Whether to record `open: true` for this session (#783's reopen-on-reload). The full-screen
+   *  pane persists it; a WINDOW drawer does not (#1109) — its drawer state is transient, and a
+   *  window having files open should not force the next full-screen visit open too. The root
+   *  and expanded set are still remembered either way (switching back should not lose your
+   *  place). */
+  persistOpen?: boolean;
 }) {
   // Lazy initializer, not a ref read during render: seed the root from the persisted state once.
   const [root, setRoot] = useState<string>(
@@ -174,10 +196,16 @@ export function FilePanel({
   }, []);
 
   // Persist what the UI actually changes. `open` is written by SessionView (which outlives this
-  // component — a panel that unmounts on close can never record `open: false` itself).
+  // component — a panel that unmounts on close can never record `open: false` itself). A window
+  // host passes `persistOpen: false` (#1109): the drawer's openness stays the window's own
+  // transient state, and the remembered `open` flag is left exactly as it was.
   useEffect(() => {
-    savePanelState(sessionKey, { open: true, root, expanded: [...expanded] });
-  }, [sessionKey, root, expanded]);
+    savePanelState(sessionKey, {
+      open: persistOpen ? true : (loadPanelState(sessionKey)?.open ?? false),
+      root,
+      expanded: [...expanded],
+    });
+  }, [sessionKey, root, expanded, persistOpen]);
 
   // Poll only while the panel is open AND the document is visible — a backgrounded tab must not
   // keep spending worker budget.
@@ -193,22 +221,31 @@ export function FilePanel({
     return () => window.clearTimeout(timer);
   }, []);
 
-  // Sheet mode: lock body scroll and focus in, exactly like a modal (because it is one).
+  // Sheet mode: focus in, exactly like a modal (because it is one) — contained or not.
   useEffect(() => {
     if (mode !== "sheet") return;
+    closeRef.current?.focus();
+  }, [mode]);
+  // ...and lock the PAGE's scroll — only for the portalled sheet. A CONTAINED sheet (#1109)
+  // lives inside a map window's body: there is no page scroll to lock, and locking it would
+  // freeze the workspace behind the window.
+  useEffect(() => {
+    if (mode !== "sheet" || contained) return;
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
-    closeRef.current?.focus();
     return () => {
       document.body.style.overflow = prev;
     };
-  }, [mode]);
+  }, [mode, contained]);
 
   // Esc closes the sheet, and Tab is CONTAINED. Declaring `aria-modal` while letting focus walk
   // out to the background is a false claim — the viewer already had this trap; the sheet did not.
   // In dock mode the panel is not modal, so neither applies and Esc belongs to the terminal.
   useEffect(() => {
     if (mode !== "sheet") return;
+    // A BACKGROUND window's sheet owns no keys (#1109): ungated, every open sheet's capture
+    // listener fires and one Escape closes them all. Only the active window's sheet listens.
+    if (contained && !sheetKeyScopeActive) return;
     const onKey = (e: KeyboardEvent) => {
       // The viewer stacks above the sheet and owns the keyboard while it is open — and so do the
       // upload menu and collision prompt (#807) and the GIT tab's branch menu and discard
@@ -227,6 +264,19 @@ export function FilePanel({
         )
       )
         return;
+      // And ANY OTHER aria-modal dialog portalled above the workspace — the session dialogs
+      // this panel's owner chrome can open (brief, hand off, move to project, template save,
+      // …). The panel cannot enumerate its owner's chrome, so the contract is STRUCTURAL: a
+      // workspace-level dialog — not one inside a window (a background window's sheet is
+      // focus-gated above and never owns keys), and not this sheet itself — owns the keyboard
+      // while it is open. Escape belongs to the topmost dialog, not to the panel under it
+      // (Hermes on #1109: Escape in the Session brief was closing the Files sheet beneath).
+      const above = document.querySelector<HTMLElement>(
+        '[role="dialog"][aria-modal="true"]:not([data-file-panel])',
+      );
+      if (above && !sheetRef.current?.contains(above) && !above.closest("[data-session-window]")) {
+        return;
+      }
       if (e.key === "Escape") {
         e.stopPropagation();
         close();
@@ -254,7 +304,7 @@ export function FilePanel({
     };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
-  }, [mode, close]);
+  }, [mode, close, contained, sheetKeyScopeActive]);
 
   // Up uses the listing's `parent`, which the server computes against the contained root and
   // returns as null when there is nowhere legal to go. Deriving it by trimming the string
@@ -537,29 +587,45 @@ export function FilePanel({
   );
 
   if (mode === "sheet") {
+    // A contained sheet (#1109) renders INLINE — the host (a map window's body) places it;
+    // the portalled sheet is the viewport-sized one, and keeps every behaviour it shipped
+    // with. The scrim and the sheet swap fixed→absolute via the contained modifier classes.
+    const scrim = (
+      <button
+        type="button"
+        className={contained ? `${styles.sheetScrim} ${styles.sheetInHost}` : styles.sheetScrim}
+        aria-label="Dismiss the file panel"
+        onClick={close}
+      />
+    );
+    const sheet = (
+      <div
+        ref={sheetRef}
+        className={contained ? `${styles.sheet} ${styles.sheetInHost}` : styles.sheet}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Files"
+        data-file-panel="sheet"
+      >
+        <div className={styles.grabber} aria-hidden="true" />
+        {inner}
+      </div>
+    );
     return (
       <>
-        {createPortal(
+        {contained ? (
           <>
-            <button
-              type="button"
-              className={styles.sheetScrim}
-              aria-label="Dismiss the file panel"
-              onClick={close}
-            />
-            <div
-              ref={sheetRef}
-              className={styles.sheet}
-              role="dialog"
-              aria-modal="true"
-              aria-label="Files"
-              data-file-panel="sheet"
-            >
-              <div className={styles.grabber} aria-hidden="true" />
-              {inner}
-            </div>
-          </>,
-          document.body,
+            {scrim}
+            {sheet}
+          </>
+        ) : (
+          createPortal(
+            <>
+              {scrim}
+              {sheet}
+            </>,
+            document.body,
+          )
         )}
         {viewer && (
           <FileViewerModal

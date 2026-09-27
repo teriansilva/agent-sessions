@@ -164,6 +164,53 @@ test("separators render with role=separator between groups", async () => {
   expect(screen.getByRole("separator")).toBeInTheDocument();
 });
 
+test("a group label renders as a non-interactive header and is skipped by the roving focus (#1109)", async () => {
+  // The merged window ⋯ menu separates its two item sources with labelled groups. A label is
+  // neither a separator nor an item: no role of its own, and the focus cycle — which walks
+  // itemRefs, populated per ACTION item — must never land on it or mis-index around it.
+  const user = userEvent.setup();
+  const items: RowMenuEntry[] = [
+    { group: "Session" },
+    {
+      key: "rename",
+      label: "Rename",
+      ariaLabel: "Rename session",
+      icon: <Pencil size={15} />,
+      onSelect: () => {},
+    },
+    "separator",
+    { group: "Pane" },
+    {
+      key: "repaint",
+      label: "Repaint",
+      ariaLabel: "Repaint screen",
+      icon: <Sparkles size={15} />,
+      onSelect: () => {},
+    },
+    "separator",
+    {
+      key: "archive",
+      label: "Archive",
+      ariaLabel: "Archive session",
+      icon: <Archive size={15} />,
+      onSelect: () => {},
+    },
+  ];
+  render(<RowMenu items={items} />);
+  await user.click(screen.getByRole("button", { name: "Session actions" }));
+  const menu = screen.getByRole("menu");
+  expect(menu.querySelector("[data-menu-group='Session']")).toHaveTextContent("Session");
+  expect(menu.querySelector("[data-menu-group='Pane']")).toHaveTextContent("Pane");
+  // Focus lands on the FIRST ACTION ITEM, not the label before it.
+  expect(document.activeElement).toHaveAccessibleName("Rename session");
+  // End jumps to the LAST action item — past the second label, without mis-indexing.
+  await user.keyboard("{End}");
+  expect(document.activeElement).toHaveAccessibleName("Archive session");
+  // And wrapping forward from there lands back on the first item.
+  await user.keyboard("{ArrowDown}");
+  expect(document.activeElement).toHaveAccessibleName("Rename session");
+});
+
 // --- MenuPopover at a pointer (#968) ------------------------------------------------------------
 // jsdom lays nothing out, so the menu's measured size is stubbed; the viewport is jsdom's 1024×768.
 describe("MenuPopover — point anchor", () => {

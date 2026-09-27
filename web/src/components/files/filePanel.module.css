@@ -88,6 +88,18 @@
   background: var(--line-strong);
 }
 
+/* Contained sheet (#1109): the window-hosted variant renders INLINE inside the host's own
+ * overlay box, so it swaps the viewport pinning for filling its parent — same classes, same
+ * semantics, a smaller kingdom. No body portal, no page scroll lock (the host effect skips
+ * both when `contained` is set). */
+.sheetInHost {
+  position: absolute;
+  inset: 0;
+}
+.sheet.sheetInHost {
+  height: auto; /* the host box is the size; 100dvh is the portalled sheet's business */
+}
+
 /* ------------------------------------------------------------------ shared chrome */
 
 .head {
