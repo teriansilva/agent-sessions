@@ -60,7 +60,9 @@ function blankObjective(n: number): MissionPlaybookObjective {
   };
 }
 
-export function MissionPlaybooks() {
+/** `asPage` when it is the whole page (Missions → Checklists): its heading is then the page's `h1`. */
+export function MissionPlaybooks({ asPage = false }: { asPage?: boolean } = {}) {
+  const Heading = asPage ? "h1" : "h2";
   const cfg = useConfig();
   const refreshConfig = useConfigRefresh();
   const stored = cfg?.mission_playbooks;
@@ -251,7 +253,7 @@ export function MissionPlaybooks() {
 
   return (
     <section className={styles.section} data-testid="mission-playbooks">
-      <h2>Mission checklists</h2>
+      <Heading>Mission checklists</Heading>
       <p className={styles.blurb}>
         A checklist is what a new mission starts with — what has to be true
         before the work counts as done. Objectives with a <b>probe</b> are

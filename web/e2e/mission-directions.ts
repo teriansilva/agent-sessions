@@ -14,6 +14,7 @@ import { resolve } from "node:path";
 import { expect, type Page } from "@playwright/test";
 
 import { DIRECTION_PREVIEW_PATH } from "../src/lib/apiPaths";
+import { CHECKLISTS_PATH } from "../src/lib/routes";
 import { settingsPath } from "../src/routes/settingsTabs";
 import {
   MISSION,
@@ -166,7 +167,7 @@ export async function commonMocks(page: Page) {
 
 // --- the playbook editor ---------------------------------------------------------------------------
 
-/** Settings → AI → Playbooks, with a prefs route that records each save and refuses `{nope}`. */
+/** Missions → Checklists, with a prefs route that records each save and refuses `{nope}`. */
 export async function playbookEditor(page: Page, opts: { refuse?: boolean } = {}) {
   const common = await commonMocks(page);
   const saves: { mission_playbooks: typeof PLAYBOOKS }[] = [];
@@ -184,7 +185,7 @@ export async function playbookEditor(page: Page, opts: { refuse?: boolean } = {}
       json: { mission_playbooks: { ...body.mission_playbooks, revision: PLAYBOOKS.revision + 1 } },
     });
   });
-  await page.goto(settingsPath("ai-playbooks"));
+  await page.goto(CHECKLISTS_PATH);
   const field = page.getByTestId("objective-direction").first();
   await expect(field).toBeVisible();
   return { ...common, saves, field, text: field.getByTestId("objective-direction-text") };

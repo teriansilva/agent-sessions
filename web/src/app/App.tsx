@@ -59,7 +59,13 @@ import {
   WIDTH_KEY,
   WIDTH_STEP,
 } from "./sidebarWidth";
-import { ASK_PATH, DASHBOARD_PATH, LEGACY_MISSION_PATH, MISSION_PATH } from "../lib/routes";
+import {
+  ASK_PATH,
+  CHECKLISTS_PATH,
+  DASHBOARD_PATH,
+  LEGACY_MISSION_PATH,
+  MISSION_PATH,
+} from "../lib/routes";
 import { SETTINGS_PATH } from "../routes/settingsTabs";
 import { OperatorMenu } from "../components/shell/OperatorMenu";
 import { SectionNav } from "../components/shell/SectionNav";
@@ -78,6 +84,11 @@ const MissionControl = lazyWithReload(() => import("../routes/Pulse"), "pulse");
 const Templates = lazyWithReload(
   () => import("../routes/Templates"),
   "templates",
+);
+// MISSIONS → CHECKLISTS — the mission playbooks editor, moved out of Settings. Lazy like the others.
+const Checklists = lazyWithReload(
+  () => import("../routes/Checklists"),
+  "checklists",
 );
 const TemplateEditor = lazyWithReload(
   () => import("../routes/TemplateEditor"),
@@ -663,12 +674,18 @@ function Layout() {
                   {/* Canonical Settings form is /settings/:tab (#357); the bare path mounts the
                   same component, which replace-redirects to the first tab (state preserved). */}
                   <Route path="/settings" element={<Settings />} />
+                  {/* The checklists were a Settings tab until they moved under Missions. */}
+                  <Route
+                    path="/settings/ai-playbooks"
+                    element={<Navigate to={CHECKLISTS_PATH} replace />}
+                  />
                   <Route path="/settings/:tab" element={<Settings />} />
                   {/* #1128: an agent's own page, and the agent Defaults, under the roster. */}
                   <Route path="/settings/agents/:agent" element={<Settings />} />
                   <Route path="/overview" element={<Overview />} />
                   <Route path={MISSION_PATH} element={<MissionControl />} />
                   <Route path={LEGACY_MISSION_PATH} element={<LegacyMissionRedirect />} />
+                  <Route path={CHECKLISTS_PATH} element={<Checklists />} />
                   <Route path={DASHBOARD_PATH} element={<Dashboard />} />
                   {/* #1171: a conversation has its own page under Dashboard. */}
                   <Route path={ASK_PATH} element={<Ask />} />

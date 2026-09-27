@@ -404,7 +404,6 @@ test.each([
   ["ai-session-review", ["Session review"]],
   ["ai-auto-sort", ["Auto-sort projects"]],
   ["ai-mission-control", ["Orchestrator", "Session scan", "Forge connection"]],
-  ["ai-playbooks", ["Mission checklists"]],
   ["ai-prompts", ["Prompts"]],
   ["ai-activity", ["AI activity"]],
   ["agents", ["Agents"]],
@@ -428,7 +427,8 @@ test.each([
 
 test("the registry and the pages agree: every section id renders something", () => {
   // A registry entry with no body in Settings.tsx would be a nav link to a blank page.
-  expect(SETTINGS_SECTIONS).toHaveLength(18);
+  // 17 since the mission checklists moved out of Settings to Missions → Checklists.
+  expect(SETTINGS_SECTIONS).toHaveLength(17);
 });
 
 // ---- Usage analytics (#1009) ----------------------------------------------------------------

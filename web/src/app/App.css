@@ -995,12 +995,14 @@ body.hud-static-grid {
      overflow slid TEMPLATES under the notification bell — visible, clickable-looking and dead.
      32px + 2px gaps is 168. The 44px hit-target floor is on the HEIGHT and is untouched.
      #1171 gave Dashboard a chevron too (its Ask sub-page): two 20px chevrons ran 0.2px under the
-     bell at 320, so the chevrons are 18px here — 4px back, still a full-height target. */
+     bell at 320, so the chevrons are 18px here — 4px back, still a full-height target.
+     Missions → Checklists made it THREE chevrons, 14px over at 320; the icons give 4px each
+     (28px, a 16px glyph with room either side) rather than any entry leaving the row. */
   .section-nav {
     gap: 2px;
   }
   .section-nav a {
-    width: 32px;
+    width: 28px;
     padding-inline: 0;
   }
   .section-nav-chevron {

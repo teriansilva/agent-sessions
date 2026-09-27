@@ -49,7 +49,6 @@ import { AiEndpointSetup } from "./AiEndpointSetup";
 import { AiReviewSettings } from "./AiReviewSettings";
 import { ForgeSettings } from "./ForgeSettings";
 import { AutoSortSettings } from "./AutoSortSettings";
-import { MissionPlaybooks } from "./MissionPlaybooks";
 import { OrchestratorSettings } from "./OrchestratorSettings";
 import { PromptsSettings } from "./PromptsSettings";
 import { PulseSettings } from "./PulseSettings";
@@ -2521,8 +2520,6 @@ export function Settings() {
             <ForgeSettings />
           </>
         )}
-        {/* The checklists MISSION CONTROL starts a mission with (#892). */}
-        {section === "ai-playbooks" && <MissionPlaybooks />}
         {/* Every system prompt, in one catalog (#824). */}
         {section === "ai-prompts" && <PromptsSettings />}
         {section === "ai-activity" && <AiActivityPanel />}

@@ -23,6 +23,7 @@
 import {
   BookMarked,
   Crosshair,
+  ListChecks,
   LayoutDashboard,
   MessageSquare,
   Network,
@@ -32,6 +33,7 @@ import {
 
 import {
   ASK_PATH,
+  CHECKLISTS_PATH,
   DASHBOARD_PATH,
   LEGACY_MISSION_PATH,
   MAP_PATH,
@@ -43,8 +45,15 @@ import {
 export type SectionId = "ask" | "sessions" | "mission" | "templates";
 
 /** An entry inside a section's sub-menu: Sessions has the session view and its map; Dashboard
- *  has the dashboard and Ask's conversation page (#1171). */
-export type SubsectionId = "sessions" | "map" | "dashboard" | "ask";
+ *  has the dashboard and Ask's conversation page (#1171); Missions has the console and its
+ *  checklists. */
+export type SubsectionId =
+  | "sessions"
+  | "map"
+  | "dashboard"
+  | "ask"
+  | "mission"
+  | "checklists";
 
 export interface Subsection {
   id: SubsectionId;
@@ -89,7 +98,19 @@ export const SECTIONS: Section[] = [
       { id: "map", label: "Sessions map", Icon: Network, to: MAP_PATH },
     ],
   },
-  { id: "mission", label: "Missions", Icon: Crosshair, to: MISSION_PATH, beta: true },
+  // The checklists a mission starts with live under Missions, beside the console that uses them —
+  // they were a Settings tab, which is not where anyone looks for what "done" means for a mission.
+  {
+    id: "mission",
+    label: "Missions",
+    Icon: Crosshair,
+    to: MISSION_PATH,
+    beta: true,
+    children: [
+      { id: "mission", label: "Missions", Icon: Crosshair, to: MISSION_PATH },
+      { id: "checklists", label: "Checklists", Icon: ListChecks, to: CHECKLISTS_PATH },
+    ],
+  },
   { id: "templates", label: "Templates", Icon: BookMarked, to: TEMPLATES_PATH },
 ];
 
@@ -103,8 +124,7 @@ export function activeSection(pathname: string): SectionId | null {
   const sub = activeSubsection(pathname);
   if (sub === "sessions" || sub === "map") return "sessions";
   if (sub === "dashboard" || sub === "ask") return "ask";
-  if (pathname === MISSION_PATH || pathname === LEGACY_MISSION_PATH)
-    return "mission";
+  if (sub === "mission" || sub === "checklists") return "mission";
   if (pathname === TEMPLATES_PATH || pathname.startsWith(`${TEMPLATES_PATH}/`))
     return "templates";
   return null;
@@ -119,5 +139,8 @@ export function activeSubsection(pathname: string): SubsectionId | null {
   if (pathname === MAP_PATH) return "map";
   if (pathname === DASHBOARD_PATH) return "dashboard";
   if (pathname === ASK_PATH) return "ask";
+  if (pathname === MISSION_PATH || pathname === LEGACY_MISSION_PATH)
+    return "mission";
+  if (pathname === CHECKLISTS_PATH) return "checklists";
   return null;
 }

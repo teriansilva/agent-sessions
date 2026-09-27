@@ -27,7 +27,6 @@ export const SETTINGS_SECTIONS = [
   { id: "ai-session-review", label: "Session review", group: "ai" },
   { id: "ai-auto-sort", label: "Auto-sort", group: "ai" },
   { id: "ai-mission-control", label: "Mission control", group: "ai" },
-  { id: "ai-playbooks", label: "Checklists", group: "ai" },
   { id: "ai-prompts", label: "Prompts", group: "ai" },
   { id: "ai-activity", label: "Activity", group: "ai" },
   // AGENTS (#853 P4, #1128): the roster keeps the `/settings/agents` URL it had as "Agents &
