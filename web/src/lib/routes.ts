@@ -20,11 +20,12 @@ export const MISSION_PATH = "/mission";
 /** The pre-#948 mission path, still served as a permanent replace-redirect. */
 export const LEGACY_MISSION_PATH = "/pulse";
 
-/** The BattleLab dashboard (#1123): what is running, what needs you, quota, and Ask. */
+/** The BattleLab dashboard (#1123): what is running, what needs you, quota, and the Ask field
+ *  that opens a conversation on `ASK_PATH` (#1171). */
 export const DASHBOARD_PATH = "/dashboard";
 
-/** Ask's own path (#878, #1058) — kept working as a replace-redirect to the dashboard, which is
- *  where Ask lives now (#1123): it is linked from docs and from #1086. */
+/** Ask's conversation page (#878, #1058). #1123 folded it into the dashboard; #1171 gives the
+ *  conversation its page back, under Dashboard in the nav — asking on the dashboard lands here. */
 export const ASK_PATH = "/ask";
 
 /** The session map (#208 / #424). Labelled MAP in the nav; the path is unchanged. */

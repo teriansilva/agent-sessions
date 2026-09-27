@@ -6,6 +6,8 @@
  */
 import { expect, test, type Page } from "@playwright/test";
 
+import { ASK_STREAM, fulfillAsk } from "./askStream";
+
 import {
   MISSION,
   missionList,
@@ -115,7 +117,7 @@ test("a turn goes to the MISSION route and its answer comes back from the timeli
   const stored: unknown[] = [];
   let answered = false;
   await stub(page, []);
-  await page.route("**/api/pulse/ask", (r) =>
+  await page.route(/\/api\/pulse\/ask(\/stream)?$/, (r) =>
     r.fulfill({
       status: 500,
       json: { detail: "the composer must not use this route" },
@@ -371,8 +373,8 @@ test("ASK stays transient and says why (#948: was the UNTRACKED view's; #1058: n
   // the "Sessions without a mission" view's; that view is gone (#948 P3), and the landing is now
   // where this Ask lives — so the operator still has to be TOLD its answers are not kept.
   await stub(page, []);
-  await page.route("**/api/pulse/ask", (r) =>
-    r.fulfill({ json: { answer: "nothing tracked", matches: [] } }),
+  await page.route(ASK_STREAM, (r) =>
+    fulfillAsk(r, { answer: "nothing tracked", matches: [] }),
   );
   // ASK IS `/ask` SINCE #1058 — it was the landing's second mode. The claim is unchanged and is
   // still worth making HERE, beside the mission thread's durable turns: those go to

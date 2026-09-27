@@ -84,6 +84,10 @@ const TemplateEditor = lazyWithReload(
   "template-editor",
 );
 // ASK — `find` / `history` over past work, its own section since #1058. Lazy like the others.
+const Dashboard = lazyWithReload(
+  () => import("../routes/Dashboard"),
+  "dashboard",
+);
 const Ask = lazyWithReload(() => import("../routes/Ask"), "ask");
 
 const COLLAPSE_KEY = "tr-sidebar-collapsed";
@@ -665,9 +669,9 @@ function Layout() {
                   <Route path="/overview" element={<Overview />} />
                   <Route path={MISSION_PATH} element={<MissionControl />} />
                   <Route path={LEGACY_MISSION_PATH} element={<LegacyMissionRedirect />} />
-                  <Route path={DASHBOARD_PATH} element={<Ask />} />
-                  {/* #1123: Ask's old path keeps working — it IS the dashboard's Ask now. */}
-                  <Route path={ASK_PATH} element={<Navigate to={DASHBOARD_PATH} replace />} />
+                  <Route path={DASHBOARD_PATH} element={<Dashboard />} />
+                  {/* #1171: a conversation has its own page under Dashboard. */}
+                  <Route path={ASK_PATH} element={<Ask />} />
                   <Route path="/templates" element={<Templates />} />
                   <Route path="/templates/new" element={<TemplateEditor />} />
                   <Route path="/templates/:id" element={<TemplateEditor />} />

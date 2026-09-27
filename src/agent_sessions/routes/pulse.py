@@ -30,7 +30,7 @@ import logging
 import time
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from .. import (
     actuator,
@@ -778,12 +778,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # from the page while the ledger still says they are pending.
         return JSONResponse(await asyncio.to_thread(_attach_pending, artifact))
 
-    @app.post("/api/pulse/ask")
-    async def ask_pulse(
-        request: Request,
-        _user: str = Depends(logged_in),
-        _csrf: None = Depends(csrf_guard),
-    ) -> JSONResponse:
+    async def _ask_body(request: Request) -> tuple[str, object] | JSONResponse:
+        """The ask's body, or the 422 that refuses it. Shared by both ask routes so their bounds
+        cannot drift apart."""
         # Hand-rolled body parsing (like /scan): the bounds are the contract (#522) —
         # a missing/empty/oversized query is a 422 with a plain detail.
         body: object = None
@@ -799,26 +796,105 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 status_code=422,
             )
         history = body.get("history") if isinstance(body, dict) else None
+        return query, history
+
+    def _ask_busy() -> JSONResponse:
+        return JSONResponse(
+            {"detail": "a question is already running", **aitasks.snapshot()},
+            status_code=409,
+        )
+
+    def _ask_unconfigured() -> JSONResponse:
+        # Contrast with /scan (which degrades to 200/fast): a chat has no non-LLM
+        # fallback, so an unconfigured endpoint surfaces as a 409 the UI pre-gates on.
+        return JSONResponse(
+            {"detail": "AI endpoint is not configured", "configured": False},
+            status_code=409,
+        )
+
+    @app.post("/api/pulse/ask")
+    async def ask_pulse(
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        parsed = await _ask_body(request)
+        if isinstance(parsed, JSONResponse):
+            return parsed
+        query, history = parsed
         try:
             # Separate kind from "pulse-scan" ON PURPOSE: an ask never blocks a scan (or
             # vice-versa); only concurrent ASKS serialize.
             async with aitasks.single_flight("pulse-chat", "ask"):
                 result = await pulse_chat.ask(query, history, working_keys=_working_keys())
         except aitasks.AlreadyRunning:
-            return JSONResponse(
-                {"detail": "a question is already running", **aitasks.snapshot()},
-                status_code=409,
-            )
+            return _ask_busy()
         except review.NotConfiguredError:
-            # Contrast with /scan (which degrades to 200/fast): a chat has no non-LLM
-            # fallback, so an unconfigured endpoint surfaces as a 409 the UI pre-gates on.
-            return JSONResponse(
-                {"detail": "AI endpoint is not configured", "configured": False},
-                status_code=409,
-            )
+            return _ask_unconfigured()
         except review.ReviewError as e:
             return JSONResponse({"detail": str(e)}, status_code=502)
         return JSONResponse(await asyncio.to_thread(_with_pending, result))
+
+    @app.post("/api/pulse/ask/stream", response_model=None)
+    async def ask_pulse_stream(
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse | StreamingResponse:
+        """The same ask, as NDJSON events while it runs (#1171) — see ``pulse_chat.ask_events``.
+
+        Everything that can be refused before any work is still an HTTP status: 422 for the body,
+        409 when unconfigured or another question is running. Once the stream has started, a
+        failure arrives as ONE final ``{"type": "error", "status", "detail"}`` line, since the
+        200 is already on the wire.
+
+        The single-flight lives INSIDE the generator, so its lifetime is exactly the stream's: a
+        client that goes away cancels the generator and the ``finally`` releases it, and a stream
+        that never starts never took it. The check here is what keeps the ordinary busy case a
+        409; the one inside settles the race between two streams that both passed it.
+        """
+        parsed = await _ask_body(request)
+        if isinstance(parsed, JSONResponse):
+            return parsed
+        query, history = parsed
+        try:
+            review._require_config()
+        except review.NotConfiguredError:
+            return _ask_unconfigured()
+        if aitasks.is_running("pulse-chat"):
+            return _ask_busy()
+        working = _working_keys()
+
+        async def events():
+            try:
+                async with aitasks.single_flight("pulse-chat", "ask"):
+                    async for ev in pulse_chat.ask_events(query, history, working_keys=working):
+                        if ev["type"] == "answer":
+                            ev = await asyncio.to_thread(_with_pending, ev)
+                        yield json.dumps(ev) + "\n"
+            except aitasks.AlreadyRunning:
+                yield (
+                    json.dumps(
+                        {"type": "error", "status": 409, "detail": "a question is already running"}
+                    )
+                    + "\n"
+                )
+            except review.NotConfiguredError:
+                yield (
+                    json.dumps(
+                        {"type": "error", "status": 409, "detail": "AI endpoint is not configured"}
+                    )
+                    + "\n"
+                )
+            except review.ReviewError as e:
+                yield json.dumps({"type": "error", "status": 502, "detail": str(e)}) + "\n"
+
+        return StreamingResponse(
+            events(),
+            media_type="application/x-ndjson",
+            # Nothing between here and the browser may hold the lines back.
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
 
     # --- orchestrator (#726 Phase 1) ---------------------------------------------------
     # Pulse gains agency. These join the `/api/pulse/*` family on purpose rather than opening

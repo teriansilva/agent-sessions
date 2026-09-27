@@ -210,11 +210,35 @@ class AppProxyTarget:
             await stream.write(resp.content)
             await stream.end()
 
-        if self._client is not None:
-            await do(self._client)
-        else:
-            async with httpx.AsyncClient() as client:
-                await do(client)
+        async def run() -> None:
+            if self._client is not None:
+                await do(self._client)
+            else:
+                async with httpx.AsyncClient() as client:
+                    await do(client)
+
+        # A browser that gives up RESETS its stream (an aborted fetch — Ask's New conversation,
+        # leaving the page). The request must end with it: left running, the app never sees a
+        # disconnect and holds whatever the request holds — for Ask, the one-question gate, so
+        # the next question is refused with a 409 (#1171). Cancelling the upstream call closes
+        # its connection, which the app sees as the client going away, exactly as it would on
+        # a direct connection.
+        work = asyncio.ensure_future(run())
+        gone = asyncio.ensure_future(stream.wait_reset())
+        try:
+            await asyncio.wait({work, gone}, return_when=asyncio.FIRST_COMPLETED)
+            if not work.done():
+                work.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await work
+                return
+            work.result()
+        finally:
+            gone.cancel()
+            if not work.done():
+                work.cancel()
+            # Reaped here, so no watcher outlives its request.
+            await asyncio.gather(gone, work, return_exceptions=True)
 
     async def _proxy_ws(self, stream: Stream, info: dict, path: str) -> None:
         # Forward the browser's auth headers (Cookie / X-CSRF-Token) on the WS upgrade —

@@ -50,6 +50,7 @@ import type {
   ProjectArchiveReport,
   ProjectEntity,
   PromptEntry,
+  PulseAskEvent,
   PulseAskResult,
   PulseDepth,
   PulseOverview,
@@ -307,6 +308,74 @@ async function mutateJson<T>(
     );
   }
   return (await r.json()) as T;
+}
+
+/** `POST /api/pulse/ask/stream`, read line by line (#1171). A fetch whose body cannot be read as
+ *  a stream (the Home Free tunnel may buffer it) still works: the lines are simply all there at
+ *  once, and the caller sees the same events, only later. */
+async function streamAsk(
+  query: string,
+  history: { role: "user" | "assistant"; content: string }[],
+  onEvent: (ev: PulseAskEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const path = "/api/pulse/ask/stream";
+  const r = await apiFetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+    body: JSON.stringify({ query, history }),
+    ...(signal ? { signal } : {}),
+  });
+  if (r.status === 401 || r.status === 403) await authGate(r);
+  if (!r.ok) {
+    let parsed: unknown;
+    try {
+      parsed = await r.json();
+    } catch {
+      /* non-JSON body */
+    }
+    const detail = (parsed as { detail?: string } | undefined)?.detail ?? "";
+    throw new ApiError(r.status, detail || `POST ${path} → ${r.status}`, parsed);
+  }
+  // A stream that ends without its final answer — the connection dropped, a proxy cut it — is a
+  // failure, never a turn left spinning, and a half-written last line is the same failure rather
+  // than a JSON parse error.
+  let final = false;
+  const cut = () =>
+    new ApiError(502, "The answer was cut off before it finished — ask again.");
+  const emit = (line: string) => {
+    if (!line.trim()) return;
+    let ev: PulseAskEvent;
+    try {
+      ev = JSON.parse(line) as PulseAskEvent;
+    } catch {
+      throw cut();
+    }
+    if (ev.type === "error") throw new ApiError(ev.status, ev.detail);
+    if (ev.type === "answer" && ev.final) final = true;
+    onEvent(ev);
+  };
+  const reader = r.body?.getReader();
+  if (!reader) {
+    for (const line of (await r.text()).split("\n")) emit(line);
+  } else {
+    const decoder = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let nl = buf.indexOf("\n");
+      while (nl >= 0) {
+        emit(buf.slice(0, nl));
+        buf = buf.slice(nl + 1);
+        nl = buf.indexOf("\n");
+      }
+    }
+    emit(buf + decoder.decode());
+  }
+  if (!final) throw cut();
 }
 
 const patchJson = <T>(path: string, body?: unknown): Promise<T> =>
@@ -1039,6 +1108,18 @@ export const api = {
     query: string,
     history: { role: "user" | "assistant"; content: string }[],
   ) => mutateJson<PulseAskResult>("POST", "/api/pulse/ask", { query, history }),
+  /** The same ask, streamed (#1171): `onEvent` sees each NDJSON event as the server sends it —
+   *  the step it is on, the Stage-1 answer (`final: false`) the moment it exists, then the final
+   *  one. Resolves after the last event. A refusal before the stream (422 / 409) throws like
+   *  `pulseAsk`; a failure after it started arrives as `{type: "error"}` and throws the same way,
+   *  so a caller has one error path either way. Aborting `signal` closes the connection, which
+   *  ends the server's run and frees its one-question gate. */
+  pulseAskStream: (
+    query: string,
+    history: { role: "user" | "assistant"; content: string }[],
+    onEvent: (ev: PulseAskEvent) => void,
+    signal?: AbortSignal,
+  ) => streamAsk(query, history, onEvent, signal),
   /** Pulse orchestrator state (#726): config + pending actions + the activity feed. Like
    *  `pulse()` this is CACHE-ONLY — it never runs a pass. */
   orchestrator: () => getJson<OrchestratorState_>("/api/pulse/orchestrator"),

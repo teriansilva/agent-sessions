@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+import { ASK_STREAM, fulfillAsk } from "./askStream";
+
 import { mockMissions } from "./mission-console";
 
 // Pulse "Ask" (#522): the natural-language session finder embedded at the top of /mission.
@@ -83,20 +85,18 @@ test("Ask answers with a matched card and Jump in routes to the session (#522)",
   page,
 }) => {
   await stubApp(page);
-  await page.route("**/api/pulse/ask", async (r) => {
+  await page.route(ASK_STREAM, async (r) => {
     const body = r.request().postDataJSON() as {
       query: string;
       history: unknown[];
     };
     expect(body.query).toContain("websocket reconnect");
-    await r.fulfill({
-      json: {
-        answer:
-          "That was your ws delta-resume session in agent-sessions, 2 hours ago.",
-        matches: [MATCH],
-        stage: "content",
-        configured: true,
-      },
+    await fulfillAsk(r, {
+      answer:
+        "That was your ws delta-resume session in agent-sessions, 2 hours ago.",
+      matches: [MATCH],
+      stage: "content",
+      configured: true,
     });
   });
 
@@ -141,20 +141,18 @@ test("a long question + a matched card fit at 320px — no horizontal scroll (#5
   // card (not just an answer line) must shrink, never clip or scroll sideways.
   await page.setViewportSize({ width: 320, height: 780 });
   await stubApp(page);
-  await page.route("**/api/pulse/ask", (r) =>
-    r.fulfill({
-      json: {
-        answer: "That long-token session is this one.",
-        matches: [
-          {
-            ...MATCH,
-            title: `debug ${"reconnect_backoff_delta_resume_".repeat(3)}handshake`,
-            why: `transcript token ${"reconnect_backoff_delta_resume_".repeat(3)} matches`,
-          },
-        ],
-        stage: "content",
-        configured: true,
-      },
+  await page.route(ASK_STREAM, (r) =>
+    fulfillAsk(r, {
+      answer: "That long-token session is this one.",
+      matches: [
+        {
+          ...MATCH,
+          title: `debug ${"reconnect_backoff_delta_resume_".repeat(3)}handshake`,
+          why: `transcript token ${"reconnect_backoff_delta_resume_".repeat(3)} matches`,
+        },
+      ],
+      stage: "content",
+      configured: true,
     }),
   );
 

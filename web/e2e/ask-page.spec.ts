@@ -1,4 +1,4 @@
-/** `/ask` as a page (#1058).
+/** `/ask` as a page (#1058) — and, since #1171, Ask's conversation page under Dashboard.
  *
  *  Ask was a MODE of the mission composer: to reach it you entered Missions and pressed a segmented
  *  control, and there was no URL that opened it. These specs drive the thing that changed — you get
@@ -11,6 +11,7 @@
  */
 import { expect, test, type Page } from "@playwright/test";
 
+import { ASK_STREAM, fulfillAsk } from "./askStream";
 import { openMapFromNav } from "./mapNav";
 
 const ANSWER = {
@@ -73,7 +74,7 @@ async function mockShell(page: Page, { configured = true } = {}) {
 const barNav = (page: Page) =>
   page.getByRole("navigation", { name: "Main sections" });
 
-test("ASK is one tap from the top bar at every width, and the page is its own URL", async ({
+test("the Dashboard is one tap from the top bar, and Ask is its own URL under it (#1171)", async ({
   page,
 }) => {
   await mockShell(page);
@@ -84,17 +85,28 @@ test("ASK is one tap from the top bar at every width, and the page is its own UR
   await expect(link).toBeVisible();
   await link.click();
   await expect(page).toHaveURL(/\/dashboard$/);
-  await expect(page.getByTestId("ask-page")).toBeVisible();
+  await expect(page.getByTestId("dashboard-page")).toBeVisible();
   await expect(link).toHaveAttribute("aria-current", "page");
 
-  // …and a direct load of that URL works, which is what having a route means.
+  // Ask is the Dashboard menu's second entry, the way the map is Sessions'.
+  if ((await page.locator(".app.navOpen").count()) > 0) {
+    await page.keyboard.press("Escape");
+  }
+  await page.locator('.hud-topbar [data-testid="section-menu-ask"]').click();
+  await page
+    .locator('[data-testid="section-menu-ask-panel"] a[data-subsection="ask"]')
+    .click();
+  await expect(page).toHaveURL(/\/ask$/);
+  await expect(page.getByTestId("ask-page")).toBeVisible();
+  // On Ask, Dashboard is current-in-set: its link goes to the dashboard, not here.
+  await expect(link).toHaveAttribute("aria-current", "true");
+
+  // …and a direct load of either URL works, which is what having a route means.
   await page.goto("/dashboard");
-  await expect(page.getByTestId("ask-page")).toBeVisible();
-  // #1123: Ask's old path keeps working — it lands on the dashboard, where Ask lives now.
+  await expect(page.getByTestId("dashboard-page")).toBeVisible();
   await page.goto("/ask");
-  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page).toHaveURL(/\/ask$/);
   await expect(page.getByTestId("ask-page")).toBeVisible();
-  await expect(link).toHaveAttribute("aria-current", "page");
 });
 
 test("a question answers, names the sessions it matched, and jumps into one", async ({
@@ -102,9 +114,9 @@ test("a question answers, names the sessions it matched, and jumps into one", as
 }) => {
   await mockShell(page);
   let asked: unknown = null;
-  await page.route("**/api/pulse/ask", async (r) => {
+  await page.route(ASK_STREAM, async (r) => {
     asked = r.request().postDataJSON();
-    await r.fulfill({ json: ANSWER });
+    await fulfillAsk(r, ANSWER);
   });
   await page.goto("/ask");
 
@@ -144,7 +156,7 @@ test("a match is ONE row: the session and its reason left, the way in right", as
   // measures where the boxes actually are. The mission thread draws the same row from the same
   // sheet, and `mission-turns.spec.ts` asserts it there.
   await mockShell(page);
-  await page.route("**/api/pulse/ask", (r) => r.fulfill({ json: ANSWER }));
+  await page.route(ASK_STREAM, (r) => fulfillAsk(r, ANSWER));
   await page.setViewportSize({ width: 1280, height: 860 });
   await page.goto("/ask");
   await page.getByTestId("composer-input").fill("upload retry");
@@ -187,7 +199,7 @@ test("leaving and coming back starts clean — the answers really are transient"
   page,
 }) => {
   await mockShell(page);
-  await page.route("**/api/pulse/ask", (r) => r.fulfill({ json: ANSWER }));
+  await page.route(ASK_STREAM, (r) => fulfillAsk(r, ANSWER));
   await page.goto("/ask");
   await page.getByTestId("composer-input").fill("anything");
   await page.getByTestId("composer-send").click();
@@ -197,7 +209,10 @@ test("leaving and coming back starts clean — the answers really are transient"
   // prove something weaker (that nothing was persisted server-side).
   await openMapFromNav(page);
   await expect(page).toHaveURL(/\/overview$/);
-  await barNav(page).getByRole("link", { name: "Dashboard", exact: true }).click();
+  await page.locator('.hud-topbar [data-testid="section-menu-ask"]').click();
+  await page
+    .locator('[data-testid="section-menu-ask-panel"] a[data-subsection="ask"]')
+    .click();
   await expect(page.getByTestId("ask-page")).toBeVisible();
   await expect(page.getByTestId("ask-turn")).toHaveCount(0);
 });
@@ -207,9 +222,9 @@ test("with no AI endpoint the page says what to do, instead of only greying the 
 }) => {
   await mockShell(page, { configured: false });
   let called = false;
-  await page.route("**/api/pulse/ask", (r) => {
+  await page.route(ASK_STREAM, (r) => {
     called = true;
-    return r.fulfill({ json: ANSWER });
+    return fulfillAsk(r, ANSWER);
   });
   await page.goto("/ask");
   await expect(page.getByTestId("ask-needs-endpoint")).toBeVisible();
@@ -241,20 +256,18 @@ test("Ask is a chat column: composer docked at the bottom, the thread grows up t
 }) => {
   await mockShell(page);
   const mid = "msn_" + "a".repeat(32);
-  await page.route("**/api/pulse/ask", (r) =>
-    r.fulfill({
-      json: {
-        ...ANSWER,
-        mission_matches: [
-          {
-            id: mid,
-            title: "Stabilise upload retries",
-            state: "done",
-            project_id: "",
-            why: "its instruction names the retry",
-          },
-        ],
-      },
+  await page.route(ASK_STREAM, (r) =>
+    fulfillAsk(r, {
+      ...ANSWER,
+      mission_matches: [
+        {
+          id: mid,
+          title: "Stabilise upload retries",
+          state: "done",
+          project_id: "",
+          why: "its instruction names the retry",
+        },
+      ],
     }),
   );
   await page.goto("/ask");
@@ -263,7 +276,7 @@ test("Ask is a chat column: composer docked at the bottom, the thread grows up t
   const pane = page.getByTestId("ask-pane");
 
   // Empty: the greeting is in the thread and the composer is already on the bottom edge.
-  await expect(page.getByRole("heading", { name: "BattleLab dashboard" })).toBeVisible();
+  await expect(page.getByTestId("ask-empty")).toBeVisible();
   const dockBox = (await dock.boundingBox())!;
   const paneBox = (await pane.boundingBox())!;
   expect(dockBox.y).toBeGreaterThan(paneBox.y + paneBox.height - 2);
@@ -278,7 +291,7 @@ test("Ask is a chat column: composer docked at the bottom, the thread grows up t
   await expect(turn.getByRole("article", { name: "Answer" })).toContainText(
     "Two sessions touched",
   );
-  await expect(page.getByRole("heading", { name: "BattleLab dashboard" })).toHaveCount(0);
+  await expect(page.getByTestId("ask-empty")).toHaveCount(0);
   // …the mission opens the mission, the session still jumps in…
   await expect(
     page.getByRole("link", { name: "Open mission Stabilise upload retries" }),
@@ -291,4 +304,79 @@ test("Ask is a chat column: composer docked at the bottom, the thread grows up t
   const after = (await dock.boundingBox())!;
   expect(after.y - (threadBox.y + threadBox.height)).toBeLessThan(60);
   expect(Math.abs(after.y - dockBox.y)).toBeLessThan(2);
+});
+
+/** #1171 — the operator's four asks, in a real browser: asking on the dashboard lands on Ask's own
+ *  page with the question running; the conversation carries no dashboard tiles, only a back arrow
+ *  and New conversation; Enter sends and Shift+Enter is a new line; the wait is a live box that
+ *  names its step. */
+test("asking on the dashboard opens Ask's page — back arrow and New conversation, no tiles (#1171)", async ({
+  page,
+}) => {
+  await mockShell(page);
+  let asked: unknown = null;
+  let release: (() => void) | undefined;
+  const held = new Promise<void>((res) => (release = res));
+  await page.route(ASK_STREAM, async (r) => {
+    asked = r.request().postDataJSON();
+    await held;
+    await fulfillAsk(r, ANSWER, [
+      { type: "progress", step: "catalog", sessions: 12, missions: 0 },
+    ]);
+  });
+  await page.goto("/dashboard");
+  await expect(page.getByTestId("dashboard-page")).toBeVisible();
+
+  const input = page.getByTestId("composer-input");
+  // Shift+Enter is a new line, not a send.
+  await input.fill("where did I fix");
+  await input.press("Shift+Enter");
+  await input.pressSequentially("the upload retry?");
+  await expect(input).toHaveValue("where did I fix\nthe upload retry?");
+  expect(asked).toBeNull();
+  // Enter sends — and sending on the dashboard goes to Ask's page.
+  await input.press("Enter");
+  await expect(page).toHaveURL(/\/ask$/);
+  await expect(page.getByTestId("ask-page")).toBeVisible();
+  await expect(page.getByTestId("dashboard-page")).toHaveCount(0);
+
+  // While the answer is out, the turn shows a live box, not a bare ellipsis.
+  const working = page.getByTestId("ask-working");
+  await expect(working).toBeVisible();
+  await expect(working.getByRole("status")).toContainText(/reading your question/i);
+  release!();
+  await expect(page.getByTestId("ask-turns")).toContainText(
+    "Two sessions touched the upload retry.",
+  );
+  await expect(working).toHaveCount(0);
+  expect(asked).toMatchObject({
+    query: "where did I fix\nthe upload retry?",
+    history: [],
+  });
+
+  // The head is a back arrow and New conversation, and nothing from the dashboard.
+  const head = page.getByTestId("ask-head");
+  await expect(head.getByRole("link")).toHaveCount(1);
+  await expect(head.getByRole("button")).toHaveCount(1);
+  await expect(head.getByRole("button", { name: "New conversation" })).toBeVisible();
+  for (const gone of ["ask-bar", "bar-agents", "bar-more", "dash-kpis"]) {
+    await expect(page.getByTestId(gone)).toHaveCount(0);
+  }
+  // Both touch targets hold the 44px floor (design §8).
+  for (const b of [head.getByRole("link"), head.getByRole("button")]) {
+    const box = (await b.boundingBox())!;
+    expect(box.height).toBeGreaterThanOrEqual(44);
+  }
+
+  // Reload does not ask the dashboard's question again: the hand-off was consumed.
+  asked = null;
+  await page.reload();
+  await expect(page.getByTestId("ask-page")).toBeVisible();
+  await expect(page.getByTestId("ask-turn")).toHaveCount(0);
+  expect(asked).toBeNull();
+
+  // Back arrow → the dashboard.
+  await head.getByRole("link", { name: "Back to dashboard" }).click();
+  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page.getByTestId("dashboard-page")).toBeVisible();
 });

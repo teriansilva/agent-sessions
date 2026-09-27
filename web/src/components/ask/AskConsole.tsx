@@ -1,4 +1,5 @@
-/** ASK — `find` / `history` against `/api/pulse/ask` (#878), on its own page since #1058.
+/** ASK — `find` / `history` against `/api/pulse/ask/stream` (#878, streamed since #1171), on its
+ * own page since #1058 and again since #1171, under Dashboard.
  *
  * It used to be the second mode of the mission composer, behind a `NEW MISSION | ASK` segmented
  * control on the mission landing. That put a question about *sessions* behind a section about
@@ -20,9 +21,10 @@
  * it. Nothing retains these turns above the router — deliberately (#1058), because that would make
  * them durable, which is a promise the server does not keep.
  *
- * `live` is therefore HYGIENE, not the fence: `api.pulseAsk` takes no abort signal (an
- * `AbortController` here would abort nothing while reading as though it did), so the request keeps
- * running after unmount and its callbacks would otherwise set state on a dead component.
+ * `live` is therefore HYGIENE, not the fence: it keeps a late callback from setting state on a
+ * dead component. Since #1171 the request is also ABORTED on unmount and on New conversation —
+ * the stream takes a signal, and closing it ends the server's run and frees its one-question gate,
+ * so the next question is not refused with "a question is already running".
  *
  * **It must be set on the EFFECT RUN, not only cleared on cleanup.** React StrictMode runs an
  * effect, cleans it up and runs it again on the SAME fiber, and `useRef(true)` initialises exactly
@@ -38,33 +40,53 @@
  * column: a scrolling thread that grows UP from a composer docked on the bottom edge
  * (`.threadCol` / `.pane` / `.paneAtBottom` / `.composerDock`, the #942 layout), each question and
  * answer an `article` named for its speaker ("You" / "Answer", the mission thread's `MessageRow`
- * words). Before the first question the thread is empty, so the page's greeting (`intro`) sits
- * centred in it; it gives way to the conversation, the way a chat does.
+ * words). Before the first question the thread is empty, so a short greeting sits centred in it;
+ * it gives way to the conversation, the way a chat does.
+ *
+ * **Its only chrome is a way back and a way to start over (#1171).** The dashboard's tiles used to
+ * ride above the thread as a pinned bar (#1086); the operator found it crowded the conversation.
+ * The head carries the back arrow to the dashboard (Settings' back link) and New conversation —
+ * nothing else. NEEDS YOU still reaches the thread: an answer row for a session on that list
+ * carries the marker and ⓘ.
+ *
+ * **The wait is shown, and the answer arrives as it forms (#1171).** The server streams the ask's
+ * steps: which catalog it is searching, the Stage-1 answer the moment it exists, then the answer
+ * Stage 2 confirmed against the transcripts. The pending turn names the step it is on under a
+ * moving scan bar, shows the Stage-1 answer while the transcripts are read, and swaps in the
+ * confirmed one. Text is revealed progressively — instantly under `prefers-reduced-motion`.
  *
  * The composer box, the turn rows and the match rows are the console's own primitives
  * (`mission.module.css`) rather than a second copy of them — the same cross-directory import the
  * composer already made for the session pane's Send (`terminal/Compose.module.css`). One box, drawn
  * one way, wherever it appears.
  */
-import { Info, Send } from "lucide-react";
+import { ArrowLeft, Info } from "lucide-react";
 import {
   useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
   useState,
-  type ReactNode,
 } from "react";
 
 import { Link } from "react-router-dom";
 
 import { api } from "../../lib/api";
 import { missionLink } from "../../lib/missionLink";
-import type { PulseAskMatch, PulseAskMissionMatch } from "../../types/api";
+import { DASHBOARD_PATH } from "../../lib/routes";
+import { settingsPath } from "../../routes/settingsTabs";
+import type {
+  PulseAskEvent,
+  PulseAskMatch,
+  PulseAskMissionMatch,
+} from "../../types/api";
 
-import compose from "../terminal/Compose.module.css";
 import styles from "../pulse/mission.module.css";
+import { AskComposer } from "./AskComposer";
 import a from "./AskConsole.module.css";
+import type { AskStep } from "./askStep";
+import { AskWorking } from "./AskWorking";
+import { RevealText } from "./RevealText";
 
 export interface AskTurn {
   id: number;
@@ -77,6 +99,10 @@ export interface AskTurn {
   matches: PulseAskMatch[];
   /** The missions the answer is about (#1069), each with why it matched. */
   missions: PulseAskMissionMatch[];
+  /** The step the ask is on while it runs (#1171); `null` once it has settled. */
+  step: AskStep | null;
+  /** The answer shown is Stage 1's, still being confirmed against the transcripts (#1171). */
+  provisional: boolean;
 }
 
 let nextTurnId = 1;
@@ -89,35 +115,50 @@ function matchRoute(key: string): string {
   return `/s/${encodeURIComponent(engine)}/${encodeURIComponent(uuid)}`;
 }
 
+/** Fold one streamed event into its turn. */
+function applyEvent(t: AskTurn, ev: PulseAskEvent): AskTurn {
+  if (ev.type === "progress") {
+    return {
+      ...t,
+      step:
+        ev.step === "catalog"
+          ? { step: "catalog", sessions: ev.sessions, missions: ev.missions }
+          : { step: "content", candidates: ev.candidates },
+    };
+  }
+  if (ev.type === "answer") {
+    return {
+      ...t,
+      answer: ev.answer ?? "",
+      matches: ev.matches ?? [],
+      missions: ev.mission_matches ?? [],
+      provisional: !ev.final,
+      step: ev.final ? null : t.step,
+    };
+  }
+  return t;
+}
+
 export function AskConsole({
   configured,
-  intro,
-  pinned,
   needsYou,
   onDetails,
-  wide = false,
+  initialQuestion,
 }: {
   /** False when no AI endpoint is configured. `/api/pulse/ask` answers 409 in that case and has
    *  no local fallback, so the control is disabled and says why — `find` / `history` genuinely
    *  do not work without a model. */
   configured: boolean;
-  /** The greeting shown in the empty thread, before the first question. The page owns its words. */
-  intro?: ReactNode;
-  /** Once a conversation has started, what stays pinned above it (#1086): the page's sections
-   *  collapsed into a bar, so NEEDS YOU never leaves the screen. `reset` starts a new
-   *  conversation — the turns are this page's own and transient (#878), so reset just drops them. */
-  pinned?: (reset: () => void) => ReactNode;
   /** Sessions currently on the NEEDS YOU list: an answer row for one of them carries the marker
    *  and ⓘ, which opens the same details the list does (#1086). */
   needsYou?: Set<string>;
   onDetails?: (sessionId: string) => void;
-  /** The intro is a DASHBOARD (#1123): laid out across the page's width from the top, rather than
-   *  a greeting centred in the chat's measure. The thread and the composer keep their measure. */
-  wide?: boolean;
+  /** A question asked on the dashboard (#1171): asked once, as this page opens. */
+  initialQuestion?: string;
 }) {
   const [turns, setTurns] = useState<AskTurn[]>([]);
-  const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
   /** False once this page has unmounted. Read at RESOLUTION time, never captured as a value —
    *  a captured boolean answers the question as it was when the request started, which is
    *  exactly the moment that does not matter. See the module note on the StrictMode re-run. */
@@ -129,12 +170,24 @@ export function AskConsole({
     };
   }, []);
 
-  const submit = useCallback(
-    async (e: React.FormEvent) => {
-      e.preventDefault();
-      const q = text.trim();
+  /** The ask in flight, so New conversation and leaving can end it. The abort on leaving waits a
+   *  microtask and re-checks `live`: StrictMode's cleanup-and-rerun sets `live` back to true
+   *  before then, so its fake unmount does not kill the dashboard's handed-off question. */
+  const inflight = useRef<AbortController | null>(null);
+  useEffect(
+    () => () =>
+      queueMicrotask(() => {
+        if (!live.current) inflight.current?.abort();
+      }),
+    [],
+  );
+
+  const ask = useCallback(
+    async (q: string) => {
       if (!q || busy || !configured) return;
       const id = nextTurnId++;
+      const ctl = new AbortController();
+      inflight.current = ctl;
       setTurns((prev) => [
         ...prev,
         {
@@ -144,49 +197,63 @@ export function AskConsole({
           error: null,
           matches: [],
           missions: [],
+          step: null,
+          provisional: false,
         },
       ]);
-      setText("");
       setBusy(true);
+      const update = (fn: (t: AskTurn) => AskTurn) =>
+        setTurns((prev) => prev.map((t) => (t.id === id ? fn(t) : t)));
       try {
         // Prior turns of THIS page only, and only the ones that actually answered.
         const history = turns.flatMap((t) =>
-          t.answer !== null
+          t.answer !== null && !t.provisional
             ? [
                 { role: "user" as const, content: t.question },
                 { role: "assistant" as const, content: t.answer },
               ]
             : [],
         );
-        const r = await api.pulseAsk(q, history);
-        // The operator left: discard, and take the pending turn with it.
-        if (!live.current) return;
-        setTurns((prev) =>
-          prev.map((t) =>
-            t.id === id
-              ? {
-                  ...t,
-                  answer: r.answer ?? "",
-                  matches: r.matches ?? [],
-                  missions: r.mission_matches ?? [],
-                }
-              : t,
-          ),
+        await api.pulseAskStream(
+          q,
+          history,
+          (ev) => {
+            // The operator left: discard, and take the pending turn with it.
+            if (live.current) update((t) => applyEvent(t, ev));
+          },
+          ctl.signal,
         );
+        // A stream that ended without its final answer must not leave a turn spinning, or
+        // keep a Stage-1 answer labelled as still being checked.
+        if (live.current)
+          update((t) => ({ ...t, step: null, provisional: false }));
       } catch (err) {
-        if (!live.current) return;
+        // Ended on purpose (New conversation / leaving): its turn is already gone.
+        if (!live.current || ctl.signal.aborted) return;
         const msg = err instanceof Error ? err.message : "That didn't work.";
-        setTurns((prev) =>
-          prev.map((t) => (t.id === id ? { ...t, error: msg } : t)),
-        );
+        // An answer Stage 1 already gave stays; the failure is said beside it.
+        update((t) => ({ ...t, error: msg, step: null, provisional: false }));
       } finally {
-        // Safe unconditionally: after unmount this is a no-op on a dead component, not a write
-        // into another surface.
-        setBusy(false);
+        // Only the ask that is still current may clear `busy`: one ended by New conversation
+        // finishes AFTER the next question may have started, and must not unlock the box
+        // under it.
+        if (inflight.current === ctl) {
+          inflight.current = null;
+          setBusy(false);
+        }
       }
     },
-    [text, busy, configured, turns],
+    [busy, configured, turns],
   );
+
+  // The dashboard's question (#1171), asked ONCE. StrictMode re-runs this effect on the same
+  // fiber, and the ref survives that, so the question is never asked twice.
+  const handedOff = useRef(false);
+  useEffect(() => {
+    if (handedOff.current || !initialQuestion) return;
+    handedOff.current = true;
+    void ask(initialQuestion);
+  }, [initialQuestion, ask]);
 
   /** The newest turn is where the operator is looking: keep the thread scrolled to it, as a chat
    *  does, whenever a turn is added or answered. */
@@ -196,67 +263,55 @@ export function AskConsole({
     if (el && turns.length) el.scrollTop = el.scrollHeight;
   }, [turns]);
 
-  const form = (
-    <form className={styles.composerBox} onSubmit={submit} data-testid="ask-form">
-      <textarea
-        className={`${styles.composerInput} ${styles.boxInput}`}
-        rows={1}
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        // Enter is a newline — a question can run to several lines. Ctrl/⌘+Enter sends it,
-        // the same shortcut the mission brief uses.
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-            e.preventDefault();
-            e.currentTarget.form?.requestSubmit();
-          }
-        }}
-        aria-keyshortcuts="Control+Enter Meta+Enter"
-        disabled={!configured}
-        placeholder={
-          configured
-            ? "Ask about your sessions and missions…"
-            : "Needs an AI endpoint"
-        }
-        aria-label="Ask about your past work"
-        data-testid="composer-input"
-      />
-      <div className={styles.composerFoot} data-testid="composer-foot">
-        <div className={styles.footLead}>
-          {/* The shortcut, for the eye. The textarea's `aria-keyshortcuts` is its accessible
-              form. */}
-          <span className={styles.footHint} aria-hidden="true">
-            Ctrl + Enter
-          </span>
-        </div>
-        <div className={styles.footTrail}>
-          <span className={styles.footSpacer} aria-hidden="true" />
-          {/* THE SESSION PANE'S SEND (#967), its class and its icon — identical by construction,
-              so this page, the mission thread and a session cannot draw three different Sends. */}
-          <button
-            type="submit"
-            className={`${compose.send} shine`}
-            disabled={!configured || busy || !text.trim()}
-            data-testid="composer-send"
-          >
-            <Send size={15} aria-hidden="true" />
-            Send
-          </button>
-        </div>
-      </div>
-    </form>
-  );
-
   return (
     <div className={`${styles.threadCol} ${a.col}`} data-testid="ask-col">
-      {turns.length > 0 && pinned ? (
-        <div className={a.measure} data-testid="ask-pinned">
-          {pinned(() => setTurns([]))}
-        </div>
-      ) : null}
+      <header className={`${a.measure} ${a.head}`} data-testid="ask-head">
+        <Link
+          to={DASHBOARD_PATH}
+          className={a.back}
+          aria-label="Back to dashboard"
+          data-testid="ask-back"
+        >
+          <ArrowLeft size={18} aria-hidden="true" />
+        </Link>
+        <h1 className={a.title}>Ask</h1>
+        <span className={a.sp} />
+        <button
+          type="button"
+          className={a.newBtn}
+          aria-label="New conversation"
+          disabled={turns.length === 0}
+          onClick={() => {
+            inflight.current?.abort();
+            inflight.current = null;
+            setBusy(false);
+            setTurns([]);
+            inputRef.current?.focus();
+          }}
+          data-testid="ask-new"
+        >
+          <span className={a.long}>New conversation</span>
+          <span className={a.short}>New</span>
+        </button>
+      </header>
       <div className={styles.pane} ref={paneRef} data-testid="ask-pane">
         {turns.length === 0 ? (
-          <div className={wide ? a.dashboard : `${a.measure} ${a.intro}`}>{intro}</div>
+          <div className={`${a.measure} ${a.intro}`} data-testid="ask-empty">
+            <p className={a.greeting}>
+              Ask about anything your sessions and missions hold — answers are
+              read from the transcripts this install can already see.
+            </p>
+            {!configured ? (
+              <p className={a.needsEndpoint} data-testid="ask-needs-endpoint">
+                Ask needs an AI endpoint — it has no local fallback. Set one up
+                in{" "}
+                <Link to={settingsPath("ai-endpoint")}>
+                  Settings → Endpoint &amp; model
+                </Link>
+                , then come back.
+              </p>
+            ) : null}
+          </div>
         ) : (
           <div
             className={`${a.measure} ${styles.paneAtBottom}`}
@@ -271,11 +326,19 @@ export function AskConsole({
                   <div className={styles.eventHead}>You</div>
                   <div className={styles.eventText}>{t.question}</div>
                 </article>
-                <article className={styles.event} aria-label="Answer">
+                <article
+                  className={styles.event}
+                  aria-label="Answer"
+                  aria-busy={t.answer === null && !t.error}
+                >
                   <div className={styles.eventHead}>Answer</div>
                   {t.answer !== null ? (
                     <>
-                      <div className={styles.eventText}>{t.answer}</div>
+                      <RevealText
+                        className={styles.eventText}
+                        text={t.answer}
+                        testId="ask-answer"
+                      />
                       {/* Missions first, then sessions — each group labelled only when there
                           are missions, so a sessions-only answer reads as it did before #1069. */}
                       {t.missions.length > 0 ? (
@@ -286,7 +349,7 @@ export function AskConsole({
                           {t.missions.map((m) => (
                             <div
                               key={m.id}
-                              className={styles.matchRow}
+                              className={`${styles.matchRow} ${a.arrive}`}
                               data-testid="ask-mission-match"
                             >
                               <div className={styles.matchBody}>
@@ -316,7 +379,7 @@ export function AskConsole({
                       {t.matches.map((m) => (
                         <div
                           key={m.id}
-                          className={styles.matchRow}
+                          className={`${styles.matchRow} ${a.arrive}`}
                           data-testid="ask-match"
                         >
                           <div className={styles.matchBody}>
@@ -352,14 +415,16 @@ export function AskConsole({
                           </Link>
                         </div>
                       ))}
+                      {t.provisional ? <AskWorking step={t.step} /> : null}
                     </>
-                  ) : t.error ? (
+                  ) : t.error ? null : (
+                    <AskWorking step={t.step} />
+                  )}
+                  {t.error ? (
                     <div className={styles.objStale} data-testid="ask-error">
                       {t.error}
                     </div>
-                  ) : (
-                    <div className={styles.objReason}>…</div>
-                  )}
+                  ) : null}
                 </article>
               </div>
             ))}
@@ -374,7 +439,14 @@ export function AskConsole({
       {/* THE COMPOSER, DOCKED — the mission thread's #942 dock, on the bottom edge at every
           height, under the same centred measure as the thread. */}
       <div className={styles.composerDock}>
-        <div className={a.measure}>{form}</div>
+        <div className={a.measure}>
+          <AskComposer
+            configured={configured}
+            busy={busy}
+            onAsk={(q) => void ask(q)}
+            inputRef={inputRef}
+          />
+        </div>
       </div>
     </div>
   );

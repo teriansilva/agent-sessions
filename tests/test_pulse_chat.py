@@ -640,3 +640,290 @@ def test_concurrent_ask_is_409_with_activity_snapshot(auth_cfg, fake_jsonl, monk
     body = r.json()
     assert "already running" in body["detail"]
     assert "running" in body and "last" in body  # the activity snapshot rides along
+
+
+# ---- streamed ask (#1171) -----------------------------------------------------------
+
+
+def _two_stage(monkeypatch, calls: list) -> str:
+    _setup(monkeypatch, _sessions(3))
+    target = f"claude:{_uuid(1)}"
+    monkeypatch.setattr(
+        review,
+        "_TRANSPORT",
+        _seq_transport(
+            [
+                {"answer": "first look", "matches": [{"id": target, "why": "title"}]},
+                {"answer": "confirmed", "matches": [{"id": target, "why": "transcript"}]},
+            ],
+            calls,
+        ),
+    )
+    monkeypatch.setattr(review, "gather_input", lambda key, n: ("user: reconnect", "fp"))
+    return target
+
+
+def test_events_stream_the_stage1_answer_before_stage2_runs(configured_ai, monkeypatch):
+    calls: list = []
+    target = _two_stage(monkeypatch, calls)
+
+    async def collect():
+        seen = []
+        async for ev in pulse_chat.ask_events("reconnect?"):
+            # How many model calls had been made when THIS event was handed out.
+            seen.append((ev, len(calls)))
+        return seen
+
+    seen = asyncio.run(collect())
+    kinds = [(ev["type"], ev.get("step") or ev.get("final")) for ev, _ in seen]
+    assert kinds == [
+        ("progress", "catalog"),
+        ("answer", False),
+        ("progress", "content"),
+        ("answer", True),
+    ]
+    (catalog, n0), (early, n1), (content, n2), (final, n3) = seen
+    assert n0 == 0 and catalog["sessions"] == 3
+    # The whole point: the Stage-1 answer is out after ONE call, not after both.
+    assert n1 == 1 and early["answer"] == "first look" and early["stage"] == "catalog"
+    assert early["matches"][0]["id"] == target
+    assert content["candidates"] == 1
+    assert n3 == 2 and final["answer"] == "confirmed" and final["stage"] == "content"
+
+
+def test_ask_is_the_last_event_without_its_event_fields(configured_ai, monkeypatch):
+    _two_stage(monkeypatch, [])
+    result = asyncio.run(pulse_chat.ask("reconnect?"))
+    assert result["answer"] == "confirmed"
+    assert "type" not in result and "final" not in result
+    assert set(result) == {"answer", "matches", "mission_matches", "stage", "configured"}
+
+
+def test_no_match_streams_one_final_answer_and_no_content_step(configured_ai, monkeypatch):
+    _setup(monkeypatch, _sessions(2))
+    monkeypatch.setattr(
+        review, "_TRANSPORT", _seq_transport([{"answer": "Nothing like that.", "matches": []}])
+    )
+
+    async def collect():
+        return [ev async for ev in pulse_chat.ask_events("q")]
+
+    evs = asyncio.run(collect())
+    assert [e["type"] for e in evs] == ["progress", "answer"]
+    assert evs[-1]["final"] is True and evs[-1]["stage"] == "catalog"
+
+
+def _ndjson(r) -> list[dict]:
+    return [json.loads(line) for line in r.text.splitlines() if line.strip()]
+
+
+def test_stream_route_sends_ndjson_events(auth_cfg, fake_jsonl, monkeypatch):
+    prefs.set_ai_review({"enabled": True, "base_url": BASE, "api_key": SECRET, "model": "m"})
+
+    async def fake_events(query, history=None, *, working_keys=None):
+        # The single-flight is held while the stream is being produced.
+        assert aitasks.is_running("pulse-chat")
+        yield {"type": "progress", "step": "catalog", "sessions": 1, "missions": 0}
+        yield {
+            "type": "answer",
+            "final": True,
+            "answer": "a",
+            "matches": [],
+            "mission_matches": [],
+            "stage": "catalog",
+            "configured": True,
+        }
+
+    monkeypatch.setattr(pulse_chat, "ask_events", fake_events)
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    r = c.post("/api/pulse/ask/stream", json={"query": "q"}, headers=hdr)
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/x-ndjson")
+    evs = _ndjson(r)
+    assert [e["type"] for e in evs] == ["progress", "answer"]
+    # Released once the stream is done.
+    assert not aitasks.is_running("pulse-chat")
+
+
+def test_stream_route_failure_after_start_is_one_error_line(auth_cfg, fake_jsonl, monkeypatch):
+    prefs.set_ai_review({"enabled": True, "base_url": BASE, "api_key": SECRET, "model": "m"})
+    monkeypatch.setattr(
+        review, "_TRANSPORT", httpx.MockTransport(lambda request: httpx.Response(502))
+    )
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    r = c.post("/api/pulse/ask/stream", json={"query": "where?"}, headers=hdr)
+    assert r.status_code == 200
+    last = _ndjson(r)[-1]
+    assert last["type"] == "error" and last["status"] == 502
+    assert "HTTP 502" in last["detail"]
+    assert not aitasks.is_running("pulse-chat")
+
+
+def test_stream_route_refuses_before_streaming(auth_cfg, fake_jsonl, monkeypatch):
+    c = _client(auth_cfg)
+    # Login and CSRF, like the plain route.
+    assert c.post("/api/pulse/ask/stream", json={"query": "q"}).status_code in (401, 403)
+    csrf = _login(c, auth_cfg)
+    assert c.post("/api/pulse/ask/stream", json={"query": "q"}).status_code in (401, 403)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    # Unconfigured is a 409 the UI pre-gates on, not a stream.
+    r = c.post("/api/pulse/ask/stream", json={"query": "q"}, headers=hdr)
+    assert r.status_code == 409 and r.json()["configured"] is False
+    prefs.set_ai_review({"enabled": True, "base_url": BASE, "api_key": SECRET, "model": "m"})
+    # The body bounds are the plain route's.
+    assert c.post("/api/pulse/ask/stream", json={}, headers=hdr).status_code == 422
+    long = "x" * (pulse_chat.QUERY_MAX + 1)
+    assert c.post("/api/pulse/ask/stream", json={"query": long}, headers=hdr).status_code == 422
+    # Another question in flight is a 409 with the activity snapshot, before any byte.
+    monkeypatch.setattr(aitasks, "is_running", lambda *a, **k: True)
+    r = c.post("/api/pulse/ask/stream", json={"query": "q"}, headers=hdr)
+    assert r.status_code == 409
+    assert "already running" in r.json()["detail"] and "running" in r.json()
+
+
+def _stream_endpoint(app):
+    (route,) = [r for r in app.routes if getattr(r, "path", "") == "/api/pulse/ask/stream"]
+    return route.endpoint
+
+
+def _request(body: dict):
+    from starlette.requests import Request
+
+    payload = json.dumps(body).encode()
+
+    async def receive():
+        return {"type": "http.request", "body": payload, "more_body": False}
+
+    return Request(
+        {"type": "http", "method": "POST", "path": "/api/pulse/ask/stream", "headers": []},
+        receive,
+    )
+
+
+def test_stream_delivers_stage1_before_stage2_and_holds_the_gate_across_it(
+    auth_cfg, fake_jsonl, monkeypatch
+):
+    """Through the route's own body iterator, with Stage 2 PAUSED: the Stage-1 answer line is out
+    while Stage 2 has not finished, the single-flight is held for exactly that span, and a plain
+    `/api/pulse/ask` meanwhile is a 409 — the two routes share one gate."""
+    prefs.set_ai_review({"enabled": True, "base_url": BASE, "api_key": SECRET, "model": "m"})
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    gate = asyncio.Event()
+
+    async def paused_events(query, history=None, *, working_keys=None):
+        yield {"type": "progress", "step": "catalog", "sessions": 3, "missions": 0}
+        yield {
+            "type": "answer",
+            "final": False,
+            "answer": "first look",
+            "matches": [],
+            "mission_matches": [],
+            "stage": "catalog",
+            "configured": True,
+        }
+        await gate.wait()  # Stage 2, paused
+        yield {
+            "type": "answer",
+            "final": True,
+            "answer": "confirmed",
+            "matches": [],
+            "mission_matches": [],
+            "stage": "content",
+            "configured": True,
+        }
+
+    monkeypatch.setattr(pulse_chat, "ask_events", paused_events)
+    endpoint = _stream_endpoint(c.app)
+
+    async def run():
+        resp = await endpoint(_request({"query": "q"}), _user="marcus", _csrf=None)
+        it = resp.body_iterator
+        first = json.loads(await it.__anext__())
+        early = json.loads(await it.__anext__())
+        assert first["type"] == "progress"
+        assert early == {**early, "type": "answer", "final": False, "answer": "first look"}
+        # Stage 2 has NOT run, and the gate is held while it waits.
+        assert aitasks.is_running("pulse-chat")
+        # The plain route shares that gate.
+        assert c.post("/api/pulse/ask", json={"query": "q"}, headers=hdr).status_code == 409
+        gate.set()
+        final = json.loads(await it.__anext__())
+        assert final["final"] is True and final["answer"] == "confirmed"
+        with pytest.raises(StopAsyncIteration):
+            await it.__anext__()
+        assert not aitasks.is_running("pulse-chat")
+
+    asyncio.run(run())
+
+
+def test_a_client_that_leaves_mid_stream_releases_the_gate(auth_cfg, fake_jsonl, monkeypatch):
+    """A disconnect closes the body iterator (Starlette cancels the response). Whether it happens
+    after the first line or while Stage 2 is in flight, the gate must come free — otherwise one
+    abandoned tab blocks every later question with a 409."""
+    prefs.set_ai_review({"enabled": True, "base_url": BASE, "api_key": SECRET, "model": "m"})
+    c = _client(auth_cfg)
+
+    async def hanging_events(query, history=None, *, working_keys=None):
+        yield {"type": "progress", "step": "catalog", "sessions": 1, "missions": 0}
+        await asyncio.Event().wait()  # never finishes on its own
+        yield {}  # pragma: no cover
+
+    monkeypatch.setattr(pulse_chat, "ask_events", hanging_events)
+    endpoint = _stream_endpoint(c.app)
+
+    async def run():
+        # Left after the first line.
+        resp = await endpoint(_request({"query": "q"}), _user="marcus", _csrf=None)
+        it = resp.body_iterator
+        await it.__anext__()
+        assert aitasks.is_running("pulse-chat")
+        await it.aclose()
+        assert not aitasks.is_running("pulse-chat")
+        # Left while the pipeline is awaiting (cancelled mid-Stage-2).
+        resp = await endpoint(_request({"query": "q"}), _user="marcus", _csrf=None)
+        it = resp.body_iterator
+        await it.__anext__()
+        pending = asyncio.ensure_future(it.__anext__())
+        await asyncio.sleep(0.05)
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        assert not aitasks.is_running("pulse-chat")
+        # A stream that was refused before it started never took the gate.
+        resp = await endpoint(_request({}), _user="marcus", _csrf=None)
+        assert resp.status_code == 422
+        assert not aitasks.is_running("pulse-chat")
+
+    asyncio.run(run())
+
+
+def test_total_stage2_failure_streams_a_final_stage1_answer(configured_ai, monkeypatch):
+    """The Stage-1 fallback holds for the stream too, and it is FINAL — the client's "checking
+    transcripts…" must clear on it rather than wait for an answer that is not coming."""
+    _setup(monkeypatch, _sessions(3))
+    target = f"claude:{_uuid(1)}"
+    monkeypatch.setattr(
+        review,
+        "_TRANSPORT",
+        _seq_transport([{"answer": "first look", "matches": [{"id": target, "why": "t"}]}]),
+    )
+
+    def boom(key, n):
+        raise review.ReviewError("nothing to review")
+
+    monkeypatch.setattr(review, "gather_input", boom)
+
+    async def collect():
+        return [ev async for ev in pulse_chat.ask_events("q")]
+
+    evs = asyncio.run(collect())
+    finals = [e for e in evs if e["type"] == "answer" and e["final"]]
+    assert len(finals) == 1 and evs[-1] is finals[0]
+    assert finals[0]["answer"] == "first look" and finals[0]["stage"] == "catalog"
+    assert finals[0]["matches"][0]["id"] == target

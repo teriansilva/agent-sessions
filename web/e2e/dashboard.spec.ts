@@ -2,9 +2,11 @@
  *  desktop and mobile, both themes. API mocked. What is pinned is what the issue asks for:
  *  every tile loads and fails ON ITS OWN (a failing tile never blanks the page), a failed read is
  *  never drawn as "0", `none` quota reads "not measured", stale quota says so, counts open exactly
- *  what they count, the phone keeps agent · project under each recent session, and after asking
- *  the tiles stay reachable from the pinned bar. */
+ *  what they count, the phone keeps agent · project under each recent session, and asking opens
+ *  the conversation on Ask's own page, from which the back arrow returns here (#1171). */
 import { expect, test, type Page } from "@playwright/test";
+
+import { ASK_STREAM, fulfillAsk } from "./askStream";
 
 const NOW = Math.floor(Date.now() / 1000);
 const A = "claude:aaaaaaaa-0000-4000-8000-00000000000a";
@@ -254,7 +256,7 @@ test("every tile renders its own read, and the strip counts what the tiles show"
   page,
 }) => {
   await mockAll(page);
-  await page.goto("/ask");
+  await page.goto("/dashboard");
   await expect(
     page.getByRole("heading", { name: "BattleLab dashboard" }),
   ).toBeVisible();
@@ -280,7 +282,7 @@ test("plan quota: the strip names the LOWEST plan window; tokens/manual never co
   page,
 }) => {
   await mockAll(page);
-  await page.goto("/ask");
+  await page.goto("/dashboard");
   // claude has 18 % left (82 used); opencode's 99 % used is a token count, not a plan quota.
   await expect(page.getByTestId("kpi-quota")).toContainText("18%");
   await expect(page.getByTestId("kpi-quota")).toContainText("claude");
@@ -290,7 +292,7 @@ test("quota: 'none' reads NOT MEASURED, never 0 %, and a stale figure says so", 
   page,
 }) => {
   await mockAll(page);
-  await page.goto("/ask");
+  await page.goto("/dashboard");
   const kimi = page.locator('[data-testid="quota-row"][data-engine="kimi"]');
   await expect(kimi).toContainText("not measured");
   await expect(kimi).not.toContainText("0%");
@@ -367,7 +369,7 @@ test("a failing tile never blanks the page, and says it could not read — never
   page,
 }) => {
   await mockAll(page, { dash: { status: 500, json: { detail: "boom" } } });
-  await page.goto("/ask");
+  await page.goto("/dashboard");
   await expect(
     page.getByTestId("dash-running").getByTestId("tile-error"),
   ).toBeVisible();
@@ -386,7 +388,7 @@ test("an unreadable runtime is 'couldn't read', never '0 running'", async ({
   await mockAll(page, {
     dash: { json: { ...DASH, live: { health: "unavailable" } } },
   });
-  await page.goto("/ask");
+  await page.goto("/dashboard");
   await expect(page.getByTestId("running-unavailable")).toBeVisible();
   await expect(page.getByTestId("running-empty")).toHaveCount(0);
   await expect(page.getByTestId("kpi-agents")).toContainText("couldn’t read");
@@ -407,7 +409,7 @@ test("a mission store that won't answer is an error, never 'no missions'", async
       },
     },
   });
-  await page.goto("/ask");
+  await page.goto("/dashboard");
   await expect(
     page.getByTestId("dash-missions").getByTestId("tile-error"),
   ).toBeVisible();
@@ -416,7 +418,7 @@ test("a mission store that won't answer is an error, never 'no missions'", async
 
 test("'All N running' opens exactly the N the count said", async ({ page }) => {
   await mockAll(page);
-  await page.goto("/ask");
+  await page.goto("/dashboard");
   await page.getByTestId("running-show-all").click();
   await expect(
     page.getByTestId("dash-running").getByTestId("running-row"),
@@ -427,27 +429,30 @@ test("a count is a way to what it counts: the agents number opens the running ti
   page,
 }) => {
   await mockAll(page);
-  await page.goto("/ask");
+  await page.goto("/dashboard");
   await page.getByTestId("kpi-agents").click();
   await expect(page.getByTestId("dash-running")).toBeInViewport();
 });
 
-test("after asking, the tiles stay reachable from the pinned bar", async ({
+test("asking opens the conversation on Ask's page; the back arrow returns to the tiles (#1171)", async ({
   page,
 }) => {
   await mockAll(page);
-  await page.route("**/api/pulse/ask", (r) =>
-    r.fulfill({
-      json: { answer: "Two sessions ran.", matches: [], missions: [] },
-    }),
+  await page.route(ASK_STREAM, (r) =>
+    fulfillAsk(r, { answer: "Two sessions ran.", matches: [], mission_matches: [] }),
   );
-  await page.goto("/ask");
+  await page.goto("/dashboard");
   await page.getByTestId("composer-input").fill("what ran today?");
   await page.getByTestId("composer-send").click();
+  await expect(page).toHaveURL(/\/ask$/);
   await expect(page.getByTestId("ask-turn")).toHaveCount(1);
-  await page.getByTestId("bar-agents").click();
-  await expect(page.getByTestId("dash-running")).toBeVisible();
-  await expect(page.getByTestId("bar-agents")).toContainText("7");
+  // The conversation carries none of the tiles (the operator's call, #1171)…
+  await expect(page.getByTestId("dash-running")).toHaveCount(0);
+  await expect(page.getByTestId("dash-kpis")).toHaveCount(0);
+  // …and one tap brings them back.
+  await page.getByRole("link", { name: "Back to dashboard" }).click();
+  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page.getByTestId("kpi-agents")).toContainText("7");
 });
 
 test("on a phone, a recent session keeps agent · project under its title", async ({
@@ -455,7 +460,7 @@ test("on a phone, a recent session keeps agent · project under its title", asyn
 }, info) => {
   test.skip(info.project.name !== "mobile", "phone layout");
   await mockAll(page);
-  await page.goto("/ask");
+  await page.goto("/dashboard");
   const row = page.getByTestId("recent-session-row").first();
   await expect(
     row.locator("td").first().getByText("claude · Alpha"),
@@ -465,7 +470,7 @@ test("on a phone, a recent session keeps agent · project under its title", asyn
 for (const theme of ["dark", "light"] as const) {
   test(`renders in the ${theme} theme`, async ({ page }, info) => {
     await mockAll(page);
-    await page.goto("/ask");
+    await page.goto("/dashboard");
     await page.evaluate((t) => {
       document.documentElement.dataset.theme = t;
     }, theme);
@@ -477,34 +482,6 @@ for (const theme of ["dark", "light"] as const) {
     });
   });
 }
-
-test("on a phone, after asking, Missions and Quota stay one tap away behind More", async ({
-  page,
-}, info) => {
-  test.skip(info.project.name !== "mobile", "the phone bar");
-  await mockAll(page);
-  await page.route("**/api/pulse/ask", (r) =>
-    r.fulfill({
-      json: { answer: "Two sessions ran.", matches: [], missions: [] },
-    }),
-  );
-  await page.goto("/ask");
-  await page.getByTestId("composer-input").fill("what ran today?");
-  await page.getByTestId("composer-send").click();
-  await expect(page.getByTestId("ask-turn")).toHaveCount(1);
-  for (const [item, tile] of [
-    ["Missions", "dash-missions"],
-    ["Quota", "dash-quota"],
-  ] as const) {
-    await page.getByTestId("bar-more").click();
-    await page
-      .getByTestId("bar-more-menu")
-      .getByRole("menuitem", { name: item })
-      .click();
-    await expect(page.getByTestId(tile)).toBeVisible();
-    await expect(page.getByTestId("ask-turn")).toHaveCount(1); // the thread is kept
-  }
-});
 
 test("long agent-authored titles and project names never overflow the page sideways", async ({
   page,
@@ -531,9 +508,9 @@ test("long agent-authored titles and project names never overflow the page sidew
       },
     },
   });
-  await page.goto("/ask");
+  await page.goto("/dashboard");
   await expect(page.getByTestId("recent-session-row")).toHaveCount(1);
-  const pane = page.getByTestId("ask-pane");
+  const pane = page.getByTestId("dashboard-pane");
   const [scroll, client] = await pane.evaluate((el) => [
     el.scrollWidth,
     el.clientWidth,

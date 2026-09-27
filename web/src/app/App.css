@@ -993,7 +993,9 @@ body.hud-static-grid {
   /* 320px is the narrowest supported screen and the one width where five entries do NOT fit at
      40px: 5×40 + gaps needs 172px against the 170px between the wordmark and the corner, and the
      overflow slid TEMPLATES under the notification bell — visible, clickable-looking and dead.
-     32px + 2px gaps is 168. The 44px hit-target floor is on the HEIGHT and is untouched. */
+     32px + 2px gaps is 168. The 44px hit-target floor is on the HEIGHT and is untouched.
+     #1171 gave Dashboard a chevron too (its Ask sub-page): two 20px chevrons ran 0.2px under the
+     bell at 320, so the chevrons are 18px here — 4px back, still a full-height target. */
   .section-nav {
     gap: 2px;
   }
@@ -1002,7 +1004,7 @@ body.hud-static-grid {
     padding-inline: 0;
   }
   .section-nav-chevron {
-    width: 20px;
+    width: 18px;
   }
   .hud-topbar-actions {
     gap: 3px;

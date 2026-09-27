@@ -326,3 +326,83 @@ def test_a_body_under_the_cap_is_still_forwarded(monkeypatch):
         "the proxy cap must sit ABOVE the 25 MiB per-file upload limit, with room for the "
         "multipart framing that makes a 25 MiB file a larger request"
     )
+
+
+def test_a_browser_reset_cancels_the_upstream_request_and_frees_what_it_held():
+    """#1171: an aborted fetch (Ask's New conversation) RESETS its mux stream. The proxy must end
+    the upstream request with it — otherwise the app never sees a disconnect, the old question
+    keeps the one-question gate, and the replacement is refused with a 409 while the discarded
+    one runs on. The old request here never completes on its own; the new one must still be
+    admitted."""
+    from agent_sessions import aitasks
+
+    aitasks.reset()
+    held = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if aitasks.is_running("pulse-chat"):
+            return httpx.Response(409, json={"detail": "a question is already running"})
+        if request.url.path == "/api/pulse/ask/stream" and request.content == b'{"q":"old"}':
+            try:
+                async with aitasks.single_flight("pulse-chat", "ask"):
+                    held.set()
+                    await asyncio.Event().wait()  # the old question: never finishes by itself
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+        return httpx.Response(200, json={"ok": True})
+
+    async def ask(browser, body: bytes):
+        s = browser.open(
+            json.dumps({"k": "http", "method": "POST", "path": "/api/pulse/ask/stream"}).encode()
+        )
+        await s.write(body)
+        await s.end()
+        return s
+
+    async def go():
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        proxy = AppProxyTarget(app_port=1, client=client)
+        browser = _browser_to(proxy)
+        old = await ask(browser, b'{"q":"old"}')
+        await asyncio.wait_for(held.wait(), 5)
+        assert aitasks.is_running("pulse-chat")
+
+        old.reset()  # New conversation: the browser aborts the fetch
+        await asyncio.wait_for(cancelled.wait(), 5)
+        assert not aitasks.is_running("pulse-chat")
+
+        new = await ask(browser, b'{"q":"new"}')
+        meta, _ = await asyncio.wait_for(_read_http_response(new), 5)
+        return meta
+
+    try:
+        meta = _run(go())
+    finally:
+        aitasks.reset()
+    assert meta["status"] == 200
+
+
+def test_a_request_that_finishes_is_not_disturbed_by_the_reset_watch():
+    """The watch ends with the request: a normal response still arrives whole, and nothing is
+    left pending on the stream afterwards."""
+
+    async def go():
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda r: httpx.Response(200, content=b"x" * 70_000))
+        )
+        proxy = AppProxyTarget(app_port=1, client=client)
+        browser = _browser_to(proxy)
+        s = browser.open(json.dumps({"k": "http", "method": "GET", "path": "/api/x"}).encode())
+        await s.end()
+        meta, body = await asyncio.wait_for(_read_http_response(s), 5)
+        await asyncio.sleep(0.05)  # the serve task's own teardown, a few loop turns
+        pending = [
+            t for t in asyncio.all_tasks() if t is not asyncio.current_task() and not t.done()
+        ]
+        return meta, body, pending
+
+    meta, body, pending = _run(go())
+    assert meta["status"] == 200 and len(body) == 70_000
+    assert pending == []

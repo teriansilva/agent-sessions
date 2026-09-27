@@ -67,3 +67,182 @@
   color: var(--text-2);
   cursor: pointer;
 }
+
+/* #1171: the conversation's only chrome — back to the dashboard, the page's name, New
+ * conversation. The back link is Settings' (`Settings.module.css .back`), at the 44px touch
+ * target (design §8). */
+.head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+}
+.back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  flex: none;
+  color: var(--text);
+  border: 1px solid var(--border);
+  background: var(--panel);
+}
+.back:hover,
+.back:focus-visible {
+  border-color: var(--accent);
+}
+.title {
+  margin: 0;
+  font-size: 1rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.sp {
+  flex: 1;
+}
+.newBtn {
+  min-height: 44px;
+  padding: 0 14px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.newBtn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.newBtn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.short {
+  display: none;
+}
+@media (max-width: 800px) {
+  .long {
+    display: none;
+  }
+  .short {
+    display: inline;
+  }
+}
+
+.greeting {
+  margin: 0 0 12px;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.needsEndpoint {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px dashed var(--line-strong);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.needsEndpoint a {
+  color: var(--accent);
+}
+
+/* #1171: the pending answer. A scan block sweeps a hairline track — brand accent, not a status
+ * colour: it says "working", not "healthy". Only `transform` and `opacity` move (never geometry or
+ * `clip-path`, design §5), and all of it stops under reduced motion. */
+.working {
+  margin-top: 6px;
+  animation: askArrive 180ms ease-out both;
+}
+.scan {
+  position: relative;
+  height: 2px;
+  overflow: hidden;
+  background: var(--line);
+}
+.scanBlock {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 28%;
+  background: var(--accent);
+  animation: askScan 1.3s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+.workingRow {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  color: var(--text-2);
+}
+.step {
+  flex: 1;
+  min-width: 0;
+}
+.step::after {
+  content: "▍";
+  margin-left: 4px;
+  color: var(--accent);
+  animation: askBlink 1s steps(1) infinite;
+}
+.elapsed {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+/* A match row that has just arrived settles in rather than popping. */
+.arrive {
+  animation: askArrive 220ms ease-out both;
+}
+
+@keyframes askScan {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(360%);
+  }
+}
+@keyframes askBlink {
+  50% {
+    opacity: 0;
+  }
+}
+@keyframes askArrive {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .working,
+  .arrive,
+  .step::after {
+    animation: none;
+  }
+  .scanBlock {
+    animation: none;
+    width: 100%;
+    opacity: 0.5;
+  }
+}
+
+/* The composer's hint keeps to "Enter to send" on a phone, where the rest ran under Send. */
+@media (max-width: 800px) {
+  .hintMore {
+    display: none;
+  }
+}

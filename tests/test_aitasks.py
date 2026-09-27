@@ -147,3 +147,55 @@ async def test_a_LEGACY_one_argument_stub_still_works(monkeypatch):
     async with aitasks.single_flight("legacy"):
         pass
     assert seen == ["legacy"]
+
+
+def test_a_cancelled_run_is_not_recorded_as_a_failure():
+    """#1171: a streamed Ask is cancelled whenever the operator starts a new conversation or
+    leaves. That is a deliberate stop, not a failure: the activity panel must not say "failed",
+    and "failing since" must not count it. It still leaves the running set."""
+    import asyncio
+
+    aitasks.reset()
+
+    async def go():
+        async def ok_run():
+            async with aitasks.single_flight("pulse-chat", "ask"):
+                pass
+
+        await ok_run()
+        before = dict(aitasks.snapshot()["last"]["pulse-chat"])
+
+        async def hung():
+            async with aitasks.single_flight("pulse-chat", "ask"):
+                await asyncio.Event().wait()
+
+        t = asyncio.ensure_future(hung())
+        await asyncio.sleep(0)
+        assert aitasks.is_running("pulse-chat")
+        t.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await t
+        assert not aitasks.is_running("pulse-chat")  # the gate is free
+        return before, aitasks.snapshot()["last"]["pulse-chat"]
+
+    before, after = asyncio.run(go())
+    assert after == before  # untouched: still the last real (successful) run
+    assert after["ok"] is True and after["consecutive_failures"] == 0
+    aitasks.reset()
+
+
+def test_a_real_failure_is_still_recorded():
+    import asyncio
+
+    aitasks.reset()
+
+    async def go():
+        with pytest.raises(RuntimeError):
+            async with aitasks.single_flight("pulse-chat", "ask"):
+                raise RuntimeError("endpoint down")
+
+    asyncio.run(go())
+    last = aitasks.snapshot()["last"]["pulse-chat"]
+    assert last["ok"] is False and last["consecutive_failures"] == 1
+    assert "endpoint down" in (last["error"] or "")
+    aitasks.reset()

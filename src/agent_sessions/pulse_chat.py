@@ -45,6 +45,7 @@ import logging
 import re
 import sqlite3
 import time
+from collections.abc import AsyncIterator
 
 from . import engines, missions, prompts, pulse, review
 
@@ -376,15 +377,21 @@ async def _stage2_refine(
     return answer, refined
 
 
-async def ask(query: str, history: object = None, *, working_keys: set[str] | None = None) -> dict:
-    """One ask: catalog ranking, then transcript-tail confirmation for the top picks.
+async def ask_events(
+    query: str, history: object = None, *, working_keys: set[str] | None = None
+) -> AsyncIterator[dict]:
+    """One ask, as the events it passes through (#1171) — what ``/api/pulse/ask/stream`` sends.
 
-    Returns ``{"answer", "matches": [PulseCard + "why", …], "mission_matches": [{id, title,
-    state, project_id, why}, …], "stage", "configured": True}``
-    with ``stage`` ∈ ``empty`` (no catalog → 0 LLM calls) / ``catalog`` (Stage-1 only) /
-    ``content`` (Stage-2 confirmed). Raises :class:`review.NotConfiguredError` when the
-    endpoint isn't configured (route → 409) and :class:`review.ReviewError` when Stage 1
-    fails (route → 502) — a chat has no useful non-LLM fallback, unlike a Pulse scan.
+    ``{"type": "progress", "step": "catalog", "sessions": N, "missions": M}`` before Stage 1,
+    ``{"type": "answer", "final": False, **result}`` with the Stage-1 answer the moment it exists
+    (only when Stage 2 will run), ``{"type": "progress", "step": "content", "candidates": K}``
+    before Stage 2, and exactly one ``{"type": "answer", "final": True, **result}`` last. The
+    final result is the same dict :func:`ask` returns — ``ask`` IS this generator's last event,
+    so the two routes cannot drift apart.
+
+    The model calls stay what they were: two non-streaming JSON-mode completions. What streams is
+    the pipeline, which is where the waiting is — the Stage-1 answer no longer sits behind the
+    transcript reads and the second call. Raises exactly what :func:`ask` raises.
     """
     # Check config BEFORE any FS work so the unconfigured 409 stays instant (and the
     # "empty catalog → 0 calls" path still surfaces an unconfigured endpoint honestly).
@@ -395,16 +402,25 @@ async def ask(query: str, history: object = None, *, working_keys: set[str] | No
         asyncio.to_thread(build_catalog, working_keys=working_keys), _mission_catalog()
     )
     if not catalog and not mission_catalog:
-        return {
+        yield {
+            "type": "answer",
+            "final": True,
             "answer": "No sessions found yet — start one and ask again.",
             "matches": [],
             "mission_matches": [],
             "stage": "empty",
             "configured": True,
         }
+        return
     now = time.time()
     slice_ = _prefilter(catalog, query)
     mission_slice = _prefilter(mission_catalog, query, MISSION_SLICE_MAX)
+    yield {
+        "type": "progress",
+        "step": "catalog",
+        "sessions": len(slice_),
+        "missions": len(mission_slice),
+    }
     by_id = {c["id"]: c for c in (*slice_, *mission_slice)}
     user = {
         "question": query,
@@ -422,10 +438,46 @@ async def ask(query: str, history: object = None, *, working_keys: set[str] | No
     )
     answer, matches = _validate_matches(obj, set(by_id))
     if not matches:
-        return _result(answer, [], by_id, "catalog")
+        yield {"type": "answer", "final": True, **_result(answer, [], by_id, "catalog")}
+        return
+    yield {"type": "answer", "final": False, **_result(answer, matches, by_id, "catalog")}
+    yield {
+        "type": "progress",
+        "step": "content",
+        "candidates": min(
+            sum(1 for mid, _ in matches if not _is_mission(by_id[mid])), STAGE2_CANDIDATES
+        )
+        + min(sum(1 for mid, _ in matches if _is_mission(by_id[mid])), STAGE2_MISSION_CANDIDATES),
+    }
     refined = await _stage2_refine(query, turns, matches, by_id)
     if refined is None:
-        return _result(answer, matches, by_id, "catalog")
+        yield {"type": "answer", "final": True, **_result(answer, matches, by_id, "catalog")}
+        return
     answer2, matches2 = refined
     # A refine that verified but returned no usable answer keeps the Stage-1 line.
-    return _result(answer2 or answer, matches2, by_id, "content")
+    yield {
+        "type": "answer",
+        "final": True,
+        **_result(answer2 or answer, matches2, by_id, "content"),
+    }
+
+
+async def ask(query: str, history: object = None, *, working_keys: set[str] | None = None) -> dict:
+    """One ask: catalog ranking, then transcript-tail confirmation for the top picks.
+
+    Returns ``{"answer", "matches": [PulseCard + "why", …], "mission_matches": [{id, title,
+    state, project_id, why}, …], "stage", "configured": True}``
+    with ``stage`` ∈ ``empty`` (no catalog → 0 LLM calls) / ``catalog`` (Stage-1 only) /
+    ``content`` (Stage-2 confirmed). Raises :class:`review.NotConfiguredError` when the
+    endpoint isn't configured (route → 409) and :class:`review.ReviewError` when Stage 1
+    fails (route → 502) — a chat has no useful non-LLM fallback, unlike a Pulse scan.
+
+    The last event of :func:`ask_events`, without its event fields.
+    """
+    final: dict | None = None
+    async for ev in ask_events(query, history, working_keys=working_keys):
+        if ev["type"] == "answer" and ev["final"]:
+            final = {k: v for k, v in ev.items() if k not in ("type", "final")}
+    if final is None:  # unreachable: ask_events ends on a final answer or raises
+        raise review.ReviewError("the question ended without an answer")
+    return final

@@ -85,6 +85,10 @@ class Stream:
         self._recv_eof = False
         self._recv_reset: int | None = None
         self._data_ready = asyncio.Event()
+        # Set once, when the stream is reset (by the peer, by us, or by the mux closing). Its own
+        # event, not `_data_ready`: a responder that has read the request to EOF still needs to
+        # learn that the browser gave up while it waits on the app (#1171).
+        self._reset_seen = asyncio.Event()
 
     # ── outbound ──────────────────────────────────────────────────────
     async def write(self, data: bytes) -> None:
@@ -197,8 +201,15 @@ class Stream:
         while self._send_waiters and self._send_window > 0:
             self._send_waiters.popleft().set_result(None)
 
+    async def wait_reset(self) -> int:
+        """Wait until this stream is reset — the peer's RESET, our own, or the mux closing — and
+        return the code. Never returns for a stream that ends cleanly."""
+        await self._reset_seen.wait()
+        return self._recv_reset or 0
+
     def _fail(self, code: int) -> None:
         self._recv_reset = code
+        self._reset_seen.set()
         self._data_ready.set()
         while self._send_waiters:
             w = self._send_waiters.popleft()

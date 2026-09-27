@@ -1,13 +1,16 @@
-/** ASK as the home for sessions without a mission (#1086 Phase 3): RECENT WORK, NEEDS YOU, the
- *  details dialog and the pinned bar once a conversation starts.
+/** ASK as the home for sessions without a mission (#1086 Phase 3): RECENT WORK, NEEDS YOU and the
+ *  details dialog on the dashboard, and the needs-you marker on the answers of Ask's own page
+ *  (#1171).
  *
  *  Real browser, API mocked. What is pinned is what the operator relies on: Approve names what it
  *  does and approves exactly that decision; the EDITED text is what is sent; opening details opens
  *  no terminal socket (a viewer attach is what failed Approve in #1049); a moved screen sends
  *  nothing and says so; a late answer cannot repaint a newer filter; "Nothing needs you" appears
- *  only after a successful read; and NEEDS YOU stays reachable after asking.
+ *  only after a successful read; and an answer about a session that needs you says so.
  */
 import { expect, test, type Page, type Request } from "@playwright/test";
+
+import { ASK_STREAM, fulfillAsk } from "./askStream";
 
 const A = "claude:aaaaaaaa-0000-4000-8000-00000000000a";
 const B = "claude:aaaaaaaa-0000-4000-8000-00000000000b";
@@ -178,7 +181,7 @@ const needs = (page: Page) => page.getByTestId("needs-you");
 test("RECENT WORK previews the latest four, oldest first, and Show more opens the window by day", async ({ page }) => {
   await mockShell(page);
   await mockNeedsYou(page);
-  await page.goto("/ask");
+  await page.goto("/dashboard");
   const preview = page.getByTestId("recent-work").getByTestId("recent-work-entry");
   await expect(preview).toHaveCount(4);
   // The LATEST four (2..5), shown oldest first.
@@ -199,7 +202,7 @@ test("RECENT WORK previews the latest four, oldest first, and Show more opens th
 test("NEEDS YOU lists only what needs you, and every Approve names what it does", async ({ page }) => {
   await mockShell(page);
   await mockNeedsYou(page);
-  await page.goto("/ask");
+  await page.goto("/dashboard");
   const rows = needs(page).getByTestId("needs-you-row");
   await expect(rows).toHaveCount(3);
   await expect(rows.nth(0).getByTestId("needs-you-approve")).toHaveText("Approve · Delete it");
@@ -216,7 +219,7 @@ test("NEEDS YOU lists only what needs you, and every Approve names what it does"
 test("Approve on a row approves exactly that decision, unedited, and re-reads the list", async ({ page }) => {
   await mockShell(page);
   const seen = await mockNeedsYou(page);
-  await page.goto("/ask");
+  await page.goto("/dashboard");
   await expect(needs(page).getByTestId("needs-you-row")).toHaveCount(3);
   const before = seen.lists.length;
   await needs(page).getByTestId("needs-you-approve").first().click();
@@ -231,7 +234,7 @@ test("details: the EDITED text is what gets sent, and opening them opens no term
   const seen = await mockNeedsYou(page);
   const sockets: string[] = [];
   page.on("websocket", (ws) => sockets.push(ws.url()));
-  await page.goto("/ask");
+  await page.goto("/dashboard");
   await needs(page).getByTestId("needs-you-row").nth(1).getByTestId("needs-you-details").click();
   const dialog = page.getByTestId("needs-you-dialog");
   await expect(dialog.getByTestId("needs-you-last-words")).toHaveText("Which option do you want?");
@@ -251,7 +254,7 @@ test("details: the EDITED text is what gets sent, and opening them opens no term
 test("details: an UNEDITED text approve sends no text at all", async ({ page }) => {
   await mockShell(page);
   const seen = await mockNeedsYou(page);
-  await page.goto("/ask");
+  await page.goto("/dashboard");
   await needs(page).getByTestId("needs-you-row").nth(1).getByTestId("needs-you-details").click();
   await page.getByTestId("needs-you-dialog").getByTestId("needs-you-dialog-approve").click();
   await expect.poll(() => seen.approves.length).toBe(1);
@@ -268,7 +271,7 @@ test("a moved screen sends nothing, says so, and shows where the session is now"
   page.on("request", (r) => {
     if (/\/details$/.test(r.url())) details++;
   });
-  await page.goto("/ask");
+  await page.goto("/dashboard");
   await needs(page).getByTestId("needs-you-row").first().getByTestId("needs-you-details").click();
   const dialog = page.getByTestId("needs-you-dialog");
   await dialog.getByTestId("needs-you-dialog-approve").click();
@@ -280,7 +283,7 @@ test("a moved screen sends nothing, says so, and shows where the session is now"
 test("Dismiss rejects that decision and never names a screen", async ({ page }) => {
   await mockShell(page);
   const seen = await mockNeedsYou(page);
-  await page.goto("/ask");
+  await page.goto("/dashboard");
   await needs(page).getByTestId("needs-you-row").first().getByTestId("needs-you-details").click();
   await page.getByTestId("needs-you-dialog").getByTestId("needs-you-dismiss").click();
   await expect.poll(() => seen.dismisses.length).toBe(1);
@@ -299,7 +302,7 @@ test("a filter change cannot be painted over by a late answer for the old filter
       return engine === "codex" ? payload([ROWS[2]]) : payload();
     },
   });
-  await page.goto("/ask");
+  await page.goto("/dashboard");
   await expect(needs(page).getByTestId("needs-you-row")).toHaveCount(3); // options loaded
   const slow = page.waitForRequest((r) => r.url().includes("engine=claude"));
   await needs(page).getByLabel("Agent").selectOption("claude");
@@ -317,7 +320,7 @@ test("'Nothing needs you' only after a successful read; a failed read is its own
   await mockNeedsYou(page, {
     list: () => (fail ? { status: 503, json: { detail: "ledger unreadable" } } : payload([])),
   });
-  await page.goto("/ask");
+  await page.goto("/dashboard");
   await expect(needs(page).getByTestId("needs-you-error")).toBeVisible();
   await expect(needs(page).getByTestId("needs-you-empty")).toHaveCount(0);
   fail = false;
@@ -325,29 +328,24 @@ test("'Nothing needs you' only after a successful read; a failed read is its own
   await expect(needs(page).getByTestId("needs-you-empty")).toHaveText("Nothing needs you.");
 });
 
-test("after asking, NEEDS YOU stays reachable in a pinned bar and answer rows mark who needs you", async ({ page }) => {
+test("after asking, answer rows mark who needs you and open the same details (#1086, #1171)", async ({ page }) => {
   await mockShell(page);
   await mockNeedsYou(page);
-  await page.route("**/api/pulse/ask", (r) =>
-    r.fulfill({
-      json: {
-        answer: "One relay session is stuck.",
-        matches: [{ id: A, title: "session a", why: "asked which option" }],
-        stage: "catalog",
-        configured: true,
-      },
+  await page.route(ASK_STREAM, (r) =>
+    fulfillAsk(r, {
+      answer: "One relay session is stuck.",
+      matches: [{ id: A, title: "session a", why: "asked which option" }],
+      stage: "catalog",
+      configured: true,
     }),
   );
-  await page.goto("/ask");
+  await page.goto("/dashboard");
   await expect(needs(page).getByTestId("needs-you-row")).toHaveCount(3);
   await page.getByTestId("composer-input").fill("is anything stuck?");
   await page.getByTestId("composer-send").click();
-  const bar = page.getByTestId("ask-bar");
-  await expect(bar).toBeVisible();
-  await expect(bar.getByRole("button", { name: /needs you · 3/i })).toBeVisible();
-  await expect(needs(page)).toHaveCount(0); // collapsed, not gone: one tap brings it back
-  await bar.getByRole("button", { name: /needs you · 3/i }).click();
-  await expect(needs(page).getByTestId("needs-you-row")).toHaveCount(3);
+  // The conversation is Ask's own page: the list stays on the dashboard, the marker comes along.
+  await expect(page).toHaveURL(/\/ask$/);
+  await expect(needs(page)).toHaveCount(0);
 
   const match = page.getByTestId("ask-match").first();
   await expect(match.getByTestId("ask-match-needs-you")).toHaveText("Needs you");
@@ -355,8 +353,7 @@ test("after asking, NEEDS YOU stays reachable in a pinned bar and answer rows ma
   await expect(page.getByTestId("needs-you-dialog")).toBeVisible();
   await page.keyboard.press("Escape");
 
-  await bar.getByRole("button", { name: "New conversation" }).click();
-  await expect(page.getByTestId("ask-bar")).toHaveCount(0);
+  await page.getByRole("link", { name: "Back to dashboard" }).click();
   await expect(needs(page).getByTestId("needs-you-row")).toHaveCount(3);
 });
 
@@ -373,7 +370,7 @@ test("an approval that completes AFTER a filter change never repaints the old fi
     await held; // the approval is still in flight…
     return r.fulfill({ json: { id: "x", state: "delivered" } });
   });
-  await page.goto("/ask");
+  await page.goto("/dashboard");
   await expect(needs(page).getByTestId("needs-you-row")).toHaveCount(3);
   await needs(page).getByTestId("needs-you-approve").first().click();
   await needs(page).getByLabel("Agent").selectOption("codex"); // …when the operator filters
@@ -393,7 +390,7 @@ test("a dialog cannot be dismissed, or its text edited, while its decision is in
     await held;
     return r.fulfill({ json: { id: "x", state: "delivered" } });
   });
-  await page.goto("/ask");
+  await page.goto("/dashboard");
   await needs(page).getByTestId("needs-you-row").nth(1).getByTestId("needs-you-details").click();
   const dialog = page.getByTestId("needs-you-dialog");
   await dialog.getByTestId("needs-you-dialog-approve").click();
@@ -405,19 +402,13 @@ test("a dialog cannot be dismissed, or its text edited, while its decision is in
   await expect(dialog).toHaveCount(0); // it closes itself when its own decision settles
 });
 
-test("an expanded pinned list scrolls inside a bound and never pushes the composer off-screen", async ({ page }) => {
+test("a long NEEDS YOU list scrolls inside the dashboard and never pushes the composer off-screen", async ({ page }) => {
   await mockShell(page);
   const many = Array.from({ length: 30 }, (_, i) =>
     row(`claude:aaaaaaaa-0000-4000-8000-${String(i).padStart(12, "0")}`, { title: `row ${i}` }),
   );
   await mockNeedsYou(page, { list: () => payload(many) });
-  await page.route("**/api/pulse/ask", (r) =>
-    r.fulfill({ json: { answer: "ok", matches: [], stage: "catalog", configured: true } }),
-  );
-  await page.goto("/ask");
-  await page.getByTestId("composer-input").fill("hi");
-  await page.getByTestId("composer-send").click();
-  await page.getByTestId("ask-bar").getByRole("button", { name: /needs you/i }).click();
+  await page.goto("/dashboard");
   await expect(needs(page).getByTestId("needs-you-row").first()).toBeVisible();
   const vh = page.viewportSize()!.height;
   const send = (await page.getByTestId("composer-send").boundingBox())!;
@@ -431,7 +422,7 @@ test("a failed poll after an EMPTY read is shown as a failure, never as 'Nothing
   await mockNeedsYou(page, {
     list: () => (fail ? { status: 503, json: { detail: "ledger unreadable" } } : payload([])),
   });
-  await page.goto("/ask");
+  await page.goto("/dashboard");
   await expect(needs(page).getByTestId("needs-you-empty")).toBeVisible();
   fail = true;
   await page.clock.runFor(31_000); // the 30 s poll
@@ -439,7 +430,7 @@ test("a failed poll after an EMPTY read is shown as a failure, never as 'Nothing
   await expect(needs(page).getByTestId("needs-you-empty")).toHaveCount(0);
 });
 
-test("a list filter never hides the needs-you marker on an answer, nor the overall count", async ({ page }) => {
+test("a list filter never hides the needs-you marker on an answer", async ({ page }) => {
   await mockShell(page);
   await mockNeedsYou(page, {
     list: (url) => {
@@ -447,10 +438,10 @@ test("a list filter never hides the needs-you marker on an answer, nor the overa
       return { ...body, total_unfiltered: 3, needs_you_ids: ROWS.map((r) => r.id) };
     },
   });
-  await page.route("**/api/pulse/ask", (r) =>
-    r.fulfill({ json: { answer: "A claude session waits.", matches: [{ id: A, title: "session a", why: "choice" }], stage: "catalog", configured: true } }),
+  await page.route(ASK_STREAM, (r) =>
+    fulfillAsk(r, { answer: "A claude session waits.", matches: [{ id: A, title: "session a", why: "choice" }], stage: "catalog", configured: true }),
   );
-  await page.goto("/ask");
+  await page.goto("/dashboard");
   await needs(page).getByLabel("Agent").selectOption("codex");
   await expect(needs(page).getByTestId("needs-you-row")).toHaveCount(1);
   await page.getByTestId("composer-input").fill("anything stuck?");
@@ -458,7 +449,6 @@ test("a list filter never hides the needs-you marker on an answer, nor the overa
   const match = page.getByTestId("ask-match").first();
   await expect(match.getByTestId("ask-match-needs-you")).toBeVisible();
   await expect(match.getByRole("button", { name: /details for session a/i })).toBeVisible();
-  await expect(page.getByTestId("ask-bar").getByRole("button", { name: /needs you · 3/i })).toBeVisible();
 });
 
 test("a failed read for a NEW window is shown as a failure, never as the old window's result", async ({ page }) => {
@@ -469,7 +459,7 @@ test("a failed read for a NEW window is shown as a failure, never as the old win
   await page.route(/\/api\/pulse\/recap\?window_days=3$/, (r) =>
     r.fulfill({ status: 500, json: { detail: "boom" } }),
   );
-  await page.goto("/ask");
+  await page.goto("/dashboard");
   const recent = page.getByTestId("recent-work");
   await expect(recent.getByTestId("recent-work-entry")).toHaveCount(4);
   await recent.getByText("3", { exact: true }).click();
@@ -484,7 +474,7 @@ test("the Show more dialog follows a window change, and a failed read there is a
   await page.route(/\/api\/pulse\/recap\?window_days=2$/, (r) =>
     r.fulfill({ status: 500, json: { detail: "boom" } }),
   );
-  await page.goto("/ask");
+  await page.goto("/dashboard");
   await page.getByTestId("recent-work-more").click();
   const dialog = page.getByTestId("recent-work-dialog");
   await expect(dialog.getByTestId("recent-work-entry")).toHaveCount(6);
@@ -510,7 +500,7 @@ test("a slow refresh for the old window never leaves the new window 'updating…
     await new Promise((res) => setTimeout(res, 1500));
     return r.fulfill({ json: RECAP }).catch(() => {});
   });
-  await page.goto("/ask");
+  await page.goto("/dashboard");
   const recent = page.getByTestId("recent-work");
   await expect(recent.getByText("updating…")).toBeVisible();
   await recent.getByText("3", { exact: true }).click();
@@ -528,7 +518,7 @@ test("after a conflict, a FAILED reload marks the old screen out of date and all
   await page.route(/\/api\/pulse\/actions\/[^/]+\/approve$/, (r) =>
     r.fulfill({ status: 409, json: { detail: "the screen changed" } }),
   );
-  await page.goto("/ask");
+  await page.goto("/dashboard");
   await needs(page).getByTestId("needs-you-row").nth(1).getByTestId("needs-you-details").click();
   const dialog = page.getByTestId("needs-you-dialog");
   await expect(dialog.getByTestId("needs-you-dialog-approve")).toBeVisible();
@@ -559,7 +549,7 @@ test("details render the last words' markdown, and keep the screen only for a me
   await mockNeedsYou(page, {
     lastWords: "Done.\n\n- **Checkouts:** under `~/agentwork/`.\n- **Next:** P5 <b>waits</b>.",
   });
-  await page.goto("/ask");
+  await page.goto("/dashboard");
   await needs(page).getByTestId("needs-you-row").nth(1).getByTestId("needs-you-details").click();
   const dialog = page.getByTestId("needs-you-dialog");
   const words = dialog.getByTestId("needs-you-last-words");
@@ -583,7 +573,7 @@ test("the details dialog never scrolls as a whole: long last words scroll inside
   // A laptop-height window, like the report's: the menu row carries both evidence blocks.
   await page.setViewportSize({ width: page.viewportSize()!.width, height: 600 });
   for (const row of [0, 1]) {
-    await page.goto("/ask");
+    await page.goto("/dashboard");
     await needs(page).getByTestId("needs-you-row").nth(row).getByTestId("needs-you-details").click();
     const dialog = page.getByTestId("needs-you-dialog");
     await expect(dialog.getByTestId("needs-you-last-words")).toContainText("Step 79");

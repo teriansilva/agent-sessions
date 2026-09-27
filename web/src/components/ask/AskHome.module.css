@@ -265,7 +265,7 @@
   color: var(--danger-text, var(--status-down));
 }
 
-/* ---- the pinned bar once a conversation has started ---- */
+/* ---- a section's own control row ---- */
 .bar {
   display: flex;
   align-items: center;
@@ -275,23 +275,6 @@
 }
 .bar .sp {
   flex: 1;
-}
-.hot {
-  border-color: var(--status-degraded);
-}
-.dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--status-degraded);
-}
-/* The expanded section is BOUNDED and scrolls (review 5184): unbounded, 30 rows pushed the composer
- * thousands of pixels below a fixed-height page. The conversation and the composer keep the rest. */
-.panel {
-  margin-bottom: 12px;
-  max-height: min(45vh, 420px);
-  overflow: auto;
-  overscroll-behavior: contain;
 }
 
 /* ---- the details dialog ---- */
@@ -429,37 +412,8 @@
   flex: 1;
 }
 
-/* Short bar labels on a phone, so the pinned bar stays ONE row; each button's accessible name is
- * its full label (`aria-label`), so nothing is lost to a screen reader. */
-.short {
-  display: none;
-}
-/* A bar control that exists only on a phone (the dashboard's More, #1123). */
-.mobileOnly {
-  display: none;
-}
-.moreMenu {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 10px;
-  border: 1px solid var(--line);
-  background: var(--bg-1);
-}
-.moreMenu .btn {
-  justify-content: flex-start;
-}
 
 @media (max-width: 800px) {
-  .long {
-    display: none;
-  }
-  .short {
-    display: inline;
-  }
-  .mobileOnly {
-    display: inline-flex;
-  }
   .row {
     grid-template-columns: 10px 1fr;
   }

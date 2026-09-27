@@ -175,3 +175,33 @@ def test_reset_tears_down_one_stream_only():
         assert await by[b"keep"].read(1024) == b"alive"
 
     _run(go())
+
+
+def test_wait_reset_wakes_on_a_peer_reset_and_on_mux_close_but_not_on_end():
+    """#1171: a responder that has read its request to EOF learns the browser gave up."""
+    from agent_sessions.homefree.mux import Mux
+
+    async def go():
+        m: dict = {}
+        opened: list = []
+        m["a"] = Mux(is_initiator=True, on_send=lambda f: m["b"].feed(f))
+        m["b"] = Mux(is_initiator=False, on_send=lambda f: m["a"].feed(f), on_stream=opened.append)
+        s = m["a"].open(b"x")
+        await s.end()
+        await asyncio.sleep(0)
+        (peer,) = opened
+        assert await peer.read() == b""  # request read to EOF
+        waiting = asyncio.ensure_future(peer.wait_reset())
+        await asyncio.sleep(0.01)
+        assert not waiting.done()  # a clean END is not a reset
+        s.reset(7)
+        assert await asyncio.wait_for(waiting, 1) == 7
+
+        s2 = m["a"].open(b"y")
+        await asyncio.sleep(0)
+        waiting2 = asyncio.ensure_future(opened[1].wait_reset())
+        m["b"].close()
+        assert await asyncio.wait_for(waiting2, 1) == 0
+        del s2
+
+    asyncio.run(go())

@@ -22,6 +22,7 @@ deregisters and still records its (failed) last-run.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -92,7 +93,8 @@ async def track(kind: str, detail: str = "", *, exclusive: bool = False, scope: 
     atomic because nothing awaits between them. The block is visible to :func:`snapshot`
     for its whole life and is deregistered in a ``finally``; the per-kind last-run
     (``ok`` / ``finished_at`` / ``duration_s``) is recorded on exit whether the block
-    returned or raised.
+    returned or raised — except a CANCELLED block (``CancelledError`` / ``GeneratorExit``), which
+    did not finish and leaves the record untouched (#1171).
     """
     if exclusive:
         # Called with ONE argument when there is no scope, which is every pre-existing caller.
@@ -112,8 +114,16 @@ async def track(kind: str, detail: str = "", *, exclusive: bool = False, scope: 
     _running[token] = _Running(token, kind, detail, started, scope)
     ok = True
     err: str | None = None
+    cancelled = False
     try:
         yield
+    except (asyncio.CancelledError, GeneratorExit):
+        # CANCELLED is not FAILED (#1171). A streamed Ask is cancelled whenever the operator
+        # starts a new conversation or leaves the page; recording that as a failure put "failed"
+        # on the activity panel and counted towards "failing since" for a deliberate stop. The
+        # run did not finish either way, so the last-run record is left exactly as it was.
+        cancelled = True
+        raise
     except BaseException as e:  # noqa: BLE001 — recorded, then re-raised unchanged
         ok = False
         # WHY it failed, not just that it did. The orchestrator's endpoint went down for 11
@@ -125,23 +135,26 @@ async def track(kind: str, detail: str = "", *, exclusive: bool = False, scope: 
         raise
     finally:
         _running.pop(token, None)
-        prev = _last.get(kind) or {}
-        finished = time.time()
-        _last[kind] = {
-            "finished_at": finished,
-            "ok": ok,
-            "detail": detail,
-            "duration_s": round(finished - started, 3),
-            # None once it has succeeded — a stale error next to `ok: true` reads as a fault
-            # that is still happening.
-            "error": None if ok else err,
-            # A single failure is a blip; a run of them is an outage. The client needs the
-            # count to tell those apart without inventing a rule of its own.
-            "consecutive_failures": 0 if ok else int(prev.get("consecutive_failures") or 0) + 1,
-            # Carried across failures, so "failing since" is answerable at a glance rather
-            # than by digging for the last successful pass.
-            "last_ok": finished if ok else prev.get("last_ok"),
-        }
+        # A cancelled run leaves the record alone. NOT a `return` here: that would swallow the
+        # cancellation re-raised above.
+        if not cancelled:
+            prev = _last.get(kind) or {}
+            finished = time.time()
+            _last[kind] = {
+                "finished_at": finished,
+                "ok": ok,
+                "detail": detail,
+                "duration_s": round(finished - started, 3),
+                # None once it has succeeded — a stale error next to `ok: true` reads as a fault
+                # that is still happening.
+                "error": None if ok else err,
+                # A single failure is a blip; a run of them is an outage. The client needs the
+                # count to tell those apart without inventing a rule of its own.
+                "consecutive_failures": 0 if ok else int(prev.get("consecutive_failures") or 0) + 1,
+                # Carried across failures, so "failing since" is answerable at a glance rather
+                # than by digging for the last successful pass.
+                "last_ok": finished if ok else prev.get("last_ok"),
+            }
 
 
 def single_flight(kind: str, detail: str = "", *, scope: str = ""):

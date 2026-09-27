@@ -833,6 +833,20 @@ export interface PulseAskResult {
   configured: boolean;
 }
 
+/** One line of `POST /api/pulse/ask/stream` (#1171). `progress` names the step the ask is on;
+ *  `answer` carries a result — `final: false` is the Stage-1 answer, shown while Stage 2 confirms
+ *  it against the transcripts; `error` is a failure after the stream had started. */
+export type PulseAskEvent =
+  | {
+      type: "progress";
+      step: "catalog";
+      sessions: number;
+      missions: number;
+    }
+  | { type: "progress"; step: "content"; candidates: number }
+  | ({ type: "answer"; final: boolean } & PulseAskResult)
+  | { type: "error"; status: number; detail: string };
+
 /** One running AI task in the shared activity surface (#441 Phase 1). */
 export interface AiActivityTask {
   kind: string;

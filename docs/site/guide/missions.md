@@ -7,8 +7,8 @@ It is the `/mission` route (`/pulse` redirects there), and it used to be a dashb
 work" banner, and a separate Ask box. That told you what mattered and then handed you off to a
 terminal to act. The console replaces all three with a shape you already know — a rail of missions
 on the left, one thread in the middle, and the mission's own detail beside it. Ask was not folded
-into the console: it lives on the [Dashboard](/guide/dashboard) (`/dashboard`; `/ask` still works), first in the top
-bar's section nav.
+into the console: you ask from the [Dashboard](/guide/dashboard) (`/dashboard`), first in the top bar's section
+nav, and the conversation has its own page under it (`/ask`).
 
 ## A mission is the unit of work
 
@@ -342,7 +342,7 @@ relocated — out of mission control entirely, into its own section:
 |---|---|
 | A session card in the grid | A mission row in the rail |
 | The banner | The mission's own recap stream |
-| The Ask box | [Ask](/guide/ask), in the middle of the [Dashboard](/guide/dashboard) (`/dashboard`) |
+| The Ask box | The [Dashboard](/guide/dashboard)'s Ask field, and its conversation page [Ask](/guide/ask) (`/ask`) |
 | A session no mission owns | Adopted from the session itself — its row menu or its pane header |
 
 Deliberately unchanged: the **terminal**, the **sidebar**, and the **per-session recap** — which is

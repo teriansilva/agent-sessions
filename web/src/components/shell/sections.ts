@@ -24,6 +24,7 @@ import {
   BookMarked,
   Crosshair,
   LayoutDashboard,
+  MessageSquare,
   Network,
   TerminalSquare,
   type LucideIcon,
@@ -41,8 +42,9 @@ import {
 
 export type SectionId = "ask" | "sessions" | "mission" | "templates";
 
-/** An entry inside a section's sub-menu. Only Sessions has one today: the session view and its map. */
-export type SubsectionId = "sessions" | "map";
+/** An entry inside a section's sub-menu: Sessions has the session view and its map; Dashboard
+ *  has the dashboard and Ask's conversation page (#1171). */
+export type SubsectionId = "sessions" | "map" | "dashboard" | "ask";
 
 export interface Subsection {
   id: SubsectionId;
@@ -65,8 +67,18 @@ export interface Section {
 }
 
 export const SECTIONS: Section[] = [
-  // The dashboard (#1123) — Ask lives on it, so the section keeps its id and its first place.
-  { id: "ask", label: "Dashboard", Icon: LayoutDashboard, to: DASHBOARD_PATH },
+  // The dashboard (#1123) — Ask starts on it, so the section keeps its id and its first place.
+  // A conversation has its own page under it (#1171), the way the map sits under Sessions.
+  {
+    id: "ask",
+    label: "Dashboard",
+    Icon: LayoutDashboard,
+    to: DASHBOARD_PATH,
+    children: [
+      { id: "dashboard", label: "Dashboard", Icon: LayoutDashboard, to: DASHBOARD_PATH },
+      { id: "ask", label: "Ask", Icon: MessageSquare, to: ASK_PATH },
+    ],
+  },
   {
     id: "sessions",
     label: "Sessions",
@@ -89,20 +101,23 @@ export const SECTIONS: Section[] = [
  *  "you are here" on the wrong entry the first time someone adds a route sharing a prefix. */
 export function activeSection(pathname: string): SectionId | null {
   const sub = activeSubsection(pathname);
-  if (sub) return "sessions";
+  if (sub === "sessions" || sub === "map") return "sessions";
+  if (sub === "dashboard" || sub === "ask") return "ask";
   if (pathname === MISSION_PATH || pathname === LEGACY_MISSION_PATH)
     return "mission";
-  if (pathname === DASHBOARD_PATH || pathname === ASK_PATH) return "ask";
   if (pathname === TEMPLATES_PATH || pathname.startsWith(`${TEMPLATES_PATH}/`))
     return "templates";
   return null;
 }
 
-/** Which sub-menu entry a pathname belongs to — the map, or the session view — `null` elsewhere.
+/** Which sub-menu entry a pathname belongs to — the session view, the map, the dashboard or Ask —
+ *  `null` elsewhere.
  *  Same exact-match rule as `activeSection`, which derives the Sessions parent from this. */
 export function activeSubsection(pathname: string): SubsectionId | null {
   if (pathname === SESSIONS_PATH || pathname.startsWith("/s/"))
     return "sessions";
   if (pathname === MAP_PATH) return "map";
+  if (pathname === DASHBOARD_PATH) return "dashboard";
+  if (pathname === ASK_PATH) return "ask";
   return null;
 }

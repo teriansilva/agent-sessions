@@ -43,7 +43,10 @@ describe("activeSection", () => {
     ["/", "sessions"],
     ["/s/claude/abc-123", "sessions"],
     ["/overview", "map"],
-    ["/ask", null],
+    // #1171: the dashboard and Ask's conversation page are Dashboard's sub-entries.
+    ["/dashboard", "dashboard"],
+    ["/ask", "ask"],
+    ["/askew", null],
     ["/overviewer", null],
   ])("sub-entry of %s → %s (#1069)", (path, expected) => {
     expect(activeSubsection(path)).toBe(expected);
@@ -65,7 +68,12 @@ describe("SectionNav", () => {
   test("the bar names every section, Ask first; the map is only in the Sessions menu (#1069)", () => {
     render(
       <MemoryRouter>
-        <SectionNav active="ask" sessionsPath="/" onNavigate={() => {}} />
+        <SectionNav
+          active="ask"
+          activeSub="dashboard"
+          sessionsPath="/"
+          onNavigate={() => {}}
+        />
       </MemoryRouter>,
     );
     const top = SECTIONS.map((s) => s.label);
@@ -86,6 +94,32 @@ describe("SectionNav", () => {
       "aria-current",
       "page",
     );
+  });
+
+  test("on Ask's page, Dashboard is current-in-set and the menu names Ask as the page (#1171)", async () => {
+    render(
+      <MemoryRouter>
+        <SectionNav
+          active="ask"
+          activeSub="ask"
+          sessionsPath="/"
+          onNavigate={() => {}}
+        />
+      </MemoryRouter>,
+    );
+    const bar = screen.getByTestId("section-nav");
+    expect(
+      within(bar).getByRole("link", { name: "Dashboard" }),
+    ).toHaveAttribute("aria-current", "true");
+    await userEvent.click(
+      within(bar).getByRole("button", { name: "Dashboard menu" }),
+    );
+    const menu = await screen.findByRole("menu", { name: "Dashboard menu" });
+    const items = within(menu).getAllByRole("menuitem");
+    expect(items.map((i) => i.textContent)).toEqual(["Dashboard", "Ask"]);
+    expect(items[0]).toHaveAttribute("href", "/dashboard");
+    expect(items[1]).toHaveAttribute("href", "/ask");
+    expect(items[1]).toHaveAttribute("aria-current", "page");
   });
 
   test("Sessions points at the last session route, not always at the landing", () => {

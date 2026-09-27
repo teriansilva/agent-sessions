@@ -1,8 +1,8 @@
 # Dashboard
 
 The **Dashboard** (`/dashboard`, first in the top bar's section nav) is BattleLab's home: what your
-agents are doing right now, what is running, what needs you, and the Ask field, on one page. `/ask`
-still works and opens the same page.
+agents are doing right now, what is running, what needs you, and the Ask field, on one page. Its
+chevron menu holds the Dashboard and **Ask** (`/ask`), the page your conversations happen on.
 
 It adds no new actions. Every number is a count of something you can open, and every tile reads on
 its own schedule, so one slow or failing read never blanks the rest.
@@ -36,16 +36,21 @@ wrong is worse than no count.
 Sessions refresh every 30 seconds, missions every minute and quota every five minutes. A refresh that
 fails keeps the last figures and says so, with a **Retry**.
 
-## Needs you and Ask
+## Needs you and recent work
 
-The middle of the page is [Ask](/guide/ask): your recent work, the **Needs you** list with its
-actions (approve, reply, dismiss), and the Ask field. The Dashboard only arranges them around the
-tiles; how each behaves is on the Ask page.
+Your recent work and the **Needs you** list with its actions (approve, reply, dismiss) sit among the
+tiles; how each behaves is on the [Ask](/guide/ask) page.
+
+## Asking
+
+The Ask field is docked at the bottom of the Dashboard. **Enter** sends; **Shift+Enter** starts a new
+line. Sending opens [Ask](/guide/ask#once-youve-asked) (`/ask`, also in the Dashboard's chevron
+menu) with your question already running, so the conversation gets the whole page.
 
 ## On a phone
 
-The strip and Needs you stay on screen. Missions, Quota and Recent work sit behind **More ▾**, so the
-page is one column you can act from with a thumb.
+The Dashboard is one column: the strip first, then Needs you and the other tiles, with the Ask field
+docked at the bottom.
 
 ## What it does not do
 
