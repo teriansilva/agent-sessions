@@ -250,6 +250,8 @@ class Usage:
     source: str
     kind: str | None
     probe_token: str | None
+    #: `usage.access` (#1167): the check that observes whether the vendor refuses this account.
+    access: str | None = None
 
 
 @dataclass(frozen=True)
@@ -610,6 +612,7 @@ def parse(doc: Any, *, source: str = "", digest: str | None = None) -> Manifest:
         src = r.str("source", one_of=kinds.USAGE_SOURCES)
         ukind = r.str("kind", None, one_of=kinds.USAGE_KINDS)
         token = r.str("probe_token", None, one_of=kinds.USAGE_PROBE_TOKENS)
+        access = r.str("access", None, one_of=kinds.USAGE_ACCESS_KINDS)
         r.done()
         if src in ("plan", "tokens") and ukind is None:
             raise ManifestError("usage.kind", f"is required for source {src!r}")
@@ -619,7 +622,7 @@ def parse(doc: Any, *, source: str = "", digest: str | None = None) -> Manifest:
             raise ManifestError(
                 "usage.probe_token", "is required for a cli-probe kind and forbidden otherwise"
             )
-        usage = Usage(src, ukind, token)
+        usage = Usage(src, ukind, token, access)
 
     r = top.table("terminal", required=False)
     terminal = Terminal("none", "bytes", "none", False)

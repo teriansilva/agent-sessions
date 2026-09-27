@@ -205,7 +205,10 @@ export interface TemplateDraft {
   name: string;
   description: string;
   body: string;
-  fields: Pick<TemplateField, "name" | "label" | "default" | "source" | "kind">[];
+  fields: Pick<
+    TemplateField,
+    "name" | "label" | "default" | "source" | "kind"
+  >[];
 }
 
 export interface TemplateSuggestionsResult {
@@ -710,7 +713,8 @@ export interface ScreenMenu {
 }
 
 /** What kind of stop a NEEDS YOU row is at — read off the SCREEN, never from a model (#1086). */
-export type NeedsYouKind = "choice" | "approval" | "question" | "needs_inspection";
+export type NeedsYouKind =
+  "choice" | "approval" | "question" | "needs_inspection";
 
 /** The one decision a NEEDS YOU row can settle: the operator projection of a ledger action,
  *  whitelisted server-side. `menu` is the menu an escalation RECORDED (what `/choose` checks). */
@@ -867,7 +871,8 @@ export interface DashboardLiveRow {
   state_line: string;
 }
 
-export type DashboardBand = "needs_you" | "in_flight" | "recently_active" | "idle";
+export type DashboardBand =
+  "needs_you" | "in_flight" | "recently_active" | "idle";
 
 export interface DashboardRecentRow {
   id: string;
@@ -1267,6 +1272,18 @@ export interface AgentUsageRow {
   manual_used: number;
   /** The one number a threshold is tested against, or null when there isn't one. */
   used_pct: number | null;
+  /** Whether the vendor refuses this account (#1167) — the agent's own answer. `null` when it has
+   *  no access check or has never answered one. */
+  access?: AgentAccess | null;
+}
+
+export interface AgentAccess {
+  state: "denied" | "ok";
+  /** The agent's own refusal text (denied only). */
+  message: string | null;
+  /** When the agent said it. */
+  observed_at: number | null;
+  checked_at: number | null;
 }
 
 export interface AgentBudgets {
@@ -1515,7 +1532,12 @@ export interface FileWriteResult {
 /** The body of a 409 from POST /api/files/write (#950), carried as `ApiError.record`. */
 export interface FileWriteRefusal {
   detail: string;
-  reason?: "changed" | "open_elsewhere" | "opened_during_save" | "too_large" | "not_editable";
+  reason?:
+    | "changed"
+    | "open_elsewhere"
+    | "opened_during_save"
+    | "too_large"
+    | "not_editable";
   /** The version now on disk, when the refusal is `changed`. */
   version?: string;
   /** Best-effort name of the process holding the file open. Often absent; never required. */
@@ -2109,7 +2131,8 @@ export interface MissionSession {
 /** What one held session is doing right now (#1064), from `GET /api/missions/{id}/now`. Derived
  *  facts only — the server never sends screen text on this route. `unobserved` is NOT quiet: it
  *  means this process has seen no output for the session, so it cannot say. */
-export type MissionNowStatus = "producing" | "at_prompt" | "quiet" | "unobserved";
+export type MissionNowStatus =
+  "producing" | "at_prompt" | "quiet" | "unobserved";
 
 export interface MissionNowSession {
   session_key: string;

@@ -39,6 +39,7 @@ kind = "kimi-wire"
 
 [usage]
 source = "manual"
+access = "kimi-wire-auth-error"
 
 [terminal]
 repaint = "wipe"

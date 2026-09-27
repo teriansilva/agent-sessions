@@ -194,6 +194,7 @@ def test_native_ids_are_capped_and_never_look_like_options():
         lambda d: d["launch"].__setitem__("resume", {"kind": "subcommand", "subcommand": "exec"}),
         lambda d: d["binary"].update(version_flag="--eval"),
         lambda d: d["usage"].update(source="plan", kind="curl-probe"),
+        lambda d: d["usage"].update(access="curl-probe"),
         lambda d: d.update(verify=["binary", "run-this"]),
         lambda d: d.update(signin={"kind": "cli-subcommand", "subcommand": "rm"}),
         lambda d: d["display"].update(accent="#ff0000"),

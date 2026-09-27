@@ -624,28 +624,34 @@ function QuotaRow({ row }: { row: AgentUsageRow }) {
   const measured = row.source !== "none";
   const leftPct = w ? Math.max(0, 100 - w.used_pct) : null;
   const usedPct = row.used_pct;
+  // The vendor refuses this account outright (#1167): the agent's own answer, never a guess — so
+  // it outranks "not measured" and any stale figures.
+  const denied = row.access?.state === "denied" ? row.access : null;
   // Only a PLAN window is the agent's own percentage. A token count against the operator's limit and
   // the operator's own counter are said as counts (mockup v2), never dressed up as "% left".
-  const headline =
-    row.source === "none"
+  const headline = denied
+    ? "no access"
+    : row.source === "none"
       ? "not measured"
       : w
         ? `${Math.round(leftPct!)}% left · ${w.label}`
         : row.limit_tokens
           ? `${shortTokens(billable(row))} of ${shortTokens(row.limit_tokens)}`
           : "no limit set";
-  const fill = w
-    ? leftPct!
-    : usedPct !== null && Number.isFinite(usedPct)
-      ? 100 - usedPct
-      : null;
+  const fill = denied
+    ? null
+    : w
+      ? leftPct!
+      : usedPct !== null && Number.isFinite(usedPct)
+        ? 100 - usedPct
+        : null;
   const tone = fill === null ? "" : fill <= 0 ? d.down : fill < 25 ? d.deg : "";
-  const stale = stalenessNote(row);
+  const stale = denied ? null : stalenessNote(row);
   return (
     <div className={d.q} data-testid="quota-row" data-engine={row.engine}>
       <div className={d.qTop}>
         <span>{row.engine}</span>
-        <span>{headline}</span>
+        <span className={denied ? d.denied : undefined}>{headline}</span>
       </div>
       <div
         className={`${d.bar} ${measured && fill !== null ? "" : d.barNone}`}
@@ -658,10 +664,16 @@ function QuotaRow({ row }: { row: AgentUsageRow }) {
           />
         ) : null}
       </div>
-      <div className={`${d.qSub} ${stale ? d.warnText : ""}`}>
-        {row.source === "none"
-          ? "no usage source — set a limit in Settings → Agents & usage"
-          : usageCaption(row)}
+      <div
+        className={`${d.qSub} ${stale ? d.warnText : ""} ${denied ? d.qSubMsg : ""}`}
+      >
+        {denied
+          ? `refused: “${denied.message ?? "no access"}”${
+              denied.observed_at ? ` · ${relTime(denied.observed_at)}` : ""
+            }`
+          : row.source === "none"
+            ? "no usage source — set a limit in Settings → Agents & usage"
+            : usageCaption(row)}
         {stale ? ` · ${row.error ? "" : "stale — taken "}${stale}` : ""}
       </div>
     </div>

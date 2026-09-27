@@ -859,6 +859,251 @@ def _int(v: object) -> int:
     return v if isinstance(v, int) and 0 <= v <= 2**53 else 0
 
 
+# --- account access (#1167) ---------------------------------------------------------------------
+#
+# Separate from the quota figures: whether the vendor refuses this ACCOUNT at all. Only an explicit,
+# recognised refusal is "denied"; everything indeterminate is "unknown" and changes nothing, so a
+# network blip can never read as "no access".
+
+ACCESS_DENIED = "denied"
+ACCESS_OK = "ok"
+
+
+@dataclass
+class Access:
+    """One access observation. ``state`` None = unknown (the check could not tell)."""
+
+    state: str | None
+    message: str | None = None
+    #: When the AGENT said it: the probe's time, or the event time kimi recorded.
+    observed_at: float | None = None
+    error: str | None = None
+
+
+#: gemini's `authenticate` refusals that mean THE ACCOUNT is refused — a closed set. Any other
+#: error text (network, internal, protocol) is unknown, never denied.
+_GEMINI_REFUSALS = re.compile(
+    r"no longer supported|ineligible|not eligible|does not have access", re.IGNORECASE
+)
+_GEMINI_AUTH_ID = 2
+_GEMINI_ACP_REQUEST = (
+    "\n".join(
+        json.dumps(msg, separators=(",", ":"))
+        for msg in (
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"protocolVersion": 1, "clientCapabilities": {}},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": _GEMINI_AUTH_ID,
+                "method": "authenticate",
+                "params": {"methodId": "oauth-personal"},
+            },
+        )
+    )
+    + "\n"
+).encode()
+
+
+#: The stored refusal is an EXCERPT: another program's text, bounded, and marked when cut.
+ACCESS_MESSAGE_MAX = 200
+
+
+def _excerpt(msg: str) -> str:
+    msg = " ".join(msg.split())
+    return msg if len(msg) <= ACCESS_MESSAGE_MAX else msg[: ACCESS_MESSAGE_MAX - 1] + "…"
+
+
+def _jsonrpc_reply(text: str, want_id: int) -> dict | None:
+    for line in text.splitlines():
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and obj.get("id") == want_id and "method" not in obj:
+            return obj
+    return None
+
+
+def _engine_for_access(kind: str) -> str:
+    """The engine whose manifest declares this access check — never a literal id here."""
+    from . import engines
+
+    ids = engines.ids_where(lambda m: m.usage.access == kind)
+    return ids[0] if ids else kind
+
+
+def parse_gemini_acp_auth(text: str, now: float | None = None) -> Access:
+    """Classify gemini's ACP ``initialize`` + ``authenticate`` replies: denied / ok / unknown."""
+    now = time.time() if now is None else now
+    init = _jsonrpc_reply(text, 1)
+    if init is None or "error" in init:
+        return Access(None, error="gemini ACP initialize failed")
+    auth = _jsonrpc_reply(text, _GEMINI_AUTH_ID)
+    if auth is None:
+        return Access(None, error="no authenticate reply")
+    if "result" in auth and "error" not in auth:
+        return Access(ACCESS_OK, observed_at=now)
+    err = auth.get("error")
+    msg = err.get("message") if isinstance(err, dict) else None
+    if isinstance(msg, str) and _GEMINI_REFUSALS.search(msg):
+        return Access(ACCESS_DENIED, message=_excerpt(msg), observed_at=now)
+    return Access(None, error=(msg if isinstance(msg, str) else "authenticate failed")[:200])
+
+
+def check_gemini_access(
+    binary: str | None = None, *, engine: str | None = None, now: float | None = None, **_kw
+) -> Access:
+    """Ask gemini whether it will log this account in — `initialize` + `authenticate` over ACP,
+    and NOTHING else: no `session/new`, no prompt. A refused account answers the authenticate."""
+    engine = engine or _engine_for_access("gemini-acp-auth")
+    exe = binary or _probe_binary(engine)
+    if not exe:
+        return Access(None, error=f"{_binary_name(engine)} not found")
+    code, out = _run(
+        [exe, "--acp"],
+        send=_GEMINI_ACP_REQUEST,
+        # BOTH replies: gemini can answer `authenticate` before `initialize` (measured).
+        done=lambda b: all(
+            _jsonrpc_reply(b.decode("utf-8", "replace"), i) is not None
+            for i in (1, _GEMINI_AUTH_ID)
+        ),
+    )
+    got = parse_gemini_acp_auth(out, now)
+    if got.state is None and code not in (0, None) and got.error == "gemini ACP initialize failed":
+        got.error = _first_line(out) or f"{_binary_name(engine)} --acp exited {code}"
+    return got
+
+
+#: How much of kimi's record is read to find its latest turn: the newest N wire files, each tail.
+KIMI_WIRE_FILES = 5
+KIMI_TAIL_BYTES = 512 * 1024
+
+
+def _tail_lines(path: Path, cap: int) -> list[bytes]:
+    """At most ``cap`` bytes from the end of ``path``, as lines.
+
+    The bound is on the READ, not only on the seek (Hermes on #1173): kimi appends to these files
+    while we look, so the size is taken from the open descriptor and the read is ``read(cap)`` —
+    anything appended after that is simply not ours to read this time. A partial last line is
+    left to the JSON parse to reject.
+    """
+    try:
+        with path.open("rb") as fh:
+            size = os.fstat(fh.fileno()).st_size
+            start = max(0, size - cap)
+            fh.seek(start)
+            blob = fh.read(cap)
+    except OSError:
+        return []
+    if start > 0:
+        blob = blob.partition(b"\n")[2]  # the first line after the seek is partial
+    return blob.splitlines()
+
+
+def check_kimi_access(
+    home: Path | None = None, *, engine: str | None = None, now: float | None = None, **_kw
+) -> Access:
+    """Read the refusal kimi RECORDS on a turn — no subprocess, no vendor traffic.
+
+    The latest ``turn.ended`` (by its own event time, across the newest wire files) decides:
+    ``provider.auth_error`` is denied, a ``completed`` turn is ok, anything else is unknown — a
+    network or tool failure after a refusal is not a recovery.
+    """
+    from .engines import base
+
+    try:
+        files = sorted(
+            base._kimi_dir(home or Path.home()).glob("sessions/*/*/agents/*/wire.jsonl"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )[:KIMI_WIRE_FILES]
+    except OSError as exc:
+        return Access(None, error=str(exc)[:200])
+    latest: tuple[float, dict] | None = None
+    for path in files:
+        for line in _tail_lines(path, KIMI_TAIL_BYTES):
+            if b'"turn.ended"' not in line:
+                continue
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(obj, dict) or obj.get("type") != "turn.ended":
+                continue
+            raw = obj.get("time")
+            # kimi records MILLISECONDS; scaled before the range check, which expects seconds.
+            t = _epoch(raw / 1000.0 if isinstance(raw, int | float) and raw > 1e11 else raw)
+            if t is None:
+                continue
+            if latest is None or t > latest[0]:
+                latest = (t, obj)
+    if latest is None:
+        return Access(None, error="no finished kimi turn on record")
+    t, ev = latest
+    err = ev.get("error")
+    # Only a turn that COMPLETED proves access; a cancelled one proves nothing either way.
+    if not err and ev.get("reason") == "completed":
+        return Access(ACCESS_OK, observed_at=t)
+    if isinstance(err, dict) and err.get("code") == "provider.auth_error":
+        msg = err.get("message")
+        return Access(
+            ACCESS_DENIED,
+            message=_excerpt(msg if isinstance(msg, str) else "refused"),
+            observed_at=t,
+        )
+    return Access(None, error="kimi's latest turn did not complete for another reason")
+
+
+#: `usage.access` → the built-in check that implements it.
+ACCESS_KINDS: dict[str, object] = {
+    "gemini-acp-auth": check_gemini_access,
+    "kimi-wire-auth-error": check_kimi_access,
+}
+
+
+def _build_access_checks() -> dict[str, object]:
+    from . import engines
+
+    out: dict[str, object] = {}
+    for eid in engines.ids_where(lambda m: m.usage.access in ACCESS_KINDS):
+        fn = ACCESS_KINDS[engines.manifest_of(eid).usage.access]
+        out[eid] = _reporter_for(eid, fn)
+    return out
+
+
+def merge_access(old: object, new: Access, now: float) -> dict:
+    """The persisted access block after one check. Unknown keeps what was known."""
+    prev = old if isinstance(old, dict) else {}
+    if new.state is None:
+        kept = dict(prev)
+        kept["checked_at"] = now
+        kept["error"] = new.error
+        return kept
+    return {
+        "state": new.state,
+        "message": new.message if new.state == ACCESS_DENIED else None,
+        "observed_at": new.observed_at,
+        "checked_at": now,
+        "error": None,
+    }
+
+
+def clean_access(v: object) -> dict | None:
+    """The served access block — every field named and normalized, like the rest of the row."""
+    if not isinstance(v, dict) or v.get("state") not in (ACCESS_DENIED, ACCESS_OK):
+        return None
+    return {
+        "state": v["state"],
+        "message": _excerpt(v["message"]) if isinstance(v.get("message"), str) else None,
+        "observed_at": _epoch(v.get("observed_at")),
+        "checked_at": _epoch(v.get("checked_at")),
+    }
+
+
 # --- the collection ------------------------------------------------------------------------------
 
 #: `usage.kind` → the built-in reporter that implements it. Adding a kind is reviewed code; which
@@ -904,6 +1149,9 @@ def _manual_only() -> tuple[str, ...]:
 #: kind. An engine absent from here reports nothing and falls back to the operator's manual counter.
 REPORTERS: dict[str, object] = _build_reporters()
 
+#: engine → its account-access check (#1167), from each manifest's `usage.access`.
+ACCESS_CHECKS: dict[str, object] = _build_access_checks()
+
 #: Engines that run an agent but answer nothing — a manual counter is the only option
 #: (`usage.source = "manual"`). An agentless engine (`shell`) is in no list here: no usage, no row.
 MANUAL_ONLY: tuple[str, ...] = _manual_only()
@@ -933,6 +1181,20 @@ def refresh(
             log.exception("usage probe failed for %s", engine)
             report = Report(engine=engine, source=SOURCE_PLAN, at=time.time(), error=str(exc))
         fresh[engine] = report.as_dict()
+
+    # Account access (#1167), separately from the figures — an access-only engine (no quota
+    # reporter) is asked too, and whatever quota collection did has no bearing on it.
+    wanted_access = engines if engines is not None else list(ACCESS_CHECKS)
+    seen_access: dict[str, Access] = {}
+    for engine in wanted_access:
+        check = ACCESS_CHECKS.get(engine)
+        if check is None:
+            continue
+        try:
+            seen_access[engine] = check()  # type: ignore[operator]
+        except Exception as exc:  # noqa: BLE001 — a failed check is unknown, never denied
+            log.exception("access check failed for %s", engine)
+            seen_access[engine] = Access(None, error=str(exc)[:200])
 
     # **Read the policy AFTER the probes, not before.** A sweep spends up to 90 seconds per
     # engine inside a vendor CLI, and the operator can change the threshold or switch alerts off
@@ -985,10 +1247,15 @@ def refresh(
                 reports[engine] = new
         doc["reports"] = reports
         now = time.time()
+        access = doc.get("access")
+        access = access if isinstance(access, dict) else {}
+        for engine, seen in seen_access.items():
+            access[engine] = merge_access(access.get(engine), seen, now)
+        doc["access"] = access
         doc["updated_at"] = now
         # Decided against the reports THIS call is writing, under the same lock, so two sweeps
         # racing can't both see "not yet announced" and each announce the same crossing.
-        rows = build_rows(reports, cfg, now)
+        rows = build_rows(reports, cfg, now, access)
         alerts, still = evaluate_alerts(rows, cfg, doc.get("alerted"))
         # **Persist the re-arm bookkeeping, NOT the delivery.** Writing a crossing here would
         # consume it before anything reached the operator, so a single transient bell-store
@@ -1005,6 +1272,7 @@ def refresh(
     return {
         "asked": list(fresh),
         "errors": {e: r["error"] for e, r in fresh.items() if r["error"]},
+        "access": {e: a.state for e, a in seen_access.items()},
         "alerts": alerts if cfg.get("notify") else [],
     }
 
@@ -1177,7 +1445,7 @@ def live_windows(report: dict, now: float) -> list[dict]:
     return out
 
 
-def build_rows(reports: dict, budgets: dict, now: float) -> list[dict]:
+def build_rows(reports: dict, budgets: dict, now: float, access: dict | None = None) -> list[dict]:
     """One row per engine from an ALREADY-READ reports dict. Pure: no store, no clock.
 
     `refresh` calls this with the document it is holding the lock over, so the alert decision is
@@ -1193,6 +1461,7 @@ def build_rows(reports: dict, budgets: dict, now: float) -> list[dict]:
     """
     cfg_all = budgets.get("engines") or {}
     stored = reports if isinstance(reports, dict) else {}
+    seen = access if isinstance(access, dict) else {}
     rows = []
     for engine in ENGINES:
         cfg = dict(cfg_all.get(engine) or {})
@@ -1225,6 +1494,7 @@ def build_rows(reports: dict, budgets: dict, now: float) -> list[dict]:
             "stale": bool(at) and (now - at) > STALE_AFTER_S,
             "limit_tokens": cfg["limit_tokens"],
             "manual_used": cfg["manual_used"],
+            "access": clean_access(seen.get(engine)),
         }
         row["used_pct"] = derive_pct(row, cfg)
         rows.append(row)
@@ -1247,7 +1517,13 @@ def snapshot(*, path: Path | None = None, budgets: dict | None = None, now: floa
 
     if budgets is None:
         budgets = prefs.get_agent_budgets()
-    return build_rows(load(path).get("reports") or {}, budgets, time.time() if now is None else now)
+    doc = load(path)
+    return build_rows(
+        doc.get("reports") or {},
+        budgets,
+        time.time() if now is None else now,
+        doc.get("access") or {},
+    )
 
 
 #: The second announcement level. Fixed, not configurable: "you are out" is not a preference.

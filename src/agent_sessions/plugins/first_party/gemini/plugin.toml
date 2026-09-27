@@ -38,6 +38,7 @@ kind = "gemini-chat"
 
 [usage]
 source = "manual"
+access = "gemini-acp-auth"
 
 [display]
 order = 40

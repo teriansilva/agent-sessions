@@ -236,6 +236,15 @@
   font-size: 0.66rem;
   color: var(--text-3);
 }
+/* "no access" (#1167): the vendor refused this account. Status colour carries the meaning; the
+   agent's own refusal is quoted in full underneath and wraps rather than clipping. */
+.qTop span.denied {
+  color: var(--status-down);
+}
+.qSubMsg {
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
 
 /* ---- most recent sessions ---- */
 /* FIXED layout: column widths come from the header, not from the longest title, so arbitrary

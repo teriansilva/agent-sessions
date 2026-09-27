@@ -125,6 +125,9 @@ USAGE_KINDS = frozenset(
         "opencode-store-query",
     }
 )
+#: `usage.access` — how an engine's ACCOUNT ACCESS is observed (#1167), independent of `source`:
+#: whether the vendor refuses this login at all. Each names a built-in check in `agent_usage`.
+USAGE_ACCESS_KINDS = frozenset({"gemini-acp-auth", "kimi-wire-auth-error"})
 #: The only token a `*-cli-probe` may send the vendor CLI (`agent_usage`: "the literal string
 #: `/usage` and nothing else").
 USAGE_PROBE_TOKENS = frozenset({"/usage"})

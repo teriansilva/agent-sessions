@@ -299,6 +299,70 @@ test("quota: 'none' reads NOT MEASURED, never 0 %, and a stale figure says so", 
   await expect(codex).toContainText("not logged in");
 });
 
+for (const theme of ["dark", "light"] as const) {
+  test(`quota: a refused account reads NO ACCESS with the agent's own words, in full — ${theme} (#1167)`, async ({
+    page,
+  }) => {
+    // The longest the API ever sends: a 200-character excerpt, marked as cut.
+    const refusal = (
+      "403 Your current subscription does not have access to Kimi Code right now. Upgrade your plan to keep coding with Kimi Code: https://www.kimi.com/code/#pricing " +
+      "and more words than fit "
+    )
+      .slice(0, 199)
+      .concat("…");
+    await mockAll(page, {
+      usage: {
+        json: {
+          ...USAGE,
+          agents: USAGE.agents.map((a) =>
+            a.engine === "kimi"
+              ? {
+                  ...a,
+                  access: {
+                    state: "denied",
+                    message: refusal,
+                    observed_at: NOW - 3 * 3600,
+                    checked_at: NOW - 60,
+                  },
+                }
+              : a,
+          ),
+        },
+      },
+    });
+    await page.goto("/ask");
+    await page.evaluate((t) => {
+      document.documentElement.dataset.theme = t;
+    }, theme);
+    const kimi = page.locator('[data-testid="quota-row"][data-engine="kimi"]');
+    await expect(kimi).toContainText("no access");
+    await expect(kimi).not.toContainText("not measured");
+    await expect(kimi).toContainText(refusal);
+    // The whole refusal is READABLE: it wraps inside the row, never clipped by it.
+    const row = (await kimi.boundingBox())!;
+    const msg = (await kimi
+      .getByText(refusal, { exact: false })
+      .boundingBox())!;
+    expect(msg.x + msg.width).toBeLessThanOrEqual(row.x + row.width + 1);
+    expect(msg.y + msg.height).toBeLessThanOrEqual(row.y + row.height + 1);
+    const headline = kimi.getByText("no access", { exact: true });
+    const colour = await headline.evaluate((el) => getComputedStyle(el).color);
+    const down = await page.evaluate(() => {
+      const probe = document.createElement("span");
+      probe.style.color = "var(--status-down)";
+      document.body.append(probe);
+      const c = getComputedStyle(probe).color;
+      probe.remove();
+      return c;
+    });
+    expect(colour).toBe(down);
+    // A row with no access verdict is untouched.
+    await expect(
+      page.locator('[data-testid="quota-row"][data-engine="claude"]'),
+    ).not.toContainText("no access");
+  });
+}
+
 test("a failing tile never blanks the page, and says it could not read — never '0'", async ({
   page,
 }) => {
