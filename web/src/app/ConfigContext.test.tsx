@@ -11,7 +11,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
 
-import { api } from "../lib/api";
+import { api, ApiError } from "../lib/api";
 import type { AppConfig } from "../types/api";
 
 import { useConfig, useConfigRefresh } from "./config";
@@ -126,4 +126,95 @@ test("a FAILED newer read does not let an older one roll the config back", async
   await waitFor(() =>
     expect(screen.getByTestId("version")).toHaveTextContent("fresh"),
   );
+});
+
+test("a failed FIRST read is retried until one lands — not final for the page's lifetime", async () => {
+  // The reload after Update now can reach a server that is still restarting (a 502 from the
+  // proxy). That one failure used to leave the config null forever: no operator tile, so no way
+  // into Settings, and no CSRF token.
+  vi.mocked(api.config)
+    .mockRejectedValueOnce(new Error("GET /api/config → 502"))
+    .mockRejectedValueOnce(new Error("GET /api/config → 502"))
+    .mockResolvedValue(cfg("up"));
+
+  render(
+    <ConfigProvider>
+      <Probe />
+    </ConfigProvider>,
+  );
+  expect(screen.getByTestId("version")).toHaveTextContent("none");
+  // 1 s, then 2 s of backoff.
+  await waitFor(
+    () => expect(screen.getByTestId("version")).toHaveTextContent("up"),
+    { timeout: 6_000 },
+  );
+  expect(api.config).toHaveBeenCalledTimes(3);
+}, 10_000);
+
+test("a failed refresh AFTER a successful read is not retried and keeps the config", async () => {
+  vi.mocked(api.config)
+    .mockResolvedValueOnce(cfg("first"))
+    .mockRejectedValue(new Error("offline"));
+
+  render(
+    <ConfigProvider>
+      <Probe />
+    </ConfigProvider>,
+  );
+  await waitFor(() =>
+    expect(screen.getByTestId("version")).toHaveTextContent("first"),
+  );
+  await userEvent.click(screen.getByText("refresh"));
+  await new Promise((r) => setTimeout(r, 1_500));
+  expect(api.config).toHaveBeenCalledTimes(2);
+  expect(screen.getByTestId("version")).toHaveTextContent("first");
+});
+
+test("a first read that rejects AFTER unmount schedules nothing", async () => {
+  // Home Free's teardown unmounts the app and then disposes the tunnel under it, so a pending
+  // first read can reject after cleanup. It must not start a retry loop from a dead provider.
+  let reject: (e: unknown) => void = () => {};
+  vi.mocked(api.config).mockImplementation(
+    () =>
+      new Promise<AppConfig>((_, rej) => {
+        reject = rej;
+      }),
+  );
+  const { unmount } = render(
+    <ConfigProvider>
+      <Probe />
+    </ConfigProvider>,
+  );
+  await waitFor(() => expect(api.config).toHaveBeenCalledTimes(1));
+  unmount();
+  reject(new Error("tunnel closed"));
+  await new Promise((r) => setTimeout(r, 3_100));
+  expect(api.config).toHaveBeenCalledTimes(1);
+}, 10_000);
+
+test("unmount cancels an already scheduled retry", async () => {
+  vi.mocked(api.config).mockRejectedValue(new Error("GET /api/config → 502"));
+  const { unmount } = render(
+    <ConfigProvider>
+      <Probe />
+    </ConfigProvider>,
+  );
+  await waitFor(() => expect(api.config).toHaveBeenCalledTimes(1));
+  // Let the rejection land and the 1 s retry be scheduled, then unmount before it fires.
+  await new Promise((r) => setTimeout(r, 100));
+  unmount();
+  await new Promise((r) => setTimeout(r, 3_100));
+  expect(api.config).toHaveBeenCalledTimes(1);
+}, 10_000);
+
+test("an auth refusal is not retried", async () => {
+  vi.mocked(api.config).mockRejectedValue(new ApiError(403, "forbidden"));
+  render(
+    <ConfigProvider>
+      <Probe />
+    </ConfigProvider>,
+  );
+  await waitFor(() => expect(api.config).toHaveBeenCalledTimes(1));
+  await new Promise((r) => setTimeout(r, 1_500));
+  expect(api.config).toHaveBeenCalledTimes(1);
 });
