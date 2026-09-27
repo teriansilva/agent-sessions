@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { ApiError, api } from "../../lib/api";
+import { blockMarkup } from "../../lib/blockMarkup";
 import type { NeedsYouDetails } from "../../types/api";
 import dlg from "../HudDialog.module.css";
 import { useFocusContainment } from "../pulse/useModalDrawer";
@@ -122,6 +123,11 @@ export function NeedsYouDetailsDialog({
     action && !action.can_approve && action.menu && action.menu.options.length
       ? action.menu
       : null;
+  // The screen is shown only where it is evidence the last words don't carry (#1169): a numbered
+  // menu or permission prompt (what is being approved lives only on screen), or a session with no
+  // last words yet. Otherwise it repeats the final message plus the agent's own input box and
+  // status chrome — for every engine, so this is decided on the payload, never the engine.
+  const showScreen = !d?.last_words || Boolean(d?.menu) || isChoose || Boolean(action?.menu);
   const titleId = "needs-you-details-title";
 
   return createPortal(
@@ -131,7 +137,7 @@ export function NeedsYouDetailsDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className={dlg.dialog}
+        className={`${dlg.dialog} ${s.details}`}
         onMouseDown={(e) => e.stopPropagation()}
         data-testid="needs-you-dialog"
       >
@@ -167,8 +173,8 @@ export function NeedsYouDetailsDialog({
             {d.last_words ? (
               <>
                 <div className={s.lab}>Session’s last words</div>
-                <div className={s.quote} data-testid="needs-you-last-words">
-                  {d.last_words}
+                <div className={`${s.quote} ${s.md}`} data-testid="needs-you-last-words">
+                  {blockMarkup(d.last_words)}
                 </div>
               </>
             ) : null}
@@ -184,12 +190,18 @@ export function NeedsYouDetailsDialog({
                 ) : null}
               </p>
             ) : null}
-            <div className={s.lab}>
-              {outdated ? "On screen before (out of date)" : "On screen now · read without attaching"}
-            </div>
-            <pre className={s.screen} data-testid="needs-you-screen">
-              {d.screen || "(nothing on screen)"}
-            </pre>
+            {showScreen ? (
+              <>
+                <div className={s.lab}>
+                  {outdated
+                    ? "On screen before (out of date)"
+                    : "On screen now · read without attaching"}
+                </div>
+                <pre className={s.screen} data-testid="needs-you-screen">
+                  {d.screen || "(nothing on screen)"}
+                </pre>
+              </>
+            ) : null}
 
             {isChoose ? (
               <>

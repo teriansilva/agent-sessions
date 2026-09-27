@@ -295,6 +295,23 @@
 }
 
 /* ---- the details dialog ---- */
+/* One scroll per block, never the whole panel (#1170): the panel is a column bounded by the shared
+   dialog's max-height, the evidence blocks (last words, screen) are the only items that shrink —
+   each scrolling inside itself — and everything else keeps its size, so the footer stays in view.
+   The shared `overflow-y: auto` remains as the fallback for a viewport too short for the fixed
+   parts alone. */
+.details {
+  display: flex;
+  flex-direction: column;
+}
+.details > * {
+  flex: none;
+}
+.details > .quote,
+.details > .screen {
+  flex: 0 1 auto;
+  min-height: 48px;
+}
 .lab {
   margin: 14px 0 6px;
   font-family: var(--font-mono);
@@ -313,8 +330,35 @@
   background: var(--glass-strong);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  max-height: 180px;
+  max-height: min(320px, 40vh);
   overflow: auto;
+}
+/* The last words' markdown (#1168): quiet structure, same type size as the quote. */
+.md p,
+.md ul,
+.md ol,
+.md pre {
+  margin: 0 0 6px;
+}
+.md > :last-child {
+  margin-bottom: 0;
+}
+.md ul,
+.md ol {
+  padding-left: 18px;
+}
+.md strong {
+  color: var(--text-1);
+}
+.md code {
+  font-family: var(--font-mono);
+  font-size: 0.8em;
+}
+.md pre {
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-0);
+  white-space: pre-wrap;
 }
 .screen {
   margin: 0;

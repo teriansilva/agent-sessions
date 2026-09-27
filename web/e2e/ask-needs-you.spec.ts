@@ -114,7 +114,10 @@ async function mockShell(page: Page) {
 }
 
 /** NEEDS YOU + its details/actions. Returns the requests the page made, for assertions. */
-async function mockNeedsYou(page: Page, opts: { list?: (url: URL) => unknown | Promise<unknown> } = {}) {
+async function mockNeedsYou(
+  page: Page,
+  opts: { list?: (url: URL) => unknown | Promise<unknown>; lastWords?: string } = {},
+) {
   const seen = { lists: [] as URL[], approves: [] as Request[], dismisses: [] as Request[] };
   await page.route(/\/api\/pulse\/needs-you(\?.*)?$/, async (r) => {
     const url = new URL(r.request().url());
@@ -151,7 +154,7 @@ async function mockNeedsYou(page: Page, opts: { list?: (url: URL) => unknown | P
         engine: found.engine,
         project: found.project,
         reason: found.reason,
-        last_words: "Which option do you want?",
+        last_words: opts.lastWords ?? "Which option do you want?",
         screen: "? How should I proceed?\n  1. Keep the retry\n  2. Delete it",
         prompt_class: "choice",
         menu: found.menu,
@@ -232,7 +235,8 @@ test("details: the EDITED text is what gets sent, and opening them opens no term
   await needs(page).getByTestId("needs-you-row").nth(1).getByTestId("needs-you-details").click();
   const dialog = page.getByTestId("needs-you-dialog");
   await expect(dialog.getByTestId("needs-you-last-words")).toHaveText("Which option do you want?");
-  await expect(dialog.getByTestId("needs-you-screen")).toContainText("Delete it");
+  // A text decision: the screen would only repeat the last words + the agent's input box (#1169).
+  await expect(dialog.getByTestId("needs-you-screen")).toHaveCount(0);
   const box = dialog.getByTestId("needs-you-text");
   await expect(box).toHaveValue("Use the second option.");
   await box.fill("Use option two, and add a unit test.");
@@ -545,7 +549,49 @@ test("after a conflict, a FAILED reload marks the old screen out of date and all
   fail = false;
   await outdated.getByRole("button", { name: "Retry" }).click();
   await expect(dialog.getByTestId("needs-you-outdated")).toHaveCount(0);
-  await expect(dialog.getByText("On screen now", { exact: false })).toBeVisible();
+  await expect(dialog.getByText("out of date", { exact: false })).toHaveCount(0);
   await expect(dialog.getByTestId("needs-you-dialog-approve")).toBeVisible();
   await expect(dialog.getByTestId("needs-you-dismiss")).toBeEnabled();
+});
+
+test("details render the last words' markdown, and keep the screen only for a menu (#1168, #1169)", async ({ page }) => {
+  await mockShell(page);
+  await mockNeedsYou(page, {
+    lastWords: "Done.\n\n- **Checkouts:** under `~/agentwork/`.\n- **Next:** P5 <b>waits</b>.",
+  });
+  await page.goto("/ask");
+  await needs(page).getByTestId("needs-you-row").nth(1).getByTestId("needs-you-details").click();
+  const dialog = page.getByTestId("needs-you-dialog");
+  const words = dialog.getByTestId("needs-you-last-words");
+  await expect(words.locator("li")).toHaveCount(2);
+  await expect(words.locator("strong").first()).toHaveText("Checkouts:");
+  await expect(words.locator("code")).toHaveText("~/agentwork/");
+  await expect(words).not.toContainText("**");
+  await expect(words.locator("b")).toHaveCount(0); // agent HTML stays literal
+  await expect(words).toContainText("<b>waits</b>");
+  await expect(dialog.getByTestId("needs-you-screen")).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  // A menu decision: what is being approved lives on screen, so it stays.
+  await needs(page).getByTestId("needs-you-row").first().getByTestId("needs-you-details").click();
+  await expect(dialog.getByTestId("needs-you-screen")).toContainText("Delete it");
+});
+
+test("the details dialog never scrolls as a whole: long last words scroll inside their block (#1170)", async ({ page }) => {
+  await mockShell(page);
+  const long = Array.from({ length: 80 }, (_, i) => `- **Step ${i}:** did a thing in \`file${i}.ts\`.`).join("\n");
+  await mockNeedsYou(page, { lastWords: long });
+  // A laptop-height window, like the report's: the menu row carries both evidence blocks.
+  await page.setViewportSize({ width: page.viewportSize()!.width, height: 600 });
+  for (const row of [0, 1]) {
+    await page.goto("/ask");
+    await needs(page).getByTestId("needs-you-row").nth(row).getByTestId("needs-you-details").click();
+    const dialog = page.getByTestId("needs-you-dialog");
+    await expect(dialog.getByTestId("needs-you-last-words")).toContainText("Step 79");
+    const [scroll, client] = await dialog.evaluate((el) => [el.scrollHeight, el.clientHeight]);
+    expect(scroll).toBeLessThanOrEqual(client);
+    await expect(dialog.getByTestId("needs-you-dialog-approve")).toBeInViewport({ ratio: 1 });
+    const words = dialog.getByTestId("needs-you-last-words");
+    const inner = await words.evaluate((el) => el.scrollHeight > el.clientHeight);
+    expect(inner).toBe(true);
+  }
 });
