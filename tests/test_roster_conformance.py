@@ -540,7 +540,10 @@ def _rollout(root: Path, pct: float, *, native: str = SID) -> Path:
     return p
 
 
-def test_a_shared_USAGE_kind_reads_each_engines_OWN_store(two_stores):
+def test_a_shared_USAGE_kind_reads_each_engines_OWN_store(two_stores, monkeypatch):
+    # codex ASKS first (`codex app-server`); unanswered here, so it falls back to its own
+    # rollout — the store this test is about. Never the host's real codex.
+    monkeypatch.setattr(agent_usage, "_run", lambda argv, **kw: (127, "not found"))
     _rollout(two_stores / ".codex" / "sessions", 17.0)
     _rollout(two_stores / ".zetab", 83.0)
     mine = agent_usage.REPORTERS[ZETAB](home=two_stores, now=NOW)

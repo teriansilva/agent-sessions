@@ -1518,3 +1518,139 @@ def test_a_plan_window_announces_at_both_levels():
     # And neither repeats.
     fresh, state = au.evaluate_alerts(rows(100.0), budgets, state)
     assert fresh == []
+
+
+# --- codex, asked (app-server) ------------------------------------------------------------------
+
+
+def test_codex_app_server_reply_is_parsed():
+    """Recorded from codex-cli 0.155.1 on the host where the rollout said "every window has already
+    reset" and the account actually stood at 25 % of a live week."""
+    rep = au.parse_codex_app_server(
+        _fixture("codex-app-server-ratelimits.jsonl"), now=1790503410, engine="codex"
+    )
+    assert rep.error is None
+    assert rep.source == au.SOURCE_PLAN
+    assert rep.plan == "pro"
+    assert [(w.label, w.used_pct, w.resets_at) for w in rep.windows] == [
+        ("week", 25.0, 1791046988.0)
+    ]
+    # Asked now, so measured now — not when codex last ran.
+    assert rep.at == 1790503410
+
+
+def test_codex_app_server_error_reply_is_reported_not_guessed():
+    text = '{"id":2,"error":{"code":-32600,"message":"not logged in"}}\n'
+    rep = au.parse_codex_app_server(text, engine="codex")
+    assert rep.windows == []
+    assert rep.error == "not logged in"
+
+
+def test_the_codex_probe_sends_only_the_handshake_and_one_read(monkeypatch):
+    """Literal argv, and what goes to codex is the JSON-RPC handshake plus
+    `account/rateLimits/read` — no thread, no prompt, no path."""
+    seen = {}
+
+    def fake_run(argv, **kw):
+        seen.update(argv=argv, **kw)
+        return 0, _fixture("codex-app-server-ratelimits.jsonl")
+
+    monkeypatch.setattr(au, "_run", fake_run)
+    rep = au.probe_codex(binary="/opt/codex", engine="codex")
+    assert seen["argv"] == ["/opt/codex", "app-server"]
+    methods = [json.loads(line)["method"] for line in seen["send"].decode().splitlines()]
+    assert methods == ["initialize", "initialized", "account/rateLimits/read"]
+    assert seen["done"](_fixture("codex-app-server-ratelimits.jsonl").encode())
+    assert not seen["done"](b'{"id":1,"result":{}}\n')
+    assert [w.used_pct for w in rep.windows] == [25.0]
+
+
+def test_a_codex_probe_that_cannot_answer_falls_back_to_the_rollout(tmp_path, monkeypatch):
+    """Offline or logged out: the rollout's own record is still better than nothing."""
+    payload = json.loads("{" + _fixture("codex-ratelimits.json").strip() + "}")
+    _rollout(tmp_path, {"type": "event_msg", "payload": {"type": "token_count", **payload}})
+    monkeypatch.setattr(au, "_run", lambda argv, **kw: (1, "error: network is unreachable\n"))
+    rep = au.probe_codex(binary="/opt/codex", engine="codex", home=tmp_path, now=1788137880 - 60)
+    assert rep.windows  # the rollout's figures
+    # …and it SAYS the live read failed, so `refresh` can weigh it against a newer cached read.
+    assert "network is unreachable" in rep.error
+
+
+def _codex_refresh(tmp_path, monkeypatch, rollout_ts: str, probe_ok: bool):
+    """Drive the REAL `probe_codex` → `refresh` path; only the CLI and the store are stubbed."""
+    from agent_sessions.engines import base
+
+    payload = json.loads("{" + _fixture("codex-ratelimits.json").strip() + "}")
+    payload["rate_limits"]["primary"]["used_percent"] = 5.0
+    payload["rate_limits"]["primary"]["resets_at"] = 1791046988
+    _rollout(
+        tmp_path,
+        {
+            "timestamp": rollout_ts,
+            "type": "event_msg",
+            "payload": {"type": "token_count", **payload},
+        },
+    )
+    live = _fixture("codex-app-server-ratelimits.jsonl")  # 25 %, week, resets 1791046988
+    monkeypatch.setattr(
+        au,
+        "_run",
+        lambda argv, **kw: (0, live) if probe_ok else (1, "error: network is unreachable\n"),
+    )
+    monkeypatch.setattr(base.Path, "home", lambda: tmp_path)
+    monkeypatch.setitem(
+        au.REPORTERS, "codex", lambda: au.probe_codex(binary="/opt/codex", engine="codex")
+    )
+    return au.refresh(path=tmp_path / "usage.json", engines=["codex"], budgets=BUDGETS)
+
+
+def _codex_row(tmp_path):
+    rows = au.build_rows(au.load(tmp_path / "usage.json")["reports"], BUDGETS, time.time())
+    return next(r for r in rows if r["engine"] == "codex")
+
+
+def test_a_failed_live_read_keeps_the_NEWER_cached_figures_not_an_older_rollout(
+    tmp_path, monkeypatch
+):
+    """Hermes on #1166: a live 25 % followed by a transient failure must not be replaced by the
+    rollout's older 5 % with the error cleared."""
+    _codex_refresh(tmp_path, monkeypatch, "2026-09-18T10:00:00Z", probe_ok=True)
+    assert [w["used_pct"] for w in _codex_row(tmp_path)["windows"]] == [25.0]
+    _codex_refresh(tmp_path, monkeypatch, "2026-09-18T10:00:00Z", probe_ok=False)
+    row = _codex_row(tmp_path)
+    assert [w["used_pct"] for w in row["windows"]] == [25.0]
+    assert "network is unreachable" in row["error"]
+
+
+def test_a_failed_live_read_with_no_cache_still_shows_the_rollout(tmp_path, monkeypatch):
+    """No better observation cached: the rollout's figures are shown, with the probe's error."""
+    _codex_refresh(tmp_path, monkeypatch, "2026-09-26T10:00:00Z", probe_ok=False)
+    row = _codex_row(tmp_path)
+    assert [w["used_pct"] for w in row["windows"]] == [5.0]
+    assert "network is unreachable" in row["error"]
+
+
+def test_a_codex_probe_with_nothing_to_fall_back_on_says_why(tmp_path, monkeypatch):
+    monkeypatch.setattr(au, "_run", lambda argv, **kw: (1, "error: network is unreachable\n"))
+    rep = au.probe_codex(binary="/opt/codex", engine="codex", home=tmp_path)
+    assert rep.windows == []
+    assert "network is unreachable" in rep.error
+
+
+def test_run_keeps_stdin_open_until_the_answer_then_ends_the_server():
+    """codex app-server exits on stdin EOF BEFORE answering (measured), so `send` must leave the
+    pipe open; and a server never exits by itself, so `done` is what ends the probe — well inside
+    the timeout, with the group reaped."""
+    script = (
+        "import sys, time\n"
+        "line = sys.stdin.readline()\n"
+        "time.sleep(0.2)\n"
+        "print('answer:' + line.strip(), flush=True)\n"
+        "time.sleep(600)\n"
+    )
+    t0 = time.monotonic()
+    code, out = au._run(
+        [sys.executable, "-c", script], send=b"ping\n", done=lambda b: b"answer:" in b
+    )
+    assert "answer:ping" in out
+    assert time.monotonic() - t0 < 30

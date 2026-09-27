@@ -117,7 +117,13 @@ TRANSCRIPT_KINDS = frozenset(
 USAGE_SOURCES = frozenset({"plan", "tokens", "manual", "none"})
 #: `usage.kind` — each names a built-in reporter. Required for `plan`/`tokens`, forbidden otherwise.
 USAGE_KINDS = frozenset(
-    {"claude-cli-probe", "agy-cli-probe", "codex-rollout-field", "opencode-store-query"}
+    {
+        "claude-cli-probe",
+        "agy-cli-probe",
+        "codex-app-server-probe",
+        "codex-rollout-field",
+        "opencode-store-query",
+    }
 )
 #: The only token a `*-cli-probe` may send the vendor CLI (`agent_usage`: "the literal string
 #: `/usage` and nothing else").

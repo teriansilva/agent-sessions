@@ -41,7 +41,7 @@ kind = "codex-rollout"
 
 [usage]
 source = "plan"
-kind = "codex-rollout-field"
+kind = "codex-app-server-probe"
 
 [terminal]
 repaint = "wipe"

@@ -11,8 +11,9 @@ engine           how it is asked                            what comes back
 ``claude``       ``claude -p "/usage"``                     plan % per window + reset times, and
                                                             the run bills **zero tokens**
 ``antigravity``  ``agy -p "/usage"``                        remaining % per model family + resets
-``codex``        nothing — it writes ``rate_limits`` into   ``used_percent``, window, ``resets_at``,
-                 its own rollout                            ``plan_type``
+``codex``        ``codex app-server``: one                  ``usedPercent``, window, ``resetsAt``,
+                 ``account/rateLimits/read`` (the rollout's ``planType`` — asked of the vendor,
+                 ``rate_limits`` is the offline fallback)   not only when codex last ran
 ``opencode``     its own database, aggregated               token totals over a window
 ``kimi``         — (``/usage`` is TUI-only)                 operator's manual counter
 ``shell``        — (no agent)                               nothing
@@ -45,6 +46,7 @@ import select
 import sqlite3
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -156,7 +158,13 @@ class Report:
 # --- probes ------------------------------------------------------------------------------------
 
 
-def _run(argv: list[str], *, cwd: str | None = None) -> tuple[int, str]:
+def _run(
+    argv: list[str],
+    *,
+    cwd: str | None = None,
+    send: bytes | None = None,
+    done: Callable[[bytes], bool] | None = None,
+) -> tuple[int, str]:
     """Run a probe and return ``(returncode, output)``, bounded in **time and in bytes**.
 
     A literal argv list, never a command string and never a shell — the same rule the engine
@@ -172,13 +180,18 @@ def _run(argv: list[str], *, cwd: str | None = None) -> tuple[int, str]:
     exhausting the server process. The output of every probe here is a handful of lines, so
     anything past `MAX_PROBE_BYTES` is not an answer we could use — the child is killed and what
     was read so far is returned, which still lets the parser explain what went wrong.
+
+    **A server-shaped probe** (``codex app-server``) passes ``send`` and ``done``: ``send`` is
+    written to its stdin, which then stays OPEN — codex exits on EOF before it answers, measured
+    — and the probe ends as soon as ``done(output so far)`` is true. Every bound above still
+    holds; a server that never answers is the timeout's case like any other.
     """
     try:
         proc = subprocess.Popen(  # noqa: S603 — literal argv, no shell, bounded
             argv,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.PIPE if send is not None else subprocess.DEVNULL,
             cwd=cwd,
             # Its own process group, so the timeout and the byte cap bound the whole PROBE and
             # not merely the process we happen to hold a handle to. A CLI that forks a helper
@@ -190,9 +203,20 @@ def _run(argv: list[str], *, cwd: str | None = None) -> tuple[int, str]:
     except OSError as exc:
         return 127, str(exc)
 
+    if send is not None:
+        assert proc.stdin is not None
+        try:
+            # A few hundred bytes: well inside a pipe buffer, so this cannot block on a child
+            # that is not reading yet.
+            proc.stdin.write(send)
+            proc.stdin.flush()
+        except OSError as exc:
+            return _kill(proc, 127, str(exc))
+
     chunks: list[bytes] = []
     total = 0
     overflowed = False
+    answered = False
     deadline = time.monotonic() + PROBE_TIMEOUT_S
     try:
         assert proc.stdout is not None
@@ -217,15 +241,33 @@ def _run(argv: list[str], *, cwd: str | None = None) -> tuple[int, str]:
                 overflowed = True
                 break
             chunks.append(chunk)
+            if done is not None and done(b"".join(chunks)):
+                # Answered. A server does not exit by itself: close its stdin (its own signal to
+                # stop) and let the group reap below take whatever is left.
+                with contextlib.suppress(Exception):
+                    if proc.stdin is not None:
+                        proc.stdin.close()
+                answered = True
+                break
     except OSError as exc:
         return _kill(proc, 127, str(exc))
     finally:
         with contextlib.suppress(Exception):
             if proc.stdout is not None:
                 proc.stdout.close()
+        with contextlib.suppress(Exception):
+            if proc.stdin is not None:
+                proc.stdin.close()
 
     if overflowed:
         return _kill(proc, 125, f"output exceeded {MAX_PROBE_BYTES} bytes")
+    if answered:
+        # The answer is in hand; how the server leaves is not the probe's concern. A moment to
+        # exit on its own after the EOF, then the group goes either way.
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.wait(timeout=5)
+        _kill(proc, 0, "")
+        return 0, b"".join(chunks).decode("utf-8", "replace")
     try:
         code = proc.wait(timeout=max(0.0, deadline - time.monotonic()))
     except subprocess.TimeoutExpired:
@@ -472,6 +514,133 @@ def _first_line(text: str) -> str:
     return ""
 
 
+#: What the codex probe says to ``codex app-server`` — the JSON-RPC handshake and ONE read, and
+#: nothing else: no thread, no prompt, no path. ``account/rateLimits/read`` is the call codex's own
+#: TUI makes for its status line; it asks the vendor with the operator's existing login.
+_CODEX_RATE_LIMITS_ID = 2
+_CODEX_APP_SERVER_REQUEST = (
+    "\n".join(
+        json.dumps(msg, separators=(",", ":"))
+        for msg in (
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"clientInfo": {"name": "agent-sessions", "version": "0"}},
+            },
+            {"jsonrpc": "2.0", "method": "initialized"},
+            {"jsonrpc": "2.0", "id": _CODEX_RATE_LIMITS_ID, "method": "account/rateLimits/read"},
+        )
+    )
+    + "\n"
+).encode()
+
+
+def _codex_rate_limits_reply(text: str) -> dict | None:
+    """The JSON-RPC reply to the rate-limits read, or None if it has not arrived (yet)."""
+    for line in text.splitlines():
+        if f'"id":{_CODEX_RATE_LIMITS_ID}' not in line.replace(" ", ""):
+            continue
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and obj.get("id") == _CODEX_RATE_LIMITS_ID:
+            return obj
+    return None
+
+
+def parse_codex_app_server(
+    text: str, now: float | None = None, *, engine: str | None = None
+) -> Report:
+    """Parse ``codex app-server``'s reply to ``account/rateLimits/read``.
+
+    The same fields the rollout carries, camel-cased: ``usedPercent``, ``windowDurationMins``,
+    ``resetsAt`` per ``primary``/``secondary`` window, and ``planType``. Asked NOW, so ``at`` is
+    now — unlike the rollout, whose figure is only as fresh as codex's last turn on this host.
+    """
+    now = time.time() if now is None else now
+    engine = engine or _engine_for("codex-app-server-probe")
+    reply = _codex_rate_limits_reply(text)
+    if reply is None:
+        return Report(engine=engine, source=SOURCE_PLAN, at=now, error="no rate-limits reply")
+    if "error" in reply:
+        err = reply.get("error")
+        msg = err.get("message") if isinstance(err, dict) else None
+        return Report(
+            engine=engine,
+            source=SOURCE_PLAN,
+            at=now,
+            error=str(msg or "rate-limits read failed")[:200],
+        )
+    result = reply.get("result")
+    limits = result.get("rateLimits") if isinstance(result, dict) else None
+    if not isinstance(limits, dict):
+        return Report(engine=engine, source=SOURCE_PLAN, at=now, error="no rateLimits in reply")
+    windows = []
+    for key in ("primary", "secondary"):
+        block = limits.get(key)
+        if not isinstance(block, dict):
+            continue
+        pct = _pct(block.get("usedPercent"))
+        if pct is None:
+            continue
+        windows.append(
+            Window(
+                label=_window_label(block.get("windowDurationMins")),
+                used_pct=pct,
+                resets_at=_epoch(block.get("resetsAt")),
+            )
+        )
+    plan = limits.get("planType")
+    return Report(
+        engine=engine,
+        source=SOURCE_PLAN,
+        windows=windows,
+        plan=plan if isinstance(plan, str) else None,
+        at=now,
+        error=None if windows else "no rate-limit windows reported",
+    )
+
+
+def probe_codex(
+    binary: str | None = None,
+    *,
+    engine: str | None = None,
+    home: Path | None = None,
+    now: float | None = None,
+) -> Report:
+    """Ask codex for its quota, and fall back to what its newest rollout recorded.
+
+    The rollout alone was wrong in the way that matters: codex writes ``rate_limits`` only
+    while it runs, so on a host where it last ran nine days ago the row showed a dead window while
+    the account stood at 25 % of a live one. The rollout stays as the fallback for when the probe
+    cannot answer — offline, logged out, an older codex without the call.
+    """
+    engine = engine or _engine_for("codex-app-server-probe")
+    exe = binary or _probe_binary(engine)
+    asked: Report | None = None
+    if exe:
+        code, out = _run(
+            [exe, "app-server"],
+            send=_CODEX_APP_SERVER_REQUEST,
+            done=lambda b: _codex_rate_limits_reply(b.decode("utf-8", "replace")) is not None,
+        )
+        asked = parse_codex_app_server(out, now, engine=engine)
+        if asked.windows:
+            return asked
+        if code not in (0, None) and asked.error == "no rate-limits reply":
+            asked.error = _first_line(out) or f"{_binary_name(engine)} app-server exited {code}"
+    recorded = read_codex_rate_limits(home, now=now, engine=engine)
+    why = asked.error if asked is not None else f"{_binary_name(engine)} not found"
+    # The fallback ALWAYS says the probe failed, figures or not. A rollout is only as fresh as
+    # codex's last turn here, so a report that looked like a clean refresh would let `refresh`
+    # overwrite a NEWER live read with it (Hermes on #1166: a cached 25% replaced by an older 5%).
+    # With the error set, `refresh` keeps whichever observation is newer.
+    recorded.error = f"{why}; {recorded.error}" if recorded.error else why
+    return recorded
+
+
 # --- file-backed reporters (no subprocess) ------------------------------------------------------
 
 
@@ -698,6 +867,7 @@ KIND_REPORTERS: dict[str, object] = {
     "claude-cli-probe": probe_claude,
     "agy-cli-probe": probe_agy,
     "codex-rollout-field": read_codex_rate_limits,
+    "codex-app-server-probe": probe_codex,
     "opencode-store-query": read_opencode_tokens,
 }
 
@@ -796,7 +966,16 @@ def refresh(
         for engine, new in fresh.items():
             old = reports.get(engine)
             had_figures = isinstance(old, dict) and (old.get("windows") or old.get("tokens"))
-            if new.get("error") and had_figures:
+            # A failed refresh may still carry figures — a fallback's older observation (codex's
+            # rollout when the live probe failed). Those replace the cached ones only when they
+            # were OBSERVED later; otherwise the newer cached figures stand, with the error.
+            new_has = bool(new.get("windows") or new.get("tokens"))
+            newer = (
+                new_has
+                and had_figures
+                and ((_epoch(new.get("at")) or 0.0) > (_epoch(old.get("at")) or 0.0))
+            )
+            if new.get("error") and had_figures and not newer:
                 # Keep what was true, say when it was true, and say why it is not newer.
                 old = dict(old)
                 old["error"] = new["error"]
