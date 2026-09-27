@@ -332,7 +332,7 @@ for (const theme of ["dark", "light"] as const) {
         },
       },
     });
-    await page.goto("/ask");
+    await page.goto("/dashboard");
     await page.evaluate((t) => {
       document.documentElement.dataset.theme = t;
     }, theme);
