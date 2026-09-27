@@ -423,47 +423,123 @@ def _with_pending(result: dict) -> dict:
     return result
 
 
+def pending_checked() -> list[dict]:
+    """The operator-pending actions, PROJECTED, from ONE checked ledger snapshot.
+
+    `_pending_and_feed` reads through `live_actions`, which turns an unreadable ledger into
+    "no actions" — right for a feed, wrong for a worklist, where it silently drops every
+    decision-only session. So this reads `latest_by_id_checked` once and derives the rows from
+    that same snapshot: a separate health probe followed by the fail-soft read would race.
+    """
+    status, latest = orchestrator_ledger.latest_by_id_checked()
+    if status != "ok":
+        raise needs_you.LedgerUnavailable
+    cfg = _orchestrator_cfg()
+    titles: dict[str, dict] = {}
+    return [
+        _operator_projection(r, cfg, titles)
+        for r in latest.values()
+        if r.get("state") in orchestrator_ledger.OPERATOR_PENDING_STATES
+    ]
+
+
+def in_scope_cards(cards: list[dict]) -> list[dict]:
+    """Roots + ``folder_exclusions`` — the TERMINAL's form of the boundary (#867).
+
+    The Ask page lists these sessions and (#1086 Phase 3) acts on them, so a session the
+    terminal would refuse to resume is neither named nor summarised here. The strict form
+    (`honour_curation=False`) is the one resume uses; the list's looser form would let an
+    adopted out-of-root session through to a surface that can type into it.
+    """
+    in_scope = _hard_scope_filter(honour_curation=False)
+    return [
+        c
+        for c in cards
+        if isinstance(c.get("cwd"), str) and in_scope(c["cwd"], c.get("project") or {"kind": ""})
+    ]
+
+
+def build_needs_you(
+    wd: int, *, engine: str | None = None, project: str | None = None, strict: bool = False
+) -> dict:
+    """The NEEDS YOU payload for window ``wd`` — the route's read AND the notification sync's
+    (#1086 Phase 4), so a notification can never be raised for a session the list would not show.
+    Blocking; raises `needs_you.MembershipUnavailable` / `LedgerUnavailable`.
+
+    ``strict`` (the notification sync, which RETRACTS on the answer — Hermes 5231): one checked
+    engine walk shared by both card reads, metadata read under the writers' lock, and a checked
+    dismissal read. Any of them incomplete raises `needs_you.ReadIncomplete`, never a list that
+    silently lost a session or a flag. The list route stays fail-soft."""
+    try:
+        scanned = pulse.checked_scan() if strict else None
+        # The fail-soft call is exactly the pre-#1086-P4 one; only the strict read adds arguments.
+        cards = (
+            pulse.build_cards(window_days=wd, strict=True, scanned=scanned)
+            if strict
+            else pulse.build_cards(window_days=wd)
+        )
+        suppressed = (
+            needs_you_dismissals.suppressed_checked()
+            if strict
+            else needs_you_dismissals.suppressed()
+        )
+    except (pulse.CardsIncomplete, needs_you_dismissals.DismissalsUnreadable) as e:
+        raise needs_you.ReadIncomplete(str(e)) from e
+    # The same retirement every other decision read applies first (#969): an expired or
+    # undeliverable proposal must not be offered as approvable here either.
+    try:
+        actuator.housekeep_pending()
+    except Exception:  # noqa: BLE001 — `needs_you` also refuses a past-deadline action
+        log.debug("needs-you: housekeeping failed", exc_info=True)
+    pending = pending_checked()
+    # A LIVE DECISION IS LISTED WHATEVER THE WINDOW (#1086 Phase 3). The window scopes the
+    # review flag's "needs you"; a decision the operator can still act on must never
+    # vanish from the one surface that acts on it because the session is older than it.
+    in_window = {c["id"] for c in cards}
+    wanted = {str(a.get("session_id") or "") for a in pending} - in_window
+    if wanted:
+        try:
+            full = (
+                pulse.build_cards(window_days=None, strict=True, scanned=scanned)
+                if strict
+                else pulse.build_cards(window_days=None)
+            )
+        except pulse.CardsIncomplete as e:
+            raise needs_you.ReadIncomplete(str(e)) from e
+        cards += [c for c in full if c["id"] in wanted]
+    cards = in_scope_cards(cards)
+    try:
+        held: set[str] | None = set(missions.all_active_memberships())
+    except Exception:  # noqa: BLE001 — unreadable ownership is its own answer
+        held = None
+    out = needs_you.build(
+        cards,
+        pending,
+        held,
+        # The strict read raises on an unreadable screen; the fail-soft call is unchanged.
+        observe=(
+            (lambda row: orchestrator.observed_screen(engines.physical_key(row["id"]), strict=True))
+            if strict
+            else (lambda row: orchestrator.observed_screen(engines.physical_key(row["id"])))
+        ),
+        engine=engine,
+        project=project,
+        suppressed=suppressed,
+        strict=strict,
+    )
+    out["window_days"] = wd
+    return out
+
+
 def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
+    _pending_checked = pending_checked
+    _in_scope_cards = in_scope_cards
+
     def _working_keys() -> set[str]:
         # One implementation, in `actuator`, because `/api/missions/{id}/message` needs the same
         # overlay and two callers computing "what is busy" differently would propose against
         # different views of the world.
         return actuator.working_keys(registry)
-
-    def _pending_checked() -> list[dict]:
-        """The operator-pending actions, PROJECTED, from ONE checked ledger snapshot.
-
-        `_pending_and_feed` reads through `live_actions`, which turns an unreadable ledger into
-        "no actions" — right for a feed, wrong for a worklist, where it silently drops every
-        decision-only session. So this reads `latest_by_id_checked` once and derives the rows from
-        that same snapshot: a separate health probe followed by the fail-soft read would race.
-        """
-        status, latest = orchestrator_ledger.latest_by_id_checked()
-        if status != "ok":
-            raise needs_you.LedgerUnavailable
-        cfg = _orchestrator_cfg()
-        titles: dict[str, dict] = {}
-        return [
-            _operator_projection(r, cfg, titles)
-            for r in latest.values()
-            if r.get("state") in orchestrator_ledger.OPERATOR_PENDING_STATES
-        ]
-
-    def _in_scope_cards(cards: list[dict]) -> list[dict]:
-        """Roots + ``folder_exclusions`` — the TERMINAL's form of the boundary (#867).
-
-        The Ask page lists these sessions and (#1086 Phase 3) acts on them, so a session the
-        terminal would refuse to resume is neither named nor summarised here. The strict form
-        (`honour_curation=False`) is the one resume uses; the list's looser form would let an
-        adopted out-of-root session through to a surface that can type into it.
-        """
-        in_scope = _hard_scope_filter(honour_curation=False)
-        return [
-            c
-            for c in cards
-            if isinstance(c.get("cwd"), str)
-            and in_scope(c["cwd"], c.get("project") or {"kind": ""})
-        ]
 
     def _standalone_card(session_id: str) -> tuple[dict | None, tuple[int, str] | None]:
         """The card for a session the Ask page may act on, or ``(None, (status, reason))``.
@@ -638,37 +714,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         project_f = (project or "").strip()[:200] or None
 
         def _build() -> dict:
-            cards = pulse.build_cards(window_days=wd)
-            # The same retirement every other decision read applies first (#969): an expired or
-            # undeliverable proposal must not be offered as approvable here either.
-            try:
-                actuator.housekeep_pending()
-            except Exception:  # noqa: BLE001 — `needs_you` also refuses a past-deadline action
-                log.debug("needs-you: housekeeping failed", exc_info=True)
-            pending = _pending_checked()
-            # A LIVE DECISION IS LISTED WHATEVER THE WINDOW (#1086 Phase 3). The window scopes the
-            # review flag's "needs you"; a decision the operator can still act on must never
-            # vanish from the one surface that acts on it because the session is older than it.
-            in_window = {c["id"] for c in cards}
-            wanted = {str(a.get("session_id") or "") for a in pending} - in_window
-            if wanted:
-                cards += [c for c in pulse.build_cards(window_days=None) if c["id"] in wanted]
-            cards = _in_scope_cards(cards)
-            try:
-                held: set[str] | None = set(missions.all_active_memberships())
-            except Exception:  # noqa: BLE001 — unreadable ownership is its own answer
-                held = None
-            out = needs_you.build(
-                cards,
-                pending,
-                held,
-                observe=lambda row: orchestrator.observed_screen(engines.physical_key(row["id"])),
-                engine=engine_f,
-                project=project_f,
-                suppressed=needs_you_dismissals.suppressed(),
-            )
-            out["window_days"] = wd
-            return out
+            return build_needs_you(wd, engine=engine_f, project=project_f)
 
         try:
             return JSONResponse(await asyncio.to_thread(_build))

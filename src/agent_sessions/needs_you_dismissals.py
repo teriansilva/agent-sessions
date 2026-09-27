@@ -13,6 +13,7 @@ Phase 4's notification episodes build on this record.
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from pathlib import Path
@@ -47,6 +48,43 @@ def dismiss(session_key: str, fingerprint: str, now: float | None = None) -> Non
             rows = dict(keep)
         doc["dismissed"] = rows
         atomic_write_json(path, doc)
+    # A dismissal ends the session's needs-you episode (#1086 Phase 4): retract it now.
+    from . import needs_you_notify
+
+    needs_you_notify.poke()
+
+
+class DismissalsUnreadable(Exception):
+    """The dismissal record exists but could not be read (#1086 Phase 4, Hermes 5231)."""
+
+
+def suppressed_checked(now: float | None = None) -> dict[str, str]:
+    """:func:`suppressed`, but a record that EXISTS and cannot be read or parsed raises
+    :class:`DismissalsUnreadable` instead of reading as "nothing dismissed" — the notification
+    sync must not re-announce a dismissed screen because a read failed. A missing file is a
+    genuinely empty record. Writes are atomic replaces, so there is no torn state to wait out."""
+    now = time.time() if now is None else now
+    path = _path()
+    try:
+        with path.open(encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except FileNotFoundError:
+        return {}
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
+        raise DismissalsUnreadable(type(e).__name__) from e
+    if not isinstance(doc, dict):
+        raise DismissalsUnreadable("not a mapping")
+    rows = doc.get("dismissed")
+    if rows is None:
+        return {}
+    if not isinstance(rows, dict):
+        raise DismissalsUnreadable("dismissed is not a mapping")
+    out: dict[str, str] = {}
+    for k, v in rows.items():
+        if isinstance(k, str) and isinstance(v, dict) and isinstance(v.get("fingerprint"), str):
+            if _fresh(v, now):
+                out[k] = v["fingerprint"]
+    return out
 
 
 def suppressed(now: float | None = None) -> dict[str, str]:

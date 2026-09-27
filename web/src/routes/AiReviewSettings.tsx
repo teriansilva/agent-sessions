@@ -26,6 +26,7 @@ const FALLBACK: AiReviewConfig = {
 const DEPTH_FALLBACK: SessionReviewConfig = {
   recognise_prompts: true,
   decision_context: "standard",
+  notify: true,
 };
 
 /** How deeply a session is read before a decision (#1086 Phase 2): the `session_review` block.
@@ -125,6 +126,24 @@ export function SessionReviewDepth() {
         {block.decision_context === "deep"
           ? "Deep: before it suggests an answer, the orchestrator also reads the end of the conversation and what was already done or refused — for the few sessions a decision is about, not the whole list."
           : "Standard: the orchestrator reads where each session stands now, why it needs you, and what its screen is waiting on."}
+      </p>
+      <label className={styles.aiToggle}>
+        <input
+          type="checkbox"
+          checked={block.notify !== false}
+          disabled={saving}
+          onChange={(e) => void save({ notify: e.currentTarget.checked })}
+          data-testid="session-review-notify"
+        />
+        <span>Notify me when a session needs me</span>
+      </label>
+      <p className={styles.hint}>
+        One notification when a session without a mission starts needing you — a
+        question, a choice or an approval — and it is taken back when it doesn’t:
+        answered, decided, dismissed, archived or taken into a mission. The bell
+        clears at once; on a device it closes the next time BattleLab is open there
+        or the next notification arrives. Nothing is sent for sessions that are just
+        working or finished.
       </p>
     </div>
   );

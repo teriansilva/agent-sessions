@@ -110,7 +110,57 @@ RECLAIM_ATTEMPTS = 8
 
 
 def _load(path: Path) -> tuple[list[dict], list[str]]:
-    """``(rows, announced)`` from either document shape.
+    """``(rows, announced)`` from either document shape. See :func:`_load_doc` for the episodes."""
+    rows, announced, _episodes = _load_doc(path)
+    return rows, announced
+
+
+class StoreUnreadable(Exception):
+    """An EXISTING notifications document could not be read or parsed (#1086 Phase 4, Hermes
+    5231). A mutation must not replace it: the rows, the announcement tombstones and the open
+    needs-you episodes it holds would be destroyed by a write built from an invented empty
+    predecessor. Reads for display stay fail-soft (:func:`_load_doc`)."""
+
+
+def _load_doc_strict(path: Path) -> tuple[list[dict], list[str], dict[str, dict]]:
+    """:func:`_load_doc` for a MUTATION: a missing file is empty (knowable), anything else that
+    cannot be read or parsed raises :class:`StoreUnreadable` rather than answering empty."""
+    try:
+        text = path.read_text()
+    except FileNotFoundError:
+        return [], [], {}
+    except (OSError, UnicodeDecodeError) as e:
+        raise StoreUnreadable(type(e).__name__) from e
+    if not text.strip():
+        return [], [], {}
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise StoreUnreadable("not JSON") from e
+    if not isinstance(raw, list | dict):
+        raise StoreUnreadable("neither a list nor a document")
+    return _shape(raw)
+
+
+def _shape(raw: object) -> tuple[list[dict], list[str], dict[str, dict]]:
+    if isinstance(raw, list):
+        return [r for r in raw if isinstance(r, dict)], [], {}
+    if isinstance(raw, dict):
+        rows, seen, eps = raw.get("rows"), raw.get("announced"), raw.get("episodes")
+        return (
+            [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else [],
+            [a for a in seen if isinstance(a, str)] if isinstance(seen, list) else [],
+            {
+                k: v
+                for k, v in (eps.items() if isinstance(eps, dict) else ())
+                if isinstance(k, str) and isinstance(v, dict) and isinstance(v.get("tag"), str)
+            },
+        )
+    return [], [], {}
+
+
+def _load_doc(path: Path) -> tuple[list[dict], list[str], dict[str, dict]]:
+    """``(rows, announced, episodes)`` from either document shape.
 
     The store was a bare JSON list and still is whenever there is nothing to remember. It becomes
     ``{"rows": [...], "announced": [...]}`` only once an announcement tombstone exists, so the
@@ -118,20 +168,18 @@ def _load(path: Path) -> tuple[list[dict], list[str]]:
     before #983 P4 keep exactly the bytes they had.
     """
     if not path.exists():
-        return [], []
+        return [], [], {}
     try:
         raw = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
-        return [], []
-    if isinstance(raw, list):
-        return [r for r in raw if isinstance(r, dict)], []
-    if isinstance(raw, dict):
-        rows, seen = raw.get("rows"), raw.get("announced")
-        return (
-            [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else [],
-            [a for a in seen if isinstance(a, str)] if isinstance(seen, list) else [],
-        )
-    return [], []
+        return [], [], {}
+    return _shape(raw)
+
+
+def _read_strict(path: Path) -> list[dict]:
+    """The rows a MUTATION starts from: :func:`_load_doc_strict`'s, so a transient read failure
+    raises instead of starting the replacement from an empty list (Hermes 5239, finding 2)."""
+    return _load_doc_strict(path)[0]
 
 
 def _read(path: Path) -> list[dict]:
@@ -208,11 +256,35 @@ def _converge(action_id: str, after: Callable[[], None] | None) -> None:
         log.debug("notifications: the announcement receipt did not converge", exc_info=True)
 
 
-def _write(path: Path, rows: list[dict], *, announced: list[str] | None = None) -> None:
+def _write(
+    path: Path,
+    rows: list[dict],
+    *,
+    announced: list[str] | None = None,
+    episodes: dict[str, dict] | None = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     # Unique per writer: a shared ".tmp" lets one writer's os.replace unlink the file
     # another is still writing into. The lock above makes this belt-and-braces, but the
     # cost is nil and it keeps _write correct if it is ever called unlocked.
+    # The predecessor is resolved BEFORE the temporary is opened (Hermes 5239, finding 3): the
+    # strict read can refuse, and a refusal after `os.open` leaked the descriptor on every attempt.
+    #
+    # `episodes` (#1086 Phase 4) follows the same rule: `None` preserves what is on disk, so no
+    # writer that edits rows can drop the open needs-you episodes — which would re-announce every
+    # one of them on the next sync.
+    if announced is None or episodes is None:
+        # STRICT: preserving what is on disk from a document that could not be read would write
+        # an invented empty predecessor over it (Hermes 5231) — so an unreadable one refuses.
+        _, disk_announced, disk_episodes = _load_doc_strict(path)
+        announced = disk_announced if announced is None else announced
+        episodes = disk_episodes if episodes is None else episodes
+    doc: object = rows
+    if announced or episodes:
+        full: dict[str, object] = {"rows": rows, "announced": announced}
+        if episodes:
+            full["episodes"] = episodes
+        doc = full
     tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     # A buffered writer, not a bare `os.write`: `os.write` is permitted to write FEWER bytes
@@ -228,9 +300,6 @@ def _write(path: Path, rows: list[dict], *, announced: list[str] | None = None) 
     # `announced=None` means PRESERVE what is on disk, which is what every caller that is editing
     # rows wants; a bare list is written whenever there is nothing to remember, so the shared
     # subscriptions file and every pre-P4 store keep their exact shape.
-    if announced is None:
-        announced = _load(path)[1]
-    doc: object = {"rows": rows, "announced": announced} if announced else rows
     try:
         with os.fdopen(fd, "wb", closefd=True) as fh:
             fh.write(json.dumps(doc, indent=2, sort_keys=True).encode())
@@ -272,7 +341,7 @@ def add(
     this signature."""
     p = path or _notifications_path()
     with _locked(p):
-        rows, announced = _load(p)
+        rows, announced, _eps = _load_doc_strict(p)
         # THE DEDUPE IDENTITY IS THIS STORE'S OWN, AND IT IS WRITTEN WITH THE ROW (#983 P4 review).
         #
         # Read inside the lock, so a lagging announcer cannot re-announce what a peer has already
@@ -535,9 +604,9 @@ EVERY_SESSION = _EverySession()
 def mission_surfaces() -> set[str] | None:
     """The sessions an OPEN mission holds, or ``None`` if the membership cannot be read (#1057).
 
-    Kept separate from :func:`decision_surfaces` for one caller: the orchestrator's PUSH gate.
-    Until #1086 Phase 4 lands conservative, withdrawable notifications, a push for a standalone
-    escalation stays off — the badge widening below must not quietly re-enable pushes.
+    Kept separate from :func:`decision_surfaces` for one caller: the orchestrator's announcement
+    gate. Since #1086 Phase 4 the pass announces only these sessions; the rest are announced by
+    the needs-you episode sync (`needs_you_notify`), which retracts what it raises.
     """
     try:
         from . import missions
@@ -600,6 +669,10 @@ def _counts_toward_badge(
     (:func:`decision_surfaces`); what remains uncountable is an UNREADABLE membership, which is
     `uncertain`. Nothing model-authored enters this.
     """
+    if row.get("needs_you") is True:
+        # An OPEN episode is, by construction, a session that needs you NOW: the row is retired the
+        # moment the episode closes (#1086 Phase 4), and the Ask page is its surface.
+        return not row.get("retired")
     if row.get("escalation") is not True:
         return False  # a log entry, never a decision
     from . import orchestrator_ledger as ledger
@@ -695,7 +768,7 @@ def retire_for_actions(
         return 0
     p = path or _notifications_path()
     with _locked(p):
-        rows = _read(p)
+        rows = _read_strict(p)
         n = 0
         for r in rows:
             if r.get("retired") or r.get("action_id") not in ids:
@@ -730,7 +803,7 @@ def unretire_for_action(action_id: str, path: Path | None = None) -> int:
         return 0
     p = path or _notifications_path()
     with _locked(p):
-        rows = _read(p)
+        rows = _read_strict(p)
         n = 0
         for r in rows:
             if r.get("action_id") != action_id or not r.get("retired"):
@@ -770,11 +843,14 @@ def listing(path: Path | None = None) -> dict:
         # The decision times come from the SAME snapshot that detected the settlement. Fetching
         # them in a second read races compaction, and losing that race silently substitutes
         # repair time for decision time — the reordering these stamps exist to prevent.
-        retire_for_actions(
-            set(settled_now),
-            p,
-            decided_at={k: v for k, v in settled_now.items() if v is not None},
-        )
+        # A self-heal, and the listing is a READ: an unreadable store refuses the write, and the
+        # listing still shows what it can rather than failing the bell.
+        with contextlib.suppress(StoreUnreadable):
+            retire_for_actions(
+                set(settled_now),
+                p,
+                decided_at={k: v for k, v in settled_now.items() if v is not None},
+            )
         rows = _read(p)
     states = _action_states(rows)
     surfaces = decision_surfaces()
@@ -799,12 +875,18 @@ def listing(path: Path | None = None) -> dict:
     hydrated = [
         {**r, **_row_projection(r, states)} if r.get("escalation") is True else r for r in visible
     ]
-    return {
+    out = {
         "notifications": hydrated,
         "unread": unread,
         "uncertain": uncertain,
         "settled": settled(rows, states),
     }
+    # Every device tag still OWED a retraction (#1086 Phase 4): the app closes EXACTLY these when it
+    # is opened — the retraction path that needs no push at all. Episode tags only, never reused;
+    # an escalation's URL tag never. ABSENT when the store could not be read.
+    with contextlib.suppress(StoreUnreadable):
+        out["close_tags"] = owed_close_tags(p)
+    return out
 
 
 def _settled_window(rows: list[dict], *, now: float | None = None) -> list[dict]:
@@ -899,7 +981,7 @@ def clear_settled(seen_ids: list[str] | set[str], path: Path | None = None) -> i
         return 0
     p = path or _notifications_path()
     with _locked(p):
-        rows = _read(p)
+        rows = _read_strict(p)
         # The SAME membership definition the operator is looking at, computed inside this lock so
         # the two cannot drift. Identity, not equality — two rows can compare equal.
         visible = {id(r) for r in _settled_window(rows)}
@@ -917,7 +999,7 @@ def mark_read(ids: list[str] | None = None, path: Path | None = None) -> int:
     """Mark the given ids read, or all of them when ``ids`` is None. Returns the count."""
     p = path or _notifications_path()
     with _locked(p):
-        rows = _read(p)
+        rows = _read_strict(p)
         n = 0
         for r in rows:
             if (ids is None or r.get("id") in ids) and not r.get("read"):
@@ -938,7 +1020,7 @@ def dismiss(ids: list[str] | None = None, path: Path | None = None) -> int:
     """
     p = path or _notifications_path()
     with _locked(p):
-        rows = _read(p)
+        rows = _read_strict(p)
         if ids is None:
             n = len(rows)
             if n:
@@ -964,12 +1046,247 @@ def dismiss_for_action(action_id: str, path: Path | None = None) -> int:
         return 0
     p = path or _notifications_path()
     with _locked(p):
-        rows = _read(p)
+        rows = _read_strict(p)
         keep = [r for r in rows if r.get("action_id") != action_id]
         n = len(rows) - len(keep)
         if n:
             _write(p, keep)
         return n
+
+
+# --- needs-you episodes (#1086 Phase 4) --------------------------------------------------
+
+#: What a needs-you row says, keyed by the SERVER-derived kind (`needs_you.KINDS`). Never a
+#: model-authored string: a row's text is decided here, so nothing a model writes can reach the
+#: bell or a push through this path.
+KIND_REASON = {
+    "choice": "Asks you to choose",
+    "approval": "Waiting for your approval",
+    "question": "Asks you a question",
+    "needs_inspection": "Stopped — take a look",
+}
+
+
+def episode_tag(session_id: str, episode: str) -> str:
+    """The notification tag for one episode — what a close push closes, and ONLY that."""
+    return f"needs-you:{session_id}:{episode}"
+
+
+#: Reserved key prefix in the episodes map for a device notification still to be RETRACTED. Session
+#: keys are ``engine:id`` and no engine is called ``closing``, so the two can never collide; keeping
+#: them in the same map is what makes every writer preserve them (`_write(..., episodes=None)`).
+CLOSING = "closing:"
+
+#: How long a pending retraction is kept for delivery on a shown push before it is dropped. The
+#: closed-episode ledger below keeps covering it for the app's own reconciliation afterwards.
+CLOSING_KEEP_S = 7 * 86400
+
+#: The CLOSED-EPISODE LEDGER (Hermes 5265, finding 6): every retracted device tag, kept for the
+#: supported recovery horizon whether or not a push ever carried it. It is the server's
+#: authoritative answer to "is this notification retracted?" — the app closes exactly these tags
+#: when it reads the bell, and the service worker asks before it shows a needs-you notification.
+#: Unlike an owed retraction it is never acknowledged away, only aged out.
+CLOSED = "closed:"
+CLOSED_KEEP_S = 30 * 86400
+CLOSED_MAX = 5000
+
+
+def owed_close_tags(path: Path | None = None) -> list[str]:
+    """Every retracted device tag in the recovery horizon — what the app closes EXACTLY, and what
+    the service worker checks before showing (Hermes 5239 finding 5, 5265 findings 2 and 6). Strict.
+
+    Only needs-you EPISODE tags are ever listed. They are minted per episode and never reused, so
+    retracting one can never close or suppress a later notification (Hermes 5275, finding 1). An
+    escalation's per-session URL tag is reused by every later escalation, so it is never retracted
+    from here at all: episodes defer to such a row rather than adopting it (see
+    :func:`sync_needs_you`)."""
+    _rows, _a, episodes = _load_doc_strict(path or _notifications_path())
+    return sorted({str(ep["tag"]) for k, ep in episodes.items() if k.startswith(CLOSED)})
+
+
+def has_open_episode(session_id: str, path: Path | None = None) -> bool | None:
+    """Whether ``session_id`` has an open needs-you episode; ``None`` when the store is unreadable.
+    The orchestrator's unreadable-membership fallback asks, so an episode that already covers the
+    situation is not announced a second time (Hermes 5239, finding 4)."""
+    try:
+        _rows, _a, episodes = _load_doc_strict(path or _notifications_path())
+    except StoreUnreadable:
+        return None
+    return session_id in episodes
+
+
+def ack_closes(tags: list[str] | set[str], path: Path | None = None) -> int:
+    """Forget pending retractions that have been DELIVERED. Returns how many were removed."""
+    wanted = {str(t) for t in tags}
+    if not wanted:
+        return 0
+    p = path or _notifications_path()
+    with _locked(p):
+        rows, _a, episodes = _load_doc_strict(p)
+        drop = [k for k in episodes if k.startswith(CLOSING) and episodes[k]["tag"] in wanted]
+        for k in drop:
+            del episodes[k]
+        if drop:
+            _write(p, rows, episodes=episodes)
+        return len(drop)
+
+
+def sync_needs_you(
+    current: dict[str, dict],
+    *,
+    keep: set[str] | frozenset[str] = frozenset(),
+    push: bool = False,
+    now: float | None = None,
+    path: Path | None = None,
+) -> dict:
+    """Reconcile the needs-you EPISODES with who needs the operator now. One notification per
+    episode, retracted when the episode ends.
+
+    ``current`` maps each session to announce onto its row facts (title, project, engine, kind,
+    action_id). ``keep`` names further sessions that still need the operator but are not to be
+    announced by this pass (beyond the list's row cap): their open episodes stay open. Everything
+    else with an open episode has stopped needing the operator, so its episode closes.
+
+    **An episode is ``(session key, episode start)``** and never includes model text (the
+    notification-volume rule): a session re-worded by its next review is the same episode, and a
+    session that stops needing you and comes back is a new one. Episodes are persisted in THIS
+    store, under its lock, in the same document as the rows — so a restart finds the open episode
+    and never re-announces the state it announced, and an operator's bell dismissal (a row delete)
+    does not re-open it either. An unreadable store raises :class:`StoreUnreadable` and is never
+    rewritten (Hermes 5231).
+
+    **Closing retires the episode's rows** (they leave the bell and the badge) and, when it was
+    pushed, records a PENDING RETRACTION for its device tag(s) in the same document. Retractions
+    are delivered by the caller only alongside something VISIBLE and acknowledged with
+    :func:`ack_closes` once sent, so a failed send or a restart retries rather than forgetting
+    (Hermes 5231, findings 5 and 7).
+
+    **An episode DEFERS to a live escalation that already announces its session** — the
+    orchestrator's unreadable-membership fallback, a mission escalation, or one from before this
+    change. The episode opens with no row and no push, so the situation is announced once, and it
+    never touches that row: the escalation keeps its own lifecycle (its decision settles it) and its
+    per-session URL tag, which later escalations reuse, is never retracted by an episode. Adopting
+    it instead let a retraction close a newer mission escalation under the same tag, and let a
+    session joining a mission retire the mission's own new escalation (Hermes 5275, findings 1-2).
+
+    Returns ``opened`` (new rows to push), ``closed``, ``pending`` (tags awaiting retraction) and
+    ``keep`` (the newest open, pushed episode's row — what a retraction may be delivered with).
+    Blocking.
+    """
+    now = time.time() if now is None else now
+    live = set(current) | set(keep)
+    p = path or _notifications_path()
+    with _locked(p):
+        rows, _announced, episodes = _load_doc_strict(p)  # raises StoreUnreadable, never guesses
+        changed = False
+
+        def _pend(tag: str) -> None:
+            if tag:
+                episodes[f"{CLOSING}{tag}"] = {"tag": tag, "closing": True, "ts": now}
+                episodes[f"{CLOSED}{tag}"] = {"tag": tag, "closed": True, "ts": now}
+
+        def _is_open(k: str) -> bool:
+            return not (k.startswith(CLOSING) or k.startswith(CLOSED))
+
+        # Owed retractions expire from the PUSH path after CLOSING_KEEP_S; the closed ledger keeps
+        # covering them for the app for CLOSED_KEEP_S, then the oldest beyond CLOSED_MAX go.
+        for prefix, keep_s in ((CLOSING, CLOSING_KEEP_S), (CLOSED, CLOSED_KEEP_S)):
+            for k in [k for k in episodes if k.startswith(prefix)]:
+                ts = episodes[k].get("ts")
+                if not isinstance(ts, int | float) or now - float(ts) > keep_s:
+                    del episodes[k]
+                    changed = True
+        ledger = sorted(
+            (k for k in episodes if k.startswith(CLOSED)),
+            key=lambda k: float(episodes[k].get("ts") or 0),
+        )
+        for k in ledger[: max(0, len(ledger) - CLOSED_MAX)]:
+            del episodes[k]
+            changed = True
+
+        def _escalated(sid: str) -> bool:
+            return any(
+                r.get("session_id") == sid
+                and r.get("escalation") is True
+                and r.get("needs_you") is not True
+                and not r.get("retired")
+                for r in rows
+            )
+
+        closed: list[dict] = []
+        for sid in sorted(k for k in episodes if _is_open(k)):
+            if sid in live:
+                continue
+            ep = episodes.pop(sid)
+            changed = True
+            tag = str(ep.get("tag") or "")
+            for r in rows:
+                if r.get("needs_you") is True and r.get("tag") == tag and not r.get("retired"):
+                    r["retired"] = True
+                    r["settled_at"] = now
+            pushed = ep.get("pushed") is True
+            if pushed:
+                _pend(tag)
+            closed.append(
+                {
+                    "session_id": sid,
+                    "episode": str(ep.get("id") or ""),
+                    "tag": tag,
+                    "pushed": pushed,
+                }
+            )
+
+        opened: list[dict] = []
+        for sid in sorted(current):
+            if sid in episodes:
+                continue
+            info = current[sid]
+            ep_id = f"{int(now * 1000):x}"
+            tag = episode_tag(sid, ep_id)
+            ep: dict = {"id": ep_id, "start": now, "tag": tag, "pushed": bool(push)}
+            if _escalated(sid):
+                # Already announced by a live escalation: defer to it — no second row, no push,
+                # nothing to retract when the episode ends. The escalation is left untouched.
+                ep.update({"pushed": False, "deferred": True})
+                episodes[sid] = ep
+                changed = True
+                continue
+            episodes[sid] = ep
+            rec = {
+                "id": hashlib.sha256(f"{tag}".encode()).hexdigest()[:16],
+                "ts": now,
+                "read": False,
+                "title": str(info.get("title") or "A session needs you")[:TITLE_MAX],
+                "project": str(info.get("project") or "")[:BODY_MAX],
+                "reason": KIND_REASON.get(str(info.get("kind") or ""))
+                or KIND_REASON["needs_inspection"],
+                "session_id": sid,
+                "engine": str(info.get("engine") or ""),
+                "action_id": str(info.get("action_id") or ""),
+                "escalation": False,
+                "auto_direction": False,
+                "needs_you": True,
+                "episode": ep_id,
+                "tag": tag,
+                "activity_at": None,
+            }
+            rows.append(rec)
+            opened.append(rec)
+            changed = True
+        if changed:
+            rows = _evict(rows)
+            _write(p, rows, episodes=episodes)
+        # Oldest first, so a bounded batch always drains the longest-owed retractions.
+        owed = sorted(
+            (ep for k, ep in episodes.items() if k.startswith(CLOSING)),
+            key=lambda ep: (float(ep.get("ts") or 0), str(ep["tag"])),
+        )
+        return {
+            "opened": opened,
+            "closed": closed,
+            "pending": [str(ep["tag"]) for ep in owed],
+            "open": sorted(k for k in episodes if _is_open(k)),
+        }
 
 
 # --- push subscriptions -----------------------------------------------------------------
@@ -999,7 +1316,7 @@ def subscribe(subscription: dict, path: Path | None = None) -> dict:
     webpush.assert_usable_keys(keys["p256dh"], keys["auth"])
     p = path or _subs_path()
     with _locked(p):
-        rows = [r for r in _read(p) if r.get("endpoint") != endpoint]
+        rows = [r for r in _read_strict(p) if r.get("endpoint") != endpoint]
         rec = {
             "id": _sub_id(endpoint),
             "endpoint": endpoint,
@@ -1029,7 +1346,7 @@ def list_subscriptions(path: Path | None = None) -> list[dict]:
 def unsubscribe(sub_id: str, path: Path | None = None) -> bool:
     p = path or _subs_path()
     with _locked(p):
-        rows = _read(p)
+        rows = _read_strict(p)
         keep = [r for r in rows if r.get("id") != sub_id]
         if len(keep) == len(rows):
             return False
@@ -1041,13 +1358,19 @@ def drop_endpoint(endpoint: str, path: Path | None = None) -> None:
     """Prune a subscription the push service reported gone (404/410)."""
     p = path or _subs_path()
     with _locked(p):
-        rows = _read(p)
+        rows = _read_strict(p)
         keep = [r for r in rows if r.get("endpoint") != endpoint]
         if len(keep) != len(rows):
             _write(p, keep)
 
 
-def fanout(notification: dict, base_url: str = "", path: Path | None = None) -> dict:
+def _link(notification: dict, base_url: str = "") -> str:
+    uuid = notification.get("session_id", "")
+    engine = notification.get("engine", "")
+    return f"{base_url}/s/{engine}/{uuid.split(':', 1)[-1]}" if uuid else f"{base_url}/mission"
+
+
+def fanout(notification: dict, base_url: str = "", path: Path | None = None, close=()) -> dict:
     """Push one notification to every subscribed device. Blocking — call under to_thread.
 
     Best-effort by design: the bell entry already exists, so a dead push service degrades the
@@ -1055,25 +1378,40 @@ def fanout(notification: dict, base_url: str = "", path: Path | None = None) -> 
     """
     from . import webpush
 
-    rows = _read(path or _subs_path())
+    # STRICT: a subscription list that could not be read is not "nobody to tell" — a caller that
+    # acknowledges retractions on a send with no failures would forget work it never did (5265, 1).
+    rows = _read_strict(path or _subs_path())
     if not rows:
         return {"sent": 0, "pruned": 0, "failed": 0}
-    uuid = notification.get("session_id", "")
-    engine = notification.get("engine", "")
-    url = f"{base_url}/s/{engine}/{uuid.split(':', 1)[-1]}" if uuid else f"{base_url}/mission"
+    url = _link(notification, base_url)
     # Title + project + link ONLY. This is the third-party boundary (#726).
     payload = webpush.build_payload(
         title=notification.get("title", "Mission control"),
         project=notification.get("project", ""),
         url=url,
+        # A needs-you row carries its episode's tag, so a later retraction can close exactly it.
+        tag=str(notification.get("tag") or ""),
+        # Pending retractions ride on a SHOWN push — never a silent one (Hermes 5231).
+        close=close,
     )
+    return _send_all(payload, path, rows=rows)
+
+
+def _send_all(payload: bytes, path: Path | None, *, rows: list[dict] | None = None) -> dict:
+    from . import webpush
+
+    if rows is None:
+        rows = _read_strict(path or _subs_path())
     sent = pruned = failed = 0
     for row in rows:
         try:
             webpush.send(row, payload)
             sent += 1
         except webpush.SubscriptionGone:
-            drop_endpoint(row.get("endpoint", ""), path)
+            # A prune is housekeeping: a subscriptions file that cannot be read refuses the write
+            # (it must not be rewritten from a guess) and the gone device is pruned next time.
+            with contextlib.suppress(StoreUnreadable):
+                drop_endpoint(row.get("endpoint", ""), path)
             pruned += 1
         except webpush.PushError:
             failed += 1  # never fatal — the bell entry stands on its own

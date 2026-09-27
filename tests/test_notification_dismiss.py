@@ -142,6 +142,7 @@ def test_dismiss_all_empties_the_ring_and_reports_the_count():
         "unread": 0,
         "uncertain": 0,
         "settled": [],
+        "close_tags": [],  # #1086 Phase 4: no retraction is owed
     }
 
 

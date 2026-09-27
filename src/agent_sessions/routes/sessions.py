@@ -23,6 +23,7 @@ from .. import (
     fsbrowse,
     metadata,
     missions,
+    needs_you_notify,
     perfstats,
     prefs,
     project_dirs,
@@ -1505,6 +1506,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 status_code=400, detail=f"archive not supported for engine {prov.engine_id}"
             ) from None
         engines.invalidate_scan_cache()  # Claude moved the JSONL → next list must re-walk (#561)
+        # An archived session no longer needs anyone: retract its notification now (#1086 P4).
+        needs_you_notify.poke()
         return JSONResponse({"id": key, "archived": True})
 
     @app.post("/api/sessions/{sid}/unarchive")

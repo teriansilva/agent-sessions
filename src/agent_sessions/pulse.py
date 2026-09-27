@@ -116,8 +116,27 @@ def _classify(m: metadata.SessionMeta, last_mtime: float, live: bool, now: float
     return "idle"
 
 
+class CardsIncomplete(Exception):
+    """A STRICT card read could not establish its whole input (#1086 Phase 4, Hermes 5231): a
+    provider's store, or the metadata sidecar, could not be read completely. Unknown is not
+    "no session needs you" — a caller that would retract something on the answer must not."""
+
+
+def checked_scan() -> list:
+    """One complete engine walk for a strict card read, or :class:`CardsIncomplete`."""
+    rows, problems = engines.scan_all_checked()
+    if problems:
+        raise CardsIncomplete("; ".join(problems))
+    return rows
+
+
 def build_cards(
-    *, window_days: int | None, now: float | None = None, working_keys: set[str] | None = None
+    *,
+    window_days: int | None,
+    now: float | None = None,
+    working_keys: set[str] | None = None,
+    strict: bool = False,
+    scanned: list | None = None,
 ) -> list[dict]:
     """Curate the in-window, non-archived sessions into ranked cards. Pure FS + metadata, no
     network — safe to run under ``asyncio.to_thread``.
@@ -131,16 +150,32 @@ def build_cards(
     ONLY by ``pulse_chat.build_catalog`` (#522) — the Pulse scan/loop/cache paths
     (``run_scan`` / ``fingerprint_for``) always pass a concrete window, so normal Pulse
     recency/caching behaviour is unchanged.
+
+    ``strict`` (#1086 Phase 4) is for a caller that RETRACTS on the answer — the needs-you
+    notification sync. Its inputs are read so that an incomplete read raises
+    :class:`CardsIncomplete` instead of silently dropping a session or clearing its flags: the
+    metadata under the writers' lock (`metadata.load_checked`, which also sees through the
+    zero-byte window of an in-place rewrite) and a checked engine walk (``scanned``, from
+    :func:`checked_scan`, so two calls in one decision share one walk). Every other caller keeps
+    the fail-soft read.
     """
     now = time.time() if now is None else now
     working = working_keys or set()
     cutoff = None if window_days is None else now - window_days * 86400
-    meta_index = metadata.load()
-    aliases = metadata.load_aliases()
+    if strict:
+        try:
+            meta_index, aliases, _overrides = metadata.load_checked()
+        except metadata.MetadataUnreadable as e:
+            raise CardsIncomplete(f"session metadata: {e}") from e
+        sessions = scanned if scanned is not None else checked_scan()
+    else:
+        meta_index = metadata.load()
+        aliases = metadata.load_aliases()
+        sessions = scanned if scanned is not None else engines.scan_all()
     project_index = projects.load()
 
     cards: list[dict] = []
-    for s in engines.scan_all():
+    for s in sessions:
         key = engines.session_key(s)
         phys = engines.physical_key(key, aliases)
         m = meta_index.get(key) or meta_index.get(phys) or metadata.SessionMeta()

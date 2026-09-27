@@ -10,9 +10,27 @@ import { engineBadge, relTime } from "../../lib/format";
 import type { PulseNotification } from "../../types/api";
 import styles from "./NotificationBell.module.css";
 import { MISSION_PATH } from "../../lib/missionLink";
+import { reconcileDeviceNotifications } from "../../swPush";
 import { useEngineRoster } from "../../app/engineRoster";
 
 const POLL_MS = 60_000;
+
+/** The app-open retraction (#1086 Phase 4): with the bell's read in hand, close on this device
+ *  every notification the server says is still OWED a retraction (`close_tags` is absent when its
+ *  store could not be read). Never fatal — this is chrome, and a browser without service workers or
+ *  notifications simply has nothing to close. */
+function reconcileDevice(closeTags: string[] | undefined) {
+  if (
+    !closeTags?.length ||
+    typeof navigator === "undefined" ||
+    !("serviceWorker" in navigator)
+  )
+    return;
+  navigator.serviceWorker
+    .getRegistration()
+    .then((reg) => (reg ? reconcileDeviceNotifications(reg, closeTags) : 0))
+    .catch(() => undefined);
+}
 
 /** Deep link for a notification: the session it concerns, or mission control when it has none. */
 function targetPath(n: PulseNotification): string {
@@ -106,6 +124,7 @@ export function NotificationBell() {
           setUnread(r.unread);
           setSettled(r.settled ?? []);
           setUncertain(r.uncertain ?? 0);
+          reconcileDevice(r.close_tags);
         })
         .catch(() => undefined);
     };

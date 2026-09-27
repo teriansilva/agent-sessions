@@ -129,11 +129,12 @@ def test_a_held_escalation_is_pushed(held, monkeypatch):
     ]
 
 
-def test_a_mission_less_escalation_is_listed_but_not_pushed(held, monkeypatch):
-    assert (
-        _persist_escalation("act-loose", LOOSE, monkeypatch) == []
-    ), "pushes for standalone decisions wait for #1086 Phase 4's withdrawable notifications"
-    assert [r["action_id"] for r in notifications.listing()["notifications"]] == ["act-loose"]
+def test_a_mission_less_escalation_is_announced_by_the_needs_you_sync_not_here(held, monkeypatch):
+    # #1086 Phase 4: ONE producer for sessions no mission holds — the needs-you episode sync
+    # (`needs_you_notify`), which retracts what it raises. The orchestrator's pass says nothing for
+    # them: a second row would announce the same situation twice and nothing would retract it.
+    assert _persist_escalation("act-loose", LOOSE, monkeypatch) == []
+    assert notifications.listing()["notifications"] == []
 
 
 def test_an_unreadable_membership_store_fails_toward_pushing(

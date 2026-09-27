@@ -31,6 +31,7 @@ from fastapi.testclient import TestClient
 from agent_sessions import (
     aitasks,
     metadata,
+    missions,
     orchestrator,
     orchestrator_loop,
     prefs,
@@ -2925,9 +2926,13 @@ def _rec(state, aid="a1", sid="claude:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"):
 
 
 @pytest.mark.parametrize("state", ["escalated", LOW_CONF])
-def test_notify_escalations_announces_both_kinds_exactly_once(state):
+def test_notify_escalations_announces_both_kinds_exactly_once(state, monkeypatch):
     """`orchestrator.py:692` decides whether the row is announced AT ALL. A low-confidence row
-    that missed it would be silent — the one failure this feature exists to remove."""
+    that missed it would be silent — the one failure this feature exists to remove.
+
+    For a session a mission holds: since #1086 Phase 4 the pass announces only those, and the
+    needs-you episode sync announces the rest (`test_needs_you_notify`)."""
+    monkeypatch.setattr(missions, "all_active_memberships", lambda **k: {_rec(state)["session_id"]})
     prefs.set_orchestrator({**prefs.get_orchestrator(), "notify": "escalations"})
     orchestrator._persist([_rec(state)])
     rows = notifications.listing()["notifications"]
@@ -2935,10 +2940,11 @@ def test_notify_escalations_announces_both_kinds_exactly_once(state):
 
 
 @pytest.mark.parametrize("state", ["escalated", LOW_CONF])
-def test_both_kinds_are_flagged_as_escalations_for_the_badge(state):
+def test_both_kinds_are_flagged_as_escalations_for_the_badge(state, monkeypatch):
     """`orchestrator.py:704` decides `escalation=True`, which drives the badge and the settled
     window. Missing it announces the row and then never counts it — a different silence in the
-    same feature."""
+    same feature. (A mission-held session: see the test above.)"""
+    monkeypatch.setattr(missions, "all_active_memberships", lambda **k: {_rec(state)["session_id"]})
     prefs.set_orchestrator({**prefs.get_orchestrator(), "notify": "escalations"})
     orchestrator._persist([_rec(state)])
     assert notifications.listing()["notifications"][0]["escalation"] is True, state

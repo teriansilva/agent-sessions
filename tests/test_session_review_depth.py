@@ -21,6 +21,7 @@ def test_defaults_are_recognise_on_and_standard_context(tmp_path):
     assert prefs.get_session_review(tmp_path / "none.json") == {
         "recognise_prompts": True,
         "decision_context": "standard",
+        "notify": True,
     }
 
 
@@ -38,17 +39,21 @@ def test_writes_are_strict_and_unknown_keys_refused():
 def test_reads_are_lenient_and_a_partial_write_keeps_the_other_field(tmp_path):
     path = tmp_path / "prefs.json"
     path.write_text(
-        json.dumps({"session_review": {"recognise_prompts": "x", "decision_context": 3}})
+        json.dumps(
+            {"session_review": {"recognise_prompts": "x", "decision_context": 3, "notify": "no"}}
+        )
     )
     assert prefs.get_session_review(path) == {
         "recognise_prompts": True,
         "decision_context": "standard",
+        "notify": True,
     }
     prefs.set_session_review({"decision_context": "deep"}, path)
     prefs.set_session_review({"recognise_prompts": False}, path)
     assert prefs.get_session_review(path) == {
         "recognise_prompts": False,
         "decision_context": "deep",
+        "notify": True,
     }
 
 

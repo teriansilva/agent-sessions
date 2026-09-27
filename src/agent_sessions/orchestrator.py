@@ -175,7 +175,11 @@ def observed_prompt_for(key: str) -> dict:
     }
 
 
-def observed_screen(key: str) -> dict:
+class ScreenUnreadable(Exception):
+    """A STRICT screen read failed (#1086 Phase 4, Hermes 5265): unknown, not "the screen moved"."""
+
+
+def observed_screen(key: str, *, strict: bool = False) -> dict:
     """The live screen as the Ask page reads it (#1086 Phase 3), WITHOUT attaching. Blocking.
 
     ``prompt_class`` and ``menu`` exactly as :func:`observed_prompt_for`; ``fingerprint`` the same
@@ -185,7 +189,12 @@ def observed_screen(key: str) -> dict:
     """
     try:
         screen = scrollback.live_tail_text(key, PROMPT_SCREEN_CHARS)
-    except Exception:
+    except Exception as e:
+        # The fail-soft read (the list, the details) shows an empty screen. The notification
+        # sync must not: an empty screen has a DIFFERENT fingerprint, which a dismissal would read
+        # as "the screen moved" and re-announce an unchanged, dismissed session.
+        if strict:
+            raise ScreenUnreadable(type(e).__name__) from e
         screen = ""
     return {
         "prompt_class": _prompt_class(screen),
@@ -979,10 +988,12 @@ def _persist(records: list[dict], *, gate=None) -> list[dict]:
     ledger.compact_if_needed()
 
     notify = str(prefs.get_orchestrator().get("notify") or "escalations")
-    # WHICH ESCALATIONS MAY PUSH (#1057), read once per pass and only when there is something to
-    # announce: sessions a mission holds. The Ask page (#1086 Phase 3) is a surface for the rest,
-    # so the BADGE counts them now — but a push stays off for them until Phase 4 brings the
-    # conservative, withdrawable notification model. Deliberately NOT `decision_surfaces()`.
+    # WHICH SESSIONS THIS PASS ANNOUNCES (#1057, #1086 Phase 4): those a mission holds. A session no
+    # mission holds is announced by ONE producer, the needs-you episode sync (`needs_you_notify`),
+    # which raises one withdrawable notification per episode and retracts it when the session no
+    # longer needs the operator. Raising a second row here would announce the same situation
+    # twice and leave a row nothing retracts — so for those sessions this pass says nothing, not
+    # even under `notify: all`. Read once per pass, and only when there is something to announce.
     surfaces = notifications.mission_surfaces() if kept else None
     for rec in kept:
         # `escalated` IS the "I'm not sure, you look" state (see _decide). `all` also covers
@@ -994,6 +1005,15 @@ def _persist(records: list[dict], *, gate=None) -> list[dict]:
             notify == "all"
             or (notify == "escalations" and rec.get("state") in ledger.ESCALATION_STATES)
         ):
+            continue
+        # `surfaces is None` (membership unreadable) cannot establish that the session is
+        # standalone, so it fails toward announcing here, as before.
+        if surfaces is not None and str(rec.get("session_id") or "") not in surfaces:
+            continue
+        # …except where a needs-you EPISODE is already open for it: that notification covers the
+        # situation, and a second, URL-tagged one would be the duplicate its retraction cannot
+        # reach (Hermes 5239, finding 4). An unreadable episode store still fails toward announcing.
+        if surfaces is None and notifications.has_open_episode(str(rec.get("session_id") or "")):
             continue
         with contextlib.suppress(Exception):
             # Best-effort by design: a notification store or push failure must never lose the
@@ -1013,19 +1033,7 @@ def _persist(records: list[dict], *, gate=None) -> list[dict]:
             # `None` means an equivalent alert is already sitting in the bell — the operator has
             # been told. Re-proposing is correct (the situation IS still unresolved); re-alerting
             # about it every TTL is not, and a push is the one channel that can wake someone.
-            #
-            # A decision with NO surface still lands in the bell (visible, not counted — see
-            # `notifications._counts_toward_badge`) but is not pushed. `surfaces is None` (the
-            # membership store unreadable) fails toward announcing, the same way `add` treats every
-            # unprovable answer: a push that turns out unactionable costs a glance, a lost one can
-            # cost the decision.
-            no_surface = (
-                note is not None
-                and note.get("escalation") is True
-                and surfaces is not None
-                and str(note.get("session_id") or "") not in surfaces
-            )
-            if note is not None and not no_surface:
+            if note is not None:
                 notifications.fanout(note)
     return kept
 

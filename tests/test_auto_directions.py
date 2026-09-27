@@ -873,7 +873,10 @@ async def test_a_lagging_announcer_cannot_resurrect_a_dismissed_notification(env
 
     rec = _drafts()[0]
     entered, go = threading.Event(), threading.Event()
-    real_load = notifications._load
+    # `add` reads its predecessor through the STRICT loader since #1086 Phase 4 (Hermes 5239: a
+    # mutation starts from one checked snapshot), so that is where the dedupe read — and this hook —
+    # lives now.
+    real_load = notifications._load_doc_strict
     who: list = []
     seen: list[int] = []
     errors: list[BaseException] = []
@@ -881,9 +884,10 @@ async def test_a_lagging_announcer_cannot_resurrect_a_dismissed_notification(env
     def lagging(path):
         """Hold the FIRST announcer inside the store lock, right after it reads the tombstones.
 
-        Hooked on `_load` because that is where the dedupe decision is now made — inside `add`'s
-        lock — rather than on a receipt read taken before it. Gated on the announcer thread, so the
-        peer's reads and `_write`'s own internal load are untouched.
+        Hooked on the strict loader because that is where the dedupe decision is now made —
+        inside `add`'s lock — rather than on a receipt read taken before it. Gated on the
+        announcer thread's FIRST read, so the peer's reads and `_write`'s own internal load are
+        untouched.
         """
         out = real_load(path)
         if who and threading.current_thread() is who[0] and not seen:
@@ -892,7 +896,7 @@ async def test_a_lagging_announcer_cannot_resurrect_a_dismissed_notification(env
             go.wait(timeout=15)
         return out
 
-    monkeypatch.setattr(notifications, "_load", lagging)
+    monkeypatch.setattr(notifications, "_load_doc_strict", lagging)
 
     # EVERY ROW EVER CREATED FOR THIS ACTION, not the rows left at the end.
     #

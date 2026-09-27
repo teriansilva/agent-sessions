@@ -1399,6 +1399,10 @@ _SESSION_REVIEW_DEFAULTS: dict[str, object] = {
     # the review's reason and the screen's prompt; `deep` adds the transcript tail and this
     # session's earlier operator decisions.
     "decision_context": "standard",
+    # Raise a notification (bell + push) when a session no mission holds starts needing you
+    # (#1086 Phase 4). Retraction is NOT optional and has no setting: switching this off closes
+    # every open needs-you notification on the next sync.
+    "notify": True,
 }
 
 
@@ -1414,6 +1418,8 @@ def _merge_session_review(base: dict, raw: object) -> dict:
             base["recognise_prompts"] = raw["recognise_prompts"]
         if raw.get("decision_context") in SESSION_REVIEW_CONTEXTS:
             base["decision_context"] = raw["decision_context"]
+        if isinstance(raw.get("notify"), bool):
+            base["notify"] = raw["notify"]
     return base
 
 
@@ -1428,6 +1434,8 @@ def validate_session_review_patch(patch: object) -> str | None:
         return "session_review.recognise_prompts must be a boolean"
     if "decision_context" in patch and patch["decision_context"] not in SESSION_REVIEW_CONTEXTS:
         return f"session_review.decision_context must be one of {list(SESSION_REVIEW_CONTEXTS)}"
+    if "notify" in patch and not isinstance(patch["notify"], bool):
+        return "session_review.notify must be a boolean"
     return None
 
 

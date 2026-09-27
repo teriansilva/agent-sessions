@@ -113,3 +113,14 @@ test("the server's refreshed block wins after a failed save", async () => {
   expect(screen.getByLabelText("Deep")).toBeChecked();
   expect(screen.getByLabelText(/recognise questions and choices/i)).not.toBeChecked();
 });
+
+test("the notify switch saves session_review.notify and defaults to on (#1086 P4)", async () => {
+  const refresh = vi.fn();
+  // A server predating the field sends no `notify`: that reads as ON, never as off.
+  renderDepth({ recognise_prompts: true, decision_context: "standard" }, refresh);
+  const box = screen.getByLabelText(/notify me when a session needs me/i);
+  expect(box).toBeChecked();
+  await userEvent.click(box);
+  expect(api.setPrefs).toHaveBeenLastCalledWith({ session_review: { notify: false } });
+  await waitFor(() => expect(box).not.toBeChecked());
+});

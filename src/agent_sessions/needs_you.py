@@ -77,6 +77,11 @@ class LedgerUnavailable(Unavailable):
     """The action ledger could not be read: a decision-only session would silently vanish."""
 
 
+class ReadIncomplete(Unavailable):
+    """A STRICT read (the notification sync's) could not establish its whole input: a session
+    store, the metadata sidecar or the dismissal record could not be read completely."""
+
+
 def _num(value: object) -> float | None:
     """A FINITE number, or ``None``: ``NaN``/``inf`` are not times, and `JSONResponse` refuses
     them."""
@@ -158,6 +163,7 @@ def build(
     project: str | None = None,
     now: float | None = None,
     suppressed: dict[str, str] | None = None,
+    strict: bool = False,
 ) -> dict:
     """The NEEDS YOU payload. Pure apart from ``observe`` (a screen read per candidate row).
 
@@ -218,7 +224,15 @@ def build(
             if fp is None:
                 kept.append(r)
                 continue
-            observed_cache[r["id"]] = _safe_observe(observe, r)
+            if strict:
+                # A dismissal is judged on the screen; a screen that could not be read is
+                # UNKNOWN, never "moved" (Hermes 5265, finding 5).
+                try:
+                    observed_cache[r["id"]] = observe(r)
+                except Exception as e:  # noqa: BLE001 — any failure is "could not read"
+                    raise ReadIncomplete(f"screen of a dismissed session: {e}") from e
+            else:
+                observed_cache[r["id"]] = _safe_observe(observe, r)
             current = (observed_cache[r["id"]] or {}).get("fingerprint")
             if current != fp:
                 kept.append(r)

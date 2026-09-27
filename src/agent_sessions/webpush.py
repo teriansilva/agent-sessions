@@ -299,22 +299,53 @@ def encrypt(payload: bytes, p256dh_b64: str, auth_b64: str) -> bytes:
     )
 
 
-def build_payload(*, title: str, project: str, url: str) -> bytes:
+#: A notification tag is an identifier we mint (`notifications.episode_tag`), never content.
+TAG_MAX = 200
+#: Retractions carried by one push, at most. Tags are short identifiers; this bounds the payload
+#: well under the push services' 4 KB.
+CLOSE_MAX = 20
+
+
+#: Plaintext bytes a push may carry. Push services cap the ENCRYPTED body at 4,096 bytes, and
+#: aes128gcm adds a 86-byte header, a 1-byte delimiter and a 16-byte tag; the rest is margin.
+PAYLOAD_MAX_BYTES = 3800
+
+
+def fit_close(tags, **fields) -> list[str]:
+    """The longest prefix of ``tags`` that keeps :func:`build_payload` within
+    :data:`PAYLOAD_MAX_BYTES` for these ``fields`` — measured in ENCODED bytes, never characters
+    (Hermes 5265, finding 3: a multibyte title plus twenty tags overflowed the service's limit).
+    The caller acknowledges exactly what it returns."""
+    batch = list(tags)[:CLOSE_MAX]
+    while batch and len(build_payload(**fields, close=batch)) > PAYLOAD_MAX_BYTES:
+        batch.pop()
+    return batch
+
+
+def _tags(tags) -> list[str]:
+    return [str(t)[:TAG_MAX] for t in list(tags)[:CLOSE_MAX] if t]
+
+
+def build_payload(*, title: str, project: str, url: str, tag: str = "", close=()) -> bytes:
     """The ONLY push payload constructor. Three short strings and a link — no screen text, no
-    transcript, no rationale.
+    transcript, no rationale — plus, for a needs-you episode, its tag and the tags of notifications
+    to RETRACT before showing (#1086 Phase 4). Tags are identifiers this server minted.
 
     Keeping this a named function with a fixed signature is the enforcement point: a caller
     cannot pass "just a bit of the screen" without changing this signature, and the test suite
     asserts the encoded body contains nothing else.
     """
-    return json.dumps(
-        {
-            "title": str(title)[:TITLE_MAX],
-            "body": str(project)[:BODY_MAX],
-            "url": str(url)[:500],
-        },
-        separators=(",", ":"),
-    ).encode()
+    body: dict = {
+        "title": str(title)[:TITLE_MAX],
+        "body": str(project)[:BODY_MAX],
+        "url": str(url)[:500],
+    }
+    if tag:
+        body["tag"] = str(tag)[:TAG_MAX]
+    closes = _tags(close)
+    if closes:
+        body["close"] = closes
+    return json.dumps(body, separators=(",", ":")).encode()
 
 
 def send(subscription: dict, payload: bytes, *, subject: str = "mailto:admin@localhost") -> None:

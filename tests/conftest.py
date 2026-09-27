@@ -171,6 +171,11 @@ def _install_tripwire() -> None:
 
 
 _pin_store_env()
+
+# The needs-you notification sync (#1086 Phase 4) runs from the app lifespan and WRITES the bell
+# store on its first pass. A test that enters the lifespan would get rows it never asked for, at a
+# moment it does not control. Its tests call `needs_you_notify.sync_once` directly instead.
+os.environ.setdefault("AGENT_SESSIONS_NEEDS_YOU_LOOP", "0")
 _install_tripwire()
 
 

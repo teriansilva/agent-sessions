@@ -38,6 +38,7 @@ from . import (
     mission_plan,
     mission_supervisor_loop,
     missions,
+    needs_you_notify,
     orchestrator_loop,
     owner,
     prefs,
@@ -359,6 +360,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # event loop. Env kill-switch AGENT_SESSIONS_USAGE_LOOP=0; nothing else gates it,
         # because reading a quota is not a model call and costs no tokens.
         usage_task = asyncio.create_task(usage_loop.run())
+        # Needs-you notifications (#1086 Phase 4): one withdrawable notification per episode, synced
+        # from the Ask page's NEEDS YOU read. Env kill-switch AGENT_SESSIONS_NEEDS_YOU_LOOP=0.
+        needs_you_task = asyncio.create_task(needs_you_notify.run())
         try:
             yield
         finally:
@@ -376,6 +380,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 cap_sweep_task,
                 mission_task,
                 usage_task,
+                needs_you_task,
             ):
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):

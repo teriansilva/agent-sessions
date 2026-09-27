@@ -695,6 +695,12 @@ def _settled(action_id: str, state: str, record: dict | None = None) -> None:
             [action_id],
             decided_at={action_id: float(when)} if isinstance(when, int | float) else None,
         )
+    # A settled decision may end a needs-you episode (#1086 Phase 4): re-sync now, not at the
+    # interval, so its notification is retracted while the operator is still looking.
+    with contextlib.suppress(Exception):
+        from . import needs_you_notify
+
+        needs_you_notify.poke()
     # Freeze the mission timeline's settlement projection (#846, #840 §2). Compaction bounds
     # this ledger to a GLOBAL tail (`HISTORY_MAX`), which is right for a feed and wrong for a
     # mission that outlives it: without a projection, a six-week-old mission would keep its

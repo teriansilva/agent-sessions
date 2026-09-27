@@ -652,6 +652,9 @@ export interface NotificationList {
    *  the store: a row that ages out of this list is still present, still suppressing a
    *  re-announce (#760), and merely stops being drawn. Optional for the same reason as above. */
   settled?: PulseNotification[];
+  /** Needs-you episode tags the server has retracted (#1086 Phase 4): the app closes exactly
+   *  these. ABSENT when the store could not be read. */
+  close_tags?: string[];
 }
 
 /** A registered browser. `origin` only — the endpoint is a per-device capability URL and
@@ -1003,6 +1006,9 @@ export interface SessionReviewConfig {
   /** `deep` adds a bounded transcript tail and earlier outcomes for the sessions a decision is
    *  about; `standard` reads the current-state line, the reason and the screen's prompt. */
   decision_context: "standard" | "deep";
+  /** Notify (bell + push) when a session no mission holds starts needing you (#1086 Phase 4).
+   *  Optional so a server predating the field still parses; absent means on. */
+  notify?: boolean;
 }
 
 export interface AppConfig {
