@@ -95,6 +95,7 @@ export function AskConsole({
   pinned,
   needsYou,
   onDetails,
+  wide = false,
 }: {
   /** False when no AI endpoint is configured. `/api/pulse/ask` answers 409 in that case and has
    *  no local fallback, so the control is disabled and says why — `find` / `history` genuinely
@@ -110,6 +111,9 @@ export function AskConsole({
    *  and ⓘ, which opens the same details the list does (#1086). */
   needsYou?: Set<string>;
   onDetails?: (sessionId: string) => void;
+  /** The intro is a DASHBOARD (#1123): laid out across the page's width from the top, rather than
+   *  a greeting centred in the chat's measure. The thread and the composer keep their measure. */
+  wide?: boolean;
 }) {
   const [turns, setTurns] = useState<AskTurn[]>([]);
   const [text, setText] = useState("");
@@ -252,7 +256,7 @@ export function AskConsole({
       ) : null}
       <div className={styles.pane} ref={paneRef} data-testid="ask-pane">
         {turns.length === 0 ? (
-          <div className={`${a.measure} ${a.intro}`}>{intro}</div>
+          <div className={wide ? a.dashboard : `${a.measure} ${a.intro}`}>{intro}</div>
         ) : (
           <div
             className={`${a.measure} ${styles.paneAtBottom}`}

@@ -20,7 +20,11 @@ export const MISSION_PATH = "/mission";
 /** The pre-#948 mission path, still served as a permanent replace-redirect. */
 export const LEGACY_MISSION_PATH = "/pulse";
 
-/** Ask — `find` / `history` over past work (#878), its own page since #1058. */
+/** The BattleLab dashboard (#1123): what is running, what needs you, quota, and Ask. */
+export const DASHBOARD_PATH = "/dashboard";
+
+/** Ask's own path (#878, #1058) — kept working as a replace-redirect to the dashboard, which is
+ *  where Ask lives now (#1123): it is linked from docs and from #1086. */
 export const ASK_PATH = "/ask";
 
 /** The session map (#208 / #424). Labelled MAP in the nav; the path is unchanged. */

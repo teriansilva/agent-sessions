@@ -4,6 +4,7 @@ import { DIRECTION_PREVIEW_PATH } from "./apiPaths";
 import { uploadStoredName } from "./templateMessage";
 import type {
   AgentCounts,
+  DashboardSessions,
   AgentBudgets,
   AgentDefaults,
   AgentUsageResponse,
@@ -416,6 +417,14 @@ export const api = {
   version: () => getJson<{ version: string }>("/api/version"),
   /** Host-wide running / working agent counts (#1085) — cheap, no session walk. */
   agents: () => getJson<AgentCounts>("/api/agents"),
+  /** The dashboard's live + recent sessions (#1123), one scoped read with its own read health. */
+  dashboardSessions: (liveLimit = 5, recentLimit = 6) =>
+    getJson<DashboardSessions>(
+      `/api/dashboard/sessions?live_limit=${liveLimit}&recent_limit=${recentLimit}`,
+    ),
+  /** The drill-down behind a live/working count: the session list filtered to running agents. */
+  runningSessions: (which: "live" | "working", limit = 200, offset = 0) =>
+    getJson<SessionsPage>(`/api/sessions?running=${which}&limit=${limit}&offset=${offset}`),
   /** Discovery: every known engine provider with presence / new-session / bin path. */
   engines: () => getJson<EnginesResponse>("/api/engines"),
   /** One engine's manifest detail (#853 P4) — the Agents page. A 404 means no such agent. */

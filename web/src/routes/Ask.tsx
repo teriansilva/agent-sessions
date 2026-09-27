@@ -8,6 +8,23 @@ import { NeedsYouDetailsDialog } from "../components/ask/NeedsYouDetailsDialog";
 import { needsYouIds } from "../components/ask/needsYouLabels";
 import { RecentWork } from "../components/ask/RecentWork";
 import { useNeedsYou } from "../components/ask/useNeedsYou";
+import {
+  KpiStrip,
+  MissionsTile,
+  QuotaTile,
+  RecentSessionsTile,
+  RunningTile,
+} from "../components/dashboard/Tiles";
+import d from "../components/dashboard/Dashboard.module.css";
+import {
+  MISSIONS_POLL_MS,
+  QUOTA_POLL_MS,
+  SESSIONS_POLL_MS,
+  readMissions,
+  readQuota,
+  readSessions,
+} from "../components/dashboard/sources";
+import { usePolled } from "../components/dashboard/usePolled";
 import { useConfig, useConfigRefresh } from "../app/config";
 import { api } from "../lib/api";
 import { coerceRecentWindowDays } from "../lib/recentWindow";
@@ -48,11 +65,42 @@ export default function Ask() {
 
   const [engine, setEngine] = useState("");
   const [project, setProject] = useState("");
-  const { state, facets, membership, refresh } = useNeedsYou(windowDays, engine, project);
+  const { state, facets, membership, refresh } = useNeedsYou(
+    windowDays,
+    engine,
+    project,
+  );
   const [details, setDetails] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState<null | "needs" | "recent">(null);
+  const [expanded, setExpanded] = useState<
+    null | "needs" | "recent" | "agents" | "missions" | "quota" | "more"
+  >(null);
 
-  const recent = <RecentWork windowDays={windowDays} onWindowDays={changeWindow} />;
+  // The dashboard's own reads (#1123): each tile loads, fails and retries on its own.
+  const [sessions, retrySessions] = usePolled(readSessions, SESSIONS_POLL_MS);
+  const [missionsRes, retryMissions] = usePolled(
+    readMissions,
+    MISSIONS_POLL_MS,
+  );
+  const [quota, retryQuota] = usePolled(readQuota, QUOTA_POLL_MS);
+  const running = (
+    <RunningTile res={sessions} retry={() => void retrySessions()} />
+  );
+  const missionsTile = (
+    <MissionsTile res={missionsRes} retry={() => void retryMissions()} />
+  );
+  const quotaTile = <QuotaTile res={quota} retry={retryQuota} />;
+  const liveNow =
+    sessions.status === "ok" && sessions.data.live.health === "ok"
+      ? sessions.data.live
+      : null;
+  const jump = (id: string) => {
+    const el = document.getElementById(id);
+    el?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const recent = (
+    <RecentWork windowDays={windowDays} onWindowDays={changeWindow} />
+  );
   const needs = (
     <NeedsYou
       state={state}
@@ -86,7 +134,9 @@ export default function Ask() {
                 type="button"
                 className={`${s.btn} ${count ? s.hot : ""}`}
                 aria-expanded={expanded === "needs"}
-                onClick={() => setExpanded((e) => (e === "needs" ? null : "needs"))}
+                onClick={() =>
+                  setExpanded((e) => (e === "needs" ? null : "needs"))
+                }
               >
                 {count ? <span className={s.dot} aria-hidden="true" /> : null}
                 Needs you{count !== null ? ` · ${count}` : ""} ▾
@@ -94,12 +144,71 @@ export default function Ask() {
               <button
                 type="button"
                 className={s.btn}
+                aria-label="Active agents"
+                aria-expanded={expanded === "agents"}
+                onClick={() =>
+                  setExpanded((e) => (e === "agents" ? null : "agents"))
+                }
+                data-testid="bar-agents"
+              >
+                <span className={s.long}>
+                  Agents{" "}
+                  {liveNow
+                    ? `${liveNow.total} live · ${liveNow.working} working`
+                    : ""}
+                </span>
+                <span className={s.short}>
+                  Live {liveNow ? liveNow.total : ""}
+                </span>{" "}
+                ▾
+              </button>
+              <button
+                type="button"
+                className={`${s.btn} ${s.long}`}
+                aria-label="Missions"
+                aria-expanded={expanded === "missions"}
+                onClick={() =>
+                  setExpanded((e) => (e === "missions" ? null : "missions"))
+                }
+                data-testid="bar-missions"
+              >
+                Missions ▾
+              </button>
+              <button
+                type="button"
+                className={`${s.btn} ${s.long}`}
+                aria-label="Quota"
+                aria-expanded={expanded === "quota"}
+                onClick={() =>
+                  setExpanded((e) => (e === "quota" ? null : "quota"))
+                }
+                data-testid="bar-quota"
+              >
+                Quota ▾
+              </button>
+              <button
+                type="button"
+                className={`${s.btn} ${s.long}`}
                 aria-label="Recent work"
                 aria-expanded={expanded === "recent"}
-                onClick={() => setExpanded((e) => (e === "recent" ? null : "recent"))}
+                onClick={() =>
+                  setExpanded((e) => (e === "recent" ? null : "recent"))
+                }
               >
-                <span className={s.long}>Recent work</span>
-                <span className={s.short}>Recent</span> ▾
+                Recent work ▾
+              </button>
+              {/* A phone keeps ONE row (#1086): Missions, Quota and Recent work sit behind More, each
+                  still one tap from its tile over the thread (Hermes 5240, finding 1). */}
+              <button
+                type="button"
+                className={`${s.btn} ${s.mobileOnly}`}
+                aria-expanded={expanded === "more"}
+                onClick={() =>
+                  setExpanded((e) => (e === "more" ? null : "more"))
+                }
+                data-testid="bar-more"
+              >
+                More ▾
               </button>
               <span className={s.sp} />
               <button
@@ -116,32 +225,93 @@ export default function Ask() {
               </button>
             </div>
             {expanded ? (
-              <div className={s.panel}>{expanded === "needs" ? needs : recent}</div>
+              <div className={s.panel}>
+                {expanded === "more" ? (
+                  <div
+                    className={s.moreMenu}
+                    role="menu"
+                    data-testid="bar-more-menu"
+                  >
+                    {(
+                      [
+                        ["missions", "Missions"],
+                        ["quota", "Quota"],
+                        ["recent", "Recent work"],
+                      ] as const
+                    ).map(([key, label]) => (
+                      <button
+                        key={key}
+                        type="button"
+                        role="menuitem"
+                        className={s.btn}
+                        onClick={() => setExpanded(key)}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                ) : expanded === "needs" ? (
+                  needs
+                ) : expanded === "agents" ? (
+                  running
+                ) : expanded === "missions" ? (
+                  missionsTile
+                ) : expanded === "quota" ? (
+                  quotaTile
+                ) : (
+                  recent
+                )}
+              </div>
             ) : null}
           </>
         )}
         intro={
           <>
-            <div className={styles.kicker}>Ask // your work</div>
-            <h1 className={styles.h1}>Ask about your work</h1>
+            <div className={styles.kicker}>Dashboard // what is going on</div>
+            <h1 className={styles.h1}>BattleLab dashboard</h1>
             <p className={styles.sub}>
-              Find a session or a mission by what happened in it, or ask what
-              you did and when. Answers are read from the transcripts and
-              missions this install can already see.
+              What is running, what needs you and what you did — and below, ask
+              about anything: answers are read from the transcripts and missions
+              this install can already see.
             </p>
             {!configured ? (
-              <div className={styles.needsEndpoint} data-testid="ask-needs-endpoint">
-                Ask needs an AI endpoint — it has no local fallback. Set one up in{" "}
+              <div
+                className={styles.needsEndpoint}
+                data-testid="ask-needs-endpoint"
+              >
+                Ask needs an AI endpoint — it has no local fallback. Set one up
+                in{" "}
                 <Link to={settingsPath("ai-endpoint")}>
                   Settings → Endpoint &amp; model
                 </Link>
                 , then come back.
               </div>
             ) : null}
-            {recent}
-            {needs}
+            <KpiStrip
+              sessions={sessions}
+              missions={missionsRes}
+              quota={quota}
+              needsYou={count}
+              onJump={jump}
+            />
+            <div className={d.cols}>
+              <div>
+                {needs}
+                {recent}
+                <RecentSessionsTile
+                  res={sessions}
+                  retry={() => void retrySessions()}
+                />
+              </div>
+              <div>
+                {running}
+                {missionsTile}
+                {quotaTile}
+              </div>
+            </div>
           </>
         }
+        wide
       />
       {details ? (
         <NeedsYouDetailsDialog

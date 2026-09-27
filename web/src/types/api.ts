@@ -851,6 +851,47 @@ export interface AiActivity {
 }
 
 /** Running vs working, host-wide (#1085): agents running, and how many printed in the window. */
+/** One running session on the dashboard (#1123). */
+export interface DashboardLiveRow {
+  id: string;
+  title: string;
+  engine: string;
+  project: { id: string; name: string };
+  /** Running AND visibly printing (#1085). */
+  working: boolean;
+  last_activity: number;
+  /** The recap's current-state line — where it stands now, not how it started. */
+  state_line: string;
+}
+
+export type DashboardBand = "needs_you" | "in_flight" | "recently_active" | "idle";
+
+export interface DashboardRecentRow {
+  id: string;
+  title: string;
+  engine: string;
+  project: { id: string; name: string };
+  band: DashboardBand;
+  /** `null` when the runtime probe failed: unknown, never "not running". */
+  running: boolean | null;
+  last_activity: number;
+}
+
+/** `GET /api/dashboard/sessions` (#1123). Every count is over the rows the session list shows, so
+ *  it equals `/api/sessions?running=live|working`'s `total`. */
+export interface DashboardSessions {
+  live:
+    | {
+        health: "ok";
+        total: number;
+        working: number;
+        by_engine: Record<string, { live: number; working: number }>;
+        rows: DashboardLiveRow[];
+      }
+    | { health: "unavailable" };
+  recent: { total: number; rows: DashboardRecentRow[] };
+}
+
 export interface AgentCounts {
   live: number;
   working: number;
@@ -872,6 +913,8 @@ export interface SessionsPage {
   };
   /** A `mission` filter was requested but the mission store could not be read (#948). */
   mission_filter_unavailable?: boolean;
+  /** A `running` filter was requested but the runtime probe failed (#1123): unknown, not "none". */
+  running_filter_unavailable?: boolean;
   /** The pinned scan to pass on the NEXT page (#1007 Phase 3). Present only when the request sent
    *  `snapshot`, and it may differ from what was sent (an expired pin is replaced, never an error). */
   snapshot?: string;

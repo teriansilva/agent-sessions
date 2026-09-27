@@ -13,6 +13,14 @@
   margin-inline: auto;
 }
 
+/* The dashboard intro (#1123): the page's width, from the top — tiles, not a centred greeting. */
+.dashboard {
+  width: 100%;
+  max-width: 1320px;
+  margin-inline: auto;
+  padding-block: 16px;
+}
+
 /* Before the first question the greeting sits in the middle of the empty thread. */
 .intro {
   margin-block: auto;

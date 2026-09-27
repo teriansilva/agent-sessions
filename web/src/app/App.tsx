@@ -59,7 +59,7 @@ import {
   WIDTH_KEY,
   WIDTH_STEP,
 } from "./sidebarWidth";
-import { ASK_PATH, LEGACY_MISSION_PATH, MISSION_PATH } from "../lib/routes";
+import { ASK_PATH, DASHBOARD_PATH, LEGACY_MISSION_PATH, MISSION_PATH } from "../lib/routes";
 import { SETTINGS_PATH } from "../routes/settingsTabs";
 import { OperatorMenu } from "../components/shell/OperatorMenu";
 import { SectionNav } from "../components/shell/SectionNav";
@@ -665,7 +665,9 @@ function Layout() {
                   <Route path="/overview" element={<Overview />} />
                   <Route path={MISSION_PATH} element={<MissionControl />} />
                   <Route path={LEGACY_MISSION_PATH} element={<LegacyMissionRedirect />} />
-                  <Route path={ASK_PATH} element={<Ask />} />
+                  <Route path={DASHBOARD_PATH} element={<Ask />} />
+                  {/* #1123: Ask's old path keeps working — it IS the dashboard's Ask now. */}
+                  <Route path={ASK_PATH} element={<Navigate to={DASHBOARD_PATH} replace />} />
                   <Route path="/templates" element={<Templates />} />
                   <Route path="/templates/new" element={<TemplateEditor />} />
                   <Route path="/templates/:id" element={<TemplateEditor />} />

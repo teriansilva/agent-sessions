@@ -181,7 +181,7 @@ test("the command topbar names every work section, Ask first, the map under Sess
         a.getAttribute("href"),
       ]),
   ).toEqual([
-    ["Ask", "/ask"],
+    ["Dashboard", "/dashboard"],
     ["Sessions", "/"],
     ["Missions", "/mission"],
     ["Templates", "/templates"],

@@ -80,16 +80,21 @@ test("ASK is one tap from the top bar at every width, and the page is its own UR
   await page.goto("/");
   // Named even where the label is visually clipped (mobile): the accessible name is the link's own
   // text, which the CSS clips rather than removes.
-  const link = barNav(page).getByRole("link", { name: "Ask", exact: true });
+  const link = barNav(page).getByRole("link", { name: "Dashboard", exact: true });
   await expect(link).toBeVisible();
   await link.click();
-  await expect(page).toHaveURL(/\/ask$/);
+  await expect(page).toHaveURL(/\/dashboard$/);
   await expect(page.getByTestId("ask-page")).toBeVisible();
   await expect(link).toHaveAttribute("aria-current", "page");
 
   // …and a direct load of that URL works, which is what having a route means.
-  await page.goto("/ask");
+  await page.goto("/dashboard");
   await expect(page.getByTestId("ask-page")).toBeVisible();
+  // #1123: Ask's old path keeps working — it lands on the dashboard, where Ask lives now.
+  await page.goto("/ask");
+  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page.getByTestId("ask-page")).toBeVisible();
+  await expect(link).toHaveAttribute("aria-current", "page");
 });
 
 test("a question answers, names the sessions it matched, and jumps into one", async ({
@@ -192,7 +197,7 @@ test("leaving and coming back starts clean — the answers really are transient"
   // prove something weaker (that nothing was persisted server-side).
   await openMapFromNav(page);
   await expect(page).toHaveURL(/\/overview$/);
-  await barNav(page).getByRole("link", { name: "Ask", exact: true }).click();
+  await barNav(page).getByRole("link", { name: "Dashboard", exact: true }).click();
   await expect(page.getByTestId("ask-page")).toBeVisible();
   await expect(page.getByTestId("ask-turn")).toHaveCount(0);
 });
@@ -258,7 +263,7 @@ test("Ask is a chat column: composer docked at the bottom, the thread grows up t
   const pane = page.getByTestId("ask-pane");
 
   // Empty: the greeting is in the thread and the composer is already on the bottom edge.
-  await expect(page.getByRole("heading", { name: "Ask about your work" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "BattleLab dashboard" })).toBeVisible();
   const dockBox = (await dock.boundingBox())!;
   const paneBox = (await pane.boundingBox())!;
   expect(dockBox.y).toBeGreaterThan(paneBox.y + paneBox.height - 2);
@@ -273,7 +278,7 @@ test("Ask is a chat column: composer docked at the bottom, the thread grows up t
   await expect(turn.getByRole("article", { name: "Answer" })).toContainText(
     "Two sessions touched",
   );
-  await expect(page.getByRole("heading", { name: "Ask about your work" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "BattleLab dashboard" })).toHaveCount(0);
   // …the mission opens the mission, the session still jumps in…
   await expect(
     page.getByRole("link", { name: "Open mission Stabilise upload retries" }),

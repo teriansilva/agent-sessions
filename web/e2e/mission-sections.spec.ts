@@ -144,7 +144,7 @@ test("section buttons share the brand row and keep their own declared typography
     expect(cb.height, `chevron height at ${width}`).toBe(44);
     expect(Math.abs(cb.y + cb.height / 2 - (bb.y + bb.height / 2)), `chevron row at ${width}`).toBeLessThan(2);
     await chevron.click({ trial: true });
-    for (const name of ["Ask", "Sessions", "Missions", "Templates"]) {
+    for (const name of ["Dashboard", "Sessions", "Missions", "Templates"]) {
       const link = nav.getByRole("link", { name, exact: true });
       const b = (await link.boundingBox())!;
       expect(
@@ -315,7 +315,7 @@ test("ambient and press feedback reach ordinary controls and respect reduced mot
   await page.clock.fastForward(7001);
   await expect(toggle).not.toHaveClass(/glitching/);
   await expect(
-    barLink(page, "Ask"),
+    barLink(page, "Dashboard"),
   ).toHaveClass(/glitching/);
   await page.clock.fastForward(301);
   await toggle.evaluate((el) => ((el as HTMLButtonElement).disabled = false));

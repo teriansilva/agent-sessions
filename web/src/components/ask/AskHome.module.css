@@ -390,6 +390,21 @@
 .short {
   display: none;
 }
+/* A bar control that exists only on a phone (the dashboard's More, #1123). */
+.mobileOnly {
+  display: none;
+}
+.moreMenu {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+}
+.moreMenu .btn {
+  justify-content: flex-start;
+}
 
 @media (max-width: 800px) {
   .long {
@@ -397,6 +412,9 @@
   }
   .short {
     display: inline;
+  }
+  .mobileOnly {
+    display: inline-flex;
   }
   .row {
     grid-template-columns: 10px 1fr;

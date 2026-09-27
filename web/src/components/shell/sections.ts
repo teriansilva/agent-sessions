@@ -23,14 +23,15 @@
 import {
   BookMarked,
   Crosshair,
+  LayoutDashboard,
   Network,
-  Sparkles,
   TerminalSquare,
   type LucideIcon,
 } from "lucide-react";
 
 import {
   ASK_PATH,
+  DASHBOARD_PATH,
   LEGACY_MISSION_PATH,
   MAP_PATH,
   MISSION_PATH,
@@ -64,7 +65,8 @@ export interface Section {
 }
 
 export const SECTIONS: Section[] = [
-  { id: "ask", label: "Ask", Icon: Sparkles, to: ASK_PATH },
+  // The dashboard (#1123) — Ask lives on it, so the section keeps its id and its first place.
+  { id: "ask", label: "Dashboard", Icon: LayoutDashboard, to: DASHBOARD_PATH },
   {
     id: "sessions",
     label: "Sessions",
@@ -90,7 +92,7 @@ export function activeSection(pathname: string): SectionId | null {
   if (sub) return "sessions";
   if (pathname === MISSION_PATH || pathname === LEGACY_MISSION_PATH)
     return "mission";
-  if (pathname === ASK_PATH) return "ask";
+  if (pathname === DASHBOARD_PATH || pathname === ASK_PATH) return "ask";
   if (pathname === TEMPLATES_PATH || pathname.startsWith(`${TEMPLATES_PATH}/`))
     return "templates";
   return null;

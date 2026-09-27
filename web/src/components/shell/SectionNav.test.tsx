@@ -69,7 +69,7 @@ describe("SectionNav", () => {
       </MemoryRouter>,
     );
     const top = SECTIONS.map((s) => s.label);
-    expect(top).toEqual(["Ask", "Sessions", "Missions", "Templates"]);
+    expect(top).toEqual(["Dashboard", "Sessions", "Missions", "Templates"]);
     const nav = screen.getByTestId("section-nav");
     expect(
       within(nav)
@@ -82,7 +82,7 @@ describe("SectionNav", () => {
     expect(missions.querySelector(".section-nav-beta")).toHaveAttribute("aria-hidden", "true");
     expect(missions).toHaveAttribute("title", "Missions (beta)");
     expect(nav.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
-    expect(within(nav).getByRole("link", { name: "Ask" })).toHaveAttribute(
+    expect(within(nav).getByRole("link", { name: "Dashboard" })).toHaveAttribute(
       "aria-current",
       "page",
     );

@@ -113,7 +113,7 @@ test("the Sessions label still goes straight to the sessions view; Escape closes
   await page.goto("/ask");
   const bar = page.locator(".hud-topbar");
   // Ask leads the row.
-  await expect(bar.locator(".section-nav > *").first()).toContainText("Ask");
+  await expect(bar.locator(".section-nav > *").first()).toContainText("Dashboard");
   const chevron = bar.getByRole("button", { name: "Sessions menu" });
   await chevron.click();
   const menu = page.getByRole("menu", { name: "Sessions menu" });

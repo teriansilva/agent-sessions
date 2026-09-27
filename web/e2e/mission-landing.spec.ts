@@ -287,8 +287,8 @@ test("the landing is the brief form, and ASK has left for its own section (#1058
   const ask = page
     .locator(".hud-topbar")
     .getByRole("navigation", { name: "Main sections" })
-    .getByRole("link", { name: "Ask", exact: true });
-  await expect(ask).toHaveAttribute("href", "/ask");
+    .getByRole("link", { name: "Dashboard", exact: true });
+  await expect(ask).toHaveAttribute("href", "/dashboard");
   await ask.click();
   await expect(page.getByTestId("composer-input")).toBeVisible();
 });
