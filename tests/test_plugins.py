@@ -1440,10 +1440,10 @@ def test_runtime_pty_can_be_stated_explicitly():
     assert parse(d).runtime == "pty"
 
 
-@pytest.mark.parametrize("kind", ["chat", "api", "", "PTY", 1, None])
+@pytest.mark.parametrize("kind", ["api", "http", "", "PTY", "Chat", 1, None])
 def test_a_runtime_this_build_cannot_run_is_refused_not_half_run(kind):
-    """An API-only runtime is #853 P9; until its reviewed code lands, naming it is refused with a
-    reason — never loaded as if it were a terminal engine."""
+    """A runtime outside the closed set is refused with a reason — never loaded as if it were a
+    terminal engine. (`chat` joined the set in #1209; the rest of the vocabulary stays closed.)"""
     d = doc()
     d["runtime"] = {"kind": kind}
     with pytest.raises(ManifestError, match="runtime.kind"):
@@ -1464,7 +1464,7 @@ def test_a_manifest_with_an_unrunnable_runtime_fails_soft_with_its_reason(tmp_pa
     d = doc()
     d["identity"]["id"] = "zeta"
     d["binary"].update(name="zeta", env_var="AGENT_SESSIONS_ZETA_BIN")
-    d["runtime"] = {"kind": "chat"}
+    d["runtime"] = {"kind": "api"}
     (local / "zeta" / "plugin.json").write_text(json.dumps(d))
     got = load_all(local_dir=local, state_dir=tmp_path / "state")
     assert "zeta" not in got.providers and "needs a newer BattleLab" in str(got.problems)
@@ -1489,3 +1489,148 @@ def test_search_npm_global_is_a_boolean():
     d["binary"]["search_npm_global"] = "yes"
     with pytest.raises(ManifestError):
         parse(d)
+
+
+# --- #853 P9a (#1209): the `chat` runtime -------------------------------------------------------
+
+
+def chat_doc(engine_id: str = "apichat") -> dict:
+    """A minimal, valid `chat` manifest: no binary, no launch, an endpoint wire format only."""
+    return {
+        "contract": 1,
+        "identity": {"id": engine_id, "label": "API agent", "publisher": "t", "version": "1"},
+        "runtime": {"kind": "chat"},
+        "endpoint": {"kind": "openai-chat"},
+        "session_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "mint": "pinned",
+        },
+        "store": {
+            "root": "~/.local/share/agent-sessions/chat",
+            "layout": "battlelab-chat",
+            "read_only": False,
+        },
+        "capabilities": {"resume": True, "new": True, "archive": True},
+        "transcript": {"kind": "battlelab-chat"},
+        "usage": {"source": "tokens", "kind": "chat-response-tokens"},
+        "display": {"name": "API agent", "badge": "api", "accent": "blue"},
+    }
+
+
+def test_a_chat_manifest_parses_with_no_binary_and_no_launch():
+    m = parse(chat_doc())
+    assert m.runtime == "chat"
+    assert m.binary is None and m.launch is None
+    assert m.endpoint is not None and m.endpoint.kind == "openai-chat"
+    assert m.store is not None and m.store.layout == "battlelab-chat"
+    assert m.transcript_kind == "battlelab-chat"
+    assert (m.usage.source, m.usage.kind) == ("tokens", "chat-response-tokens")
+
+
+@pytest.mark.parametrize("block", kinds.PTY_ONLY_BLOCKS)
+def test_a_chat_manifest_refuses_every_block_that_describes_a_process(block):
+    d = chat_doc()
+    d[block] = doc()[block] if block in doc() else {"kind": "none"}
+    if block == "verify":
+        d[block] = ["binary"]
+    with pytest.raises(ManifestError, match=f"^{block}: is forbidden for runtime 'chat'"):
+        parse(d)
+
+
+def test_a_chat_manifest_needs_an_endpoint_of_a_known_wire_format():
+    d = chat_doc()
+    del d["endpoint"]
+    with pytest.raises(ManifestError, match="endpoint"):
+        parse(d)
+    d = chat_doc()
+    d["endpoint"] = {"kind": "anthropic-messages"}
+    with pytest.raises(ManifestError, match="endpoint.kind"):
+        parse(d)
+
+
+@pytest.mark.parametrize("field", ["url", "base_url", "authority", "api_key", "model"])
+def test_a_manifest_can_never_name_the_endpoint_authority_or_key(field):
+    """The URL, key and model are the operator's configuration. A manifest naming any of them is
+    refused by the unknown-field policy — not an allowlist the manifest could populate."""
+    d = chat_doc()
+    d["endpoint"][field] = "https://attacker.example/v1"
+    with pytest.raises(ManifestError, match=f"endpoint.{field}"):
+        parse(d)
+
+
+def test_an_endpoint_block_on_a_pty_manifest_is_refused():
+    d = doc()
+    d["endpoint"] = {"kind": "openai-chat"}
+    with pytest.raises(ManifestError, match="only allowed for runtime 'chat'"):
+        parse(d)
+
+
+@pytest.mark.parametrize("cap", sorted(kinds.PTY_ONLY_CAPABILITIES))
+def test_a_chat_manifest_refuses_capabilities_that_presume_a_terminal(cap):
+    d = chat_doc()
+    d["capabilities"][cap] = True
+    with pytest.raises(ManifestError, match=f"capabilities.{cap}"):
+        parse(d)
+
+
+@pytest.mark.parametrize(
+    "mutate,field",
+    [
+        (lambda d: d.pop("store"), "store"),
+        (lambda d: d["store"].update(layout="shell-records"), "store.layout"),
+        (lambda d: d["store"].update(read_only=True), "store.read_only"),
+        (lambda d: d["transcript"].update(kind="claude-jsonl"), "transcript.kind"),
+    ],
+)
+def test_a_chat_manifest_must_keep_its_conversations_in_its_own_store(mutate, field):
+    d = chat_doc()
+    mutate(d)
+    with pytest.raises(ManifestError, match=field):
+        parse(d)
+
+
+@pytest.mark.parametrize(
+    "mutate,field",
+    [
+        (lambda d: d["store"].update(layout="battlelab-chat"), "store.layout"),
+        (lambda d: d.__setitem__("transcript", {"kind": "battlelab-chat"}), "transcript.kind"),
+        (
+            lambda d: d.__setitem__("usage", {"source": "tokens", "kind": "chat-response-tokens"}),
+            "usage.kind",
+        ),
+    ],
+)
+def test_the_chat_kinds_are_refused_on_a_pty_manifest(mutate, field):
+    d = doc()
+    mutate(d)
+    with pytest.raises(ManifestError, match=field):
+        parse(d)
+
+
+def test_pty_manifests_still_require_binary_and_launch():
+    for block in ("binary", "launch"):
+        d = doc()
+        del d[block]
+        with pytest.raises(ManifestError, match=block):
+            parse(d)
+
+
+def test_a_chat_manifest_loads_and_refuses_to_launch(tmp_path):
+    """Through the real loader (local trust, the strictest path): no problem is recorded, and the
+    provider refuses anything that would execute — with the reason, not an AttributeError."""
+    local = tmp_path / "plugins"
+    (local / "apichat").mkdir(parents=True)
+    f = local / "apichat" / "plugin.json"
+    f.write_text(json.dumps(chat_doc()))
+    f.chmod(0o600)
+    got = load_all(local_dir=local, state_dir=tmp_path / "state", home=tmp_path)
+    assert not {k: v for k, v in got.problems.items() if "apichat" in k}, got.problems
+    p = got.providers["apichat"]
+    assert p.entrypoint() is None
+    assert not (p.supports_orchestrator_input or p.expects_raw_tty or p.supports_seed_start)
+    for call in (
+        lambda: p.launch_argv(UUID, cwd="/tmp", bypass=False),
+        lambda: p.new_launch_argv(UUID, cwd="/tmp", bypass=False),
+    ):
+        with pytest.raises(EngineError, match="runs no process"):
+            call()

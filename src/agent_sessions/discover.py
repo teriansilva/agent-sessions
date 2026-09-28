@@ -28,10 +28,11 @@ def _manifest(name: str):
 
 
 def engine_ids() -> list[str]:
-    """Every engine `doctor` looks for: the roster, in display order (#853 P3). No list here."""
+    """Every engine `doctor` looks for: the roster, in display order (#853 P3). No list here.
+    Only engines that run a binary — a `chat` engine (#1209) has nothing to discover."""
     from . import engines
 
-    return engines.engine_ids()
+    return [e for e in engines.engine_ids() if _manifest(e).binary is not None]
 
 
 def _bin_name(name: str) -> str:
@@ -84,6 +85,8 @@ def resolve(name: str, env: Mapping[str, str] | None = None) -> str | None:
     """Resolve one engine's binary, or None if not present. Precedence: explicit env
     (if it executes) > PATH > known dirs."""
     env = os.environ if env is None else env
+    if _manifest(name).binary is None:
+        return None  # a `chat` engine (#1209) runs no binary
     binary = _bin_name(name)
     explicit = env.get(envvar(name))
     if explicit and _is_exec(explicit):

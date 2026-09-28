@@ -349,7 +349,7 @@ def _binary_name(engine: str) -> str:
     from . import engines
 
     m = engines.manifest_of(engine)
-    return m.binary.name if m is not None else engine
+    return m.binary.name if m is not None and m.binary is not None else engine
 
 
 #: ``Current session: 5% used · resets Aug 26, 1:10pm (Europe/Bucharest)``

@@ -317,11 +317,17 @@ def register(
                 "kind": m.identity.kind,
                 "runtime": m.runtime,
                 "status": "retiring" if engines.is_retiring(prov) else "active",
-                "binary": {
-                    "name": m.binary.name,
-                    "env_var": m.binary.env_var,
-                    "search_paths": list(m.binary.search_paths),
-                },
+                # A `chat` engine (#1209) runs no binary and launches nothing: both are null.
+                "binary": (
+                    {
+                        "name": m.binary.name,
+                        "env_var": m.binary.env_var,
+                        "search_paths": list(m.binary.search_paths),
+                    }
+                    if m.binary is not None
+                    else None
+                ),
+                "endpoint": {"kind": m.endpoint.kind} if m.endpoint is not None else None,
                 "provenance": prov_state,
                 "store": (
                     {
@@ -333,11 +339,15 @@ def register(
                     if store is not None
                     else None
                 ),
-                "launch": {
-                    "resume": m.launch.resume.kind,
-                    "new": m.launch.new.kind if m.launch.new else None,
-                    "admission": m.launch.admission,
-                },
+                "launch": (
+                    {
+                        "resume": m.launch.resume.kind,
+                        "new": m.launch.new.kind if m.launch.new else None,
+                        "admission": m.launch.admission,
+                    }
+                    if m.launch is not None
+                    else None
+                ),
                 "transcript": {"kind": m.transcript_kind, "strict": m.transcript_strict},
                 "usage": {"source": m.usage.source, "kind": m.usage.kind},
                 "capabilities": {c: m.can(c) for c in kinds.CAPABILITIES},

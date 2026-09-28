@@ -1341,7 +1341,10 @@ export interface EngineDetail {
   source: string;
   kind: string;
   runtime: string;
-  binary: { name: string; env_var: string | null; search_paths: string[] };
+  /** Null for a runtime that executes nothing (`chat`, #1209). */
+  binary: { name: string; env_var: string | null; search_paths: string[] } | null;
+  /** The wire format of a `chat` engine's endpoint (#1209); null for `pty`. Never a URL. */
+  endpoint?: { kind: string } | null;
   /** How the binary was found (or why not): `state` is e.g. `adopted`, `absent`, `refused`. */
   provenance: {
     state: string;
@@ -1355,7 +1358,8 @@ export interface EngineDetail {
     layout: string;
     read_only: boolean;
   } | null;
-  launch: { resume: string; new: string | null; admission: string | null };
+  /** Null for a runtime that launches nothing (`chat`, #1209). */
+  launch: { resume: string; new: string | null; admission: string | null } | null;
   transcript: { kind: string | null; strict: boolean };
   usage: { source: string; kind: string | null };
   capabilities: Record<string, boolean>;

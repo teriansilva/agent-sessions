@@ -63,7 +63,7 @@ def admits(engine: str) -> bool:
     from . import engines
 
     m = engines.manifest_of(engine)
-    return m is not None and m.launch.admission == "sqlite-store-shared"
+    return m is not None and m.launch is not None and m.launch.admission == "sqlite-store-shared"
 
 
 def acquire(engine: str | None = None, *, exclusive: bool) -> Admission | None:

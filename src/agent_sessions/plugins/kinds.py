@@ -26,10 +26,21 @@ CONTRACT_CURRENT = 1
 #: termios, because typed "continue" into a bare shell is executed as a command.
 IDENTITY_KINDS = frozenset({"agent", "terminal"})
 
-#: `runtime.kind` (#853 §7). `pty`: a binary under `dtach`, shown through xterm — every engine
-#: today. An API-only runtime (BattleLab's own turn loop, no binary, no terminal) is #853 P9 and
-#: joins this set only with the reviewed code that runs it; until then naming it is refused.
-RUNTIME_KINDS = frozenset({"pty"})
+#: `runtime.kind` (#853 §7). `pty`: a binary under `dtach`, shown through xterm. `chat` (#853 P9a,
+#: #1209): no binary and no terminal — BattleLab sends the conversation to an operator-configured
+#: HTTP endpoint and keeps the transcript itself. A chat plugin executes nothing and has no tools.
+RUNTIME_KINDS = frozenset({"pty", "chat"})
+#: `endpoint.kind` — the wire format a `chat` plugin speaks. The endpoint's URL, key and model are
+#: the OPERATOR's configuration, never the manifest's: a manifest can name no authority at all.
+ENDPOINT_KINDS = frozenset({"openai-chat"})
+#: Blocks that only make sense for a process in a terminal. A `chat` manifest declaring any of them
+#: is refused rather than silently ignoring them.
+PTY_ONLY_BLOCKS = ("binary", "launch", "terminal", "unattended", "install", "signin", "verify")
+#: Capabilities a `chat` plugin may never assert: each presumes a terminal to type into, a TTY to
+#: repair, a session to hand off into, or a process that owns its transcript.
+PTY_ONLY_CAPABILITIES = frozenset(
+    {"seed_start", "orchestrator_input", "raw_tty", "handoff_target", "owns_transcript"}
+)
 
 #: `session_id.mint`. `pinned`: BattleLab mints the id before launch (claude, gemini, shell).
 #: `adopt`: the engine mints its own and the new-session path reconciles a `new-<uuid>`
@@ -95,6 +106,7 @@ STORE_LAYOUTS = frozenset(
         "antigravity-cli",
         "kimi-code",
         "shell-records",
+        "battlelab-chat",  # chat runtime: BattleLab's own per-session JSONL (#1209)
     }
 )
 #: Named auxiliary paths a store may declare under its root (`store.paths`).
@@ -109,6 +121,7 @@ TRANSCRIPT_KINDS = frozenset(
         "opencode-sqlite",
         "gemini-chat",
         "antigravity-brain",
+        "battlelab-chat",  # chat runtime (#1209)
         "none",
     }
 )
@@ -123,6 +136,7 @@ USAGE_KINDS = frozenset(
         "codex-app-server-probe",
         "codex-rollout-field",
         "opencode-store-query",
+        "chat-response-tokens",  # chat runtime: token counts recorded from each response (#1209)
     }
 )
 #: `usage.access` — how an engine's ACCOUNT ACCESS is observed (#1167), independent of `source`:

@@ -290,15 +290,22 @@ class Install:
 
 
 @dataclass(frozen=True)
+class Endpoint:
+    kind: str
+
+
+@dataclass(frozen=True)
 class Manifest:
     contract: int
     identity: Identity
     #: `runtime.kind` (#853 §7). Every consumer that needs a terminal asks this first.
     runtime: str
-    binary: Binary
+    #: None exactly for a non-`pty` runtime — nothing is executed, so there is no binary to name.
+    binary: Binary | None
     session_id: SessionId
     store: Store | None
-    launch: Launch
+    #: None exactly for a non-`pty` runtime — nothing is launched.
+    launch: Launch | None
     capabilities: Mapping[str, bool]
     transcript_kind: str
     transcript_strict: bool
@@ -317,6 +324,8 @@ class Manifest:
     #: sha256 of the manifest as loaded. An install record or an operator confirmation is bound to
     #: it, so editing the manifest (a new entrypoint name, new search paths) voids both.
     digest: str = field(default="", compare=False)
+    #: `[endpoint]` (#1209): present exactly for a `chat` runtime. The wire format only.
+    endpoint: Endpoint | None = None
 
     @property
     def id(self) -> str:
@@ -519,24 +528,10 @@ def parse(doc: Any, *, source: str = "", digest: str | None = None) -> Manifest:
     )
     r.done()
 
-    r = top.table("binary")
-    name = r.str("name", pattern=_BIN_NAME_RE)
-    aliases = r.strs("aliases", pattern=_BIN_NAME_RE, max_items=4)
-    env_var = r.str("env_var", None, pattern=_ENV_BIN_RE)
-    search = tuple(
-        anchored_path(p, f"binary.search_paths[{i}]")
-        for i, p in enumerate(r.strs("search_paths", max_items=8))
-    )
-    version_flag = r.str("version_flag", None, one_of=kinds.VERSION_FLAGS)
-    npm_global = r.bool("search_npm_global")
-    r.done()
-    if name != identity.id and name not in aliases:
-        raise ManifestError("binary.name", "must be the plugin id or one of binary.aliases")
-    binary = Binary(name, aliases, env_var, search, version_flag, npm_global)
-
-    # `runtime` (#853 §7): how a session of this engine runs. Absent means `pty`, which is every
-    # engine that exists, so contract 1 needs no migration. The set holds only what this build can
-    # run; a manifest naming anything else is refused rather than half-run.
+    # `runtime` (#853 §7) is read FIRST: it decides which blocks are required and which are
+    # forbidden. Absent means `pty`, which is every engine that predates #1209, so contract 1 needs
+    # no migration. The set holds only what this build can run; anything else is refused rather
+    # than half-run.
     r = top.table("runtime", required=False)
     runtime = "pty"
     if r is not None:
@@ -549,6 +544,35 @@ def parse(doc: Any, *, source: str = "", digest: str | None = None) -> Manifest:
             )
         runtime = raw_rt
         r.done()
+
+    binary: Binary | None = None
+    endpoint: Endpoint | None = None
+    if runtime == "chat":
+        # Nothing is executed, launched or typed into: a block that describes a process is a
+        # contradiction, refused with its name rather than ignored.
+        for block in kinds.PTY_ONLY_BLOCKS:
+            if top.has(block):
+                raise ManifestError(block, "is forbidden for runtime 'chat' (nothing is executed)")
+        r = top.table("endpoint")
+        endpoint = Endpoint(kind=r.str("kind", one_of=kinds.ENDPOINT_KINDS))
+        r.done()
+    else:
+        if top.has("endpoint"):
+            raise ManifestError("endpoint", f"is only allowed for runtime 'chat', not {runtime!r}")
+        r = top.table("binary")
+        name = r.str("name", pattern=_BIN_NAME_RE)
+        aliases = r.strs("aliases", pattern=_BIN_NAME_RE, max_items=4)
+        env_var = r.str("env_var", None, pattern=_ENV_BIN_RE)
+        search = tuple(
+            anchored_path(p, f"binary.search_paths[{i}]")
+            for i, p in enumerate(r.strs("search_paths", max_items=8))
+        )
+        version_flag = r.str("version_flag", None, one_of=kinds.VERSION_FLAGS)
+        npm_global = r.bool("search_npm_global")
+        r.done()
+        if name != identity.id and name not in aliases:
+            raise ManifestError("binary.name", "must be the plugin id or one of binary.aliases")
+        binary = Binary(name, aliases, env_var, search, version_flag, npm_global)
 
     r = top.table("session_id")
     sid = SessionId(
@@ -588,9 +612,11 @@ def parse(doc: Any, *, source: str = "", digest: str | None = None) -> Manifest:
         r.done()
         store = Store(root, env_override, layout, read_only, paths, path_env)
 
-    r = top.table("launch")
-    launch = _launch(r)
-    r.done()
+    launch: Launch | None = None
+    if runtime == "pty":
+        r = top.table("launch")
+        launch = _launch(r)
+        r.done()
 
     r = top.table("capabilities", required=False)
     caps: dict[str, bool] = {}
@@ -690,6 +716,7 @@ def parse(doc: Any, *, source: str = "", digest: str | None = None) -> Manifest:
             entrypoint=relative_path(r.raw("entrypoint"), "install.entrypoint"),
         )
         r.done()
+        assert binary is not None  # `install` is a PTY_ONLY_BLOCK, refused above for chat
         if install.entrypoint.rsplit("/", 1)[-1] not in (binary.name, *binary.aliases):
             raise ManifestError(
                 "install.entrypoint", "must end in binary.name or one of binary.aliases"
@@ -733,6 +760,7 @@ def parse(doc: Any, *, source: str = "", digest: str | None = None) -> Manifest:
         verify=verify,
         source=source,
         digest=digest,
+        endpoint=endpoint,
     )
     _cross_check(m)
     return m
@@ -777,6 +805,49 @@ def _cross_check(m: Manifest) -> None:
                     "a terminal plugin has no agent behind it; text typed into it runs as a "
                     "command",
                 )
+    if m.runtime == "chat":
+        for c in sorted(kinds.PTY_ONLY_CAPABILITIES):
+            if caps.get(c):
+                raise ManifestError(
+                    f"capabilities.{c}",
+                    "presumes a terminal or a process; a 'chat' plugin has neither",
+                )
+        if m.store is None:
+            raise ManifestError("store", "is required for runtime 'chat'")
+        if m.store.layout != "battlelab-chat":
+            raise ManifestError("store.layout", "must be 'battlelab-chat' for runtime 'chat'")
+        if m.transcript_kind != "battlelab-chat":
+            raise ManifestError("transcript.kind", "must be 'battlelab-chat' for runtime 'chat'")
+        if m.store.read_only:
+            raise ManifestError("store.read_only", "must be false: BattleLab writes this store")
+    else:
+        if m.store is not None and m.store.layout == "battlelab-chat":
+            raise ManifestError("store.layout", "'battlelab-chat' is only for runtime 'chat'")
+        if m.transcript_kind == "battlelab-chat":
+            raise ManifestError("transcript.kind", "'battlelab-chat' is only for runtime 'chat'")
+        if m.usage.kind == "chat-response-tokens":
+            raise ManifestError("usage.kind", "'chat-response-tokens' is only for runtime 'chat'")
+        _cross_check_launch(m)
+    if caps.get("owns_transcript") and m.transcript_kind == "none":
+        raise ManifestError("capabilities.owns_transcript", "needs a transcript kind")
+    if m.transcript_strict and m.transcript_kind == "none":
+        raise ManifestError("transcript.strict", "needs a transcript kind")
+    if "sqlite-vacuum" in m.maintenance and (m.store is None or "db" not in m.store.paths):
+        raise ManifestError("maintenance", "sqlite-vacuum needs store.paths.db")
+    if m.start_evidence == "opencode-log" and (m.store is None or "log" not in m.store.paths):
+        raise ManifestError("unattended.start_evidence", "opencode-log needs store.paths.log")
+    if m.usage.source == "none" and "usage" in m.verify:
+        raise ManifestError("verify", "cannot verify usage for a plugin that declares none")
+    if m.install is not None and m.binary is not None and m.binary.env_var is None:
+        # A managed plugin must say which env override would flip it to adopted (§2b), so the flip
+        # can be detected rather than silently honoured.
+        raise ManifestError("binary.env_var", "is required when install is declared")
+
+
+def _cross_check_launch(m: Manifest) -> None:
+    """The `launch` rules, which exist only for a `pty` runtime."""
+    caps = m.capabilities
+    assert m.launch is not None
     if caps.get("new") and m.launch.new is None:
         raise ManifestError("launch.new", "is required when capabilities.new is true")
     if not caps.get("new") and m.launch.new is not None:
@@ -791,22 +862,8 @@ def _cross_check(m: Manifest) -> None:
         raise ManifestError(
             "launch.resume", "an agent that can resume needs a resume kind other than 'fresh'"
         )
-    if caps.get("owns_transcript") and m.transcript_kind == "none":
-        raise ManifestError("capabilities.owns_transcript", "needs a transcript kind")
-    if m.transcript_strict and m.transcript_kind == "none":
-        raise ManifestError("transcript.strict", "needs a transcript kind")
     if m.launch.admission != "none" and (m.store is None or "db" not in m.store.paths):
         raise ManifestError("launch.admission", "needs store.paths.db")
-    if "sqlite-vacuum" in m.maintenance and (m.store is None or "db" not in m.store.paths):
-        raise ManifestError("maintenance", "sqlite-vacuum needs store.paths.db")
-    if m.start_evidence == "opencode-log" and (m.store is None or "log" not in m.store.paths):
-        raise ManifestError("unattended.start_evidence", "opencode-log needs store.paths.log")
-    if m.usage.source == "none" and "usage" in m.verify:
-        raise ManifestError("verify", "cannot verify usage for a plugin that declares none")
-    if m.install is not None and m.binary.env_var is None:
-        # A managed plugin must say which env override would flip it to adopted (§2b), so the flip
-        # can be detected rather than silently honoured.
-        raise ManifestError("binary.env_var", "is required when install is declared")
 
 
 # --- files ---------------------------------------------------------------------------------------

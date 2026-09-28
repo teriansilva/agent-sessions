@@ -325,7 +325,7 @@ def _inside(path: str, root: str) -> bool:
 
 def check_vocabulary(m: Manifest, trust: str) -> None:
     """The closed entrypoint vocabulary, applied to the manifest's own names at load time."""
-    if trust == FIRST_PARTY:
+    if trust == FIRST_PARTY or m.binary is None:  # a `chat` plugin names no executable at all
         return
     for n in (m.binary.name, *m.binary.aliases):
         if kinds.is_forbidden_entrypoint(n):
@@ -352,6 +352,8 @@ def resolve(
     if trust not in TRUST_LEVELS:
         raise ProvenanceError(f"unknown trust level {trust!r}")
     check_vocabulary(m, trust)
+    if m.binary is None:
+        return None  # a non-`pty` runtime executes nothing, so there is nothing to resolve
     record = record or Record()
     if record != Record() and record.manifest_sha256 != m.digest:
         raise ProvenanceError(

@@ -37,7 +37,8 @@ def _owning_binaries() -> frozenset[str]:
     names: set[str] = set()
     for eid in engines.ids_where(lambda m: m.can("owns_transcript")):
         m = engines.manifest_of(eid)
-        names.update((m.binary.name, *m.binary.aliases))
+        if m.binary is not None:  # owns_transcript is refused for chat, but never assume
+            names.update((m.binary.name, *m.binary.aliases))
     return frozenset(names)
 
 

@@ -97,7 +97,9 @@ def holders(path: Path, engine: str | None = None) -> dict:
             continue
     prov = _target(engine)
     binary = (
-        (discover.resolve(prov.engine_id) or prov.manifest.binary.name) if prov is not None else ""
+        (discover.resolve(prov.engine_id) or prov.manifest.binary.name)
+        if prov is not None and prov.manifest.binary is not None
+        else ""
     )
     binaries = {os.fsencode(binary), os.fsencode(os.path.realpath(binary))} if binary else set()
     try:

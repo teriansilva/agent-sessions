@@ -785,9 +785,9 @@ function provenanceNote(d: EngineDetail): string {
   const p = d.provenance;
   const via =
     p.via === "env"
-      ? `set by ${d.binary.env_var ?? "its environment override"}`
+      ? `set by ${d.binary?.env_var ?? "its environment override"}`
       : p.via === "search_paths"
-        ? `found in its search paths (${d.binary.search_paths.join(", ")})`
+        ? `found in its search paths (${d.binary?.search_paths.join(", ") ?? ""})`
         : p.via === "install"
           ? "installed by BattleLab"
           : p.state === "absent"
@@ -929,8 +929,9 @@ export function AgentDetail({ id }: { id: string }) {
 
         <section className={styles.section} aria-labelledby="agent-binary-h">
           <h2 id="agent-binary-h">Binary &amp; provenance</h2>
-          <Kv
-            rows={[
+          {d.binary ? (
+            <Kv
+              rows={[
               ["Resolved path", d.provenance.path ?? "— not found"],
               [
                 "State",
@@ -948,7 +949,15 @@ export function AgentDetail({ id }: { id: string }) {
                   : "none declared",
               ],
             ]}
-          />
+            />
+          ) : (
+            <div className={a.empty}>
+              <b>No binary</b>
+              This agent runs no process: BattleLab talks to its endpoint
+              {d.endpoint ? ` (${d.endpoint.kind})` : ""} and runs nothing on this
+              host.
+            </div>
+          )}
         </section>
 
         <section className={styles.section} aria-labelledby="agent-store-h">
@@ -976,11 +985,15 @@ export function AgentDetail({ id }: { id: string }) {
           <h2 id="agent-kinds-h">Kinds</h2>
           <Kv
             rows={[
-              ["Resume", d.launch.resume],
-              ["New", d.launch.new ?? "not declared"],
-              ...(d.launch.admission
-                ? [["Admission", d.launch.admission] as [string, string]]
-                : []),
+              ...(d.launch
+                ? ([
+                    ["Resume", d.launch.resume],
+                    ["New", d.launch.new ?? "not declared"],
+                    ...(d.launch.admission
+                      ? [["Admission", d.launch.admission] as [string, string]]
+                      : []),
+                  ] as [string, string][])
+                : ([["Launch", "none — runs no process"]] as [string, string][])),
               [
                 "Transcript",
                 `${d.transcript.kind ?? "none"}${d.transcript.strict ? " · strict" : ""}`,

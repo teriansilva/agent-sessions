@@ -40,11 +40,12 @@ be a restriction, and a reader that skipped it would grant what the author meant
 |---|---|---|
 | `contract` | yes | The manifest format version (an integer). A higher contract than this build reads is refused as "needs a newer BattleLab", and rolling the app back disables such a plugin instead of misreading it. |
 | `[identity]` | yes | `id` (lowercase, 2–24 characters: the `<engine>` in every session id), `label`, `publisher`, `version`, and `kind`: `agent`, or `terminal` for a plugin with no agent behind it. |
-| `[runtime]` | no | `kind`. Absent means `pty`: a binary under `dtach`, shown in the terminal. |
-| `[binary]` | yes | `name` (the plugin id or one of `aliases`), `env_var` (its `AGENT_SESSIONS_*_BIN` override), `search_paths` (absolute or `~/` directories, no globs, no `..`), `version_flag`, and `search_npm_global` for CLIs installed with `npm i -g`. |
+| `[runtime]` | no | `kind`. Absent means `pty`: a binary under `dtach`, shown in the terminal. `chat` means no process at all: BattleLab sends the conversation to an HTTP model endpoint **you** configure and keeps the transcript itself. A `chat` manifest may not declare `binary`, `launch`, `terminal`, `unattended`, `install`, `signin` or `verify`, nor any capability that presumes a terminal (`seed_start`, `orchestrator_input`, `raw_tty`, `handoff_target`, `owns_transcript`). |
+| `[endpoint]` | for `chat` only | `kind`: the wire format (`openai-chat`). **Nothing else**: the URL, API key and model are your configuration, never the manifest's, so a manifest cannot point BattleLab at a server. A `chat` agent has no tools; it can only talk. |
+| `[binary]` | for `pty` | `name` (the plugin id or one of `aliases`), `env_var` (its `AGENT_SESSIONS_*_BIN` override), `search_paths` (absolute or `~/` directories, no globs, no `..`), `version_flag`, and `search_npm_global` for CLIs installed with `npm i -g`. |
 | `[session_id]` | yes | `pattern`, the native-id shape (grammar below); `mint` (`pinned` or `adopt`, see [Engines](./engines#two-ways-a-new-session-gets-its-id)); `legacy_bare_id` (claimed by at most one in-tree manifest). |
 | `[store]` | no | Where the engine keeps its sessions: `root`, `env_override`, `layout` (the built-in reader), and named auxiliary `paths` (`db`, `log`, …) relative to the root, each with an optional override in `path_env`. |
-| `[launch]` | yes | `resume` and `new`, each a kind plus the flag or subcommand it takes; `base_args`; `bypass` (the permission-bypass flags) and `bypass_on`; `admission`. The kind assembles the argv — the manifest never writes one. |
+| `[launch]` | for `pty` | `resume` and `new`, each a kind plus the flag or subcommand it takes; `base_args`; `bypass` (the permission-bypass flags) and `bypass_on`; `admission`. The kind assembles the argv — the manifest never writes one. |
 | `[capabilities]` | no | Booleans, **all off unless declared**: `resume`, `new`, `archive`, `handoff_target`, `seed_start`, `orchestrator_input`, `raw_tty`, `owns_transcript`. A `terminal` plugin may not declare `seed_start`, `orchestrator_input`, `raw_tty` or `owns_transcript`. |
 | `[transcript]` | no | `kind`, the built-in adapter that renders the conversation for scroll-up and AI review; `strict`. Absent means none. |
 | `[usage]` | no | `source`: `plan` (a subscription window), `tokens`, `manual` (you enter it), or `none`. `plan` and `tokens` need a `kind` naming the built-in reporter; a CLI probe also names its `probe_token`. `access` names the check that notices when the vendor refuses the account. |
@@ -108,10 +109,11 @@ Every value a manifest may choose, generated from the kinds this build ships:
 |---|---|
 | `contract` | `1` |
 | `identity.kind` | `agent`, `terminal` |
-| `runtime.kind` | `pty` |
+| `runtime.kind` | `chat`, `pty` |
+| `endpoint.kind` (runtime `chat` only) | `openai-chat` |
 | `binary.version_flag` | `--version`, `-V`, `-v`, `version` |
 | `session_id.mint` | `adopt`, `pinned` |
-| `store.layout` | `antigravity-cli`, `claude-projects`, `codex-rollouts`, `gemini-tmp`, `kimi-code`, `opencode-sqlite`, `shell-records` |
+| `store.layout` | `antigravity-cli`, `battlelab-chat`, `claude-projects`, `codex-rollouts`, `gemini-tmp`, `kimi-code`, `opencode-sqlite`, `shell-records` |
 | `store.paths` names | `archive`, `db`, `index`, `log`, `sessions` |
 | `launch.resume.kind` | `flag`, `fresh`, `positional-dir`, `subcommand` |
 | `launch.new.kind` | `bare`, `cwd-flag`, `pin-flag`, `positional-dir` |
@@ -124,9 +126,9 @@ Every value a manifest may choose, generated from the kinds this build ships:
 | `launch.bypass_on` | `both`, `new` |
 | `launch.admission` | `none`, `sqlite-store-shared` |
 | `capabilities` | `archive`, `handoff_target`, `new`, `orchestrator_input`, `owns_transcript`, `raw_tty`, `resume`, `seed_start` |
-| `transcript.kind` | `antigravity-brain`, `claude-jsonl`, `codex-rollout`, `gemini-chat`, `kimi-wire`, `none`, `opencode-sqlite` |
+| `transcript.kind` | `antigravity-brain`, `battlelab-chat`, `claude-jsonl`, `codex-rollout`, `gemini-chat`, `kimi-wire`, `none`, `opencode-sqlite` |
 | `usage.source` | `manual`, `none`, `plan`, `tokens` |
-| `usage.kind` | `agy-cli-probe`, `claude-cli-probe`, `codex-app-server-probe`, `codex-rollout-field`, `opencode-store-query` |
+| `usage.kind` | `agy-cli-probe`, `chat-response-tokens`, `claude-cli-probe`, `codex-app-server-probe`, `codex-rollout-field`, `opencode-store-query` |
 | `usage.probe_token` | `/usage` |
 | `usage.access` | `gemini-acp-auth`, `kimi-wire-auth-error` |
 | `terminal.repaint` | `none`, `wipe` |

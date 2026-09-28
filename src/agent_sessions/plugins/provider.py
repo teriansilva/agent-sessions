@@ -228,6 +228,8 @@ class PluginProvider:
 
         Raises `ProvenanceError` when a candidate exists but may not run.
         """
+        if self.manifest.binary is None:
+            return None  # a `chat` plugin (#1209) executes nothing
         record = read_record(self.state_dir, self.engine_id)
         env_var = self.manifest.binary.env_var
         # Everything resolution reads is in the key: the override, the record, and the home the
@@ -268,6 +270,11 @@ class PluginProvider:
     def _entry_path(self) -> str:
         if self.retiring:
             raise EngineError(f"{self.engine_id}: agent removed")
+        if self.manifest.runtime != "pty":
+            raise EngineError(
+                f"{self.engine_id}: runs no process (runtime {self.manifest.runtime!r}) — "
+                "nothing to launch"
+            )
         try:
             ep = self.entrypoint()
         except provenance.ProvenanceError as e:
@@ -342,12 +349,16 @@ class PluginProvider:
 
     def launch_argv(self, native_id: str, *, cwd: str, bypass: bool) -> list[str]:
         self._check_native(native_id)
+        if self.manifest.launch is None:
+            self._entry_path()  # raises the runtime refusal, naming why
         return self._assemble(
             self.manifest.launch.resume, native_id, cwd=cwd, bypass=bypass, new=False
         )
 
     def new_launch_argv(self, native_id: str, *, cwd: str, bypass: bool) -> list[str]:
-        step = self.manifest.launch.new
+        step = self.manifest.launch.new if self.manifest.launch is not None else None
+        if step is None and self.manifest.launch is None:
+            self._entry_path()  # raises the runtime refusal, naming why
         if step is None:
             raise NotImplementedError(f"{self.engine_id} cannot start a new session")
         if self.manifest.session_id.mint == "adopt":

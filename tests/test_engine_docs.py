@@ -208,6 +208,8 @@ _NOT_MANIFEST_VALUES = {
     "RESERVED_IDS",
     "AGENT_ONLY_CAPABILITIES",
     "_CLI_PROBE_KINDS",
+    "PTY_ONLY_BLOCKS",  # a guard list: which blocks a chat manifest may not declare
+    "PTY_ONLY_CAPABILITIES",
 }
 
 

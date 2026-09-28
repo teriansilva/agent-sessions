@@ -86,6 +86,13 @@ def engine_table() -> str:
     ]
     for m in manifests:
         prov = providers[m.id]
+        if m.runtime != "pty":
+            # Nothing is executed: no binary, no argv. The row says how it runs instead (#1209).
+            name = f"**{m.identity.label}** (`{m.id}`)"
+            store = _code(m.store.root) if m.store is not None else "—"
+            how = f"no process — runtime `{m.runtime}`, endpoint `{m.endpoint.kind}`"
+            rows.append(f"| {name} | — | {store} | {how} | new conversation | — |")
+            continue
         binary = _code(m.binary.name) + (f" · `{m.binary.env_var}`" if m.binary.env_var else "")
         if m.store is None:
             store = "—"
@@ -122,7 +129,7 @@ def engine_env() -> str:
     manifests, _ = _manifests()
     rows = ["| Variable | Engine | Overrides |", "|---|---|---|"]
     for m in manifests:
-        if m.binary.env_var:
+        if m.binary is not None and m.binary.env_var:
             rows.append(f"| `{m.binary.env_var}` | {m.identity.label} | the binary |")
         if m.store is not None and m.store.env_override:
             rows.append(
@@ -157,6 +164,7 @@ def manifest_vocab() -> str:
         ("`contract`", _code(str(kinds.CONTRACT_CURRENT))),
         ("`identity.kind`", _vals(kinds.IDENTITY_KINDS)),
         ("`runtime.kind`", _vals(kinds.RUNTIME_KINDS)),
+        ("`endpoint.kind` (runtime `chat` only)", _vals(kinds.ENDPOINT_KINDS)),
         ("`binary.version_flag`", _vals(kinds.VERSION_FLAGS)),
         ("`session_id.mint`", _vals(kinds.MINT_KINDS)),
         ("`store.layout`", _vals(kinds.STORE_LAYOUTS)),

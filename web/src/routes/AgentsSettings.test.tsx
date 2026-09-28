@@ -212,6 +212,26 @@ test("roster: a retiring engine shows why, and offers nothing to start", async (
 
 // ---- an agent's own page ------------------------------------------------------------------------
 
+test("agent page: a chat-runtime agent shows no binary and no launch, not a crash (#1209)", async () => {
+  vi.mocked(api.engineDetail).mockResolvedValue({
+    ...DETAIL,
+    runtime: "chat",
+    binary: null,
+    launch: null,
+    endpoint: { kind: "openai-chat" },
+    provenance: { state: "absent", via: null, path: null, note: null },
+  });
+  renderPage(<AgentDetail id="claude" />);
+  expect(
+    await screen.findByRole("heading", { name: "Claude Code" }),
+  ).toBeInTheDocument();
+  expect(screen.getByText("No binary")).toBeInTheDocument();
+  expect(screen.getByText(/runs no process: BattleLab talks to its endpoint/)).toHaveTextContent(
+    "(openai-chat)",
+  );
+  expect(screen.getByText("none — runs no process")).toBeInTheDocument();
+});
+
 test("agent page: identity, provenance, store, capabilities, and an honest empty models list", async () => {
   renderPage(<AgentDetail id="claude" />);
   expect(
