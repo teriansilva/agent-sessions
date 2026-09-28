@@ -88,6 +88,50 @@ test("streaming output does not yank a scrolled-up viewport back to the tail", a
   ).toBeHidden();
 });
 
+test("a reconnect inside the attach settle still releases the tail lock", async ({
+  page,
+}) => {
+  // The first socket delivers its replay and drops before the attach has settled (800 ms); the
+  // client reconnects and resumes. The fresh attach's settle must still release its tail lock,
+  // or the next output drags a scrollbar reader back to the bottom (Hermes on #1204).
+  await page.goto("/s/claude/aaa");
+  await expect(page.locator(".xterm-rows")).toContainText("LIVE tail", {
+    timeout: 5000,
+  });
+  // Drop the live socket (a transient close, so the client reconnects) and mark it, so the
+  // reconnect is visible as a NEW socket object in the page.
+  await page.evaluate(() => {
+    const w = window as unknown as {
+      __BENCH_LAST_WS__: {
+        __dropped?: boolean;
+        readyState: number;
+        onclose: ((e: { code: number }) => void) | null;
+      };
+    };
+    const ws = w.__BENCH_LAST_WS__;
+    ws.__dropped = true;
+    ws.readyState = 3;
+    ws.onclose?.({ code: 1006 });
+  });
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          !(window as unknown as { __BENCH_LAST_WS__: { __dropped?: boolean } })
+            .__BENCH_LAST_WS__.__dropped,
+      ),
+    )
+    .toBe(true);
+  await page.waitForTimeout(1800);
+
+  await scrollUpViaScrollbar(page);
+  await expect(page.locator(".xterm-rows")).toContainText(TOP_MARKER);
+  await pushOutput(page, streamChunk);
+  await page.waitForTimeout(300);
+  await expect(page.locator(".xterm-rows")).toContainText(TOP_MARKER);
+  expect(await rowsText(page)).not.toContain(STREAMED);
+});
+
 test("the scroll-to-bottom button is available on desktop, hidden while on the tail", async ({
   page,
 }, testInfo) => {

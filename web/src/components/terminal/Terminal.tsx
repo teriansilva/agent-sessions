@@ -694,8 +694,26 @@ export function Terminal({
     // ring / dirty the VT mirror. The client owns the resize channel, so nothing can
     // interleave inside its pair (unlike the server nudge racing the connect resize),
     // and the spacing exceeds the agents' resize debounce → two distinct repaints.
+    //
+    // ALT-SCREEN SESSIONS REPAINT ON EVERY CONNECT (operator, 2026-09-28: "when I access a session I
+    // usually need to press repaint"). The heuristics below can only see EMPTY rows, so a full
+    // frame replayed at a stale geometry passed them, and a reconnect (a phone waking) never
+    // armed them at all. Their caution is about the NORMAL buffer: there a repaint's clear wipes
+    // the injected scroll-up from view (#300) and a reconnect's frame is already good (Hermes
+    // #374). An agent in the ALTERNATE screen (claude ≥ 2.1.178, opencode) has no scrollback there
+    // to wipe, and its repaint redraws the current frame in place — the same nudge REPAINT and the
+    // tab-refocus path (#503) send. So once the attach settles, an alt-screen owner always
+    // repaints; a normal-buffer session keeps the heuristics.
     let attachBytes = 0;
     let initialTailLock = false;
+    // This socket's claim verdict (the role frame arrives right after open, long before the
+    // settle). A read-only secondary never drives the pty, so the unconditional repaint is the
+    // owner's alone — as on refocus (#503).
+    let sockRole: TermRole = "owner";
+    const altScreenOwner = () =>
+      sockRole === "owner" && term.buffer.active.type === "alternate";
+    /** How long an attach gets to deliver its replay before the repaint. */
+    const ATTACH_SETTLE_MS = 800;
     let jiggleTimers: ReturnType<typeof setTimeout>[] = [];
     const clearJiggle = () => {
       for (const t of jiggleTimers) clearTimeout(t);
@@ -758,6 +776,10 @@ export function Terminal({
             setAppTailUnknown(true);
             appTailUnknownRef.current = true;
           }
+          if (altScreenOwner()) {
+            jiggleRows();
+            return;
+          }
           // "Blank" used to mean "essentially no replay bytes". #407 shows the
           // byte count is not enough: a large raw replay can process successfully
           // while xterm's visible row layer remains empty. In that case, repaint too.
@@ -769,7 +791,21 @@ export function Terminal({
             attachBytes >= FRAGMENT_MIN_BYTES && visibleRowsSparse();
           if (attachBytes >= 512 && !visibleRowsBlank() && !fragment) return;
           jiggleRows();
-        }, 800),
+        }, ATTACH_SETTLE_MS),
+      );
+    };
+    // A reconnect resumes from its offset: the tail lock and the ↓ FAB reveal above belong to a
+    // fresh attach, so a reader scrolled into history stays where they are. Only the redraw, and
+    // only in the alt screen (see above). It ADDS its timer and never clears the others: a
+    // reconnect inside the first ATTACH_SETTLE_MS would otherwise cancel the fresh attach's
+    // settle, and with it the tail-lock release — every later chunk would then drag a reader
+    // who scrolled up by the scrollbar back to the tail (Hermes on #1204).
+    const repaintAfterReconnect = () => {
+      jiggleTimers.push(
+        setTimeout(() => {
+          if (sock !== sockRef.current || !altScreenOwner()) return;
+          jiggleRows();
+        }, ATTACH_SETTLE_MS),
       );
     };
     const pagesBuf = new PagesBuffer(PAGES_BUF_CAP); // fetched older pages, oldest-first
@@ -1199,10 +1235,12 @@ export function Terminal({
             // not-yet-existent session. (opencode `new-` placeholders keep new=1 until converged.)
             freshConsumed = true;
             onConnected();
-            // Backstop only a TRUE fresh attach (consumed offset 0). A caught-up
-            // reconnect (have == total) correctly receives no delta while the screen
-            // is already painted — jiggling it would wipe a good frame (Hermes #374).
+            // The heuristic backstop runs on a TRUE fresh attach (consumed offset 0). A caught-up
+            // reconnect (have == total) receives no delta while the screen is already painted —
+            // jiggling a normal-buffer frame would wipe it (Hermes #374); an alt-screen one is
+            // redrawn in place, so that one still repaints.
             if (sock.consumed === 0) armRepaintBackstop();
+            else repaintAfterReconnect();
           }
         },
         onId: (sid) => onReconcileIdRef.current?.(sid),
@@ -1216,6 +1254,7 @@ export function Terminal({
           stripLiveScrollbackErase.reset();
         },
         onRole: (r, h) => {
+          sockRole = r;
           setRole(r);
           onRoleRef.current?.(r);
           // Owner → clear the banner. Secondary → show who's active (#434): we keep streaming
