@@ -84,6 +84,22 @@ def test_embedded_root_matches_the_signers_file_byte_for_byte():
     assert _embedded("RELEASE_SIGNERS") == "\n".join(_signer_lines(SIGNERS.read_text()))
 
 
+def test_embedded_unsigned_pins_match_the_trust_record():
+    """install.sh's exemption list is the trust record's two pin maps, exactly (#832 Phase 2).
+
+    The installer cannot read scripts/release-trust.json from the clone it is verifying, so it
+    carries its own copy — and a copy nothing compares is a copy that drifts. One `<tag> <commit>`
+    line per release per remote commit (the public mirror's differ: it is a snapshot publish).
+    """
+    doc = json.loads(TRUST.read_text())
+    want = {f"{t} {c}" for t, c in doc["unsigned_releases"].items()}
+    want |= {f"{t} {c}" for t, c in doc["unsigned_releases_public_mirror"].items()}
+    got = set(_embedded("RELEASE_UNSIGNED_PINS").splitlines())
+    assert got == want
+    # every mirror pin names a release that is also pre-signing on the forge
+    assert set(doc["unsigned_releases_public_mirror"]) <= set(doc["unsigned_releases"])
+
+
 def test_embedded_cutover_matches_the_trust_record():
     doc = json.loads(TRUST.read_text())
     assert _embedded("RELEASE_LAST_UNSIGNED") == doc["last_unsigned_release"]

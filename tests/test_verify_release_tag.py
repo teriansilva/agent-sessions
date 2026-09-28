@@ -481,3 +481,119 @@ def test_the_assembled_deploy_gate_lets_a_pre_cutover_tag_through(tmp_path):
         capture_output=True,
     )
     assert _deploys(tmp_path, origin, "v0.19.0").returncode == 0
+
+
+# ---- Hermes on #1206: the same two bypasses the installer had -------------------------
+
+
+@needs_ssh_keygen
+def test_a_signed_release_relabelled_under_a_higher_name_is_refused(tmp_path):
+    good = _keygen(tmp_path / "good")
+    repo = _repo(tmp_path, tmp_path / "good.pub")
+    _tag(repo, "v0.20.0", good)
+    obj = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "refs/tags/v0.20.0"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    subprocess.run(["git", "-C", str(repo), "update-ref", "refs/tags/v0.99.0", obj], check=True)
+    assert _run(repo, "v0.20.0").returncode == 0
+    r = _run(repo, "v0.99.0")
+    assert r.returncode == 1
+    assert "relabelled" in r.stderr
+
+
+@needs_ssh_keygen
+@pytest.mark.skipif(
+    subprocess.run(["which", "gpg"], capture_output=True).returncode != 0, reason="gpg absent"
+)
+def test_a_pgp_signed_tag_is_refused_even_with_its_key_in_the_keyring(tmp_path):
+    _keygen(tmp_path / "good")
+    repo = _repo(tmp_path, tmp_path / "good.pub")
+    gnupg = tmp_path / "gnupg"
+    gnupg.mkdir(mode=0o700)
+    env = {**os.environ, "GNUPGHOME": str(gnupg)}
+    subprocess.run(
+        [
+            "gpg",
+            "--batch",
+            "--pinentry-mode",
+            "loopback",
+            "--passphrase",
+            "",
+            "--quick-gen-key",
+            "pgp@example.invalid",
+            "ed25519",
+            "sign",
+            "never",
+        ],
+        env=env,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "gpg.format=openpgp",
+            "-c",
+            "user.signingkey=pgp@example.invalid",
+            "tag",
+            "-s",
+            "v0.20.0",
+            "-m",
+            "v0.20.0",
+        ],
+        env=env,
+        check=True,
+        capture_output=True,
+    )
+    r = subprocess.run(
+        ["sh", str(VERIFY), "v0.20.0"], cwd=repo, capture_output=True, text=True, env=env
+    )
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "SSH" in r.stderr
+
+
+@needs_ssh_keygen
+def test_the_assembled_deploy_gate_refuses_a_checkout_the_tag_moved_away_from(tmp_path):
+    """Hermes on #1206: the job checks out the tag, then the gate re-fetches and verifies it.
+    Point the tag at unsigned B for the checkout, restore the genuine signed A before the gate's
+    fetch: A verifies, and the next step would run B's install.sh. The gate must refuse."""
+    work, origin, good, _bad = _bare_world(tmp_path)
+
+    def git(repo, *a):
+        return subprocess.run(
+            ["git", "-C", str(repo), *a], check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    git(work, "-c", f"user.signingkey={good}", "tag", "-s", "v0.20.0", "-m", "v0.20.0")
+    git(work, "push", "-q", "origin", "refs/tags/v0.20.0")
+    signed_obj = git(origin, "rev-parse", "refs/tags/v0.20.0")
+    assert _deploys(tmp_path, origin, "v0.20.0").returncode == 0  # positive control
+
+    (work / "f").write_text("attacker's app\n")
+    git(work, "commit", "-qam", "B — never signed")
+    git(work, "push", "-q", "origin", "HEAD:refs/heads/attacker")  # B's objects reach the origin
+    git(origin, "update-ref", "refs/tags/v0.20.0", git(work, "rev-parse", "HEAD"))  # moved to B
+    co = tmp_path / "co-race"
+    subprocess.run(
+        ["git", "clone", "-q", "--depth", "1", "--branch", "v0.20.0", f"file://{origin}", str(co)],
+        check=True,
+        capture_output=True,
+    )
+    git(origin, "update-ref", "refs/tags/v0.20.0", signed_obj)  # restored before the gate fetches
+    gate = tmp_path / "gate-race.sh"
+    gate.write_text(_gate_script())
+    r = subprocess.run(
+        ["bash", str(gate)],
+        cwd=co,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "GITHUB_REF": "refs/tags/v0.20.0", "GITHUB_REF_NAME": "v0.20.0"},
+    )
+    assert r.returncode != 0, "the gate verified A and let B's checkout through to install.sh"
+    assert "the tag moved during the job" in (r.stdout + r.stderr)

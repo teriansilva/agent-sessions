@@ -42,6 +42,149 @@ release@agent-sessions ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE3LUURaBPIGDEAluzrmD
 # release is recorded rather than the first signed one because it is a fact today, whereas
 # the first signed version number is a guess about a cut nobody has made yet.
 RELEASE_LAST_UNSIGNED='v0.19.2'
+# The releases that predate signing — the ONLY releases installed without a signature — as
+# `<tag> <commit>` pairs. Membership plus the pinned commit, never a version comparison:
+# ordering against RELEASE_LAST_UNSIGNED let `v`, `v0.0.0` & co. through the deploy gate once
+# (docs/release-signing.md → Cutover). A release has one commit per remote (the public mirror is
+# a snapshot publish), so both remotes' commits are listed; which remote was cloned does not
+# matter, because a commit cannot be forged and either one IS that reviewed release.
+# Kept equal to scripts/release-trust.json by tests/test_release_signing.py.
+RELEASE_UNSIGNED_PINS='v0.1.0 2c65b2ff4b5128cc53f4b1c6bc4e82b08e80deac
+v0.1.1 595a5ac738032d9c9b6181438a1efeb2623deb1a
+v0.1.1 cc09b8b0ad7c328e9ad91bf555f6c50c630399c7
+v0.1.2 7c4d6b680bdcee388e55a6f0a2a8202f9b9c8af0
+v0.1.2 b036b55bb3e6d1eda8112fb8d74a03fc9610ed88
+v0.1.3 42ceb45cfbd82c7e125717ba52fc497a5c9c94d9
+v0.1.4 9647567a92ca0399f49915cf910ec1c56dfddeb2
+v0.1.5 3413954f85bdfb4bc2ba9bc06cae85c663240069
+v0.1.6 2c95b36447a3172c58518d75d434c14c748ba9f0
+v0.1.7 6d365bb258d6dc13ea7b4b08be24cdc1d01dbecc
+v0.1.8 9033a269dd5c9b9114b549ef9732fb47d92f5aae
+v0.2.0 14823c2f857237aa3cec07aad33868ec46551aa0
+v0.2.0 34ff070ef7c11e163f46d29ae14b63dc1cbb4cc9
+v0.2.1 120baf17ddb85069e44a723b2648336298b68e16
+v0.2.1 2b8ed16e3302c80b9b132992794be8b50931f1b8
+v0.2.2 60e6287c2b3cbf81af7c7c2593c0219613719a84
+v0.2.2 d1ab3109a6b2c0f9568eef88ab71aac89e2b0769
+v0.2.3 14a7956dbf9744895e58bb6ea1bdfd139f57a1c3
+v0.2.3 5e3a7c2445714162bbb0751e74d22086e2b72070
+v0.2.4 27d54e12f1c2e0a0939038ad5e35cfcbf4510b45
+v0.2.4 5b3f7f98b31d29d0dce676c6c26557415268b9b2
+v0.2.5 635fa0f648be56f04be95f2df482d5ee5159b68d
+v0.2.5 80fb11c23ef5b56b4969c1fb821bbee4e7628e0a
+v0.2.6 07b69335172b07e12f97fe28447af553489842d7
+v0.2.6 feb86cdc5717173e823a33bfcd33a2938c49c7ae
+v0.2.7 9c99f3f0cffdaf0c520c11055922dbf4aa890688
+v0.2.7 bbb79102ef9c22b4703e05b4d0077460dc54141a
+v0.2.8 e4e85d33d73b008de932caf52d895b245433563d
+v0.2.8 e8f0380348a030a43f852a8f9f8789ee91a5c8ac
+v0.2.9 cb1497f15bad17dbd90e25b9af099ec5c96eb54e
+v0.2.9 f000be7a567fc15814f3aea14acc1063079addb4
+v0.3.0 599bfc53febf3172d8060a9ad39e9e0f23b9e590
+v0.3.0 ace7e9777a62b4f28158676ce84febce69d4bff0
+v0.4.0 62a6980e0c3bc4af670736b02424d331369cca21
+v0.4.0 ec0304d5c34808205196a04289ddaccc76859fc6
+v0.5.0 96887e7f954a76ddf4510700fc4d0a00f472ecdb
+v0.5.0 bb5c63d0174bb22d3e8499f94e623641b29b68e6
+v0.5.1 b8ce14cf5937dda839370681d04c42977ba3bed4
+v0.5.1 ed783f8924e6c5b712d8b5280f3e0762c9315c98
+v0.5.2 542fdef7aed8f0b6be5cafc3237c9def5d2e63ae
+v0.5.2 86fc494fbb48614af7637e739477418e35a8a345
+v0.5.3 626c2fe2a2c8fbc46e13734dd6e79c6ea5dc39ff
+v0.5.3 6e42821249bc59ac505fe614072f88efe82b090e
+v0.5.4 59be4b21a9e94e435c7d137dd5d0be90feb1f39e
+v0.5.4 c88e0994c03dfcd6301b42b7470125a394e075f6
+v0.6.0 6f1edfa5619352944e11147a0ec8b165d1e423d9
+v0.6.0 97769e09417a22461077d74749c394eed4dd3fa3
+v0.7.0 bec9aa8135957fa018906f67157ea358935d253d
+v0.7.0 bedc1106171fc3a6f559672c0f1093c3255f2799
+v0.8.0 d4eb5f76c4aa8f9215ec8bba48acf74808679ddb
+v0.8.1 3bf33559195199e89dca05d91d419a9dfebe9782
+v0.8.2 f6db25d974a890b276a360282dc72a7af320c788
+v0.8.3 4ac379a8ef99a70a922a2c8611084d4f02b8393e
+v0.8.4 a4bbaea1b0cd2179bdacf765eaf0356478d94354
+v0.8.5 999061740ef01bb24af53e65b74e53cc5be21595
+v0.8.5 cbf030183070d690131a5ffbe8a3f2f57bb49ae9
+v0.8.6 85d48b55be7398c76d5ff242ed70bce47f8668bc
+v0.8.6 b65222785ceb5b2c35fae5185de91d1cef12d5bc
+v0.8.7 860b2dace897098309d1f90daaa4dbe2e6945c5c
+v0.8.7 867daf2c40d78ca6212d431656987657c98a90d1
+v0.8.8 250698e15d5d85518f84d44017a616e32d17aebd
+v0.8.8 e2a075e12a40e4a8db2530bbb4902c1a013cb320
+v0.8.9 17ac7f4f895954ba4a8ff4711dbdeb750e552102
+v0.8.9 3b8a3118f561b8f65665eb7fc776b87363806a70
+v0.8.10 39a0d806765dab8c821bbfe15564c3f7330b9461
+v0.8.10 4f3bc450780a4a59be06a0cfa8af8ac301f77f1d
+v0.9.0 2c408aa0ace06bcd5632c379e0e4b34b9166a080
+v0.9.0 64eefb3d0a9239b271f3877dbca7f34e0a3ef0f8
+v0.10.0 01af1d2f4d4f2954c8e324d802e7e4f21a477196
+v0.10.0 8d2265eebdb9dd5883c52fea0452fdbaa47444be
+v0.10.1 45d338746793f19a83eeb03164562c9f5f891f62
+v0.10.1 d6288b151f08dfdd584c42b2568cc99ca56316a8
+v0.10.2 046a2e51002802681a3190546ad4ebe628d18101
+v0.10.2 87a82f775686665d752c54b75c3a9976bcb95aaa
+v0.10.3 4146a0b9a0cf5c1c53e35c1e3edc4f8c7f5fe97a
+v0.10.3 645aa0e16b94df0d4ed1888e552948db12b56148
+v0.10.4 910c6725f5b77aa1b77acd24fe04525fbafbc408
+v0.10.4 f45a50dddf09f2a01aab9927fa5c7c479fd7d36c
+v0.10.5 101a4e0f009f7ee72cb788db6fd6b49f7dfdc5c7
+v0.10.5 f3de27c199eedd4bd99742fec9ee36158094b8d6
+v0.10.6 5ed7c3b735dd3577570810ce02b7baacb0848300
+v0.10.6 a1b476433374381475264caf658b13f49d97749d
+v0.10.7 8046bd10ac4c7f67c238fa805d57af0a0ef2a91d
+v0.10.7 a041c0ed7d3240328e7c74fe024956a27126ee84
+v0.10.8 54a64f28a5d203e87fc1fc32dc9adb9371cd3f15
+v0.10.8 ee54b5b742a71de30aa577eb536e70aef51cab6f
+v0.10.9 1f25785d7bf4dd6e1fb9e652175a7d090056598e
+v0.10.9 d6a8926bc09cc1ca4d73f5d6b6dca8f85109db35
+v0.10.10 0a210128750b1ae6499dc934888ab843300cf4aa
+v0.10.10 723857fb23840e7742c3f8ea45898cd3863990cc
+v0.11.0 c641dccca440d7fc6b531104beff76c2644c0734
+v0.11.0 ecd2375d4ddb1d7157c96c9b392c118a6df69792
+v0.12.0 48552f7bf0ad76a907fd003b07924e4e105cba19
+v0.12.0 996a9e9e41f36f4c6738600206fe9c6fdbaf5235
+v0.12.1 67ee35e4715edfa1a06d1c2dad654a967892143d
+v0.12.1 fa23e6f06ee4ef4cbbd1637949abe996e44b1c4f
+v0.12.2 0bff50aa4f61b2673193d20691ddd0170b861581
+v0.12.2 481bfd35c66cfff57129950094c71aa1b624d307
+v0.12.3 635f0273adfef7d084481219461e30ef7c5138d3
+v0.12.3 dcdece713db9378dcad481438de61c2353744cf7
+v0.13.0 40ad5849fbd5639c3d6bd34a8b0919d7ceb672f0
+v0.13.0 cac05d33c3f7a4df11002783fda03afb3f881234
+v0.13.1 16f2f115288f24f6ccb50ea1bee3d0ea0050b8e2
+v0.13.1 c21881634885e93a1b4c14ccf7228fb6a07ed6c9
+v0.14.0 7f4f3adaac29f7acecb9aa2b77b1aa464cd0aba5
+v0.14.0 fa1cad87f04e0811b47ae46780fec5fc07bcfb13
+v0.15.0 1907568401f934a0ac11903b450e80a204d73808
+v0.15.0 380e0871fce78be69851c3a5bd92180681086058
+v0.16.0 0dc768caa1581748826899732469de9e81abaeef
+v0.16.0 8ae543dfca607c707b5c419fabd61aae4a768a38
+v0.17.0 b6da5b38d2fdce90bd392ad70699554dad83b654
+v0.17.0 c13fa5d9333656f22e5d57aa87c7d431153277d4
+v0.17.1 048520d0fa73375e5956f251424065337b337f18
+v0.17.1 9c34edad39bfe415ad19004f5dece37dc7f09fdc
+v0.17.2 70eec63bf0b5719587497455d2e4223598434b0a
+v0.17.2 a2e0705537c4f50905cc681ee3a463c74021c307
+v0.17.3 9b8dc15de4edc80ac0fd6369d19d391cd7f4fa18
+v0.17.3 d0f1a465f26d7ce95460010acdae555040f5defb
+v0.17.4 3e528850206621dc2c54d9621a702a848a5e8cde
+v0.17.4 4af0571fa1c98f604ba687697b30591741218fd6
+v0.17.5 7d4eccd9114768c3cc34f8f57f1423a5fbfc90e5
+v0.17.5 d2d71eaea14e748f3da9ad4ca3f934a8f99991d8
+v0.17.6 7842b9ce9e822155303e904d2de84a659e50dc39
+v0.17.6 9f9a2443290b96a902f86960028714503af194e4
+v0.17.7 1183e41348d5f3ad99a746a6dc8edad1b07f25a1
+v0.17.7 50d08ec2fcd35353813c519d87ebe63e410fe546
+v0.17.8 6ea1fc429d4ac16ed24146985a941099f420f314
+v0.17.8 ee8fb1930b0dd625b389218f333aaf2a4f1786b4
+v0.18.0 6b9f04e38328d9dec86a2ee0156421e1f18415ac
+v0.18.0 9a0b6d738192265401c7fc1f629c713bc5017b9b
+v0.19.0 3b1d4d89f16fee4cae6df56e0cef3b85da36d009
+v0.19.0 77fa8ef0ac8bd40248c191038617b62048531b90
+v0.19.1 8026a21f6112a87d4fbc94ef9a9f58c82491405c
+v0.19.1 c01f2d1879d98921b64162bd7a2d1bbea90f5bf7
+v0.19.2 7bc8bf88fc3d3d7c012346b2121e79048e65b79d
+v0.19.2 c9797ddbe5e4d54c587c05ac433051bd3dd66100'
 REF="${AGENT_SESSIONS_REF:-}"
 # The commit $REF must resolve to, set by the self-updater from the tag it verified
 # (update.py). Empty for a hand-run install, which has no prior verification to bind to.
@@ -508,6 +651,13 @@ ensure_prereqs() {
   have curl || die "curl not found — install curl and re-run"
   have git || { log "git missing — installing…"; _pkg_install git || die "install git and re-run"; }
   ensure_python
+  # Release signatures are verified with ssh-keygen (#832). Usually present — git pulls in an ssh
+  # client on the mainstream distros — but a minimal image may lack it. Best-effort here; the
+  # verification itself refuses with the package name if it is still missing.
+  have ssh-keygen || { log "ssh-keygen missing (release signature checks) — installing…"
+    if have apt-get; then _pkg_install openssh-client; elif have dnf; then _pkg_install openssh-clients
+    else _pkg_install openssh; fi >/dev/null 2>&1 \
+      || log "could not auto-install ssh-keygen — release tags cannot be verified until it is installed"; }
   # The ws terminal attaches agents under a persistent dtach master.
   have dtach || { log "dtach missing (terminal pane) — installing…"; _pkg_install dtach >/dev/null 2>&1 \
     || log "could not auto-install dtach — install it so the terminal pane works"; }
@@ -523,6 +673,7 @@ preflight_report() {
   log "  python   ${PY:-MISSING} ($("${PY:-python3}" -V 2>&1 | awk '{print $2}'))"
   log "  node     $(command -v node || echo '(vendored)') ($(node -v 2>/dev/null || echo "v$NODE_VERSION vendored"))"
   log "  dtach    $(command -v dtach || echo 'MISSING — terminal pane degraded')"
+  log "  ssh-keygen $(command -v ssh-keygen || echo 'MISSING — release signatures cannot be verified')"
   log "  channel  $CHANNEL"
   # #612: `main` is already opt-in (CHANNEL defaults to stable, and only an explicit
   # AGENT_SESSIONS_CHANNEL=main selects it) — what was missing is that the choice was silent.
@@ -539,8 +690,107 @@ preflight_report() {
 resolve_ref() {
   if [ -n "$REF" ]; then printf '%s' "$REF"; return; fi
   if [ "$CHANNEL" = main ]; then printf 'main'; return; fi
-  # stable = the highest semver-ish vX.Y.Z tag on the remote (empty → default branch).
-  git ls-remote --tags --refs "$REPO_URL" 'v*' 2>/dev/null | sed 's#.*/##' | sort -V | tail -1
+  # stable = the highest release tag on the remote. The FULL name after refs/tags/, and only
+  # the exact vX.Y.Z shape: taking the text after the last slash let a tag `v999/z` resolve to a
+  # branch `z`, which then built unverified (Hermes on #1206). No release tag ⇒ nothing to
+  # install on stable; the caller refuses rather than falling back to a branch.
+  git ls-remote --tags --refs "$REPO_URL" 'v*' 2>/dev/null \
+    | sed -n 's#^[0-9a-f]*[[:space:]]*refs/tags/##p' \
+    | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1
+}
+
+# ---- release signature verification (#832 Phase 2) ---------------------------------
+# _classify_verify <rc> <output> → prints ok | unknown-signer | refused.
+# `git verify-tag` has no machine-readable status for SSH signatures, so this rests on its
+# English output — pinned by tests against the real git, so a rewording fails loudly. Only the
+# EXACT two-line shape of "a valid signature by a key the root does not list" is steppable
+# (#832 Phase 4); everything else, including anything unrecognised, is refused. It is only
+# ever called after the root has been proven present and non-empty, because a MISSING root
+# prints the same "No principal matched" and would otherwise read as unknown-signer.
+_classify_verify() {
+  if [ "$1" -eq 0 ]; then echo ok; return; fi
+  _l1="$(printf '%s\n' "$2" | sed -n 1p)"; _l2="$(printf '%s\n' "$2" | sed -n 2p)"
+  _n="$(printf '%s\n' "$2" | grep -c .)"
+  case "$_l1" in 'Good "git" signature with '*) ;; *) echo refused; return ;; esac
+  if [ "$_n" -eq 2 ] && [ "$_l2" = "No principal matched." ]; then echo unknown-signer; else echo refused; fi
+}
+
+# verify_release <tag> <git-dir> → exit 0 ok | 3 unknown signer (steppable) | 1 refused.
+# Prints ONE line saying why. The trust root is RELEASE_SIGNERS / RELEASE_UNSIGNED_PINS embedded
+# in THIS script — never anything from the clone being verified, which is the attacker's to
+# write. A tag not named like a release is out of scope (an explicit branch or commit is the
+# operator's own choice, like the main channel) and is never passed here.
+verify_release() {
+  _tag="$1"; _gd="$2"
+  _commit="$(git -C "$_gd" rev-parse -q --verify "refs/tags/$_tag^{commit}" 2>/dev/null || true)"
+  [ -n "$_commit" ] || { echo "$_tag: the release tag is not present in what was fetched"; return 1; }
+  _pins="$(printf '%s\n' "$RELEASE_UNSIGNED_PINS" | awk -v t="$_tag" '$1 == t { print $2 }')"
+  if [ -n "$_pins" ]; then
+    if printf '%s\n' "$_pins" | grep -qxF "$_commit"; then
+      echo "$_tag: a recorded pre-signing release at its pinned commit — signature not required"; return 0
+    fi
+    echo "$_tag: a recorded pre-signing release, but it now points at $_commit, which is not its recorded commit — the tag has been moved"
+    return 1
+  fi
+  [ "$(git -C "$_gd" cat-file -t "refs/tags/$_tag" 2>/dev/null)" = tag ] \
+    || { echo "$_tag: not an annotated tag, so there is no signature to verify"; return 1; }
+  _tagobj="$(git -C "$_gd" cat-file tag "refs/tags/$_tag" 2>/dev/null)"
+  # The signature covers the tag OBJECT, and the name it is published under is just a ref. Bind
+  # the two: the object's own signed `tag` header must name this release, or an old signed
+  # release re-published as a higher version passes as new (Hermes on #1206).
+  [ "$(printf '%s\n' "$_tagobj" | sed -n '/^tag /{s/^tag //p;q;}')" = "$_tag" ] \
+    || { echo "$_tag: the signed tag object names a different release — refusing a relabelled release"; return 1; }
+  # SSH signatures only. git picks the verifier from the signature's format, so a PGP or X.509
+  # signature would be checked against the operator's own keyring instead of the embedded root.
+  printf '%s\n' "$_tagobj" | grep -qx -- '-----BEGIN SSH SIGNATURE-----' \
+    || { echo "$_tag: not signed with an SSH release key — refusing"; return 1; }
+  if printf '%s\n' "$_tagobj" | grep -qE -- '-----BEGIN (PGP SIGNATURE|SIGNED MESSAGE)-----'; then
+    echo "$_tag: carries a non-SSH signature — refusing"; return 1
+  fi
+  have ssh-keygen || { echo "$_tag: cannot verify release signatures — ssh-keygen is missing (install the openssh-client package, or openssh-clients on Fedora/RHEL)"; return 1; }
+  _gv="$(git --version | awk '{print $3}')"
+  _gmaj="${_gv%%.*}"; _grest="${_gv#*.}"; _gmin="${_grest%%.*}"
+  if [ "${_gmaj:-0}" -lt 2 ] || { [ "${_gmaj:-0}" -eq 2 ] && [ "${_gmin:-0}" -lt 34 ]; }; then
+    echo "$_tag: cannot verify release signatures — git $_gv is older than 2.34 (SSH signatures); upgrade git"; return 1
+  fi
+  _signers="$(mktemp)"
+  printf '%s\n' "$RELEASE_SIGNERS" > "$_signers"
+  if ! [ -s "$_signers" ] || ! grep -qE '^[^#[:space:]]+[[:space:]]+ssh-' "$_signers"; then
+    rm -f "$_signers"; echo "$_tag: this installer carries no release signer — refusing rather than verifying against nothing"; return 1
+  fi
+  # The operator's own git config must not be able to change what "verified" means (a
+  # gpg.ssh.program that always succeeds, say): global and system config are off for this call.
+  # LC_ALL=C because the classification below reads git's English messages; a translated one
+  # would fail closed (refused), which is safe but would wrongly stop a rotation walk.
+  # Belt and braces for the format check above: no usable GPG either (empty home, program false).
+  _gnupg="$(mktemp -d)"
+  _out="$(LC_ALL=C GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GNUPGHOME="$_gnupg" git -C "$_gd" \
+    -c gpg.ssh.allowedSignersFile="$_signers" -c gpg.ssh.program=ssh-keygen \
+    -c gpg.program=false -c gpg.x509.program=false \
+    verify-tag "$_tag" 2>&1)" && _rc=0 || _rc=$?
+  rm -rf "$_signers" "$_gnupg"
+  case "$(_classify_verify "$_rc" "$_out")" in
+    ok) echo "$_tag: signed by a trusted release key"; return 0 ;;
+    unknown-signer) echo "$_tag: validly signed, but by a key this installation does not trust"; return 3 ;;
+    *) echo "$_tag: signature missing or invalid — refusing"; return 1 ;;
+  esac
+}
+
+# `install.sh --verify-release <tag>`: fetch just that tag and verify it, building nothing and
+# touching no install state. The updater asks the INSTALLED release's installer this before it
+# spawns one (#832 Phase 3), so its refusal can be shown in the app rather than dying unseen in
+# a detached child.
+verify_release_only() {
+  _tag="${1:-}"
+  case "$_tag" in v*) ;; *) echo "usage: install.sh --verify-release <vX.Y.Z>" >&2; exit 2 ;; esac
+  _vt="$(mktemp -d)"
+  git init -q --bare "$_vt/r"
+  if ! git -C "$_vt/r" fetch -q --depth 1 --no-tags "$REPO_URL" "refs/tags/$_tag:refs/tags/$_tag" 2>/dev/null; then
+    rm -rf "$_vt"; echo "$_tag: could not be fetched from $REPO_URL"; exit 1
+  fi
+  _vrc=0; verify_release "$_tag" "$_vt/r" || _vrc=$?
+  rm -rf "$_vt"
+  exit "$_vrc"
 }
 
 build_release() {
@@ -578,6 +828,19 @@ build_release() {
     rm -rf "$tmp"
     die "refusing to build $ref: it was verified as commit $EXPECT_COMMIT but the clone resolved it to ${full_sha:-<unknown>}. A released tag that changed between verification and checkout is exactly what must not be installed. Nothing was built."
   fi
+  # The release signature (#832 Phase 2): after the clone, before anything is built, against the
+  # root embedded in THIS script. Only a ref named like a release is a release; an explicit
+  # branch or commit is the operator's own choice and is not verified (like the main channel).
+  case "$ref" in
+    v*)
+      _why="$(verify_release "$ref" "$tmp/src")" || { rm -rf "$tmp"; die "refusing to build $ref: $_why. Nothing was built."; }
+      # What is built must BE what was verified. `clone --branch` resolves a name to a branch
+      # before a tag, so a `v1.0.0` branch beside a signed `v1.0.0` tag would build the branch
+      # (Hermes on #1206). Always — fresh installs have no EXPECT_COMMIT to catch it.
+      _tagc="$(git -C "$tmp/src" rev-parse "refs/tags/$ref^{commit}")"
+      [ "$full_sha" = "$_tagc" ] || { rm -rf "$tmp"; die "refusing to build $ref: the checkout is $full_sha but the verified tag is $_tagc (a branch with the release's name?). Nothing was built."; }
+      log "$_why" ;;
+  esac
   sha="$(git -C "$tmp/src" rev-parse --short HEAD)"
   mkdir -p "$RELEASES"
   rel="$RELEASES/$(date +%Y%m%d-%H%M%S)-$sha"
@@ -1348,6 +1611,8 @@ main() {
   # Maintenance flags first: they act on an existing install and exit without building
   # anything (#612). A no-flag invocation falls straight through to the install path.
   homefree_lifecycle_dispatch "${1:-}"
+  # Verify-only mode (#832): no install state is touched before this returns.
+  [ "${1:-}" = --verify-release ] && verify_release_only "${2:-}"
   # Fresh vs upgrade (#675): key off a *completed* prior install — a valid `current`
   # symlink whose target exists — not the mere presence of `releases/`. A failed first
   # install can leave an empty `releases/` behind (the trap removes only the half-built
@@ -1364,7 +1629,8 @@ main() {
   progress running prepare
   ensure_prereqs
   ref="$(resolve_ref)"
-  log "installing $APP (${ref:-default branch}) into $PREFIX …"
+  [ -n "$ref" ] || die "no release tag (vX.Y.Z) found on $REPO_URL — nothing to install on the stable channel. Use AGENT_SESSIONS_CHANNEL=main or AGENT_SESSIONS_REF=<ref> to install something else explicitly."
+  log "installing $APP ($ref) into $PREFIX …"
   rel=""
   # Remove a half-built release on any failure before `current` is flipped — the prior
   # release keeps serving (rollback-safe). Cleared once the flip succeeds.

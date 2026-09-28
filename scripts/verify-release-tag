@@ -110,8 +110,28 @@ grep -qE '^[^#[:space:]]+[[:space:]]+ssh-' "$SIGNERS" \
 git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1 \
   || refuse "$TAG does not exist in this repository"
 
-if git -c "gpg.ssh.allowedSignersFile=$SIGNERS" verify-tag "$TAG" >/dev/null 2>&1; then
+[ "$(git cat-file -t "refs/tags/$TAG" 2>/dev/null)" = tag ] \
+  || refuse "$TAG is not a recorded pre-signing release and is not an annotated tag, so there is no signature to verify"
+TAGOBJ="$(git cat-file tag "refs/tags/$TAG")"
+# The signature covers the tag OBJECT; the name is only a ref. An old signed release re-published
+# under a higher name must not pass as that release (Hermes on #1206).
+[ "$(printf '%s\n' "$TAGOBJ" | sed -n '/^tag /{s/^tag //p;q;}')" = "$TAG" ] \
+  || refuse "$TAG: the signed tag object names a different release — refusing a relabelled release"
+# SSH signatures only: git picks the verifier from the signature's format, so a PGP or X.509
+# signature would be checked against this machine's keyring instead of the signers file.
+printf '%s\n' "$TAGOBJ" | grep -qx -- '-----BEGIN SSH SIGNATURE-----' \
+  || refuse "$TAG is not a recorded pre-signing release and is not signed with an SSH release key"
+if printf '%s\n' "$TAGOBJ" | grep -qE -- '-----BEGIN (PGP SIGNATURE|SIGNED MESSAGE)-----'; then
+  refuse "$TAG is not a recorded pre-signing release and carries a non-SSH signature"
+fi
+
+GNUPG_EMPTY="$(mktemp -d)"
+if GNUPGHOME="$GNUPG_EMPTY" git -c "gpg.ssh.allowedSignersFile=$SIGNERS" \
+  -c gpg.ssh.program=ssh-keygen -c gpg.program=false -c gpg.x509.program=false \
+  verify-tag "$TAG" >/dev/null 2>&1; then
+  rm -rf "$GNUPG_EMPTY"
   say "verified: $TAG is signed by a trusted release key"
   exit 0
 fi
+rm -rf "$GNUPG_EMPTY"
 refuse "$TAG is not a recorded pre-signing release and is not signed by a trusted key"

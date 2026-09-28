@@ -1414,6 +1414,9 @@ export interface UpdateInfo {
    *  meaning (nothing auto-updates on a guess), while the panel gains a verdict it can render
    *  honestly instead of "You're on the latest". Absent means the comparison happened. */
   undetermined?: boolean;
+  /** Why the last update was REFUSED by release verification — a moved tag (#612) or a
+   *  signature that does not verify (#832). Absent when nothing was refused. */
+  blocked?: string;
   /** #538 additive fields (present on current servers; optional for back-compat). */
   auto_update?: boolean;
   last_auto?: UpdateLastAuto | null;

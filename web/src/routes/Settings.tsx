@@ -536,6 +536,14 @@ function UpdatesCard() {
       // The progress panel below says the rest — step by step, through the restart (#1085).
       setStartedGen((g) => g + 1);
     } catch (e) {
+      if (e instanceof ApiError && e.status === 422) {
+        // Refused by release verification (#612/#832). The reason lives on the check result
+        // (`blocked`), so fetch it — check() resets the message, hence it is set afterwards.
+        await check();
+        setState("error");
+        setMsg("The update was refused — the reason is shown above.");
+        return;
+      }
       setState("error");
       setMsg(
         e instanceof ApiError && e.status === 503
@@ -624,6 +632,13 @@ function UpdatesCard() {
           release tag and `main` moved on without it. `undetermined` is reported separately so
           the panel can say so; `update_available` stays false either way, because uncertainty
           must never start an install on its own. */}
+      {/* A REFUSED update (#612 moved tag, #832 signature) is not "up to date" and not "no
+          self-update here": say what was refused and why, above the verdict. */}
+      {info?.blocked && (
+        <p className={styles.err} role="alert" data-testid="update-blocked">
+          Update refused: {info.blocked}
+        </p>
+      )}
       {info &&
         (info.undetermined ? (
           <p className={styles.hint} data-testid="update-undetermined">

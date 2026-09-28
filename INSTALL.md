@@ -311,26 +311,32 @@ sh install.sh --homefree-disable            # stop streaming; take the key out o
 
 ## Release signing
 
-<!-- signing-enforcement: off -->
-> **Status: not active yet.** This release ships the trust root only. Nothing verifies anything
-> today — `install.sh` carries `RELEASE_SIGNERS` as a constant and has no signature check, and no
-> release has been signed yet. Signing arrives in #832 Phase 1 and the installer starts enforcing
-> in Phase 2. Until then this section describes what is being built, so the mechanism can be
-> reviewed before it has teeth.
+> **Status: enforced for new releases.** The installer verifies the signature of any release
+> newer than `v0.19.2` before building it, and refuses one it cannot verify. Releases up to
+> `v0.19.2` predate signing and are accepted by their pinned commits instead. No signed release
+> has been cut yet, so the first protected release is the next one.
 
-Once active, release **tags** will be signed and the installer will verify the signature before
-building anything.
+Release **tags** are signed, and the installer verifies the signature before building anything.
 
 The reason for a signature rather than a checksum list is that **one key covers every future
 release**. A list must name each release, so a copy installed months ago can only vouch for
 releases *older* than itself — exactly backwards for an updater. A key does not expire that way.
 
-The trust root will be read from the copy you already trust — the `install.sh` you ran, or the
+The trust root is read from the copy you already trust — the `install.sh` you ran, or the
 release currently installed — and never from the code being verified. A signer list taken from
 the thing it vouches for proves nothing.
 
 Enforcement starts at a recorded cutover (`scripts/release-trust.json`), so existing unsigned
 releases keep working; only releases newer than that require a signature.
+
+Check a release without installing it:
+
+```sh
+sh install.sh --verify-release <tag>
+```
+
+Exit `0` means it verifies, `3` means it is validly signed by a key this installer does not
+trust (a key rotation — the updater steps to the bridge release), and `1` means refused.
 
 Inspect the trust root shipped with this release:
 
@@ -338,7 +344,7 @@ Inspect the trust root shipped with this release:
 cat scripts/release-signers
 ```
 
-and, once signed releases exist, check one by hand:
+and check one by hand:
 
 ```sh
 git -c gpg.ssh.allowedSignersFile=scripts/release-signers verify-tag <tag>
@@ -348,9 +354,9 @@ Exit `0` plus `Good "git" signature for release@agent-sessions` is the only succ
 signature` *without* a named principal means the signature is valid but the key is untrusted — a
 check grepping for `Good.*signature` would accept anyone's key.
 
-**What signing will and will not cover.** It proves the release tag was created by a holder of the
+**What signing covers, and what it does not.** It proves the release tag was created by a holder of the
 release key. It says nothing about the dependencies, the toolchain, or the machine that built the
-release. Verification requires `ssh-keygen` (`openssh-client`).
+release. Verification requires `ssh-keygen` (`openssh-client`) and git 2.34 or newer (SSH signatures).
 
 ## Lost the password?
 

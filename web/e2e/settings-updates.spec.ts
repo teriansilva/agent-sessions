@@ -195,3 +195,43 @@ test("Update now shows the installer's progress through the restart, and links t
     page.viewportSize()!.width,
   );
 });
+
+// #832: an update REFUSED by release verification says so, with the reason — it used to reach the
+// card as a 503 and read "Self-update isn't available for this install", which is the wrong
+// fault entirely. The long refusal must also wrap on a phone rather than widen the page.
+test("a refused update shows why, not 'unavailable' (#832)", async ({ page }) => {
+  const reason =
+    "refusing to update: v1.3.0: validly signed, but by a key this installation does not trust";
+  let refused = false;
+  await page.route("**/api/update/check", (r) =>
+    r.fulfill({
+      json: {
+        current: "1.2.3",
+        channel: "stable",
+        latest: "v1.3.0",
+        update_available: true,
+        ...(refused ? { blocked: reason } : {}),
+      },
+    }),
+  );
+  await page.route("**/api/update/apply", (r) => {
+    refused = true;
+    return r.fulfill({ status: 422, json: { detail: reason } });
+  });
+  await page.route("**/api/update/progress", (r) =>
+    r.fulfill({ json: { state: "idle", steps: 7, last_duration_s: 360 } }),
+  );
+  await setup(page);
+  await page.getByRole("button", { name: /check for updates/i }).click();
+  await page.getByTestId("update-apply").click();
+
+  const blocked = page.getByTestId("update-blocked");
+  await expect(blocked).toBeVisible();
+  await expect(blocked).toContainText("does not trust");
+  await expect(page.getByText(/the update was refused/i)).toBeVisible();
+  await expect(page.getByText(/isn.t available for this install/i)).toHaveCount(0);
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  );
+  expect(overflow).toBeLessThanOrEqual(0);
+});

@@ -1031,11 +1031,17 @@ def _tag_repo(tmp_path: Path) -> tuple[Path, str, str]:
             },
         )
 
+    # Release tags are signed since #832 Phase 2, so the fixture signs them too — this suite is
+    # about the commit pin, and the signature gate must not be what refuses (or admits) here.
+    key = tmp_path / "release-key"
+    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)], check=True)
+    sign = ["-c", "gpg.format=ssh", "-c", f"user.signingkey={key}"]
+
     git("init", "-q", "-b", "main")
     (repo / "marker").write_text("reviewed\n")
     git("add", "-A")
     git("commit", "-qm", "the reviewed release")
-    git("tag", "v9.9.9")
+    git(*sign, "tag", "-s", "-m", "v9.9.9", "v9.9.9")
     first = subprocess.run(
         ["git", "-C", str(repo), "rev-parse", "v9.9.9^{}"],
         capture_output=True,
@@ -1046,7 +1052,7 @@ def _tag_repo(tmp_path: Path) -> tuple[Path, str, str]:
     (repo / "marker").write_text("swapped\n")
     git("add", "-A")
     git("commit", "-qm", "what the attacker wants built")
-    git("tag", "-f", "v9.9.9")  # the tag MOVES — same name, different bytes
+    git(*sign, "tag", "-f", "-s", "-m", "v9.9.9", "v9.9.9")  # the tag MOVES — same name, new bytes
     second = subprocess.run(
         ["git", "-C", str(repo), "rev-parse", "v9.9.9^{}"],
         capture_output=True,
@@ -1065,7 +1071,8 @@ def _build_release(tmp_path: Path, repo: Path, *, expect: str, py: str = "python
     prefix = tmp_path / "prefix"
     prefix.mkdir()
     return subprocess.run(
-        ["sh", "-c", f'. "{src}"; PY={py}; build_release v9.9.9'],
+        # The fixture's own key stands in for the release key (see _tag_repo).
+        ["sh", "-c", f'. "{src}"; RELEASE_SIGNERS="$SIGNERS"; PY={py}; build_release v9.9.9'],
         capture_output=True,
         text=True,
         env={
@@ -1074,6 +1081,8 @@ def _build_release(tmp_path: Path, repo: Path, *, expect: str, py: str = "python
             "AGENT_SESSIONS_REPO": str(repo),
             "AGENT_SESSIONS_EXPECT_COMMIT": expect,
             "AGENT_SESSIONS_NO_SERVICE": "1",
+            "SIGNERS": "release@agent-sessions "
+            + (tmp_path / "release-key.pub").read_text().strip(),
         },
     )
 

@@ -21,6 +21,15 @@ from fastapi.testclient import TestClient
 from agent_sessions import update
 from agent_sessions.main import create_app
 
+
+@pytest.fixture(autouse=True)
+def _release_signature_ok(monkeypatch):
+    """`apply()` also checks the release signature by running the INSTALLED install.sh (#832).
+    These tests use a fake installer, so that check is stubbed; tests/test_install_verify.py
+    exercises it for real against signed tags."""
+    monkeypatch.setattr(update, "verify_signature", lambda _t, _u: (update.SIG_OK, "stub"))
+
+
 NOW = 1_800_000_000
 
 

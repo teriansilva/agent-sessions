@@ -1145,6 +1145,33 @@ def test_update_apply_202_then_503(auth_cfg, fake_jsonl, monkeypatch):
     assert c.post("/api/update/apply", headers=hdr).status_code == 503
 
 
+def test_update_apply_refused_by_verification_is_422_not_503(
+    auth_cfg, fake_jsonl, monkeypatch, tmp_path
+):
+    # #832: a refusal (moved tag, unverifiable signature) must not read as "not an install".
+    import agent_sessions.update as up
+
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    monkeypatch.setattr(up, "_SPAWNED_AT", None)
+    inst = tmp_path / "install.sh"
+    inst.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(up, "installer_path", lambda: inst)
+
+    def refused():
+        up._LAST_BLOCK = "refusing to update: v9.9.9: signature missing or invalid — refusing"
+        return False
+
+    monkeypatch.setattr(up, "apply", refused)
+    monkeypatch.setattr(up, "_LAST_BLOCK", None)
+    r = c.post("/api/update/apply", headers=hdr)
+    assert r.status_code == 422
+    assert "signature missing or invalid" in r.json()["detail"]
+    monkeypatch.setattr(up, "latest_ref", lambda _c, _u: "v9.9.9")
+    assert "signature missing or invalid" in c.get("/api/update/check").json()["blocked"]
+
+
 def test_update_apply_busy_409(auth_cfg, fake_jsonl, monkeypatch):
     # #538 single-flight: while a scheduled pass holds the lock, manual apply is refused.
     import agent_sessions.update as up
@@ -2760,3 +2787,28 @@ def test_config_username_is_null_when_there_is_no_login(monkeypatch, tmp_path, f
     body = c.get("/api/config").json()  # no login needed in this mode
     assert body["auth_mode"] == "none"
     assert body["username"] is None
+
+
+def test_manual_apply_runs_off_the_event_loop(auth_cfg, fake_jsonl, monkeypatch):
+    # The signature check is subprocess work with a timeout; on the loop thread it froze every
+    # other request and WebSocket until it returned (Hermes on #1206).
+    import asyncio
+
+    import agent_sessions.update as update
+
+    seen = {}
+
+    def apply_manual():
+        try:
+            asyncio.get_running_loop()
+            seen["on_loop"] = True
+        except RuntimeError:
+            seen["on_loop"] = False
+        return "started"
+
+    monkeypatch.setattr(update, "apply_manual", apply_manual)
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = c.post("/api/update/apply", headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin})
+    assert r.status_code == 202
+    assert seen == {"on_loop": False}

@@ -11,6 +11,14 @@ import pytest
 from agent_sessions import update
 
 
+@pytest.fixture(autouse=True)
+def _release_signature_ok(monkeypatch):
+    """`apply()` also checks the release signature by running the INSTALLED install.sh (#832).
+    These tests use a fake installer, so that check is stubbed; tests/test_install_verify.py
+    exercises it for real against signed tags."""
+    monkeypatch.setattr(update, "verify_signature", lambda _t, _u: (update.SIG_OK, "stub"))
+
+
 def test_latest_ref_stable_picks_highest_tag(monkeypatch):
     monkeypatch.setattr(update.shutil, "which", lambda _n: "/usr/bin/git")
     out = SimpleNamespace(

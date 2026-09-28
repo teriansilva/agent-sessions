@@ -1362,6 +1362,52 @@ test("Updates: the apply action exists even when no update is available (#931)",
   expect(api.updateApply).toHaveBeenCalled();
 });
 
+test("Updates: a refused update says why, not 'up to date' (#832)", async () => {
+  vi.mocked(api.updateCheck).mockResolvedValue({
+    current: "0.19.2",
+    channel: "stable",
+    latest: "v0.20.0",
+    update_available: true,
+    blocked: "refusing to update: v0.20.0: signature missing or invalid — refusing",
+  });
+  renderSettings("dark", "#ffb000", "/settings/updates");
+  await userEvent.click(
+    screen.getByRole("button", { name: /check for updates/i }),
+  );
+  expect(await screen.findByTestId("update-blocked")).toHaveTextContent(
+    /update refused: .*signature missing or invalid/i,
+  );
+});
+
+test("Updates: a 422 from apply fetches and shows the refusal, not 'unavailable' (#832)", async () => {
+  const { ApiError } = await vi.importActual<typeof import("../lib/api")>("../lib/api");
+  vi.mocked(api.updateCheck)
+    .mockResolvedValueOnce({
+      current: "0.19.2",
+      channel: "stable",
+      latest: "v0.20.0",
+      update_available: true,
+    })
+    .mockResolvedValueOnce({
+      current: "0.19.2",
+      channel: "stable",
+      latest: "v0.20.0",
+      update_available: true,
+      blocked: "v0.20.0: validly signed, but by a key this installation does not trust",
+    });
+  vi.mocked(api.updateApply).mockRejectedValue(new ApiError(422, "refused"));
+  renderSettings("dark", "#ffb000", "/settings/updates");
+  await userEvent.click(
+    screen.getByRole("button", { name: /check for updates/i }),
+  );
+  await userEvent.click(await screen.findByTestId("update-apply"));
+  expect(await screen.findByTestId("update-blocked")).toHaveTextContent(
+    /does not trust/i,
+  );
+  expect(await screen.findByText(/the update was refused/i)).toBeInTheDocument();
+  expect(screen.queryByText(/isn.t available for this install/i)).not.toBeInTheDocument();
+});
+
 test("Updates: an undetermined verdict never reads as up to date (#931)", async () => {
   // The partial failure: main HEAD resolved, the running build's own tag did not. Reporting
   // that as "You're on the latest" is the reassurance that let an install sit 26 days behind.

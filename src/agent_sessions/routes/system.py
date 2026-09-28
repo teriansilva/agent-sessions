@@ -481,7 +481,14 @@ def register(
         # Update to the channel's latest — no user-supplied ref/command. Re-runs the
         # installer detached (atomic release + flip + restart + health-check + rollback).
         # Single-flight with the scheduled auto-update pass (#538).
-        status = update.apply_manual()
+        # Off the event loop: the release-signature check (#832) fetches the tag and may walk
+        # several candidates, each a subprocess with a timeout — on the loop thread that froze
+        # every other request and WebSocket until it returned (Hermes on #1206).
+        status = await asyncio.to_thread(update.apply_manual)
+        if status == "blocked":
+            # Release verification refused (#612 manifest / #832 signature). The reason is also
+            # on /api/update/check's `blocked`, which is where the Settings card reads it.
+            raise HTTPException(status_code=422, detail=update.check_blocked() or "update refused")
         if status == "unavailable":
             raise HTTPException(status_code=503, detail="self-update unavailable (not an install)")
         if status == "busy":

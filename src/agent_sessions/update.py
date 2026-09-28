@@ -43,6 +43,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -152,6 +153,22 @@ def _home() -> Path:
     ).expanduser()
 
 
+_RELEASE_TAG_RE = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
+
+
+def _release_tags(ls_remote: str) -> list[str]:
+    """Release tag names from ``git ls-remote --tags --refs`` output: the FULL name after
+    ``refs/tags/``, and only the exact ``vX.Y.Z`` shape. Taking the text after the last slash
+    let a remote tag ``v999/z`` stand in for a branch ``z`` (Hermes on #1206)."""
+    out = []
+    for line in ls_remote.splitlines():
+        _sha, _, ref = line.partition("\t")
+        name = ref.strip().removeprefix("refs/tags/")
+        if ref.strip().startswith("refs/tags/") and _RELEASE_TAG_RE.fullmatch(name):
+            out.append(name)
+    return out
+
+
 def latest_ref(channel: str, repo_url: str) -> str | None:
     """The channel's latest ref on the remote: the highest ``v*`` tag (stable) or the
     ``main`` short SHA. None if git/network is unavailable."""
@@ -173,8 +190,7 @@ def latest_ref(channel: str, repo_url: str) -> str | None:
         )
         if out.returncode != 0:
             return None
-        tags = [ln.rsplit("/", 1)[-1] for ln in out.stdout.splitlines() if ln.strip()]
-        tags = sorted(tags, key=_semver_key)
+        tags = sorted(_release_tags(out.stdout), key=_semver_key)
         return tags[-1] if tags else None
     except (OSError, subprocess.SubprocessError):
         return None
@@ -402,6 +418,143 @@ def select_stable_target(repo_url: str) -> tuple[str | None, str | None, str]:
     return tag, commit, reason
 
 
+# ---------------------------------------------------------------- release signatures (#832)
+SIG_OK = "ok"
+SIG_UNKNOWN_SIGNER = "unknown-signer"  # validly signed by a key this install does not trust
+SIG_REFUSED = "refused"
+_VERIFY_TIMEOUT_S = 120
+#: How far down the rotation walk may look before giving up. A bridge is normally one or two
+#: releases below the newest; the bound only stops a pathological remote costing a verify per tag.
+_WALK_LIMIT = 10
+
+
+def verify_signature(tag: str, repo_url: str) -> tuple[str, str]:
+    """``(status, reason)`` for ``tag``'s release signature, answered by the INSTALLED release's
+    own ``install.sh --verify-release`` (#832 Phase 3).
+
+    One implementation of the check, and one trust root: the signer list embedded in the
+    installer this install was itself verified with. Nothing here reads a signer list from the
+    remote or from the candidate, which is the attacker's to write. Fails closed: no installer,
+    an installer that predates the check, a timeout or any unexpected exit is ``refused``.
+    """
+    inst = installer_path()
+    if inst is None:
+        return SIG_REFUSED, "no installer found to verify the release signature with"
+    try:
+        if "verify_release_only" not in inst.read_text(errors="replace"):
+            return SIG_REFUSED, "the installed installer predates release signature checks"
+    except OSError as e:
+        return SIG_REFUSED, f"the installer could not be read ({e.strerror})"
+    sh = shutil.which("sh") or "/bin/sh"
+    env = {k: v for k, v in os.environ.items() if not k.startswith("AGENT_SESSIONS_")}
+    env["AGENT_SESSIONS_REPO"] = repo_url
+    try:
+        out = subprocess.run(  # noqa: S603 — literal argv; the tag is from the remote's tag list
+            [sh, str(inst), "--verify-release", tag],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=_VERIFY_TIMEOUT_S,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        return SIG_REFUSED, f"{tag}: the signature check could not run ({type(e).__name__})"
+    reason = (out.stdout.strip().splitlines() or [f"{tag}: no answer from the signature check"])[-1]
+    if out.returncode == 0:
+        return SIG_OK, reason
+    if out.returncode == 3:
+        return SIG_UNKNOWN_SIGNER, reason
+    return SIG_REFUSED, reason
+
+
+def _remote_tags(repo_url: str) -> list[str]:
+    """Every ``v*`` tag on the remote, highest first. Empty if the remote cannot be listed."""
+    git = shutil.which("git")
+    if not git:
+        return []
+    try:
+        out = subprocess.run(  # noqa: S603
+            [git, "ls-remote", "--tags", "--refs", repo_url, "v*"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if out.returncode != 0:
+        return []
+    return sorted(_release_tags(out.stdout), key=_semver_key, reverse=True)
+
+
+def _release_key(version: str) -> tuple[int, ...]:
+    """The X.Y.Z of a version or tag, for "strictly newer" — a dev/local suffix is not a
+    newer release (``0.19.3.dev5+g1a2b`` is 0.19.3, never 0.19.3.5)."""
+    base = version.lstrip("v").partition("+")[0]
+    return tuple((_semver_key(base) + (0, 0, 0))[:3])
+
+
+def select_signed_target(repo_url: str) -> tuple[str | None, str | None, str]:
+    """``(tag, commit, reason)`` for a stable self-update: the manifest checks of
+    :func:`select_stable_target` **and** a release signature (#832).
+
+    **The rotation walk (Phase 4).** When the newest tag is validly signed by a key this
+    install does not trust yet, that is what a key rotation looks like to an install that was
+    off across it: the bridge release — signed by the old key, carrying both — sits below the
+    newest. So step down to the newest release this install *can* verify, install that, and
+    let the next cycle re-evaluate with the bridge's wider root.
+
+    Bounded three ways, because "walk down until something verifies" is otherwise a downgrade
+    primitive:
+
+    * only an **unknown signer** is steppable. A missing, invalid or tampered signature — or
+      any answer the check does not recognise — is an attack, and refuses outright;
+    * every candidate is **strictly newer** than the running version, so the walk can never
+      reinstall what is running (a loop) or go backwards;
+    * no verifiable candidate ⇒ a hard refusal that says so, never a guess.
+    """
+    tag, commit, reason = select_stable_target(repo_url)
+    if not tag or not commit:
+        return None, None, reason
+    status, why = verify_signature(tag, repo_url)
+    if status == SIG_OK:
+        return tag, commit, why
+    if status != SIG_UNKNOWN_SIGNER:
+        return None, None, f"refusing to update: {why}"
+    running = _release_key(get_version())
+    candidates = [t for t in _remote_tags(repo_url) if t != tag and _release_key(t) > running][
+        :_WALK_LIMIT
+    ]
+    for cand in candidates:
+        c_status, c_why = verify_signature(cand, repo_url)
+        if c_status == SIG_UNKNOWN_SIGNER:
+            continue
+        if c_status != SIG_OK:
+            return None, None, f"refusing to update: {c_why}"
+        remote = remote_tag_shas(cand, repo_url)
+        ok, m_why = verify_release_tag(cand, repo_url, remote=remote)
+        if not ok:
+            return None, None, m_why
+        pin = verified_commit(cand, repo_url, remote=remote)
+        if not pin:
+            return None, None, f"{cand} could not be resolved to a commit — will retry"
+        return (
+            cand,
+            pin,
+            (
+                f"{tag} is signed by a key this installation does not trust yet; stepping to "
+                f"{cand}, the newest release it can verify (a key-rotation bridge)"
+            ),
+        )
+    return (
+        None,
+        None,
+        (
+            f"refusing to update: {why}, and no newer release this installation can verify exists "
+            f"(a key rotation without a bridge release). Reinstall from the current installer to "
+            f"pick up the new release key."
+        ),
+    )
+
+
 def _semver_key(tag: str) -> tuple[int, ...]:
     parts = tag.lstrip("v").split(".")
     out = []
@@ -474,6 +627,11 @@ def _main_update_verdict(cur: str, latest: str | None, repo_url: str) -> str:
     if cur_sha.lower()[:n] == latest.lower()[:n]:  # tolerant of differing short lengths
         return MAIN_CURRENT
     return MAIN_AVAILABLE
+
+
+def check_blocked() -> str | None:
+    """Why the last update was refused by release verification, or None."""
+    return _LAST_BLOCK
 
 
 def check() -> dict[str, object]:
@@ -688,7 +846,7 @@ def installer_path() -> Path | None:
 def apply() -> bool:
     """Run the installer detached to upgrade to the channel's latest (no user input).
     Returns False if the installer isn't found (e.g. a dev checkout, not an install), or if
-    the target release tag fails manifest verification (#612)."""
+    the target release tag fails manifest verification (#612) or its signature check (#832)."""
     global _SPAWNED_AT, _LAST_BLOCK
     inst = installer_path()
     if inst is None:
@@ -699,7 +857,7 @@ def apply() -> bool:
     target: str | None = None
     pin: str | None = None
     if _channel() == "stable":
-        target, pin, reason = select_stable_target(_repo_url())
+        target, pin, reason = select_signed_target(_repo_url())
         # Both or neither: an installer spawned without a commit to check against is an
         # unverified build, because install.sh deliberately skips the comparison when
         # AGENT_SESSIONS_EXPECT_COMMIT is empty. Refusing here is cheap and self-correcting.
@@ -746,20 +904,28 @@ def apply_manual() -> str:
     just-spawned installer. `apply()` returns right after the detached spawn while the
     installer keeps working through its build/restart window — without the cooldown a
     double-click or retried POST would stack a second installer (Hermes #539).
-    Returns 'started' | 'busy' | 'unavailable'."""
+    Returns 'started' | 'busy' | 'blocked' | 'unavailable'."""
     if not _RUN_LOCK.acquire(blocking=False):
         return "busy"
     try:
         if _SPAWNED_AT is not None and time.monotonic() - _SPAWNED_AT < _SPAWN_COOLDOWN_S:
             return "busy"
-        return "started" if apply() else "unavailable"
+        return "started" if apply() else _not_started()
     finally:
         _RUN_LOCK.release()
 
 
+def _not_started() -> str:
+    """Why `apply()` returned False: ``blocked`` when release verification refused (the reason
+    is on `check()`'s ``blocked``), ``unavailable`` when there is no installer to run. Keeping
+    them apart matters: a refused update must not read as "self-update isn't available"."""
+    return "blocked" if installer_path() is not None and _LAST_BLOCK else "unavailable"
+
+
 def autoupdate() -> str:
     """Check the channel and apply only if an update is available (the scheduled/CLI
-    entrypoint). Returns 'up-to-date', 'applied', 'unavailable', or 'busy' (another
+    entrypoint). Returns 'up-to-date', 'applied', 'blocked' (release verification refused),
+    'unavailable', or 'busy' (another
     check/apply holds the single-flight lock, or an installer spawned moments ago is
     still working through its restart window)."""
     if not _RUN_LOCK.acquire(blocking=False):
@@ -770,6 +936,6 @@ def autoupdate() -> str:
         info = check()
         if not info["update_available"]:
             return "up-to-date"
-        return "applied" if apply() else "unavailable"
+        return "applied" if apply() else _not_started()
     finally:
         _RUN_LOCK.release()
