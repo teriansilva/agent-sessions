@@ -51,7 +51,7 @@ def _fake_run_pass(monkeypatch, *results):
     calls: list[str] = []
     it = iter(results)
 
-    async def run_pass(mid, registry=None):
+    async def run_pass(mid, registry=None, **kw):
         calls.append(mid)
         r = next(it)
         if isinstance(r, BaseException):
@@ -185,7 +185,7 @@ def test_the_loop_serves_an_early_reading_long_before_the_sweep_and_does_not_swe
     monkeypatch.setattr(loop, "sweep", sweep)
     read: list[str] = []
 
-    async def run_pass(mid, registry=None):
+    async def run_pass(mid, registry=None, **kw):
         read.append(mid)
         return _pass(READ)
 
@@ -215,7 +215,7 @@ def test_switching_supervision_off_mid_batch_stops_the_early_judge_calls(monkeyp
     enabled = {"on": True}
     monkeypatch.setattr(loop, "_enabled", lambda: enabled["on"])
 
-    async def run_pass(mid, registry=None):
+    async def run_pass(mid, registry=None, **kw):
         enabled["on"] = False  # the operator switches supervision off while this reading runs
         return _pass(READ)
 

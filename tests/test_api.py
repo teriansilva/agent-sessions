@@ -2014,6 +2014,11 @@ def test_archive_route_reaps_runtime_then_archives(auth_cfg, fake_jsonl, monkeyp
 
     monkeypatch.setattr(sroutes.runtime_cleanup, "cleanup_runtime", fake_cleanup)
     monkeypatch.setattr(engines.ClaudeProvider, "archive", spy_archive)
+    # HERMETIC: the background-agent guard (#631) scans EVERY process on the host for this
+    # transcript, and the fixture uuid is shared by many suites — on a busy shared runner another
+    # job holding `11111111-….jsonl` turned this into a 409. This test is about the order of
+    # teardown and archive; the guard has its own tests.
+    monkeypatch.setattr(sroutes.transcript_owner, "owned_elsewhere", lambda prov, native: False)
 
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)

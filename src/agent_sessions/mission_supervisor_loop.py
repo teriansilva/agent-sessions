@@ -15,6 +15,22 @@ Gating — all must hold before a mission is swept:
 
 Failures are swallowed per mission and logged: one stuck mission must not stop the fleet, which
 is the whole complaint this feature exists to answer.
+
+Cadence (#1214) — three clocks, one single-flight:
+
+* **Fast sweep**, every `FAST_INTERVAL_S` (30 s), over `running` missions on their own keyset ring.
+* **Slow sweep**, every `INTERVAL_S` (300 s), over `review` missions on a separate ring, plus the
+  delivered-nudge reconciliation — neither needs to be faster, and a separate ring keeps a large
+  running fleet from starving the review one.
+* **Prompt watch**, every `WATCH_INTERVAL_S` (5 s): a held session of a running mission that has
+  COME TO REST (`mission_supervisor.session_rest`) wakes its mission's pass once per rest episode,
+  so a permission prompt is read within seconds rather than at the next sweep. The watch decides
+  nothing — the woken pass is the ordinary `run_pass`, with every gate it always had.
+
+Looking often is cheap; the model is not. Every pass goes through ONE `mission_pace.Pace`, whose
+bounds are per unit of wall-clock time (reads, model calls, asks, probes), and the judge budgets
+are per `JUDGE_WINDOW_S` window rather than per sweep — so ten times the passes is not ten times
+the spend, and an idle mission costs no model call at all.
 """
 
 from __future__ import annotations
@@ -25,14 +41,30 @@ import logging
 import os
 import time
 
-from . import aitasks, mission_judge, mission_supervisor, missions, prefs
+from . import aitasks, mission_judge, mission_pace, mission_supervisor, missions, prefs
 
 log = logging.getLogger(__name__)
 
-#: How often the fleet is swept. Deliberately slower than the orchestrator's own pass: a
-#: supervisor that runs every minute is a supervisor that spends the operator's money re-reading
-#: transcripts nobody wrote to. The model half is fingerprint-gated on top of this.
+#: How often the SLOW sweep runs — `review` missions and the delivered-nudge reconciliation. It was
+#: the cadence of every mission until #1214.
 INTERVAL_S = 300.0
+#: How often RUNNING missions are swept (#1214). Cheap because the spend is not per pass: a session
+#: is read at most once per `mission_pace.READ_INTERVAL_S` unless it came to rest, and the model is
+#: called only when its input moved, within a per-window cap (`mission_pace`).
+FAST_INTERVAL_S = 30.0
+#: How often the prompt watch looks for a held session that has come to rest (#1214). Local reads
+#: only: a clock per session, a cached screen class while quiet 3–20 s, else a store mark.
+WATCH_INTERVAL_S = 5.0
+#: The window the judge budgets refill on (#1214). Was "per sweep", when a sweep was five minutes.
+JUDGE_WINDOW_S = 300.0
+#: The least a sweep waits after the previous one finished, when it overran its interval — a sweep
+#: is scheduled from the START of the last one, so an overrun is followed at once, but never
+#: back-to-back without the watch and the early readings getting a turn.
+MIN_SWEEP_GAP_S = 2.0
+
+#: The states each ring sweeps, and the durable cursor it keeps.
+FAST_STATES = ("running",)
+SLOW_STATES = ("review",)
 
 #: How many missions one sweep will visit. A ceiling on WORK, never on the set that work is drawn
 #: from — conflating those two is the bug this file has now had twice. The worklist is a keyset
@@ -63,13 +95,34 @@ EARLY_CONTENTION_BACKOFF_S = 5.0
 #: IN MEMORY, deliberately. A restart loses a pending request and the mission is read at the next
 #: sweep — the behaviour before #1064 — so there is nothing to persist and nothing to recover.
 _early: dict[str, tuple[float, int]] = {}
-#: The judge budget early readings share (#1088 review): every early reading between two sweeps
-#: draws on this one, replaced by a full one at the start of every sweep. It is a SEPARATE budget
-#: from the sweep's own, so the true bound is: at most `JUDGE_CALLS_PER_SWEEP` (6) judge calls per
-#: sweep, plus at most 6 for all early readings between two sweeps, and never more than
+#: The judge budget early readings share (#1088 review): every early reading in one judge window
+#: draws on this one, replaced by a full one when the next window opens (`refresh_judge_window`;
+#: per SWEEP until #1214, when a sweep was five minutes). It is a SEPARATE budget from the sweeps'
+#: own, so the true bound is: at most `JUDGE_CALLS_PER_SWEEP` (6) judge calls per `JUDGE_WINDOW_S`
+#: for all sweeps, plus at most 6 for all early readings in the same window, and never more than
 #: `JUDGE_CALLS_PER_MISSION` (2) per mission per pass. Kept separate on purpose: an early reading is
-#: the operator's newest mission, and the sweep that follows should not find its budget spent.
+#: the operator's newest mission, and the sweeps that follow should not find their budget spent.
 _early_budget: mission_judge.Budget = mission_judge.Budget()
+#: The missions the loop's sweeps supervised since the last judge phase (#1214 review). The loop
+#: JUDGES ONCE PER WINDOW, over this whole set — not per sweep over one 25-mission page. A budget
+#: carried across the pages of a ring would be spent by whichever page the window opened on, and
+#: `judge_batch`'s least-recently-served order only rotates within the ids it is given: with two
+#: pages, the second never saw a call. Given every mission supervised in the window, the order is
+#: global again, and the spend is still `JUDGE_CALLS_PER_SWEEP` per `JUDGE_WINDOW_S`.
+_judge_due: set[str] = set()
+#: When the sweeps' current judge window opened, on the monotonic clock; `None` = no window yet.
+_window_at: float | None = None
+#: When the early readings' current budget window opened — a separate clock (#1214 review).
+_early_window_at: float | None = None
+#: The one spend gate every pass the loop makes goes through (#1214). Module-level so an early
+#: reading, a woken pass and a sweep share one set of clocks.
+_pace: mission_pace.Pace = mission_pace.Pace()
+#: session key -> the rest episode the watch last woke its mission for (#1214).
+_watch_seen: dict[str, str] = {}
+#: When the prompt watch is next due, on the monotonic clock (#1214). Module-level because a sweep
+#: services it BETWEEN its passes too: a sweep holds the single-flight for as long as its batch
+#: takes, and a watch that waited for the whole batch would miss its deadline by exactly that.
+_next_watch: float = 0.0
 #: Set by `run()` so a request can wake a loop that would otherwise sleep the whole interval. `None`
 #: when no loop is running (tests, tooling), in which case a request is simply recorded.
 _wake: asyncio.Event | None = None
@@ -154,6 +207,31 @@ def _worth_retrying(res: dict | None) -> bool:
     return True
 
 
+def refresh_judge_window(now: float | None = None) -> bool:
+    """The SWEEPS' judge window (#1214): opens a new one once `JUDGE_WINDOW_S` has passed since the
+    last one opened, and returns True when it did — that sweep runs the window's judge phase (see
+    `_judge_due`). Only a paced sweep calls this: the early readings keep their own clock
+    (`refresh_early_budget`), so an early reading at a window boundary can never take the sweeps'
+    judge phase for itself (#1214 review)."""
+    global _window_at
+    t = time.monotonic() if now is None else now
+    if _window_at is not None and t - _window_at < JUDGE_WINDOW_S:
+        return False
+    _window_at = t
+    return True
+
+
+def refresh_early_budget(now: float | None = None) -> None:
+    """The EARLY readings' budget refills once per `JUDGE_WINDOW_S` on its own clock (#1214):
+    within a window it carries over however many early readings and sweeps run."""
+    global _early_budget, _early_window_at
+    t = time.monotonic() if now is None else now
+    if _early_window_at is not None and t - _early_window_at < JUDGE_WINDOW_S:
+        return
+    _early_window_at = t
+    _early_budget = mission_judge.Budget()
+
+
 async def run_due_early(registry=None, *, now: float | None = None) -> dict:
     """Run each due early reading once. Returns ``{mission_id: "read" | "re-armed" | "gave up"}``.
 
@@ -165,6 +243,7 @@ async def run_due_early(registry=None, *, now: float | None = None) -> dict:
         _early.clear()
         return {"skipped": "disabled"}
     t = time.monotonic() if now is None else now
+    refresh_early_budget(t)
     report: dict[str, str] = {}
     return await _run_due(t, report, registry)
 
@@ -174,7 +253,7 @@ async def _run_due(t: float, report: dict[str, str], registry) -> dict:
         _due, made = _early.pop(mid)
         res: dict | None = None
         try:
-            res = await mission_supervisor.run_pass(mid, registry=registry)
+            res = await mission_supervisor.run_pass(mid, registry=registry, pace=_pace)
         except Exception as e:  # noqa: BLE001 — one mission's early read must not stop the loop
             log.warning("mission %s: early supervisor reading failed: %s", mid, e)
         # …then the judge phase for this one mission, on the early readings' shared budget. Its
@@ -207,6 +286,8 @@ ELIGIBLE_STATES = ("running", "review")
 #: never reached — fairness a restart silently erases is not fairness (#888 review, finding 6).
 #: Restarts are routine here: a deploy, a crash, an operator toggling the orchestrator.
 _CURSOR_KEY = "sweep_cursor"
+#: The slow ring's own cursor (#1214) — `review` missions, swept every `INTERVAL_S`.
+SLOW_CURSOR_KEY = "sweep_cursor:review"
 
 
 def _enabled() -> bool:
@@ -216,17 +297,40 @@ def _enabled() -> bool:
     return bool(cfg.get("enabled")) and str(cfg.get("autonomy") or "off") != "off"
 
 
-async def sweep(registry=None) -> dict:
-    """One sweep over the eligible missions. Returns a small report for the caller/tests."""
+async def sweep(
+    registry=None,
+    *,
+    states: tuple[str, ...] = ELIGIBLE_STATES,
+    cursor_key: str = _CURSOR_KEY,
+    reconcile: bool = True,
+    paced: bool = False,
+    now: float | None = None,
+) -> dict:
+    """One sweep over one ring of eligible missions. Returns a small report for the caller/tests.
+
+    The loop runs two rings (#1214): `FAST_STATES` every `FAST_INTERVAL_S` on `_CURSOR_KEY`, and
+    `SLOW_STATES` every `INTERVAL_S` on `SLOW_CURSOR_KEY`, which also reconciles. The loop's sweeps
+    are `paced`: every pass goes through the shared `_pace`, the judge runs once per window over
+    every mission supervised in it (`_judge_due`), and a mission with a pending early reading is
+    left to it. The defaults are the
+    single unpaced ring this was before, for direct callers: a fresh judge budget per call.
+    """
     # BEFORE the enabled gate: a delivery made while the orchestrator was on still owes its thread
     # record after it is switched off, and this only ever writes that record (#983 review).
-    await _reconcile_delivered()
+    if reconcile:
+        await _reconcile_delivered()
     if not _enabled():
         return {"skipped": "disabled"}
     await _forget_legacy_state()
-    # A new sweep window: early readings get a fresh shared judge budget (#1088 review).
-    global _early_budget
-    _early_budget = mission_judge.Budget()
+    if paced:
+        # The judge runs once per WINDOW, not per sweep (#1214; per sweep since #1088 review).
+        judge_now = refresh_judge_window(now)
+        refresh_early_budget(now)
+    else:
+        # A direct call is one sweep window of its own, as before #1214.
+        global _early_budget
+        _early_budget = mission_judge.Budget()
+        judge_now = True
 
     # A KEYSET CURSOR over the complete eligible set — not a rebuilt prefix of a list page.
     #
@@ -237,10 +341,10 @@ async def sweep(registry=None) -> dict:
     # no prefix: the cursor advances through every eligible mission and wraps, which is what makes
     # "every eligible mission is eventually visited" true rather than aspirational.
     try:
-        cursor = await missions.run_admitted(lambda: missions.get_supervisor_state(_CURSOR_KEY))
+        cursor = await missions.run_admitted(lambda: missions.get_supervisor_state(cursor_key))
         batch = await missions.run_admitted(
             lambda: missions.supervisor_worklist(
-                states=ELIGIBLE_STATES, after=cursor, limit=MISSIONS_PER_SWEEP
+                states=states, after=cursor, limit=MISSIONS_PER_SWEEP
             )
         )
         if not batch and cursor is not None:
@@ -248,7 +352,7 @@ async def sweep(registry=None) -> dict:
             # past the last id.
             batch = await missions.run_admitted(
                 lambda: missions.supervisor_worklist(
-                    states=ELIGIBLE_STATES, after=None, limit=MISSIONS_PER_SWEEP
+                    states=states, after=None, limit=MISSIONS_PER_SWEEP
                 )
             )
     except Exception:  # noqa: BLE001 — a store hiccup must not kill the loop
@@ -257,10 +361,15 @@ async def sweep(registry=None) -> dict:
 
     if not batch:
         with contextlib.suppress(Exception):
-            await missions.run_admitted(lambda: missions.set_supervisor_state(_CURSOR_KEY, None))
-        return {"swept": 0, "nudged": 0, "escalated": 0}
+            await missions.run_admitted(lambda: missions.set_supervisor_state(cursor_key, None))
+        out = {"swept": 0, "nudged": 0, "escalated": 0}
+        if paced and judge_now and _judge_due:
+            # The window's judgments are still owed for what earlier sweeps supervised.
+            await _judge_phase(_take_judge_due([]), out, mission_judge.Budget())
+        return out
 
     out = {"swept": 0, "nudged": 0, "escalated": 0}
+
     # ONE judge budget for the whole sweep (#1088): at most `JUDGE_CALLS_PER_SWEEP` model calls
     # across every mission it visits, on top of the per-mission cap inside the pass.
     #
@@ -274,34 +383,69 @@ async def sweep(registry=None) -> dict:
     # CANCELLATION (shutdown: `CancelledError` is not an `Exception`, so it propagates without a
     # single judge call), and never once the orchestrator was switched off mid-sweep (#1097 round
     # 10): turning supervision off stops the model calls, not just the next sweep.
+    # WHICH missions phase 2 judges: a direct sweep judges its own batch; the loop judges once per
+    # window over every mission its sweeps supervised since the last judge phase (`_judge_due`).
+    def _judge_ids() -> list[str] | None:
+        if not paced:
+            return batch
+        if not judge_now:
+            _judge_due.update(batch)
+            return None
+        return _take_judge_due(batch)
+
     try:
-        result = await _sweep_batch(batch, out, registry)
+        result = await _sweep_batch(batch, out, registry, cursor_key=cursor_key, paced=paced)
     except Exception:
-        await _judge_phase(batch, out)
+        ids = _judge_ids()
+        if ids is not None:
+            await _judge_phase(ids, out, mission_judge.Budget())
         raise
-    await _judge_phase(batch, out)
+    ids = _judge_ids()
+    if ids is None:
+        out["judge_skipped"] = "not this window"
+    else:
+        await _judge_phase(ids, out, mission_judge.Budget())
     return result
 
 
-async def _judge_phase(batch: list[str], out: dict) -> None:
+def _take_judge_due(batch: list[str]) -> list[str]:
+    """Everything supervised since the last judge phase, plus `batch`, in id order — and reset."""
+    ids = sorted(_judge_due | set(batch))
+    _judge_due.clear()
+    return ids
+
+
+async def _judge_phase(batch: list[str], out: dict, budget: mission_judge.Budget) -> None:
     """Phase 2 of a sweep, if supervision is still on. Best-effort: never raises an `Exception`."""
     with contextlib.suppress(Exception):
         if not _enabled():
             out["judge_skipped"] = "disabled"
             return
-        judged = await mission_judge.judge_batch(batch, mission_judge.Budget())
+        judged = await mission_judge.judge_batch(batch, budget)
         out["judge_calls"] = sum(int(r.get("calls") or 0) for r in judged.values())
 
 
-async def _sweep_batch(batch: list[str], out: dict, registry) -> dict:
+async def _sweep_batch(
+    batch: list[str], out: dict, registry, *, cursor_key: str = _CURSOR_KEY, paced: bool = False
+) -> dict:
     """Run one pass per mission in `batch`, advancing the durable cursor after every attempt."""
     for mid in batch:
         failed = False
-        try:
-            res = await mission_supervisor.run_pass(mid, registry=registry)
-        except Exception as e:  # noqa: BLE001 — one stuck mission must not stop the fleet
-            log.warning("mission %s: supervisor pass failed: %s", mid, e)
-            failed = True
+        # A mission whose EARLY reading is still pending is left to it (#1214): the early reading
+        # waits for the agent to have done something (#1064), and a 30 s sweep reading the empty
+        # screen right after dispatch would spend the call the early reading exists to place well.
+        if paced and mid in _early:
+            out["deferred_to_early"] = out.get("deferred_to_early", 0) + 1
+            res = None
+        else:
+            try:
+                if paced:
+                    res = await mission_supervisor.run_pass(mid, registry=registry, pace=_pace)
+                else:
+                    res = await mission_supervisor.run_pass(mid, registry=registry)
+            except Exception as e:  # noqa: BLE001 — one stuck mission must not stop the fleet
+                log.warning("mission %s: supervisor pass failed: %s", mid, e)
+                failed = True
         # Advance after every ATTEMPT, not only after a success, and never before the attempt.
         #
         # Advancing before means a crash mid-batch skips work that never happened. Advancing only
@@ -310,7 +454,7 @@ async def _sweep_batch(batch: list[str], out: dict, registry) -> dict:
         # and the wrap at the top of `sweep` is never reached — one broken mission starves the
         # entire fleet (#888 review, finding 3). An attempt that failed is still an attempt.
         try:
-            await missions.run_admitted(lambda m=mid: missions.set_supervisor_state(_CURSOR_KEY, m))
+            await missions.run_admitted(lambda m=mid: missions.set_supervisor_state(cursor_key, m))
         except Exception as e:  # noqa: BLE001
             # A cursor that will not advance is not a slow sweep, it is a STUCK one: every
             # subsequent sweep re-selects the same low-id batch and the tail is never visited,
@@ -320,7 +464,15 @@ async def _sweep_batch(batch: list[str], out: dict, registry) -> dict:
             log.error("mission supervisor: cursor did not advance past %s: %s", mid, e)
             out["cursor_error"] = str(e)
             return out
-        if failed:
+        # BETWEEN WORK UNITS (#1214): a resting session found while this batch runs is served after
+        # the pass in flight, not after the whole batch. The flight is already ours. Only inside the
+        # running loop (`_wake` set): a direct `sweep()` call is one sweep and nothing else.
+        if paced and _wake is not None:
+            with contextlib.suppress(Exception):
+                woke = await service_watch(registry)
+                if woke:
+                    out["woken"] = out.get("woken", 0) + len(woke)
+        if failed or res is None:
             continue
         out["swept"] += 1
         if (res.get("nudged") or {}).get("sent"):
@@ -368,6 +520,82 @@ async def _reconcile_delivered() -> None:
         log.info("mission supervisor: restored %d delivered nudge record(s) to the thread", n)
 
 
+def _running_held_sessions() -> dict[str, str]:
+    """``session_key -> mission_id`` for every session a RUNNING mission holds. Blocking (store)."""
+    rows = missions.active_membership_rows()
+    return {sk: str(r["id"]) for sk, r in rows.items() if str(r.get("state") or "") == "running"}
+
+
+async def watch(*, pace: mission_pace.Pace | None = None) -> list[str]:
+    """One prompt-watch tick (#1214): the missions to wake, each at most once, in a stable order.
+
+    A mission is woken when one of its held sessions has come to rest on an episode the watch has
+    not woken it for yet. Coalesced: one wake per mission however many of its sessions rest, and the
+    same episode never wakes twice — so a prompt that sits there for an hour is one reading. New
+    output ends the episode, and the next rest is a new one. Local reads only, off the loop; the
+    watch decides nothing — `run_woken` runs the ordinary pass.
+    """
+    if not _enabled():
+        _watch_seen.clear()
+        return []
+    p = _pace if pace is None else pace
+    try:
+        held = await missions.run_admitted(_running_held_sessions)
+    except Exception:  # noqa: BLE001 — a busy store is retried on the next tick
+        log.debug("mission supervisor: watch could not read the held sessions", exc_info=True)
+        return []
+    # Forget sessions no running mission holds any more, so the map stays the live set.
+    for sk in [k for k in _watch_seen if k not in held]:
+        _watch_seen.pop(sk, None)
+    woken: list[str] = []
+    for sk in sorted(held):
+        mid = held[sk]
+        try:
+            episode = await asyncio.to_thread(mission_supervisor.session_rest, sk, p)
+        except Exception:  # noqa: BLE001 — an unreadable session is simply not at rest
+            log.debug("mission supervisor: watch could not read %s", sk, exc_info=True)
+            continue
+        if episode is None or _watch_seen.get(sk) == episode:
+            continue
+        _watch_seen[sk] = episode
+        if mid not in woken:
+            woken.append(mid)
+    return woken
+
+
+async def run_woken(mission_ids: list[str], registry=None) -> dict:
+    """Pass each woken mission now, through the same pace every pass shares. No judge call: the
+    judge is the sweep's second phase, and a woken pass is about a session that stopped, not about
+    a gate. Returns ``{mission_id: "passed" | "failed"}``."""
+    report: dict[str, str] = {}
+    for mid in mission_ids:
+        if not _enabled():
+            break
+        try:
+            await mission_supervisor.run_pass(mid, registry=registry, pace=_pace)
+            report[mid] = "passed"
+        except Exception as e:  # noqa: BLE001 — one mission must not stop the others
+            log.warning("mission %s: woken supervisor pass failed: %s", mid, e)
+            report[mid] = "failed"
+    return report
+
+
+async def service_watch(registry=None, *, now: float | None = None) -> dict:
+    """Run the prompt watch if it is due, and pass the missions it wakes. The caller holds the
+    supervisor's single-flight. Returns ``{mission_id: "passed" | "failed"}`` (empty if not due)."""
+    global _next_watch
+    t = time.monotonic() if now is None else now
+    if t < _next_watch:
+        return {}
+    _next_watch = t + WATCH_INTERVAL_S
+    woken = await watch()
+    if not woken:
+        return {}
+    report = await run_woken(woken, registry)
+    log.info("mission supervisor: woken by a resting session %s", report)
+    return report
+
+
 async def run(registry=None) -> None:
     """The loop. Cancelled at shutdown like every other background task."""
     if os.getenv("AGENT_SESSIONS_MISSION_SUPERVISOR", "1") == "0":
@@ -378,17 +606,38 @@ async def run(registry=None) -> None:
     global _wake, _wake_loop
     _wake = asyncio.Event()
     _wake_loop = asyncio.get_running_loop()
-    failures = 0
-    next_sweep = time.monotonic() + INTERVAL_S
+    start = time.monotonic()
+    # Two rings and a watch (#1214), each with its own clock and its own failure backoff.
+    rings = {
+        "fast": {
+            "states": FAST_STATES,
+            "cursor": _CURSOR_KEY,
+            "interval": FAST_INTERVAL_S,
+            "reconcile": False,
+            "next": start + FAST_INTERVAL_S,
+            "failures": 0,
+        },
+        "slow": {
+            "states": SLOW_STATES,
+            "cursor": SLOW_CURSOR_KEY,
+            "interval": INTERVAL_S,
+            "reconcile": True,
+            "next": start + INTERVAL_S,
+            "failures": 0,
+        },
+    }
+    global _next_watch
+    _next_watch = start + WATCH_INTERVAL_S
     try:
         while True:
-            # WAKEABLE, not a flat sleep (#1064). The sweep cadence is exactly what it was — the
-            # timeout is still the next sweep, backoff included — but an early reading that falls
-            # due first is served when it is due, and a new request wakes the wait so it is seen.
+            # WAKEABLE, not a flat sleep (#1064): whichever clock falls due first, or a request.
             # Cleared BEFORE the target is computed, so a request landing in between still wakes it.
             _wake.clear()
+            targets = [r["next"] for r in rings.values()] + [_next_watch]
             pending = next_early_due()
-            target = next_sweep if pending is None else min(next_sweep, pending)
+            if pending is not None:
+                targets.append(pending)
+            target = min(targets)
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(_wake.wait(), max(0.0, target - time.monotonic()))
             now = time.monotonic()
@@ -408,30 +657,58 @@ async def run(registry=None) -> None:
                 except Exception:  # noqa: BLE001
                     log.exception("mission supervisor early reading crashed")
 
-            if now < next_sweep:
-                continue
-            try:
-                async with aitasks.single_flight("mission-supervisor", "sweep"):
-                    report = await sweep(registry)
-            except aitasks.AlreadyRunning:
-                next_sweep = time.monotonic() + INTERVAL_S * min(2**failures, 8)
-                continue
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001
-                failures += 1
-                log.exception("mission supervisor sweep crashed")
-                next_sweep = time.monotonic() + INTERVAL_S * min(2**failures, 8)
-                continue
-            failures = 0
-            next_sweep = time.monotonic() + INTERVAL_S
-            if report.get("swept"):
-                log.info(
-                    "mission supervisor: swept %d, nudged %d, escalated %d",
-                    report["swept"],
-                    report["nudged"],
-                    report["escalated"],
-                )
+            if now >= _next_watch:
+                try:
+                    async with aitasks.single_flight("mission-supervisor", "sweep"):
+                        await service_watch(registry, now=now)
+                except aitasks.AlreadyRunning:
+                    # The next tick looks again, and the episode is not marked seen — but WAIT:
+                    # left due, the next iteration's timeout would be zero — a spin.
+                    _next_watch = now + WATCH_INTERVAL_S
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001
+                    log.exception("mission supervisor prompt watch crashed")
+
+            for name, ring in rings.items():
+                if time.monotonic() < ring["next"]:
+                    continue
+                began = time.monotonic()
+                try:
+                    async with aitasks.single_flight("mission-supervisor", "sweep"):
+                        report = await sweep(
+                            registry,
+                            states=ring["states"],
+                            cursor_key=ring["cursor"],
+                            reconcile=ring["reconcile"],
+                            paced=True,
+                        )
+                except aitasks.AlreadyRunning:
+                    ring["next"] = time.monotonic() + ring["interval"] * min(
+                        2 ** ring["failures"], 8
+                    )
+                    continue
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001
+                    ring["failures"] += 1
+                    log.exception("mission supervisor %s sweep crashed", name)
+                    ring["next"] = time.monotonic() + ring["interval"] * min(
+                        2 ** ring["failures"], 8
+                    )
+                    continue
+                ring["failures"] = 0
+                # From the START of this sweep, so the cadence is the interval and not interval
+                # plus however long the sweep took — but never back-to-back (#1214).
+                ring["next"] = max(began + ring["interval"], time.monotonic() + MIN_SWEEP_GAP_S)
+                if report.get("swept"):
+                    log.info(
+                        "mission supervisor (%s): swept %d, nudged %d, escalated %d",
+                        name,
+                        report["swept"],
+                        report["nudged"],
+                        report["escalated"],
+                    )
     finally:
         _wake = None
         _wake_loop = None
@@ -440,10 +717,16 @@ async def run(registry=None) -> None:
 __all__ = [
     "EARLY_READING_ATTEMPTS",
     "EARLY_READING_DELAY_S",
+    "FAST_INTERVAL_S",
     "INTERVAL_S",
+    "JUDGE_WINDOW_S",
+    "WATCH_INTERVAL_S",
     "MISSIONS_PER_SWEEP",
+    "refresh_judge_window",
     "request_early_pass",
     "run",
     "run_due_early",
+    "run_woken",
     "sweep",
+    "watch",
 ]

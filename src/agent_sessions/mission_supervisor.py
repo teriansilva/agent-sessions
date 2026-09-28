@@ -30,6 +30,7 @@ derivation. Re-deriving after progress would still see the earlier nudges.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import time
@@ -39,6 +40,8 @@ from . import (
     automation,
     mission_directions,
     mission_judge,
+    mission_now,
+    mission_pace,
     mission_probes,
     mission_questions,
     missions,
@@ -557,7 +560,40 @@ def session_is_stalled(
 # ---------------------------------------------------------------- the model half
 
 
-async def consider(mission_id: str, session_key: str, *, path=None) -> dict:
+def session_rest(session_key: str, pace: mission_pace.Pace, *, path=None) -> str | None:
+    """This held session's REST EPISODE, or ``None`` while it is working (#1214). Blocking.
+
+    One definition, shared by the loop's prompt watch and the pass, so the watch never wakes a
+    mission for a rest the pass then refuses to read. The screen decides when this process observes
+    the session's output (`mission_now.rest_episode`); otherwise the engine store does — at rest
+    when it has not grown for `mission_now.QUIET_AFTER_S`.
+    """
+    from pathlib import Path as _P
+
+    from . import engines, mission_fence, transcript
+
+    try:
+        phys = mission_fence.physical_of(session_key, path=path)
+    except Exception:  # noqa: BLE001 — an unresolvable binding reads the logical key's ring
+        phys = session_key
+    observed, episode = mission_now.rest_episode(phys)
+    if observed:
+        return episode
+    engine, native = engines.parse_key(session_key)
+    mark = transcript.growth_mark(engine.engine_id, native, _P.home())
+    if mark is None:
+        return None
+    return pace.store_rest(session_key, int(mark), mission_now.QUIET_AFTER_S)
+
+
+async def consider(
+    mission_id: str,
+    session_key: str,
+    *,
+    path=None,
+    pace: mission_pace.Pace | None = None,
+    rest: str | None = None,
+) -> dict:
     """The MODEL half — gated on the input fingerprint, and it proposes rather than acts.
 
     Returns ``{"skipped": reason}`` or ``{"recap", "assessment", "nudge", "input_fp"}``.
@@ -575,6 +611,11 @@ async def consider(mission_id: str, session_key: str, *, path=None) -> dict:
 
     Nothing here marks an objective met. `likely_done` is a proposal that the gates LOOK
     satisfied, and the gates are settled by observation.
+
+    **Paced on a wall clock when the loop passes a `pace`** (#1214). The loop looks every 30 s, so
+    the read itself is gated — a working session is read once per `READ_INTERVAL_S`, a session
+    that came to REST (`rest`, its episode id) once per episode — and the model call behind the
+    fingerprint gate is capped per session per window. Without a `pace` nothing is throttled.
     """
     from . import mission_choices, prompts, review
 
@@ -585,52 +626,84 @@ async def consider(mission_id: str, session_key: str, *, path=None) -> dict:
         # console keeps working and the operator is simply not paying for a recap.
         return {"skipped": "no AI endpoint is configured"}
 
+    prev_read = None
+    if pace is not None:
+        due, why = pace.read_due(mission_id, session_key, rest)
+        if not due:
+            return {"skipped": f"not due: {why}", "paced": True}
+        # Recorded BEFORE the read, so a read that fails is not retried every 30 s either. A read
+        # that reaches the model and gets no reading is un-recorded below instead.
+        prev_read = pace.note_read(mission_id, session_key, rest)
+
+    # CONSUMED ONLY BY A COMPLETED READ (#1214 review): an unchanged-input decision, or a reading
+    # the model produced. Every other way out of here — a failed authority capture, input read,
+    # checkpoint or mission lookup, nothing to review yet, a refused or FAILED model call — puts the
+    # read record back, so the stop that made this read due stays pending and the next pass (30 s
+    # away) retries it rather than waiting out `READ_INTERVAL_S`. A failed model call is still
+    # charged (`take_model_call` ran), so a dead endpoint is bounded per window, not per pass.
+    completed = False
     try:
-        grant = await missions.run_admitted(
-            lambda: automation.capture(session_key, mission_id, path=path)
+        try:
+            grant = await missions.run_admitted(
+                lambda: automation.capture(session_key, mission_id, path=path)
+            )
+        except Exception:
+            return {"skipped": "automation authority could not be established"}
+        a = assess(mission_id, path=path)
+        try:
+            body, input_fp = await missions.run_admitted(
+                lambda: review.gather_input(session_key, _INPUT_MAX)
+            )
+        except review.ReviewError as e:
+            return {"skipped": f"nothing to review: {e}"}
+
+        # The approved menu grant shares this existing model call and input budget. The exact
+        # parsed menu is captured BEFORE the call; no post-reply screen can supply missing context.
+        seen_menu = await missions.run_admitted(lambda: mission_choices.snapshot(session_key))
+        body, input_fp = mission_choices.model_input(body, input_fp, seen_menu, _INPUT_MAX)
+        checkpoint = missions.supervisor_checkpoint(mission_id, session_key=session_key, path=path)
+        if checkpoint.get("input_fp") == input_fp:
+            completed = True
+            return {
+                "skipped": "the session has not changed since the last recap",
+                "input_fp": input_fp,
+            }
+
+        row = missions.get_mission(mission_id, path=path) or {}
+        # THE OBJECTIVES' OWN CHECKED FACTS (#983 P3), so a draft can say something concrete. Off
+        # the loop, one snapshot per objective, and bounded by the closed placeholder table.
+        facts = await missions.run_admitted(
+            lambda: _objective_facts(mission_id, [o["key"] for o in a["objectives"]], path=path)
         )
-    except Exception:
-        return {"skipped": "automation authority could not be established"}
-    a = assess(mission_id, path=path)
-    try:
-        body, input_fp = await missions.run_admitted(
-            lambda: review.gather_input(session_key, _INPUT_MAX)
+        checklist = (
+            "\n".join(_checklist_line(o, facts.get(o["key"]) or []) for o in a["objectives"])
+            or "(no objectives)"
         )
-    except review.ReviewError as e:
-        return {"skipped": f"nothing to review: {e}"}
 
-    # The approved menu grant shares this existing model call and input budget. The exact
-    # parsed menu is captured BEFORE the call; no post-reply screen can supply missing context.
-    seen_menu = await missions.run_admitted(lambda: mission_choices.snapshot(session_key))
-    body, input_fp = mission_choices.model_input(body, input_fp, seen_menu, _INPUT_MAX)
-    checkpoint = missions.supervisor_checkpoint(mission_id, session_key=session_key, path=path)
-    if checkpoint.get("input_fp") == input_fp:
-        return {"skipped": "the session has not changed since the last recap", "input_fp": input_fp}
-
-    row = missions.get_mission(mission_id, path=path) or {}
-    # THE OBJECTIVES' OWN CHECKED FACTS (#983 P3), so a draft can say something concrete. Off the
-    # loop, one snapshot per objective, and bounded by the closed placeholder table.
-    facts = await missions.run_admitted(
-        lambda: _objective_facts(mission_id, [o["key"] for o in a["objectives"]], path=path)
-    )
-    checklist = (
-        "\n".join(_checklist_line(o, facts.get(o["key"]) or []) for o in a["objectives"])
-        or "(no objectives)"
-    )
-
-    reply = await review.complete_json(
-        [
-            {"role": "system", "content": prompts.effective("mission_supervisor")},
-            {
-                "role": "user",
-                "content": (
-                    f"Instruction:\n{row.get('instruction') or row.get('title') or ''}\n\n"
-                    f"Objectives:\n{checklist}\n\n"
-                    f"Session:\n{body}"
-                ),
-            },
-        ]
-    )
+        if pace is not None:
+            # Charged immediately before the call, so a call that fails counts and nothing before
+            # it does. No `input_fp` in the refusal: the checkpoint must not advance past an input
+            # the model never read.
+            allowed, why = pace.take_model_call(mission_id, session_key)
+            if not allowed:
+                return {"skipped": why, "paced": True}
+        reply = await review.complete_json(
+            [
+                {"role": "system", "content": prompts.effective("mission_supervisor")},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Instruction:\n{row.get('instruction') or row.get('title') or ''}\n\n"
+                        f"Objectives:\n{checklist}\n\n"
+                        f"Session:\n{body}"
+                    ),
+                },
+            ]
+        )
+        completed = True
+    finally:
+        if not completed and pace is not None:
+            pace.restore_read(mission_id, session_key, prev_read)
     reading = _reading(reply if isinstance(reply, dict) else {}, a, input_fp)
     choice = mission_choices.reading(reply, seen_menu)
     if choice is not None:
@@ -1578,6 +1651,7 @@ async def run_pass(
     *,
     registry=None,
     path=None,
+    pace: mission_pace.Pace | None = None,
 ) -> dict:
     """One supervisor pass over one mission. Returns what it did, in the operator's terms.
 
@@ -1617,6 +1691,10 @@ async def run_pass(
     Overlapping passes cannot double-recap, double-charge or double-announce: the recap advances
     with the fingerprint in one transaction, the nudge budget is reserved in the same transaction
     that binds the action, and the escalation is a unique row on `(mission, objective, episode)`.
+
+    `pace` (#1214) is the loop's wall-clock spend gate: with one, the probes, each session's read
+    and model call, and a question retry each run only when their clock allows. Without one — a
+    direct caller — nothing is throttled, exactly as before.
     """
     row = await missions.run_admitted(lambda: missions.get_mission(mission_id, path=path))
     if row is None:
@@ -1629,10 +1707,13 @@ async def run_pass(
     # `run_for_mission` swallows per-objective failures and reports counts, so the worst case is a
     # pass that assesses the same rows it would have assessed anyway.
     probes: dict = {}
-    with contextlib.suppress(Exception):
-        probes = await missions.run_admitted(
-            lambda: mission_probes.run_for_mission(mission_id, path=path)
-        )
+    # PACED (#1214): the loop now passes every 30 s, and a probe is an external call — so the
+    # probes keep their old five-minute cadence per mission rather than following the pass.
+    if pace is None or pace.take_probes(mission_id):
+        with contextlib.suppress(Exception):
+            probes = await missions.run_admitted(
+                lambda: mission_probes.run_for_mission(mission_id, path=path)
+            )
 
     # (0b) THE JUDGMENTS' STALENESS (#1088, #1097 round 9), after the probes and BEFORE the
     # assessment: every judgment whose input or criterion moved is marked stale, so the completion
@@ -1722,7 +1803,7 @@ async def run_pass(
         # NO RECAP CONTEXT HERE, and that is the honest trade: the recap is a model call that
         # this skipped path deliberately does not make, and a question about the objective —
         # whose title, state and gate `ask` reads for itself — is worth more than no question.
-        await _ask_owed(mission_id, a, "", out, path=path)
+        await _ask_owed(mission_id, a, "", out, path=path, pace=pace)
         return out
 
     # (3b) CURRENTLY-HELD SESSIONS ONLY. `get_mission` returns the complete historical roster, so
@@ -1763,6 +1844,7 @@ async def run_pass(
             registry=registry,
             path=path,
             may_actuate=not actuated,
+            pace=pace,
         )
         per_session.append(res)
         # A PROPOSED DRAFT counts as this pass's one action (#983 P3): at most one intervention per
@@ -1811,6 +1893,7 @@ async def _pass_one_session(
     registry=None,
     path=None,
     may_actuate: bool = True,
+    pace: mission_pace.Pace | None = None,
 ) -> dict:
     """One held session's half of the pass. Split out so every session gets the same treatment.
 
@@ -1852,7 +1935,9 @@ async def _pass_one_session(
                 added_at = float(srow.get("added_at") or 0.0)
                 break
         since = float(cp.get("growth_at") or 0.0) or added_at or float(row.get("created_at") or 0.0)
-        stalled, since_what, mark_now = session_is_stalled(
+        # OFF THE LOOP (#1214): this reads the engine's store, and it now runs every 30 s.
+        stalled, since_what, mark_now = await asyncio.to_thread(
+            session_is_stalled,
             engine.engine_id,
             native,
             since=since,
@@ -1869,7 +1954,18 @@ async def _pass_one_session(
         if stalled:
             out["stalled"] = since_what
 
-    reading = await consider(mission_id, session_key, path=path)
+    # IS IT AT REST? (#1214) Only asked when paced: a session that has stopped is read once,
+    # promptly; one that is working is read on the slow interval.
+    rest: str | None = None
+    if pace is not None:
+        with contextlib.suppress(Exception):
+            rest = await asyncio.to_thread(session_rest, session_key, pace, path=path)
+        if rest is not None:
+            out["rest"] = rest
+    if pace is None:
+        reading = await consider(mission_id, session_key, path=path)
+    else:
+        reading = await consider(mission_id, session_key, path=path, pace=pace, rest=rest)
     out["assessment"] = reading.get("assessment")
     if reading.get("skipped"):
         out["skipped_model"] = reading["skipped"]
@@ -2079,6 +2175,10 @@ async def _pass_one_session(
         #   `derive_needs_you` drops an escalation for a stood-down objective — so a question
         #   that lands SUPERSEDES the vague escalation with a concrete choice, and the mission
         #   stays flagged across the swap rather than blinking through "fine".
+        # PACED (#1214): a question that did not land is retried on the next pass — which is now
+        # 30 s away, so the retry keeps the old five-minute spacing.
+        if pace is not None and not pace.take_ask(mission_id, o["key"]):
+            break
         asked = await mission_questions.ask(
             mission_id,
             o["key"],
@@ -2091,7 +2191,15 @@ async def _pass_one_session(
     return out
 
 
-async def _ask_owed(mission_id: str, a: dict, context: str, out: dict, *, path=None) -> None:
+async def _ask_owed(
+    mission_id: str,
+    a: dict,
+    context: str,
+    out: dict,
+    *,
+    path=None,
+    pace: mission_pace.Pace | None = None,
+) -> None:
     """Ask about an objective whose escalation exists and whose question never landed.
 
     The retry half of #900 review 4, finding 1. Deliberately narrow: it asks only where an
@@ -2104,6 +2212,8 @@ async def _ask_owed(mission_id: str, a: dict, context: str, out: dict, *, path=N
     """
     for o in a["objectives"]:
         if o["met"] or o["stood_down"] or o.get("awaiting_answer") or not o.get("escalated"):
+            continue
+        if pace is not None and not pace.take_ask(mission_id, o["key"]):
             continue
         asked = await mission_questions.ask(
             mission_id, o["key"], context=context[:QUESTION_CONTEXT_MAX], path=path

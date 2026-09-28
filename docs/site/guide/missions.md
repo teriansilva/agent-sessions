@@ -160,8 +160,9 @@ Some objectives have no fact a server can fetch — *a finding is written down*,
   The supervisor does not judge that same output again; it waits for new output.
 - **Every objective gets its turn.** Required objectives are judged first, and within them the one
   judged longest ago (or never) goes first, so a mission whose output keeps changing still judges
-  every objective in turn. Across missions, each sweep first checks every mission, then hands
-  out its judge calls in turn: the mission that was last judged longest ago (or never) goes first,
+  every objective in turn. Across missions, the supervisor checks every mission first and then,
+  once every five minutes, hands out its judge calls across all the missions it checked in that
+  time: the mission that was last judged longest ago (or never) goes first,
   and a mission that just had its turn goes to the back, so busy missions cannot keep a quiet one
   waiting. Every attempt counts as a turn,
   including one that failed — and so does a turn where there was nothing to read (no session
@@ -170,16 +171,18 @@ Some objectives have no fact a server can fetch — *a finding is written down*,
 - **Unknown is never met.** An endpoint error, a timeout, a reply that breaks the contract, or
   evidence that does not verify leaves the row not judged, with the reason. With no AI endpoint
   configured a judged row says it cannot be judged, and never settles.
-- **Cost.** At most two judge calls per mission per sweep, six per sweep, and six more shared by
-  the early readings of newly started missions between two sweeps; required objectives first, and
+- **Cost.** At most two judge calls per mission per turn, six per five minutes across all missions,
+  and six more per five minutes shared by the early readings of newly started missions; required
+  objectives first, and
   none at all when nothing the judgment read has changed. Only a call to the model is counted: a
   mission with nothing to read, or nothing due, uses none of the six. A reply that breaks the
   contract, or evidence that does not verify, is not retried until the output changes; a timeout,
   an endpoint error or a missing endpoint is retried on the same output no sooner than 30 minutes
   later.
 - **What a judgment can do.** Settle one objective. When every required objective holds, the
-  mission is *proposed* for `review` at the next sweep (so up to about five minutes after the
-  verdict, once it has been checked against the output again), exactly as with observations —
+  mission is *proposed* for `review` at the next sweep (running missions are swept every 30
+  seconds, so about half a minute after the verdict, once it has been checked against the output
+  again), exactly as with observations —
   nothing is closed, no text is typed, no address is opened. Session output is untrusted, and an instruction hidden in it can
   push the judge towards "met"; that is why the most a judgment can do is propose review, and why
   the evidence and the overrule are one tap away.
@@ -189,9 +192,18 @@ Some objectives have no fact a server can fetch — *a finding is written down*,
 The supervisor is what the console is *for*: agents stop on mundane things, a check goes red, a
 session stalls, and nothing picks it up.
 
-It runs on a timer over live missions and does two things. The mechanical half always runs and
-costs nothing. The model half is skipped entirely when nothing the session wrote has changed, so an
-idle mission is free.
+It runs on a timer over live missions — every 30 seconds for a running mission, every five minutes
+for one in `review` — and does two things. The mechanical half always runs and costs nothing. The
+model half is skipped entirely when nothing the session wrote has changed, so an idle mission is
+free.
+
+It does not wait for the timer when an agent stops. When a session a running mission holds comes to
+rest — a permission or confirmation prompt settled on screen for a few seconds, or no output at all
+for 20 seconds — the supervisor reads that mission within seconds, and a prompt only you can answer
+becomes an escalation straight away. Reading often does not mean paying often: a session that is
+still working is read by the model at most once every five minutes, a session that stopped is read
+once for that stop, at most three model readings per session in any five minutes, and the checks
+that call your forge or a web address keep their five-minute pace.
 
 Every objective shows why the supervisor is or is not acting on it:
 

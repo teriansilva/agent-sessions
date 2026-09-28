@@ -1,7 +1,8 @@
 """What a mission's sessions are doing RIGHT NOW — observation only, no model call (#1064).
 
-The supervisor's recap is the narrative, and it costs a model call, so it runs on a five-minute
-sweep. Between recaps a running mission used to show nothing at all, and silence reads the same
+The supervisor's recap is the narrative, and it costs a model call, so it is paced on a wall clock
+(`mission_pace`, #1214) even though running missions are swept every 30 s. Between recaps a running
+mission used to show nothing at all, and silence reads the same
 whether the agent is working, stuck, or waiting. This is the cheap layer under the recap: facts the
 app already has, derived into one word per held session.
 
@@ -94,6 +95,35 @@ def prompt_class_cached(physical_key: str, *, now: float | None = None) -> str:
     return cls
 
 
+def rest_episode(physical_key: str, *, now: float | None = None) -> tuple[bool, str | None]:
+    """Has this session COME TO REST on its screen? ``(observed, episode)`` — blocking (#1214).
+
+    ``observed`` is False when this process has no visible-output clock for the session (nothing
+    passed through a ring since boot, or it was evicted): the screen cannot say, and the caller
+    falls back to the engine store. Otherwise ``episode`` is ``None`` while the session is
+    producing, and an id naming the output it rests on once it is either
+
+    * at a WAITING prompt (`WAITING_CLASSES`) settled for `PROMPT_SETTLE_S`, or
+    * silent for `QUIET_AFTER_S`, whatever the screen shows — an unrecognised dialog is still a
+      stop, and the classifier is a hint, not proof, in both directions.
+
+    Both are the SAME episode (the output stamp), so a prompt read at 3 s is not read again when it
+    turns quiet at 20 s; new output starts a new one. The screen is read only in the 3–20 s window,
+    through the same cached classification the strip uses.
+    """
+    last = scrollback.get_last_visible_output_at(physical_key)
+    if last is None:
+        return False, None
+    t = time.time() if now is None else now
+    since = t - last
+    episode = f"screen:{last!r}"
+    if since >= QUIET_AFTER_S:
+        return True, episode
+    if since >= PROMPT_SETTLE_S and prompt_class_cached(physical_key) in WAITING_CLASSES:
+        return True, episode
+    return True, None
+
+
 def _screen_chars() -> int:
     """The window the prompt class is judged from — the same one the precondition uses, whichever
     constant this build names it by."""
@@ -112,4 +142,5 @@ __all__ = [
     "STATUSES",
     "derive",
     "prompt_class_cached",
+    "rest_episode",
 ]

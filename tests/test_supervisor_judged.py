@@ -2141,7 +2141,7 @@ async def test_a_sweep_CANCELLED_during_supervision_makes_no_judge_call(judge, m
     judge["model"] = m = Model(_verdict())
     started = asyncio.Event()
 
-    async def slow_batch(batch, out, registry):
+    async def slow_batch(batch, out, registry, **kw):
         started.set()
         await asyncio.sleep(30)
         return out
@@ -2164,8 +2164,8 @@ async def test_switching_supervision_OFF_mid_sweep_stops_the_judge_calls(judge, 
     monkeypatch.setattr(loop, "_enabled", lambda: on["v"])
     real = loop._sweep_batch
 
-    async def then_off(batch, out, registry):
-        res = await real(batch, out, registry)
+    async def then_off(batch, out, registry, **kw):
+        res = await real(batch, out, registry, **kw)
         on["v"] = False  # the operator turns the orchestrator off while phase 1 runs
         return res
 
@@ -2182,7 +2182,7 @@ async def test_a_phase1_ERROR_still_judges(judge, monkeypatch):
     _judged_mission()
     judge["model"] = m = Model(_verdict(conf=0.5))
 
-    async def boom(batch, out, registry):
+    async def boom(batch, out, registry, **kw):
         raise RuntimeError("phase 1 broke")
 
     monkeypatch.setattr(loop, "_sweep_batch", boom)
