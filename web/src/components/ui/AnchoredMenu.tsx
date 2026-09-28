@@ -22,7 +22,14 @@
  *  the menu wrapper, because which of its items comes first depends on the mission's state and
  *  some of them are destructive. The Help menu has no such item, so it focuses the first one.
  */
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
 
 import { useModalDrawer } from "../pulse/useModalDrawer";
@@ -108,6 +115,21 @@ export function AnchoredMenu({
         maxHeight: Math.max(120, window.innerHeight - (r.bottom + 4) - 8),
       });
   }, []);
+
+  // KEPT ON SCREEN HORIZONTALLY. Right-aligned to its trigger, a panel wider than the room to the
+  // trigger's left ran off the left edge: on a phone the Dashboard chevron sits ~130px in, and its
+  // 220px menu opened at x = -88 with an entry nobody could reach. The panel's width is only known
+  // once it has laid out, so this runs before paint and slides it right to an 8px gutter. It only
+  // ever moves a panel that overflows, so the right-aligned placement everywhere else is unchanged.
+  useLayoutEffect(() => {
+    if (!open || !portal || !anchor || !panelRef.current) return;
+    // Closed-form from the width, not "shift by the overflow": the answer does not depend on where
+    // the panel was last drawn, so the second pass computes the same value and stops.
+    const width = panelRef.current.offsetWidth;
+    if (window.innerWidth - anchor.right - width >= 8) return;
+    const right = Math.max(8, window.innerWidth - width - 8);
+    if (right < anchor.right) setAnchor({ ...anchor, right });
+  }, [open, portal, anchor]);
 
   // Re-measure while open: the topbar does not scroll, but a resize moves the trigger.
   useEffect(() => {
