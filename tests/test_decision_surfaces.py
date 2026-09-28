@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent_sessions import missions, notifications, orchestrator, prefs
+from agent_sessions import automation, missions, notifications, orchestrator, prefs
 from agent_sessions import orchestrator_ledger as ledger
 
 HELD = "claude:11111111-1111-1111-1111-111111111111"
@@ -114,6 +114,8 @@ def _persist_escalation(action_id: str, session: str, monkeypatch) -> list[dict]
                 "id": action_id,
                 "state": "escalated",
                 "session_id": session,
+                "mission_id": missions.holder_of(session),
+                "authority": automation.capture(session, missions.holder_of(session)),
                 "engine": "claude",
                 "title": "needs a decision",
                 "project": "agent-sessions",
@@ -137,9 +139,10 @@ def test_a_mission_less_escalation_is_announced_by_the_needs_you_sync_not_here(h
     assert notifications.listing()["notifications"] == []
 
 
-def test_an_unreadable_membership_store_fails_toward_pushing(
-    fake_jsonl, unreadable_store, monkeypatch
-):
+def test_an_unreadable_membership_store_fails_toward_pushing(fake_jsonl, monkeypatch):
+    # The notification projection is unavailable; original action authority is still readable.
+    # An unreadable authority store must refuse new proposals (#1019).
+    monkeypatch.setattr(notifications, "mission_surfaces", lambda: None)
     assert [n["action_id"] for n in _persist_escalation("act-loose", LOOSE, monkeypatch)] == [
         "act-loose"
     ]

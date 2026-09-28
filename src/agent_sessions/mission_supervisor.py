@@ -35,7 +35,15 @@ import logging
 import time
 import uuid
 
-from . import mission_directions, mission_judge, mission_probes, mission_questions, missions, prefs
+from . import (
+    automation,
+    mission_directions,
+    mission_judge,
+    mission_probes,
+    mission_questions,
+    missions,
+    prefs,
+)
 from . import orchestrator_ledger as ledger
 
 log = logging.getLogger(__name__)
@@ -568,7 +576,7 @@ async def consider(mission_id: str, session_key: str, *, path=None) -> dict:
     Nothing here marks an objective met. `likely_done` is a proposal that the gates LOOK
     satisfied, and the gates are settled by observation.
     """
-    from . import prompts, review
+    from . import mission_choices, prompts, review
 
     try:
         review._require_config()
@@ -577,6 +585,12 @@ async def consider(mission_id: str, session_key: str, *, path=None) -> dict:
         # console keeps working and the operator is simply not paying for a recap.
         return {"skipped": "no AI endpoint is configured"}
 
+    try:
+        grant = await missions.run_admitted(
+            lambda: automation.capture(session_key, mission_id, path=path)
+        )
+    except Exception:
+        return {"skipped": "automation authority could not be established"}
     a = assess(mission_id, path=path)
     try:
         body, input_fp = await missions.run_admitted(
@@ -585,6 +599,10 @@ async def consider(mission_id: str, session_key: str, *, path=None) -> dict:
     except review.ReviewError as e:
         return {"skipped": f"nothing to review: {e}"}
 
+    # The approved menu grant shares this existing model call and input budget. The exact
+    # parsed menu is captured BEFORE the call; no post-reply screen can supply missing context.
+    seen_menu = await missions.run_admitted(lambda: mission_choices.snapshot(session_key))
+    body, input_fp = mission_choices.model_input(body, input_fp, seen_menu, _INPUT_MAX)
     checkpoint = missions.supervisor_checkpoint(mission_id, session_key=session_key, path=path)
     if checkpoint.get("input_fp") == input_fp:
         return {"skipped": "the session has not changed since the last recap", "input_fp": input_fp}
@@ -613,7 +631,11 @@ async def consider(mission_id: str, session_key: str, *, path=None) -> dict:
             },
         ]
     )
-    return _reading(reply if isinstance(reply, dict) else {}, a, input_fp)
+    reading = _reading(reply if isinstance(reply, dict) else {}, a, input_fp)
+    choice = mission_choices.reading(reply, seen_menu)
+    if choice is not None:
+        reading.update(choose=choice, seen_menu=seen_menu, nudge=None, draft=None)
+    return {**reading, "authority": grant}
 
 
 #: What the session view is worth to this decision. Bounded because the supervisor runs per
@@ -744,10 +766,9 @@ def _reading(reply: dict, a: dict, input_fp: str) -> dict:
 # ---------------------------------------------------------------- acting on the reading
 
 
-#: The ONLY verb the supervisor may mint. `continue` is "carry on with what you were doing", which
-#: is the whole of a nudge. `choose` and `answer` are excluded deliberately: they type an ANSWER
-#: into a prompt, and a supervisor that guessed which option an agent should pick would be making
-#: the operator's decision for them. `needs_approval` therefore escalates — it never becomes bytes.
+#: A nudge remains `continue`. The separately approved per-mission menu grant (#1060) goes
+#: through mission_choices and the shared actuator; it never widens what a nudge may type.
+#: `needs_approval` still escalates and never becomes bytes.
 NUDGE_VERB = "continue"
 
 
@@ -800,6 +821,7 @@ async def nudge(
     why: str,
     registry=None,
     path=None,
+    expected_authority: dict | None = None,
 ) -> dict:
     """Send ONE nudge against one objective, through the existing verb path.
 
@@ -821,6 +843,20 @@ async def nudge(
     # inside that window. Re-reading the policy at the point of the write is the same rule the
     # orchestrator learned the hard way; a proposal minted under a policy that has since changed
     # must not become bytes.
+    try:
+        grant = (
+            expected_authority
+            if expected_authority is not None
+            else automation.capture(session_key, mission_id, path=path)
+        )
+        valid, reason = automation.check(
+            {"session_id": session_key, "mission_id": mission_id, "authority": grant}, path=path
+        )
+        if not valid:
+            return {"sent": False, "why": reason}
+    except Exception:
+        return {"sent": False, "why": "automation authority could not be established"}
+
     ok, why_stale = _still_authorized(mission_id, objective_key, session_key=session_key, path=path)
     if not ok:
         return {"sent": False, "why": why_stale}
@@ -830,7 +866,7 @@ async def nudge(
         return {"sent": False, "why": refusal}
 
     episode, _ = missions.objective_episode(mission_id, objective_key, path=path)
-    cfg = prefs.get_orchestrator()
+    cfg = prefs.get_mission_orchestration()
 
     # WHAT WILL BE TYPED, decided here and bound to the action (#983). The operator's direction
     # for this objective filled with its own checked facts, or the global nudge when it has none —
@@ -864,6 +900,7 @@ async def nudge(
         "session_id": session_key,
         "source": "supervisor",
         "mission_id": mission_id,
+        "authority": grant,
         "objective_key": objective_key,
         # THE EPISODE THIS WAS MINTED FOR, on the durable record. Without it a proposal made in
         # episode 1 stays deliverable in episode 2 — and a drop plus a re-add of the same key
@@ -1013,7 +1050,7 @@ async def _maybe_auto_send(
     """
     from . import actuator
 
-    cfg = prefs.get_orchestrator()
+    cfg = prefs.get_mission_orchestration()
     if not actuator.draft_auto_allowed(rec, cfg):
         return None
     session_key = str(rec.get("session_id") or "")
@@ -1085,6 +1122,7 @@ async def propose_draft(
     confidence: float = 0.0,
     registry=None,
     path=None,
+    expected_authority: dict | None = None,
 ) -> dict:
     """Mint ONE AI-drafted direction as a proposal for the operator (#983 P3).
 
@@ -1116,6 +1154,20 @@ async def propose_draft(
     """
     from . import handoff, mission_fence, orchestrator
 
+    try:
+        grant = (
+            expected_authority
+            if expected_authority is not None
+            else automation.capture(session_key, mission_id, path=path)
+        )
+        valid, reason = automation.check(
+            {"session_id": session_key, "mission_id": mission_id, "authority": grant}, path=path
+        )
+        if not valid:
+            return {"proposed": False, "why": reason}
+    except Exception:
+        return {"proposed": False, "why": "automation authority could not be established"}
+
     ok, why_stale = _still_authorized(mission_id, objective_key, session_key=session_key, path=path)
     if not ok:
         return {"proposed": False, "why": why_stale}
@@ -1135,7 +1187,7 @@ async def propose_draft(
         return {"proposed": False, "why": "the objective has no identity to bind a draft to"}
 
     episode, _ = missions.objective_episode(mission_id, objective_key, path=path)
-    cfg = prefs.get_orchestrator()
+    cfg = prefs.get_mission_orchestration()
     snapshot = await missions.run_admitted(
         lambda: missions.objective_snapshot(mission_id, objective_key, path=path)
     )
@@ -1165,6 +1217,7 @@ async def propose_draft(
         "session_id": session_key,
         "source": "supervisor",
         "mission_id": mission_id,
+        "authority": grant,
         "objective_key": objective_key,
         "objective_episode": episode,
         "objective_incarnation": expect_incarnation,
@@ -1717,10 +1770,15 @@ async def run_pass(
         if (
             (res.get("nudged") or {}).get("sent")
             or (res.get("drafted") or {}).get("proposed")
+            or res.get("chosen")
             or res.get("escalated")
         ):
             actuated = True
     out["per_session"] = per_session
+    for r in per_session:
+        if r.get("chosen"):
+            out["chosen"] = r["chosen"]
+            break
     for r in per_session:
         if r.get("nudged") and r["nudged"].get("sent"):
             out["nudged"] = r["nudged"]
@@ -1822,7 +1880,15 @@ async def _pass_one_session(
             lambda: missions.advance_checkpoint(
                 mission_id,
                 session_key=session_key,
-                input_fp=reading["input_fp"],
+                # A menu deferred by this pass's shared budget has not been consumed. Keep
+                # the recap, but require a fresh decision next sweep even on the same screen.
+                input_fp=(
+                    ""
+                    if reading.get("choose")
+                    and reading.get("assessment") != "needs_approval"
+                    and not may_actuate
+                    else reading["input_fp"]
+                ),
                 recap_text=reading.get("recap") or "",
                 recap_meta={"assessment": reading.get("assessment")},
                 path=path,
@@ -1843,6 +1909,29 @@ async def _pass_one_session(
         proposal = None
         draft = None
         escalate_because = "the agent is waiting on a decision only you can make"
+
+    # A parsed engine menu is precisely the pause the operator-approved opt-in can answer.
+    # Permission dialogs never enter this path, and an explicit needs_approval still escalates.
+    if reading.get("choose") and not escalate_because:
+        if not may_actuate:
+            out["held_back"] = "another session in this pass already acted"
+            return out
+        from . import mission_choices
+
+        out["chosen"] = await mission_choices.propose(
+            mission_id, session_key, reading, registry=registry
+        )
+        if out["chosen"] is None:
+            # Nothing was persisted: the original authority/menu was refused, not consumed.
+            # Keep the recap already written, but let the next sweep make a FRESH decision.
+            # Never clear this for a persisted action, especially delivered/indeterminate:
+            # those bytes may have landed even if the terminal still shows the same menu.
+            await missions.run_admitted(
+                lambda: missions.advance_checkpoint(
+                    mission_id, session_key=session_key, input_fp="", path=path
+                )
+            )
+        return out
 
     # (4b) A STALLED session is not nudged, and that is the follow-through rather than the absence
     # of it. A session whose engine store has not grown since dispatch is sitting at something that
@@ -1886,6 +1975,7 @@ async def _pass_one_session(
             why=proposal.get("why") or "",
             registry=registry,
             path=path,
+            expected_authority=reading.get("authority") or {},
         )
         out["nudged"] = res
         # AN UNFILLABLE DIRECTION IS HELD AND ESCALATED (#983), the same terminal-for-this-episode
@@ -1920,6 +2010,7 @@ async def _pass_one_session(
             confidence=float(draft.get("confidence") or 0.0),
             registry=registry,
             path=path,
+            expected_authority=reading.get("authority") or {},
         )
 
     if not may_actuate:

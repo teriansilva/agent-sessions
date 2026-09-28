@@ -1,16 +1,15 @@
 """The periodic supervisor sweep (#885, Phase 5a of #840).
 
 `mission_supervisor.run_pass` is the whole decision; this only decides WHEN to run it and over
-which missions. Same reaper pattern as `orchestrator_loop` / `pulse_loop`, and the same gates,
-because an operator who has switched autonomy off has switched THIS off too.
+which missions. It shares the reaper pattern and actuator with the session assistant, while
+its gates read only mission orchestration policy (#1019).
 
 Gating — all must hold before a mission is swept:
 
 * **Env kill-switch** ``AGENT_SESSIONS_MISSION_SUPERVISOR=0`` — the task exits at startup and
   never sweeps, whatever prefs say.
-* **The orchestrator's own switches**, re-read every sweep: `enabled`, and `autonomy != "off"`.
-  The supervisor nudges through the orchestrator's verb path, so it inherits its master switch
-  rather than adding a second one an operator has to find.
+* **Mission orchestration switches**, re-read every sweep: `enabled`, and `autonomy != "off"`.
+  Session-assistance settings do not authorize or stop a mission sweep.
 * **Single-flight** — one supervisor sweep at a time, so a slow mission cannot overlap the next
   sweep and double-charge a budget.
 
@@ -213,7 +212,7 @@ _CURSOR_KEY = "sweep_cursor"
 def _enabled() -> bool:
     if os.getenv("AGENT_SESSIONS_MISSION_SUPERVISOR", "1") == "0":
         return False
-    cfg = prefs.get_orchestrator()
+    cfg = prefs.get_mission_orchestration()
     return bool(cfg.get("enabled")) and str(cfg.get("autonomy") or "off") != "off"
 
 

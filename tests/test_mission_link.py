@@ -18,7 +18,7 @@ import time
 
 import pytest
 
-from agent_sessions import actuator, engines, missions, prefs, session_input
+from agent_sessions import actuator, automation, engines, missions, prefs, session_input
 from agent_sessions import mission_supervisor as sup
 from agent_sessions import orchestrator_ledger as ledger
 
@@ -100,6 +100,8 @@ async def test_INVARIANT_2_two_deliveries_of_one_action_cannot_both_write(store,
             "id": "act_1",
             "verb": "continue",
             "session_id": CLAUDE_A,
+            "mission_id": store,
+            "authority": automation.capture(CLAUDE_A, store),
             "state": "approved",
             "confidence": 1.0,
         }
@@ -137,6 +139,8 @@ async def test_INVARIANT_2_a_write_is_RECORDED_BEFORE_the_bytes(store, monkeypat
             "id": "act_2",
             "verb": "continue",
             "session_id": CLAUDE_A,
+            "mission_id": store,
+            "authority": automation.capture(CLAUDE_A, store),
             "state": "approved",
             "confidence": 1.0,
         }
@@ -179,6 +183,8 @@ async def test_INVARIANT_3_liveness_is_IS_LIVE_not_the_card_flag(store, monkeypa
             "id": "act_3",
             "verb": "continue",
             "session_id": CLAUDE_A,
+            "mission_id": store,
+            "authority": automation.capture(CLAUDE_A, store),
             "state": "approved",
             "confidence": 1.0,
         }

@@ -90,9 +90,12 @@ export function NewMissionForm({
   /** Whether "No checklist" means AI-written, supervisor-judged objectives (#1088) — true only with
    *  an AI endpoint; without one it is notes only, and the copy says so. */
   const aiBuilt = config?.ai_review?.configured === true;
+  const missionPolicy = config?.automation?.version === 1
+    ? config.automation.mission
+    : config?.orchestrator;
   const judgeAt = (
-    config?.orchestrator?.judge_confidence_min ??
-    config?.orchestrator?.judge_confidence_floor ??
+    missionPolicy?.judge_confidence_min ??
+    missionPolicy?.judge_confidence_floor ??
     0.9
   ).toFixed(2);
   const playbookBlock = config?.mission_playbooks;

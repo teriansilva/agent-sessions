@@ -112,7 +112,7 @@ EXPECTED_DEFAULT_SHA = {
     # #983 P3: the optional `draft` field, the direction flag and the checked facts per objective.
     # Re-pinned by #983 P4: the contract gained `draft.confidence`, and the draft rule now says
     # plainly that an opted-in operator has a draft typed with nobody reading it first.
-    "mission_supervisor": "b13a71453329dd3b",
+    "mission_supervisor": "b78c12d41c8d5867",
     "mission_plan": "a4d0cb1003a79e45",
     # #1088: the objective judge — quotes verified verbatim, confidence against the floor.
     "mission_judge": "604e82e9d100c1dc",
@@ -208,7 +208,11 @@ def test_an_upgraded_install_does_not_look_edited(tmp_home):
     guard sentence and all. Without normalization the catalog would call a prompt nobody
     touched "Edited", put the legacy clause in the editor, AND show the canonical one below it
     read-only — three wrong signals from one stale string."""
-    prefs.set_orchestrator({"prompt": prefs.DEFAULT_ORCH_PROMPT})
+    # An old install's file, not a new API write (prompt writes use the registry now).
+    (tmp_home / "prefs.json").write_text(
+        json.dumps({"orchestrator": {"prompt": prefs.DEFAULT_ORCH_PROMPT}})
+    )
+    prefs.ensure_automation_policies()
     row = prompts.entry("orchestrator_pass")
     assert row["is_default"] is True
     assert row["value"] == prompts.get("orchestrator_pass").default

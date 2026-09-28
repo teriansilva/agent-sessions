@@ -153,7 +153,10 @@ function MissionBody({
   // visible, so the turn-off is offered on the row that proves why you might want it. It is a
   // pref write, and `refreshConfig` is what makes the thread row and the draft card stop claiming
   // the mode is on the moment it is not.
-  const orchBlock = useConfig()?.orchestrator;
+  const automationConfig = useConfig();
+  const orchBlock = automationConfig?.automation?.version === 1
+    ? automationConfig.automation.mission
+    : automationConfig?.orchestrator;
   const refreshConfig = useConfigRefresh();
   const [turnOffBusy, setTurnOffBusy] = useState(false);
   const [turnOffError, setTurnOffError] = useState<string | null>(null);

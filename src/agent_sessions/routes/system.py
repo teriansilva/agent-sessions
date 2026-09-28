@@ -80,6 +80,8 @@ def _preflight_prefs(payload: dict) -> None:
     def bad(detail: str) -> HTTPException:
         return HTTPException(status_code=422, detail=detail)
 
+    if "orchestrator" in payload and len(payload) != 1:
+        raise bad("save automation policy separately from other preferences")
     if "theme" in payload and payload["theme"] not in prefs.THEMES:
         raise bad("unknown theme")
     if "agent_defaults" in payload:
@@ -638,6 +640,7 @@ def register(
                 # `auto_verbs_ceiling` so the UI can SHOW that choose/answer/dispatch always
                 # need a tap, rather than implying the tier alone decides.
                 "orchestrator": prefs.public_orchestrator(),
+                "automation": prefs.public_automation(),
                 # Mission playbooks (#883), so Settings can EDIT them (#892). Until now the
                 # templates that decide what "done" means were reachable only by hand-editing
                 # `prefs.json` — the block was validated, defaulted and consumed, and had no
@@ -671,6 +674,46 @@ def register(
                     # fact chips can never offer a placeholder the server would refuse.
                     "placeholders": mission_directions.placeholder_table(),
                 },
+            }
+        )
+
+    @app.patch("/api/automation/{scope}")
+    async def set_automation(
+        scope: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        if scope not in prefs.AUTOMATION_BLOCKS:
+            raise HTTPException(status_code=404, detail="unknown automation scope")
+        try:
+            body = await request.json()
+        except (ValueError, json.JSONDecodeError):
+            raise HTTPException(status_code=422, detail="invalid JSON") from None
+        if (
+            not isinstance(body, dict)
+            or set(body) - {"revision", "policy"}
+            or not isinstance(body.get("policy"), dict)
+            or not isinstance(body.get("revision"), str)
+        ):
+            raise HTTPException(
+                status_code=422, detail="policy and the revision you read are required"
+            )
+        try:
+            saved = await asyncio.to_thread(
+                prefs.set_automation_policy, scope, body["policy"], revision=body["revision"]
+            )
+        except prefs.PolicyConflict as e:
+            raise HTTPException(status_code=409, detail=str(e)) from None
+        except (prefs.PolicyStoreError, session_input.AuthorityFenceBusy) as e:
+            raise HTTPException(status_code=503, detail=str(e)) from None
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from None
+        return JSONResponse(
+            {
+                "version": prefs.AUTOMATION_VERSION,
+                "scope": scope,
+                "policy": prefs.public_automation_policy(scope, cfg=saved),
             }
         )
 
@@ -860,6 +903,12 @@ def register(
             # other request while a sibling instance holds it (#888 review, finding 2).
             try:
                 await asyncio.to_thread(prefs.set_orchestrator, payload["orchestrator"])
+            except prefs.PolicyConflict as e:
+                raise HTTPException(status_code=409, detail=str(e)) from None
+            except prefs.PolicyStoreError as e:
+                raise HTTPException(status_code=503, detail=str(e)) from None
+            except ValueError as e:
+                raise HTTPException(status_code=422, detail=str(e)) from None
             except session_input.AuthorityFenceBusy:
                 raise HTTPException(
                     status_code=503,

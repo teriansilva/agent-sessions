@@ -29,6 +29,7 @@ import pytest
 
 from agent_sessions import (
     actuator,
+    automation,
     engines,
     metadata,
     orchestrator,
@@ -40,6 +41,7 @@ from agent_sessions import (
 from agent_sessions import (
     orchestrator_ledger as ledger,
 )
+from automation_helpers import current_action
 
 KEY = "claude:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 SHELL_KEY = "shell:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
@@ -86,6 +88,7 @@ def _propose(**over) -> dict:
         "precondition": {},
         **over,
     }
+    rec["authority"] = automation.capture(rec["session_id"], rec.get("mission_id"))
     ledger.append(rec)
     return rec
 
@@ -133,10 +136,7 @@ def test_shell_engine_is_refused_at_the_write_boundary(monkeypatch):
 
 
 def test_session_excluded_after_the_proposal_is_refused(monkeypatch):
-    monkeypatch.setattr(metadata, "resolve_key", lambda k: k)
-    monkeypatch.setattr(
-        metadata, "get", lambda *a, **k: metadata.SessionMeta(orchestrator_excluded=True)
-    )
+    metadata.patch(KEY, orchestrator_excluded=True)
     ok, reason = actuator.check_precondition({"session_id": KEY})
     assert ok is False and "no longer managed" in reason
 
@@ -355,20 +355,61 @@ def test_auto_delivery_respects_the_ceiling_and_the_threshold(monkeypatch):
     # `enabled` is now part of the auto gate (a disabled orchestrator must not deliver even
     # a pass-approved action), so this test opts in explicitly — it is about the CEILING.
     prefs.set_orchestrator({"enabled": True, "autonomy": "yolo", "confidence_min": 0.8})
-    assert asyncio.run(actuator.deliver_auto({"id": "x", "verb": "continue", "confidence": 0.9}))
+    assert asyncio.run(
+        actuator.deliver_auto(
+            {
+                "session_id": KEY,
+                "authority": automation.capture(KEY),
+                "id": "x",
+                "verb": "continue",
+                "confidence": 0.9,
+            }
+        )
+    )
     # below threshold
     assert (
-        asyncio.run(actuator.deliver_auto({"id": "y", "verb": "continue", "confidence": 0.5}))
+        asyncio.run(
+            actuator.deliver_auto(
+                {
+                    "session_id": KEY,
+                    "authority": automation.capture(KEY),
+                    "id": "y",
+                    "verb": "continue",
+                    "confidence": 0.5,
+                }
+            )
+        )
         is None
     )
     # outside the v1 ceiling, however confident
     assert (
-        asyncio.run(actuator.deliver_auto({"id": "z", "verb": "answer", "confidence": 1.0})) is None
+        asyncio.run(
+            actuator.deliver_auto(
+                {
+                    "session_id": KEY,
+                    "authority": automation.capture(KEY),
+                    "id": "z",
+                    "verb": "answer",
+                    "confidence": 1.0,
+                }
+            )
+        )
+        is None
     )
     # suggest never auto-delivers
     prefs.set_orchestrator({"autonomy": "suggest"})
     assert (
-        asyncio.run(actuator.deliver_auto({"id": "w", "verb": "continue", "confidence": 1.0}))
+        asyncio.run(
+            actuator.deliver_auto(
+                {
+                    "session_id": KEY,
+                    "authority": automation.capture(KEY),
+                    "id": "w",
+                    "verb": "continue",
+                    "confidence": 1.0,
+                }
+            )
+        )
         is None
     )
     assert delivered == ["x"]
@@ -480,6 +521,7 @@ def test_pass_delivery_stops_when_policy_is_withdrawn_mid_batch(tmp_path, monkey
         "session_id": "claude:abc",
         "engine": "claude",
     }
+    rec = current_action(rec)
     ledger.append(rec)
 
     wrote: list = []
@@ -490,7 +532,8 @@ def test_pass_delivery_stops_when_policy_is_withdrawn_mid_batch(tmp_path, monkey
 
     out = asyncio.run(actuator.deliver_pass_actions([rec]))
 
-    assert out == [], "a withdrawn policy still delivered a pass-approved action"
+    assert len(out) == 1 and out[0]["state"] == "stale"
+    assert ledger.get(rec["id"])["state"] == "stale"
     assert wrote == [], "bytes were written after orchestration was switched off"
 
 
@@ -662,6 +705,7 @@ def test_a_viewer_attaching_during_the_wait_blocks_the_write(tmp_path, monkeypat
     ledger.append(
         {
             "id": "a1",
+            "authority": automation.capture(KEY),
             "state": "proposed",
             "verb": "continue",
             "confidence": 0.99,
@@ -785,6 +829,7 @@ def test_leaving_yolo_mid_delivery_stops_an_auto_write(tmp_path, monkeypatch, pt
         "session_id": KEY,
         "engine": "claude",
     }
+    action["authority"] = automation.capture(KEY)
     ledger.append(action)
 
     real_wait = session_input._wait_quiet

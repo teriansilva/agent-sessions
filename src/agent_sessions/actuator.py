@@ -39,9 +39,11 @@ import time
 from collections.abc import Callable
 
 from . import (
+    automation,
     engines,
     handoff,
     metadata,
+    mission_fence,
     orchestrator,
     prefs,
     ptybridge,
@@ -162,7 +164,7 @@ def _is_draft(action: dict) -> bool:
 
 def _is_auto_choose(action: dict) -> bool:
     """A `choose` the PASS approved under a mission's opt-in (#1060 Phase 4). Only
-    `orchestrator.run_pass` writes these fields, from facts the server read; a model reply cannot
+    `mission_choices.propose` writes these fields, from facts the server read; a model reply cannot
     carry them (`_validate_actions` builds the action field by field)."""
     return action.get("verb") == "choose" and action.get("auto_choose") is True
 
@@ -225,7 +227,7 @@ def _auto_choose_screen_ok(action: dict) -> tuple[bool, str]:
     sid = str(action.get("session_id") or "")
     try:
         screen = scrollback.live_tail_text(
-            engines.physical_key(sid), orchestrator.PROMPT_SCREEN_CHARS
+            mission_fence.physical_of(sid), orchestrator.PROMPT_SCREEN_CHARS
         )
     except Exception:  # noqa: BLE001
         return False, "the session's screen could not be read"
@@ -251,9 +253,9 @@ def _auto_choose_authority(rec: dict):
     The opt-in is AUTHORITY, so it rides the in-fence fingerprint like membership does: the
     guard's verdict is only as fresh as the moment it ran, and withdrawing the opt-in between the
     guard and byte one must still refuse. `missions.set_auto_choose` also commits inside
-    `session_input.policy_transaction()`, so a same-process withdrawal is ordered against the write
-    by the fence's own lock; this term catches a sibling instance's withdrawal, which that lock
-    cannot see. Fails closed: an unreadable grant is no grant.
+    `session_input.policy_transaction("mission")`, so a same-process withdrawal is ordered
+    against the write by the fence's own lock; this term catches a sibling instance's withdrawal,
+    which that lock cannot see. Fails closed: an unreadable grant is no grant.
     """
     if not _is_auto_choose(rec):
         return None, None
@@ -558,6 +560,13 @@ def screen_matches(phys: str, pre: dict) -> tuple[bool, str]:
     return True, ""
 
 
+def _action_excluded(sid: str, phys: str) -> bool:
+    """Use delivery's durable runtime, retaining logical-before-physical metadata precedence."""
+    index, _aliases, _overrides = metadata.load_checked()
+    meta = index.get(sid) or index.get(phys)
+    return bool(meta and meta.orchestrator_excluded)
+
+
 def check_precondition(
     action: dict, *, registry=None, operator_approval: bool = False
 ) -> tuple[bool, str]:
@@ -580,11 +589,13 @@ def check_precondition(
         return False, f"engine {getattr(prov, 'engine_id', '?')} is not orchestrator-actuable"
 
     # (2) the operator may have withdrawn agency AFTER this was proposed.
-    mkey = metadata.resolve_key(sid)
-    if metadata.get(mkey).orchestrator_excluded:
+    try:
+        phys = mission_fence.physical_of(sid)
+        excluded = _action_excluded(sid, phys)
+    except Exception:
+        return False, "session action opt-out could not be verified"
+    if excluded:
         return False, "session is no longer managed by the orchestrator"
-
-    phys = engines.physical_key(sid)
 
     # (3) nobody else is at the keyboard.
     if _viewer_busy(phys, registry, operator_approval=operator_approval):
@@ -594,74 +605,20 @@ def check_precondition(
     return screen_matches(phys, action.get("precondition") or {})
 
 
-def _policy_fingerprint() -> tuple:
-    """A cheap, comparable snapshot of every policy value a write depends on.
-
-    Compared inside the write fence, so any change between authorization and byte one refuses.
-    A tuple rather than the dict itself because it must be hashable/comparable and stable —
-    and narrow, so an unrelated preference edit does not spuriously cancel a delivery.
-    """
-    cfg = prefs.get_orchestrator()
-    return (
-        bool(cfg.get("enabled")),
-        str(cfg.get("autonomy")),
-        tuple(sorted(cfg.get("allowed_verbs") or ())),
-        float(cfg.get("confidence_min") or 0),
-        # THE AUTONOMOUS-AI-DIRECTION GRANT (#983 P4), and this is where its withdrawal actually
-        # bites. `_final_guard` asks `draft_auto_allowed` too, but a guard's verdict is only as
-        # fresh as the moment it ran — the operator can clear the toggle, or leave yolo, in the
-        # gap between the guard returning and byte one. This tuple is re-read inside that gap,
-        # under the registry lock, so a withdrawal anywhere up to the write refuses the payload.
-        cfg.get("auto_ai_directions") is True,
-        float(cfg.get("ai_direction_confidence_min") or 0),
-    )
+def _policy_fingerprint(scope: str = "session") -> tuple:
+    """Only the selected policy; its durable revision also detects withdrawal/re-enable."""
+    return (automation.policy_revision(scope),)
 
 
 def _mission_membership_authority(rec: dict):
-    """`(check, fingerprint)` for any action that names a mission AND a session, or `(None, None)`.
-
-    **An action authorised under one mission must not land in another mission's session** (#903
-    review, finding 1). The route checks membership before it appends, but between that check and
-    byte one lie a ledger append, a quiet wait, an fd borrow and a lock queue — seconds in which
-    the operator can detach the session and a second mission can adopt it. The relay would then
-    deliver mission A's words into mission B's work.
-
-    DERIVED FROM THE RECORD, deliberately, exactly as `_supervisor_authority` is: whoever
-    delivers the action gets the enforcement without knowing it exists. That is what stopped the
-    equivalent supervisor bug being re-introduced through the ordinary approve route, and the
-    same reasoning applies to every operator-origin mission action added later.
-
-    The generic mission fence in `_final_guard` does NOT cover this. Its question is "is this
-    session's mission being torn down", and a session re-adopted by a healthy second mission is
-    barred by nothing — correctly, for that second mission's own writes.
-
-    Fails CLOSED: this is the last check before a real pty, and an unverifiable membership is not
-    a membership.
-    """
-    mission_id = str(rec.get("mission_id") or "")
-    session_key = str(rec.get("session_id") or "")
-    if not (mission_id and session_key):
-        return None, None
+    """Original scope/incarnation for EVERY action, including unassigned sessions and relays."""
 
     def _state():
         from . import missions
 
-        return missions.session_mission(session_key)
+        return missions.automation_ownership(str(rec.get("session_id") or ""))
 
-    def _check() -> tuple[bool, str]:
-        from . import missions
-
-        try:
-            holder = missions.session_mission(session_key)
-        except Exception:
-            return False, "the mission store could not be read, so authority is unverifiable"
-        if holder is None:
-            return False, "the session left this mission before the write"
-        if holder != mission_id:
-            return False, f"the session was adopted by mission {holder} before the write"
-        return True, ""
-
-    return _check, _state
+    return lambda: automation.check(rec), _state
 
 
 def _supervisor_authority(rec: dict):
@@ -842,7 +799,7 @@ def _render_authority(rec: dict):
 
     def _check() -> tuple[bool, str]:
         try:
-            supervisor_render(rec, prefs.get_orchestrator())
+            supervisor_render(rec, prefs.get_mission_orchestration())
         except NotDeliverable as e:
             return False, str(e)
         return True, ""
@@ -853,7 +810,7 @@ def _render_authority(rec: dict):
             # resolved checkout target in `_check` above (see `current_authority`). Probe writes and
             # forge saves take the same fence (`session_input.fact_transaction`), so none of what
             # this reads can commit between it and byte one.
-            supervisor_render(rec, prefs.get_orchestrator(), resolve_target=False)
+            supervisor_render(rec, prefs.get_mission_orchestration(), resolve_target=False)
         except NotDeliverable:
             return object()
         return str((rec.get("render") or {}).get("digest") or "")
@@ -861,7 +818,7 @@ def _render_authority(rec: dict):
     return _check, _state
 
 
-def _authority_fingerprint(session_id: str) -> Callable[[], object]:
+def _authority_fingerprint(session_id: str, scope: str = "session") -> Callable[[], object]:
     """The policy snapshot PLUS the shared mission state for this session (#871).
 
     The in-memory policy epoch is process-local, and this app supports several instances over one
@@ -885,13 +842,10 @@ def _authority_fingerprint(session_id: str) -> Callable[[], object]:
         # that check still had its withdrawal land before byte one with nothing to catch it. It is
         # a sidecar read, shared by every instance, which is exactly what this fingerprint is for
         # (#888 review, finding 1).
-        excluded = False
-        if session_id:
-            with contextlib.suppress(Exception):
-                excluded = bool(
-                    metadata.get(metadata.resolve_key(session_id)).orchestrator_excluded
-                )
-        return (*_policy_fingerprint(), barred, excluded)
+        excluded = bool(session_id) and _action_excluded(
+            session_id, mission_fence.physical_of(session_id)
+        )
+        return (*_policy_fingerprint(scope), barred, excluded)
 
     return _fp
 
@@ -957,6 +911,14 @@ def withdraw_undeliverable(path=None) -> list[str]:
     for rec in ledger.live_actions(path):
         if rec.get("state") not in ledger.OPERATOR_PENDING_STATES:
             continue
+        valid, why = automation.check(rec)
+        if not valid:
+            if why != "automation authority is unreadable":
+                if ledger.compare_and_set(
+                    rec["id"], ledger.OPERATOR_PENDING_STATES, "stale", path, detail=why
+                ):
+                    moved.append(rec["id"])
+            continue
         # NO SURFACE LEFT (#1086 review 5184). A standalone decision is settled on the Ask page,
         # which lists only sessions that are in scope, not archived and not review-excluded. One
         # whose session stopped being listed after it was proposed can no longer be acted on
@@ -989,7 +951,7 @@ def withdraw_undeliverable(path=None) -> list[str]:
         if rec.get("state") not in CLAIMABLE_STATES:
             continue
         try:
-            phys = engines.physical_key(str(rec.get("session_id") or ""))
+            phys = rec["authority"]["physical_key"]
         except Exception:  # noqa: BLE001, S112 — an unresolvable id is delivery's to refuse
             continue
         if not session_input.is_live(phys):
@@ -1091,7 +1053,11 @@ async def deliver(
     if isinstance(exp, int | float) and time.time() >= exp:
         return _settle_waiting(action_id, "expired") or rec
 
-    cfg = prefs.get_orchestrator()
+    valid, why = await asyncio.to_thread(automation.check, rec)
+    if not valid:
+        return _settle_waiting(action_id, "stale", detail=why) or rec
+    scope = automation.scope_of(rec)
+    cfg = prefs.get_automation_policy(scope)
     # APPROVE-ONLY, UNLESS THE OPERATOR OPTED IN (#983 P3, widened in P4). An AI-drafted direction
     # is model-authored text, so the operator's tap on the approve route is normally the only
     # authority to type it. The one exception is the grant they gave explicitly: with
@@ -1137,7 +1103,7 @@ async def deliver(
     except NotDeliverable as e:
         return _settle_waiting(action_id, "failed", detail=str(e)) or rec
 
-    phys = engines.physical_key(rec["session_id"])
+    phys = rec["authority"]["physical_key"]
     if not session_input.is_live(phys):
         return _settle_waiting(action_id, "failed", detail="session is not live") or rec
 
@@ -1163,7 +1129,7 @@ async def deliver(
         attach and start typing. Re-asking here is the only way those actions actually win;
         checked earlier, they lose to a verdict formed before they happened.
         """
-        live = prefs.get_orchestrator()
+        live = prefs.get_automation_policy(scope)
         if not live.get("enabled"):
             return False, "orchestration was switched off before the write"
         if live.get("autonomy") == "off":
@@ -1241,51 +1207,60 @@ async def deliver(
         # like the one that was proposed against" — as of NOW, not as of setup.
         return check_precondition(rec, registry=registry, operator_approval=operator_approval)
 
-    outcome = await asyncio.to_thread(
-        session_input.send_input,
-        phys,
-        payload,
-        # The SAME flag as `_final_guard` above: two callbacks that disagreed about who counts as
-        # being at the keyboard would let one approve what the other refuses (#969).
-        precondition=lambda: check_precondition(
-            rec, registry=registry, operator_approval=operator_approval
-        ),
-        final_guard=_final_guard,
-        # The third domain. `_final_guard` reads policy and then does the screen check, so a
-        # flip between those two still slipped through — the guard's verdict is only as fresh
-        # as the moment it ran. This is re-read INSIDE the fence, immediately before byte one,
-        # so a withdrawal at any point up to the write refuses.
-        # A caller may add its OWN state to the thing that is re-read inside the fence. That is
-        # the only place an extra authority can be enforced rather than merely consulted: a
-        # callback invoked from `_final_guard` runs before the registry and screen work, so a
-        # change after it still reaches byte one (#888 review, finding 1).
-        policy_fingerprint=_compose_fingerprint(
-            _compose_fingerprint(
+    try:
+        outcome = await asyncio.to_thread(
+            session_input.send_input,
+            phys,
+            payload,
+            policy_scope=scope,
+            # The SAME flag as `_final_guard`: disagreeing about who is at the keyboard
+            # would let one callback approve what the other refuses (#969).
+            precondition=lambda: check_precondition(
+                rec, registry=registry, operator_approval=operator_approval
+            ),
+            final_guard=_final_guard,
+            # The third domain. `_final_guard` reads policy and then does the screen check, so a
+            # flip between those two still slipped through — the guard's verdict is only as fresh
+            # as the moment it ran. This is re-read INSIDE the fence, immediately before byte one,
+            # so a withdrawal at any point up to the write refuses.
+            # A caller may add its OWN state to the thing that is re-read inside the fence. That is
+            # the only place an extra authority can be enforced rather than merely consulted: a
+            # callback invoked from `_final_guard` runs before the registry and screen work, so a
+            # change after it still reaches byte one (#888 review, finding 1).
+            policy_fingerprint=_compose_fingerprint(
                 _compose_fingerprint(
                     _compose_fingerprint(
-                        _authority_fingerprint(str(rec.get("session_id") or "")),
-                        extra_fingerprint if extra_fingerprint is not None else sup_state,
+                        _compose_fingerprint(
+                            _authority_fingerprint(str(rec.get("session_id") or ""), scope),
+                            extra_fingerprint if extra_fingerprint is not None else sup_state,
+                        ),
+                        # Membership rides in the fingerprint as well as in the guard, for the
+                        # reason every other term does: the guard's verdict is only as fresh as
+                        # the moment it ran, and the re-adopt can land between it and byte one.
+                        mem_state,
                     ),
-                    # Membership rides in the fingerprint as well as in the guard, for the
-                    # reason every other term does: the guard's verdict is only as fresh as
-                    # the moment it ran, and the re-adopt can land between it and byte one.
-                    mem_state,
+                    # …and so does a supervisor nudge's render digest (#983): a direction,
+                    # template, head or observation change after `_final_guard` evaluated is
+                    # refused before byte one.
+                    txt_state,
                 ),
-                # …and so does a supervisor nudge's render digest (#983): a direction,
-                # template, head or observation change after `_final_guard` evaluated is
-                # refused before byte one.
-                txt_state,
+                # …and an autonomous draft's OPERATOR-DIRECTION eligibility (#983 P4 review). Read
+                # from the shared store, the only thing a sibling instance and this one agree on:
+                # its `set_direction` never moves this process's epoch, so nothing else sees it.
+                _compose_fingerprint(dir_state, ac_state) if dir_state is not None else ac_state,
             ),
-            # …and an autonomous draft's OPERATOR-DIRECTION eligibility (#983 P4 review). Read
-            # from the shared store, the only thing a sibling instance and this one agree on:
-            # its `set_direction` never moves this process's epoch, so nothing else sees it.
-            _compose_fingerprint(dir_state, ac_state) if dir_state is not None else ac_state,
-        ),
-    )
+        )
+    except Exception as e:
+        # A seam failure may have happened after byte one. Never leave a live owner's claim
+        # stranded or make an uncertain send replayable; recovery uses the same terminal state.
+        outcome = session_input.Outcome(
+            "indeterminate", f"delivery outcome is unknown ({type(e).__name__}); not retried"
+        )
     state = {
         "delivered": "delivered",
         "stale": "stale",
         "aborted": "failed",
+        "indeterminate": "indeterminate",
         "refused": "stale",
         "not_live": "failed",
         "failed": "failed",
@@ -1510,7 +1485,12 @@ async def deliver_auto(
     Composed AND, and the prefs checks run first, so a withdrawn tier short-circuits before any
     extra work. A refusal from either half is a refusal.
     """
-    cfg = prefs.get_orchestrator()
+    valid, why = await asyncio.to_thread(automation.check, action)
+    if not valid:
+        if why == "automation authority is unreadable":
+            return None
+        return await asyncio.to_thread(_settle_waiting, action["id"], "stale", detail=why)
+    cfg = prefs.get_automation_policy(automation.scope_of(action))
     # AN AI-DRAFTED DIRECTION IS REFUSED UNLESS THE OPERATOR OPTED IN (#983 P3, widened in P4), and
     # it is asked as its own question rather than left to the ceiling below. The ceiling is a SET,
     # and a set is the kind of thing a later edit widens by accident; `draft_auto_allowed` is the

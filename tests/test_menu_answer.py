@@ -32,6 +32,7 @@ from agent_sessions import (
 )
 from agent_sessions import orchestrator_ledger as ledger
 from agent_sessions.main import create_app
+from automation_helpers import append_current_action
 
 SID = "claude:22222222-2222-2222-2222-222222222222"
 PHYS = engines.physical_key(SID)
@@ -70,7 +71,7 @@ def world(auth_cfg, fake_jsonl, tmp_path, monkeypatch):  # noqa: ARG001
     _paint(FIXTURE)
     menu = _menu_now()
     assert menu is not None, "the fixture must parse through the real ring"
-    ledger.append(
+    append_current_action(
         {
             "id": "esc-1",
             "state": "escalated",
@@ -239,7 +240,7 @@ def test_a_malformed_body_is_a_422_and_touches_nothing(world, body):
 
 def test_only_an_escalation_can_be_answered_this_way(world):
     choose, _slave = world
-    ledger.append(
+    append_current_action(
         {
             "id": "prop-1",
             "state": "proposed",

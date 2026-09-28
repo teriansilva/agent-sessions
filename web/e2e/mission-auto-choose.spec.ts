@@ -39,9 +39,20 @@ async function open(
   page: Page,
   autonomy: string,
   over: Record<string, unknown> = {},
+  missionEnabled?: boolean,
 ) {
   await page.route("**/api/config", (r) =>
-    r.fulfill({ json: config(autonomy) }),
+    r.fulfill({ json: {
+      ...config(autonomy),
+      ...(missionEnabled === undefined ? {} : {
+        orchestrator: { ...config(autonomy).orchestrator, enabled: !missionEnabled },
+        automation: {
+          version: 1, legacy_compatible: false,
+          session: { enabled: !missionEnabled, autonomy: "yolo" },
+          mission: { enabled: missionEnabled, autonomy: "yolo" },
+        },
+      }),
+    } }),
   );
   await page.route("**/api/version", (r) =>
     r.fulfill({ json: { version: "test" } }),
@@ -169,3 +180,18 @@ test("an answer mission control gave on its own is in the thread", async ({
       .first(),
   ).toBeVisible();
 });
+
+
+for (const missionEnabled of [true, false]) {
+  test(`mission opt-in follows its scoped policy when legacy disagrees: ${missionEnabled}`, async ({ page }) => {
+    const { patches } = await open(page, "yolo", {}, missionEnabled);
+    if (missionEnabled) {
+      await expect(box(page)).toBeEnabled();
+      await box(page).check();
+      await expect.poll(() => patches).toEqual([{ auto_choose: true }]);
+    } else {
+      await expect(box(page)).toBeDisabled();
+      expect(patches).toEqual([]);
+    }
+  });
+}

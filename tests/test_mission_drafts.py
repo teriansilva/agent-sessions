@@ -42,6 +42,7 @@ from agent_sessions import (
 from agent_sessions import mission_supervisor as sup
 from agent_sessions import orchestrator_ledger as ledger
 from agent_sessions.main import create_app
+from automation_helpers import current_action
 
 SESSION = "claude:11111111-1111-1111-1111-111111111111"
 KEY = "review"
@@ -164,6 +165,7 @@ def _forged(mid, **over) -> dict:
         "precondition": {},
         **over,
     }
+    rec = current_action(rec)
     ledger.append(rec)
     return rec
 
@@ -172,9 +174,10 @@ def _hand_edited_prefs(env, autonomy):
     """The operator's prefs file, edited by hand to name the draft verb in the ceiling."""
     path = env / ".config" / "agent-sessions" / "prefs.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    doc = json.loads(path.read_text()) if path.exists() else {}
-    doc["orchestrator"] = {
-        **doc.get("orchestrator", {}),
+    prefs.ensure_automation_policies(path)
+    doc = json.loads(path.read_text())
+    doc["mission_orchestration"] = {
+        **doc["mission_orchestration"],
         "enabled": True,
         "autonomy": autonomy,
         "allowed_verbs": ["continue", sup.DRAFT_VERB],

@@ -381,16 +381,14 @@ def _begin_archive_fenced(mission_id: str, *, abandon: bool = False, resume: boo
     in-flight send either finishes before the archive starts, or waits and then fails the
     integer epoch compare that happens INSIDE the fence, immediately before byte one.
 
-    **The global epoch rather than the per-session one**, deliberately: which sessions this
-    archive governs is not known until the transaction has read the roster, so there is no key
-    to scope a `session_transaction` to at the moment the fence must be taken. Over-invalidation
-    costs an unrelated in-flight delivery one refusal, which the caller settles and the
-    orchestrator re-proposes; under-invalidation costs bytes typed into a torn-down mission.
+    **The mission policy epoch**, because the roster is not known until the transaction reads
+    it. This may refuse another mission's queued action, but it never cancels standalone session
+    assistance. Durable ownership and lifecycle fingerprints still catch sibling processes.
 
     Lock order stays one-way: this takes the registry lock and then does missions work; the
     fence takes the registry lock and compares an integer, never wanting the missions store.
     """
-    with session_input.policy_transaction():
+    with session_input.policy_transaction("mission"):
         return missions.begin_archive(mission_id, abandon=abandon, resume=resume)
 
 

@@ -281,7 +281,9 @@ async def test_a_DETACHED_session_is_never_nudged(store, monkeypatch):
     seen: list = []
     monkeypatch.setattr(sup, "_still_authorized", lambda *a, **k: (True, ""))
 
-    async def _spy(mid, *, session_key, objective_key, why, registry=None, path=None):
+    async def _spy(
+        mid, *, session_key, objective_key, why, registry=None, path=None, expected_authority=None
+    ):
         seen.append(session_key)
         return {"sent": False}
 
@@ -1285,7 +1287,9 @@ async def test_ONE_pass_nudges_ONCE_even_with_several_held_sessions(store, monke
     monkeypatch.setattr(sup, "consider", _wants_a_nudge)
     sent: list = []
 
-    async def _spy(mid, *, session_key, objective_key, why, registry=None, path=None):
+    async def _spy(
+        mid, *, session_key, objective_key, why, registry=None, path=None, expected_authority=None
+    ):
         sent.append(session_key)
         return {"sent": True, "id": f"a{len(sent)}", "episode": 1}
 

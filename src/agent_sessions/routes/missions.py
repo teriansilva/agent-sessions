@@ -1049,7 +1049,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # a change landing between the capture and the read would otherwise carry the new
             # epoch and the old reading.
             policy_epoch = session_input.policy_fingerprint()
-            cfg = prefs.get_orchestrator()
+            cfg = prefs.get_mission_orchestration()
             if not cfg.get("enabled"):
                 return _fail(
                     missions.MissionError(
@@ -1268,7 +1268,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 )
 
             policy_epoch = session_input.policy_fingerprint()
-            cfg = prefs.get_orchestrator()
+            cfg = prefs.get_mission_orchestration()
             if not cfg.get("enabled"):
                 return _fail(
                     missions.MissionError(
@@ -1775,6 +1775,15 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                     )
                 )
 
+        from .. import automation
+
+        try:
+            grant = await missions.run_admitted(lambda: automation.capture(key, mission_id))
+        except Exception:
+            return _fail(
+                missions.MissionError("automation ownership could not be established", 409)
+            )
+
         action_id = f"relay_{uuid.uuid4().hex}"
 
         # REPLACING A DRAFT IS AN ORDERED, FAIL-CLOSED PROTOCOL (#983 P3), not a transaction: the
@@ -1850,7 +1859,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # So this failure is definite, and saying so is the whole point of splitting it out.
         try:
             await asyncio.to_thread(
-                orchestrator_ledger.append,
+                automation.append_operator_action,
                 {
                     "id": action_id,
                     "verb": "relay",
@@ -1865,6 +1874,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                     "confidence": 1.0,
                     "origin": "operator",
                     "mission_id": mission_id,
+                    "authority": grant,
                 },
             )
         except Exception as e:  # noqa: BLE001

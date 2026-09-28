@@ -74,6 +74,7 @@ def test_a_v29_store_migrates_the_old_name_WITHOUT_touching_gate(store):
     con.execute("UPDATE mission_objectives SET probe='agent_judged' WHERE key='finding'")
     con.execute("ALTER TABLE mission_objectives DROP COLUMN judge_rejected_fp")
     # …and what a LATER migration adds, which a real v29 store cannot have (v31, #1060).
+    con.execute("DROP TRIGGER IF EXISTS automation_owner_menu")
     con.execute("ALTER TABLE missions DROP COLUMN auto_choose")
     con.execute("PRAGMA user_version=29")
     con.commit()
@@ -86,7 +87,7 @@ def test_a_v29_store_migrates_the_old_name_WITHOUT_touching_gate(store):
     gates = dict(con.execute("SELECT key, gate FROM mission_objectives").fetchall())
     version = con.execute("PRAGMA user_version").fetchone()[0]
     con.close()
-    # Migrated all the way to the current version (v31 since #1060 Phase 4), not merely past v29.
+
     assert version == missions.SCHEMA_VERSION
     assert raw == {"branch": "git_local", "finding": "supervisor_judged"}
     assert gates == {"branch": 1, "finding": 0}, "the migration changed a gate"

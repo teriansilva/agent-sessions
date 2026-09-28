@@ -16,8 +16,15 @@ import asyncio
 
 import pytest
 
-from agent_sessions import actuator, session_input
+from agent_sessions import actuator, automation, session_input
 from agent_sessions import orchestrator_ledger as ledger
+
+
+def _append_action(rec, path=None):
+    """Projection fixtures represent current actions, not legacy approvals."""
+    if rec.get("session_id") and rec.get("state") in ledger.OPERATOR_PENDING_STATES:
+        rec = {**rec, "authority": automation.capture(rec["session_id"], rec.get("mission_id"))}
+    return ledger.append(rec, path)
 
 
 @pytest.fixture(autouse=True)
@@ -115,10 +122,10 @@ def test_both_pulse_producers_emit_the_projection(auth_cfg, fake_jsonl, monkeypa
     from agent_sessions import pulse
     from agent_sessions.main import create_app
 
-    ledger.append(
+    _append_action(
         {"id": "act-1", "state": "proposed", "verb": "continue", "session_id": "claude:known"}
     )
-    ledger.append(
+    _append_action(
         {"id": "act-2", "state": "proposed", "verb": "continue", "session_id": "claude:missing"}
     )
     monkeypatch.setattr(
@@ -157,7 +164,7 @@ def _pulse_cards(auth_cfg, state, *, cached):
     from agent_sessions import pulse
     from agent_sessions.main import create_app
 
-    ledger.append({"id": "act-1", "state": state, "verb": "continue", "session_id": "claude:s1"})
+    _append_action({"id": "act-1", "state": state, "verb": "continue", "session_id": "claude:s1"})
     cards = [{"id": "claude:s1", "state": "idle"}] if cached else []
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(pulse, "load_cache", lambda *a, **k: {"cards": cards})
@@ -211,7 +218,7 @@ def test_notification_hydration_projects_every_state(tmp_path, monkeypatch, stat
         escalation=True,
         activity_at=1.0,
     )
-    ledger.append({"id": "act-1", "state": state, "verb": "continue", "session_id": "claude:s1"})
+    _append_action({"id": "act-1", "state": state, "verb": "continue", "session_id": "claude:s1"})
     out = notifications.listing()
     rows = out["notifications"] + out["settled"]
     assert rows, state
@@ -317,7 +324,7 @@ def test_an_escalated_delivering_verb_is_refused_by_the_real_delivery_path(tmp_p
     looks deliverable and is not.
     """
     monkeypatch.setenv("AGENT_SESSIONS_ORCHESTRATOR_LEDGER", str(tmp_path / "l.jsonl"))
-    ledger.append(
+    _append_action(
         {
             "id": "a1",
             "state": "escalated",
@@ -571,7 +578,7 @@ def test_a_synthesized_card_is_stamped_too(auth_cfg, fake_jsonl):  # noqa: ARG00
     """The second producer. A card conjured for an action the pulse cache never saw is still a
     session some mission may hold — and it is the one most likely to be, since it is carrying a
     live decision."""
-    ledger.append(
+    _append_action(
         {"id": "act-1", "state": "proposed", "verb": "continue", "session_id": "claude:ghost"}
     )
     cards = _cards_with_missions(auth_cfg, cached_ids=[], membership={"claude:ghost": "msn_x"})

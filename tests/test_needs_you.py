@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from agent_sessions import missions, needs_you, orchestrator, orchestrator_ledger, pulse
 from agent_sessions.main import create_app
+from automation_helpers import current_action
 
 
 def _card(
@@ -300,7 +301,7 @@ def _real_ledger_with_live_proposal(expires_at):
     }
     path = L._path(None)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(rec) + "\n")
+    path.write_text(json.dumps(current_action(rec)) + "\n")
     return path
 
 

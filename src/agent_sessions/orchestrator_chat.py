@@ -118,10 +118,10 @@ async def ask(
         return {"intent": "find", **result, "actions": []}
 
     # instruct — the same path a scheduled pass takes, with no shortcuts.
-    cfg = prefs.get_orchestrator()
+    cfg = prefs.get_automation_policy("mission" if mission_id else "session")
     now = time.time()
     cards, skipped = await asyncio.to_thread(
-        orchestrator.eligible_cards, now=now, working_keys=working_keys
+        orchestrator.eligible_cards, now=now, working_keys=working_keys, mission_id=mission_id
     )
     if not cards:
         return {
@@ -154,7 +154,9 @@ async def ask(
     # — `intended` would read False and the "On it." below would stand over an empty action
     # list, telling the operator a session had been nudged when nothing was even proposed.
     validation_dropped: list[dict] = []
-    answer, actions = orchestrator._validate_actions(obj, sent, now=now, dropped=validation_dropped)
+    answer, actions = orchestrator._validate_actions(
+        obj, sent, now=now, dropped=validation_dropped, cfg=cfg
+    )
     answer = _clamp(answer or obj.get("answer"), ANSWER_MAX)
 
     # `complete_json` is the long await here exactly as it is in a scheduled pass, and policy
@@ -164,9 +166,12 @@ async def ask(
     # support mid-call must not find an `approved` action waiting for them afterwards, and a
     # session that picked up a pending action from a concurrent scheduled pass must not get a
     # duplicate stacked on top of it.
-    cfg = prefs.get_orchestrator()
+    cfg = prefs.get_automation_policy("mission" if mission_id else "session")
     still_eligible = {
-        c["id"] for c in await asyncio.to_thread(orchestrator._eligible_ids, working_keys)
+        c["id"]
+        for c in await asyncio.to_thread(
+            orchestrator._eligible_ids, working_keys, mission_id=mission_id
+        )
     }
     # How many actions the model actually asked for — counted BEFORE the eligibility filter and
     # the cap below, and including the ones validation already removed. This is the number the
@@ -205,18 +210,21 @@ async def ask(
         }
         # Same single-writer rule as the scheduled pass (`orchestrator.run_pass`): whatever the
         # spread carried over is discarded, and the decision's own reason is written back.
+        rec["authority"] = card["automation_authority"]
+        if mission_id:
+            rec["mission_id"] = mission_id
         rec.pop("escalation_reason", None)
         if esc_reason:
             rec["escalation_reason"] = esc_reason
         if action["verb"] in orchestrator.DELIVERING_VERBS:
             rec["precondition"] = await asyncio.to_thread(
                 orchestrator.precondition_for,
-                orchestrator.engines.physical_key(action["session_id"]),
+                rec["authority"]["physical_key"],
             )
         elif action["verb"] == "escalate":
             rec["observed_prompt"] = await asyncio.to_thread(
                 orchestrator.observed_prompt_for,
-                orchestrator.engines.physical_key(action["session_id"]),
+                rec["authority"]["physical_key"],
             )
         if turn_id:
             # Durable provenance, MISSION-QUALIFIED. Without the mission half, a recovering turn

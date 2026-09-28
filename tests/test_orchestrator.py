@@ -30,6 +30,7 @@ from fastapi.testclient import TestClient
 
 from agent_sessions import (
     aitasks,
+    automation,
     metadata,
     missions,
     orchestrator,
@@ -91,6 +92,13 @@ def _setup(monkeypatch, sessions, meta=None):
     monkeypatch.setattr(pulse.projects, "load", lambda *a, **k: {})
     monkeypatch.setattr(orchestrator.metadata, "load", lambda *a, **k: meta or {})
     monkeypatch.setattr(orchestrator.metadata, "load_aliases", lambda *a, **k: {})
+
+
+def _append_action(rec, path=None):
+    """Seed a current proposal explicitly; ledger-only records remain historical fixtures."""
+    if rec.get("session_id") and rec.get("state") in ledger.OPERATOR_PENDING_STATES:
+        rec = {**rec, "authority": automation.capture(rec["session_id"], rec.get("mission_id"))}
+    return ledger.append(rec, path)
 
 
 def _transport(payload: dict, calls: list | None = None):
@@ -521,7 +529,7 @@ def test_run_pass_unconfigured_raises_before_touching_the_filesystem(monkeypatch
 
 def test_ledger_torn_tail_is_dropped(tmp_path):
     p = tmp_path / "l.jsonl"
-    ledger.append({"id": "a", "state": "proposed"}, p)
+    _append_action({"id": "a", "state": "proposed"}, p)
     with p.open("a") as fh:
         fh.write('{"id": "b", "sta')  # crash mid-append
     assert [r["id"] for r in ledger.read_all(p)] == ["a"]
@@ -529,7 +537,7 @@ def test_ledger_torn_tail_is_dropped(tmp_path):
 
 def test_ledger_is_0600(tmp_path):
     p = tmp_path / "l.jsonl"
-    ledger.append({"id": "a", "state": "proposed"}, p)
+    _append_action({"id": "a", "state": "proposed"}, p)
     assert oct(p.stat().st_mode & 0o777) == "0o600"
 
 
@@ -542,7 +550,7 @@ def test_claimed_recovers_to_indeterminate_and_is_never_retried(tmp_path):
     """Nothing on disk can prove whether a `claimed` action's bytes reached the PTY, so it must
     be parked rather than retried (double-delivery) or assumed delivered (silent drop)."""
     p = tmp_path / "l.jsonl"
-    ledger.append(
+    _append_action(
         {"id": "a", "state": "claimed", "verb": "choose", "option": 1, "claim_owner": DEAD_OWNER},
         p,
     )
@@ -563,7 +571,7 @@ def test_recovery_LEAVES_a_claim_whose_owner_is_still_running(tmp_path):
     """
     p = tmp_path / "l.jsonl"
     # OUR OWN pid, which is exactly what a sibling's live claim looks like from here.
-    ledger.append({"id": "live", "state": "claimed", "claim_owner": ledger.owner_token()}, p)
+    _append_action({"id": "live", "state": "claimed", "claim_owner": ledger.owner_token()}, p)
     assert ledger.recover_claimed(p) == []
     assert ledger.get("live", p)["state"] == "claimed"
 
@@ -572,8 +580,8 @@ def test_recovery_LEAVES_a_claim_whose_owner_it_cannot_identify(tmp_path):
     """`unknown` is not `gone`. An unparseable token, or a `/proc` entry that will not read, is
     not evidence that the owner died — and recovering a live claim is the harmful direction."""
     p = tmp_path / "l.jsonl"
-    ledger.append({"id": "odd", "state": "claimed", "claim_owner": "not-a-token"}, p)
-    ledger.append({"id": "mine", "state": "claimed", "claim_owner": f"{os.getpid()}:unknown"}, p)
+    _append_action({"id": "odd", "state": "claimed", "claim_owner": "not-a-token"}, p)
+    _append_action({"id": "mine", "state": "claimed", "claim_owner": f"{os.getpid()}:unknown"}, p)
     assert ledger.recover_claimed(p) == []
 
 
@@ -584,7 +592,7 @@ def test_a_LEGACY_claim_with_no_owner_is_recovered_only_once_it_is_impossibly_ol
     claim."""
     p = tmp_path / "l.jsonl"
     now = time.time()
-    ledger.append({"id": "fresh", "state": "claimed", "ts": now}, p)
+    _append_action({"id": "fresh", "state": "claimed", "ts": now}, p)
     assert ledger.recover_claimed(p, now=now) == []
     assert ledger.recover_claimed(p, now=now + ledger.LEGACY_CLAIM_STALE_S + 1) == ["fresh"]
 
@@ -593,7 +601,7 @@ def test_a_CLAIM_records_who_holds_it(tmp_path):
     """The fact recovery is decided on. Without it the question "may I recover this?" has no
     answer and every claim looks orphaned."""
     p = tmp_path / "l.jsonl"
-    ledger.append({"id": "c", "state": "approved"}, p)
+    _append_action({"id": "c", "state": "approved"}, p)
     rec = ledger.claim("c", frozenset({"approved"}), p)
     assert rec["claim_owner"] == ledger.owner_token()
     assert ledger.owner_is_live(rec["claim_owner"]) is True
@@ -602,17 +610,17 @@ def test_a_CLAIM_records_who_holds_it(tmp_path):
 def test_expiry_skips_claimed_actions(tmp_path):
     p = tmp_path / "l.jsonl"
     past = time.time() - 1
-    ledger.append({"id": "old", "state": "proposed", "expires_at": past}, p)
-    ledger.append({"id": "mid", "state": "claimed", "expires_at": past}, p)
+    _append_action({"id": "old", "state": "proposed", "expires_at": past}, p)
+    _append_action({"id": "mid", "state": "claimed", "expires_at": past}, p)
     assert ledger.expire_due(path=p) == ["old"]
     assert ledger.get("mid", p)["state"] == "claimed"
 
 
 def test_compaction_keeps_live_and_bounds_history(tmp_path):
     p = tmp_path / "l.jsonl"
-    ledger.append({"id": "live", "state": "proposed"}, p)
+    _append_action({"id": "live", "state": "proposed"}, p)
     for i in range(20):
-        ledger.append({"id": f"done{i}", "state": "delivered"}, p)
+        _append_action({"id": f"done{i}", "state": "delivered"}, p)
     kept = ledger.compact(p, history_max=5)
     states = [r["state"] for r in ledger.latest_by_id(p).values()]
     assert kept == 6
@@ -800,8 +808,8 @@ def test_concurrent_append_during_compaction_is_not_lost(tmp_path):
 
     p = tmp_path / "l.jsonl"
     for i in range(30):
-        ledger.append({"id": f"done{i}", "state": "delivered"}, p)
-    ledger.append({"id": "live", "state": "proposed"}, p)
+        _append_action({"id": f"done{i}", "state": "delivered"}, p)
+    _append_action({"id": "live", "state": "proposed"}, p)
 
     errors: list = []
 
@@ -814,7 +822,7 @@ def test_concurrent_append_during_compaction_is_not_lost(tmp_path):
     def appender():
         try:
             for i in range(20):
-                ledger.append({"id": f"late{i}", "state": "proposed"}, p)
+                _append_action({"id": f"late{i}", "state": "proposed"}, p)
         except Exception as e:  # pragma: no cover
             errors.append(e)
 
@@ -840,7 +848,7 @@ def test_concurrent_transitions_do_not_lose_one(tmp_path):
 
     p = tmp_path / "l.jsonl"
     for i in range(10):
-        ledger.append({"id": f"a{i}", "state": "proposed"}, p)
+        _append_action({"id": f"a{i}", "state": "proposed"}, p)
     threads = [
         threading.Thread(target=ledger.transition, args=(f"a{i}", "rejected"), kwargs={"path": p})
         for i in range(10)
@@ -1005,7 +1013,7 @@ def test_a_session_with_a_pending_action_is_not_proposed_again(monkeypatch):
     key = f"claude:{uid}"
     _setup(monkeypatch, [FakeSession("claude", uid, "/a", now)])
     assert [c["id"] for c in orchestrator.eligible_cards(now=now)[0]] == [key]
-    ledger.append({"id": "p1", "state": "proposed", "session_id": key})
+    _append_action({"id": "p1", "state": "proposed", "session_id": key})
     cards, skipped = orchestrator.eligible_cards(now=now)
     assert cards == [] and skipped["pending"] == 1
     # Once it settles, the session is available again.
@@ -1164,7 +1172,7 @@ def test_work_restored_by_expiry_is_reconsidered(monkeypatch, configured_ai):
     async def fake_pass(**kw):
         runs.append(1)
         pending.append("p")  # the pass appends a proposal → the session is now ineligible
-        ledger.append(
+        _append_action(
             {"id": "act", "state": "proposed", "session_id": key, "expires_at": time.time() - 1}
         )
         return {"actions": [], "truncated": False, "next_offset": 0}
@@ -1211,7 +1219,7 @@ def test_expiry_outside_the_sweep_still_invalidates(monkeypatch, configured_ai):
     async def fake_pass(**kw):
         runs.append(1)
         pending.append("p")
-        ledger.append(
+        _append_action(
             {"id": "act-1", "state": "proposed", "session_id": key, "expires_at": time.time() - 1}
         )
         return {"actions": [], "truncated": False, "next_offset": 0}
@@ -1433,7 +1441,7 @@ def test_a_history_question_never_reaches_the_actuator(auth_cfg, fake_jsonl, mon
     sid = c.get("/api/sessions").json()["sessions"][0]["id"]
 
     # An APPROVED row already in the ledger — exactly what a history answer surfaces.
-    ledger.append(
+    _append_action(
         {
             "id": "old1",
             "state": "approved",
@@ -1551,7 +1559,7 @@ def test_rejecting_an_action_also_retires_its_bell_row(auth_cfg, fake_jsonl, tmp
     from agent_sessions import notifications
 
     monkeypatch.setenv("AGENT_SESSIONS_NOTIFICATIONS", str(tmp_path / "n.json"))
-    ledger.append(
+    _append_action(
         {"id": "act-1", "state": "escalated", "verb": "escalate", "session_id": "claude:aaa"}
     )
     _seed_note("act-1", "mine")
@@ -1576,7 +1584,7 @@ def test_a_failed_reject_never_destroys_an_alert(auth_cfg, fake_jsonl, tmp_path,
     from agent_sessions import notifications
 
     monkeypatch.setenv("AGENT_SESSIONS_NOTIFICATIONS", str(tmp_path / "n.json"))
-    ledger.append(
+    _append_action(
         {"id": "act-done", "state": "delivered", "verb": "continue", "session_id": "claude:aaa"}
     )
     _seed_note("act-done", "already delivered")
@@ -1668,7 +1676,7 @@ def _matches(*ids):
 
 def test_ask_matches_are_annotated_with_the_live_action(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
     """Finding the session is half an answer; "and something is waiting there" is the rest."""
-    ledger.append(
+    _append_action(
         {"id": "act-1", "state": "escalated", "verb": "escalate", "session_id": "claude:aaa"}
     )
     monkeypatch.setattr(pulse_chat, "ask", _async_ret(_matches("claude:aaa", "codex:bbb")))
@@ -1682,7 +1690,7 @@ def test_a_finished_action_is_history_not_an_errand(auth_cfg, fake_jsonl, monkey
     """Flagging a delivered or expired action sends the operator somewhere nothing waits —
     the fastest way to make them stop trusting the flag."""
     for i, state in enumerate(("delivered", "expired", "rejected")):
-        ledger.append(
+        _append_action(
             {"id": f"a{i}", "state": state, "verb": "continue", "session_id": "claude:aaa"}
         )
     monkeypatch.setattr(pulse_chat, "ask", _async_ret(_matches("claude:aaa")))
@@ -1713,7 +1721,7 @@ def test_cards_carry_their_live_action_and_are_banded_as_needing_you(
 ):  # noqa: ARG001
     """The queue was a strict SUBSET of the cards — every action's session already appeared
     under "Needs you" — so it rendered one session twice. The action now rides on the card."""
-    ledger.append(
+    _append_action(
         {"id": "act-1", "state": "escalated", "verb": "escalate", "session_id": "claude:aaa"}
     )
     monkeypatch.setattr(
@@ -1742,7 +1750,7 @@ def test_cards_carry_their_live_action_and_are_banded_as_needing_you(
 def test_a_finished_action_never_reaches_a_card(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
     """Only LIVE states are an errand; a delivered or expired action is history."""
     for i, state in enumerate(("delivered", "expired", "rejected")):
-        ledger.append(
+        _append_action(
             {"id": f"a{i}", "state": state, "verb": "continue", "session_id": "claude:aaa"}
         )
     monkeypatch.setattr(
@@ -1764,7 +1772,7 @@ def test_a_claimed_action_never_puts_controls_on_a_card(auth_cfg, fake_jsonl, mo
     poll would keep those controls on screen. The sibling "Needs a decision" list already drew
     this line; both now read `OPERATOR_PENDING_STATES`.
     """
-    ledger.append(
+    _append_action(
         {"id": "act-1", "state": "claimed", "verb": "continue", "session_id": "claude:aaa"}
     )
     monkeypatch.setattr(
@@ -1785,7 +1793,7 @@ def test_the_operator_pending_set_is_the_one_the_queue_uses(auth_cfg, fake_jsonl
     """Card overlay and the "Needs a decision" list must agree on what is pending, or the same
     action shows controls in one place and not the other."""
     for i, state in enumerate(("proposed", "approved", "escalated", "claimed")):
-        ledger.append(
+        _append_action(
             {
                 "id": f"a{i}",
                 "state": state,
@@ -1818,7 +1826,7 @@ def test_the_pending_list_carries_the_operator_projection(auth_cfg, fake_jsonl, 
         "ask": ("escalated", "escalate"),
     }
     for i, (aid, (state, verb)) in enumerate(rows.items()):
-        ledger.append(
+        _append_action(
             {"id": aid, "state": state, "verb": verb, "session_id": f"claude:s{i}", "ts": 1000 + i}
         )
     monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
@@ -1847,7 +1855,7 @@ def test_the_overlay_records_the_band_it_replaced(auth_cfg, fake_jsonl, monkeypa
     sits under "Needs you" with nothing pending until some later fetch succeeds — the band
     outliving the reason for it (#762 review).
     """
-    ledger.append(
+    _append_action(
         {"id": "act-1", "state": "proposed", "verb": "continue", "session_id": "claude:aaa"}
     )
     monkeypatch.setattr(
@@ -1865,7 +1873,7 @@ def test_a_synthesized_card_says_that_is_all_it_is(auth_cfg, fake_jsonl, monkeyp
     """A card invented for an action has nothing behind it. The client needs to know, so that
     settling the action removes the card instead of leaving an empty phantom under "Needs you"
     with no title, no summary and no controls."""
-    ledger.append(
+    _append_action(
         {
             "id": "act-1",
             "state": "proposed",
@@ -1909,7 +1917,7 @@ def test_scanning_does_not_strip_the_inline_actions(auth_cfg, fake_jsonl, monkey
     Approve/Dismiss control from the page while the ledger still said they were pending — the
     overlay was wired on one route and missing on its sibling.
     """
-    ledger.append(
+    _append_action(
         {"id": "act-1", "state": "escalated", "verb": "escalate", "session_id": "claude:aaa"}
     )
 
@@ -1936,7 +1944,7 @@ def test_a_live_action_with_no_card_is_still_reachable(auth_cfg, fake_jsonl, mon
     scan has run. With the queue gone and no card to host the controls, the action would be
     impossible to approve or reject from anywhere.
     """
-    ledger.append(
+    _append_action(
         {
             "id": "act-1",
             "state": "escalated",
@@ -1969,7 +1977,7 @@ def test_a_session_outside_the_cached_window_still_gets_its_controls(
 ):  # noqa: ARG001
     """The orchestrator has no window; Pulse does. A session the cache never saw must not
     silently lose its action."""
-    ledger.append(
+    _append_action(
         {
             "id": "act-old",
             "state": "proposed",
@@ -2004,7 +2012,7 @@ def test_an_overdue_proposal_is_never_offered_as_actionable(auth_cfg, fake_jsonl
     out. The overlay now retires due records first.
     """
     now = time.time()
-    ledger.append(
+    _append_action(
         {
             "id": "act-old",
             "state": "proposed",
@@ -2428,7 +2436,7 @@ def test_the_feed_collapses_repeats_of_one_session(auth_cfg, fake_jsonl, monkeyp
     accumulates a row per pass forever."""
     sid = "claude:aaa"
     for i, verb in enumerate(("observe", "escalate", "observe")):
-        ledger.append(
+        _append_action(
             {
                 "id": f"a{i}",
                 "state": "observed",
@@ -2454,7 +2462,7 @@ def test_the_feed_collapses_repeats_of_one_session(auth_cfg, fake_jsonl, monkeyp
 def test_a_session_with_one_action_says_repeats_one(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
     """The client shows the count only above 1, so the field must always be present and honest
     rather than absent-meaning-one."""
-    ledger.append({"id": "a0", "state": "observed", "verb": "observe", "session_id": "claude:aaa"})
+    _append_action({"id": "a0", "state": "observed", "verb": "observe", "session_id": "claude:aaa"})
     monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
     c = _client(auth_cfg)
     _login(c, auth_cfg)
@@ -2463,7 +2471,7 @@ def test_a_session_with_one_action_says_repeats_one(auth_cfg, fake_jsonl, monkey
 
 def test_collapsing_keeps_sessions_apart_and_newest_first(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
     for i, sid in enumerate(("claude:aaa", "codex:bbb", "claude:aaa", "gemini:ccc")):
-        ledger.append(
+        _append_action(
             {
                 "id": f"a{i}",
                 "state": "observed",
@@ -2484,10 +2492,10 @@ def test_a_pending_action_is_still_excluded_from_the_feed(auth_cfg, fake_jsonl, 
     """`pending` and `feed` are disjoint by contract — collapsing must not smuggle a pending
     action back in as somebody's 'latest'."""
     sid = "claude:aaa"
-    ledger.append(
+    _append_action(
         {"id": "old", "state": "observed", "verb": "observe", "session_id": sid, "ts": 1000}
     )
-    ledger.append(
+    _append_action(
         {"id": "live", "state": "proposed", "verb": "continue", "session_id": sid, "ts": 2000}
     )
     monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
@@ -2502,7 +2510,7 @@ def test_a_pending_action_is_still_excluded_from_the_feed(auth_cfg, fake_jsonl, 
 def test_a_row_with_no_session_id_stands_alone(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
     """Keying them all to "" would merge unrelated actions into a single row."""
     for i in range(3):
-        ledger.append({"id": f"a{i}", "state": "observed", "verb": "observe", "ts": 1000 + i})
+        _append_action({"id": f"a{i}", "state": "observed", "verb": "observe", "ts": 1000 + i})
     monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
     c = _client(auth_cfg)
     _login(c, auth_cfg)
@@ -2524,7 +2532,7 @@ def test_a_busy_session_cannot_push_older_sessions_out_of_the_feed(
     Bounding the input costs nothing anyway — `latest_by_id` already reads the whole ledger
     before anything is sliced, so a pre-cap only truncates correctness.
     """
-    ledger.append(
+    _append_action(
         {
             "id": "old",
             "state": "observed",
@@ -2534,7 +2542,7 @@ def test_a_busy_session_cannot_push_older_sessions_out_of_the_feed(
         }
     )
     for i in range(801):
-        ledger.append(
+        _append_action(
             {
                 "id": f"hot{i}",
                 "state": "observed",
@@ -2661,7 +2669,7 @@ def test_tolerant_extraction_survives_for_the_degraded_path(monkeypatch, configu
 def test_a_settled_action_rides_its_card(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
     """The Activity block was a SECOND list of near-identical boxes above the cards. The
     session's last action belongs on the row it is about."""
-    ledger.append(
+    _append_action(
         {
             "id": "a1",
             "state": "observed",
@@ -2685,10 +2693,10 @@ def test_a_settled_action_rides_its_card(auth_cfg, fake_jsonl, monkeypatch):  # 
 def test_a_live_action_wins_over_history_on_the_same_card(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
     """Never both: decision controls are about a choice you still have, and a settled summary
     beside them would read as a second, contradictory status."""
-    ledger.append(
+    _append_action(
         {"id": "old", "state": "observed", "verb": "observe", "session_id": "claude:aaa", "ts": 1}
     )
-    ledger.append(
+    _append_action(
         {
             "id": "live",
             "state": "proposed",
@@ -2713,7 +2721,7 @@ def test_a_synthesized_history_card_is_not_duplicated_by_its_own_session(
 ):  # noqa: ARG001
     """A session that HAS a card must not also get a synthesized twin — that would recreate the
     duplication this whole change is about."""
-    ledger.append(
+    _append_action(
         {"id": "a1", "state": "observed", "verb": "observe", "session_id": "claude:aaa", "ts": 1}
     )
     monkeypatch.setattr(
@@ -2729,7 +2737,7 @@ def test_a_synthesized_history_card_is_not_duplicated_by_its_own_session(
 def test_the_repeat_count_reaches_the_card(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
     """`repeats` (#775) is what stops a collapsed row reading as the only thing that happened."""
     for i in range(4):
-        ledger.append(
+        _append_action(
             {
                 "id": f"a{i}",
                 "state": "observed",
@@ -2760,7 +2768,7 @@ def test_settled_history_for_a_session_with_no_card_makes_no_card(
 
     A wall of 102 boxes is a worse answer than the duplication it replaced.
     """
-    ledger.append(
+    _append_action(
         {
             "id": "old",
             "state": "expired",
@@ -2781,7 +2789,7 @@ def test_a_LIVE_action_with_no_card_is_still_synthesized(auth_cfg, fake_jsonl, m
     """The line is not "card or no card", it is WAITING ON YOU or not. `eligible_cards` builds
     with `window_days=None`, so the orchestrator can act on a session outside Pulse's cached
     window — and something awaiting the operator must be reachable whatever its age (#762)."""
-    ledger.append(
+    _append_action(
         {
             "id": "live",
             "state": "proposed",
@@ -2804,7 +2812,7 @@ def test_a_LIVE_action_with_no_card_is_still_synthesized(auth_cfg, fake_jsonl, m
 def test_a_settled_action_still_rides_a_card_that_exists(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
     """The useful half of #777 stays: a session you HAVE still says what the orchestrator last
     did there. Only the phantom cards go."""
-    ledger.append(
+    _append_action(
         {
             "id": "a1",
             "state": "observed",
@@ -2826,7 +2834,7 @@ def test_a_settled_action_still_rides_a_card_that_exists(auth_cfg, fake_jsonl, m
 def test_the_card_count_tracks_sessions_not_ledger_history(auth_cfg, fake_jsonl, monkeypatch):  # noqa: ARG001
     """The shape of the regression, in one assertion: lots of history, few sessions."""
     for i in range(30):
-        ledger.append(
+        _append_action(
             {
                 "id": f"h{i}",
                 "state": "expired",
@@ -2861,7 +2869,7 @@ def test_a_manual_decision_hides_the_row_but_keeps_the_dedupe_memo(
 
     monkeypatch.setenv("AGENT_SESSIONS_NOTIFICATIONS", str(tmp_path / "n.json"))
     idle = 1_700_000_000.0
-    ledger.append(
+    _append_action(
         {"id": "act-A", "state": "escalated", "verb": "escalate", "session_id": "claude:aaa"}
     )
     notifications.add(
@@ -2932,9 +2940,12 @@ def test_notify_escalations_announces_both_kinds_exactly_once(state, monkeypatch
 
     For a session a mission holds: since #1086 Phase 4 the pass announces only those, and the
     needs-you episode sync announces the rest (`test_needs_you_notify`)."""
-    monkeypatch.setattr(missions, "all_active_memberships", lambda **k: {_rec(state)["session_id"]})
-    prefs.set_orchestrator({**prefs.get_orchestrator(), "notify": "escalations"})
-    orchestrator._persist([_rec(state)])
+    prefs.set_orchestrator({"notify": "escalations"})
+    mid = missions.create_mission("notification owner", cwd="/tmp")["id"]
+    rec = _rec(state)
+    missions.adopt(mid, rec["session_id"])
+    rec.update(mission_id=mid, authority=automation.capture(rec["session_id"], mid))
+    orchestrator._persist([rec])
     rows = notifications.listing()["notifications"]
     assert len(rows) == 1, state
 
@@ -2944,9 +2955,12 @@ def test_both_kinds_are_flagged_as_escalations_for_the_badge(state, monkeypatch)
     """`orchestrator.py:704` decides `escalation=True`, which drives the badge and the settled
     window. Missing it announces the row and then never counts it — a different silence in the
     same feature. (A mission-held session: see the test above.)"""
-    monkeypatch.setattr(missions, "all_active_memberships", lambda **k: {_rec(state)["session_id"]})
-    prefs.set_orchestrator({**prefs.get_orchestrator(), "notify": "escalations"})
-    orchestrator._persist([_rec(state)])
+    prefs.set_orchestrator({"notify": "escalations"})
+    mid = missions.create_mission("notification owner", cwd="/tmp")["id"]
+    rec = _rec(state)
+    missions.adopt(mid, rec["session_id"])
+    rec.update(mission_id=mid, authority=automation.capture(rec["session_id"], mid))
+    orchestrator._persist([rec])
     assert notifications.listing()["notifications"][0]["escalation"] is True, state
 
 
@@ -2957,7 +2971,7 @@ def test_both_kinds_suppress_a_second_proposal_for_the_same_session(state):
     — otherwise a low-confidence row would let the next pass stack a second action on the same
     session, which is the duplicate-proposal loop the pending set exists to break."""
     sid = "claude:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-    ledger.append(_rec(state, sid=sid))
+    _append_action(_rec(state, sid=sid))
     pending = {
         r.get("session_id")
         for r in ledger.live_actions()
@@ -2972,7 +2986,7 @@ def test_both_kinds_expire_on_the_ttl_sweep(state):
     expires and stays live INDEFINITELY, which is worse than the gap being fixed."""
     rec = _rec(state)
     rec["expires_at"] = time.time() - 1
-    ledger.append(rec)
+    _append_action(rec)
     ledger.expire_due()
     assert ledger.latest_by_id()["a1"]["state"] == "expired", state
 
@@ -2988,7 +3002,7 @@ def test_only_the_low_confidence_kind_reaches_the_card_with_an_approve(
         LOW_CONF: "claude:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
     }
     for state, sid in sids.items():
-        ledger.append(_rec(state, aid=f"act-{state}", sid=sid))
+        _append_action(_rec(state, aid=f"act-{state}", sid=sid))
     monkeypatch.setattr(pulse, "load_cache", lambda *a, **k: {"cards": []})
 
     c = _client(auth_cfg)
@@ -3113,7 +3127,7 @@ def test_969_an_explicit_approval_is_not_refused_by_the_viewer_it_was_tapped_in(
     try:
         phys = engines.physical_key(sid)
         session_input.register_writer(phys, master, threading.Lock(), "attached")
-        ledger.append(
+        _append_action(
             {
                 "id": "act-969",
                 "state": "proposed",
@@ -3203,7 +3217,8 @@ def test_969_every_retiring_surface_withdraws_a_proposal_that_can_no_longer_be_d
 
     monkeypatch.setenv("AGENT_SESSIONS_NOTIFICATIONS", str(tmp_path / "n.json"))
     sid = f"claude:{BUSY_UID}"
-    ledger.append(
+    prefs.set_orchestrator({"enabled": True})
+    _append_action(
         {
             "id": "act-gone",
             "state": "proposed",
@@ -3233,7 +3248,6 @@ def test_969_every_retiring_surface_withdraws_a_proposal_that_can_no_longer_be_d
     )
 
     if surface == "sweep":
-        prefs.set_orchestrator({"enabled": True})
         _setup(monkeypatch, [])
         asyncio.run(orchestrator_loop.sweep())
     else:

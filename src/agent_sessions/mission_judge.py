@@ -605,7 +605,7 @@ async def judge_row(mission_id: str, row: dict, inp: JudgeInput, instruction: st
 
     # THE THRESHOLD IS READ AFTER THE CALL, at the write boundary — a setting changed while the
     # model was thinking applies to this judgment, not to the next one. `missions` never reads it.
-    threshold = float(prefs.get_orchestrator()["judge_confidence_min"])
+    threshold = float(prefs.get_mission_orchestration()["judge_confidence_min"])
     judged = {
         "met": parsed["met"],
         "confidence": parsed["confidence"],
@@ -696,7 +696,7 @@ async def mark_mission(mission_id: str, *, path=None) -> dict:
     if not wl or not wl["rows"] or wl["archived"]:
         return report
     inp = await missions.run_admitted(lambda: gather(mission_id, wl.get("cwd")))
-    threshold = float(prefs.get_orchestrator()["judge_confidence_min"])
+    threshold = float(prefs.get_mission_orchestration()["judge_confidence_min"])
     report.update(
         await missions.run_admitted(lambda: mark_stale_judgments(mission_id, wl, inp, threshold))
     )
@@ -772,7 +772,7 @@ async def judge_one(mission_id: str, budget: Budget, *, path=None) -> dict:
             report["skipped"] = "nothing due"
             return report
     inp = await missions.run_admitted(lambda: gather(mission_id, wl.get("cwd")))
-    threshold = float(prefs.get_orchestrator()["judge_confidence_min"])
+    threshold = float(prefs.get_mission_orchestration()["judge_confidence_min"])
     # Marked again: the input may have moved since the supervision phase read it.
     marks = await missions.run_admitted(
         lambda: mark_stale_judgments(mission_id, wl, inp, threshold)

@@ -1134,6 +1134,17 @@ export interface AppConfig {
   /** How deeply a session is read before a decision (#1086 Phase 2). No secret. */
   session_review?: SessionReviewConfig;
   orchestrator?: OrchestratorConfig;
+  /** #1019: feature-detected scoped grants; legacy projections may conservatively be off. */
+  automation?: {
+    version: 1;
+    legacy_compatible: boolean;
+    mission: OrchestratorConfig & { revision: string };
+    session: Omit<OrchestratorConfig,
+      "auto_ai_directions" | "ai_direction_confidence_min" |
+      "ai_direction_confidence_floor" | "ai_direction_confidence_max" |
+      "judge_confidence_min" | "judge_confidence_floor" | "judge_confidence_max"
+    > & { revision: string };
+  };
   /** The mission playbooks (#883), so Settings can edit them (#892). Normalized server-side, so
    *  this is exactly the shape `POST /api/prefs` accepts back. */
   mission_playbooks?: MissionPlaybooks;

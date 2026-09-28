@@ -23,7 +23,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from agent_sessions import notifications, webpush
+from agent_sessions import automation, notifications, webpush
 
 # Every decision here has a surface: these tests pin other axes of the bell (#1057).
 pytestmark = pytest.mark.usefixtures("every_session_held")
@@ -436,13 +436,20 @@ def test_an_escalation_actually_raises_a_notification(tmp_path, monkeypatch):
                 "id": "act1",
                 "state": "escalated",
                 "session_id": "claude:abc",
+                "authority": automation.capture("claude:abc"),
                 "engine": "claude",
                 "title": "needs a decision",
                 "project": "agent-sessions",
                 "rationale": "two plausible options",
             },
             # A proposed action is NOT an escalation; `escalations` must not raise for it.
-            {"id": "act2", "state": "proposed", "session_id": "claude:def", "engine": "claude"},
+            {
+                "authority": automation.capture("claude:def"),
+                "id": "act2",
+                "state": "proposed",
+                "session_id": "claude:def",
+                "engine": "claude",
+            },
         ]
     )
 

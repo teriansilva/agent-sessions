@@ -172,7 +172,10 @@ export function ActionRow({
   // THE OPT-IN (#983 P4), read here rather than threaded in from each host: both surfaces that
   // render a draft card — the mission console and the session pane — need the same answer, and
   // `ConfigCtx` already holds it. A hook, so it sits with the others and above every branch.
-  const orch = useConfig()?.orchestrator;
+  const automationConfig = useConfig();
+  const orch = automationConfig?.automation?.version === 1
+    ? automationConfig.automation.mission
+    : automationConfig?.orchestrator;
   // WHICH CONTROLS ARE OFFERED IS THE SERVER'S ANSWER, not ours (#852/#840 §16).
   //
   // This used to derive it from `state`, treating `proposed` and `approved` alike — so an

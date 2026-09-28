@@ -22,6 +22,7 @@ from agent_sessions import (
 )
 from agent_sessions.main import create_app
 from agent_sessions.routes import pulse as pulse_routes
+from automation_helpers import current_action
 
 
 def _client(cfg):
@@ -50,6 +51,7 @@ def _action(aid="act-1", *, sid="claude:a", verb="answer", state="proposed", **e
         "title": "t",
         **extra,
     }
+    rec = current_action(rec)
     orchestrator_ledger.append(rec)
     return rec
 
@@ -147,6 +149,10 @@ def test_a_continue_can_be_edited_too(auth_cfg, fake_jsonl, delivered):
 def test_the_edit_refusal_matrix_delivers_nothing(
     auth_cfg, fake_jsonl, delivered, body, setup, status
 ):
+    if setup.get("mission_id"):
+        mid = missions.create_mission("owned decision", cwd="/tmp")["id"]
+        missions.adopt(mid, setup.get("sid", "claude:a"))
+        setup = {**setup, "mission_id": mid}
     _action(**setup)
     c = _client(auth_cfg)
     hdr = _login(c, auth_cfg)

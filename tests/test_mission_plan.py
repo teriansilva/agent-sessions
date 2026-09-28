@@ -1256,10 +1256,10 @@ def test_an_UNREADABLE_policy_refuses_the_launch_rather_than_authorising_it(stor
     rather than permission (#904 review 3, finding 3)."""
     from agent_sessions import mission_dispatch, prefs, session_input
 
-    def boom():
+    def boom(*args):
         raise OSError("prefs could not be read")
 
-    monkeypatch.setattr(prefs, "get_orchestrator", boom)
+    monkeypatch.setattr(prefs, "get_automation_policy", boom)
     assert session_input.policy_fingerprint() is None
 
     mid, plan = _planned(store)

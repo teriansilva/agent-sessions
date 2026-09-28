@@ -15,7 +15,7 @@ import time
 import pytest
 
 from agent_sessions import archive as archive_mod
-from agent_sessions import metadata, mission_archive, missions
+from agent_sessions import automation, metadata, mission_archive, missions
 
 CLAUDE_A = "claude:11111111-1111-1111-1111-111111111111"
 CLAUDE_B = "claude:22222222-2222-2222-2222-222222222222"
@@ -1225,21 +1225,14 @@ async def test_DELIVERY_refuses_a_session_whose_mission_was_archived_mid_batch(
 
     mid = _mission("running")
     missions.adopt(mid, CLAUDE_A)
-    monkeypatch.setattr(
-        prefs,
-        "get_orchestrator",
-        lambda: {
-            "enabled": True,
-            "autonomy": "yolo",
-            "allowed_verbs": ["continue"],
-            "confidence_min": 0.0,
-        },
-    )
+    prefs.set_orchestrator({"enabled": True, "autonomy": "yolo"})
     action = {
         "id": "x1",
         "state": "approved",
         "verb": "continue",
         "session_id": CLAUDE_A,
+        "mission_id": mid,
+        "authority": automation.capture(CLAUDE_A, mid),
         "confidence": 1.0,
     }
     reached: list[str] = []
@@ -1346,22 +1339,15 @@ async def test_the_MANUAL_approval_path_is_fenced_too(env, tmp_path, monkeypatch
 
     mid = _mission("running")
     missions.adopt(mid, CLAUDE_A)
-    monkeypatch.setattr(
-        prefs,
-        "get_orchestrator",
-        lambda: {
-            "enabled": True,
-            "autonomy": "yolo",
-            "allowed_verbs": ["continue"],
-            "confidence_min": 0.0,
-        },
-    )
+    prefs.set_orchestrator({"enabled": True, "autonomy": "yolo"})
     ledger.append(
         {
             "id": "m1",
             "state": "approved",
             "verb": "continue",
             "session_id": CLAUDE_A,
+            "mission_id": mid,
+            "authority": automation.capture(CLAUDE_A, mid),
             "confidence": 1.0,
         }
     )
@@ -1537,6 +1523,7 @@ def test_an_archive_COMMITTING_after_the_guard_still_writes_ZERO_bytes(env, tmp_
         out = session_input.send_input(
             CLAUDE_A,
             b"UNAUTHORIZED_AFTER_ARCHIVE",
+            policy_scope="mission",
             final_guard=guard_then_archive,
             require_quiet=False,
         )

@@ -29,6 +29,7 @@ from agent_sessions import (
     review,
     webpush,
 )
+from automation_helpers import append_current_action, current_action
 
 A = "claude:aaaaaaaa-0000-0000-0000-00000000000a"
 B = "claude:aaaaaaaa-0000-0000-0000-00000000000b"
@@ -156,7 +157,7 @@ def test_answered_in_the_terminal_retracts_the_row_and_closes_ONLY_its_own_tag(w
 def test_a_settled_decision_retracts_its_notification(world, pushes):
     # A decision-only session: not flagged by its review, but holding a decision you can act on.
     world["cards"] = [_card(A, flagged=False)]
-    orchestrator_ledger.append(
+    append_current_action(
         {
             "id": "act-1",
             "state": "escalated",
@@ -276,16 +277,18 @@ def test_the_notify_pref_is_write_strict_and_read_lenient():
 
 
 def _rec(sid, aid):
-    return {
-        "id": aid,
-        "state": "escalated",
-        "session_id": sid,
-        "verb": "answer",
-        "answer": "x",
-        "engine": "claude",
-        "title": "needs a call",
-        "last_activity": time.time(),
-    }
+    return current_action(
+        {
+            "id": aid,
+            "state": "escalated",
+            "session_id": sid,
+            "verb": "answer",
+            "answer": "x",
+            "engine": "claude",
+            "title": "needs a call",
+            "last_activity": time.time(),
+        }
+    )
 
 
 def test_the_orchestrator_announces_ONLY_mission_held_sessions(monkeypatch, pushes):

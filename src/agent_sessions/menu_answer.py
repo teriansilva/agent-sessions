@@ -42,7 +42,7 @@ import contextlib
 import time
 import uuid
 
-from . import actuator, engines, orchestrator, screen_menus, scrollback
+from . import actuator, automation, engines, mission_fence, orchestrator, screen_menus, scrollback
 from . import orchestrator_ledger as ledger
 
 
@@ -86,7 +86,7 @@ def _option(menu: object, n: int) -> dict | None:
 
 def _live_frame(session_id: str) -> tuple[str, dict | None]:
     """The screen now, and the engine's menu parsed from it. Blocking (ring replay)."""
-    phys = engines.physical_key(session_id)
+    phys = mission_fence.physical_of(session_id)
     try:
         screen = scrollback.live_tail_text(phys, orchestrator.PROMPT_SCREEN_CHARS)
     except Exception:  # noqa: BLE001 — an unreadable ring is "no menu", which refuses
@@ -117,6 +117,9 @@ def prepare(escalation_id: str, option: object, label: object) -> tuple[dict, di
     expires = esc.get("expires_at")
     if isinstance(expires, int | float) and time.time() > expires:
         raise Refused("nothing was sent: this decision has expired")
+    valid, why = automation.check(esc)
+    if not valid:
+        raise Refused(f"nothing was sent: {why}")
 
     recorded = _option((esc.get("observed_prompt") or {}).get("menu"), option)
     if recorded is None or recorded.get("label") != label:
@@ -147,10 +150,11 @@ def prepare(escalation_id: str, option: object, label: object) -> tuple[dict, di
         "confidence": 1.0,
         "origin": "operator",
         "answers": escalation_id,
+        "authority": esc["authority"],
         "expires_at": time.time() + 120,
         # THE FRAME WHOSE LABELS WERE JUST VERIFIED, not a second read of the screen.
         "precondition": {
-            "key": engines.physical_key(sid),
+            "key": esc["authority"]["physical_key"],
             "screen_fingerprint": orchestrator._screen_fingerprint(screen),
             "prompt_class": orchestrator._prompt_class(screen),
             "observed_at": time.time(),
@@ -262,7 +266,7 @@ async def answer(escalation_id: str, option: object, label: object, *, registry)
         return Refused(f"nothing was sent: {why}", status)
 
     try:
-        await asyncio.to_thread(ledger.append, rec)
+        await asyncio.to_thread(automation.append_operator_action, rec)
     except Exception as e:  # noqa: BLE001 — nothing claimed, nothing written
         raise await refuse(f"the action could not be recorded ({type(e).__name__})", 502) from e
 

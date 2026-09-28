@@ -303,7 +303,7 @@ def test_excluding_a_session_mid_call_drops_it_before_anything_is_recorded(monke
 
     def exclude_it():
         # Re-derivation goes through _eligible_ids; make it report nothing eligible.
-        monkeypatch.setattr(orchestrator, "_eligible_ids", lambda wk: [])
+        monkeypatch.setattr(orchestrator, "_eligible_ids", lambda wk, **kw: [])
 
     _instruct_then(monkeypatch, exclude_it)
 
@@ -329,8 +329,8 @@ def test_a_concurrent_pass_cannot_double_queue_the_same_session(monkeypatch):
 
     real_eligible_ids = orchestrator._eligible_ids
 
-    def eligible_then_rival(working_keys):
-        out = real_eligible_ids(working_keys)
+    def eligible_then_rival(working_keys, **kw):
+        out = real_eligible_ids(working_keys, **kw)
         # A scheduled pass lands here, between our check and our write.
         ledger.append(
             {

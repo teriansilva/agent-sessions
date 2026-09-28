@@ -235,6 +235,13 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
 
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI):
+        # Cut over both policy scopes before any controller starts. A failed persist disables
+        # automation reads for this process while the terminal and read-only surfaces remain up.
+        try:
+            await asyncio.to_thread(prefs.ensure_automation_policies)
+        except Exception:
+            log.exception("automation policy cutover failed; both controllers remain disabled")
+
         # Raise the default thread-pool ceiling (#280). Each live session's SessionStream._drain
         # parks one default-executor thread for the session's whole life, and the pool defaults to
         # only min(32, cpu+4). Past that, attach-time work (transcript render) can't get a thread

@@ -1089,6 +1089,7 @@ def test_the_v25_UPGRADE_backfills_READY_or_SKIPPED_and_queues_NOTHING(tmp_path,
     # A REAL v24 store: the v25 plan columns go, and so does every `missions` column a LATER
     # migration adds (v31's `auto_choose`, #1060) — a v24 file cannot have them, and leaving one in
     # would put it ahead of the plan columns the upgrade appends.
+    con.execute("DROP TRIGGER IF EXISTS automation_owner_menu")
     for col in ("plan_state", "plan_generation", "plan_at", "plan_detail", "auto_choose"):
         con.execute(f"ALTER TABLE missions DROP COLUMN {col}")
     con.execute("ALTER TABLE mission_plans DROP COLUMN generation")

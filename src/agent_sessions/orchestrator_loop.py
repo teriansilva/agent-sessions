@@ -9,7 +9,7 @@ Gating — all must hold before a single endpoint call happens:
 * **Env kill-switch** ``AGENT_SESSIONS_ORCHESTRATOR_LOOP=0`` — the task exits at startup and
   never sweeps, regardless of prefs. The operator-level "stop it NOW" that doesn't require
   touching saved settings.
-* **Prefs** ``orchestrator.enabled``, re-read on EVERY sweep so the Settings toggle applies at
+* **Prefs** ``session_assistance.enabled``, re-read on EVERY sweep so its toggle applies at
   the next wake without a restart. ``autonomy: off`` still runs the pass — observing and
   proposing is the *point* of that tier; it simply never queues anything for delivery.
 * **Single-flight** — ``aitasks`` kind ``orchestrator``, so a manual "Run now" and the loop can
@@ -36,7 +36,7 @@ import logging
 import os
 import time
 
-from . import actuator, aitasks, engines, orchestrator, prefs, review
+from . import actuator, aitasks, mission_fence, orchestrator, prefs, review
 from . import orchestrator_ledger as ledger
 
 log = logging.getLogger("agent_sessions.orchestrator_loop")
@@ -94,7 +94,7 @@ def world_fingerprint(
     prompt — would leave the fingerprint identical, and every scheduled sweep would skip as
     "unchanged" while the operator waits for their new policy to do something.
     """
-    cfg = cfg if cfg is not None else prefs.get_orchestrator()
+    cfg = cfg if cfg is not None else prefs.get_session_assistance()
     now = time.time() if now is None else now
     ledger_gen = ledger.generation() if ledger_gen is None else ledger_gen
     # #1086 Phase 2 (review 5180): the Session review settings change what the digest carries,
@@ -157,7 +157,7 @@ def _prompt_facts(cards: list[dict]) -> dict[str, list]:
     out: dict[str, list] = {}
     for c in cards:
         try:
-            observed = orchestrator.observed_prompt_for(engines.physical_key(c["id"]))
+            observed = orchestrator.observed_prompt_for(mission_fence.physical_of(c["id"]))
         except Exception:  # noqa: BLE001 — unreadable is its own stable value
             out[c["id"]] = ["unreadable", ""]
             continue
@@ -193,7 +193,7 @@ async def sweep(registry=None) -> dict:
     # autonomous sweep is not a kill-switch for finishing what a delivery started.
     with contextlib.suppress(Exception):
         await asyncio.to_thread(ledger.discharge_owed)
-    cfg = prefs.get_orchestrator()
+    cfg = prefs.get_session_assistance()
     if not cfg["enabled"]:
         # Reset change-detection on disable. Otherwise disable → re-enable inherits the cached
         # fingerprint and the first sweep after re-enabling skips as "unchanged" — the operator
@@ -358,7 +358,7 @@ async def run(registry=None) -> None:
     while True:
         interval_s = max(
             prefs.ORCH_INTERVAL_MIN * 60,
-            int(prefs.get_orchestrator()["interval_minutes"]) * 60,
+            int(prefs.get_session_assistance()["interval_minutes"]) * 60,
         )
         await asyncio.sleep(interval_s * min(2**consecutive_failures, _BACKOFF_MAX_MULT))
         try:

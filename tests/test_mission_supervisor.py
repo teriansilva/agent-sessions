@@ -463,19 +463,13 @@ async def test_the_supervisor_prompt_goes_through_the_REGISTRY(store, configured
 # ---- acting on the reading: one verb, one escalation, no new entry point --------------------
 
 
-def test_the_supervisor_may_mint_only_CONTINUE_and_a_never_auto_DRAFT_DIRECTION(store):
-    """`choose` and `answer` type an ANSWER into a prompt.
+def test_supervisor_nudges_and_drafts_keep_their_ceiling_beside_the_approved_menu_grant(store):
+    """Nudges and drafts keep their existing vocabulary and ceiling.
 
-    A supervisor that guessed which option an agent should pick would be making the operator's
-    decision for them, so `needs_approval` escalates instead of becoming bytes. Asserted on the
-    verb the module can mint, not on the label the model returned (#885).
-
-    **Changed on purpose by #983 P3.** This test was `…may_mint_only_CONTINUE`. The supervisor may
-    now also mint `draft_direction`: model-authored text that is only ever a proposal. It widens
-    what may be MINTED for approval and nothing about what may auto-deliver. `continue` stays the
-    one auto-capable verb, and `draft_direction` is outside the autonomy ceiling, outside the
-    orchestrator's vocabulary, and refused by every automatic path (pinned in
-    `tests/test_mission_drafts.py`).
+    #1019 routes #1060's separately approved menu grant through mission_choices in the existing
+    supervisor call. `needs_approval` still escalates; arbitrary answer/relay text is not granted.
+    The real menu, opt-in, original authority and confidence boundaries are exercised end to end
+    in test_mission_choice_scopes and test_auto_choose.
     """
     from agent_sessions import actuator, orchestrator, prefs
 
@@ -493,7 +487,7 @@ def test_the_supervisor_may_mint_only_CONTINUE_and_a_never_auto_DRAFT_DIRECTION(
     import ast
 
     src = (__import__("pathlib").Path(sup.__file__)).read_text()
-    for forbidden in ('"choose"', '"answer"', '"relay"', '"escalate"'):
+    for forbidden in ('"answer"', '"relay"', '"escalate"'):
         assert forbidden not in src, f"the supervisor can mint {forbidden}"
     minted: set[str] = set()
     for node in ast.walk(ast.parse(src)):
@@ -691,10 +685,14 @@ async def test_the_sweep_is_OFF_when_the_orchestrator_is(store, monkeypatch):
     ran = []
     monkeypatch.setattr(loop.mission_supervisor, "run_pass", lambda *a, **k: ran.append(a))
 
-    monkeypatch.setattr(prefs, "get_orchestrator", lambda: {"enabled": False, "autonomy": "yolo"})
+    monkeypatch.setattr(
+        prefs, "get_mission_orchestration", lambda: {"enabled": False, "autonomy": "yolo"}
+    )
     assert (await loop.sweep())["skipped"] == "disabled"
 
-    monkeypatch.setattr(prefs, "get_orchestrator", lambda: {"enabled": True, "autonomy": "off"})
+    monkeypatch.setattr(
+        prefs, "get_mission_orchestration", lambda: {"enabled": True, "autonomy": "off"}
+    )
     assert (await loop.sweep())["skipped"] == "disabled"
     assert ran == []
 
@@ -704,7 +702,9 @@ async def test_the_env_kill_switch_beats_prefs(store, monkeypatch):
     from agent_sessions import mission_supervisor_loop as loop
     from agent_sessions import prefs
 
-    monkeypatch.setattr(prefs, "get_orchestrator", lambda: {"enabled": True, "autonomy": "yolo"})
+    monkeypatch.setattr(
+        prefs, "get_mission_orchestration", lambda: {"enabled": True, "autonomy": "yolo"}
+    )
     monkeypatch.setenv("AGENT_SESSIONS_MISSION_SUPERVISOR", "0")
     assert (await loop.sweep())["skipped"] == "disabled"
 
@@ -722,7 +722,9 @@ async def test_one_stuck_mission_does_not_stop_the_FLEET(store, monkeypatch):
     missions.set_state(other, "planned", "dispatching")
     missions.set_state(other, "dispatching", "running")
 
-    monkeypatch.setattr(prefs, "get_orchestrator", lambda: {"enabled": True, "autonomy": "yolo"})
+    monkeypatch.setattr(
+        prefs, "get_mission_orchestration", lambda: {"enabled": True, "autonomy": "yolo"}
+    )
     seen = []
 
     async def flaky(mid, **kw):

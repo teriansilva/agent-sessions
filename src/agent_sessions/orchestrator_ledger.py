@@ -520,6 +520,7 @@ def append_batch_for_free_sessions(
     *,
     gate: Callable[[], bool] | None = None,
     barred: Callable[[], set[str]] | None = None,
+    record_guard: Callable[[dict], bool] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Append only those ``records`` whose session has no live action. Returns ``(kept, dropped)``.
 
@@ -583,6 +584,9 @@ def append_batch_for_free_sessions(
             if r.get("state") in LIVE_STATES and r.get("session_id")
         }
         for rec in records:
+            if record_guard is not None and not record_guard(rec):
+                dropped.append(rec)
+                continue
             sid = rec.get("session_id")
             if sid and sid in busy:
                 dropped.append(rec)

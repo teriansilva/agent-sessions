@@ -22,7 +22,10 @@ export function MissionAutoChoose({
   mission: Mission;
   onChanged: () => void;
 }) {
-  const orch = useConfig()?.orchestrator;
+  const automationConfig = useConfig();
+  const orch = automationConfig?.automation?.version === 1
+    ? automationConfig.automation.mission
+    : automationConfig?.orchestrator;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const server = mission.auto_choose === true;

@@ -20,6 +20,7 @@ whole old document or the whole new one, and never needs the lock to be correct.
 from __future__ import annotations
 
 import copy
+import json
 import math
 import os
 import re
@@ -1638,8 +1639,15 @@ def get_orchestrator(path: Path | None = None) -> dict:
     """The stored `orchestrator` block with defaults applied + types coerced (#726). Empty
     prompts coerce back to their defaults so a blank field can never strand the pass or leave
     `continue` with nothing to send."""
-    raw = _load(path or _default_path()).get("orchestrator")
-    return _coerce_orchestrator(raw)
+    data = _load(path or _default_path())
+    if _scoped(data):
+        session = _policy_from_doc(data, "session")
+        mission = _policy_from_doc(data, "mission")
+        # A legacy client must never interpret one scope's permission as a global grant.
+        if not _legacy_compatible(session, mission):
+            return {**{k: mission[k] for k in _ORCH_DEFAULTS}, "enabled": False, "autonomy": "off"}
+        return {k: mission[k] for k in _ORCH_DEFAULTS}
+    return _coerce_orchestrator(data.get("orchestrator"))
 
 
 def _coerce_orchestrator(raw: object) -> dict:
@@ -1731,7 +1739,9 @@ def public_orchestrator(path: Path | None = None) -> dict:
     return out
 
 
-def validate_orchestrator_patch(patch: object, path: Path | None = None) -> str | None:
+def validate_orchestrator_patch(
+    patch: object, path: Path | None = None, *, current: dict | None = None
+) -> str | None:
     """Server-side schema validation for a partial `orchestrator` write (#726): returns a
     human-readable error (→ 422) or None. Unknown keys are rejected so a typo can't no-op.
 
@@ -1756,7 +1766,13 @@ def validate_orchestrator_patch(patch: object, path: Path | None = None) -> str 
 
     def stored() -> dict:
         if not _stored:
-            _stored.append(get_orchestrator(path))
+            if current is not None:
+                _stored.append(current)
+            else:
+                # The legacy projection is deliberately disabled when scopes diverge. It is
+                # presentation, not stored authority. Mission-dependent fields validate here;
+                # ambiguous shared writes still fail with 409 inside the bridge's write lock.
+                _stored.append(get_mission_orchestration(path))
         return _stored[0]
 
     # THE OPT-IN (#983 P4). A bool on TYPE — `isinstance(True, int)` is True in Python and the
@@ -1847,64 +1863,263 @@ def validate_orchestrator_patch(patch: object, path: Path | None = None) -> str 
     return None
 
 
-def set_orchestrator(patch: dict, path: Path | None = None) -> dict:
-    """Merge a VALIDATED partial block into the stored one and persist (#726).
+def _merge_orchestrator(patch: dict, stored: object) -> dict:
+    cur = dict(_ORCH_DEFAULTS)
+    cur.update(_coerce_orchestrator(stored))
+    for k in _ORCH_DEFAULTS:
+        if k in patch:
+            cur[k] = patch[k].strip() if isinstance(patch[k], str) else patch[k]
+    # LEAVING YOLO TURNS IT OFF, DURABLY (#983 P4) — and this is the enforcement, inside the
+    # lock, not the validator's advisory 422. Clamping only on read would let a tier round-trip
+    # through `suggest` and back silently re-arm a mode the operator switched away from; the
+    # stored value is what has to change, so coming back to yolo requires saying so again.
+    if cur.get("auto_ai_directions") is not True or cur.get("autonomy") != "yolo":
+        cur["auto_ai_directions"] = False
+    conf = cur.get("ai_direction_confidence_min")
+    cur["ai_direction_confidence_min"] = (
+        float(conf)
+        if isinstance(conf, int | float)
+        and not isinstance(conf, bool)
+        and ORCH_AI_DIRECTION_CONF_LO <= conf <= ORCH_AI_DIRECTION_CONF_HI
+        else ORCH_AI_DIRECTION_CONF_DEFAULT
+    )
+    jc = cur.get("judge_confidence_min")
+    cur["judge_confidence_min"] = float(jc) if judge_conf_in_range(jc) else ORCH_JUDGE_CONF_DEFAULT
+    cur["allowed_verbs"] = coerce_allowed_verbs(
+        cur.get("allowed_verbs"), allow_draft=cur["auto_ai_directions"] is True
+    )
+    if cur["auto_ai_directions"] is True:
+        cur["allowed_verbs"] = sorted({*cur["allowed_verbs"], DRAFT_DIRECTION_VERB})
+    if not str(cur["prompt"]).strip():
+        cur["prompt"] = DEFAULT_ORCH_PROMPT
+    if not str(cur["nudge_template"]).strip():
+        cur["nudge_template"] = DEFAULT_ORCH_NUDGE
+    return cur
 
-    The merge happens INSIDE the file lock (`_mutate`), not before it: two concurrent partial
-    saves — say `{enabled: true}` and `{autonomy: "yolo"}` — would otherwise both read the same
-    base and the second would erase the first, silently reverting a setting the UI already
-    said was saved.
 
-    Emptied prompts fall back to their defaults; `allowed_verbs` is re-clamped to the ceiling
-    on the way in as well as on the way out, so the stored file can never hold a verb the
-    ceiling forbids.
-    """
+# Independent automation policies (#1019). Prompt editing stays in its ONE registry binding.
+AUTOMATION_VERSION = 1
+_policy_unavailable: set[str] = set()
+AUTOMATION_BLOCKS = {"session": "session_assistance", "mission": "mission_orchestration"}
+_MISSION_POLICY_FIELDS = frozenset(
+    {"auto_ai_directions", "ai_direction_confidence_min", "judge_confidence_min"}
+)
+_SHARED_POLICY_FIELDS = frozenset(_ORCH_DEFAULTS) - _MISSION_POLICY_FIELDS - {"prompt"}
 
-    def merge(stored: object) -> dict:
-        cur = dict(_ORCH_DEFAULTS)
-        cur.update(_coerce_orchestrator(stored))
-        for k in _ORCH_DEFAULTS:
-            if k in patch:
-                cur[k] = patch[k].strip() if isinstance(patch[k], str) else patch[k]
-        # LEAVING YOLO TURNS IT OFF, DURABLY (#983 P4) — and this is the enforcement, inside the
-        # lock, not the validator's advisory 422. Clamping only on read would let a tier round-trip
-        # through `suggest` and back silently re-arm a mode the operator switched away from; the
-        # stored value is what has to change, so coming back to yolo requires saying so again.
-        if cur.get("auto_ai_directions") is not True or cur.get("autonomy") != "yolo":
-            cur["auto_ai_directions"] = False
-        conf = cur.get("ai_direction_confidence_min")
-        cur["ai_direction_confidence_min"] = (
-            float(conf)
-            if isinstance(conf, int | float)
-            and not isinstance(conf, bool)
-            and ORCH_AI_DIRECTION_CONF_LO <= conf <= ORCH_AI_DIRECTION_CONF_HI
-            else ORCH_AI_DIRECTION_CONF_DEFAULT
+
+class PolicyConflict(ValueError):
+    """A stale revision or ambiguous old-client write; nothing was persisted."""
+
+
+class PolicyStoreError(ValueError):
+    """Unreadable authority must not be repaired by overwriting it with defaults."""
+
+
+def _scoped(data: dict) -> bool:
+    return any(key in data for key in AUTOMATION_BLOCKS.values())
+
+
+def _policy_fields(scope: str) -> frozenset[str]:
+    if scope not in AUTOMATION_BLOCKS:
+        raise ValueError("automation scope must be session or mission")
+    return _SHARED_POLICY_FIELDS | (_MISSION_POLICY_FIELDS if scope == "mission" else frozenset())
+
+
+def _read_policy_doc(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text())
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as e:
+        raise PolicyStoreError("automation preferences could not be read") from e
+    if not isinstance(data, dict):
+        raise PolicyStoreError("automation preferences must be an object")
+    return data
+
+
+def _policy_from_doc(data: dict, scope: str) -> dict:
+    fields = _policy_fields(scope)
+    raw = data.get(AUTOMATION_BLOCKS[scope]) if _scoped(data) else data.get("orchestrator")
+    cfg = _coerce_orchestrator(raw)
+    revision = "legacy"
+    if _scoped(data):
+        revision = raw.get("revision") if isinstance(raw, dict) else None
+        valid = (
+            isinstance(raw, dict)
+            and isinstance(revision, str)
+            and bool(revision)
+            and isinstance(raw.get("enabled"), bool)
+            and raw.get("autonomy") in ORCH_TIERS
         )
-        jc = cur.get("judge_confidence_min")
-        cur["judge_confidence_min"] = (
-            float(jc) if judge_conf_in_range(jc) else ORCH_JUDGE_CONF_DEFAULT
-        )
-        cur["allowed_verbs"] = coerce_allowed_verbs(
-            cur.get("allowed_verbs"), allow_draft=cur["auto_ai_directions"] is True
-        )
-        if cur["auto_ai_directions"] is True:
-            cur["allowed_verbs"] = sorted({*cur["allowed_verbs"], DRAFT_DIRECTION_VERB})
-        if not str(cur["prompt"]).strip():
-            cur["prompt"] = DEFAULT_ORCH_PROMPT
-        if not str(cur["nudge_template"]).strip():
-            cur["nudge_template"] = DEFAULT_ORCH_NUDGE
-        return cur
+        if valid:
+            patch = {k: v for k, v in raw.items() if k != "revision"}
+            valid = set(patch) == fields and validate_orchestrator_patch(patch, current=cfg) is None
+        if not valid:
+            cfg = {**_ORCH_DEFAULTS, "enabled": False, "autonomy": "off"}
+            revision = "invalid"
+    if scope == "session":
+        cfg["auto_ai_directions"] = False
+        cfg["allowed_verbs"] = coerce_allowed_verbs(cfg["allowed_verbs"])
+    # The prompt remains shared and registry-owned. Never copy it into a policy block.
+    cfg["prompt"] = _coerce_orchestrator(data.get("orchestrator"))["prompt"]
+    return {**cfg, "revision": revision, "scope": scope}
 
-    # Deferred import: `session_input` is a runtime concern and importing it at module scope
-    # would tie prefs to the terminal stack.
+
+def get_automation_policy(scope: str, path: Path | None = None) -> dict:
+    """Read-only, including under the non-reentrant input fence. Never migrate in a getter."""
+    _policy_fields(scope)
+    if str(path or _default_path()) in _policy_unavailable:
+        return _policy_from_doc({AUTOMATION_BLOCKS[scope]: None}, scope)
+    try:
+        data = _read_policy_doc(path or _default_path())
+    except PolicyStoreError:
+        data = {AUTOMATION_BLOCKS[scope]: None}
+    return _policy_from_doc(data, scope)
+
+
+def get_session_assistance(path: Path | None = None) -> dict:
+    return get_automation_policy("session", path)
+
+
+def get_mission_orchestration(path: Path | None = None) -> dict:
+    return get_automation_policy("mission", path)
+
+
+def _legacy_compatible(session: dict, mission: dict) -> bool:
+    # draft_direction and the direction/judge thresholds apply ONLY to mission policy.
+    return all(
+        (coerce_allowed_verbs(session[k]) == coerce_allowed_verbs(mission[k]))
+        if k == "allowed_verbs"
+        else session[k] == mission[k]
+        for k in _SHARED_POLICY_FIELDS
+    ) and all(c.get("revision") != "invalid" for c in (session, mission))
+
+
+def _cutover_doc(data: dict) -> dict:
+    if not _scoped(data):
+        legacy = _coerce_orchestrator(data.get("orchestrator"))
+        for scope, block in AUTOMATION_BLOCKS.items():
+            cfg = dict(legacy)
+            if scope == "session":
+                cfg["allowed_verbs"] = coerce_allowed_verbs(cfg["allowed_verbs"])
+            data[block] = {k: cfg[k] for k in _policy_fields(scope)}
+            data[block]["revision"] = uuid.uuid4().hex
+    # Even on re-upgrade after an old binary wrote, scoped blocks remain authoritative.
+    legacy = data.get("orchestrator")
+    data["orchestrator"] = {**(legacy if isinstance(legacy, dict) else {}), "enabled": False}
+    return data
+
+
+def ensure_automation_policies(path: Path | None = None) -> None:
+    """Atomic, idempotent startup cutover before either controller is scheduled."""
     from . import session_input
 
-    # The persist and the announcement are ONE transaction under the write fence (#726).
-    # Persisting first and announcing after leaves a gap in which the stored policy has already
-    # changed but the fence still sees the old epoch — a delivery in that gap passes the check
-    # and writes under policy the operator has withdrawn.
-    with session_input.policy_transaction():
-        return _mutate("orchestrator", merge, path)
+    path = path or _default_path()
+    try:
+        with session_input.policy_transaction(), json_write_lock(path):
+            data = _read_policy_doc(path)
+            updated = _cutover_doc(copy.deepcopy(data))
+            if updated != data:
+                atomic_write_json(path, updated)
+        _policy_unavailable.discard(str(path))
+    except Exception:
+        _policy_unavailable.add(str(path))
+        raise
+
+
+def public_automation_policy(
+    scope: str, path: Path | None = None, *, cfg: dict | None = None
+) -> dict:
+    cfg = get_automation_policy(scope, path) if cfg is None else cfg
+    out = {k: cfg[k] for k in _policy_fields(scope)}
+    out.update(revision=cfg["revision"], configured=bool(public_ai_review(path)["configured"]))
+    out["auto_verbs_ceiling"] = sorted(auto_verbs(cfg))
+    out["default_nudge_template"] = DEFAULT_ORCH_NUDGE
+    if scope == "mission":
+        out.update(
+            ai_direction_confidence_floor=ORCH_AI_DIRECTION_CONF_LO,
+            ai_direction_confidence_max=ORCH_AI_DIRECTION_CONF_HI,
+            judge_confidence_floor=ORCH_JUDGE_CONF_LO,
+            judge_confidence_max=ORCH_JUDGE_CONF_HI,
+        )
+    return out
+
+
+def public_automation(path: Path | None = None) -> dict:
+    path = path or _default_path()
+    try:
+        data = _read_policy_doc(path)
+    except PolicyStoreError:
+        data = {block: None for block in AUTOMATION_BLOCKS.values()}
+    if str(path) in _policy_unavailable:
+        data = {block: None for block in AUTOMATION_BLOCKS.values()}
+    policies = {scope: _policy_from_doc(data, scope) for scope in AUTOMATION_BLOCKS}
+    return {
+        "version": AUTOMATION_VERSION,
+        "legacy_compatible": _legacy_compatible(policies["session"], policies["mission"]),
+        **{s: public_automation_policy(s, path, cfg=cfg) for s, cfg in policies.items()},
+    }
+
+
+def set_automation_policy(
+    scope: str, patch: dict, *, revision: str | None = None, path: Path | None = None
+) -> dict:
+    """Merge only this scope under the existing input → auth → prefs lock order."""
+    from . import session_input
+
+    fields = _policy_fields(scope)
+    if not isinstance(patch, dict) or set(patch) - fields:
+        raise ValueError(f"invalid {scope} automation policy fields")
+    path = path or _default_path()
+    with session_input.policy_transaction(scope), json_write_lock(path):
+        data = _read_policy_doc(path)
+        cur = _policy_from_doc(data, scope)
+        if revision is not None and revision != cur["revision"]:
+            raise PolicyConflict("automation policy changed; reload before saving")
+        error = validate_orchestrator_patch(patch, current=cur)
+        if error:
+            raise ValueError(error)
+        data = _cutover_doc(data)
+        merged = _merge_orchestrator(patch, cur)
+        data[AUTOMATION_BLOCKS[scope]] = {k: merged[k] for k in fields}
+        data[AUTOMATION_BLOCKS[scope]]["revision"] = uuid.uuid4().hex
+        atomic_write_json(path, data)
+        _policy_unavailable.discard(str(path))
+        return _policy_from_doc(data, scope)
+
+
+def set_orchestrator(patch: dict, path: Path | None = None) -> dict:
+    """Legacy API bridge. Shared writes require agreement; mission-only writes stay local.
+
+    No enabled legacy grant is ever persisted after cutover. A rejected write leaves the
+    whole file intact, including when another process diverged the scopes after preflight.
+    """
+    from . import session_input
+
+    path = path or _default_path()
+    shared = set(patch) & _SHARED_POLICY_FIELDS
+    with session_input.policy_transaction(None if shared else "mission"), json_write_lock(path):
+        data = _cutover_doc(_read_policy_doc(path))
+        session = _policy_from_doc(data, "session")
+        mission = _policy_from_doc(data, "mission")
+        if shared and not _legacy_compatible(session, mission):
+            raise PolicyConflict(
+                "session and mission policies differ; use the scoped automation API"
+            )
+        error = validate_orchestrator_patch(patch, current=mission)
+        if error:
+            raise ValueError(error)
+        for scope, cur in (("session", session), ("mission", mission)):
+            part = {k: v for k, v in patch.items() if k in _policy_fields(scope)}
+            if scope == "session" and "allowed_verbs" in part:
+                part["allowed_verbs"] = coerce_allowed_verbs(part["allowed_verbs"])
+            if not part:
+                continue
+            merged = _merge_orchestrator(part, cur)
+            data[AUTOMATION_BLOCKS[scope]] = {k: merged[k] for k in _policy_fields(scope)}
+            data[AUTOMATION_BLOCKS[scope]]["revision"] = uuid.uuid4().hex
+        atomic_write_json(path, data)
+    return get_orchestrator(path)
 
 
 # --- Per-agent usage budgets (#839) ----------------------------------------------------

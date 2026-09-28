@@ -36,8 +36,8 @@ from agent_sessions import (
     scrollback,
     session_input,
 )
-from agent_sessions import orchestrator_ledger as ledger
 from agent_sessions.main import create_app
+from automation_helpers import append_current_action
 
 SID = "claude:11111111-1111-1111-1111-111111111111"
 PHYS = engines.physical_key(SID)
@@ -76,7 +76,7 @@ def world(auth_cfg, fake_jsonl, tmp_path, monkeypatch):  # noqa: ARG001
     scrollback.note_cols(PHYS, 120)
     scrollback._LAST_ROWS[PHYS] = 30
     scrollback._buffer_append(PHYS, _frame(120))
-    ledger.append(
+    append_current_action(
         {
             "id": "act-1049",
             "state": "proposed",

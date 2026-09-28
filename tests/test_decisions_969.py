@@ -42,6 +42,7 @@ from agent_sessions import (
 from agent_sessions import (
     orchestrator_ledger as ledger,
 )
+from automation_helpers import current_action
 
 KEY = "claude:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 PHYS = engines.physical_key(KEY)
@@ -136,6 +137,7 @@ def _propose(pre: dict, **over) -> dict:
         "precondition": pre,
         **over,
     }
+    rec = current_action(rec)
     ledger.append(rec)
     return rec
 

@@ -44,8 +44,10 @@ import uuid
 from collections.abc import Callable
 
 from . import (
+    automation,
     engines,
     metadata,
+    mission_fence,
     notifications,
     prefs,
     prompts,
@@ -218,7 +220,7 @@ def stale_hours(cfg: dict | None = None) -> float:
     operator did not pick, never no window at all. Pass `cfg` when the caller already re-read
     the config for this pass, so the gate and the tier cannot disagree across the model call.
     """
-    c = cfg if cfg is not None else prefs.get_orchestrator()
+    c = cfg if cfg is not None else prefs.get_session_assistance()
     return float(c.get("stale_hours") or prefs.ORCH_STALE_HOURS_DEFAULT)
 
 
@@ -227,6 +229,7 @@ def eligible_cards(
     now: float | None = None,
     working_keys: set[str] | None = None,
     busy_keys: set[str] | None = None,
+    mission_id: str | None = None,
 ) -> tuple[list[dict], dict[str, int]]:
     """The sessions the orchestrator may consider, plus a count of what was filtered and why.
 
@@ -246,10 +249,9 @@ def eligible_cards(
     """
     busy = busy_keys or set()
     cards = pulse.build_cards(window_days=None, now=now, working_keys=working_keys)
-    stale_after = stale_hours()
+    stale_after = stale_hours(prefs.get_automation_policy("mission" if mission_id else "session"))
     actuable = engines.orchestrator_input_engines()
     meta_index = metadata.load()
-    aliases = metadata.load_aliases()
     # A session with an action already awaiting the operator is not eligible for another
     # proposal. This is what makes progress STRUCTURAL rather than a property of the rotation:
     # with <=DIGEST_MAX cards the offset wraps to 0, so an over-cap pass would otherwise re-send
@@ -276,6 +278,12 @@ def eligible_cards(
     boundary = bool(project_dirs.effective_roots() or prefs.get_folder_exclusions())
     skipped = {"engine": 0, "excluded": 0, "pending": 0, "working": 0, "stale": 0, "scope": 0}
     out: list[dict] = []
+    try:
+        grants = automation.capture_candidates(
+            [card["id"] for card in cards if card.get("engine") in actuable], mission_id
+        )
+    except automation.AuthorityChanged:
+        grants = {}
     for card in cards:
         if card.get("engine") not in actuable:
             skipped["engine"] += 1
@@ -287,7 +295,11 @@ def eligible_cards(
             skipped["scope"] += 1
             continue
         key = card["id"]
-        phys = engines.physical_key(key, aliases)
+        grant = grants.get(key)
+        if grant is None:
+            skipped["scope"] += 1
+            continue
+        phys = grant["physical_key"]
         m = meta_index.get(key) or meta_index.get(phys)
         if m is not None and m.orchestrator_excluded:
             skipped["excluded"] += 1
@@ -310,7 +322,7 @@ def eligible_cards(
         if age is not None and age >= stale_after:
             skipped["stale"] += 1
             continue
-        out.append(card)
+        out.append({**card, "automation_authority": grant})
     return out, skipped
 
 
@@ -325,11 +337,13 @@ def _last_action_at() -> dict[str, float]:
     return out
 
 
-def _eligible_ids(working_keys: set[str] | None, busy_keys: set[str] | None = None) -> list[dict]:
+def _eligible_ids(
+    working_keys: set[str] | None, busy_keys: set[str] | None = None, mission_id: str | None = None
+) -> list[dict]:
     """Re-derive the eligible set. Used to re-check eligibility AFTER the model call, so a
     session excluded (or an engine made non-actuable) mid-flight is dropped before anything is
     recorded against it — and, given a fresh ``busy_keys``, one that started working (#969)."""
-    cards, _ = eligible_cards(working_keys=working_keys, busy_keys=busy_keys)
+    cards, _ = eligible_cards(working_keys=working_keys, busy_keys=busy_keys, mission_id=mission_id)
     return cards
 
 
@@ -433,7 +447,7 @@ def _digest_extras(cards: list[dict], now: float, review_cfg: dict) -> dict[str,
     if recognise:
         for c in cards:
             try:
-                observed = observed_prompt_for(engines.physical_key(c["id"]))
+                observed = observed_prompt_for(mission_fence.physical_of(c["id"]))
             except Exception:  # noqa: BLE001 — an unreadable screen is simply not described
                 log.debug("digest: screen unreadable for %s", c["id"], exc_info=True)
                 continue
@@ -583,6 +597,7 @@ def _validate_actions(
     *,
     now: float | None = None,
     dropped: list[dict] | None = None,
+    cfg: dict | None = None,
 ) -> tuple[str, list[dict]]:
     """Narrow a model reply to ``(assessment, [action, …])``.
 
@@ -680,7 +695,7 @@ def _validate_actions(
             # browser is attached" — a headless-but-live session, which is the archetypal
             # `continue` target, has `live: False` while being perfectly writable. Gating on it
             # would block precisely the case this is meant to enable.
-            if not session_input.is_live(engines.physical_key(sid)):
+            if not session_input.is_live(mission_fence.physical_of(sid)):
                 if dropped is not None:
                     dropped.append(
                         {"session_id": sid, "verb": action["verb"], "reason": "not_live"}
@@ -691,7 +706,7 @@ def _validate_actions(
             # before the model is ever called, so on both production paths nothing this old
             # reaches here. It stays for a caller that assembles `sent` itself.
             age = _age_hours(sent[sid], now)
-            if age is not None and age >= stale_hours():
+            if age is not None and age >= stale_hours(cfg):
                 # DROP it. #756 degraded this to `escalate` to stop a nudge landing in work that
                 # finished last week — the verb reasoning was right and the notification
                 # consequence was not. `notify: escalations` raises an alert only for
@@ -733,7 +748,7 @@ def auto_choose_context(session_id: str, option: int, seen_menu: object) -> dict
         return None
     if not mission_id:
         return None
-    phys = engines.physical_key(session_id)
+    phys = mission_fence.physical_of(session_id)
     try:
         screen = scrollback.live_tail_text(phys, PROMPT_SCREEN_CHARS)
     except Exception:  # noqa: BLE001
@@ -868,7 +883,7 @@ async def run_pass(
     model call and again after it. Both calls happen here on the event loop, never in a worker.
     """
     review._require_config()  # fail fast before any FS work, like pulse_chat.ask
-    cfg = prefs.get_orchestrator()
+    cfg = prefs.get_session_assistance()
     now = time.time() if now is None else now
 
     busy = busy_keys() if busy_keys is not None else set()
@@ -891,25 +906,18 @@ async def run_pass(
     slice_ = (cards + cards)[start : start + DIGEST_MAX] if total > DIGEST_MAX else cards
     sent = {c["id"]: c for c in slice_}
     payload = await asyncio.to_thread(_build_digest, slice_, now)
-    # What each session's menu was IN THE MODEL'S INPUT — the only menu its option numbers mean
-    # (#1060 Phase 4). Captured before the call, never re-read after it.
-    seen_menus = {
-        str(e.get("id")): e["menu"]
-        for e in payload.get("sessions", [])
-        if isinstance(e, dict) and isinstance(e.get("menu"), dict)
-    }
     obj = await review.complete_json(
         [
             {"role": "system", "content": prompts.effective("orchestrator_pass")},
             {"role": "user", "content": json.dumps(payload)},
         ]
     )
-    assessment, actions = _validate_actions(obj, sent, now=now)
+    assessment, actions = _validate_actions(obj, sent, now=now, cfg=cfg)
 
     # The endpoint call is the long await in this function, and policy can change across it.
     # Re-read the config and re-derive eligibility BEFORE recording anything: an operator who
     # withdrew agency mid-call must not find an `approved` action waiting for them afterwards.
-    cfg = prefs.get_orchestrator()
+    cfg = prefs.get_session_assistance()
     # …and with a FRESH busy snapshot (#969): the model call takes seconds to minutes, and a
     # session that started working inside it must not come back with a proposal.
     busy = busy_keys() if busy_keys is not None else set()
@@ -933,18 +941,7 @@ async def run_pass(
     recorded: list[dict] = []
     for action in actions:
         card = sent[action["session_id"]]
-        # An autonomous `choose` is decided on facts the SERVER read (#1060 Phase 4), never on
-        # anything the model returned: the context is computed here and passed beside the action,
-        # so no field of a model reply can claim it.
-        auto = None
-        if action["verb"] == "choose" and cfg.get("enabled") and cfg.get("autonomy") == "yolo":
-            auto = await asyncio.to_thread(
-                auto_choose_context,
-                action["session_id"],
-                int(action["option"]),
-                seen_menus.get(action["session_id"]),
-            )
-        state, esc_reason = _decide(action, cfg, auto_choose=auto is not None)
+        state, esc_reason = _decide(action, cfg)
         rec: dict = {
             "id": uuid.uuid4().hex,
             "state": state,
@@ -969,35 +966,20 @@ async def run_pass(
         # `_decide` is the only writer of this field on the record. The spread above can carry a
         # `degraded` mark `_validate_actions` left on the action, so clear it first and write back
         # only what was decided — otherwise the record could disagree with its own state.
+        rec["authority"] = card["automation_authority"]
         rec.pop("escalation_reason", None)
         if esc_reason:
             rec["escalation_reason"] = esc_reason
         # Only a verb that will actually be delivered needs a precondition to verify later.
         if action["verb"] in DELIVERING_VERBS:
             rec["precondition"] = await asyncio.to_thread(
-                precondition_for, engines.physical_key(action["session_id"])
+                precondition_for, rec["authority"]["physical_key"]
             )
-        if auto is not None and state == "approved":
-            # The grant's facts ride on the record, so the write fence re-asks them: the mission
-            # (its membership AND its opt-in), the menu and the label the digit means, and the
-            # fingerprint of the very frame that was parsed.
-            rec.update(
-                auto_choose=True,
-                mission_id=auto["mission_id"],
-                label=auto["label"],
-                menu=auto["menu"],
-                precondition=auto["precondition"],
-            )
-            # Digit only where the engine's manifest proves the digit submits — the same fact the
-            # operator's tap reads (`menu_answer.digit_submits`), so the two paths cannot disagree.
-            term = engines.terminal_of(screen_menus.engine_of(action["session_id"]))
-            if term is not None and term.menu_digit_submits:
-                rec["submit"] = "digit"
         elif action["verb"] == "escalate":
             # …and an escalation says what the screen showed (#1060), so the card can tell a
             # session parked at a menu from one that simply stopped.
             rec["observed_prompt"] = await asyncio.to_thread(
-                observed_prompt_for, engines.physical_key(action["session_id"])
+                observed_prompt_for, rec["authority"]["physical_key"]
             )
         recorded.append(rec)
 
@@ -1079,16 +1061,19 @@ def _persist(records: list[dict], *, gate=None) -> list[dict]:
     # abandoned or is being archived has withdrawn its sessions from automation, and the pass
     # reasons about sessions rather than missions — so without this it can mint an action for a
     # session whose mission was torn down moments ago, and under `yolo` deliver it.
-    kept, dropped = ledger.append_batch_for_free_sessions(
-        records, gate=gate, barred=_barred_sessions
-    )
+    with session_input.mutation_fence():
+        kept, dropped = ledger.append_batch_for_free_sessions(
+            records,
+            gate=gate,
+            barred=_barred_sessions,
+            record_guard=lambda rec: automation.check(rec)[0],
+        )
     if dropped:
         log.info(
             "orchestrator: dropped %d action(s) whose session already had a live one", len(dropped)
         )
     ledger.compact_if_needed()
 
-    notify = str(prefs.get_orchestrator().get("notify") or "escalations")
     # WHICH SESSIONS THIS PASS ANNOUNCES (#1057, #1086 Phase 4): those a mission holds. A session no
     # mission holds is announced by ONE producer, the needs-you episode sync (`needs_you_notify`),
     # which raises one withdrawable notification per episode and retracts it when the session no
@@ -1097,6 +1082,9 @@ def _persist(records: list[dict], *, gate=None) -> list[dict]:
     # even under `notify: all`. Read once per pass, and only when there is something to announce.
     surfaces = notifications.mission_surfaces() if kept else None
     for rec in kept:
+        notify = str(
+            prefs.get_automation_policy(automation.scope_of(rec)).get("notify") or "escalations"
+        )
         # `escalated` IS the "I'm not sure, you look" state (see _decide). `all` also covers
         # actions taken autonomously, so a yolo operator still gets a record of what was done.
         # `ESCALATION_STATES`, never `== "escalated"` (#877). A low-confidence row that missed
@@ -1151,7 +1139,9 @@ def evidence_for(session_id: str, kind: str) -> dict:
     if kind == "none":
         return {"kind": "none", "text": "", "available": False}
     if kind == "screen":
-        text = scrollback.live_tail_text(engines.physical_key(session_id), EVIDENCE_SCREEN_CHARS)
+        text = scrollback.live_tail_text(
+            mission_fence.physical_of(session_id), EVIDENCE_SCREEN_CHARS
+        )
     elif kind == "recap":
         # Resolve first: for a reconciled opencode/codex session the sidecar still lives under
         # the PLACEHOLDER physical key, so a direct get() reports a real recap as unavailable.

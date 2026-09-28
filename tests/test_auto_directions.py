@@ -49,6 +49,7 @@ from agent_sessions import (
 from agent_sessions import mission_supervisor as sup
 from agent_sessions import orchestrator_ledger as ledger
 from agent_sessions.main import create_app
+from automation_helpers import current_action
 
 SESSION = "claude:11111111-1111-1111-1111-111111111111"
 KEY = "review"
@@ -101,12 +102,7 @@ def _add(mid, key=KEY, *, direction=None, probe="forge_review"):
 @contextlib.contextmanager
 def _live(monkeypatch, *, excluded=False, screen="› waiting"):
     """A real pty registered as the session's writer, so delivery writes to a kernel fd."""
-    monkeypatch.setattr(actuator.metadata, "resolve_key", lambda k: k)
-    monkeypatch.setattr(
-        actuator.metadata,
-        "get",
-        lambda *a, **k: metadata.SessionMeta(orchestrator_excluded=excluded),
-    )
+    metadata.patch(SESSION, orchestrator_excluded=excluded)
     monkeypatch.setattr(actuator.scrollback, "live_tail_text", lambda *a, **k: screen)
     master, slave = os.openpty()
     tty.setraw(slave)
@@ -484,15 +480,20 @@ async def test_how_a_draft_was_sent_is_derived_from_what_made_it_deliverable(env
     Today the only callers are the approve route (a tap) and `deliver_auto` (which passes an
     authority), so this pins the record correct against a caller that does not exist yet.
     """
-    # Minted while the mode is OFF, so it stays a proposal; the operator opts in afterwards.
-    prefs.set_orchestrator({"enabled": True, "autonomy": "yolo"})
+    # A current proposal under the opt-in. Hold only the automatic dispatch, so this test
+    # exercises direct delivery without changing (and thereby invalidating) its original grant.
+    _on(0.9)
+
+    async def held_auto(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(sup, "_maybe_auto_send", held_auto)
     mid = _mission()
     _add(mid)
     with _live(monkeypatch) as slave:
         res = await _propose(mid, confidence=0.95)
         assert "auto_sent" not in res, res
         aid = res["id"]
-        _on(0.9)
         # NEITHER the approve route NOR `deliver_auto`: no `authority` is passed at all.
         await actuator.deliver(aid, operator_approval=tap)
         typed = _typed(slave)
@@ -546,7 +547,7 @@ async def test_withdrawing_the_opt_in_after_the_guard_refuses_the_write(env, mon
             prefs.set_orchestrator({"auto_ai_directions": False})
         else:
             doc = json.loads(prefs_path.read_text())
-            doc["orchestrator"]["auto_ai_directions"] = False
+            doc["mission_orchestration"]["auto_ai_directions"] = False
             prefs_path.write_text(json.dumps(doc))
         return out
 
@@ -628,6 +629,7 @@ def _live_draft(mid, action_id, session, *, confidence=0.95, episode=1):
         "expires_at": time.time() + 600,
         "precondition": {},
     }
+    rec = current_action(rec)
     ledger.append(rec)
     return rec
 

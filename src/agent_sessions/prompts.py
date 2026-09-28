@@ -374,7 +374,8 @@ Answer with JSON only:
  "assessment": "on_track" | "blocked" | "needs_approval" | "stalled" | "likely_done",
  "nudge": {"objective_key": "<key from the checklist>", "why": "<one sentence>"} | null,
  "draft": {"objective_key": "<key from the checklist>", "text": "<what to tell the agent>", \
-"confidence": <0..1>} | null}
+"confidence": <0..1>} | null,
+ "choose": {"option": <integer>, "confidence": <0..1>, "reason": "<why this option>"} | null}
 
 Rules:
 
@@ -395,8 +396,12 @@ unread, from 0 to 1. Normally the operator reads a draft and decides whether to 
 have turned on automatic AI directions, a draft at or above their threshold is typed into the \
 session with nobody reading it first. Be conservative, and use a low confidence whenever you are \
 unsure.
-- Propose at most one of `nudge` and `draft`. If you are not sure what the agent should do, \
-propose neither.
+- A `choose` is allowed only when a SERVER-PARSED MENU is provided. The mission's operator \
+has opted in to automatic menu answers. Choose only a listed number whose meaning is justified \
+by the mission instruction, and report your confidence conservatively. Never answer permission \
+prompts. If the choice needs the operator's judgment, say `needs_approval` and leave choose null.
+- Propose at most one of `nudge`, `draft` and `choose`. If you are not sure what the agent should \
+do, propose none.
 - `needs_approval` means the agent is waiting on a decision only a person can make. It is not a \
 request for you to make that decision.
 - `likely_done` is a PROPOSAL that every gating objective looks satisfied. It never closes \
@@ -698,7 +703,8 @@ REGISTRY: tuple[Prompt, ...] = (
         contract='{"recap": str, "assessment": '
         '"on_track"|"blocked"|"needs_approval"|"stalled"|"likely_done", '
         '"nudge": {"objective_key": str, "why": str}|null, '
-        '"draft": {"objective_key": str, "text": str, "confidence": number}|null}',
+        '"draft": {"objective_key": str, "text": str, "confidence": number}|null, '
+        '"choose": {"option": int, "confidence": number, "reason": str}|null}',
         default=_MISSION_SUPERVISOR,
         max_chars=6000,
         block=BLOCK,

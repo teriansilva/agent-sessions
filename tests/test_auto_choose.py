@@ -31,6 +31,7 @@ from agent_sessions import (
     session_input,
 )
 from agent_sessions import orchestrator_ledger as ledger
+from automation_helpers import current_action
 
 SID = "claude:44444444-4444-4444-4444-444444444444"
 PHYS = engines.physical_key(SID)
@@ -113,6 +114,7 @@ def _approved_record(option: int = 2, confidence: float = 0.95) -> dict:
         "precondition": ctx["precondition"],
         "submit": "digit",
     }
+    rec = current_action(rec)
     ledger.append(rec)
     return rec
 
@@ -150,6 +152,7 @@ def test_a_v30_store_upgrades_to_the_column_off_for_existing_missions(world):
     mid = _running_mission(opt_in=False)
     db = os.environ["AGENT_SESSIONS_MISSIONS_DB"]
     con = sqlite3.connect(db)
+    con.execute("DROP TRIGGER IF EXISTS automation_owner_menu")
     con.execute("ALTER TABLE missions DROP COLUMN auto_choose")
     con.execute("PRAGMA user_version=30")
     con.commit()
@@ -241,7 +244,8 @@ async def test_turning_the_opt_in_off_withdraws_an_answer_already_approved(world
     mid = _running_mission()
     rec = _approved_record(2)
     missions.set_auto_choose(mid, False)
-    assert await actuator.deliver_auto(rec) is None
+    out = await actuator.deliver_auto(rec)
+    assert out is None or out["state"] == "stale"
     assert _typed(slave) == b""
 
 
@@ -262,7 +266,8 @@ async def test_leaving_yolo_withdraws_it(world):
     _running_mission()
     rec = _approved_record(2)
     prefs.set_orchestrator({"autonomy": "suggest"})
-    assert await actuator.deliver_auto(rec) is None
+    out = await actuator.deliver_auto(rec)
+    assert out is None or out["state"] == "stale"
     assert _typed(slave) == b""
 
 
@@ -286,7 +291,8 @@ async def test_a_record_claiming_the_grant_for_a_mission_that_never_opted_in_is_
     }
     ledger.append(rec)
     assert actuator.choose_auto_allowed(rec, prefs.get_orchestrator()) is False
-    assert await actuator.deliver_auto(rec) is None
+    out = await actuator.deliver_auto(rec)
+    assert out is None or out["state"] == "stale"
     assert _typed(slave) == b""
 
 
@@ -412,92 +418,33 @@ def test_a_menu_that_changed_after_the_model_saw_it_is_never_answered(world):
 
 
 @pytest.mark.anyio
-async def test_a_menu_that_changes_DURING_the_model_call_is_proposed_not_approved(
-    world, monkeypatch
-):
-    """Finding 1, through the real pass: the digest carries "2. Green", the screen changes while
-    the model is thinking, the model answers 2. The record must not be approved or typed."""
-    slave = world
-    _running_mission()
-    from agent_sessions import review
+@pytest.mark.parametrize("changed", [False, True])
+async def test_mission_reading_only_types_the_menu_the_model_saw(world, monkeypatch, changed):
+    # #1019 moves the approved grant out of the standalone pass into the existing mission call.
+    from agent_sessions import mission_choices, mission_supervisor, review
 
-    card = {
-        "id": SID,
-        "title": "pick a colour",
-        "engine": "claude",
-        "cwd": "/repo",
-        "project": {"id": "p", "name": "p"},
-        "last_activity": time.time(),
-    }
-    monkeypatch.setattr(review, "_require_config", lambda: {"base_url": "x", "api_key": "y"})
-    monkeypatch.setattr(orchestrator, "eligible_cards", lambda **_k: ([card], []))
-    monkeypatch.setattr(orchestrator, "_eligible_ids", lambda *a, **k: [card])
-
-    async def model(_messages, **_kw):
-        _paint(MENU.replace("2. Green", "2. Purple"))  # the screen moves under the call
-        return {
-            "assessment": "",
-            "actions": [
-                {
-                    "session_id": SID,
-                    "verb": "choose",
-                    "option": 2,
-                    "confidence": 0.97,
-                    "rationale": "Select Green",
-                }
-            ],
-        }
-
-    monkeypatch.setattr(review, "complete_json", model)
-    report = await orchestrator.run_pass(now=time.time())
-    [rec] = report["actions"]
-    assert rec["state"] != "approved", rec
-    assert not rec.get("auto_choose"), rec
-    assert await actuator.deliver_pass_actions(report["actions"]) == []
-    assert _typed(slave) == b""
-
-
-@pytest.mark.anyio
-async def test_the_real_pass_approves_and_types_when_the_menu_held(world, monkeypatch):
-    slave = world
     mid = _running_mission()
-    from agent_sessions import review
+    monkeypatch.setattr(review, "_require_config", lambda: {})
+    monkeypatch.setattr(review, "gather_input", lambda *a: ("agent menu", "input-1"))
 
-    card = {
-        "id": SID,
-        "title": "pick a colour",
-        "engine": "claude",
-        "cwd": "/repo",
-        "project": {"id": "p", "name": "p"},
-        "last_activity": time.time(),
-    }
-    monkeypatch.setattr(review, "_require_config", lambda: {"base_url": "x", "api_key": "y"})
-    monkeypatch.setattr(orchestrator, "eligible_cards", lambda **_k: ([card], []))
-    monkeypatch.setattr(orchestrator, "_eligible_ids", lambda *a, **k: [card])
-    monkeypatch.setattr(actuator, "DELIVERY_SPACING_S", 0)
-
-    async def model(_messages, **_kw):
-        return {
-            "assessment": "",
-            "actions": [
-                {
-                    "session_id": SID,
-                    "verb": "choose",
-                    "option": 2,
-                    "confidence": 0.97,
-                    "rationale": "Green",
-                }
-            ],
-        }
+    async def model(messages, **kwargs):
+        assert '"label": "Green"' in messages[-1]["content"]
+        if changed:
+            _paint(MENU.replace("2. Green", "2. Purple"))
+        return {"choose": {"option": 2, "confidence": 0.97, "reason": "Green"}}
 
     monkeypatch.setattr(review, "complete_json", model)
-    report = await orchestrator.run_pass(now=time.time())
-    [rec] = report["actions"]
-    assert rec["state"] == "approved" and rec["auto_choose"] is True and rec["mission_id"] == mid
-    assert rec["menu"] == _seen() and rec["label"] == "Green"
-    out = await actuator.deliver_pass_actions(report["actions"])
-    assert [r["state"] for r in out] == ["delivered"]
-    assert _typed(slave) == b"2"
+    reading = await mission_supervisor.consider(mid, SID)
+    out = await mission_choices.propose(mid, SID, reading)
+    if changed:
+        assert out is None
+        assert ledger.latest_by_id() == {}
+        assert _typed(world) == b""
+    else:
+        assert out["state"] == "delivered" and out["auto_choose"] is True
+        assert out["mission_id"] == mid and out["authority"]["scope"] == "mission"
+        assert out["menu"] == _seen() and out["label"] == "Green"
+        assert _typed(world) == b"2"
 
 
 @pytest.mark.anyio
@@ -538,10 +485,10 @@ def test_turning_it_off_commits_inside_the_write_fence(world, monkeypatch):
     entered: list = []
     real = si.policy_transaction
 
-    def spy():
-        entered.append(True)
-        return real()
+    def spy(scope=None):
+        entered.append(scope)
+        return real(scope)
 
     monkeypatch.setattr(si, "policy_transaction", spy)
     missions.set_auto_choose(mid, False)
-    assert entered == [True]
+    assert entered == ["mission"]

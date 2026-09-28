@@ -229,3 +229,28 @@ test("a snapshot that lands WHILE the save is in flight does not undo the click"
   rerender(view(true));
   expect(box()).toBeChecked();
 });
+
+
+test.each([true, false])("mission grant wins over a divergent legacy projection: %s", async (enabled) => {
+  const cfg = {
+    orchestrator: { enabled: !enabled, autonomy: "yolo" },
+    automation: {
+      version: 1,
+      legacy_compatible: false,
+      session: { enabled: !enabled, autonomy: "yolo" },
+      mission: { enabled, autonomy: "yolo" },
+    },
+  } as unknown as AppConfig;
+  render(<ConfigCtx.Provider value={cfg}>
+    <MissionAutoChoose mission={{ id: "m", auto_choose: false } as Mission} onChanged={vi.fn()} />
+  </ConfigCtx.Provider>);
+  const box = screen.getByTestId("mission-auto-choose-toggle");
+  if (enabled) {
+    expect(box).toBeEnabled();
+    await userEvent.click(box);
+    await waitFor(() => expect(api.setMissionAutoChoose).toHaveBeenCalledWith("m", true));
+  } else {
+    expect(box).toBeDisabled();
+    expect(api.setMissionAutoChoose).not.toHaveBeenCalled();
+  }
+});

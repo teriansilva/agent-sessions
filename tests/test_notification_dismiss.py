@@ -11,6 +11,7 @@ import json
 import pytest
 
 from agent_sessions import notifications, orchestrator, prefs
+from automation_helpers import current_action
 
 # Every decision here has a surface: these tests pin other axes of the bell (#1057).
 pytestmark = pytest.mark.usefixtures("every_session_held")
@@ -185,6 +186,7 @@ def test_a_suppressed_alert_does_not_re_send_the_push(monkeypatch, tmp_path):
         # the operator, so it stands still between passes.
         "last_activity": IDLE,
     }
+    rec = current_action(rec)
     orchestrator._persist([rec])
     orchestrator._persist([{**rec, "id": "act-2"}])  # same situation, next pass
 

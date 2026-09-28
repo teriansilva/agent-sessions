@@ -129,12 +129,11 @@ _tokens = count(1)
 # wrong terminal.
 _epochs: dict[str, int] = {}
 
-# Policy is the third domain and it lives in a FILE, so it cannot be read inside the fence:
-# `prefs.set_orchestrator` holds the prefs flock and would need `_lock` to announce itself,
-# while a fence that read prefs would hold `_lock` and want the prefs flock. That is a
-# lock-order inversion and it deadlocks. Policy therefore announces itself as a plain
-# in-memory counter — the fence compares an integer with no I/O at all.
+# Policy is the third domain. Local counters cheaply notice a queued write's own policy edits;
+# the selected durable fingerprint catches sibling-process changes at byte one. Writers take
+# this lock before the authorization fence and preferences flock, never in reverse order.
 _policy_epoch: int = 0
+_policy_epochs: dict[str, int] = {}
 
 
 # The FOURTH domain: the screen itself. `check_precondition` compares a screen fingerprint, but
@@ -237,8 +236,11 @@ def mutation_fence():
 
 
 @contextlib.contextmanager
-def policy_transaction():
-    """Hold the write fence across a policy change, bumping the epoch on the way out.
+def policy_transaction(scope: str | None = None):
+    """Hold the write fence across a policy change, bumping its scope on the way out.
+
+    Session and mission policy edits invalidate only their own queued writes. ``None`` is the
+    shared domain, used by the legacy bridge when it changes both policies together.
 
     A bump AFTER persisting is not enough: between the two, the stored policy has already
     changed while the epoch still reads old, so a send in that gap passes the compare and
@@ -254,13 +256,16 @@ def policy_transaction():
     # instance flipping the orchestrator off must be ordered against a writer here, and the
     # process-local epoch cannot see it.
     with _lock, _authority_fence():
-        try:
-            yield
-        finally:
+        yield
+        # Rejected saves changed no grant. If a persistence failure occurred after replacement,
+        # the durable fingerprint still detects that change before byte one.
+        if scope is None:
             _policy_epoch += 1
+        else:
+            _policy_epochs[scope] = _policy_epochs.get(scope, 0) + 1
 
 
-def current_policy_epoch() -> int:
+def current_policy_epoch(scope: str | None = None) -> int:
     """The WRITE fence's comparand: this interpreter's own counter.
 
     Process-local on purpose and unchanged. A sibling instance cannot write to a pty this process
@@ -268,10 +273,10 @@ def current_policy_epoch() -> int:
     HERE is the whole requirement, and the file fence orders it against the sibling's commit.
     """
     with _lock:
-        return _policy_epoch
+        return _policy_epoch if scope is None else _policy_epochs.get(scope, 0)
 
 
-def policy_fingerprint() -> str | None:
+def policy_fingerprint(scope: str = "mission") -> str | None:
     """The LAUNCH fence's comparand: a digest of the POLICY ITSELF, from its own file.
 
     Not a counter beside it (#904 review 3, finding 3). A second file is a second thing that can
@@ -289,8 +294,10 @@ def policy_fingerprint() -> str | None:
     from . import prefs
 
     try:
-        cfg = prefs.get_orchestrator()
+        cfg = prefs.get_automation_policy(scope)
     except Exception:  # noqa: BLE001
+        return None
+    if cfg.get("revision") == "invalid":
         return None
     try:
         blob = json.dumps(cfg, sort_keys=True, default=str)
@@ -330,8 +337,8 @@ def launch_fence(timeout: float | None = None):
 
     The same ordering `_write_all` gets, for the other thing an operator's "off" has to be able to
     stop: not a write into a session that already exists, but the CREATION of one. A dispatch
-    reads `prefs.get_orchestrator()`, then awaits a database claim and a process spawn — and a
-    check, however late it is moved, is still a check. `policy_transaction` holds exactly these
+    reads `prefs.get_mission_orchestration()`, then awaits a database claim and a process spawn.
+    A check, however late it is moved, is still a check. `policy_transaction` holds exactly these
     two locks across the persist and bumps the epoch on the way out, so a withdrawal either
     completes before this block starts (and the epoch inside it does not match what the caller
     captured) or waits until the launch has happened.
@@ -339,9 +346,8 @@ def launch_fence(timeout: float | None = None):
     The fingerprint is yielded rather than read by the caller because `policy_fingerprint` takes
     `_lock`, which is not re-entrant: asking for it inside the fence would deadlock.
 
-    The comparand covers the WHOLE orchestrator block, so an unrelated edit landing in this exact
-    window refuses a launch that would have been legal. Refusing a legal launch is the safe
-    direction and the operator can press the button again.
+    The comparand covers mission orchestration only. A session-assistance edit cannot cancel
+    a mission launch; a mission-policy edit requires a fresh launch decision.
 
     **`timeout` bounds the acquisition, and that is what makes the caller's worker bounded**
     (#904 review 8, finding 2). `_lock` is a plain `threading.Lock` with no deadline, so a
@@ -541,6 +547,7 @@ def reset() -> None:
         _writers.clear()
         _epochs.clear()
         _policy_epoch = 0
+        _policy_epochs.clear()
     with _screen_lock:
         _screen_epochs.clear()
 
@@ -572,6 +579,7 @@ def send_input(
     precondition: Callable[[], tuple[bool, str]] | None = None,
     final_guard: Callable[[], tuple[bool, str]] | None = None,
     policy_fingerprint: Callable[[], object] | None = None,
+    policy_scope: str | None = None,
     timeout_s: float = WRITE_TIMEOUT_S,
     require_quiet: bool = True,
 ) -> Outcome:
@@ -604,15 +612,22 @@ def send_input(
     # Policy is the third domain, and it lives in a file this module must not import. The
     # caller supplies a cheap fingerprint of whatever authority the write rests on; the fence
     # re-reads it before byte one and refuses on any change.
-    policy_fp = policy_fingerprint() if policy_fingerprint is not None else None
+    try:
+        policy_fp = policy_fingerprint() if policy_fingerprint is not None else None
+    except Exception:
+        return Outcome("stale", "authority could not be verified before waiting to write")
     policy_epoch = current_policy_epoch()
+    scoped_epoch = current_policy_epoch(policy_scope) if policy_scope else 0
 
     deadline = time.monotonic() + timeout_s
     if require_quiet and not _wait_quiet(key, min(deadline, time.monotonic() + QUIET_WAIT_MAX_S)):
         return Outcome("refused", "session never went quiet; not typing into a mid-render TUI")
 
     if precondition is not None:
-        ok, reason = precondition()
+        try:
+            ok, reason = precondition()
+        except Exception:
+            return Outcome("stale", "precondition could not be verified before the write")
         if not ok:
             return Outcome("stale", reason)
 
@@ -669,6 +684,8 @@ def send_input(
             epoch=epoch,
             policy_fp=policy_fp,
             policy_epoch=policy_epoch,
+            policy_scope=policy_scope,
+            scoped_epoch=scoped_epoch,
             policy_fingerprint=policy_fingerprint,
             final_guard=final_guard,
             tty_probe=tty_probe,
@@ -689,6 +706,8 @@ def _write_all(
     epoch: int = 0,
     policy_fp: object = None,
     policy_epoch: int = 0,
+    policy_scope: str | None = None,
+    scoped_epoch: int = 0,
     policy_fingerprint: Callable[[], object] | None = None,
     final_guard: Callable[[], tuple[bool, str]] | None = None,
     tty_probe: Callable[[], bool | None] | None = None,
@@ -739,7 +758,10 @@ def _write_all(
                     if key and screen_epoch % 2 == 1:
                         return Outcome("stale", "the screen was changing as this was checked")
                     if final_guard is not None:
-                        ok, why = final_guard()
+                        try:
+                            ok, why = final_guard()
+                        except Exception:
+                            return Outcome("stale", "authority could not be verified at the write")
                         if not ok:
                             return Outcome("stale", why)
 
@@ -796,7 +818,10 @@ def _write_all(
                             break
                         # Integer compare, no I/O: reading prefs here would invert the lock
                         # order against `set_orchestrator` and deadlock both.
-                        if _policy_epoch != policy_epoch:
+                        if _policy_epoch != policy_epoch or (
+                            policy_scope is not None
+                            and _policy_epochs.get(policy_scope, 0) != scoped_epoch
+                        ):
                             return Outcome("stale", "policy changed before the write")
                         # …and the caller's own authority, RE-EVALUATED here rather than trusted
                         # from before the waits. This is what the `policy_fingerprint` parameter

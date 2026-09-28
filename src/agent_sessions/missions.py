@@ -65,7 +65,7 @@ log = logging.getLogger(__name__)
 MISSION_ID_RE = re.compile(r"^msn_[0-9a-f]{32}$")
 
 #: Bumped whenever the schema changes; ``PRAGMA user_version`` carries it in the file.
-SCHEMA_VERSION = 31
+SCHEMA_VERSION = 32
 
 #: How many live SUB-AGENTS one mission may hold, beyond the session it is already running.
 #:
@@ -1269,6 +1269,54 @@ CREATE TABLE IF NOT EXISTS mission_dispatch_evidence (
 _SCHEMA += MISSION_DISPATCH_EVIDENCE_DDL
 
 
+# Ownership generations outlive mission history, like runtime bindings (#1019). Triggers keep
+# every release/cascade/adoption atomic with its revision; role/lease edits do not move it.
+AUTOMATION_GENERATIONS_DDL = (
+    "CREATE TABLE IF NOT EXISTS session_automation_generations ("
+    "session_key TEXT PRIMARY KEY, generation INTEGER NOT NULL CHECK(generation >= 0))",
+    "CREATE TRIGGER IF NOT EXISTS automation_owner_insert AFTER INSERT ON mission_sessions "
+    "WHEN NEW.removed_at IS NULL BEGIN "
+    "INSERT INTO session_automation_generations VALUES(NEW.session_key,1) "
+    "ON CONFLICT(session_key) DO UPDATE SET generation=generation+1; END",
+    "CREATE TRIGGER IF NOT EXISTS automation_owner_release AFTER UPDATE ON mission_sessions "
+    "WHEN OLD.removed_at IS NULL AND (NEW.removed_at IS NOT NULL "
+    "OR OLD.session_key!=NEW.session_key OR OLD.mission_id!=NEW.mission_id) BEGIN "
+    "INSERT INTO session_automation_generations VALUES(OLD.session_key,1) "
+    "ON CONFLICT(session_key) DO UPDATE SET generation=generation+1; END",
+    "CREATE TRIGGER IF NOT EXISTS automation_owner_adopt AFTER UPDATE ON mission_sessions "
+    "WHEN NEW.removed_at IS NULL AND (OLD.removed_at IS NOT NULL "
+    "OR OLD.session_key!=NEW.session_key OR OLD.mission_id!=NEW.mission_id) BEGIN "
+    "INSERT INTO session_automation_generations VALUES(NEW.session_key,1) "
+    "ON CONFLICT(session_key) DO UPDATE SET generation=generation+1; END",
+    "CREATE TRIGGER IF NOT EXISTS automation_owner_delete AFTER DELETE ON mission_sessions "
+    "WHEN OLD.removed_at IS NULL BEGIN "
+    "INSERT INTO session_automation_generations VALUES(OLD.session_key,1) "
+    "ON CONFLICT(session_key) DO UPDATE SET generation=generation+1; END",
+    # The opt-in is authority too. A withdrawal/re-enable must not revive an old menu answer,
+    # even after restart, and belongs to the same transaction as the mission preference.
+    "CREATE TRIGGER IF NOT EXISTS automation_owner_menu AFTER UPDATE OF auto_choose ON missions "
+    "WHEN OLD.auto_choose!=NEW.auto_choose BEGIN "
+    "INSERT INTO session_automation_generations SELECT session_key,1 FROM mission_sessions "
+    "WHERE mission_id=NEW.id AND removed_at IS NULL "
+    "ON CONFLICT(session_key) DO UPDATE SET generation=generation+1; END",
+)
+_SCHEMA += ";\n".join(AUTOMATION_GENERATIONS_DDL) + ";\n"
+
+
+def _migrate_31_to_32(con) -> None:
+    # Like the other ladder steps, tolerate a partial historical store. An absent roster
+    # still refuses ownership reads; it must never be interpreted as an empty roster.
+    if not _has_table(con, "mission_sessions"):
+        con.execute(AUTOMATION_GENERATIONS_DDL[0])
+        return
+    for statement in AUTOMATION_GENERATIONS_DDL:
+        con.execute(statement)
+    con.execute(
+        "INSERT OR IGNORE INTO session_automation_generations "
+        "SELECT DISTINCT session_key, 1 FROM mission_sessions"
+    )
+
+
 def _migrate(con) -> int:
     """Bring the file to :data:`SCHEMA_VERSION`. Explicit and tested, never implicit.
 
@@ -1350,6 +1398,8 @@ def _migrate(con) -> int:
             _migrate_29_to_30(con)
         if version < 31:
             _migrate_30_to_31(con)
+        if version < 32:
+            _migrate_31_to_32(con)
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return SCHEMA_VERSION
 
@@ -4111,6 +4161,81 @@ def session_mission(session_key: str, *, path: Path | None = None) -> str | None
         con.close()
 
 
+def automation_ownership(session_key: str, *, path: Path | None = None) -> dict:
+    """One canonical runtime, holding mission and durable generation; ambiguity raises."""
+    return automation_ownerships([session_key], path=path)[session_key]
+
+
+def automation_ownerships(session_keys: list[str], *, path: Path | None = None) -> dict[str, dict]:
+    """Resolve a candidate batch from one DB transaction and one checked sidecar read.
+
+    Durable #994 bindings win in both directions; aliases are a fallback. An unreadable sidecar
+    cannot bypass action opt-outs, even for a bound runtime. Batching avoids re-decoding the
+    entire metadata store once for every card in the fleet. Delivery still resolves afresh.
+    """
+    from . import metadata
+
+    _, aliases, _ = metadata.load_checked()
+    con = _ready(path)
+    try:
+        con.execute("BEGIN")
+        return {key: _automation_ownership_tx(con, key, aliases) for key in session_keys}
+    finally:
+        con.close()
+
+
+def _automation_ownership_tx(con, session_key: str, aliases: dict[str, str]) -> dict:
+    bindings = con.execute(
+        "SELECT logical_key, physical_key FROM session_runtime_bindings "
+        "WHERE logical_key=? OR physical_key=?",
+        (session_key, session_key),
+    ).fetchall()
+    if len(bindings) > 1:
+        raise MissionError("ambiguous runtime binding; automation refused", status=409)
+    if bindings:
+        logical, physical = str(bindings[0][0]), str(bindings[0][1])
+    else:
+        logical = aliases.get(session_key, session_key)
+        matches = [k for k, v in aliases.items() if v == logical]
+        if len(matches) > 1:
+            raise MissionError("ambiguous session aliases; automation refused", status=409)
+        physical = matches[0] if matches else logical
+        bound = con.execute(
+            "SELECT physical_key FROM session_runtime_bindings WHERE logical_key=?", (logical,)
+        ).fetchone()
+        if bound:
+            physical = str(bound[0])
+        reverse = con.execute(
+            "SELECT logical_key FROM session_runtime_bindings WHERE physical_key=?", (physical,)
+        ).fetchall()
+        if any(str(r[0]) != logical for r in reverse):
+            raise MissionError("conflicting runtime binding; automation refused", status=409)
+    reverse = con.execute(
+        "SELECT logical_key FROM session_runtime_bindings WHERE physical_key=?", (physical,)
+    ).fetchall()
+    if any(str(r[0]) != logical for r in reverse):
+        raise MissionError("ambiguous runtime binding; automation refused", status=409)
+    keys = (session_key, logical, physical)
+    holders = con.execute(
+        "SELECT mission_id, session_key FROM mission_sessions WHERE removed_at IS NULL "
+        "AND session_key IN (?,?,?)",
+        keys,
+    ).fetchall()
+    if len(holders) > 1:
+        raise MissionError("ambiguous session ownership; automation refused", status=409)
+    generations = con.execute(
+        "SELECT session_key, generation FROM session_automation_generations "
+        "WHERE session_key IN (?,?,?) ORDER BY session_key",
+        keys,
+    ).fetchall()
+    return {
+        "session_key": logical,
+        "physical_key": physical,
+        "mission_id": str(holders[0][0]) if holders else None,
+        "generation": [[str(r[0]), int(r[1])] for r in generations],
+    }
+
+
 #: Mission states in which mission control may answer a menu on its own (#1060 Phase 4). A mission
 #: being planned has launched nothing; one that is done, failed, abandoned or archiving has handed
 #: its sessions back.
@@ -4135,7 +4260,7 @@ def set_auto_choose(mission_id: str, on: object, *, path: Path | None = None) ->
     # past its checks.
     from . import session_input
 
-    with session_input.policy_transaction():
+    with session_input.policy_transaction("mission"):
         return _set_auto_choose(mission_id, on, path=path)
 
 

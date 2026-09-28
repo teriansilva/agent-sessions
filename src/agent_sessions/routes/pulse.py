@@ -79,7 +79,7 @@ def _suggested_text(action: dict) -> str:
             return handoff.sanitize_seed(str(action.get("answer") or ""))
         except handoff.HandoffError:
             return ""
-    return actuator.default_nudge_text(prefs.get_orchestrator())
+    return actuator.default_nudge_text(prefs.get_session_assistance())
 
 
 def _operator_edit(action_id: str, text: object) -> tuple[dict | None, tuple[int, str] | None]:
@@ -145,7 +145,7 @@ def _retire_decided(action_id: str) -> int:
 def _orchestrator_cfg() -> dict:
     """The orchestrator block for a projection, or `{}` when it cannot be read (never raises)."""
     try:
-        return prefs.get_orchestrator()
+        return prefs.get_session_assistance()
     except Exception:  # noqa: BLE001 — a projection must not take the read down
         return {}
 
@@ -164,7 +164,14 @@ def _operator_projection(a: dict, cfg: dict, titles: dict[str, dict]) -> dict:
 
     `titles` caches one objectives read per mission for the length of one producer call.
     """
+    from .. import automation
+
     out = {**a, **orchestrator_ledger.project_for_operator(a.get("state"))}
+    try:
+        cfg = prefs.get_automation_policy(automation.scope_of(a))
+    except automation.AuthorityChanged:
+        cfg = {"enabled": False, "autonomy": "off"}
+        out["can_approve"] = False
     # STORE-ONLY, NEVER THE CHECKOUT'S GIT: this runs per pending nudge on every poll of both
     # producers, so `render_status` uses delivery's check without target resolution (no `.git`
     # reads, no `git status`). A checkout HEAD the agent moved with its own git is not visible here;
