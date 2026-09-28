@@ -1490,6 +1490,16 @@ ORCH_AI_DIRECTION_CONF_LO = 0.90
 ORCH_AI_DIRECTION_CONF_HI = 1.00
 ORCH_AI_DIRECTION_CONF_DEFAULT = 0.90
 
+# AUTONOMOUS MENU ANSWERS (#1060 Phase 4) — the one reviewed widening of the `choose` verb, and it
+# is NOT a widening of `AUTO_VERBS_V1`: the global ceiling stays `{"continue"}`, so no tier, no
+# `allowed_verbs` patch and no hand-edited prefs file can make `choose` autonomous for a session.
+# The grant is narrower and lives beside the mission that asked for it: a per-mission opt-in
+# (`missions.auto_choose`), the yolo tier, the master switch, a server-parsed engine menu (never a
+# permission dialog — `screen_menus` refuses those), the chosen option's label bound at the write,
+# and a confidence at or above whichever is higher of the operator's `confidence_min` and this
+# floor. `actuator.choose_auto_allowed` is that grant in one expression.
+ORCH_AUTO_CHOOSE_CONF_LO = 0.90
+
 # THE SUPERVISOR'S JUDGMENT FLOOR (#1088). A `supervisor_judged` objective counts as met only when
 # an independent model call says so at or above this confidence. The operator decided the floor
 # and the default together ("high confidence"): 0.90, the same number as the one confidence floor

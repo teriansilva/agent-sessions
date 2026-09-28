@@ -160,6 +160,125 @@ def _is_draft(action: dict) -> bool:
     return action.get("verb") == prefs.DRAFT_DIRECTION_VERB
 
 
+def _is_auto_choose(action: dict) -> bool:
+    """A `choose` the PASS approved under a mission's opt-in (#1060 Phase 4). Only
+    `orchestrator.run_pass` writes these fields, from facts the server read; a model reply cannot
+    carry them (`_validate_actions` builds the action field by field)."""
+    return action.get("verb") == "choose" and action.get("auto_choose") is True
+
+
+def choose_auto_allowed(action: dict, cfg: dict) -> bool:
+    """May THIS `choose` be typed with nobody watching, under THIS policy? (#1060 Phase 4)
+
+    The whole grant in one expression, asked before the claim and again inside the write fence:
+
+    * the record is an autonomous choose minted by the pass, naming its mission, the option and the
+      label that option carried on the server-parsed menu;
+    * the master switch is on and the tier is `yolo`;
+    * the confidence is a real number in [0, 1] at or above the higher of the operator's
+      `confidence_min` and :data:`prefs.ORCH_AUTO_CHOOSE_CONF_LO` — a hand-edited block cannot
+      lower the bound below the approved one;
+    * the session is STILL held by that mission and the mission STILL opts in and is still running
+      (`missions.auto_choose_mission`, read now). Turning the opt-in off withdraws every answer in
+      flight.
+
+    It deliberately does NOT consult `allowed_verbs`: the global ceiling stays `{"continue"}`, and
+    this path is narrower than a ceiling entry would be. The screen half — that the live menu still
+    shows this label at this number — is asked by :func:`_auto_choose_screen_ok` at the write.
+    """
+    if not _is_auto_choose(action):
+        return False
+    if not cfg.get("enabled") or cfg.get("autonomy") != "yolo":
+        return False
+    opt = action.get("option")
+    if not isinstance(opt, int) or isinstance(opt, bool):
+        return False
+    if not (orchestrator.OPTION_MIN <= opt <= orchestrator.OPTION_MAX):
+        return False
+    label, mission_id = action.get("label"), action.get("mission_id")
+    if not isinstance(label, str) or not label or not isinstance(mission_id, str) or not mission_id:
+        return False
+    conf = action.get("confidence")
+    if not isinstance(conf, int | float) or isinstance(conf, bool) or not (0.0 <= conf <= 1.0):
+        return False
+    floor = cfg.get("confidence_min")
+    if not isinstance(floor, int | float) or isinstance(floor, bool):
+        floor = prefs.ORCH_AUTO_CHOOSE_CONF_LO
+    if float(conf) < max(float(floor), prefs.ORCH_AUTO_CHOOSE_CONF_LO):
+        return False
+    from . import missions
+
+    try:
+        return missions.auto_choose_mission(str(action.get("session_id") or "")) == mission_id
+    except Exception:  # noqa: BLE001 — an unreadable store withdraws the grant
+        return False
+
+
+def _auto_choose_screen_ok(action: dict) -> tuple[bool, str]:
+    """The live menu still offers this option with this label. Blocking (ring replay).
+
+    The label is the binding between what the model chose and what the digit means: a menu that
+    renumbered, or moved on to a different question with an option at the same number, refuses.
+    """
+    from . import screen_menus
+
+    sid = str(action.get("session_id") or "")
+    try:
+        screen = scrollback.live_tail_text(
+            engines.physical_key(sid), orchestrator.PROMPT_SCREEN_CHARS
+        )
+    except Exception:  # noqa: BLE001
+        return False, "the session's screen could not be read"
+    menu = screen_menus.parse(screen, screen_menus.engine_of(sid))
+    if menu is None:
+        return False, "the session is no longer at that menu"
+    # THE WHOLE MENU THE MODEL SAW (#1185 review, finding 1), not only the chosen line: a question
+    # that changed around an unchanged "2. Green" is a different decision.
+    if orchestrator._digest_menu(menu) != action.get("menu"):
+        return False, "the session's menu is no longer the one mission control answered"
+    now = next((o for o in menu["options"] if o.get("n") == action.get("option")), None)
+    if now is None or orchestrator._clamp(
+        now.get("label"), orchestrator.MENU_LABEL_MAX
+    ) != action.get("label"):
+        return False, "that option no longer reads the same on the session's menu"
+    return True, ""
+
+
+def _auto_choose_authority(rec: dict):
+    """`(check, fingerprint)` for an autonomous menu answer, or `(None, None)` (#1185 review 5374,
+    finding 2).
+
+    The opt-in is AUTHORITY, so it rides the in-fence fingerprint like membership does: the
+    guard's verdict is only as fresh as the moment it ran, and withdrawing the opt-in between the
+    guard and byte one must still refuse. `missions.set_auto_choose` also commits inside
+    `session_input.policy_transaction()`, so a same-process withdrawal is ordered against the write
+    by the fence's own lock; this term catches a sibling instance's withdrawal, which that lock
+    cannot see. Fails closed: an unreadable grant is no grant.
+    """
+    if not _is_auto_choose(rec):
+        return None, None
+    sid = str(rec.get("session_id") or "")
+    mission_id = str(rec.get("mission_id") or "")
+
+    def _state():
+        from . import missions
+
+        return missions.auto_choose_mission(sid)
+
+    def _check() -> tuple[bool, str]:
+        from . import missions
+
+        try:
+            granted = missions.auto_choose_mission(sid)
+        except Exception:
+            return False, "the mission store could not be read, so the opt-in is unverifiable"
+        if granted != mission_id:
+            return False, "the mission's autonomous menu answers were withdrawn before the write"
+        return True, ""
+
+    return _check, _state
+
+
 def draft_auto_allowed(action: dict, cfg: dict) -> bool:
     """May THIS AI-drafted direction be typed with nobody reading it, under THIS policy? (#983 P4)
 
@@ -355,7 +474,9 @@ def render(action: dict, cfg: dict) -> bytes:
         # proven to submit on the digit (#1060 Phase 3, `menu_answer.digit_submits`): the `\r`
         # would land after the answer, in the agent's next prompt. Gated on `origin` too, so a
         # model-built record can never opt into it.
-        if action.get("submit") == "digit" and action.get("origin") == "operator":
+        if action.get("submit") == "digit" and (
+            action.get("origin") == "operator" or _is_auto_choose(action)
+        ):
             return f"{opt}".encode()
         # A digit and a carriage return. No paste framing, no model text — a numbered prompt
         # wants a keypress, and the narrower the payload the smaller the blast radius.
@@ -1032,6 +1153,7 @@ async def deliver(
     mem_check, mem_state = _mission_membership_authority(rec)
     txt_check, txt_state = _render_authority(rec)
     dir_check, dir_state = _draft_direction_authority(rec, operator_approval)
+    ac_check, ac_state = _auto_choose_authority(rec)
 
     def _final_guard() -> tuple[bool, str]:
         """Evaluated UNDER the write lock, immediately before the first byte.
@@ -1084,6 +1206,10 @@ async def deliver(
         # …and, for an autonomous AI-drafted direction, that the operator has not meanwhile written
         # their OWN direction for this objective (#983 P4 review). The same fact rides the in-fence
         # fingerprint below, so a sibling instance committing one after this line still refuses.
+        if ac_check is not None:
+            ok, why = ac_check()
+            if not ok:
+                return False, why
         if dir_check is not None:
             ok, why = dir_check()
             if not ok:
@@ -1153,7 +1279,7 @@ async def deliver(
             # …and an autonomous draft's OPERATOR-DIRECTION eligibility (#983 P4 review). Read
             # from the shared store, the only thing a sibling instance and this one agree on:
             # its `set_direction` never moves this process's epoch, so nothing else sees it.
-            dir_state,
+            _compose_fingerprint(dir_state, ac_state) if dir_state is not None else ac_state,
         ),
     )
     state = {
@@ -1393,6 +1519,12 @@ async def deliver_auto(
     # P3 refusal: no tier, no confidence and no hand-edited prefs file can send model prose.
     if _is_draft(action) and not draft_auto_allowed(action, cfg):
         return None
+    # AN AUTONOMOUS MENU ANSWER IS ITS OWN GRANT (#1060 Phase 4), asked as one expression rather
+    # than left to the ceiling below — which it deliberately bypasses, because `choose` is not in
+    # `AUTO_VERBS_V1` and must not be put there.
+    auto_choose = _is_auto_choose(action)
+    if auto_choose and not choose_auto_allowed(action, cfg):
+        return None
     # `enabled` is the master switch and belongs in this gate too. Checking only the tier
     # meant a disabled orchestrator still delivered anything a pass had already approved —
     # switching it off has to stop writes, not just stop new proposals.
@@ -1400,7 +1532,7 @@ async def deliver_auto(
         return None
     if cfg["autonomy"] != "yolo":
         return None
-    if action.get("verb") not in set(cfg["allowed_verbs"]):
+    if not auto_choose and action.get("verb") not in set(cfg["allowed_verbs"]):
         return None
     if float(action.get("confidence") or 0) < float(cfg["confidence_min"]):
         return None
@@ -1417,7 +1549,16 @@ async def deliver_auto(
             return False, "autonomous AI-written directions were switched off before the write"
         if live.get("autonomy") != "yolo":
             return False, "autonomy left yolo before the write"
-        if action.get("verb") not in set(live["allowed_verbs"]):
+        if auto_choose:
+            if not choose_auto_allowed(action, live):
+                return (
+                    False,
+                    "the mission's autonomous menu answers were withdrawn before the write",
+                )
+            ok, why = _auto_choose_screen_ok(action)
+            if not ok:
+                return False, why
+        elif action.get("verb") not in set(live["allowed_verbs"]):
             return False, "the verb left the allowed set before the write"
         if float(action.get("confidence") or 0) < float(live["confidence_min"]):
             return False, "the confidence threshold was raised above this action before the write"
@@ -1431,6 +1572,35 @@ async def deliver_auto(
         authority=_auto_authority,
         extra_fingerprint=extra_fingerprint,
     )
+
+
+def _record_auto_choose(rec: dict) -> None:
+    """Say on the mission's thread that mission control answered a menu itself (#1060 Phase 4).
+
+    An autonomous answer is the one thing the operator did not see happen, so the mission that
+    opted in carries a row naming the session, the option and the label it meant. Best-effort: the
+    delivered ledger row is the durable record, and a missions-store hiccup must not undo a write
+    that already happened.
+    """
+    from . import missions
+
+    with contextlib.suppress(Exception):
+        missions.append_event(
+            str(rec.get("mission_id") or ""),
+            "action",
+            session_key=str(rec.get("session_id") or ""),
+            action_id=str(rec.get("id") or ""),
+            text=(
+                "mission control answered the menu itself: "
+                f"{rec.get('option')}. {rec.get('label')}"
+            ),
+            meta={
+                "auto_choose": True,
+                "option": rec.get("option"),
+                "label": rec.get("label"),
+                "confidence": rec.get("confidence"),
+            },
+        )
 
 
 async def deliver_pass_actions(records: list[dict], *, registry=None) -> list[dict]:
@@ -1458,6 +1628,8 @@ async def deliver_pass_actions(records: list[dict], *, registry=None) -> list[di
             if res is None:
                 continue  # live policy withdrew it; nothing was written
             out.append(res)
+            if _is_auto_choose(rec) and res.get("state") == "delivered":
+                await asyncio.to_thread(_record_auto_choose, rec)
         except NotDeliverable:
             continue  # already claimed, expired, or no longer deliverable — never fatal
         await asyncio.sleep(DELIVERY_SPACING_S)

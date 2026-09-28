@@ -19,6 +19,7 @@ import { MissionLanding } from "./MissionLanding";
 import { MissionDetails } from "./MissionDetails";
 import { MissionTitle } from "./MissionTitle";
 import { MissionSupervisorNotices } from "./MissionSupervisorBoard";
+import { MissionAutoChoose } from "./MissionAutoChoose";
 import { useMissionRailSlot } from "./railSlot";
 
 import { ApiError, api } from "../../lib/api";
@@ -790,7 +791,18 @@ function MissionBody({
           context={context}
           objectives={objectives}
           followThrough={
-            <MissionSupervisorNotices supervisor={d.mission?.supervisor} />
+            <>
+              {/* The mission's opt-in to answering menus itself (#1060 Phase 4): follow-through is
+                  where the operator decides what mission control may do on its own. */}
+              {d.mission ? (
+                <MissionAutoChoose
+                  key={d.mission.id}
+                  mission={d.mission}
+                  onChanged={() => d.reload()}
+                />
+              ) : null}
+              <MissionSupervisorNotices supervisor={d.mission?.supervisor} />
+            </>
           }
           timeline={timeline}
           revealObjectives={revealObjectives}

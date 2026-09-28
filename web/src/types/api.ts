@@ -2073,6 +2073,9 @@ export interface Mission {
    *  objectives whose target was filled in from the instruction. Zeros when nothing was unusual.
    *  Display facts for the launch confirmation, never an authority. */
   objectives_fit?: { dropped: number; parameterised: number };
+  /** The mission's opt-in to autonomous menu answers (#1060 Phase 4). Off unless the operator
+   *  turned it on for THIS mission; it acts only at the yolo tier. */
+  auto_choose?: boolean;
 }
 
 /** An unresolved turn: still running, or terminal-and-ambiguous. `done` never appears here —

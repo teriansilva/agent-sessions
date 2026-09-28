@@ -708,7 +708,65 @@ def _validate_actions(
     return assessment, out
 
 
-def _decide(action: dict, cfg: dict) -> tuple[str, str | None]:
+def auto_choose_context(session_id: str, option: int, seen_menu: object) -> dict | None:
+    """What a pass needs to APPROVE a `choose` on its own, read from ONE frame — or None. Blocking.
+
+    Asked only for a `choose` (#1060 Phase 4), and None unless every fact holds: the session is held
+    by a mission that opted in (`missions.auto_choose_mission`), the live screen is the engine's own
+    menu parsed server-side (`screen_menus.parse` — which refuses a permission dialog), the frame
+    classifies as a `choice`, and the option the model picked is on that menu. The returned
+    precondition is the fingerprint of THIS frame, so the menu whose label was bound is the screen
+    `deliver` requires, byte for byte, before the first byte goes out.
+
+    **The menu the MODEL SAW is the binding, not the one on screen now** (#1185 review 5374,
+    finding 1). The model answered the digest built before its call; the screen can change during
+    the call. `seen_menu` is that digest's menu for this session, and the live menu must equal it —
+    question and every option — or there is no autonomous answer: "2" chosen against "2. Green"
+    must never be delivered to a screen whose 2 is now "Purple". Without a seen menu (the digest
+    did not describe one) there is nothing the model's number can be bound to, so no context.
+    """
+    from . import missions
+
+    try:
+        mission_id = missions.auto_choose_mission(session_id)
+    except Exception:  # noqa: BLE001 — an unreadable store is "no grant", never a guess
+        return None
+    if not mission_id:
+        return None
+    phys = engines.physical_key(session_id)
+    try:
+        screen = scrollback.live_tail_text(phys, PROMPT_SCREEN_CHARS)
+    except Exception:  # noqa: BLE001
+        return None
+    # A belt: a menu `screen_menus.parse` accepts always classifies as `choice` (the classifier asks
+    # the parser first), so this cannot refuse what the parse below would accept — it keeps the
+    # precondition's recorded class honest if either ever changes.
+    if _prompt_class(screen) != "choice":
+        return None
+    menu = screen_menus.parse(screen, screen_menus.engine_of(session_id))
+    if menu is None or not isinstance(seen_menu, dict):
+        return None
+    if _digest_menu(menu) != seen_menu:
+        return None  # the menu changed while the model was answering the one it saw
+    picked = next((o for o in seen_menu["options"] if o.get("n") == option), None)
+    if picked is None:
+        return None
+    return {
+        "mission_id": mission_id,
+        "label": picked["label"],
+        # The digest form of the menu, as the model saw it: the write fence compares the live
+        # screen against THIS, whole, immediately before byte one.
+        "menu": seen_menu,
+        "precondition": {
+            "key": phys,
+            "screen_fingerprint": _screen_fingerprint(screen),
+            "prompt_class": "choice",
+            "observed_at": time.time(),
+        },
+    }
+
+
+def _decide(action: dict, cfg: dict, *, auto_choose: bool = False) -> tuple[str, str | None]:
     """The state a fresh proposal starts in, plus **why** it escalated when it did.
 
     * ``off`` — everything is a proposal; nothing is ever queued for delivery.
@@ -757,6 +815,15 @@ def _decide(action: dict, cfg: dict) -> tuple[str, str | None]:
         return "proposed", None
     if cfg["autonomy"] != "yolo":
         return "proposed", None
+    if verb == "choose" and auto_choose:
+        # THE ONE AUTONOMOUS `choose` (#1060 Phase 4): the session's mission opted in and the pass
+        # verified a server-parsed menu carrying this option (`auto_choose_context`). Its own floor
+        # applies whatever `confidence_min` says, and below it the operator is asked — with the
+        # action runnable, so "yes" is still one tap.
+        floor = max(float(cfg["confidence_min"]), prefs.ORCH_AUTO_CHOOSE_CONF_LO)
+        if action["confidence"] < floor:
+            return "escalated_low_confidence", "confidence"
+        return "approved", None
     if verb not in set(cfg["allowed_verbs"]):
         return "proposed", None  # outside the v1 ceiling → always a tap
     if action["confidence"] < float(cfg["confidence_min"]):
@@ -824,6 +891,13 @@ async def run_pass(
     slice_ = (cards + cards)[start : start + DIGEST_MAX] if total > DIGEST_MAX else cards
     sent = {c["id"]: c for c in slice_}
     payload = await asyncio.to_thread(_build_digest, slice_, now)
+    # What each session's menu was IN THE MODEL'S INPUT — the only menu its option numbers mean
+    # (#1060 Phase 4). Captured before the call, never re-read after it.
+    seen_menus = {
+        str(e.get("id")): e["menu"]
+        for e in payload.get("sessions", [])
+        if isinstance(e, dict) and isinstance(e.get("menu"), dict)
+    }
     obj = await review.complete_json(
         [
             {"role": "system", "content": prompts.effective("orchestrator_pass")},
@@ -859,7 +933,18 @@ async def run_pass(
     recorded: list[dict] = []
     for action in actions:
         card = sent[action["session_id"]]
-        state, esc_reason = _decide(action, cfg)
+        # An autonomous `choose` is decided on facts the SERVER read (#1060 Phase 4), never on
+        # anything the model returned: the context is computed here and passed beside the action,
+        # so no field of a model reply can claim it.
+        auto = None
+        if action["verb"] == "choose" and cfg.get("enabled") and cfg.get("autonomy") == "yolo":
+            auto = await asyncio.to_thread(
+                auto_choose_context,
+                action["session_id"],
+                int(action["option"]),
+                seen_menus.get(action["session_id"]),
+            )
+        state, esc_reason = _decide(action, cfg, auto_choose=auto is not None)
         rec: dict = {
             "id": uuid.uuid4().hex,
             "state": state,
@@ -892,6 +977,22 @@ async def run_pass(
             rec["precondition"] = await asyncio.to_thread(
                 precondition_for, engines.physical_key(action["session_id"])
             )
+        if auto is not None and state == "approved":
+            # The grant's facts ride on the record, so the write fence re-asks them: the mission
+            # (its membership AND its opt-in), the menu and the label the digit means, and the
+            # fingerprint of the very frame that was parsed.
+            rec.update(
+                auto_choose=True,
+                mission_id=auto["mission_id"],
+                label=auto["label"],
+                menu=auto["menu"],
+                precondition=auto["precondition"],
+            )
+            # Digit only where the engine's manifest proves the digit submits — the same fact the
+            # operator's tap reads (`menu_answer.digit_submits`), so the two paths cannot disagree.
+            term = engines.terminal_of(screen_menus.engine_of(action["session_id"]))
+            if term is not None and term.menu_digit_submits:
+                rec["submit"] = "digit"
         elif action["verb"] == "escalate":
             # …and an escalation says what the screen showed (#1060), so the card can tell a
             # session parked at a menu from one that simply stopped.

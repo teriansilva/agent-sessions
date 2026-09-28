@@ -1637,6 +1637,15 @@ export const api = {
     playbook_id?: string | null;
   }) => mutateJson<Mission>("POST", "/api/missions", body),
 
+  /** The mission's opt-in to autonomous menu answers (#1060 Phase 4). Operator-only on the server;
+   *  turning it off always succeeds and withdraws any answer still in flight. */
+  setMissionAutoChoose: (id: string, on: boolean) =>
+    mutateJson<{ id: string; auto_choose: boolean }>(
+      "PATCH",
+      `/api/missions/${encodeURIComponent(id)}/autonomy`,
+      { auto_choose: on },
+    ),
+
   /** Compare-and-set the lifecycle state. #889.
    *
    *  `from` is REQUIRED and is the state the client believes the mission is in — the server

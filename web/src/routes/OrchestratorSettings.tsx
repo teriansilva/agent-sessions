@@ -302,8 +302,10 @@ export function OrchestratorSettings() {
           Even on <strong>YOLO</strong>, mission control only ever types text{" "}
           <strong>you wrote</strong>: an objective&rsquo;s direction, filled with
           facts it checked itself, or your default nudge below. The AI decides
-          when, never what. Picking an option, answering a question or starting a
-          new session always waits for your approval.
+          when, never what. Picking an option waits for your approval too, unless
+          a mission lets mission control answer its sessions&rsquo; menus (set per
+          mission, in its Follow-through). Answering a question or starting a new
+          session always waits for your approval.
           {/* …UNLESS THE OPERATOR TURNED ON THE ONE EXCEPTION (#983 P4). With the toggle off this
               paragraph is exactly P3's, and it is true; with it on, the sentence above would be a
               flat untruth, so the exception is stated here rather than only next to the toggle. */}

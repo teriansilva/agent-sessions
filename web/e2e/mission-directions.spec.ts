@@ -334,7 +334,7 @@ test("D6: the YOLO copy says only text you wrote is typed, and the nudge field i
   await missionControlSettings(page);
   const copy = page.getByTestId("orchestrator-yolo-copy");
   await expect(copy).toHaveText(
-    "Even on YOLO, mission control only ever types text you wrote: an objective’s direction, filled with facts it checked itself, or your default nudge below. The AI decides when, never what. Picking an option, answering a question or starting a new session always waits for your approval.",
+    "Even on YOLO, mission control only ever types text you wrote: an objective’s direction, filled with facts it checked itself, or your default nudge below. The AI decides when, never what. Picking an option waits for your approval too, unless a mission lets mission control answer its sessions’ menus (set per mission, in its Follow-through). Answering a question or starting a new session always waits for your approval.",
   );
   await expect(copy).not.toContainText(/AI-written|AI-drafted/);
   const nudge = page.getByLabel("Default nudge · sent when an objective has no direction");

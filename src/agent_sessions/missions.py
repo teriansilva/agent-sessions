@@ -65,7 +65,7 @@ log = logging.getLogger(__name__)
 MISSION_ID_RE = re.compile(r"^msn_[0-9a-f]{32}$")
 
 #: Bumped whenever the schema changes; ``PRAGMA user_version`` carries it in the file.
-SCHEMA_VERSION = 30
+SCHEMA_VERSION = 31
 
 #: How many live SUB-AGENTS one mission may hold, beyond the session it is already running.
 #:
@@ -731,6 +731,11 @@ CREATE TABLE IF NOT EXISTS missions (
   -- Why the latest attempt is `failed` or `skipped`, for the plan card. The timeline is a capped
   -- feed, so the reason lives on the row as well as in an event.
   plan_detail     TEXT,
+  -- PER-MISSION OPT-IN to autonomous menu answers (#1060 Phase 4). 0 = every menu the mission's
+  -- sessions stop at waits for the operator's tap; 1 = mission control may answer one itself,
+  -- under the narrow grant `actuator.choose_auto_allowed` spells out. Off by default, and only the
+  -- operator's own route sets it.
+  auto_choose     INTEGER NOT NULL DEFAULT 0,
   -- A draft may exist before its project is resolved (that is the whole point of asking), but
   -- nothing may LAUNCH without a server-resolved cwd. Enforced here, not in a comment.
   CHECK (state IN ('draft','planned','abandoned') OR cwd IS NOT NULL)
@@ -1343,6 +1348,8 @@ def _migrate(con) -> int:
             _migrate_28_to_29(con)
         if version < 30:
             _migrate_29_to_30(con)
+        if version < 31:
+            _migrate_30_to_31(con)
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return SCHEMA_VERSION
 
@@ -1734,6 +1741,19 @@ def _migrate_29_to_30(con) -> None:
         con.execute("ALTER TABLE mission_objectives ADD COLUMN judge_rejected_fp TEXT")
     for old, new in PROBE_ALIASES.items():
         con.execute("UPDATE mission_objectives SET probe=? WHERE probe=?", (new, old))
+
+
+def _migrate_30_to_31(con) -> None:
+    """v31 adds `missions.auto_choose`, the per-mission opt-in to autonomous menu answers (#1060).
+
+    Off for every existing mission: nothing that was waiting for a tap starts answering itself on
+    upgrade. Idempotent — the column is added only where it is missing.
+    """
+    if not _has_table(con, "missions"):
+        return
+    have = {r["name"] for r in con.execute("PRAGMA table_info(missions)").fetchall()}
+    if "auto_choose" not in have:
+        con.execute("ALTER TABLE missions ADD COLUMN auto_choose INTEGER NOT NULL DEFAULT 0")
 
 
 def _migrate_22_to_23(con) -> None:
@@ -2405,7 +2425,10 @@ def _loads(blob: object) -> Any:
 
 
 def _row_to_mission(row) -> dict:
-    return dict(row)
+    d = dict(row)
+    if "auto_choose" in d:
+        d["auto_choose"] = bool(d["auto_choose"])
+    return d
 
 
 def _objectives_fit(raw) -> dict:
@@ -4084,6 +4107,83 @@ def session_mission(session_key: str, *, path: Path | None = None) -> str | None
             (session_key,),
         ).fetchone()
         return None if row is None else str(row["mission_id"])
+    finally:
+        con.close()
+
+
+#: Mission states in which mission control may answer a menu on its own (#1060 Phase 4). A mission
+#: being planned has launched nothing; one that is done, failed, abandoned or archiving has handed
+#: its sessions back.
+AUTO_CHOOSE_STATES: frozenset[str] = frozenset({"running", "review"})
+# The reader binds exactly two placeholders for this set; widening it means widening that query.
+assert len(AUTO_CHOOSE_STATES) == 2
+
+
+def set_auto_choose(mission_id: str, on: object, *, path: Path | None = None) -> dict:
+    """Turn the per-mission autonomous-menu-answer opt-in on or off. Returns the mission row.
+
+    A real boolean only (422 otherwise — `isinstance(True, int)` is why it is checked on type). An
+    archiving or archived mission refuses to turn it ON (409); turning it OFF is always allowed,
+    because withdrawing a grant must never be the thing that fails.
+    """
+    validate_id(mission_id)
+    if not isinstance(on, bool):
+        raise MissionError("auto_choose must be true or false", status=422)
+    # COMMITTED INSIDE THE WRITE FENCE (#1185 review 5374, finding 2), exactly as a prefs policy
+    # change is: an autonomous answer either finishes before this lands, or waits and then finds
+    # the policy epoch moved and refuses. A withdrawal must never lose a race to a write already
+    # past its checks.
+    from . import session_input
+
+    with session_input.policy_transaction():
+        return _set_auto_choose(mission_id, on, path=path)
+
+
+def _set_auto_choose(mission_id: str, on: bool, *, path: Path | None = None) -> dict:
+    con = _ready(path)
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        row = con.execute(
+            "SELECT id, archived_at, archiving_at FROM missions WHERE id=?", (mission_id,)
+        ).fetchone()
+        if row is None:
+            con.execute("ROLLBACK")
+            raise MissionNotFound(mission_id)
+        if on and (row["archived_at"] is not None or row["archiving_at"] is not None):
+            con.execute("ROLLBACK")
+            raise MissionError("an archived mission cannot answer menus on its own", status=409)
+        con.execute(
+            "UPDATE missions SET auto_choose=?, updated_at=? WHERE id=?",
+            (1 if on else 0, time.time(), mission_id),
+        )
+        con.execute("COMMIT")
+    except BaseException:
+        with contextlib.suppress(sqlite3.Error):
+            con.execute("ROLLBACK")
+        raise
+    finally:
+        con.close()
+    return get_mission(mission_id, events_limit=1, path=path) or {}
+
+
+def auto_choose_mission(session_key: str, *, path: Path | None = None) -> str | None:
+    """The mission that holds this session AND has opted in to autonomous menu answers, or None.
+
+    One row, read at the moment it is asked — the pass asks it before minting an approval and the
+    write fence asks it again immediately before byte one, so an operator who turns the opt-in off,
+    or a mission that releases the session or leaves `AUTO_CHOOSE_STATES`, withdraws the grant for
+    any answer still in flight.
+    """
+    con = _ready(path)
+    try:
+        row = con.execute(
+            "SELECT m.id FROM mission_sessions s JOIN missions m ON m.id = s.mission_id "
+            "WHERE s.session_key=? AND s.removed_at IS NULL AND m.auto_choose=1 "
+            "AND m.archived_at IS NULL AND m.archiving_at IS NULL "
+            "AND m.state IN (?, ?) LIMIT 1",
+            (session_key, *sorted(AUTO_CHOOSE_STATES)),
+        ).fetchone()
+        return None if row is None else str(row["id"])
     finally:
         con.close()
 

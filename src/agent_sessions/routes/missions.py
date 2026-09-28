@@ -797,6 +797,31 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             return JSONResponse({"detail": str(e)}, status_code=e.status)
         return JSONResponse(plan)
 
+    @app.patch("/api/missions/{mission_id}/autonomy")
+    async def mission_autonomy_route(
+        mission_id: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """The operator's per-mission opt-in to autonomous menu answers (#1060 Phase 4).
+
+        `{"auto_choose": true|false}` and nothing else. This is the ONLY writer of the opt-in, and
+        it is an operator route (logged in, CSRF, Origin) — no model output, pass or chat can reach
+        it. Turning it off always succeeds and withdraws any answer still in flight, because the
+        write fence re-reads it immediately before byte one.
+        """
+        try:
+            body = await _body(request)
+            if set(body) != {"auto_choose"}:
+                return _fail(missions.MissionError("send exactly {auto_choose: bool}", status=422))
+            row = await missions.run_admitted(
+                lambda: missions.set_auto_choose(mission_id, body.get("auto_choose"))
+            )
+        except missions.MissionError as e:
+            return _fail(e)
+        return JSONResponse({"id": mission_id, "auto_choose": bool(row.get("auto_choose"))})
+
     @app.patch("/api/missions/{mission_id}/plan")
     async def edit_plan_route(
         mission_id: str,

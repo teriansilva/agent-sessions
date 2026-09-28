@@ -2653,3 +2653,35 @@
   opacity: 0.5;
   cursor: default;
 }
+
+/* --- #1060 P4: the per-mission opt-in to autonomous menu answers -------------------------------- */
+.autoChoose {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 0 10px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.autoChooseRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  font-size: 0.84rem;
+  color: var(--text-1);
+  cursor: pointer;
+}
+.autoChooseRow input {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+}
+.autoChooseHint {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.74rem;
+  line-height: 1.45;
+  color: var(--text-3);
+}

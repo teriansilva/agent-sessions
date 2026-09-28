@@ -200,7 +200,8 @@ export function Orchestrator({
       {/* The tier alone never tells the whole story — say which verbs it can actually deliver. */}
       <p className={styles.ceiling}>
         <Check size={11} aria-hidden="true" /> Acts on its own: <b>{ceiling}</b>{" "}
-        only. Everything else always waits for you.
+        only, plus menu answers in missions that opt in. Everything else always
+        waits for you.
       </p>
 
       {!config.configured && (
