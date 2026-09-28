@@ -253,9 +253,12 @@ function Layout() {
    *  one screen, one opening sessions and one opening missions. */
   // `/pulse` is the pre-#948 path, still live as a redirect; counting it here keeps the sidebar
   // from flashing the session list for the one render before the redirect lands.
+  // …and Missions → Checklists (#1221): a Missions page carries the mission sidebar, not the
+  // session list. The checklists page mounts the console's rail on its own (`railOnly`).
   const missionRoute =
     location.pathname === MISSION_PATH ||
-    location.pathname === LEGACY_MISSION_PATH;
+    location.pathname === LEGACY_MISSION_PATH ||
+    location.pathname === CHECKLISTS_PATH;
   const railInSidebar = missionRoute;
   /** SETTINGS RENDERS WITHOUT THE SESSION SIDEBAR (#1129), at every width. Settings is a
    *  utility surface, not a work section (#1058) — the shell carries no session list there in

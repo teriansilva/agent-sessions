@@ -27,7 +27,10 @@ import {
 
 export const T = 1_700_000_000;
 export const PLACEHOLDERS = JSON.parse(
-  readFileSync(resolve(process.cwd(), "../tests/fixtures/direction_placeholders.json"), "utf8"),
+  readFileSync(
+    resolve(process.cwd(), "../tests/fixtures/direction_placeholders.json"),
+    "utf8",
+  ),
 );
 
 // --- what the server would say ---------------------------------------------------------------------
@@ -108,7 +111,7 @@ const PROBES = {
   placeholders: PLACEHOLDERS,
 };
 
-const CONFIG = {
+export const CONFIG = {
   csrf: "x",
   new_session_engines: ["claude"],
   terminal_backend: "ws",
@@ -124,8 +127,10 @@ const CONFIG = {
 
 /** A stand-in for `POST /api/mission-directions/preview`. */
 function previewAnswer(direction: string) {
-  if (direction.includes("{nope}")) return { status: 422, json: { detail: UNKNOWN } };
-  if (!direction.trim()) return { status: 200, json: { text: null, facts: [] } };
+  if (direction.includes("{nope}"))
+    return { status: 422, json: { detail: UNKNOWN } };
+  if (!direction.trim())
+    return { status: 200, json: { text: null, facts: [] } };
   return {
     status: 200,
     json: {
@@ -139,25 +144,49 @@ function previewAnswer(direction: string) {
 export async function commonMocks(page: Page) {
   const previews: { direction: string; probe: string }[] = [];
   await page.route("**/api/config", (r) => r.fulfill({ json: CONFIG }));
-  await page.route("**/api/version", (r) => r.fulfill({ json: { version: "test" } }));
-  await page.route(/\/api\/folders(\?.*)?$/, (r) => r.fulfill({ json: { folders: [] } }));
-  await page.route("**/api/engines", (r) => r.fulfill({ json: { engines: [] } }));
-  await page.route("**/api/system", (r) =>
-    r.fulfill({ json: { auto_update: true, current: "test", channel: "stable" } }),
+  await page.route("**/api/version", (r) =>
+    r.fulfill({ json: { version: "test" } }),
   );
-  await page.route("**/api/projects**", (r) => r.fulfill({ json: { projects: [] } }));
-  await page.route("**/api/ai-review/models**", (r) => r.fulfill({ json: { models: [] } }));
-  await page.route("**/api/prompts**", (r) => r.fulfill({ json: { prompts: [] } }));
+  await page.route(/\/api\/folders(\?.*)?$/, (r) =>
+    r.fulfill({ json: { folders: [] } }),
+  );
+  await page.route("**/api/engines", (r) =>
+    r.fulfill({ json: { engines: [] } }),
+  );
+  await page.route("**/api/system", (r) =>
+    r.fulfill({
+      json: { auto_update: true, current: "test", channel: "stable" },
+    }),
+  );
+  await page.route("**/api/projects**", (r) =>
+    r.fulfill({ json: { projects: [] } }),
+  );
+  await page.route("**/api/ai-review/models**", (r) =>
+    r.fulfill({ json: { models: [] } }),
+  );
+  await page.route("**/api/prompts**", (r) =>
+    r.fulfill({ json: { prompts: [] } }),
+  );
   await page.route("**/api/sessions**", (r) =>
     r.fulfill({
-      json: { sessions: [], next_offset: null, total: 0, facets: { projects: [], engines: [] } },
+      json: {
+        sessions: [],
+        next_offset: null,
+        total: 0,
+        facets: { projects: [], engines: [] },
+      },
     }),
   );
   await page.route("**/api/pulse/notifications", (r) =>
-    r.fulfill({ json: { notifications: [], unread: 0, uncertain: 0, settled: [] } }),
+    r.fulfill({
+      json: { notifications: [], unread: 0, uncertain: 0, settled: [] },
+    }),
   );
   await page.route(`**${DIRECTION_PREVIEW_PATH}`, (r) => {
-    const body = r.request().postDataJSON() as { direction: string; probe: string };
+    const body = r.request().postDataJSON() as {
+      direction: string;
+      probe: string;
+    };
     previews.push(body);
     const a = previewAnswer(body.direction);
     return r.fulfill({ status: a.status, json: a.json });
@@ -168,34 +197,53 @@ export async function commonMocks(page: Page) {
 // --- the playbook editor ---------------------------------------------------------------------------
 
 /** Missions → Checklists, with a prefs route that records each save and refuses `{nope}`. */
-export async function playbookEditor(page: Page, opts: { refuse?: boolean } = {}) {
+export async function playbookEditor(
+  page: Page,
+  opts: { refuse?: boolean } = {},
+) {
   const common = await commonMocks(page);
   const saves: { mission_playbooks: typeof PLAYBOOKS }[] = [];
   await page.route("**/api/pulse/orchestrator", (r) =>
     r.fulfill({ status: 500, json: { detail: "off" } }),
   );
   await page.route("**/api/prefs", (r) => {
-    const body = r.request().postDataJSON() as { mission_playbooks: typeof PLAYBOOKS };
+    const body = r.request().postDataJSON() as {
+      mission_playbooks: typeof PLAYBOOKS;
+    };
     saves.push(body);
     const sent = JSON.stringify(body.mission_playbooks);
     if (opts.refuse || sent.includes("{nope}")) {
       return r.fulfill({ status: 422, json: { detail: SAVE_REFUSAL } });
     }
     return r.fulfill({
-      json: { mission_playbooks: { ...body.mission_playbooks, revision: PLAYBOOKS.revision + 1 } },
+      json: {
+        mission_playbooks: {
+          ...body.mission_playbooks,
+          revision: PLAYBOOKS.revision + 1,
+        },
+      },
     });
   });
   await page.goto(CHECKLISTS_PATH);
+  // The page opens on the LIST of checklists (#1221): open the first one, then its first step.
+  await page.getByTestId("playbook-card").first().click();
+  await page.getByTestId("objective-toggle").first().click();
   const field = page.getByTestId("objective-direction").first();
   await expect(field).toBeVisible();
-  return { ...common, saves, field, text: field.getByTestId("objective-direction-text") };
+  return {
+    ...common,
+    saves,
+    field,
+    text: field.getByTestId("objective-direction-text"),
+  };
 }
 
 // --- the mission console ---------------------------------------------------------------------------
 
 export const COPIED =
   "PR #{pr}'s checks are {checks} on {branch}. Open the failing check, fix the cause, push.";
-export const PLAYBOOK_NOW = "PR #{pr} checks are {checks}. Open the failing check first.";
+export const PLAYBOOK_NOW =
+  "PR #{pr} checks are {checks}. Open the failing check first.";
 export const OWN = "Ask a reviewer on PR #{pr}.";
 
 type ObjectiveRow = Record<string, unknown> & { key: string };
@@ -226,16 +274,31 @@ function objective(
 }
 
 const OBJECTIVES = () => [
-  objective("checks", 0, "Checks are green on the PR", "forge_checks", COPIED, "template"),
+  objective(
+    "checks",
+    0,
+    "Checks are green on the PR",
+    "forge_checks",
+    COPIED,
+    "template",
+  ),
   objective("pr", 1, "A PR is open for the branch", "forge_pr", null, null),
-  objective("review", 2, "A reviewer approved the PR", "forge_review", OWN, "operator"),
+  objective(
+    "review",
+    2,
+    "A reviewer approved the PR",
+    "forge_review",
+    OWN,
+    "operator",
+  ),
 ];
 
 /** The exact text a proposal persisted. A doubled space and a line break, so a page that collapsed
  *  whitespace would fail rather than pass by looking close enough. */
 export const TYPED =
   "PR #412's checks are failing on fix/upload-retry.\nOpen the failing check,  fix the cause, push.";
-export const WHY = "The last push broke the lint step and the agent moved on to the docs.";
+export const WHY =
+  "The last push broke the lint step and the agent moved on to the docs.";
 export const SESSION = "claude:aaa";
 
 export function nudgeAction(over: Record<string, unknown> = {}) {
@@ -270,16 +333,33 @@ export function nudgeAction(over: Record<string, unknown> = {}) {
         {
           name: "pr",
           value: 412,
-          target: { forge_target: "t", repo: "", branch: "fix/upload-retry", pr: 412, head: "4b7e0d9c1f" },
+          target: {
+            forge_target: "t",
+            repo: "",
+            branch: "fix/upload-retry",
+            pr: 412,
+            head: "4b7e0d9c1f",
+          },
           observed_at: T - 300,
         },
         {
           name: "checks",
           value: "failure",
-          target: { forge_target: "t", repo: "", branch: "fix/upload-retry", pr: 412, head: "4b7e0d9c1f" },
+          target: {
+            forge_target: "t",
+            repo: "",
+            branch: "fix/upload-retry",
+            pr: 412,
+            head: "4b7e0d9c1f",
+          },
           observed_at: T - 300,
         },
-        { name: "branch", value: "fix/upload-retry", target: { probe_args: "a1" }, observed_at: null },
+        {
+          name: "branch",
+          value: "fix/upload-retry",
+          target: { probe_args: "a1" },
+          observed_at: null,
+        },
       ],
     },
     render_status: { sendable: true, reason: "" },
@@ -291,7 +371,10 @@ export function nudgeAction(over: Record<string, unknown> = {}) {
 export const STALE_REASON =
   "the facts behind this nudge changed since it was proposed (its objective, target, head or a fact's value)";
 export const staleNudge = () =>
-  nudgeAction({ can_approve: false, render_status: { sendable: false, reason: STALE_REASON } });
+  nudgeAction({
+    can_approve: false,
+    render_status: { sendable: false, reason: STALE_REASON },
+  });
 
 export interface ConsoleServer {
   rows: ObjectiveRow[];
@@ -380,7 +463,9 @@ export async function missionConsole(
   );
   const state = opts.state ?? "running";
   await mockMissions(page, {
-    missions: missionList([missionRow({ session_keys: [SESSION], state, playbook_id: "ship" })]),
+    missions: missionList([
+      missionRow({ session_keys: [SESSION], state, playbook_id: "ship" }),
+    ]),
     mission: {
       ...MISSION,
       state,
@@ -396,7 +481,9 @@ export async function missionConsole(
   // Registered AFTER mockMissions, so it wins for the objectives URL (newest route first).
   await page.route("**/api/missions/*/objectives", async (r) => {
     if (r.request().method() === "PATCH") {
-      const body = r.request().postDataJSON() as { ops: Record<string, unknown>[] };
+      const body = r.request().postDataJSON() as {
+        ops: Record<string, unknown>[];
+      };
       server.patches.push(body);
       if (server.hold) await server.hold;
       if (server.refuse !== null) {
@@ -408,9 +495,15 @@ export async function missionConsole(
         const row = server.rows.find((o) => o.key === op.key);
         if (!row) continue;
         if (op.op === "set_direction")
-          Object.assign(row, { direction: op.direction, direction_source: "operator" });
+          Object.assign(row, {
+            direction: op.direction,
+            direction_source: "operator",
+          });
         if (op.op === "reset_direction")
-          Object.assign(row, { direction: PLAYBOOK_NOW, direction_source: "template" });
+          Object.assign(row, {
+            direction: PLAYBOOK_NOW,
+            direction_source: "template",
+          });
         if (op.op === "clear_direction")
           Object.assign(row, { direction: null, direction_source: null });
       }
@@ -418,8 +511,12 @@ export async function missionConsole(
     return r.fulfill({ json: { objectives: server.rows } });
   });
   await page.route(/\/api\/pulse\/actions\/[^/]+\/approve$/, (r) => {
-    server.approvals.push(/actions\/([^/]+)\/approve/.exec(r.request().url())![1]);
-    return r.fulfill({ json: { ...nudgeAction(), state: "delivered", delivered_text: TYPED } });
+    server.approvals.push(
+      /actions\/([^/]+)\/approve/.exec(r.request().url())![1],
+    );
+    return r.fulfill({
+      json: { ...nudgeAction(), state: "delivered", delivered_text: TYPED },
+    });
   });
   await page.route(/\/api\/pulse\/actions\/[^/]+\/reject$/, (r) => {
     server.rejects.push(/actions\/([^/]+)\/reject/.exec(r.request().url())![1]);
@@ -453,7 +550,12 @@ export async function openDirection(page: Page, index: number) {
 
 // --- the thread ------------------------------------------------------------------------------------
 
-function event(seq: number, kind: string, text: string, meta: Record<string, unknown>) {
+function event(
+  seq: number,
+  kind: string,
+  text: string,
+  meta: Record<string, unknown>,
+) {
   return {
     seq,
     mission_id: "msn_1",
@@ -476,13 +578,18 @@ export const THREAD = [
     "Checks are green on the PR: its direction could not be filled: {pr} is missing from this objective's latest observation",
     { held: "direction", objective_key: "checks", episode: 2 },
   ),
-  event(3, "action", "A nudge was prepared but not delivered: session is not live", {
-    source: "supervisor",
-    objective_key: "pr",
-    episode: 1,
-    held: true,
-    state: "failed",
-  }),
+  event(
+    3,
+    "action",
+    "A nudge was prepared but not delivered: session is not live",
+    {
+      source: "supervisor",
+      objective_key: "pr",
+      episode: 1,
+      held: true,
+      state: "failed",
+    },
+  ),
   event(2, "action", NUDGE_TEMPLATE, {
     source: "supervisor",
     objective_key: "pr",
@@ -533,7 +640,9 @@ export async function missionControlSettings(
     return r.fulfill({ json: { orchestrator: { ...orch } } });
   });
   await page.route("**/api/pulse/orchestrator", (r) =>
-    r.fulfill({ json: { config: orch, pending: [], feed: [], expired_now: 0, last: {} } }),
+    r.fulfill({
+      json: { config: orch, pending: [], feed: [], expired_now: 0, last: {} },
+    }),
   );
   await mockMissions(page);
   await page.goto(settingsPath("ai-mission-control"));

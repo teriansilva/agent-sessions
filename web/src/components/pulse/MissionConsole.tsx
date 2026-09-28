@@ -837,6 +837,7 @@ export function MissionConsole({
   configured,
   onActionResolved,
   onMembershipChanged,
+  railOnly,
 }: {
   /** Every card from the overview. A mission's decisions are read from here — the pending actions
    *  of the sessions it holds. */
@@ -848,6 +849,14 @@ export function MissionConsole({
   onMembershipChanged?: () => void;
   /** Whether an AI endpoint is configured. The Ask composer is disabled without one. */
   configured: boolean;
+  /** RENDER ONLY THE RAIL (#1221), for a Missions page that is not the console — Checklists.
+   *
+   *  The same list, filters and scope as the console, from the same code: the rail's fencing is
+   *  several review rounds of race handling, and a second list for a second page is exactly how
+   *  the two would drift. Nothing is selected here; picking a mission or "+ New mission" hands
+   *  the operator to the console through these callbacks instead. The rail renders only into
+   *  the shell's slot — with no slot there is no sidebar to fill, and the page has its own body. */
+  railOnly?: { onSelect: (id: string) => void; onNewMission: () => void };
 }) {
   /** THE RAIL'S ROWS AND ITS COUNT, as ONE value (#896 review 13, finding 1).
    *
@@ -1708,6 +1717,20 @@ export function MissionConsole({
     [onActionResolved],
   );
 
+  /** Rail-only mode: the choice belongs to the console, so it is handed over (#1221). The drawer
+   *  is dismissed first for the same reason `select` does it — see there. */
+  const pickElsewhere = useCallback(
+    (id: string) => {
+      dismissRail();
+      railOnly?.onSelect(id);
+    },
+    [dismissRail, railOnly],
+  );
+  const newElsewhere = useCallback(() => {
+    dismissRail();
+    railOnly?.onNewMission();
+  }, [dismissRail, railOnly]);
+
   const rail = (
     <MissionRail
       headEl={railSlotEl ? railSlot.headEl : null}
@@ -1724,8 +1747,8 @@ export function MissionConsole({
       projectNames={projectNames}
       loading={!listLoaded && !storeError}
       filtered={missionFiltered}
-      selectedId={shown}
-      onSelect={select}
+      selectedId={railOnly ? null : shown}
+      onSelect={railOnly ? pickElsewhere : select}
       storeError={storeError}
       total={total}
       hasMore={hasMore}
@@ -1735,7 +1758,7 @@ export function MissionConsole({
       onLoadMore={loadMoreMissions}
       archived={archived}
       onScope={setScope}
-      onNewMission={startNewMission}
+      onNewMission={railOnly ? newElsewhere : startNewMission}
     />
   );
 
@@ -1744,6 +1767,8 @@ export function MissionConsole({
     changeFilters({ q: "", project: "", state: "" });
     if (archived) setScope(false);
   }, [changeFilters, archived, setScope]);
+
+  if (railOnly) return railSlotEl ? createPortal(rail, railSlotEl) : null;
 
   return (
     <div className={styles.console} data-testid="mission-console">

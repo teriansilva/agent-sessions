@@ -107,10 +107,34 @@ test("every playbook control clears 44px on a phone and stays inside the viewpor
   const panel = page.getByTestId("mission-playbooks");
   await expect(panel).toBeVisible();
 
+  // THE LIST FIRST (#1221): the cards and the new-checklist controls are targets too.
+  await expect(page.getByTestId("playbook-card").first()).toBeVisible();
+  const listFound = await panel.evaluate((root) => {
+    const bad: string[] = [];
+    for (const el of Array.from(
+      root.querySelectorAll<HTMLElement>("button, select"),
+    )) {
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) continue;
+      if (r.height < 44)
+        bad.push(
+          `${el.dataset.testid ?? el.tagName} h=${Math.round(r.height)}`,
+        );
+      if (r.right > window.innerWidth + 1 || r.left < -1)
+        bad.push(
+          `${el.dataset.testid ?? el.tagName} x=${Math.round(r.left)}..${Math.round(r.right)}`,
+        );
+    }
+    return bad;
+  });
+  expect(listFound).toEqual([]);
+
   // A DRAFT ROW TOO, because its id input only exists once one is added — the hidden state is
-  // where a control gets added without anyone re-checking the floor.
+  // where a control gets added without anyone re-checking the floor. A new checklist opens with
+  // its first step expanded, so every step field is on screen.
   await page.getByTestId("playbook-add").click();
   await expect(page.getByTestId("playbook-id")).toBeVisible();
+  await expect(page.getByTestId("objective-title")).toBeVisible();
 
   const found = await panel.evaluate((root) => {
     const sel =
@@ -184,6 +208,8 @@ test("a REFUSED save shows the server's exact words and keeps the draft", async 
 
   // A value the server refuses: the field is typed `int`, and a half-typed one is sent as text
   // so the refusal names it rather than the editor quietly dropping it.
+  await page.getByTestId("playbook-card").first().click();
+  await page.getByTestId("objective-toggle").first().click();
   await page.getByTestId("objective-arg-expect_status").fill("2xx");
   await page.getByTestId("playbook-save").click();
   await expect.poll(() => sent).toBe(1);

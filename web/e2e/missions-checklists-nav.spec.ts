@@ -39,7 +39,7 @@ test("Missions has a Checklists entry, and it opens the checklist editor as a pa
   await menu.locator('a[data-subsection="checklists"]').click();
 
   await expect(page).toHaveURL(new RegExp(`${CHECKLISTS_PATH}$`));
-  await expect(page.getByRole("heading", { level: 1, name: "Mission checklists" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "Checklists" })).toBeVisible();
   await expect(page.getByTestId("mission-playbooks")).toBeVisible();
   // On a child's route the parent says "you are in here", not "you are exactly here".
   await expect(

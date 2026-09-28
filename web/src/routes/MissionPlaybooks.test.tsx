@@ -89,13 +89,36 @@ beforeEach(() => {
   vi.mocked(api.setPrefs).mockReset().mockResolvedValue({});
 });
 
-test("the stored playbooks are what the editor opens on", () => {
+// THE PAGE IS A LIST OF CHECKLISTS THAT OPENS INTO ONE (#1221), and one checklist's steps are
+// collapsed until expanded. These walk there the way the operator does — the assertions below
+// are the same ones the flat form was held to.
+
+/** Open the `i`th checklist card. */
+async function openCard(i = 0) {
+  await userEvent.click(screen.getAllByTestId("playbook-card")[i]);
+}
+/** Expand step `j` of the open checklist. */
+async function openStep(j = 0) {
+  await userEvent.click(screen.getAllByTestId("objective-toggle")[j]);
+}
+/** The first checklist, first step open — where the single-playbook tests edit. */
+async function openFirst() {
+  await openCard(0);
+  await openStep(0);
+}
+async function backToList() {
+  await userEvent.click(screen.getByTestId("playbook-back"));
+}
+
+test("the stored playbooks are what the editor opens on", async () => {
   renderPanel();
+  expect(screen.getByTestId("playbook-default")).toHaveValue("ship");
+  expect(screen.getByTestId("playbook-card")).toHaveTextContent("Ship it");
+  await openFirst();
   expect(screen.getByTestId("playbook-label")).toHaveValue("Ship it");
   expect(screen.getByTestId("objective-arg-url")).toHaveValue(
     "https://example.test/healthz",
   );
-  expect(screen.getByTestId("playbook-default")).toHaveValue("ship");
 });
 
 test("changing the probe KIND drops the arguments that belonged to the old one", async () => {
@@ -103,6 +126,7 @@ test("changing the probe KIND drops the arguments that belonged to the old one",
   // `url` carried across from `http_status` to `forge_pr` would make every later save fail with
   // "forge_pr does not take url" — an error about a field the operator can no longer see.
   renderPanel();
+  await openFirst();
   await userEvent.selectOptions(
     screen.getByTestId("objective-probe"),
     "forge_pr",
@@ -123,6 +147,7 @@ test("clearing an argument REMOVES it rather than sending an empty string", asyn
   // The server refuses a blank where it wants text, so an emptied field that still rode along
   // would be a save the operator cannot complete without knowing to retype something.
   renderPanel();
+  await openFirst();
   await userEvent.clear(screen.getByTestId("objective-arg-url"));
   await userEvent.click(screen.getByTestId("playbook-save"));
   await waitFor(() => expect(api.setPrefs).toHaveBeenCalled());
@@ -138,7 +163,10 @@ test("removing the DEFAULT playbook clears the default with it", async () => {
   // `default_id` naming no playbook is a refusal, so leaving it behind would make the very next
   // save fail for a reason nothing on screen explains.
   renderPanel();
+  await openCard(0);
   await userEvent.click(screen.getByTestId("playbook-remove"));
+  // Removing it goes back to the list, where the default says so.
+  expect(screen.getByTestId("playbook-default")).toHaveValue("");
   await userEvent.click(screen.getByTestId("playbook-save"));
   await waitFor(() => expect(api.setPrefs).toHaveBeenCalled());
   const sent = vi.mocked(api.setPrefs).mock.calls[0][0] as {
@@ -155,6 +183,7 @@ test("the server's REFUSAL is shown as it was written", async () => {
     new ApiError(422, "bad objective key 'Checks Green'"),
   );
   renderPanel();
+  await openCard(0);
   await userEvent.click(screen.getByTestId("playbook-save"));
   await waitFor(() =>
     expect(screen.getByTestId("playbook-error")).toHaveTextContent(
@@ -166,6 +195,33 @@ test("the server's REFUSAL is shown as it was written", async () => {
 test("a non-gating probe kind cannot be made a gate (the mechanism, kept for a future kind)", async () => {
   // "The agent believes it wrote tests" is not evidence that it did, so the control is withdrawn
   // rather than offered and then refused on save.
+  renderPanel(
+    {
+      default_id: "",
+      playbooks: [
+        {
+          id: "p",
+          label: "P",
+          objectives: [
+            {
+              key: "k",
+              title: "T",
+              probe: "supervisor_judged",
+              probe_args: null,
+              gate: false,
+            },
+          ],
+        },
+      ],
+    },
+    () => {},
+    { ...SCHEMA, non_gating: ["supervisor_judged"] },
+  );
+  await openFirst();
+  expect(screen.getByTestId("objective-gate")).toBeDisabled();
+});
+
+test("'Supervisor judges' is offered by name and CAN gate (#1088)", async () => {
   renderPanel({
     default_id: "",
     playbooks: [
@@ -178,28 +234,13 @@ test("a non-gating probe kind cannot be made a gate (the mechanism, kept for a f
             title: "T",
             probe: "supervisor_judged",
             probe_args: null,
-            gate: false,
+            gate: true,
           },
         ],
       },
     ],
-  }, () => {}, { ...SCHEMA, non_gating: ["supervisor_judged"] });
-  expect(screen.getByTestId("objective-gate")).toBeDisabled();
-});
-
-test("'Supervisor judges' is offered by name and CAN gate (#1088)", () => {
-  renderPanel({
-    default_id: "",
-    playbooks: [
-      {
-        id: "p",
-        label: "P",
-        objectives: [
-          { key: "k", title: "T", probe: "supervisor_judged", probe_args: null, gate: true },
-        ],
-      },
-    ],
   });
+  await openFirst();
   const pick = screen.getByTestId("objective-probe") as HTMLSelectElement;
   expect(pick.value).toBe("supervisor_judged");
   expect(pick.selectedOptions[0].text).toBe("Supervisor judges");
@@ -214,6 +255,7 @@ test("an INTEGER argument is sent as a number, not as the string the input yield
   // the operator typed `204`, saw "expect_status must be an integer", and had no way to comply
   // (#900 review, finding 6).
   renderPanel();
+  await openFirst();
   await userEvent.type(
     screen.getByTestId("objective-arg-expect_status"),
     "204",
@@ -235,6 +277,7 @@ test("a NON-INTEGER typed into an int field reaches the server, rather than beco
   // dropping it would make the field appear to accept a value it silently discarded. The raw
   // string travels and the server's own message says what is wrong with it.
   renderPanel();
+  await openFirst();
   await userEvent.type(
     screen.getByTestId("objective-arg-expect_status"),
     "2xx",
@@ -267,6 +310,7 @@ test("an edit made WHILE a save is in flight survives the response", async () =>
   // response landed at all, which is a green that proves nothing.
   const refresh = vi.fn();
   renderPanel(block(), refresh);
+  await openCard(0);
   await userEvent.click(screen.getByTestId("playbook-save"));
   await waitFor(() => expect(api.setPrefs).toHaveBeenCalled());
 
@@ -286,6 +330,7 @@ test("a config refresh does NOT overwrite an unsaved draft", async () => {
   // re-seeds from it, and an unfenced re-seed throws the draft away just as thoroughly as the
   // save response does.
   const { rerender } = renderPanel();
+  await openCard(0);
   await userEvent.clear(screen.getByTestId("playbook-label"));
   await userEvent.type(screen.getByTestId("playbook-label"), "Local draft");
 
@@ -313,13 +358,13 @@ test("a DUPLICATE id can be corrected, not locked in", async () => {
   // already existed made the field immutable `<code>` — Save then refused the duplicate and the
   // only way out was to delete the whole row and start again (#900 review 2, finding 4).
   renderPanel();
+  // A new checklist opens straight away, with its id editable.
   await userEvent.click(screen.getByTestId("playbook-add"));
-  const ids = screen.getAllByTestId("playbook-id");
-  const fresh = ids[ids.length - 1];
+  const fresh = screen.getByTestId("playbook-id");
 
   // Typing the EXISTING id must not turn the input into static text…
   await userEvent.type(fresh, "ship");
-  expect(screen.getAllByTestId("playbook-id")).toHaveLength(ids.length);
+  expect(screen.getAllByTestId("playbook-id")).toHaveLength(1);
   expect(fresh).toHaveValue("ship");
 
   // …and it is still correctable in place.
@@ -342,6 +387,7 @@ test("a STORED playbook's id stays immutable", async () => {
   // The mirror, and the reason provenance is the right test: `playbook_id` is what a mission
   // stores, so renaming one after it has been used would orphan every mission naming it.
   renderPanel();
+  await openCard(0);
   expect(screen.queryByTestId("playbook-id")).toBeNull();
   expect(screen.getByText("ship")).toBeInTheDocument();
 });
@@ -351,18 +397,21 @@ test("REMOVING a row keeps the right rows editable", async () => {
   // remap the wrong row becomes editable — or an editable one silently freezes.
   renderPanel();
   await userEvent.click(screen.getByTestId("playbook-add"));
+  await backToList();
   await userEvent.click(screen.getByTestId("playbook-add"));
-  expect(screen.getAllByTestId("playbook-id")).toHaveLength(2);
+  await backToList();
+  expect(screen.getAllByTestId("playbook-card")).toHaveLength(3);
 
   // Remove the FIRST draft (the second row overall; index 1).
-  const removes = screen.getAllByTestId("playbook-remove");
-  await userEvent.click(removes[1]);
+  await openCard(1);
+  await userEvent.click(screen.getByTestId("playbook-remove"));
 
   // One draft left, and it is still editable.
-  const left = screen.getAllByTestId("playbook-id");
-  expect(left).toHaveLength(1);
-  await userEvent.type(left[0], "later");
-  expect(left[0]).toHaveValue("later");
+  expect(screen.getAllByTestId("playbook-card")).toHaveLength(2);
+  await openCard(1);
+  const left = screen.getByTestId("playbook-id");
+  await userEvent.type(left, "later");
+  expect(left).toHaveValue("later");
 });
 
 test("a SUCCESSFUL save settles provenance even if the operator kept typing", async () => {
@@ -381,14 +430,12 @@ test("a SUCCESSFUL save settles provenance even if the operator kept typing", as
   const refresh = vi.fn();
   renderPanel(block(), refresh);
   await userEvent.click(screen.getByTestId("playbook-add"));
-  const ids = screen.getAllByTestId("playbook-id");
-  await userEvent.type(ids[ids.length - 1], "foo");
+  await userEvent.type(screen.getByTestId("playbook-id"), "foo");
   await userEvent.click(screen.getByTestId("playbook-save"));
   await waitFor(() => expect(api.setPrefs).toHaveBeenCalled());
 
   // …the operator keeps typing while it is in flight.
-  const labels = screen.getAllByTestId("playbook-label");
-  await userEvent.type(labels[labels.length - 1], "Later");
+  await userEvent.type(screen.getByTestId("playbook-label"), "Later");
 
   // …and the server accepts the block that was sent.
   release({
@@ -403,7 +450,7 @@ test("a SUCCESSFUL save settles provenance even if the operator kept typing", as
   await waitFor(() => expect(refresh).toHaveBeenCalled());
 
   // THE NEWER EDIT SURVIVES…
-  expect(screen.getAllByTestId("playbook-label").at(-1)).toHaveValue("Later");
+  expect(screen.getByTestId("playbook-label")).toHaveValue("Later");
   // …and the id is no longer editable, because the server has it.
   expect(screen.queryByTestId("playbook-id")).toBeNull();
 });
@@ -427,16 +474,14 @@ test("a row ADDED during a save is not frozen by that save's response", async ()
   const refresh = vi.fn();
   renderPanel(block(), refresh);
   await userEvent.click(screen.getByTestId("playbook-add"));
-  const first = screen.getAllByTestId("playbook-id");
-  await userEvent.type(first[first.length - 1], "foo");
+  await userEvent.type(screen.getByTestId("playbook-id"), "foo");
   await userEvent.click(screen.getByTestId("playbook-save"));
   await waitFor(() => expect(api.setPrefs).toHaveBeenCalled());
 
   // A SECOND ROW, added while A is in flight. It was never sent.
+  await backToList();
   await userEvent.click(screen.getByTestId("playbook-add"));
-  const both = screen.getAllByTestId("playbook-id");
-  expect(both).toHaveLength(2);
-  await userEvent.type(both[both.length - 1], "bar");
+  await userEvent.type(screen.getByTestId("playbook-id"), "bar");
 
   release({
     mission_playbooks: {
@@ -449,10 +494,13 @@ test("a row ADDED during a save is not frozen by that save's response", async ()
   });
   await waitFor(() => expect(refresh).toHaveBeenCalled());
 
-  // `foo` was accepted, so its id is settled — exactly one editable id is left, and it is `bar`.
-  const left = screen.getAllByTestId("playbook-id");
-  expect(left).toHaveLength(1);
-  expect(left[0]).toHaveValue("bar");
+  // `bar` was never sent, so its id is still editable…
+  expect(screen.getByTestId("playbook-id")).toHaveValue("bar");
+  // …and `foo` was accepted, so its id is settled.
+  await backToList();
+  await openCard(1);
+  expect(screen.queryByTestId("playbook-id")).toBeNull();
+  expect(screen.getByText("foo")).toBeInTheDocument();
 });
 
 test("REMOVING a row does not move another row's provenance onto it", async () => {
@@ -462,19 +510,19 @@ test("REMOVING a row does not move another row's provenance onto it", async () =
   vi.mocked(api.setPrefs).mockResolvedValue({} as never);
   renderPanel(block());
   await userEvent.click(screen.getByTestId("playbook-add"));
+  await userEvent.type(screen.getByTestId("playbook-id"), "aaa");
+  await backToList();
   await userEvent.click(screen.getByTestId("playbook-add"));
-  const ids = screen.getAllByTestId("playbook-id");
-  expect(ids).toHaveLength(2);
-  await userEvent.type(ids[0], "aaa");
-  await userEvent.type(ids[1], "bbb");
+  await userEvent.type(screen.getByTestId("playbook-id"), "bbb");
+  await backToList();
 
   // Remove the FIRST draft. The stored row is index 0, so the drafts are 1 and 2.
-  const removes = screen.getAllByTestId("playbook-remove");
-  await userEvent.click(removes[1]);
+  await openCard(1);
+  await userEvent.click(screen.getByTestId("playbook-remove"));
 
-  const left = screen.getAllByTestId("playbook-id");
-  expect(left).toHaveLength(1);
-  expect(left[0]).toHaveValue("bbb");
+  expect(screen.getAllByTestId("playbook-card")).toHaveLength(2);
+  await openCard(1);
+  expect(screen.getByTestId("playbook-id")).toHaveValue("bbb");
 });
 
 test("a row RENAMED during a save keeps its id editable", async () => {
@@ -494,15 +542,14 @@ test("a row RENAMED during a save keeps its id editable", async () => {
   const refresh = vi.fn();
   renderPanel(block(), refresh);
   await userEvent.click(screen.getByTestId("playbook-add"));
-  const ids = screen.getAllByTestId("playbook-id");
-  await userEvent.type(ids[ids.length - 1], "foo");
+  await userEvent.type(screen.getByTestId("playbook-id"), "foo");
   await userEvent.click(screen.getByTestId("playbook-save"));
   await waitFor(() => expect(api.setPrefs).toHaveBeenCalled());
 
   // …renamed while the request is in flight.
-  const pending = screen.getAllByTestId("playbook-id");
-  await userEvent.clear(pending[pending.length - 1]);
-  await userEvent.type(pending[pending.length - 1], "bar");
+  const pending = screen.getByTestId("playbook-id");
+  await userEvent.clear(pending);
+  await userEvent.type(pending, "bar");
 
   release({
     mission_playbooks: {
@@ -517,8 +564,7 @@ test("a row RENAMED during a save keeps its id editable", async () => {
   await waitFor(() => expect(refresh).toHaveBeenCalled());
 
   // STILL EDITABLE: `bar` is a name the server has never seen.
-  const after = screen.getAllByTestId("playbook-id");
-  expect(after.at(-1)).toHaveValue("bar");
+  expect(screen.getByTestId("playbook-id")).toHaveValue("bar");
 });
 
 test("a save that lands under a newer draft still carries the revision forward", async () => {
@@ -535,6 +581,7 @@ test("a save that lands under a newer draft still carries the revision forward",
 
   const refresh = vi.fn();
   renderPanel({ ...block(), revision: 3 } as Block, refresh);
+  await openCard(0);
   await userEvent.click(screen.getByTestId("playbook-save"));
   await waitFor(() => expect(api.setPrefs).toHaveBeenCalled());
   expect(
@@ -567,13 +614,273 @@ test("removing a DUPLICATE draft does not unset the real default", async () => {
   expect(screen.getByTestId("playbook-default")).toHaveValue("ship");
 
   await userEvent.click(screen.getByTestId("playbook-add"));
-  const ids = screen.getAllByTestId("playbook-id");
-  await userEvent.type(ids[ids.length - 1], "ship");
+  await userEvent.type(screen.getByTestId("playbook-id"), "ship");
 
-  // Remove the DRAFT — the last row's own remove button.
-  const removes = screen.getAllByTestId("playbook-remove");
-  await userEvent.click(removes[removes.length - 1]);
+  // Remove the DRAFT — its own remove button, in its own view.
+  await userEvent.click(screen.getByTestId("playbook-remove"));
 
   // The real `ship` is still there, and still the default.
   expect(screen.getByTestId("playbook-default")).toHaveValue("ship");
+});
+
+// --- the list and the step view (#1221) ------------------------------------------------------
+
+function twoChecklists(): Block {
+  return {
+    default_id: "ship",
+    playbooks: [
+      block().playbooks[0],
+      {
+        id: "look",
+        label: "Investigate",
+        objectives: [
+          {
+            key: "finding",
+            title: "A finding is written down",
+            probe: "supervisor_judged",
+            probe_args: null,
+            gate: true,
+          },
+          {
+            key: "confirmed",
+            title: "You have confirmed it",
+            probe: "none",
+            probe_args: null,
+            gate: false,
+          },
+        ],
+      },
+    ],
+  };
+}
+
+test("the list shows every checklist as a card, with its steps and counts, and marks the default", () => {
+  renderPanel(twoChecklists());
+  const cards = screen.getAllByTestId("playbook-card");
+  expect(cards).toHaveLength(2);
+  expect(cards[0]).toHaveTextContent("Ship it");
+  expect(cards[0]).toHaveTextContent("It is live");
+  expect(cards[0]).toHaveAccessibleName("Open checklist Ship it");
+  // Only the default carries the badge.
+  expect(screen.getAllByTestId("playbook-default-badge")).toHaveLength(1);
+  expect(cards[0]).toContainElement(
+    screen.getByTestId("playbook-default-badge"),
+  );
+  // 2 steps, 1 required, 0 probed, 1 judged.
+  expect(cards[1]).toHaveTextContent(/2\s*steps/i);
+  expect(cards[1]).toHaveTextContent(/1\s*required/i);
+  expect(cards[1]).toHaveTextContent(/0\s*probed/i);
+  expect(cards[1]).toHaveTextContent(/1\s*judged/i);
+  // Nothing is being edited in the list: no step fields are mounted.
+  expect(screen.queryByTestId("objective-title")).toBeNull();
+});
+
+test("an EMPTY block shows the empty hint and the new-checklist card", () => {
+  renderPanel({ default_id: "", playbooks: [] });
+  // A clean list has nothing to save, so no save bar covers it.
+  expect(screen.queryByTestId("playbook-save")).toBeNull();
+  expect(screen.getByTestId("playbooks-empty")).toBeInTheDocument();
+  expect(screen.queryAllByTestId("playbook-card")).toHaveLength(0);
+  expect(screen.getByTestId("playbook-add-card")).toBeInTheDocument();
+});
+
+test("edits in TWO checklists survive switching views and go out in ONE save", async () => {
+  // The views are renderings of one block (#1221): leaving a checklist for the list, or for
+  // another checklist, never touches the draft — and the whole block still saves at once.
+  renderPanel(twoChecklists());
+  await openCard(0);
+  await userEvent.clear(screen.getByTestId("playbook-label"));
+  await userEvent.type(screen.getByTestId("playbook-label"), "Ship it now");
+  await backToList();
+  await openCard(1);
+  await openStep(1);
+  await userEvent.click(screen.getByTestId("objective-gate"));
+  await backToList();
+  expect(screen.getAllByTestId("playbook-card")[0]).toHaveTextContent(
+    "Ship it now",
+  );
+  expect(screen.getByTestId("playbook-dirty")).toBeInTheDocument();
+
+  await userEvent.click(screen.getByTestId("playbook-save"));
+  await waitFor(() => expect(api.setPrefs).toHaveBeenCalledTimes(1));
+  const sent = vi.mocked(api.setPrefs).mock.calls[0][0] as {
+    mission_playbooks: Block;
+  };
+  expect(sent.mission_playbooks.playbooks[0].label).toBe("Ship it now");
+  expect(sent.mission_playbooks.playbooks[1].objectives[1].gate).toBe(true);
+});
+
+test("the default toggle in a checklist sets and clears default_id", async () => {
+  renderPanel(twoChecklists());
+  await openCard(1);
+  const toggle = screen.getByTestId("playbook-default-toggle");
+  expect(toggle).not.toBeChecked();
+  await userEvent.click(toggle);
+  expect(toggle).toBeChecked();
+  await backToList();
+  expect(screen.getByTestId("playbook-default")).toHaveValue("look");
+  await openCard(1);
+  await userEvent.click(screen.getByTestId("playbook-default-toggle"));
+  await backToList();
+  expect(screen.getByTestId("playbook-default")).toHaveValue("");
+});
+
+test("a new checklist opens with its first step expanded; its default toggle waits for an id", async () => {
+  renderPanel();
+  await userEvent.click(screen.getByTestId("playbook-add"));
+  expect(screen.getByTestId("playbook-id")).toBeInTheDocument();
+  expect(screen.getByTestId("objective-toggle")).toHaveAttribute(
+    "aria-expanded",
+    "true",
+  );
+  expect(screen.getByTestId("objective-title")).toBeInTheDocument();
+  expect(screen.getByTestId("playbook-default-toggle")).toBeDisabled();
+});
+
+test("a step header is a button that expands with the keyboard, and Add a step opens the new one", async () => {
+  renderPanel();
+  await openCard(0);
+  const head = screen.getByTestId("objective-toggle");
+  expect(head).toHaveAttribute("aria-expanded", "false");
+  head.focus();
+  await userEvent.keyboard("{Enter}");
+  expect(head).toHaveAttribute("aria-expanded", "true");
+  expect(head).toHaveFocus();
+  await userEvent.keyboard(" ");
+  expect(head).toHaveAttribute("aria-expanded", "false");
+
+  await userEvent.click(screen.getByTestId("objective-add"));
+  const heads = screen.getAllByTestId("objective-toggle");
+  expect(heads).toHaveLength(2);
+  expect(heads[0]).toHaveAttribute("aria-expanded", "false");
+  expect(heads[1]).toHaveAttribute("aria-expanded", "true");
+});
+
+test("a REFUSAL naming a checklist and a key opens that checklist at that step", async () => {
+  // The fields are collapsed now, so the one the server names would otherwise sit behind a
+  // click the message does not mention. The message itself stays verbatim.
+  vi.mocked(api.setPrefs).mockRejectedValue(
+    new ApiError(
+      422,
+      "playbook 'look': objective 'confirmed' has invalid probe arguments",
+    ),
+  );
+  renderPanel(twoChecklists());
+  // An edit made from the list, so there is something to save.
+  await userEvent.selectOptions(screen.getByTestId("playbook-default"), "look");
+  await userEvent.click(screen.getByTestId("playbook-save"));
+  await waitFor(() =>
+    expect(screen.getByTestId("playbook-error")).toHaveTextContent(
+      "playbook 'look': objective 'confirmed' has invalid probe arguments",
+    ),
+  );
+  expect(screen.getByTestId("playbook-label")).toHaveValue("Investigate");
+  const heads = screen.getAllByTestId("objective-toggle");
+  expect(heads[0]).toHaveAttribute("aria-expanded", "false");
+  expect(heads[1]).toHaveAttribute("aria-expanded", "true");
+});
+
+test("an AMBIGUOUS refusal opens nothing it cannot pin down, and still says what it said", async () => {
+  // A key two steps share: opening either would point at an arbitrary one.
+  vi.mocked(api.setPrefs).mockRejectedValue(
+    new ApiError(422, "playbook 'look' has duplicate objective keys 'dup'"),
+  );
+  const b = twoChecklists();
+  b.playbooks[1].objectives = b.playbooks[1].objectives.map((o) => ({
+    ...o,
+    key: "dup",
+  }));
+  renderPanel(b);
+  await userEvent.selectOptions(screen.getByTestId("playbook-default"), "look");
+  await userEvent.click(screen.getByTestId("playbook-save"));
+  await waitFor(() =>
+    expect(screen.getByTestId("playbook-error")).toHaveTextContent(
+      "duplicate objective keys 'dup'",
+    ),
+  );
+  // The checklist it names is open; no step is.
+  expect(screen.getByTestId("playbook-label")).toHaveValue("Investigate");
+  for (const h of screen.getAllByTestId("objective-toggle"))
+    expect(h).toHaveAttribute("aria-expanded", "false");
+});
+
+test("a whole-block refusal naming nothing moves nothing", async () => {
+  vi.mocked(api.setPrefs).mockRejectedValue(
+    new ApiError(409, "the checklists changed elsewhere."),
+  );
+  renderPanel(twoChecklists());
+  // An edit made from the list, so there is something to save.
+  await userEvent.selectOptions(screen.getByTestId("playbook-default"), "look");
+  await userEvent.click(screen.getByTestId("playbook-save"));
+  await waitFor(() =>
+    expect(screen.getByTestId("playbook-error")).toBeInTheDocument(),
+  );
+  expect(screen.getAllByTestId("playbook-card")).toHaveLength(2);
+});
+
+test("the open checklist STAYS open across the save's own config refresh", async () => {
+  // A clean save re-seeds from the refreshed config and mints fresh row identities; that must not
+  // throw the operator back to the list from the checklist they just saved.
+  vi.mocked(api.setPrefs).mockResolvedValue({
+    mission_playbooks: twoChecklists(),
+  });
+  const { rerender } = renderPanel(twoChecklists());
+  await openCard(1);
+  await userEvent.click(screen.getByTestId("playbook-save"));
+  await waitFor(() => expect(api.setPrefs).toHaveBeenCalled());
+  await waitFor(() =>
+    expect(screen.queryByTestId("playbook-dirty")).toBeNull(),
+  );
+  rerender(
+    <ConfigRefreshCtx.Provider value={() => {}}>
+      <ConfigCtx.Provider
+        value={
+          {
+            csrf: "t",
+            new_session_engines: [],
+            terminal_backend: "ws",
+            mission_playbooks: twoChecklists(),
+            mission_probes: SCHEMA,
+          } as AppConfig
+        }
+      >
+        <MissionPlaybooks />
+      </ConfigCtx.Provider>
+    </ConfigRefreshCtx.Provider>,
+  );
+  expect(screen.getByTestId("playbook-label")).toHaveValue("Investigate");
+});
+
+test("the page is told when leaving would lose work: dirty, then saving, then clean", async () => {
+  let release: (v: unknown) => void = () => {};
+  vi.mocked(api.setPrefs).mockImplementation(
+    () =>
+      new Promise((res) => (release = res)) as ReturnType<typeof api.setPrefs>,
+  );
+  const seen = vi.fn();
+  render(
+    <ConfigRefreshCtx.Provider value={() => {}}>
+      <ConfigCtx.Provider
+        value={
+          {
+            csrf: "t",
+            new_session_engines: [],
+            terminal_backend: "ws",
+            mission_playbooks: block(),
+            mission_probes: SCHEMA,
+          } as AppConfig
+        }
+      >
+        <MissionPlaybooks onUnsavedChange={seen} />
+      </ConfigCtx.Provider>
+    </ConfigRefreshCtx.Provider>,
+  );
+  expect(seen).toHaveBeenLastCalledWith("clean");
+  await openCard(0);
+  await userEvent.type(screen.getByTestId("playbook-label"), "!");
+  expect(seen).toHaveBeenLastCalledWith("dirty");
+  await userEvent.click(screen.getByTestId("playbook-save"));
+  expect(seen).toHaveBeenLastCalledWith("saving");
+  release({ mission_playbooks: block() });
+  await waitFor(() => expect(seen).toHaveBeenLastCalledWith("clean"));
 });
