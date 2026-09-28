@@ -372,6 +372,17 @@ def _mutate(key: str, merge, path: Path | None = None):
     return value
 
 
+def read_block(key: str, path: Path | None = None) -> object:
+    """One top-level pref block as stored (``None`` when absent) — for modules that own a block of
+    their own (``chat_config``, #1209) and coerce it themselves."""
+    return _load(path or _default_path()).get(key)
+
+
+def mutate_block(key: str, merge, path: Path | None = None):
+    """``_mutate`` for a module-owned block: read-merge-write under the one exclusive lock."""
+    return _mutate(key, merge, path)
+
+
 def get_theme(path: Path | None = None) -> str:
     """The persisted theme, or the default when unset/unreadable/invalid."""
     return coerce_theme(_load(path or _default_path()).get("theme"))

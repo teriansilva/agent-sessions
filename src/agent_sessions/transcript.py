@@ -1199,3 +1199,39 @@ def _antigravity_growth(native_id: str, home: Path) -> int | None:
 register_adapter("antigravity-brain", _antigravity_adapter)
 register_locator("antigravity-brain", _antigravity_locator)
 register_growth("antigravity-brain", _antigravity_growth)
+
+
+# --- battlelab-chat (#1209): the API agent's own store ----------------------------------------
+
+
+def _chat_adapter(native_id: str, home: Path) -> list[Turn]:
+    """A `chat`-runtime conversation, from BattleLab's own store: each exchange's message and, once
+    settled, its reply. The store root is the engine's (``store_scope``, set by ``_scoped``)."""
+    from . import chat_store
+    from .engines import base
+
+    log = chat_store.read(base._store("battlelab-chat", home=home), native_id)
+    if log is None:
+        return []
+    out: list[Turn] = []
+    for t in log.turns:
+        out.append(Turn("user", t.text, ts=t.ts or None))
+        if t.reply is not None:
+            out.append(Turn("assistant", t.reply, ts=t.reply_ts))
+    return out
+
+
+def chat_log_path(native_id: str, home: Path) -> Path | None:
+    """The conversation file of a `chat` session, or None for a malformed id."""
+    from . import chat_store
+    from .engines import base
+
+    if not chat_store.valid_turn_id(native_id):  # a session id has the same UUID shape
+        return None
+    return base._store("battlelab-chat", home=home) / f"{native_id}.jsonl"
+
+
+register_adapter("battlelab-chat", _chat_adapter)
+register_locator("battlelab-chat", _path_locator(chat_log_path))
+# Append-only: the file's size is the monotonic, uncapped growth signal stall detection needs.
+register_growth("battlelab-chat", _path_growth(chat_log_path))

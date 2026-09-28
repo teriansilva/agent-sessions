@@ -1619,13 +1619,13 @@ def test_a_chat_manifest_loads_and_refuses_to_launch(tmp_path):
     """Through the real loader (local trust, the strictest path): no problem is recorded, and the
     provider refuses anything that would execute — with the reason, not an AttributeError."""
     local = tmp_path / "plugins"
-    (local / "apichat").mkdir(parents=True)
-    f = local / "apichat" / "plugin.json"
-    f.write_text(json.dumps(chat_doc()))
+    (local / "localchat").mkdir(parents=True)
+    f = local / "localchat" / "plugin.json"
+    f.write_text(json.dumps(chat_doc("localchat")))
     f.chmod(0o600)
     got = load_all(local_dir=local, state_dir=tmp_path / "state", home=tmp_path)
-    assert not {k: v for k, v in got.problems.items() if "apichat" in k}, got.problems
-    p = got.providers["apichat"]
+    assert not {k: v for k, v in got.problems.items() if "localchat" in k}, got.problems
+    p = got.providers["localchat"]
     assert p.entrypoint() is None
     assert not (p.supports_orchestrator_input or p.expects_raw_tty or p.supports_seed_start)
     for call in (

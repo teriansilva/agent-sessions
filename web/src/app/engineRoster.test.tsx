@@ -41,7 +41,13 @@ import {
   wipesOnRepaint,
 } from "./engineRoster";
 
-const SEVEN = (fixture.engines as EngineInfo[]).map((e) => e.id);
+// Every engine id — what the literal ratchet must catch anywhere in the client.
+const ROSTER = (fixture.engines as EngineInfo[]).map((e) => e.id);
+// The seven terminal engines the pre-P4 client tables described; the API agent (#1209, runtime
+// "chat") is newer than those tables and is covered by its own manifest data.
+const SEVEN = (fixture.engines as EngineInfo[])
+  .filter((e) => e.runtime === "pty")
+  .map((e) => e.id);
 
 // --- the ratchet ---------------------------------------------------------------------------------
 
@@ -76,7 +82,7 @@ describe("the web roster ratchet", () => {
       if (!/\.(ts|tsx)$/.test(rel)) continue;
       if (/\.test\.(ts|tsx)$/.test(rel) || rel.startsWith("test/") || rel.includes("fixture"))
         continue;
-      for (const hit of engineLiterals(readFileSync(f, "utf8"), SEVEN)) found.push(`${rel}: ${hit}`);
+      for (const hit of engineLiterals(readFileSync(f, "utf8"), ROSTER)) found.push(`${rel}: ${hit}`);
     }
     expect(found, "an engine is named in the SPA instead of read from the roster").toEqual([]);
   });
@@ -86,11 +92,11 @@ describe("the web roster ratchet", () => {
     "const RECONCILE = new Set(['opencode', 'codex']);",
     "const label = `kimi`;",
   ])("NEGATIVE CONTROL: a planted literal turns it red — %s", (planted) => {
-    expect(engineLiterals(planted, SEVEN).length).toBeGreaterThan(0);
+    expect(engineLiterals(planted, ROSTER).length).toBeGreaterThan(0);
   });
 
   test("comments are not code", () => {
-    expect(engineLiterals('// the "claude" engine\n/* "codex" */ const x = 1;', SEVEN)).toEqual(
+    expect(engineLiterals('// the "claude" engine\n/* "codex" */ const x = 1;', ROSTER)).toEqual(
       [],
     );
   });

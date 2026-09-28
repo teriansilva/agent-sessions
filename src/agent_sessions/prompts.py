@@ -445,6 +445,17 @@ operator decides what confidence counts, and a wrong "met" moves the mission to 
 missing."""
 
 
+_CHAT_AGENT = """You are a coding assistant inside BattleLab, talking with a software engineer.
+
+You have no tools: you cannot run commands, read or write files, or browse. Everything you know \
+about their code is what they paste into this conversation. When you need more, say exactly what \
+to paste or run and why, rather than guessing at contents you have not seen.
+
+Answer directly. Use Markdown, with fenced code blocks for code, commands and diffs. Keep \
+explanations proportional to the question. If something is uncertain, say so and say what would \
+settle it."""
+
+
 REGISTRY: tuple[Prompt, ...] = (
     Prompt(
         id="tail_review",
@@ -736,6 +747,18 @@ REGISTRY: tuple[Prompt, ...] = (
         # GUARDED. Its output decides whether a completion gate is settled — and session content,
         # which it reads, is exactly where an instruction to "say met" would be hidden.
         guarded=True,
+    ),
+    Prompt(
+        id="chat_agent",
+        group="API agents",
+        label="API agent",
+        description="The system prompt sent with every API-agent conversation (#1209). The agent "
+        "has no tools, whatever this says.",
+        contract="free text — the reply is shown to you as written",
+        default=_CHAT_AGENT,
+        max_chars=8000,
+        block=BLOCK,
+        field="chat_agent",
     ),
 )
 

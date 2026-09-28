@@ -46,6 +46,7 @@ EXPECTED_SITES = {
     ("mission_plan.py", "mission_plan"),
     ("mission_questions.py", "mission_question"),
     ("mission_judge.py", "mission_judge"),
+    ("chat_runtime.py", "chat_agent"),  # #1209: the API agent's system prompt
 }
 
 

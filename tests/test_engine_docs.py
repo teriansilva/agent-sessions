@@ -194,7 +194,7 @@ def test_argv_matches_the_launcher(gen):
     result = load_first_party(env={}, home=Path("/nonexistent-home"))
     for prov in result.providers.values():
         m = prov.manifest
-        if m.launch.resume.kind == "fresh":
+        if m.runtime != "pty" or m.launch.resume.kind == "fresh":  # nothing launched (#1209)
             continue
         prov._entry_path = lambda m=m: m.binary.name
         argv = prov._assemble(m.launch.resume, "<id>", cwd="/__dir__", bypass=False, new=False)

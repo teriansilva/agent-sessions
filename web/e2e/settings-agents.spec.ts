@@ -197,8 +197,9 @@ test("roster: every state side by side, 44px targets, long paths wrap, no overfl
     await expect(section.getByRole("heading", { name: "Claude Code" })).toBeVisible();
     await expect(section.getByText("Invalid manifest")).toBeVisible();
     await expect(section.getByText("Retiring", { exact: true })).toBeVisible();
-    await expect(section.getByText("Absent", { exact: true })).toBeVisible();
-    await expect(section.getByText(/Agents \/\/ 7 loaded · 1 retiring · 1 invalid/i)).toBeVisible();
+    // The fixture roster carries more than one absent engine (the unconfigured API agent, #1209).
+    await expect(section.getByText("Absent", { exact: true }).first()).toBeVisible();
+    await expect(section.getByText(/Agents \/\/ 8 loaded · 1 retiring · 1 invalid/i)).toBeVisible();
 
     // The long binary path wraps onto several lines inside its card.
     const path = section.getByText(LONG_BIN, { exact: true });

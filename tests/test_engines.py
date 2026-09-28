@@ -231,6 +231,8 @@ def test_supports_new_agrees_with_new_launch_argv(engine_bin):
     for prov in engines.all_providers():
         if not getattr(prov, "supports_new", False):
             continue
+        if prov.manifest.runtime != "pty":
+            continue  # a `chat` engine starts through /api/chat/new, never new_launch_argv (#1209)
         native = f"new-{uuid}" if prov.new_session_reconciles else uuid
         argv = prov.new_launch_argv(native, cwd="/tmp", bypass=True)
         assert isinstance(argv, list) and argv, f"{prov.engine_id} new_launch_argv must yield argv"

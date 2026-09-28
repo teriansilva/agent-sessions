@@ -242,6 +242,46 @@
       "status_reason": null
     },
     {
+      "id": "apichat",
+      "present": false,
+      "supports_new": false,
+      "supports_seed_start": false,
+      "seed_reason": "API agent cannot start a session from a brief",
+      "bin": null,
+      "label": "API agent",
+      "kind": "agent",
+      "runtime": "chat",
+      "display": {
+        "name": "API agent",
+        "badge": "api",
+        "accent": "blue",
+        "id_prefix": null,
+        "order": 80
+      },
+      "capabilities": {
+        "resume": true,
+        "new": true,
+        "archive": true,
+        "handoff_target": false,
+        "seed_start": false,
+        "orchestrator_input": false,
+        "raw_tty": false,
+        "owns_transcript": false
+      },
+      "session_id": {
+        "mint": "pinned"
+      },
+      "models": [],
+      "usage": {
+        "source": "tokens"
+      },
+      "terminal": {
+        "repaint": "none"
+      },
+      "status": "active",
+      "status_reason": null
+    },
+    {
       "id": "shell",
       "present": true,
       "supports_new": true,

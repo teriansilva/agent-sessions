@@ -72,7 +72,7 @@ def test_engines_lists_all_providers(auth_cfg, fake_jsonl, tmp_home, monkeypatch
         }
         m = engines.get(e["id"]).manifest
         assert e["label"] == m.identity.label and e["kind"] == m.identity.kind
-        assert e["runtime"] == "pty"
+        assert e["runtime"] == m.runtime  # `pty`, or `chat` for the API agent (#1209)
         assert e["display"] == {
             "name": m.display.name,
             "badge": m.display.badge,

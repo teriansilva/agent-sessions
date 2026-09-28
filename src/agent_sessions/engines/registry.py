@@ -17,6 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..chat_store import ChatStoreKind
 from ..scanner import Session
 from . import base
 from .antigravity import AntigravityProvider
@@ -40,6 +41,7 @@ STORE_KINDS: dict[str, type] = {
     "antigravity-cli": AntigravityProvider,
     "kimi-code": KimiProvider,
     "shell-records": ShellProvider,
+    "battlelab-chat": ChatStoreKind,
 }
 
 
@@ -300,6 +302,20 @@ def launchable_bin(prov: base.EngineProvider | None) -> str | None:
         return prov.entrypoint_path()
     except base.EngineError:
         return None
+
+
+def can_start(prov: base.EngineProvider | None) -> bool:
+    """Can this engine start a new session RIGHT NOW — the one answer the new-session picker and
+    `/api/engines` share (#853 P2; `chat` #1209). A terminal engine needs a launchable binary; a
+    `chat` engine needs its endpoint configured (it runs no binary). Call it OFF the loop."""
+    if prov is None or not getattr(prov, "supports_new", False) or is_retiring(prov):
+        return False
+    m = getattr(prov, "manifest", None)
+    if m is not None and m.runtime == "chat":
+        from .. import chat_config
+
+        return chat_config.is_configured(prov.engine_id)
+    return launchable_bin(prov) is not None
 
 
 def all_providers() -> list[base.EngineProvider]:

@@ -63,6 +63,7 @@ STORE_ENV_PATHS: dict[str, str] = {
     "AGENT_SESSIONS_VAPID_KEYS": ".config/agent-sessions/vapid.json",
     "AGENT_SESSIONS_HOME": ".local/share/agent-sessions",
     "AGENT_SESSIONS_OPENCODE_DB": ".local/share/opencode/opencode.db",
+    "AGENT_SESSIONS_CHAT_DIR": ".local/share/agent-sessions/chat",  # the API agent's store (#1209)
     "AGENT_SESSIONS_RUNTIME_DIR": "rt",  # short: AF_UNIX sockets live here (see below)
     "AGENT_SESSIONS_LOCK_DIR": ".agent-sessions/locks",
     "AGENT_SESSIONS_EDIT_RECOVERY": ".agent-sessions/edit-recovery",
@@ -578,7 +579,9 @@ def engine_bin(tmp_path, monkeypatch):
             b.parent.chmod(0o755)
             b.write_bytes(b"#!/bin/true\n")
             b.chmod(0o755)
-        for e in engine_ids or [p.engine_id for p in engines.all_providers()]:
+        # Only engines that RUN a binary: a `chat` engine (#1209) has none to point anywhere.
+        runs = [p.engine_id for p in engines.all_providers() if p.manifest.binary is not None]
+        for e in engine_ids or runs:
             monkeypatch.setenv(engines.get(e).manifest.binary.env_var, str(b))
         return os.path.realpath(b)
 
@@ -599,7 +602,8 @@ def no_engine_bin(tmp_path, monkeypatch):
     from agent_sessions import engines
 
     for p in engines.all_providers():
-        monkeypatch.delenv(p.manifest.binary.env_var, raising=False)
+        if p.manifest.binary is not None:  # a `chat` engine (#1209) runs no binary
+            monkeypatch.delenv(p.manifest.binary.env_var, raising=False)
     monkeypatch.setenv(engines.get("shell").manifest.binary.env_var, str(tmp_path / "no-bash"))
     home = Path(os.environ.get("HOME", "/"))
     if not home.is_relative_to(tmp_path):

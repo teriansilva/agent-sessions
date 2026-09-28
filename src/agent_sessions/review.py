@@ -954,6 +954,25 @@ async def _post_chat(cfg: dict, body: dict, *, retry_without_json_mode: bool = F
         return r
 
 
+class TransportTimeout(ReviewError):
+    """The endpoint did not answer within the request timeout. A distinct subclass because a
+    timeout is AMBIGUOUS: the request may have been processed (and billed) anyway (#1209)."""
+
+
+async def post_chat_response(cfg: dict, body: dict):
+    """`_post_chat` for a caller that inspects the response itself (the chat runtime, #1209),
+    with transport failures translated to `ReviewError` — so that caller needs no HTTP client of
+    its own. Adds no request: this is `_post_chat`, once."""
+    try:
+        return await _post_chat(cfg, body)
+    except httpx.TimeoutException:
+        raise TransportTimeout(
+            f"the endpoint did not answer within {request_timeout(cfg):.0f}s"
+        ) from None
+    except httpx.HTTPError as e:
+        raise _transport_error(e, cfg, subject="the endpoint") from None
+
+
 def _assert_registered_system_prompts(messages: list[dict]) -> None:
     """Every system message leaving this process comes from the prompt registry (#824).
 

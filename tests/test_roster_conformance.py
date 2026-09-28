@@ -368,8 +368,12 @@ def test_a_budget_for_an_engine_nobody_has_is_refused_but_a_STORED_one_stays_edi
 
 def test_every_moved_table_answers_what_the_old_one_did():
     """The pre-P3 tables, recorded verbatim, against what the manifests now answer."""
-    seven = engines.engine_ids()
-    assert set(seven) == set(kinds.RESERVED_IDS)
+    roster = engines.engine_ids()
+    assert set(roster) == set(kinds.RESERVED_IDS)
+    # The pre-P3 tables describe the seven terminal engines; the API agent (#1209) is newer than
+    # all of them and has no "old" answer to agree with.
+    seven = [e for e in roster if engines.manifest_of(e).runtime == "pty"]
+    assert len(seven) == 7
     old_wipe = {"codex", "kimi"}
     old_manual = {"kimi", "gemini"}
     old_reporters = {"claude", "antigravity", "codex", "opencode"}
@@ -412,8 +416,9 @@ def test_every_moved_table_answers_what_the_old_one_did():
         assert discover.envvar(e) == f"AGENT_SESSIONS_{old_bin_name.get(e, e).upper()}_BIN", e
     assert transcript_owner._owning_binaries() == {"claude"}
     assert opencode_admission.maintained_engine() == "opencode"
-    # The usage panel lists every agent — the six it always listed — now in roster order.
-    assert set(agent_usage.ENGINES) == set(seven) - {"shell"}
+    # The usage panel lists every agent — the six it always listed, plus the API agent (#1209),
+    # whose tokens BattleLab records itself — in roster order.
+    assert set(agent_usage.ENGINES) == set(roster) - {"shell"}
 
 
 def test_store_locations_come_from_the_manifest_with_every_old_default_and_override(

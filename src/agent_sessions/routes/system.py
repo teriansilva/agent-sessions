@@ -224,18 +224,21 @@ def register(
         def row(p: engines.EngineProvider) -> dict:
             # What a launch would exec (#853 P2) — the launcher's own answer, not a PATH probe.
             bin_path = engines.launchable_bin(p)
-            can_start = bool(bin_path and getattr(p, "supports_new", False))
+            # The launcher's own answer (#853 P2) — for a `chat` engine (#1209), "its endpoint is
+            # configured", since it runs no binary. `present` follows the same rule for it.
+            can_start = engines.registry.can_start(p)
+            present = bin_path is not None or (p.manifest.runtime == "chat" and can_start)
             # Handoff-target capability (#597): the ONE source both the modal's engine tiles and
             # the server-side prepare rejection consume, so a disabled tile can never disagree
             # with what the server would accept. `seed_reason` is the user-facing why-not.
-            can_seed, seed_reason = handoff.handoff_target_state(p, present=bin_path is not None)
+            can_seed, seed_reason = handoff.handoff_target_state(p, present=present)
             retiring = engines.is_retiring(p)
             if retiring:
                 can_seed, seed_reason = False, engines.REMOVED_REASON
             m = p.manifest
             return {
                 "id": p.engine_id,
-                "present": bin_path is not None,
+                "present": present,
                 "supports_new": can_start,
                 "supports_seed_start": can_seed,
                 "seed_reason": seed_reason,
@@ -520,11 +523,7 @@ def register(
         # Which engines can start a new session: the launcher's own answer (#853 P2), resolved
         # OFF the loop because provenance walks directories.
         new_session_engines = await asyncio.to_thread(
-            lambda: [
-                p.engine_id
-                for p in engines.all_providers()
-                if getattr(p, "supports_new", False) and engines.launchable_bin(p)
-            ]
+            lambda: [p.engine_id for p in engines.all_providers() if engines.registry.can_start(p)]
         )
         onboarded_explicit = prefs.get_onboarded()
         if onboarded_explicit is not None:

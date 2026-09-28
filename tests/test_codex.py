@@ -98,6 +98,8 @@ def test_launch_argv_contract_all_present_providers(engine_bin):
     uuid = "019e2ba1-1590-7003-8e4a-51ab62cec96e"
     native = {"opencode": "ses_abcd1234", "kimi": f"session_{uuid}"}
     for prov in engines.all_providers():
+        if prov.manifest.runtime != "pty":
+            continue  # a `chat` engine (#1209) launches nothing; its refusal is pinned elsewhere
         argv = prov.launch_argv(native.get(prov.engine_id, uuid), cwd="/tmp/x", bypass=False)
         assert isinstance(argv, list) and argv and all(isinstance(a, str) for a in argv)
 

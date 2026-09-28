@@ -104,7 +104,10 @@ GOLDEN = {
     ("shell", "resume", True): ["{bin}", "-l"],
 }
 
-ORDER = ["claude", "opencode", "codex", "gemini", "antigravity", "kimi", "shell"]
+# The seven P2 engines in their historic order, plus the API agent (#1209, display order 80).
+ORDER = ["claude", "opencode", "codex", "gemini", "antigravity", "kimi", "apichat", "shell"]
+#: The seven terminal engines P2 converted — what "shipped" means in the equivalence tables below.
+SEVEN = [e for e in ORDER if e != "apichat"]
 
 
 def test_roster_is_the_seven_in_their_historic_order():
@@ -119,7 +122,8 @@ def fake_bin(tmp_path, monkeypatch):
     b.write_bytes(b"#!/bin/true\n")
     b.chmod(0o755)
     for p in engines.all_providers():
-        monkeypatch.setenv(p.manifest.binary.env_var, str(b))
+        if p.manifest.binary is not None:  # a `chat` engine (#1209) runs no binary
+            monkeypatch.setenv(p.manifest.binary.env_var, str(b))
     return b
 
 
@@ -127,7 +131,7 @@ def _fill(argv, b, cwd):
     return [x.replace("{bin}", str(b)).replace("{cwd}", cwd) for x in argv]
 
 
-@pytest.mark.parametrize("engine", ORDER)
+@pytest.mark.parametrize("engine", SEVEN)
 @pytest.mark.parametrize("bypass", [True, False])
 def test_argv_matches_what_shipped(engine, bypass, fake_bin, tmp_path):
     prov = engines.get(engine)
@@ -142,7 +146,7 @@ def test_argv_matches_what_shipped(engine, bypass, fake_bin, tmp_path):
     )
 
 
-@pytest.mark.parametrize("engine", ORDER)
+@pytest.mark.parametrize("engine", SEVEN)
 def test_capabilities_match_what_shipped(engine):
     p = engines.get(engine)
     assert (
@@ -154,7 +158,7 @@ def test_capabilities_match_what_shipped(engine):
     ) == GOLDEN[(engine, "caps")]
 
 
-@pytest.mark.parametrize("engine", ORDER)
+@pytest.mark.parametrize("engine", SEVEN)
 def test_ids_are_accepted_and_refused_as_before(engine):
     p = engines.get(engine)
     assert engines.parse_key(f"{engine}:{NATIVE[engine]}") == (p, NATIVE[engine])
@@ -175,7 +179,7 @@ def test_bare_ids_still_mean_claude():
     assert engines.parse_key(UUID)[0].engine_id == "claude"
 
 
-@pytest.mark.parametrize("engine", ORDER)
+@pytest.mark.parametrize("engine", SEVEN)
 def test_every_kind_hook_is_reached_through_the_provider(engine):
     from agent_sessions.plugins.provider import KIND_HOOKS
 
@@ -269,7 +273,7 @@ def test_the_packages_import_in_any_order(first):
         [sys.executable, "-c", code], capture_output=True, text=True, timeout=120, check=False
     )
     assert out.returncode == 0, out.stderr[-2000:]
-    assert out.stdout.strip() == "7"
+    assert out.stdout.strip() == str(len(ORDER))
 
 
 def test_the_ui_and_the_launcher_ask_the_same_question(tmp_path, monkeypatch):

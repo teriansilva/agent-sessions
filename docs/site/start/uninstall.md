@@ -26,6 +26,7 @@ does not remove, so the two cannot drift apart.
 - **Gemini CLI** — `~/.gemini/tmp`
 - **Antigravity** — `~/.gemini/antigravity-cli`
 - **Kimi Code** — `~/.kimi-code`
+- **API agent** — `~/.local/share/agent-sessions/chat`
 <!-- END generated:engine-stores -->
 
 BattleLab reads those stores, and for every engine except Claude Code it never writes to them at

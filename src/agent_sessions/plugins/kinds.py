@@ -298,7 +298,9 @@ def is_forbidden_entrypoint(basename: str) -> bool:
 #: against this fixed set, not against whichever in-tree manifests happened to load, so a missing
 #: or broken in-tree manifest cannot let a local plugin claim `claude` (independent review of
 #: PR #1112). The loader also reserves every directory under `plugins/first_party/`.
-RESERVED_IDS = frozenset({"claude", "opencode", "codex", "gemini", "antigravity", "kimi", "shell"})
+RESERVED_IDS = frozenset(
+    {"claude", "opencode", "codex", "gemini", "antigravity", "kimi", "shell", "apichat"}
+)
 
 
 def is_cli_probe(kind: str) -> bool:

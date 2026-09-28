@@ -185,7 +185,7 @@ test("roster: an invalid manifest is a card with its source and exact error, and
   expect(within(bad).queryByRole("link")).toBeNull();
   expect(within(bad).queryByRole("button")).toBeNull();
   expect(screen.getByText(/loaded ·/)).toHaveTextContent(
-    "Agents // 7 loaded · 0 retiring · 1 invalid",
+    "Agents // 8 loaded · 0 retiring · 1 invalid",
   );
 });
 
@@ -206,7 +206,7 @@ test("roster: a retiring engine shows why, and offers nothing to start", async (
     expect(chip).toHaveTextContent("(off)");
   }
   expect(screen.getByText(/loaded ·/)).toHaveTextContent(
-    "Agents // 7 loaded · 1 retiring · 0 invalid",
+    "Agents // 8 loaded · 1 retiring · 0 invalid",
   );
 });
 

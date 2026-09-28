@@ -66,6 +66,7 @@ from .auth import (
 from .devicelink import DeviceLinkStore
 from .routes import ai_review as ai_review_routes
 from .routes import auth as auth_routes
+from .routes import chat as chat_routes
 from .routes import files as files_routes
 from .routes import handoff as handoff_routes
 from .routes import history as history_routes
@@ -578,6 +579,8 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     history_routes.register(app, logged_in=_logged_in)
     # AI session review (#356 Phase 1): model-list proxy + manual review + exclude toggle.
     ai_review_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
+    # API agents (#1209): conversations BattleLab holds itself, and each agent's endpoint.
+    chat_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
     # Prompt catalog (#824): the one read/write surface for every AI system prompt.
     prompts_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
     # Cross-engine handoff (#597): prepare (seed preview + handle) / commit (mint + bind).

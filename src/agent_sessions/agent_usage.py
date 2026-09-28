@@ -1104,6 +1104,29 @@ def clean_access(v: object) -> dict | None:
     }
 
 
+CHAT_WINDOW_DAYS = 7
+
+
+def read_chat_tokens(
+    home: Path | None = None, *, days: int = CHAT_WINDOW_DAYS, engine: str | None = None
+) -> Report:
+    """A `chat` agent's usage (#1209): the token counts each response reported, recorded by
+    BattleLab when it stored the reply. BattleLab IS this agent, so its own store is the agent's
+    answer — asked, not reconstructed from a transcript. One count per settled turn."""
+    from . import chat_store
+    from .engines import base
+
+    now = time.time()
+    try:
+        root = base._store("battlelab-chat", home=home)
+        totals = chat_store.usage_since(root, now - days * 86400)
+    except Exception as exc:  # noqa: BLE001 — fail soft: this engine's row, never the sweep
+        return Report(engine=engine or "", source=SOURCE_TOKENS, at=now, error=type(exc).__name__)
+    return Report(
+        engine=engine or "", source=SOURCE_TOKENS, tokens=totals, window_days=days, at=now
+    )
+
+
 # --- the collection ------------------------------------------------------------------------------
 
 #: `usage.kind` → the built-in reporter that implements it. Adding a kind is reviewed code; which
@@ -1114,6 +1137,7 @@ KIND_REPORTERS: dict[str, object] = {
     "codex-rollout-field": read_codex_rate_limits,
     "codex-app-server-probe": probe_codex,
     "opencode-store-query": read_opencode_tokens,
+    "chat-response-tokens": read_chat_tokens,
 }
 
 
