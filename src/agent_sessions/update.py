@@ -31,11 +31,16 @@ build has not heard of. What this buys instead is precise and worth stating plai
 
 * **Caught:** retroactive mutation of any release this build knows about — the attack where
   an old, already-reviewed tag is quietly re-pointed.
-* **Not caught:** a brand-new tag published after this build was cut. Nothing shipped in an
-  older artifact can vouch for a newer one; that needs signature verification over the tag
-  object, which the issue anticipates as the eventual replacement.
+* **Not caught by the manifest:** a brand-new tag published after this build was cut. Nothing
+  shipped in an older artifact can list a newer release.
 
-So this is a real narrowing, not a complete answer, and it is not presented as one.
+**That gap is closed by release signatures (#832).** One key, embedded in the installer this
+install was itself verified with, authenticates every future release without needing to know
+it in advance. :func:`select_signed_target` asks the installed ``install.sh --verify-release``
+before anything is spawned, and the installer checks again after its clone, before building.
+The manifest stays as defence in depth for known tags — the check that still means something
+if the key is ever compromised and rotated — and pre-signing releases are exempt from the
+signature only by their pinned commits.
 """
 
 from __future__ import annotations
