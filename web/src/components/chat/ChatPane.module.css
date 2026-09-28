@@ -1,0 +1,271 @@
+/* The API agent's session pane (#1209). HUD grammar: no radius, 1px lines, mono uppercase labels.
+   Amber marks YOUR turns and the primary action only — never state. A failed request is a state,
+   so it takes the status-down tint. */
+.pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+.head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  min-width: 0;
+}
+.badge {
+  font: 700 11px var(--font-mono);
+  letter-spacing: 0.06em;
+  padding: 3px 6px;
+  border: 1px solid var(--engine-blue);
+  color: var(--engine-blue);
+  flex: none;
+}
+.title {
+  font-weight: 600;
+  font-size: 14px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.meta {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line-strong);
+  padding: 3px 8px;
+  min-height: 24px;
+  font: 11px var(--font-mono);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+.sq {
+  width: 6px;
+  height: 6px;
+  background: var(--accent);
+  flex: none;
+}
+.log {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.exchange {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.who {
+  font: 600 11px var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+  display: flex;
+  gap: 8px;
+}
+.ts {
+  color: var(--text-3);
+  font-weight: 400;
+}
+.user .who {
+  color: var(--accent);
+}
+.txt {
+  font-size: 14px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.user .txt {
+  border-left: 2px solid var(--accent);
+  padding: 2px 0 2px 12px;
+  white-space: pre-wrap;
+}
+.asst .txt {
+  border-left: 1px solid var(--line);
+  padding-left: 14px;
+}
+.prose {
+  white-space: pre-wrap;
+}
+.code {
+  margin: 8px 0;
+  padding: 10px 12px;
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  font: 12.5px/1.5 var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.notice {
+  margin: 0;
+  font: 12px var(--font-mono);
+  color: var(--text-muted);
+  border-left: 2px solid var(--line-strong);
+  padding-left: 10px;
+}
+.wait {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  font: 12px var(--font-mono);
+  color: var(--text-muted);
+}
+.bars span {
+  display: inline-block;
+  width: 10px;
+  height: 3px;
+  background: var(--accent);
+  margin-right: 3px;
+  opacity: 0.35;
+  animation: pulse 1.2s infinite;
+}
+.bars span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.bars span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes pulse {
+  50% {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bars span {
+    animation: none;
+    opacity: 0.7;
+  }
+}
+.failed {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
+}
+.err {
+  border: 1px solid color-mix(in srgb, var(--status-down) 55%, transparent);
+  background: color-mix(in srgb, var(--status-down) 10%, transparent);
+  color: var(--danger-text);
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.sendError {
+  margin: 0;
+  padding: 8px 14px;
+  font-size: 13px;
+  color: var(--danger-text);
+  border-top: 1px solid var(--line);
+}
+.center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 12px;
+  flex: 1;
+  padding: 24px;
+}
+.note {
+  margin: 0;
+  max-width: 460px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+.comp {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  padding: 12px 14px;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+}
+.ta {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  max-height: 40vh;
+  resize: vertical;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: var(--bg);
+  color: var(--text);
+  padding: 11px 12px;
+  font: 14px/1.4 inherit;
+}
+.ta:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.send,
+.ghost {
+  min-height: 44px;
+  min-width: 88px;
+  padding: 0 14px;
+  border-radius: 0;
+  font: 700 12px var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  cursor: pointer;
+}
+.send {
+  background: var(--accent);
+  color: var(--on-accent);
+  border: 0;
+}
+.send:disabled {
+  background: var(--surface-2);
+  color: var(--text-muted);
+  border: 1px solid var(--line-strong);
+  cursor: default;
+}
+.ghost {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+}
+.ghost:disabled {
+  color: var(--text-3);
+  cursor: default;
+}
+.send:focus-visible,
+.ghost:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+@media (max-width: 480px) {
+  .log {
+    padding: 14px 12px;
+  }
+  .model {
+    display: none; /* the header's model chip; the token chip stays */
+  }
+}

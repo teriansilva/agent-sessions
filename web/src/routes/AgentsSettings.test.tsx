@@ -12,8 +12,7 @@ import type {
   AgentDefaults,
   AppConfig,
   EngineDetail,
-  EngineInfo,
-} from "../types/api";
+  EngineInfo, AgentEndpoint } from "../types/api";
 import {
   AgentDefaultsPage,
   AgentDetail,
@@ -32,11 +31,23 @@ vi.mock("../lib/api", async () => {
       agentUsageRefresh: vi.fn(),
       setAgentBudgets: vi.fn(),
       setAgentDefaults: vi.fn(),
+      agentEndpoint: vi.fn(),
+      setAgentEndpoint: vi.fn(),
+      testAgentEndpoint: vi.fn(),
     },
   };
 });
 
 const FIXTURE = fixture.engines as EngineInfo[];
+const ENDPOINT: AgentEndpoint = {
+  base_url: "https://llm.example.lan/v1",
+  model: "qwen3-coder",
+  api_key_set: true,
+  context_window: 32768,
+  max_output_tokens: 4096,
+  request_timeout: null,
+  configured: true,
+};
 const byId = (id: string) => FIXTURE.find((e) => e.id === id)!;
 
 const RETIRING: EngineInfo = {
@@ -98,6 +109,7 @@ beforeEach(() => {
     agents: [],
   });
   vi.mocked(api.engineDetail).mockResolvedValue(DETAIL);
+  vi.mocked(api.agentEndpoint).mockResolvedValue(ENDPOINT);
 });
 
 function renderPage(

@@ -252,7 +252,7 @@ export function SessionView() {
   return (
     <div className={panel.sessionRow} ref={rowRef}>
       <div className={panel.sessionTerm}>
-        <RuntimeGate engine={shown.engine}>
+        <RuntimeGate engine={shown.engine} id={shown.id}>
           <Terminal
             ref={termRef}
             key={sessionKey}

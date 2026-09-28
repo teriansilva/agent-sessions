@@ -1,0 +1,107 @@
+/* An API agent's endpoint card (#1209). HUD grammar; amber is the primary action only. */
+.card {
+  border: 1px solid var(--line-strong);
+  background: var(--panel);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 640px;
+}
+.h {
+  margin: 0;
+  font: 700 12px var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+.field > span {
+  font: 600 11px var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.input {
+  min-height: 44px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: var(--bg);
+  color: var(--text);
+  padding: 10px 12px;
+  font: 13.5px var(--font-mono);
+  min-width: 0;
+}
+.input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.row > .field {
+  flex: 1 1 180px;
+}
+.note {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+.ok {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ok-text);
+}
+.err {
+  margin: 0;
+  font-size: 13px;
+  color: var(--danger-text);
+  border: 1px solid color-mix(in srgb, var(--status-down) 55%, transparent);
+  background: color-mix(in srgb, var(--status-down) 10%, transparent);
+  padding: 8px 10px;
+  overflow-wrap: anywhere;
+}
+.actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.primary,
+.ghost {
+  min-height: 44px;
+  min-width: 88px;
+  padding: 0 14px;
+  border-radius: 0;
+  font: 700 12px var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.primary {
+  background: var(--accent);
+  color: var(--on-accent);
+  border: 0;
+}
+.ghost {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+}
+.primary:disabled,
+.ghost:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.primary:focus-visible,
+.ghost:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

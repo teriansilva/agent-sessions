@@ -3,6 +3,10 @@
 import { DIRECTION_PREVIEW_PATH } from "./apiPaths";
 import { uploadStoredName } from "./templateMessage";
 import type {
+  AgentEndpoint,
+  AgentEndpointPatch,
+  ChatSession,
+  ChatTurn,
   DashboardSessions,
   AgentBudgets,
   AgentDefaults,
@@ -480,7 +484,43 @@ async function upload(
   return (await r.json()) as { path: string; name: string; stored?: string };
 }
 
+/** A session key's URL segment (`engine:native`). */
+const chatPath = (sid: string) => `/api/chat/${encodeURIComponent(sid)}`;
+
 export const api = {
+  // ---- API agents (#1209) ------------------------------------------------------------------------
+  /** Start a chat-runtime conversation; resolves to its session key (`engine:uuid`). */
+  chatNew: (engine: string, cwd: string) =>
+    mutateJson<{ id: string }>("POST", "/api/chat/new", { engine, cwd }),
+  chatGet: (sid: string) => getJsonWithDetail<ChatSession>(chatPath(sid)),
+  /** Idempotent on `turn_id` (client-minted): a repeat never appends. */
+  chatSend: (sid: string, turn_id: string, text: string) =>
+    mutateJson<{ turn: Partial<ChatTurn> & { turn_id: string; status: string } }>(
+      "POST",
+      `${chatPath(sid)}/messages`,
+      { turn_id, text },
+    ),
+  chatRetry: (sid: string, turn_id: string) =>
+    mutateJson<{ turn: { turn_id: string; status: string } }>(
+      "POST",
+      `${chatPath(sid)}/turns/${encodeURIComponent(turn_id)}/retry`,
+    ),
+  agentEndpoint: (engine: string) =>
+    getJsonWithDetail<AgentEndpoint>(`/api/agents/${encodeURIComponent(engine)}/endpoint`),
+  setAgentEndpoint: (engine: string, patch: AgentEndpointPatch) =>
+    mutateJson<AgentEndpoint>(
+      "PATCH",
+      `/api/agents/${encodeURIComponent(engine)}/endpoint`,
+      patch,
+    ),
+  /** Checks a DRAFT; saves nothing. */
+  testAgentEndpoint: (engine: string, draft: { base_url: string; api_key?: string }) =>
+    mutateJson<{ models: string[]; listing: "ok" | "unsupported" }>(
+      "POST",
+      `/api/agents/${encodeURIComponent(engine)}/endpoint/test`,
+      draft,
+    ),
+
   config: () => getJson<AppConfig>("/api/config"),
   version: () => getJson<{ version: string }>("/api/version"),
   /** The dashboard's live + recent sessions (#1123), one scoped read with its own read health. */

@@ -1,7 +1,7 @@
 # Engines
 
-BattleLab does not implement agents. It **organizes** them: six AI coding CLIs plus a plain shell,
-all presented through one session list and one terminal. Each one is a **plugin**, described by a
+BattleLab does not implement agents. It **organizes** them: six AI coding CLIs, a plain shell and
+an API agent that talks to a model endpoint you configure, all presented through one session list. Each one is a **plugin**, described by a
 single declarative manifest (`plugin.toml`) that tells BattleLab everything it needs: the binary,
 the shape of a session id, where the engine keeps its sessions, how to resume and start one, what
 the app may do with it, and how to show it.
@@ -17,7 +17,10 @@ history for the sidebar, and "resume" always means launching *that tool's own re
 under BattleLab's `dtach` PTY. Nothing is re-implemented and, with one exception, nothing is
 written back.
 
-The exception is Claude Code, whose archive moves its JSONL between `projects/` and
+The API agent is the one engine with no tool of its own, so BattleLab keeps its transcript itself
+(see [The API agent](#the-api-agent-a-model-endpoint-with-no-process)).
+
+The other exception is Claude Code, whose archive moves its JSONL between `projects/` and
 `projects-archive/`. Every other engine's archive is a flag in BattleLab's own sidecar. opencode's
 SQLite database in particular is opened read-only and never written, which is why renaming,
 favouriting and archiving an opencode session change nothing inside opencode.
@@ -96,6 +99,32 @@ Three consequences worth knowing:
   screen, and errors only when both are empty — so a shell is reviewed on its terminal screen
   alone, with no special-casing anywhere in the review code.
 
+## The API agent: a model endpoint with no process
+
+`apichat` declares `runtime.kind = "chat"`: there is no binary and no terminal. BattleLab sends the
+conversation to an OpenAI-compatible chat endpoint and shows the replies in a chat pane where the
+terminal would be. Set it up in Settings → **Agents** → **API agent** → **Endpoint**: a base URL, an
+API key and a model. **Test** checks the draft (it lists the endpoint's models) and saves nothing;
+**Save** stores it, and the agent appears in the new-session picker at once.
+
+What to know:
+
+- **It has no tools.** It can only talk: it cannot run commands, read your files or edit them.
+  Replies are shown as text, never executed and never typed into a terminal, so it is never a
+  handoff target and never driven by a mission.
+- **Your text leaves the host.** Every message, with the earlier turns that fit, goes to the
+  endpoint you configured. Template secrets are redacted on the way out, the same as AI review.
+- **The key stays with its endpoint.** It is encrypted at rest, never shown again, and bound to
+  the URL's origin: changing the URL to another host needs a new key (or removing the key).
+- **Long conversations are trimmed.** Each request carries as many recent turns as fit the model's
+  context window minus the reply reserve; older turns are left out, and the pane says how many. A
+  single message too long for the window is refused.
+- **A failed turn keeps your message.** Retry sends that same turn again. A timeout means the
+  endpoint may already have processed — and billed — the request, and the pane says so.
+- **Transcripts are BattleLab's.** Each conversation is a JSONL file under
+  `~/.local/share/agent-sessions/chat` (`AGENT_SESSIONS_CHAT_DIR`), mode 0600. Removing the
+  endpoint keeps them readable.
+
 ## Which engines are present
 
 Settings → **Agents** lists every engine with its state, and each engine has its own page showing
@@ -110,6 +139,8 @@ lookup at launch: the launcher execs the
 absolute path it resolved, after checking that nobody but you or root can replace that file or any
 directory above it. A binary you installed yourself is shown as **adopted** — BattleLab found it
 rather than installed it.
+
+The API agent has no binary: it is present once its endpoint has a URL, a key and a model.
 
 An engine without a runnable binary cannot start or resume a session. If its store is still on
 disk, its existing sessions stay listed, so you can find and archive them, but resuming one fails

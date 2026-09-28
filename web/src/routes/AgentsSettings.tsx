@@ -4,6 +4,7 @@
  *  `/api/engines/{id}` (one agent's detail). Nothing names an agent in code. The only things the
  *  operator edits are the budgets (moved here unchanged from "Agents & usage", #839) and the two
  *  agent defaults. */
+import { AgentEndpointCard } from "../components/settings/AgentEndpointCard";
 import {
   type CSSProperties,
   type Dispatch,
@@ -926,6 +927,14 @@ export function AgentDetail({ id }: { id: string }) {
             ]}
           />
         </section>
+
+        {d.runtime === "chat" && (
+          // An API agent (#1209): where its conversations go. Before the binary section, which
+          // for this runtime only says there is none.
+          <section className={styles.section} aria-label="Endpoint">
+            <AgentEndpointCard engine={d.id} />
+          </section>
+        )}
 
         <section className={styles.section} aria-labelledby="agent-binary-h">
           <h2 id="agent-binary-h">Binary &amp; provenance</h2>

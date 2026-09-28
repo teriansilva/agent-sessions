@@ -2222,3 +2222,50 @@ export interface AnalyticsState {
   decided: boolean;
   available: boolean;
 }
+
+// ---- API agents (#1209): conversations BattleLab holds itself -----------------------------------
+
+/** One exchange of a chat-runtime conversation: the operator's message and, once settled, the
+ *  reply. `pending` is in flight; `failed` carries an operator-safe `reason` (never a key). */
+export interface ChatTurn {
+  turn_id: string;
+  text: string;
+  ts: number;
+  status: "pending" | "done" | "failed";
+  reason: string | null;
+  reply: string | null;
+  reply_ts: number | null;
+  usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | null;
+  /** The reply stopped at the output limit (it is kept, and marked). */
+  truncated: boolean;
+  /** Earlier exchanges left out of this request by the context budget. */
+  dropped: number;
+}
+
+export interface ChatSession {
+  session_id: string;
+  cwd: string;
+  created_at: number;
+  turns: ChatTurn[];
+  in_flight: string | null;
+}
+
+/** An API agent's endpoint, as the server shows it: never the key, only whether one is stored. */
+export interface AgentEndpoint {
+  base_url: string;
+  model: string;
+  api_key_set: boolean;
+  context_window: number;
+  max_output_tokens: number;
+  request_timeout: number | null;
+  configured: boolean;
+}
+
+export interface AgentEndpointPatch {
+  base_url?: string;
+  /** A new key; `null` clears it; omitted keeps the stored one. */
+  api_key?: string | null;
+  model?: string;
+  context_window?: number;
+  max_output_tokens?: number;
+}

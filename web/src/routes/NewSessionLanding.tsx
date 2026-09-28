@@ -1,11 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useConfig } from "../app/config";
 import { MAP_PATH, useMapWindows } from "../app/workspaceWindows";
 import { FolderPickerModal } from "../components/FolderPickerModal";
-import { api } from "../lib/api";
+import { ApiError, api } from "../lib/api";
 import { mintNewSessionId } from "../lib/newSession";
 import {
+  engineInfo,
   engineName,
   mintsOwnId,
   resolveDefault,
@@ -138,8 +139,60 @@ export function NewSessionLanding() {
   const mintKnown = roster.loaded && mintsOwnId(engine) !== undefined;
   const canStart = Boolean(engine && cwd && mintKnown);
 
+  const [startError, setStartError] = useState<string | null>(null);
+  // Chat creation is single-flight (Hermes on #1219): each `/api/chat/new` mints and persists a
+  // conversation, so a second click while one is pending would create a duplicate. The ref is
+  // the reservation (set before the await, so a same-tick double click is caught); the state
+  // disables the button. `mounted` stops a late completion from navigating after the operator
+  // has left the form.
+  const chatStarting = useRef(false);
+  const [startingChat, setStartingChat] = useState(false);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  // A `chat` engine (#1209) launches nothing: its conversation is created on the server, which
+  // mints the id, and the session opens like any other.
+  const startChat = async () => {
+    if (chatStarting.current) return;
+    chatStarting.current = true;
+    setStartingChat(true);
+    setStartError(null);
+    try {
+      const { id: key } = await api.chatNew(engine, cwd);
+      if (!mounted.current) return;
+      const id = key.slice(key.indexOf(":") + 1);
+      if (returnToMap && workspace?.requestOpen && workspace.hasRoom) {
+        workspace.requestOpen({ key, engine, id, title: "New session" });
+        navigate(MAP_PATH);
+      } else {
+        navigate(`/s/${engine}/${id}`);
+      }
+      const owningId = owningProjectId(cwd, entities);
+      if (projectSel && projectSel !== owningId) {
+        api.setSessionProject(key, projectSel).catch(() => {});
+      }
+    } catch (e) {
+      if (!mounted.current) return;
+      setStartError(
+        e instanceof ApiError && e.message ? e.message : "Couldn’t start that conversation.",
+      );
+    } finally {
+      chatStarting.current = false;
+      if (mounted.current) setStartingChat(false);
+    }
+  };
+
   const start = () => {
     if (!canStart) return;
+    if (engineInfo(engine)?.runtime === "chat") {
+      void startChat();
+      return;
+    }
     const id = mintNewSessionId(engine);
     if (!id) return;
     const fresh = { cwd, bypass };
@@ -319,6 +372,8 @@ export function NewSessionLanding() {
           </p>
         ) : null}
 
+        {/* A `chat` agent (#1209) has no tools, so there are no permission prompts to skip. */}
+        {engineInfo(engine)?.runtime !== "chat" && (
         <label className={styles.checkbox}>
           <input
             type="checkbox"
@@ -327,15 +382,21 @@ export function NewSessionLanding() {
           />
           <span>Skip permission prompts</span>
         </label>
+        )}
 
         <button
           type="button"
           className={`${styles.start} shine`}
-          disabled={!canStart}
+          disabled={!canStart || startingChat}
           onClick={start}
         >
           Start session
         </button>
+        {startError && (
+          <p className={styles.hint} role="alert" data-testid="start-error">
+            {startError}
+          </p>
+        )}
         <p className={styles.hint}>
           …or open an existing session from the list.
         </p>

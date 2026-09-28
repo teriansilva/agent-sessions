@@ -23,6 +23,7 @@ vi.mock("../lib/api", async (orig) => {
       projectEntities: vi.fn(),
       createProject: vi.fn(),
       setSessionProject: vi.fn(),
+      chatNew: vi.fn(),
     },
   };
 });
@@ -368,4 +369,41 @@ test("a default that is not installed falls back visibly, never silently (#1128)
     (screen.getByRole("combobox", { name: "Agent" }) as HTMLSelectElement)
       .value,
   ).toBe("claude");
+});
+
+test("starting an API-agent conversation is single-flight — two clicks create ONE (Hermes on #1219)", async () => {
+  const user = userEvent.setup();
+  let resolve!: (v: { id: string }) => void;
+  vi.mocked(api.chatNew).mockReset().mockReturnValue(
+    new Promise((r) => {
+      resolve = r;
+    }),
+  );
+  renderLanding(["apichat"], { default_project: "/d" });
+  const project = await screen.findByRole("combobox", { name: "Project" });
+  await user.selectOptions(project, "");
+  const startBtn = screen.getByRole("button", { name: /start session/i });
+  await user.click(startBtn);
+  await user.click(startBtn);
+  expect(api.chatNew).toHaveBeenCalledTimes(1);
+  expect(startBtn).toBeDisabled();
+  resolve({ id: "apichat:0190a3b2-1c2d-7e3f-8a9b-0c1d2e3f4a5b" });
+  await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
+});
+
+test("a chat creation that completes after the form is gone does not navigate (Hermes on #1219)", async () => {
+  const user = userEvent.setup();
+  let resolve!: (v: { id: string }) => void;
+  vi.mocked(api.chatNew).mockReset().mockReturnValue(
+    new Promise((r) => {
+      resolve = r;
+    }),
+  );
+  const { unmount } = renderLanding(["apichat"], { default_project: "/d" });
+  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  unmount();
+  resolve({ id: "apichat:0190a3b2-1c2d-7e3f-8a9b-0c1d2e3f4a5b" });
+  await new Promise((r) => setTimeout(r, 0));
+  expect(navigateMock).not.toHaveBeenCalled();
 });

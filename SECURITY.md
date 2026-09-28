@@ -43,6 +43,14 @@ These are pinned by tests and/or CI — regressions fail the build:
   sticky state live in the app's own sidecar, never in the engine's data.
 - **Bounded scrollback memory.** Per-session scrollback rings are LRU-capped (max 64 resident)
   with eager reclaim when a session's `dtach` master exits (PR #121).
+- **Model endpoints are operator-configured outbound HTTP.** AI review and the API agent
+  (`apichat`) send text to an HTTP model endpoint that **you** configure in Settings, on an
+  authenticated, CSRF-guarded route; no manifest can name a URL. Every call goes through one
+  transport (`review._post_chat`), so registered system prompts and template-secret redaction
+  apply, and a ratchet test pins every outbound HTTP site. A stored API key is AES-GCM encrypted
+  at rest, never returned in a response, and bound to the origin it was saved for — pointing the
+  URL at another host requires a new key. The API agent has no tools: its replies are rendered
+  as text and never executed or typed into a terminal.
 - **Supply-chain pin for the vendored Python.** The installer verifies the vendored Python
   download against pinned SHA-256 sums and fails closed when no sha256 tool exists.
 - **Public-mirror scrubbing.** The publish pipeline runs an export-ignore filter, scrub pass and

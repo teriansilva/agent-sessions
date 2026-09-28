@@ -449,7 +449,7 @@ export const SessionWindow = memo(function SessionWindow({
             instead of the pane — and with the pane gone, its portaled chips (and therefore
             the Files toggle) never render either, so the drawer below stays unreachable for
             a retired engine, exactly as before. */}
-        <RuntimeGate engine={engine}>
+        <RuntimeGate engine={engine} id={id}>
         <Terminal
           engine={engine}
           id={id}
