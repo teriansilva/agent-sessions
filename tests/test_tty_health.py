@@ -455,3 +455,33 @@ def test_an_ambiguous_topology_never_reaches_the_terminal(monkeypatch, pty_pair)
     assert v.repaired is False
     assert termios.tcgetattr(slave) == before
     assert _is_cooked(slave)
+
+
+# --- unread input (#1070's paste boundary) ------------------------------------------------
+
+
+def test_unread_input_counts_what_the_reader_has_not_read_yet(pty_pair):
+    import tty
+
+    master, slave = pty_pair
+    tty.setraw(slave)  # a raw TUI: the line discipline hands bytes over as they arrive
+    device, rdev = os.ttyname(slave), os.fstat(slave).st_rdev
+    assert tty_health.unread_input(device, rdev) == 0
+    os.write(master, b"\x01\x0b")
+    # The kernel hands master writes to the slave's queue on a worker, not synchronously.
+    deadline = time.time() + 2
+    while tty_health.unread_input(device, rdev) != 2 and time.time() < deadline:
+        time.sleep(0.005)
+    assert tty_health.unread_input(device, rdev) == 2
+    os.read(slave, 16)
+    assert tty_health.unread_input(device, rdev) == 0
+
+
+def test_unread_input_refuses_a_device_that_is_not_the_one_resolved(pty_pair):
+    _, slave = pty_pair
+    assert tty_health.unread_input(os.ttyname(slave), os.fstat(slave).st_rdev + 1) is None
+
+
+def test_agent_input_is_none_for_an_unresolvable_session(monkeypatch):
+    monkeypatch.setattr(tty_health, "_resolve", lambda key: None)
+    assert tty_health.agent_input("claude:11111111-2222-3333-4444-555555555555") is None

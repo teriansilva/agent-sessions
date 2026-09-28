@@ -46,9 +46,11 @@ freezes every session this process serves (the #678 failure mode).
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import logging
 import os
 import stat
+import struct
 import termios
 import time
 from dataclasses import dataclass
@@ -461,3 +463,69 @@ def ensure_raw(key: str) -> Verdict:
     except Exception as e:  # pragma: no cover — defence in depth around a best-effort probe
         log.debug("tty_health: check failed for %s: %s", key, e)
         return Verdict(UNKNOWN, f"check raised {type(e).__name__}")
+
+
+def agent_input(key: str) -> tuple[int, str, int] | None:
+    """``(dtach master pid, agent pts device, rdev)`` for ``key``, or ``None`` if unresolvable.
+
+    The two downstream hops a keystroke crosses after our own pty: the dtach master that relays
+    it, and the engine's pty that it lands in. BLOCKING (a ``/proc`` scan). The device is
+    re-verified by :func:`unread_input` on every open, so a pty recycled after this call is
+    refused rather than measured.
+    """
+    try:
+        prov, native = engines.parse_key(key, allow_new_placeholder=True)
+        master_pid = reaper._find_master_pid(prov.engine_id, native)
+        r = _resolve(key)
+    except Exception:  # pragma: no cover — best-effort, like every probe here
+        return None
+    if master_pid is None or r is None:
+        return None
+    return master_pid, r[0], r[1]
+
+
+# Where a relay process sleeps when it is waiting for input and holds nothing (#1070).
+_WAITING_WCHANS = ("select", "poll")
+
+
+def waiting_for_input(pid: int) -> bool | None:
+    """Is ``pid`` asleep waiting for input — so it holds no bytes it has yet to forward?
+
+    For the relay processes between us and the agent (the dtach client and master), which are
+    single-threaded select loops. Data arriving on a descriptor wakes the process (runnable, ``R``)
+    inside the sender's own write, so a relay seen sleeping (``S``) in select/poll has forwarded
+    everything it was sent. ``None`` if ``/proc`` can't say. When ``wchan`` is hidden (``0``),
+    the state alone decides.
+    """
+    try:
+        with open(f"/proc/{pid}/stat", encoding="ascii", errors="replace") as fh:
+            state = fh.read().rsplit(")", 1)[1].split()[0]
+        with open(f"/proc/{pid}/wchan", encoding="ascii", errors="replace") as fh:
+            wchan = fh.read().strip()
+    except (OSError, IndexError):
+        return None
+    if state != "S":
+        return False
+    if wchan in ("", "0"):
+        return True
+    return any(w in wchan for w in _WAITING_WCHANS)
+
+
+def unread_input(device: str, rdev: int) -> int | None:
+    """Bytes written to this PTY slave that its reader has not read yet (``TIOCINQ``).
+
+    ``None`` when the device can't be opened as the one resolved. Read-only: one open, one
+    ``fstat``, one ioctl, no termios change. The compose paste waits on this reaching ``0``
+    before it is written (#1070), because an agent that reads the line-clear and the paste in
+    ONE read holds the paste pending and swallows the Enter.
+    """
+    fd = _open_pts(device, rdev)
+    if fd is None:
+        return None
+    try:
+        return struct.unpack("i", fcntl.ioctl(fd, termios.TIOCINQ, b"\0\0\0\0"))[0]
+    except OSError:
+        return None
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(fd)

@@ -118,6 +118,28 @@ _NUDGE_ROWS_DELTA = 2
 _NUDGE_MAX_WAIT_S = 1.0
 _NUDGE_POLL_S = 0.02
 
+# Paste boundary (#1070). The composer sends its line-clear (Ctrl-A Ctrl-K) and then a bracketed
+# paste as two frames. If the agent reads both in ONE read, claude (measured on 2.1.283) folds
+# the paste into a pending "[Pasted text …]" and the Enter that follows only finalises it: the
+# text sits in the prompt unsubmitted until the operator presses Enter again. No spacing on the
+# WRITE side can prevent that — a claude that doesn't read for 150 ms (load, GC, a render)
+# re-joins frames written any distance apart. So a frame that OPENS a bracketed paste is written
+# only once everything before it has been READ, established hop by hop rather than by timing:
+# our pty to the dtach client has no unread bytes, the dtach client and master are both asleep
+# waiting for input (a relay holding bytes is runnable — see tty_health.waiting_for_input), and
+# the agent's pty has no unread bytes. Sampled upstream to downstream, so a byte moving on during
+# a sample lands in a hop sampled after it. One hop no ioctl can see: bytes written to a pty
+# master reach the slave's read queue through a kernel worker, so for a moment after a write they
+# are uncounted and the dtach client not yet woken. Sampling therefore starts no sooner than
+# _PASTE_FLIP_GRACE_S after our last input write — free in practice, since the composer already
+# spaces its clear 80 ms ahead of the paste. Bounded, so a wedged agent or relay costs a paste at
+# most _PASTE_DRAIN_MAX_S (queueing for a probe worker included); a hop /proc can't describe
+# costs nothing and the paste is written as before.
+_PASTE_START = b"\x1b[200~"
+_PASTE_DRAIN_MAX_S = 1.0
+_PASTE_DRAIN_POLL_S = 0.005
+_PASTE_FLIP_GRACE_S = 0.02
+
 # Re-nudge window (#349): a client resize landing within this many seconds of attach can
 # coalesce with the fresh-attach nudge inside the agent's own resize debounce — shrink +
 # client-resize + restore net out to zero geometry change and the agent never repaints
@@ -198,6 +220,23 @@ def _seed_executor() -> ThreadPoolExecutor:
             max_workers=_SEED_MAX_DELIVERY_WORKERS, thread_name_prefix="handoff-seed"
         )
     return _seed_pool
+
+
+# The paste boundary's /proc and pty probes (#1070) get their own small pool, like the seed
+# deliveries above: on the shared default executor, idle pump_out reads can hold every worker and
+# the probe — and the Enter queued behind the paste — would wait for one indefinitely. Each probe
+# is a few non-blocking opens and reads, and a connection has at most one in flight.
+_PROBE_WORKERS = 2
+_probe_pool: ThreadPoolExecutor | None = None
+
+
+def _probe_executor() -> ThreadPoolExecutor:
+    global _probe_pool
+    if _probe_pool is None:
+        _probe_pool = ThreadPoolExecutor(
+            max_workers=_PROBE_WORKERS, thread_name_prefix="paste-boundary"
+        )
+    return _probe_pool
 
 
 # A submit is Enter — CR (what a real terminal sends) or LF. Keystrokes that merely edit the
@@ -309,6 +348,16 @@ class _InputGate:
             return False
         self._queue.append(data)
         return True
+
+    def take(self) -> list[bytes]:
+        """Hand back everything queued so far, in arrival order, and STAY held.
+
+        For a replay that awaits between chunks (#1070's paste boundary): input arriving during
+        the replay queues behind it instead of overtaking it. :meth:`release` opens the gate once
+        a ``take`` comes back empty.
+        """
+        queued, self._queue = self._queue, []
+        return queued
 
     def release(self) -> list[bytes]:
         """Open the gate; hand back everything queued, in arrival order. Idempotent."""
@@ -592,6 +641,13 @@ async def run(
         os.close(master)
         os.close(slave)
         raise
+    # Where our bytes wait for the dtach client (#1070's paste boundary). Kept as a path + device
+    # number, never as an open fd: the parent holding the slave open would stop the master from
+    # seeing EOF when the client exits.
+    try:
+        client_pts: tuple[str, int] | None = (os.ttyname(slave), os.fstat(slave).st_rdev)
+    except OSError:
+        client_pts = None
     os.close(slave)  # parent keeps only the master end
     loop = asyncio.get_event_loop()
     # Every writer to this master is serialized (#701 round 4 P1): pump_in and the seed
@@ -759,13 +815,16 @@ async def run(
     # finally, so a cancelled or failed probe can never strand the operator's bytes.
     input_gate = _InputGate(bool(buf_key))
 
+    # When owner input last reached our pty (#1070's flip-buffer grace).
+    last_input = {"at": 0.0}
+
     def _release_seed_hold(*, delivered: bool) -> None:
         if not seed_hold["active"]:
             return
         seed_hold["active"] = False
         queued = b"".join(seed_queue)
         seed_queue.clear()
-        if delivered and queued:
+        if delivered and queued and not _gated():
             with contextlib.suppress(OSError), write_lock:
                 os.write(master, queued)
             _note_submit(buf_key, queued)
@@ -775,11 +834,89 @@ async def run(
         # straight through under the lock.
         if input_gate.hold(data):
             return
+        _write_past_gate(data)
+
+    def _input_settled(downstream: tuple[int, str, int] | None) -> bool | None:
+        """Has everything written so far been read by the agent? ``None``: unmeasurable.
+
+        BLOCKING (opens ptys, reads /proc) — run on the probe pool only. Hops in the order a
+        byte travels: our pty to the dtach client, the client, the dtach master, the agent's pty.
+        """
+        if client_pts is None:
+            return None
+        n = tty_health.unread_input(*client_pts)
+        if n is None:
+            return None
+        if n:
+            return False
+        if downstream is None:
+            return True
+        master_pid, *agent_pts = downstream
+        for pid in (proc.pid, master_pid):
+            idle = tty_health.waiting_for_input(pid)
+            if idle is None:
+                return None
+            if not idle:
+                return False
+        n = tty_health.unread_input(*agent_pts)
+        return None if n is None else n == 0
+
+    async def _await_paste_boundary() -> None:
+        """Hold a bracketed paste until the input before it has been read (#1070)."""
+        pool = _probe_executor()
+
+        async def settle() -> None:
+            wait = last_input["at"] + _PASTE_FLIP_GRACE_S - time.monotonic()
+            if wait > 0:
+                await asyncio.sleep(wait)
+            downstream = (
+                await loop.run_in_executor(pool, tty_health.agent_input, buf_key)
+                if buf_key
+                else None
+            )
+            quiet = 0
+            while True:
+                settled = await loop.run_in_executor(pool, _input_settled, downstream)
+                if settled is None:
+                    return  # can't measure → today's behaviour, never a stall
+                quiet = quiet + 1 if settled else 0
+                if quiet >= 2:
+                    return
+                await asyncio.sleep(_PASTE_DRAIN_POLL_S)
+
+        # The cap covers everything, including waiting for a probe worker.
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(settle(), _PASTE_DRAIN_MAX_S)
+
+    async def _replay_gated_input() -> None:
+        # The #805 hold's queue, written in order with the paste boundary between chunks. The gate
+        # stays held throughout, so input arriving meanwhile queues BEHIND the replay. If the
+        # replay is cancelled (viewer gone), what is left is written at once: never stranded.
+        pending: list[bytes] = []
+        try:
+            while pending := input_gate.take():
+                while pending:
+                    if pending[0].startswith(_PASTE_START):
+                        await _await_paste_boundary()
+                    _write_past_gate(pending.pop(0))
+        finally:
+            for chunk in pending + input_gate.release():
+                _write_past_gate(chunk)
+
+    def _write_past_gate(data: bytes) -> None:
+        # Ownership is re-checked HERE, at the write, not only when the frame arrived (#1070
+        # review): a paste can wait up to _PASTE_DRAIN_MAX_S, and a takeover in that window
+        # (`_demotion_guard` sets the gate and keeps this stream open) must not let the displaced
+        # viewer's paste into the new owner's terminal. Also covers the gated replay and its
+        # cancellation flush, which end here too.
+        if _gated():
+            return
         if seed_hold["active"]:
             seed_queue.append(data)
             return
         with contextlib.suppress(OSError), write_lock:
             os.write(master, data)
+        last_input["at"] = time.monotonic()
         _note_submit(buf_key, data)
 
     def _schedule_trailing_nudge() -> None:
@@ -842,6 +979,15 @@ async def run(
                 # is the source of truth — not the client.
                 if kind == "i" and not _gated():
                     data = obj.get("d", "").encode("utf-8", "replace")
+                    # #1070: awaited INLINE, so frames behind the paste (its Enter) wait in the
+                    # socket and can never overtake it. Only a paste opener waits; typing doesn't.
+                    # While the #805 gate holds, the replay applies the boundary instead.
+                    if (
+                        data.startswith(_PASTE_START)
+                        and not input_gate.held
+                        and not seed_hold["active"]
+                    ):
+                        await _await_paste_boundary()
                     _write_owner_input(data)
                 elif kind == "r" and not _gated():
                     with contextlib.suppress(ValueError, TypeError):
@@ -901,8 +1047,7 @@ async def run(
         try:
             await _repair_tty(buf_key)
         finally:
-            for chunk in input_gate.release():
-                _write_owner_input(chunk)
+            await _replay_gated_input()
         # When and how long to wait before the forced repaint (#304/#349/#443, and #652 T-P1:
         # fire immediately for a fresh attach) is decided by `_nudge_plan` — see its docstring.
         settle = _nudge_plan(have, blank_attach)

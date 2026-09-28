@@ -11,10 +11,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
+import shutil
+import subprocess
 import sys
 import time
 from unittest import mock
 
+import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
@@ -1713,6 +1717,19 @@ def test_the_input_gate_passes_through_once_released():
     assert gate.release() == [], "release is idempotent and drains nothing twice"
 
 
+def test_take_hands_back_the_queue_and_keeps_the_gate_held():
+    """#1070: a replay that awaits between chunks must not let new input overtake it."""
+    gate = webterm._InputGate(True)
+    gate.hold(b"a")
+    assert gate.take() == [b"a"]
+    assert gate.held is True
+    assert gate.hold(b"b") is True, "input arriving during the replay queues behind it"
+    assert gate.take() == [b"b"]
+    assert gate.take() == []
+    assert gate.release() == []
+    assert gate.held is False
+
+
 def test_an_ungated_attach_needs_no_queue():
     """No buf_key ⇒ nothing to repair ⇒ input must never be delayed."""
     gate = webterm._InputGate(False)
@@ -2321,3 +2338,280 @@ def test_webterm_spawn_timeout_drains_before_admission_and_pty_release(tmp_path,
             pass
 
     asyncio.run(main())
+
+
+# --- #1070: the compose paste is written only after the line-clear was READ ----------------
+
+# A raw-mode TUI that does not read for 300 ms (claude under load, GC, a long render), then logs
+# every read() it makes until it sees the Enter. The composer's three frames reach the server
+# back to back — exactly what an event-loop stall or relay coalescing delivers.
+_STALLED_READER = """
+import os, sys, time, tty
+tty.setraw(0)
+os.write(1, b"READY")
+time.sleep(0.3)
+reads = []
+end = time.time() + 5
+while time.time() < end:
+    d = os.read(0, 65536)
+    reads.append(d)
+    with open(sys.argv[1], "w") as f:
+        f.write(repr(reads))
+    if b"\\r" in b"".join(reads):
+        break
+"""
+
+
+class _FramesThenLinger:
+    """Hands out its frames back to back once the reader is raw (its setraw flushes input)."""
+
+    def __init__(self, frames, linger_s=3.0):
+        self._frames = list(frames)
+        self._linger_s = linger_s
+        self._seen = b""
+        self._ready: asyncio.Event | None = None
+
+    async def receive(self):
+        if self._ready is None:
+            self._ready = asyncio.Event()
+        await asyncio.wait_for(self._ready.wait(), 10)
+        if self._frames:
+            return self._frames.pop(0)
+        await asyncio.sleep(self._linger_s)
+        return {"type": "websocket.disconnect"}
+
+    async def send_bytes(self, b):
+        self._seen += b
+        if b"READY" in self._seen:
+            if self._ready is None:
+                self._ready = asyncio.Event()
+            self._ready.set()
+
+    async def send_text(self, t):
+        pass
+
+    async def close(self, code=None):
+        pass
+
+
+def _compose_frames():
+    paste = "\x1b[200~first line\nsecond line\x1b[201~"
+    return [{"text": json.dumps({"t": "i", "d": d})} for d in ("\x01\x0b", paste, "\r")]
+
+
+def _stalled_reads(tmp_path, frames):
+    import ast
+
+    script = tmp_path / "reader.py"
+    script.write_text(_STALLED_READER)
+    log = tmp_path / "reads.txt"
+    argv = [sys.executable, str(script), str(log)]
+    asyncio.run(webterm.run(_FramesThenLinger(frames), argv, cwd=str(tmp_path), buf_key=None))
+    return ast.literal_eval(log.read_text())
+
+
+def test_the_paste_never_shares_a_read_with_the_line_clear(tmp_path):
+    reads = _stalled_reads(tmp_path, _compose_frames())
+    clear_read = next(r for r in reads if b"\x01\x0b" in r)
+    assert b"\x1b[200~" not in clear_read, (
+        f"the agent read the clear and the paste together — claude holds that paste pending "
+        f"and swallows the Enter: {reads!r}"
+    )
+    assert b"".join(reads) == b"\x01\x0b\x1b[200~first line\nsecond line\x1b[201~\r"
+
+
+def test_plain_input_never_waits_on_the_paste_boundary(tmp_path, monkeypatch):
+    """Only a frame that OPENS a bracketed paste measures the queues; typing costs nothing."""
+    calls = []
+    real = webterm.tty_health.unread_input
+    monkeypatch.setattr(webterm.tty_health, "unread_input", lambda *a: calls.append(a) or real(*a))
+    frames = [{"text": json.dumps({"t": "i", "d": d})} for d in ("a", "b", "\x01\x0b", "\r")]
+    reads = _stalled_reads(tmp_path, frames)
+    assert calls == []
+    assert b"".join(reads) == b"ab\x01\x0b\r"
+
+
+# --- #1070 review: ownership, the dtach hop and the probe pool ----------------------------
+
+# A raw-mode reader for the review regressions: records where it reads from, announces READY,
+# optionally stalls, then logs every read with its time until it sees the Enter or runs out.
+_TIMED_READER = """
+import json, os, sys, time, tty
+out, stall = sys.argv[1], float(sys.argv[2])
+tty.setraw(0)
+with open(out + ".who", "w") as f:
+    json.dump({"pid": os.getpid(), "ppid": os.getppid(), "tty": os.ttyname(0),
+               "rdev": os.fstat(0).st_rdev}, f)
+os.write(1, b"READY")
+time.sleep(stall)
+reads = []
+end = time.time() + 6
+while time.time() < end:
+    d = os.read(0, 65536)
+    reads.append([time.time(), d.decode("latin-1")])
+    with open(out, "w") as f:
+        json.dump(reads, f)
+    if b"\\r" in d:
+        break
+"""
+
+
+class _HookedFrames(_FramesThenLinger):
+    """`_FramesThenLinger` that runs ``on_ready`` once, when READY is first seen."""
+
+    def __init__(self, frames, on_ready=None, linger_s=3.0):
+        super().__init__(frames, linger_s)
+        self._on_ready = on_ready
+
+    async def send_bytes(self, b):
+        await super().send_bytes(b)
+        if self._on_ready is not None and self._ready is not None and self._ready.is_set():
+            hook, self._on_ready = self._on_ready, None
+            hook()
+
+
+def _timed_reader(tmp_path, stall_s=0.0):
+    script = tmp_path / "timed_reader.py"
+    script.write_text(_TIMED_READER)
+    out = tmp_path / "timed_reads.json"
+    return [sys.executable, str(script), str(out), str(stall_s)], out
+
+
+def _timed_reads(out) -> list[tuple[float, bytes]]:
+    if not out.exists():
+        return []
+    return [(t, d.encode("latin-1")) for t, d in json.loads(out.read_text())]
+
+
+def test_a_takeover_during_the_paste_wait_drops_the_paste(tmp_path, monkeypatch):
+    """The displaced viewer's paste must not reach the new owner's terminal (review P1)."""
+    gate = asyncio.Event()
+    real = webterm.tty_health.unread_input
+
+    def measure_then_lose_ownership(*a):
+        gate.set()  # `_demotion_guard` fires while the paste is waiting
+        return real(*a)
+
+    monkeypatch.setattr(webterm.tty_health, "unread_input", measure_then_lose_ownership)
+    argv, out = _timed_reader(tmp_path, stall_s=0.3)
+    asyncio.run(
+        webterm.run(
+            _FramesThenLinger(_compose_frames()),
+            argv,
+            cwd=str(tmp_path),
+            buf_key=None,
+            read_only_gate=gate,
+        )
+    )
+    assert b"".join(d for _, d in _timed_reads(out)) == b"\x01\x0b"
+
+
+def test_a_takeover_during_the_gated_replay_drops_the_queued_input(tmp_path, monkeypatch):
+    """Input queued behind the #805 repair is re-checked at the write, not only on arrival."""
+    gate = asyncio.Event()
+    frames = _FramesThenLinger(_compose_frames())
+
+    async def repair_then_lose_ownership(_key):
+        while frames._frames:  # every frame has been queued behind the repair
+            await asyncio.sleep(0.01)
+        gate.set()
+
+    monkeypatch.setattr(webterm, "_repair_tty", repair_then_lose_ownership)
+    monkeypatch.setattr(webterm.tty_health, "agent_input", lambda key: None)
+    argv, out = _timed_reader(tmp_path)
+    asyncio.run(
+        webterm.run(
+            frames,
+            argv,
+            cwd=str(tmp_path),
+            buf_key="claude:11111111-2222-3333-4444-555555555555",
+            read_only_gate=gate,
+        )
+    )
+    assert _timed_reads(out) == []
+
+
+@pytest.mark.skipif(not shutil.which("dtach"), reason="dtach required")
+def test_the_paste_waits_for_a_stalled_dtach_master(monkeypatch):
+    """The clear can sit in dtach's socket while both measured ptys are empty (review P1).
+
+    Production shape: our pty → `dtach -a` → socket → `dtach -n` master → the agent's pty. The
+    master and the agent are stopped as the frames arrive; the master resumes at 0.3 s and the
+    agent at 0.5 s. Sampling the two ptys alone saw both empty at once and wrote the paste, and
+    the agent then read the clear, the paste and the Enter in one read.
+    """
+    import signal
+    import tempfile
+    import uuid
+    from pathlib import Path
+
+    work = Path(tempfile.mkdtemp(prefix="pb-", dir="/tmp"))  # AF_UNIX paths are short
+    sock = str(work / "s")
+    argv, out = _timed_reader(work)
+    who = Path(str(out) + ".who")
+    subprocess.run(["dtach", "-n", sock, "-z", *argv], check=True, cwd=work)
+    procs = {}
+    try:
+        deadline = time.time() + 10
+        while not who.exists() and time.time() < deadline:
+            time.sleep(0.02)
+        info = json.loads(who.read_text())
+        procs = {"master": info["ppid"], "agent": info["pid"]}
+        monkeypatch.setattr(
+            webterm.tty_health,
+            "agent_input",
+            lambda key: (info["ppid"], info["tty"], info["rdev"]),
+        )
+
+        def stall_the_downstream():
+            os.kill(procs["master"], signal.SIGSTOP)
+            os.kill(procs["agent"], signal.SIGSTOP)
+            loop = asyncio.get_running_loop()
+            loop.call_later(0.3, os.kill, procs["master"], signal.SIGCONT)
+            loop.call_later(0.5, os.kill, procs["agent"], signal.SIGCONT)
+
+        frames = _HookedFrames(_compose_frames(), on_ready=stall_the_downstream)
+        # READY was already printed before we attached; dtach replays nothing, so say it again.
+        frames._seen = b"READY"
+        asyncio.run(
+            webterm.run(
+                frames,
+                ["dtach", "-a", sock, "-z", "-E", "-r", "winch"],
+                cwd=str(work),
+                buf_key=f"claude:{uuid.uuid4()}",
+            )
+        )
+        reads = [d for _, d in _timed_reads(out)]
+        clear_read = next(r for r in reads if b"\x01\x0b" in r)
+        assert b"\x1b[200~" not in clear_read, f"clear and paste in one agent read: {reads!r}"
+        assert b"".join(reads).endswith(b"\x1b[201~\r")
+    finally:
+        for pid in procs.values():
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGCONT)
+                os.kill(pid, signal.SIGTERM)
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def test_a_saturated_probe_pool_still_writes_the_paste_within_the_cap(tmp_path, monkeypatch):
+    """Queueing for a probe worker counts against the 1 s cap (review P2)."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    release = threading.Event()
+    wedged = ThreadPoolExecutor(max_workers=1)
+    wedged.submit(release.wait, 30)  # the only worker never comes back in time
+    monkeypatch.setattr(webterm, "_probe_executor", lambda: wedged)
+    argv, out = _timed_reader(tmp_path)
+    try:
+        asyncio.run(
+            webterm.run(_FramesThenLinger(_compose_frames()), argv, cwd=str(tmp_path), buf_key=None)
+        )
+    finally:
+        release.set()
+        wedged.shutdown(wait=False, cancel_futures=True)
+    reads = _timed_reads(out)
+    assert b"".join(d for _, d in reads) == b"\x01\x0b\x1b[200~first line\nsecond line\x1b[201~\r"
+    clear_at = next(t for t, d in reads if b"\x01\x0b" in d)
+    paste_at = next(t for t, d in reads if b"\x1b[200~" in d)
+    assert paste_at - clear_at < webterm._PASTE_DRAIN_MAX_S + 0.5
