@@ -914,11 +914,6 @@ export interface DashboardSessions {
   recent: { total: number; rows: DashboardRecentRow[] };
 }
 
-export interface AgentCounts {
-  live: number;
-  working: number;
-}
-
 export interface SessionsPage {
   sessions: Session[];
   next_offset: number | null;

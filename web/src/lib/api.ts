@@ -3,7 +3,6 @@
 import { DIRECTION_PREVIEW_PATH } from "./apiPaths";
 import { uploadStoredName } from "./templateMessage";
 import type {
-  AgentCounts,
   DashboardSessions,
   AgentBudgets,
   AgentDefaults,
@@ -484,8 +483,6 @@ async function upload(
 export const api = {
   config: () => getJson<AppConfig>("/api/config"),
   version: () => getJson<{ version: string }>("/api/version"),
-  /** Host-wide running / working agent counts (#1085) — cheap, no session walk. */
-  agents: () => getJson<AgentCounts>("/api/agents"),
   /** The dashboard's live + recent sessions (#1123), one scoped read with its own read health. */
   dashboardSessions: (liveLimit = 5, recentLimit = 6) =>
     getJson<DashboardSessions>(

@@ -49,7 +49,6 @@ import { SessionsProvider } from "./SessionsContext";
 import { WorkspaceProvider } from "./WorkspaceContext";
 import { EngineRosterProvider } from "./EngineRosterProvider";
 import { useSessionsStore } from "./sessionsStore";
-import { useAgentCounts } from "./useAgentCounts";
 import {
   clampW,
   DEFAULT_W,
@@ -351,13 +350,11 @@ function Layout() {
     [railSlotEl, dismissRail, railHeadEl, railFootEl],
   );
 
-  // Sidebar footer + classification-bar counts (#211, redefined in #1085). They used to count
-  // the sidebar's LOADED rows — a 20-row page — and called "printed in the last 10 s" LIVE, so a
-  // host with a dozen agents up read "20 ENGAGED · 1 LIVE". Now both come from the server:
-  // LIVE is an agent process running (thinking, waiting on you, or printing — watched or not),
-  // the sidebar counts its whole FILTERED list, and the bottom bar counts the whole host.
+  // Sidebar footer counts (#211, redefined in #1085): LIVE is an agent process running
+  // (thinking, waiting on you, or printing — watched or not), over the sidebar's whole FILTERED
+  // list. The bottom bar no longer carries a host-wide count: it disagreed with the dashboard's
+  // scoped one, which counts only sessions the list can show.
   const { counts } = useSessionsStore();
-  const agents = useAgentCounts();
 
   // Session-list order toggle in the sidebar header (#548) — same server-synced pref as the
   // Settings → Appearance radio (#506). `orderPending` is the optimistic flip; it reconciles
@@ -722,18 +719,6 @@ function Layout() {
               TAP TO RELOAD
             </button>
           )}
-          <span
-            className="hud-tag"
-            data-testid="agent-counts"
-            title="Agents running on this host, and how many printed output in the last 10 seconds"
-          >
-            <span
-              className={`hud-led ${(agents?.live ?? 0) > 0 ? "up" : "idle"}`}
-              aria-hidden="true"
-            />
-            <b className="num">{agents?.live ?? "—"}</b> AGENTS LIVE ·{" "}
-            <b className="num">{agents?.working ?? "—"}</b> WORKING
-          </span>
         </footer>
       </div>
       {(showSetup || wizardReplay) && (

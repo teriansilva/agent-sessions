@@ -24,8 +24,6 @@ vi.mock("../lib/api", () => ({
         username: "marcus",
       }),
     version: vi.fn().mockResolvedValue({ version: "0.0.0" }),
-    // #1085: the bottom bar polls host-wide agent counts.
-    agents: vi.fn().mockResolvedValue({ live: 3, working: 1 }),
     // #726 Phase 3: the topbar mounts the notification bell, which polls on mount.
     notifications: vi.fn().mockResolvedValue({ notifications: [], unread: 0 }),
     markNotificationsRead: vi
@@ -133,14 +131,11 @@ test("choosing Settings in the operator menu lands on the first settings section
   expect(window.location.pathname).toBe("/settings/appearance");
 });
 
-test("the bottom bar counts agents host-wide: running, and how many are working (#1085)", async () => {
+test("the bottom bar carries no host-wide agent count — the dashboard's scoped one is the count", async () => {
   const { container } = render(<App />);
   const bar = container.querySelector("footer.hud-classbar") as HTMLElement;
-  await waitFor(() =>
-    expect(within(bar).getByTestId("agent-counts")).toHaveTextContent(
-      "3 AGENTS LIVE · 1 WORKING",
-    ),
-  );
+  expect(within(bar).queryByTestId("agent-counts")).toBeNull();
+  expect(bar).not.toHaveTextContent(/AGENTS LIVE/);
 });
 
 test("desktop: the single command-bar toggle collapses then re-expands the sidebar (#132/#211)", async () => {

@@ -1,9 +1,8 @@
-"""RUNNING vs WORKING, counted over the whole list and the whole host (#1085).
+"""RUNNING vs WORKING, counted over the whole filtered list (#1085).
 
 The footers said "20 ENGAGED · 1 LIVE" on a host with a dozen agents up: both numbers were counted
 over the sidebar's loaded 20-row page, and LIVE meant "printed in the last 10 s". Running is a live
-dtach master, stamped per row and totalled over the FILTERED set — never the page — and the host
-count ignores filters and scope entirely.
+dtach master, stamped per row and totalled over the FILTERED set — never the page.
 """
 
 from __future__ import annotations
@@ -69,8 +68,6 @@ def test_running_is_stamped_and_totalled_over_the_filtered_set_not_the_page(
     # A filter narrows the list count…
     only_tmp = c.get("/api/sessions?q=hello tmp").json()
     assert only_tmp["total"] == 1 and only_tmp["live_total"] == 0
-    # …never the host count, which also includes the agent the list does not show.
-    assert c.get("/api/agents").json()["live"] == 3
 
 
 def test_working_is_the_subset_that_printed_in_the_window(auth_cfg, fake_jsonl, monkeypatch):
@@ -78,9 +75,10 @@ def test_working_is_the_subset_that_printed_in_the_window(auth_cfg, fake_jsonl, 
     now = time.time()
     last = {f"claude:{A}": now - 1, f"claude:{B}": now - 600}
     monkeypatch.setattr(webterm, "get_last_output_at", lambda k: last.get(k))
-    d = _client(auth_cfg).get("/api/agents").json()
+    c = _client(auth_cfg)
     # B is running but quiet (thinking, or waiting on the operator): live, not working.
-    assert d == {"live": 2, "working": 1}
+    assert c.get("/api/sessions?running=live").json()["total"] == 2
+    assert c.get("/api/sessions?running=working").json()["total"] == 1
 
 
 def test_the_probe_runs_once_per_ttl_and_fails_soft(auth_cfg, fake_jsonl, monkeypatch):
@@ -88,7 +86,7 @@ def test_the_probe_runs_once_per_ttl_and_fails_soft(auth_cfg, fake_jsonl, monkey
     c = _client(auth_cfg)
     c.get("/api/sessions")
     c.get("/api/sessions?limit=1")
-    c.get("/api/agents")
+    c.get("/api/sessions?limit=2")
     assert len(calls) == 1
 
     def boom():
@@ -99,15 +97,3 @@ def test_the_probe_runs_once_per_ttl_and_fails_soft(auth_cfg, fake_jsonl, monkey
     d = c.get("/api/sessions").json()
     assert d["live_total"] == 0
     assert d["total"] >= 1
-    assert c.get("/api/agents").json() == {"live": 0, "working": 0}
-
-
-def test_agents_route_counts_the_host_without_the_list(auth_cfg, fake_jsonl, monkeypatch):
-    _running(monkeypatch, A, OUTSIDE)
-    c = _client(auth_cfg)
-    assert c.get("/api/agents").json() == {"live": 2, "working": 0}
-
-
-def test_agents_route_requires_login(auth_cfg, fake_jsonl):
-    c = TestClient(create_app(auth_cfg), base_url="https://testserver")
-    assert c.get("/api/agents", follow_redirects=False).status_code in (401, 303)

@@ -63,7 +63,7 @@ def _running_keys() -> frozenset[str]:
 def _running_state() -> tuple[frozenset[str], bool]:
     """``(keys, ok)`` — the same probe as :func:`_running_keys`, with its READ HEALTH (#1123).
 
-    The bottom bar and the list fail soft to "none running", which is right for them. A dashboard
+    The list fails soft to "none running", which is right for them. A dashboard
     tile that shows "0 running" after a failed probe states something false, so it reads ``ok``
     and says it could not read instead."""
     global _running_cache
@@ -82,17 +82,6 @@ def _running_state() -> tuple[frozenset[str], bool]:
     with _running_lock:
         _running_cache = (time.monotonic(), keys, ok)
     return keys, ok
-
-
-def _agent_counts(running: frozenset[str]) -> dict[str, int]:
-    """Host-wide: agents running, and how many of them printed in the working window."""
-    now = time.time()
-    working = 0
-    for k in running:
-        last = webterm.get_last_output_at(k)
-        if last is not None and now - last < _WORKING_WINDOW_S:
-            working += 1
-    return {"live": len(running), "working": working}
 
 
 # Compose-draft (#477) bounds: keep a server-side draft sane and the sidecar small. A draft
@@ -383,14 +372,6 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             return
         key = row["id"]
         row["mission"] = index.get(key) or index.get(engines.physical_key(key, aliases))
-
-    @app.get("/api/agents")
-    async def agent_counts(_: str = Depends(logged_in)) -> JSONResponse:
-        """Host-wide running / working counts (#1085) for the bottom bar, which must stay right
-        on pages where the session list is not mounted. Counts only — no ids, no rows — and no
-        transcript walk: one TTL-cached socket probe (``_running_keys``), off the event loop."""
-        running = await asyncio.to_thread(_running_keys)
-        return JSONResponse(_agent_counts(running))
 
     def _dashboard_sync(live_limit: int, recent_limit: int) -> dict:
         """The BattleLab dashboard's session reads (#1123), from ONE scoped row set.
@@ -768,8 +749,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             "sessions": window,
             "next_offset": next_offset,
             "total": len(rows),
-            # Of those, how many have an agent running (#1085). The host-wide count is
-            # `GET /api/agents`, which the bottom bar polls on every route.
+            # Of those, how many have an agent running (#1085).
             "live_total": sum(1 for r in rows if r["running"]),
             "facets": facets,
             **pinned,

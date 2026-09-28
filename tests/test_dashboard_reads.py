@@ -180,8 +180,6 @@ def test_counts_equal_their_drill_downs_and_an_excluded_live_session_counts_nowh
     # The destinations: the SAME numbers, from the list the tile links to.
     assert c.get("/api/sessions?running=live").json()["total"] == live["total"]
     assert c.get("/api/sessions?running=working").json()["total"] == live["working"]
-    # The host-wide bottom-bar count answers a different question and is unchanged.
-    assert c.get("/api/agents").json()["live"] == 4
 
 
 def test_a_capped_preview_still_counts_the_whole_set(auth_cfg, fake_jsonl, monkeypatch):

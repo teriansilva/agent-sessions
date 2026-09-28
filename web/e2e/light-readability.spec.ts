@@ -90,7 +90,7 @@ test.describe("light theme (#473)", () => {
     await expect(topbar).toHaveCSS("border-bottom-color", hexToRgb("#c9ccd2"));
     await expect(classbar).toHaveCSS("border-top-color", hexToRgb("#c9ccd2"));
     // Telemetry tags lift one step: --text-3 → --text-2 (#41454d).
-    await expect(classbar.locator(".hud-tag").last()).toHaveCSS(
+    await expect(classbar.locator(".hud-tag").first()).toHaveCSS(
       "color",
       hexToRgb("#41454d"),
     );
@@ -126,7 +126,7 @@ test.describe("dark theme stays as-is (#473 sanity)", () => {
       "border-bottom-color",
       "rgba(255, 255, 255, 0.08)",
     );
-    await expect(page.locator(".hud-classbar .hud-tag").last()).toHaveCSS(
+    await expect(page.locator(".hud-classbar .hud-tag").first()).toHaveCSS(
       "color",
       hexToRgb("#6f747d"),
     );

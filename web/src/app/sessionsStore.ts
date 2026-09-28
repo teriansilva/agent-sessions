@@ -2,8 +2,7 @@ import { createContext, useContext } from "react";
 import type { Session } from "../types/api";
 
 /** The sidebar footer's counts (#1085), published by the list that fetched them. They describe
- *  its FILTERED set, never the loaded page. (The bottom bar's host-wide count is its own poll,
- *  `useAgentCounts`, because the list is not mounted on every route.) */
+ *  its FILTERED set, never the loaded page. */
 export interface SessionCounts {
   total: number;
   live: number;
