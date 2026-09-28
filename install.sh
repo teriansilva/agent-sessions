@@ -31,11 +31,13 @@ REPO_URL="${AGENT_SESSIONS_REPO:-https://github.com/teriansilva/agent-sessions.g
 # different host from the git remote), and on an update carried by the already-verified
 # running release.
 #
-# ONE entry covers every FUTURE release, which a per-release manifest cannot do.
+# One key covers every FUTURE release, which a per-release manifest cannot do. Two lines: the
+# primary signing key and the recovery key (docs: scripts/release-signers).
 #
 # Kept byte-identical to scripts/release-signers by tests/test_release_signing.py.
 # Consumed from Phase 2 onward (#832); inert here by design.
-RELEASE_SIGNERS='release@agent-sessions ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOjW+gor5BTHMCjx6GWhCOJXdmR9Lei9elkzV7j++zbX agent-sessions release signing'
+RELEASE_SIGNERS='release@agent-sessions ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOjW+gor5BTHMCjx6GWhCOJXdmR9Lei9elkzV7j++zbX agent-sessions release signing
+release@agent-sessions ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE3LUURaBPIGDEAluzrmDCS++MwgQ0DHL23J+3TjcLKL agent-sessions release recovery'
 # Signatures are REQUIRED for any release strictly newer than this. The LAST UNSIGNED
 # release is recorded rather than the first signed one because it is a fact today, whereas
 # the first signed version number is a guess about a cut nobody has made yet.

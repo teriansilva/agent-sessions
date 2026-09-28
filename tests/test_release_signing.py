@@ -12,10 +12,8 @@ on top of it and `git verify-tag` offers no machine-readable status for SSH sign
 from __future__ import annotations
 
 import json
-import os
 import re
 import subprocess
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -39,13 +37,33 @@ def _embedded(name: str) -> str:
 # ---- the trust root itself ------------------------------------------------------
 
 
-def test_signers_file_holds_exactly_one_public_key_entry():
+#: The trust root, by fingerprint. Pinned here so a swapped or edited key line is a red build, not a
+#: silent change of who can sign releases. Custody of both: docs/release-signing.md.
+PRIMARY_FPR = "SHA256:2aBGF8oP1PEvJFiD2/GWVLnl8sC3IJ2lhNahZjm/reY"
+RECOVERY_FPR = "SHA256:kUrh/5H71d27nPuIZan3Uv+//Ny+Bxy2IExdOAbQvVo"
+
+
+def _fingerprint(line: str) -> str:
+    _principal, keytype, b64, *_ = line.split()
+    out = subprocess.run(
+        ["ssh-keygen", "-lf", "-"], input=f"{keytype} {b64}\n", capture_output=True, text=True
+    )
+    assert out.returncode == 0, out.stderr
+    return out.stdout.split()[1]
+
+
+def test_signers_file_holds_the_primary_then_the_recovery_key():
+    """Two entries, one principal. The recovery key (Recovery §2) signs only the bridge release
+    that replaces a lost primary; sharing the principal keeps every `Good "git" signature for
+    release@agent-sessions` check valid for it without a second rule."""
     lines = _signer_lines(SIGNERS.read_text())
-    assert len(lines) == 1, f"expected one signer, got {len(lines)}: {lines}"
-    principal, keytype, b64, *_ = lines[0].split()
-    assert principal == "release@agent-sessions"
-    assert keytype == "ssh-ed25519"
-    assert len(b64) > 40
+    assert len(lines) == 2, f"expected primary + recovery, got {len(lines)}: {lines}"
+    for line in lines:
+        principal, keytype, b64, *_ = line.split()
+        assert principal == "release@agent-sessions"
+        assert keytype == "ssh-ed25519"
+        assert len(b64) > 40
+    assert [_fingerprint(line) for line in lines] == [PRIMARY_FPR, RECOVERY_FPR]
 
 
 def test_the_trust_root_never_contains_private_key_material():
@@ -63,7 +81,7 @@ def test_embedded_root_matches_the_signers_file_byte_for_byte():
     copy is the one that matters operationally, and the committed file is what humans read and
     edit. Two copies of a trust root is a correctness hazard unless something forces them equal.
     """
-    assert _embedded("RELEASE_SIGNERS") == _signer_lines(SIGNERS.read_text())[0]
+    assert _embedded("RELEASE_SIGNERS") == "\n".join(_signer_lines(SIGNERS.read_text()))
 
 
 def test_embedded_cutover_matches_the_trust_record():
@@ -188,29 +206,19 @@ def test_the_custody_record_names_durable_identities():
 
 
 def test_the_documented_fingerprint_is_derived_from_the_committed_key():
-    """Bind the recorded fingerprint to the actual key, not merely to the word "Fingerprint".
+    """Bind every recorded fingerprint to an actual key, not merely to the word "Fingerprint".
 
     An earlier version only asserted the heading existed. That stays green through a key
     rotation, leaving the custody record pointing at a fingerprint nobody can match — which is
     the one thing an operator uses to confirm they are holding the right key in an incident.
     """
-    entry = _signer_lines(SIGNERS.read_text())[0].split()
-    with tempfile.NamedTemporaryFile("w", suffix=".pub", delete=False) as fh:
-        fh.write(f"{entry[1]} {entry[2]}\n")
-        pub = fh.name
-    try:
-        out = subprocess.run(
-            ["ssh-keygen", "-lf", pub], capture_output=True, text=True, check=True
-        ).stdout
-    finally:
-        os.unlink(pub)
-    derived = next(w for w in out.split() if w.startswith("SHA256:"))
-
     doc = (REPO / "docs/release-signing.md").read_text()
-    assert derived in doc, (
-        f"custody record does not carry the committed key's fingerprint ({derived}) — "
-        "it is stale, which makes it useless for confirming the right key"
-    )
+    for line in _signer_lines(SIGNERS.read_text()):
+        derived = _fingerprint(line)
+        assert derived in doc, (
+            f"custody record does not carry the committed key's fingerprint ({derived}) — "
+            "it is stale, which makes it useless for confirming the right key"
+        )
 
 
 # ---- the verifier's behaviour, which Phase 2 will depend on ---------------------

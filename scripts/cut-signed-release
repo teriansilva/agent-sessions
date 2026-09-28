@@ -14,6 +14,10 @@
 # A signature an unattended pipeline can produce on demand is a signature an attacker can produce
 # on demand. Making the cut manual is the point, not a limitation.
 #
+# That argument covers the PRIMARY key. The recovery key in the same trust root is, for now, kept
+# with its passphrase on CI-reachable storage (docs/release-signing.md, Accepted risk), so until
+# it moves the trust root as a whole is not beyond a PR job's reach.
+#
 # ORDERING IS THE OTHER HALF OF THE DESIGN
 #
 # A release exists on two remotes and the two pushes cannot be one transaction. One of them --
