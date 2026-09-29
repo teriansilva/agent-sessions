@@ -45,6 +45,7 @@ from . import (
     mission_probes,
     mission_questions,
     missions,
+    permission_prompts,
     prefs,
 )
 from . import orchestrator_ledger as ledger
@@ -1804,6 +1805,15 @@ async def run_pass(
         # this skipped path deliberately does not make, and a question about the objective —
         # whose title, state and gate `ask` reads for itself — is worth more than no question.
         await _ask_owed(mission_id, a, "", out, path=path, pace=pace)
+        # …AND THE PERMISSION CARDS (#1213). A card is itself a pending decision, so a mission
+        # showing one is "waiting on the operator" and lands here on every later pass. Answering it
+        # usually brings the NEXT dialog (Grep, then Shell), and that one must get its card too —
+        # otherwise the mission waits, silently, exactly where the incident did. Reads and a card
+        # only: no model call, no nudge, no byte.
+        for srow in row.get("sessions") or []:
+            sk = srow.get("session_key")
+            if sk and srow.get("removed_at") is None:
+                await _sync_permission(mission_id, str(sk), row, {})
         return out
 
     # (3b) CURRENTLY-HELD SESSIONS ONLY. `get_mission` returns the complete historical roster, so
@@ -1884,6 +1894,46 @@ async def run_pass(
     return out
 
 
+async def _sync_permission(
+    mission_id: str, session_key: str, row: dict, out: dict
+) -> tuple[dict | None, dict]:
+    """Keep the session's permission card in step with its screen (#1213). ``(dialog, result)``.
+
+    The dialog is read from the live frame, not from the model — it is a fact, and it is the
+    operator's. `mission_permission.sync_card` writes one ledger escalation per dialog (answered
+    through `/choose`), retires a card whose dialog is gone, and yields to any other live action on
+    the session. Failure is today's behaviour: no card, never a crash of the pass.
+    """
+    from . import mission_fence, mission_permission
+
+    try:
+        observed = await asyncio.to_thread(
+            mission_permission.observe, mission_fence.physical_of(session_key)
+        )
+    except Exception:  # noqa: BLE001 — an unreadable screen is today's behaviour
+        log.debug("supervisor: permission read failed for %s", session_key, exc_info=True)
+        return None, {}
+    perm = observed.get("permission") if isinstance(observed, dict) else None
+    # THE DIALOG IS KNOWN FROM HERE ON, whatever happens to its card (#1218 review): a card that
+    # could not be stored must not take the "never nudge into a dialog" gate down with it. The
+    # caller escalates in words instead.
+    try:
+        result = await missions.run_admitted(
+            lambda: mission_permission.sync_card(mission_id, session_key, row, observed)
+        )
+    except Exception:  # noqa: BLE001
+        log.warning("supervisor: permission card for %s could not be stored", session_key)
+        result = {"failed": True}
+    if not isinstance(perm, dict):
+        return None, result
+    out["permission"] = {
+        "summary": permission_prompts.summary(perm),
+        "card": (result.get("card") or {}).get("id"),
+        "existing": bool(result.get("existing")),
+    }
+    return perm, result
+
+
 async def _pass_one_session(
     mission_id: str,
     *,
@@ -1954,6 +2004,16 @@ async def _pass_one_session(
         if stalled:
             out["stalled"] = since_what
 
+    # (3e) A TOOL-PERMISSION DIALOG ON SCREEN (#1213). Read from the live frame, not from the model:
+    # the dialog is a fact, and it is the operator's — so it gets a decision card (a ledger
+    # escalation the operator answers through `/choose`), it names itself in the escalation, and
+    # nothing below may nudge, draft or choose into it: a `continue` typed into the dialog would
+    # answer it. The card is kept in step with the screen on EVERY pass, independent of the
+    # once-per-episode timeline escalation, so a second prompt (Grep, then Shell) gets its own card.
+    # BEFORE the model call (#1218 review): the card is mechanical, and an endpoint outage must
+    # not keep the operator from seeing the dialog.
+    permission, permission_card = await _sync_permission(mission_id, session_key, row, out)
+
     # IS IT AT REST? (#1214) Only asked when paced: a session that has stopped is read once,
     # promptly; one that is working is read on the slow interval.
     rest: str | None = None
@@ -2005,6 +2065,11 @@ async def _pass_one_session(
         proposal = None
         draft = None
         escalate_because = "the agent is waiting on a decision only you can make"
+    if permission is not None:
+        # The dialog IS the decision, whatever the model read — and its words name it (#1213).
+        proposal = None
+        draft = None
+        escalate_because = permission_prompts.summary(permission)
 
     # A parsed engine menu is precisely the pause the operator-approved opt-in can answer.
     # Permission dialogs never enter this path, and an explicit needs_approval still escalates.
@@ -2033,7 +2098,7 @@ async def _pass_one_session(
     # of it. A session whose engine store has not grown since dispatch is sitting at something that
     # eats keystrokes — a trust dialog, an auth wall, a first-run prompt — so `continue` goes into a
     # wall and the budget drains against a wall. The operator is the only one who can clear it.
-    if stalled:
+    if stalled and permission is None:
         proposal = None
         draft = None
         escalate_because = f"the agent has written nothing since it started ({out['stalled']})"
@@ -2045,16 +2110,32 @@ async def _pass_one_session(
         for o in a["objectives"]:
             if o["met"] or o["stood_down"] or o.get("awaiting_answer"):
                 continue
-            reason = f"{o['title'] or o['key']}: {escalate_because}"
+            # A permission dialog names ITSELF, not the objective (#1213): the operator needs to
+            # know what is being asked, and the objective is not what the agent is waiting on.
+            reason = (
+                escalate_because
+                if permission is not None
+                else f"{o['title'] or o['key']}: {escalate_because}"
+            )
+            meta = (
+                {"prompt": permission, "card": (permission_card.get("card") or {}).get("id")}
+                if permission is not None
+                else None
+            )
             if await escalate(
                 mission_id,
                 session_key=session_key,
                 objective_key=o["key"],
                 reason=reason,
+                meta=meta,
                 path=path,
             ):
                 out["escalated"] = {"objective_key": o["key"], "reason": reason}
-                _announce(row, session_key, reason)
+                # A card written or already live on this session was announced by the ledger's own
+                # bell path, tied to the action so answering it retires the row. A second,
+                # untied row would be the duplicate nothing retracts.
+                if not (permission_card.get("card") or permission_card.get("existing")):
+                    _announce(row, session_key, reason)
                 break
         return out
 

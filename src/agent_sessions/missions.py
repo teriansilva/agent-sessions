@@ -65,7 +65,7 @@ log = logging.getLogger(__name__)
 MISSION_ID_RE = re.compile(r"^msn_[0-9a-f]{32}$")
 
 #: Bumped whenever the schema changes; ``PRAGMA user_version`` carries it in the file.
-SCHEMA_VERSION = 32
+SCHEMA_VERSION = 33
 
 #: How many live SUB-AGENTS one mission may hold, beyond the session it is already running.
 #:
@@ -1303,6 +1303,27 @@ AUTOMATION_GENERATIONS_DDL = (
 _SCHEMA += ";\n".join(AUTOMATION_GENERATIONS_DDL) + ";\n"
 
 
+# PERMISSION HOLDS (#1213, #1218 review 5405). An operator's answer to an agent's tool-permission
+# dialog that MAY have reached the session holds that dialog: it is not answered or offered again
+# until positive evidence says the agent moved on. Its own table, owned by no mission and outside
+# the action ledger, so neither ledger compaction nor mission retention can drop an unresolved
+# hold. Written BEFORE the answer is claimed; released only by `permission_hold_release`.
+PERMISSION_HOLDS_DDL = (
+    "CREATE TABLE IF NOT EXISTS permission_holds ("
+    "choose_id TEXT PRIMARY KEY, session_key TEXT NOT NULL, identity TEXT NOT NULL, "
+    "mission_id TEXT, growth_mark INTEGER, created_at REAL NOT NULL, "
+    "released_at REAL, released_by TEXT)",
+    "CREATE INDEX IF NOT EXISTS permission_holds_open "
+    "ON permission_holds(session_key, identity) WHERE released_at IS NULL",
+)
+_SCHEMA += ";\n".join(PERMISSION_HOLDS_DDL) + ";\n"
+
+
+def _migrate_32_to_33(con) -> None:
+    for statement in PERMISSION_HOLDS_DDL:
+        con.execute(statement)
+
+
 def _migrate_31_to_32(con) -> None:
     # Like the other ladder steps, tolerate a partial historical store. An absent roster
     # still refuses ownership reads; it must never be interpreted as an empty roster.
@@ -1400,6 +1421,8 @@ def _migrate(con) -> int:
             _migrate_30_to_31(con)
         if version < 32:
             _migrate_31_to_32(con)
+        if version < 33:
+            _migrate_32_to_33(con)
     con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return SCHEMA_VERSION
 
@@ -10608,6 +10631,114 @@ def _attention_rows(con, mission_ids: list[str]):
         tuple(mission_ids),
     ).fetchall()
     return rows, open_q, escalated
+
+
+def permission_hold_add(
+    choose_id: str,
+    *,
+    session_key: str,
+    identity: str,
+    mission_id: str | None,
+    growth_mark: int | None,
+    now: float | None = None,
+    path: Path | None = None,
+) -> None:
+    """Record a hold BEFORE an answer to a permission dialog is claimed (#1213). Raises on any
+    store error — the caller must then send nothing."""
+    if not choose_id or not session_key or not identity:
+        raise MissionError("a permission hold needs an answer, a session and a dialog", status=500)
+    with _write_lock:
+        con = _ready(path)
+        try:
+            con.execute(
+                "INSERT INTO permission_holds "
+                "(choose_id, session_key, identity, mission_id, growth_mark, created_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (
+                    choose_id,
+                    session_key,
+                    identity,
+                    mission_id,
+                    growth_mark,
+                    time.time() if now is None else now,
+                ),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+
+def permission_holds_open(
+    session_key: str, identity: str | None = None, *, path: Path | None = None
+) -> list[dict]:
+    """The session's unreleased holds (optionally for one dialog), oldest first. Raises on any
+    store error: an unreadable inventory is never "nothing is held"."""
+    con = _ready(path)
+    try:
+        if identity is None:
+            rows = con.execute(
+                "SELECT * FROM permission_holds WHERE session_key=? AND released_at IS NULL "
+                "ORDER BY created_at",
+                (session_key,),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT * FROM permission_holds WHERE session_key=? AND identity=? "
+                "AND released_at IS NULL ORDER BY created_at",
+                (session_key, identity),
+            ).fetchall()
+    finally:
+        con.close()
+    return [dict(r) for r in rows]
+
+
+def permission_hold_release(
+    choose_id: str, by: str, *, now: float | None = None, path: Path | None = None
+) -> bool:
+    """Release one hold, once. True iff THIS call released it."""
+    with _write_lock:
+        con = _ready(path)
+        try:
+            cur = con.execute(
+                "UPDATE permission_holds SET released_at=?, released_by=? "
+                "WHERE choose_id=? AND released_at IS NULL",
+                (time.time() if now is None else now, _cap(by, 200), choose_id),
+            )
+            con.commit()
+            return cur.rowcount == 1
+        finally:
+            con.close()
+
+
+def current_escalations(mission_id: str, *, path: Path | None = None) -> list[str]:
+    """The reasons of this mission's CURRENT, UNRESOLVED escalations, newest first (#1213).
+
+    Exactly the predicates the attention flag uses (`_attention_rows`): the objective is neither met
+    nor waived, the escalation is for its current episode, the objective is not stood down, and no
+    question is holding it. The newest escalation EVENT is not the same thing — a newer escalation
+    can be settled while an older one is still what the mission is waiting on (#1218 review).
+    Read-only.
+    """
+    validate_id(mission_id)
+    con = _ready(path)
+    try:
+        rows = con.execute(
+            "SELECT e.reason AS reason FROM mission_escalations e "
+            "JOIN mission_objectives o "
+            "  ON o.mission_id = e.mission_id AND o.key = e.objective_key "
+            "LEFT JOIN mission_objective_episode ep "
+            "  ON ep.mission_id = e.mission_id AND ep.objective_key = e.objective_key "
+            "WHERE e.mission_id = ? "
+            "  AND o.state NOT IN ('met','waived') "
+            "  AND e.episode = COALESCE(ep.episode, 1) "
+            "  AND COALESCE(ep.stood_down, 0) = 0 "
+            "  AND ep.question_seq IS NULL "
+            "ORDER BY e.at DESC",
+            (mission_id,),
+        ).fetchall()
+    finally:
+        con.close()
+    return [str(r["reason"]) for r in rows if r["reason"]]
 
 
 def _attention_merge(out, mission_ids, rows, open_q, escalated):

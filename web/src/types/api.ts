@@ -488,7 +488,7 @@ export interface OrchestratorAction {
    *  to deliver but produced no usable option / no answer text. `confidence`: it fell under the
    *  yolo threshold. Absent on every non-escalated action, and on records written before the
    *  field existed — which render NO reason rather than a guessed one. */
-  escalation_reason?: "model" | "degraded" | "confidence";
+  escalation_reason?: "model" | "degraded" | "confidence" | "permission";
   /** What the session's screen showed when this was ESCALATED (#1060) — `orchestrator.
    *  observed_prompt_for`. An escalation delivers nothing, so it has no precondition; this is the
    *  card's only fact about the screen. `menu` is the engine's own menu when one was recognised at
@@ -502,6 +502,10 @@ export interface OrchestratorAction {
       question: string;
       options: { n: number; label: string; selected: boolean }[];
     } | null;
+    /** The engine's own TOOL-PERMISSION dialog (#1213), or null/absent. Operator-only: answered
+     *  through the same `/choose`, where the server re-parses the live screen and builds the keys.
+     *  Display text only — the card never sends anything it shows. */
+    permission?: PermissionPrompt | null;
     observed_at: number;
   };
   /** How this action should be RENDERED — decided once on the server by
@@ -703,6 +707,20 @@ export interface Evidence {
   kind: EvidenceKind;
   text: string;
   available: boolean;
+}
+
+/** A tool-permission dialog parsed server-side off a session's screen (`permission_prompts`,
+ *  #1213). `persistent` marks an option that grants more than this one call ("Allow always",
+ *  "don't ask again"). `selected` is where the dialog's own cursor was — the server's business. */
+export interface PermissionPrompt {
+  engine: string;
+  kind: "permission";
+  parser: string;
+  heading: string;
+  title: string;
+  detail: string;
+  question: string;
+  options: { n: number; label: string; selected: boolean; persistent: boolean }[];
 }
 
 /** A numbered menu parsed server-side off a session's screen (`screen_menus`, #1060/#1082). */

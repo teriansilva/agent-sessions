@@ -364,8 +364,12 @@ def test_a_client_that_leaves_never_cancels_the_turn(
                 spec=spec,
             )
         )
-        await asyncio.wait({drive}, timeout=2)
-        if spec < "2.4" or gone_after == 0:
+        ends_now = spec < "2.4" or gone_after == 0
+        # A bound, not a delay, where the stream is expected to end: `wait` returns the moment it
+        # does. 2 s flaked red on a loaded shared runner (#1218's CI) with the response simply not
+        # yet over. Where it is expected to stay open, a short look is all the case needs.
+        await asyncio.wait({drive}, timeout=15 if ends_now else 2)
+        if ends_now:
             # The response is over (a 2.4 server only learns of the leave on its next write,
             # which a held model does not produce — that stream ends when the turn does).
             assert drive.done()
@@ -440,9 +444,12 @@ def test_a_detached_turns_failure_is_observed_and_it_is_released(caplog):
 # --- through the REAL ask pipeline: delivery order and the Stage-2 fallback --------------------
 
 
-def _real_find(monkeypatch, calls):
+def _real_find(monkeypatch, calls, mission_id):
     """The real `orchestrator_chat.ask` → real `pulse_chat` pipeline; only the model and the
-    session scan are fakes. The classifier says "find"."""
+    session scan are fakes. The classifier says "find".
+
+    The mission HOLDS the session the model picks: a mission's own question is retrieved from the
+    sessions it holds and never from the rest of the fleet (#1213)."""
 
     async def classify(q, turns):
         return "find"
@@ -452,6 +459,7 @@ def _real_find(monkeypatch, calls):
     monkeypatch.setattr(review, "_require_config", _REAL_REQUIRE_CONFIG)
     _setup(monkeypatch, _sessions(3))
     target = f"claude:{_uuid(1)}"
+    missions.adopt(mission_id, target)
     monkeypatch.setattr(
         review,
         "_TRANSPORT",
@@ -470,7 +478,7 @@ def test_the_provisional_answer_is_on_the_wire_before_stage_two_runs(
     auth_cfg, configured_ai, mission, monkeypatch
 ):
     calls: list = []
-    _real_find(monkeypatch, calls)
+    _real_find(monkeypatch, calls, mission)
     real_refine = pulse_chat._stage2_refine
     stage2_started: list = []
 
@@ -518,7 +526,7 @@ def test_the_provisional_answer_is_on_the_wire_before_stage_two_runs(
 def test_a_failed_stage_two_still_settles_on_the_stage_one_answer(
     auth_cfg, configured_ai, mission, monkeypatch
 ):
-    _real_find(monkeypatch, [])
+    _real_find(monkeypatch, [], mission)
 
     async def refine_fails(*a, **k):
         return None  # what `_stage2_refine` answers when every candidate failed

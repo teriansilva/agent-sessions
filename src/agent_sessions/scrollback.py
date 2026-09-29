@@ -1230,6 +1230,19 @@ def live_tail_text(key: str, max_chars: int = 4000) -> str:
     """
     if max_chars <= 0:
         return ""
+    raw, cols, rows = _live_tail_raw(key)
+    if not raw:
+        return ""
+    if cols and rows:
+        screen = vtscreen.render(raw, rows, cols)
+        if screen:
+            return screen[-max_chars:]
+    return _stripped_tail_text(raw, max_chars)
+
+
+def _live_tail_raw(key: str) -> tuple[bytes, int | None, int | None]:
+    """The ring's tail as ``live_tail_text`` renders it: ``(raw, cols, rows)``. ``cols``/``rows``
+    are None when the frame cannot be trusted (mixed-width ring, unknown height)."""
     _ensure_loaded(key)
     # Copy the slice under the lock so a concurrent `extend`/evict on the loop can't tear the
     # read. Sized for the renderer; the strip fallback re-slices its own (smaller) window.
@@ -1241,27 +1254,44 @@ def live_tail_text(key: str, max_chars: int = 4000) -> str:
     with _RING_LOCK:
         ring = _BUFFERS.get(key)
         if not ring:
-            return ""
+            return b"", None, None
         start = max(0, len(ring) - _SCREEN_TAIL_BYTES)
         open_control_string = vtscreen.starts_inside_control_string(ring, start)
         raw = bytes(ring[start:])
     if open_control_string:
         raw = vtscreen.drop_open_control_prefix(raw)
     if not raw:
-        return ""
+        return b"", None, None
     # `ring_cols` is None for a mixed-width ring — rendering absolute cursor moves against the
     # wrong width is exactly the garble #245/#293 exists to prevent, so don't.
     cols = ring_cols(key)
-    if cols:
-        # `_LAST_ROWS` is in-memory only, so after a restart with no browser attached we don't
-        # know the height. The agent tells us: the tallest absolute row it addressed IS the
-        # screen it is drawing to.
-        rows = _LAST_ROWS.get(key) or vtscreen.infer_rows(raw)
-        if rows:
-            screen = vtscreen.render(raw, rows, cols)
-            if screen:
-                return screen[-max_chars:]
-    return _stripped_tail_text(raw, max_chars)
+    if not cols:
+        return raw, None, None
+    # `_LAST_ROWS` is in-memory only, so after a restart with no browser attached we don't
+    # know the height. The agent tells us: the tallest absolute row it addressed IS the
+    # screen it is drawing to.
+    rows = _LAST_ROWS.get(key) or vtscreen.infer_rows(raw)
+    return raw, cols, (rows or None)
+
+
+def live_tail_frame(key: str, max_chars: int = 4000) -> tuple[str, list[vtscreen.Cells] | None]:
+    """``(text, cells)`` — the CURRENT screen from ONE read of the ring, with each row's colours
+    (#1213). This is the AUTHORISATION read for answering a permission dialog, so it is strict
+    where :func:`live_tail_text` is forgiving (#1218 review): no escape-strip fallback, and no
+    frame from before a trailing full-screen erase. When the current frame cannot be rendered and
+    trusted — unknown geometry, a mixed-width ring, an empty grid — it is ``("", None)``, which
+    parses to no dialog and refuses. When it can, ``text`` equals what :func:`live_tail_text`
+    returns for the same ring, so fingerprints agree. Blocking — call off the loop.
+    """
+    if max_chars <= 0:
+        return "", None
+    raw, cols, rows = _live_tail_raw(key)
+    if not raw or not cols or not rows:
+        return "", None
+    cells = vtscreen.render_cells(raw, rows, cols)
+    if not cells:
+        return "", None
+    return "\n".join(c.text for c in cells)[-max_chars:], cells
 
 
 def get_last_visible_output_at(key: str) -> float | None:

@@ -188,6 +188,7 @@ def manifest_vocab() -> str:
         ("`terminal.repaint`", _vals(kinds.REPAINT_KINDS)),
         ("`terminal.ready`", _vals(kinds.READY_KINDS)),
         ("`terminal.menu`", _vals(kinds.MENU_KINDS)),
+        ("`terminal.permission`", _vals(kinds.PERMISSION_KINDS)),
         ("`unattended.start_evidence`", _vals(kinds.START_EVIDENCE_KINDS)),
         ("`maintenance`", _vals(kinds.MAINTENANCE_KINDS)),
         ("`display.accent`", _vals(kinds.ACCENT_TOKENS)),

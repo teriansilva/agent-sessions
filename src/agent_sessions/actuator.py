@@ -45,6 +45,7 @@ from . import (
     metadata,
     mission_fence,
     orchestrator,
+    permission_prompts,
     prefs,
     ptybridge,
     scrollback,
@@ -480,6 +481,24 @@ def render(action: dict, cfg: dict) -> bytes:
             action.get("origin") == "operator" or _is_auto_choose(action)
         ):
             return f"{opt}".encode()
+        # A TOOL-PERMISSION DIALOG (#1213): the keys that choose `opt` from the cursor the
+        # operator's tap was verified against, per the kind's recipe (`permission_prompts.keys`).
+        # OPERATOR ONLY, and deliberately not `_is_auto_choose`: no autonomous path may answer a
+        # permission dialog at any tier. Anything else claiming this submit mode is refused, not
+        # downgraded to a digit — the wrong recipe could grant the wrong thing.
+        if action.get("submit") == "permission":
+            if action.get("origin") != "operator":
+                raise NotDeliverable("a permission prompt is answered only by the operator")
+            perm = action.get("permission") if isinstance(action.get("permission"), dict) else {}
+            try:
+                return permission_prompts.keys(
+                    str(perm.get("parser") or ""),
+                    opt,
+                    perm.get("from_selected"),  # type: ignore[arg-type]
+                    perm.get("count"),  # type: ignore[arg-type]
+                )
+            except ValueError as e:
+                raise NotDeliverable(f"permission answer could not be rendered ({e})") from None
         # A digit and a carriage return. No paste framing, no model text — a numbered prompt
         # wants a keypress, and the narrower the payload the smaller the blast radius.
         return f"{opt}\r".encode()
@@ -551,12 +570,23 @@ def screen_matches(phys: str, pre: dict) -> tuple[bool, str]:
     # THE SAME WINDOW `precondition_for` judged from (#1060): a narrower read here could cut a
     # menu's title that the proposal saw, classify the unchanged frame differently, and refuse a
     # delivery as "a different kind of prompt now" when nothing moved.
-    screen = scrollback.live_tail_text(phys, orchestrator.PROMPT_SCREEN_CHARS)
+    want_prompt = pre.get("permission_digest")
+    if want_prompt:
+        # A permission answer (#1213) pins the parsed dialog INCLUDING its cursor, because opencode
+        # draws the cursor only as colour: the text fingerprint cannot see a cursor moved by hand,
+        # and the keys were built from where it was. Text and colours come from ONE read.
+        screen, cells = scrollback.live_tail_frame(phys, orchestrator.PROMPT_SCREEN_CHARS)
+    else:
+        screen, cells = scrollback.live_tail_text(phys, orchestrator.PROMPT_SCREEN_CHARS), None
     if orchestrator._screen_fingerprint(screen) != want_fp:
         return False, "the session's screen changed since this was proposed"
     want_class = pre.get("prompt_class")
     if want_class and orchestrator._prompt_class(screen) != want_class:
         return False, "the session is at a different kind of prompt now"
+    if want_prompt:
+        live = permission_prompts.parse(screen, str(pre.get("engine") or ""), cells)
+        if permission_prompts.digest(live) != want_prompt:
+            return False, "the permission prompt changed (or its selection moved) since you chose"
     return True, ""
 
 

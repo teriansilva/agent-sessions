@@ -49,6 +49,7 @@ const ESCALATION_SUFFIX: Record<string, string> = {
   confidence: "below threshold",
   model: "needs your call",
   degraded: "nothing deliverable",
+  permission: "permission prompt",
 };
 
 /** The suffix for an action's confidence line, or `undefined` for none.

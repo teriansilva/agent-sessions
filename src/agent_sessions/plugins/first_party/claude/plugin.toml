@@ -52,6 +52,8 @@ probe_token = "/usage"
 ready = "claude-first-paint"
 menu = "claude-numbered"
 menu_digit_submits = true
+# The tool-permission dialog (#1213): parsed for the operator only, answered by its digit.
+permission = "claude-permission"
 
 [unattended]
 start_evidence = "claude-sessions"

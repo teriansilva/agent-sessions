@@ -82,6 +82,87 @@ def _history_answer(limit: int = HISTORY_ROWS) -> dict:
     }
 
 
+DECISIONS_MAX = 5
+DECISION_LINE_MAX = 400
+
+
+def mission_decisions(mission_id: str) -> tuple[set[str], list[str]]:
+    """``(held session keys, open decisions)`` for ONE mission — the context a mission-scoped
+    question is answered from (#1213). Blocking (missions store + ledger).
+
+    The decisions, most concrete first, each one line of text the server wrote:
+
+    * a pending ledger decision on one of the mission's sessions — a permission dialog names
+      itself (`permission_prompts.summary`), anything else is its verb and rationale;
+    * the mission's current, unresolved escalations (`missions.current_escalations`, the same
+      predicates as the attention flag);
+    * its open question.
+
+    Nothing here comes from another mission or another session: the keys are the mission's own
+    roster, and the ledger is filtered to them.
+    """
+    from . import missions, permission_prompts
+
+    m = missions.get_mission(mission_id, events_limit=50, attention=True) or {}
+    keys = {
+        str(r.get("session_key"))
+        for r in m.get("sessions") or []
+        if r.get("session_key") and not r.get("removed_at")
+    }
+    lines: list[str] = []
+    for a in ledger.live_actions():
+        if str(a.get("session_id") or "") not in keys:
+            continue
+        if a.get("state") not in ledger.OPERATOR_PENDING_STATES:
+            continue
+        perm = (a.get("observed_prompt") or {}).get("permission")
+        if isinstance(perm, dict):
+            lines.append(permission_prompts.summary(perm))  # type: ignore[arg-type]
+        else:
+            verb = str(a.get("verb") or "action")
+            why = _clamp(a.get("rationale"), DECISION_LINE_MAX)
+            lines.append(
+                f"{verb} on {a.get('engine') or 'a session'}" + (f": {why}" if why else "")
+            )
+    # The CURRENT escalations, by the store's own attention predicates — never "the newest
+    # escalation event", which can be one already settled while an older one is still open.
+    for reason in missions.current_escalations(mission_id):
+        lines.append(_clamp(reason, DECISION_LINE_MAX))
+    q = m.get("question")
+    if isinstance(q, dict) and q.get("question"):
+        lines.append("an open question: " + _clamp(q.get("question"), DECISION_LINE_MAX))
+    seen: set[str] = set()
+    uniq = [ln for ln in lines if ln and not (ln in seen or seen.add(ln))]
+    return keys, uniq[:DECISIONS_MAX]
+
+
+async def _mission_find(
+    query: str,
+    history: object,
+    mission_id: str,
+    *,
+    working_keys: set[str] | None,
+    on_event: Callable[[dict], None] | None = None,
+) -> dict:
+    """A mission's own question (#1213): answered from THIS mission's open decisions first, and
+    retrieved only from this mission and the sessions it holds — never the fleet."""
+    from . import missions
+
+    keys, decisions = await missions.run_admitted(lambda: mission_decisions(mission_id))
+    result = await pulse_chat.ask(
+        query, history, working_keys=working_keys, scope=(keys, mission_id), on_event=on_event
+    )
+    if decisions:
+        lead = (
+            "Waiting on you in this mission: "
+            + " — ".join(decisions)
+            + ". Answer it on the decision card above."
+        )
+        answer = str(result.get("answer") or "").strip()
+        result = {**result, "answer": f"{lead}\n\n{answer}" if answer else lead}
+    return {"intent": "find", **result, "actions": [], "decisions": decisions}
+
+
 async def ask(
     query: str,
     history: object = None,
@@ -132,6 +213,10 @@ async def ask(
         return _history_answer()
 
     if intent == "find":
+        if mission_id:
+            return await _mission_find(
+                query, history, mission_id, working_keys=working_keys, on_event=emit
+            )
         result = await pulse_chat.ask(query, history, working_keys=working_keys, on_event=emit)
         return {"intent": "find", **result, "actions": []}
 

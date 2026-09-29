@@ -432,7 +432,11 @@ export function ActionRow({
             defines confidence as "right AND safe", and the right action here is to ask. Printed as
             "conf 0.90 · needs your call" it read as confidence in an ANSWER, the opposite claim. The
             other reasons keep their shape: there the figure really is about a proposed action. */}
-        {action.escalation_reason === "model" && isEscalation(action.state) ? (
+        {action.escalation_reason === "permission" && isEscalation(action.state) ? (
+          // A PERMISSION DIALOG (#1213) is a fact read off the screen, not a model's judgement:
+          // there is no confidence to print, only what it is.
+          <span className={styles.conf}>permission prompt</span>
+        ) : action.escalation_reason === "model" && isEscalation(action.state) ? (
           <span
             className={styles.conf}
             aria-label={`Needs your call — the supervisor is ${action.confidence.toFixed(2)} sure this decision is yours`}
@@ -447,7 +451,10 @@ export function ActionRow({
           </span>
         )}
       </div>
-      {action.rationale && <p className={styles.why}>{action.rationale}</p>}
+      {/* The permission card below says the same thing, structured — one telling is enough. */}
+      {action.rationale && !action.observed_prompt?.permission && (
+        <p className={styles.why}>{action.rationale}</p>
+      )}
       {action.answer && <p className={styles.why}>{`“${action.answer}”`}</p>}
       {/* THE SESSION'S OWN MENU, answerable from here (#1060 Phase 3): only on the model's question,
           only when the server parsed a menu off the screen. The row's Dismiss stays beside it. */}

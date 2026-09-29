@@ -85,7 +85,8 @@ _CLAUDE_NON_ANSWERS = frozenset({"Type something.", "Chat about this"})
 # agent may do without the operator having decided it here. Sessions BattleLab launches run with
 # permissions bypassed, but a mission's own dispatch does not, so the prompt is reachable. No real
 # capture exists on the host for that reason, so this is refused by its TEXT, anywhere between the
-# title and the footer, whatever chrome it is drawn in.
+# title and the footer, whatever chrome it is drawn in. The OPERATOR can answer one (#1213), through
+# `permission_prompts` — a separate reader no autonomous path imports — never through this module.
 _CLAUDE_PERMISSION_MARKS = ("do you want to proceed", "don't ask again", "don’t ask again")
 # A multi-question prompt draws its questions as tabs on the title line (☐ … ☐ … ✔ Submit). What a
 # digit does there is not established by any capture, so it is refused rather than guessed.

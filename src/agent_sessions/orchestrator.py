@@ -49,6 +49,7 @@ from . import (
     metadata,
     mission_fence,
     notifications,
+    permission_prompts,
     prefs,
     prompts,
     pulse,
@@ -122,6 +123,11 @@ def _prompt_class(screen: str) -> str:
     # chrome at the bottom of the screen is a choice whatever the tail's substrings say.
     if screen_menus.recognises(screen):
         return "choice"
+    # …AND AN ENGINE'S OWN PERMISSION DIALOG (#1213): a yes/no about one tool call. opencode's has
+    # none of the substrings below (no "?", no "1."), so it read as `open` — "quiet" on the mission
+    # strip while the agent was in fact blocked on the operator.
+    if permission_prompts.recognises(screen):
+        return "confirm"
     tail = screen[-400:].lower()
     if any(t in tail for t in ("(y/n)", "[y/n]", "yes/no", "do you want to proceed")):
         return "confirm"
@@ -165,16 +171,40 @@ def observed_prompt_for(key: str) -> dict:
     * ``menu`` — the engine's own menu if `screen_menus` recognises one, else ``None``. Display text
       only: labels are the agent's words, cleaned and capped, and never become bytes. What a tap
       would send is re-derived from the LIVE screen at approval time, never from this snapshot.
+    * ``permission`` — the engine's own TOOL-PERMISSION dialog (#1213), from the SAME frame, or
+      ``None``. Operator-only: `permission_prompts` is never read by an autonomous path. Display
+      text plus the dialog's cursor; what a tap sends is re-derived from the live screen too.
+    * ``fingerprint`` — the frame's normalised hash, so a card can tell "the same prompt" apart
+      from a new one showing the same words.
     """
     try:
         screen = scrollback.live_tail_text(key, PROMPT_SCREEN_CHARS)
     except Exception:
         screen = ""
+    engine = screen_menus.engine_of(key)
+    cls = _prompt_class(screen)
     return {
-        "prompt_class": _prompt_class(screen),
-        "menu": screen_menus.parse(screen, screen_menus.engine_of(key)),
+        "prompt_class": cls,
+        "menu": screen_menus.parse(screen, engine),
+        # The coloured re-read only when the text already shows a dialog: every sweep calls this
+        # for every session, and a permission dialog always classifies as `confirm`.
+        "permission": observed_permission(key) if cls == "confirm" else None,
+        "fingerprint": _screen_fingerprint(screen),
         "observed_at": time.time(),
     }
+
+
+def observed_permission(key: str) -> dict | None:
+    """The session's tool-permission dialog (#1213), or None. Blocking.
+
+    Its own read, and ONE read: the dialog's words and its cursor (a colour, for opencode) come
+    from the same frame of `scrollback.live_tail_frame`, so they can never describe two different
+    moments. Operator-only — never an input to an autonomous decision."""
+    try:
+        screen, cells = scrollback.live_tail_frame(key, PROMPT_SCREEN_CHARS)
+    except Exception:  # noqa: BLE001 — an unreadable ring is "no dialog"
+        return None
+    return permission_prompts.parse(screen, screen_menus.engine_of(key), cells)
 
 
 class ScreenUnreadable(Exception):
@@ -198,9 +228,11 @@ def observed_screen(key: str, *, strict: bool = False) -> dict:
         if strict:
             raise ScreenUnreadable(type(e).__name__) from e
         screen = ""
+    cls = _prompt_class(screen)
     return {
-        "prompt_class": _prompt_class(screen),
+        "prompt_class": cls,
         "menu": screen_menus.parse(screen, screen_menus.engine_of(key)),
+        "permission": observed_permission(key) if cls == "confirm" else None,
         "fingerprint": _screen_fingerprint(screen),
         "screen": _clean_evidence(screen)[-EVIDENCE_SCREEN_CHARS:],
     }

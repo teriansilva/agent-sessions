@@ -48,6 +48,11 @@ strict = true
 source = "tokens"
 kind = "opencode-store-query"
 
+[terminal]
+# The tool-permission dialog (#1213): parsed for the operator only; the cursor is a background
+# colour, so it is read from the coloured frame and moved with the arrow keys.
+permission = "opencode-permission"
+
 [unattended]
 start_evidence = "opencode-log"
 

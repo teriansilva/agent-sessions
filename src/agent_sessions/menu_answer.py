@@ -42,7 +42,17 @@ import contextlib
 import time
 import uuid
 
-from . import actuator, automation, engines, mission_fence, orchestrator, screen_menus, scrollback
+from . import (
+    actuator,
+    automation,
+    engines,
+    mission_fence,
+    orchestrator,
+    permission_holds,
+    permission_prompts,
+    screen_menus,
+    scrollback,
+)
 from . import orchestrator_ledger as ledger
 
 
@@ -121,7 +131,11 @@ def prepare(escalation_id: str, option: object, label: object) -> tuple[dict, di
     if not valid:
         raise Refused(f"nothing was sent: {why}")
 
-    recorded = _option((esc.get("observed_prompt") or {}).get("menu"), option)
+    observed = esc.get("observed_prompt") or {}
+    if isinstance(observed.get("permission"), dict):
+        return _prepare_permission(escalation_id, esc, observed["permission"], option, label)
+
+    recorded = _option(observed.get("menu"), option)
     if recorded is None or recorded.get("label") != label:
         raise Refused("nothing was sent: that option was not on the menu this card showed")
 
@@ -166,6 +180,136 @@ def prepare(escalation_id: str, option: object, label: object) -> tuple[dict, di
         if esc.get(k) is not None:
             rec[k] = esc[k]
     return esc, rec
+
+
+def _live_permission(session_id: str) -> tuple[str, dict | None]:
+    """The screen now, and the permission dialog parsed from it — text and colours from ONE read,
+    so the cursor and the words describe the same frame. Blocking."""
+    phys = mission_fence.physical_of(session_id)
+    try:
+        screen, cells = scrollback.live_tail_frame(phys, orchestrator.PROMPT_SCREEN_CHARS)
+    except Exception:  # noqa: BLE001 — an unreadable ring is "no dialog", which refuses
+        screen, cells = "", None
+    return screen, permission_prompts.parse(screen, screen_menus.engine_of(session_id), cells)
+
+
+def _prepare_permission(
+    escalation_id: str, esc: dict, recorded: dict, option: int, label: str
+) -> tuple[dict, dict]:
+    """A tap on a TOOL-PERMISSION dialog (#1213). Same contract as a menu, stricter binding.
+
+    The label alone is not enough here: "Allow once" reads the same over ``git log`` and over
+    ``rm -rf``. So the LIVE dialog must equal the RECORDED one field for field — heading, tool
+    line, command, question, every option — and the choose record pins a digest of it INCLUDING
+    the cursor, re-checked inside the first-byte fence (`actuator.screen_matches`). The keys are
+    built later by `actuator.render` from the kind's recipe, this option and that cursor. Blocking.
+    """
+    rec_opt = _option(recorded, option)
+    if rec_opt is None or rec_opt.get("label") != label:
+        raise Refused("nothing was sent: that option was not on the prompt this card showed")
+    sid = str(esc.get("session_id") or "")
+    screen, live = _live_permission(sid)
+    if live is None:
+        raise Refused(
+            "nothing was sent: the session is no longer showing this permission prompt — open "
+            "it to see what it shows now"
+        )
+    if not permission_prompts.same_prompt(live, recorded):  # type: ignore[arg-type]
+        raise Refused(
+            "nothing was sent: the session is showing a different permission prompt now (the "
+            "command or its options changed) — open it to see what it asks"
+        )
+    cursor = permission_prompts.selected_of(live)
+    if cursor is None:
+        raise Refused("nothing was sent: the prompt's selection could not be read")
+    # AN EARLIER ANSWER TO THIS VERY DIALOG MAY HAVE LANDED (#1218 review): its hold is released
+    # only on positive evidence (`permission_holds`), which is looked for first.
+    permission_holds.reconcile(sid)
+    try:
+        held = permission_holds.open_holds(sid, str(live.get("identity") or ""))
+    except permission_holds.HoldsUnreadable:
+        raise Refused("nothing was sent: the permission holds could not be read", 503) from None
+    if held:
+        raise Refused(
+            "nothing was sent: an earlier answer to this same prompt may already have reached the "
+            "session — check the session and answer it there"
+        )
+    engine = screen_menus.engine_of(sid)
+    rec = {
+        "id": f"choose_{uuid.uuid4().hex}",
+        "verb": "choose",
+        "option": option,
+        # What the operator chose, for the timeline and the card. Never rendered into bytes.
+        "label": label,
+        "session_id": sid,
+        "state": "approved",
+        "confidence": 1.0,
+        "origin": "operator",
+        "answers": escalation_id,
+        "authority": esc["authority"],
+        "ts": time.time(),
+        "expires_at": time.time() + 120,
+        "submit": "permission",
+        # The recipe's inputs — the kind that read the dialog, where its cursor was, how many
+        # options it has. `actuator.render` builds the keys from these and the option; the
+        # precondition below refuses if any of them is no longer true at the write.
+        "permission": {
+            "parser": live["parser"],
+            "identity": live.get("identity"),
+            "from_selected": cursor,
+            "count": len(live["options"]),
+            "title": live.get("title"),
+            "detail": live.get("detail"),
+        },
+        "precondition": {
+            "key": esc["authority"]["physical_key"],
+            "screen_fingerprint": orchestrator._screen_fingerprint(screen),
+            "prompt_class": orchestrator._prompt_class(screen),
+            "permission_digest": permission_prompts.digest(live),
+            "engine": engine,
+            "observed_at": time.time(),
+        },
+    }
+    for k in ("mission_id", "engine", "title", "project", "project_id"):
+        if esc.get(k) is not None:
+            rec[k] = esc[k]
+    return esc, rec
+
+
+def _audit_permission(rec: dict, outcome: str) -> None:
+    """The mission timeline's record of a permission answer (#1213): what was chosen, on which
+    prompt, and whether it certainly reached the session. Best-effort — the ledger is the durable
+    record; a mission that has closed meanwhile simply keeps no line."""
+    mid = rec.get("mission_id")
+    if rec.get("submit") != "permission" or not isinstance(mid, str) or not mid:
+        return
+    perm = rec.get("permission") or {}
+    what = str(perm.get("title") or "a permission prompt")
+    said = {
+        "delivered": "sent",
+        "indeterminate": (
+            "may or may not have reached the session — check it before answering again"
+        ),
+    }.get(outcome, outcome)
+    who = rec.get("engine") or "the agent"
+    text = f"You answered {who}'s permission prompt ({what}): {rec.get('label')} — {said}"
+    with contextlib.suppress(Exception):
+        from . import missions
+
+        missions.append_event(
+            mid,
+            "action",
+            session_key=str(rec.get("session_id") or "") or None,
+            text=text[:500],
+            meta={
+                "prompt_answered": True,
+                "option": rec.get("option"),
+                "label": rec.get("label"),
+                "outcome": outcome,
+                "answers": rec.get("answers"),
+                "choose_id": rec.get("id"),
+            },
+        )
 
 
 def _settle_unsent(action_id: str, detail: str) -> None:
@@ -261,9 +405,30 @@ async def answer(escalation_id: str, option: object, label: object, *, registry)
             "nothing was sent: this decision is already " f"{(cur or {}).get('state') or 'settled'}"
         )
 
+    permission = rec.get("submit") == "permission"
+
     async def refuse(why: str, status: int = 409) -> Refused:
+        # Every caller of this is a ZERO-BYTE outcome, so a permission hold taken for this answer
+        # is released on the writer's own evidence: nothing was typed.
+        if permission:
+            await asyncio.to_thread(permission_holds.release, action_id, f"nothing sent: {why}")
         await asyncio.to_thread(_reopen, escalation_id, action_id, prev_state, why)
         return Refused(f"nothing was sent: {why}", status)
+
+    if permission:
+        # THE HOLD BEFORE THE CLAIM (#1218 review 5405): from here until positive evidence, this
+        # dialog is neither answered nor offered again. No hold, no keys.
+        try:
+            await asyncio.to_thread(
+                permission_holds.take,
+                action_id,
+                session_key=str(rec.get("session_id") or ""),
+                identity=str((rec.get("permission") or {}).get("identity") or ""),
+                mission_id=rec.get("mission_id"),
+            )
+        except permission_holds.HoldsUnreadable as e:
+            await asyncio.to_thread(_reopen, escalation_id, action_id, prev_state, str(e))
+            raise Refused("nothing was sent: the permission hold could not be recorded", 503) from e
 
     try:
         await asyncio.to_thread(automation.append_operator_action, rec)
@@ -298,6 +463,7 @@ async def answer(escalation_id: str, option: object, label: object, *, registry)
             raise
         except Exception:  # noqa: BLE001
             ledger.owe_terminalize(action_id, note)
+        await asyncio.to_thread(_audit_permission, rec, "indeterminate")
         raise Indeterminate(
             f"the choice may or may not have landed ({type(e).__name__}); check the session "
             "before choosing again",
@@ -314,6 +480,7 @@ async def answer(escalation_id: str, option: object, label: object, *, registry)
             # deliverable either.
             await asyncio.to_thread(_settle_unsent, action_id, detail)
             raise await refuse(detail)
+        await asyncio.to_thread(_audit_permission, rec, "indeterminate")
         raise Indeterminate(
             f"the choice may or may not have landed ({detail}); check the session before "
             "choosing again",
@@ -321,5 +488,8 @@ async def answer(escalation_id: str, option: object, label: object, *, registry)
         )
     # THE DECISION THE CARD SHOWED, settled — with the delivered choice beside it. The card
     # resolves rows by id, and the row the operator tapped is the escalation, not the new choose.
+    if permission:
+        await asyncio.to_thread(permission_holds.release, action_id, "delivered in full")
+    await asyncio.to_thread(_audit_permission, rec, "delivered")
     settled = await asyncio.to_thread(ledger.get, escalation_id) or closed
     return {**settled, "choice": out}

@@ -134,6 +134,7 @@ Every value a manifest may choose, generated from the kinds this build ships:
 | `terminal.repaint` | `none`, `wipe` |
 | `terminal.ready` | `bytes`, `claude-first-paint` |
 | `terminal.menu` | `claude-numbered`, `none` |
+| `terminal.permission` | `claude-permission`, `none`, `opencode-permission` |
 | `unattended.start_evidence` | `claude-sessions`, `none`, `opencode-log` |
 | `maintenance` | `sqlite-vacuum` |
 | `display.accent` | `amber`, `blue`, `green`, `lime`, `magenta`, `slate`, `teal` |

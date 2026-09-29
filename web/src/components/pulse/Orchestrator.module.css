@@ -608,3 +608,91 @@
   font-size: 0.72rem;
   color: var(--text-2);
 }
+
+/* --- #1213: an agent's tool-permission dialog, answerable from the card --------------------------
+ * The dialog's own words in a framed block: who asks and for which tool, then the command / pattern /
+ * path in mono (wrapping, never overflowing), then one button per option in the menu's quiet shape.
+ * An option that grants more than this call is dashed; armed, it adds a degraded-tone warning. */
+.perm {
+  margin: 8px 0 0;
+  border: 1px solid var(--line-strong);
+  background: var(--glass-strong);
+  min-width: 0;
+}
+.permHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  padding: 7px 9px 0;
+}
+.permKind {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  /* Text tone, not the status amber: amber text on the light ground fails contrast. The row's
+   * left stripe and the escalate chip already carry the degraded tone. */
+  color: var(--text-2);
+}
+.permTool {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.permDetail {
+  margin: 6px 9px 8px;
+  padding: 6px 8px;
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  line-height: 1.5;
+  color: var(--text-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 14em;
+  overflow-y: auto;
+}
+.permQ {
+  margin: 0 9px 6px;
+  font-size: 0.78rem;
+  color: var(--text-2);
+}
+.permBtns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 9px 9px;
+}
+.permBtns .approve {
+  min-height: 44px;
+}
+.permPersistent {
+  border-style: dashed;
+}
+.perm .menuHint,
+.perm .stale {
+  margin: 0 9px 8px;
+}
+.permWarn {
+  margin: 0 9px 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--status-degraded);
+  background: color-mix(in srgb, var(--status-degraded) 8%, transparent);
+  font-size: 0.74rem;
+  line-height: 1.45;
+  color: var(--text-1);
+}
+.permWarn strong {
+  color: var(--text-1);
+}
+.permDone {
+  margin: 0 9px 9px;
+  font-size: 0.76rem;
+  color: var(--text-2);
+}
+.permDone strong {
+  color: var(--text-1);
+}

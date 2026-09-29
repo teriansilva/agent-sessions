@@ -156,6 +156,9 @@ REPAINT_KINDS = frozenset({"none", "wipe"})
 READY_KINDS = frozenset({"bytes", "claude-first-paint"})
 #: `terminal.menu` — the numbered-menu parser (`screen_menus._PARSERS`, #1075).
 MENU_KINDS = frozenset({"none", "claude-numbered"})
+#: `terminal.permission` — the tool-permission dialog parser AND its key recipe
+#: (`permission_prompts._KINDS`, #1213). Operator-only: no autonomous path reads it.
+PERMISSION_KINDS = frozenset({"none", "claude-permission", "opencode-permission"})
 #: `unattended.start_evidence` — the artifact that answers "did an agent start" (#989/#1050).
 START_EVIDENCE_KINDS = frozenset({"none", "claude-sessions", "opencode-log"})
 #: `maintenance` — store maintenance a plugin admits (#993).

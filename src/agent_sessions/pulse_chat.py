@@ -378,7 +378,11 @@ async def _stage2_refine(
 
 
 async def ask_events(
-    query: str, history: object = None, *, working_keys: set[str] | None = None
+    query: str,
+    history: object = None,
+    *,
+    working_keys: set[str] | None = None,
+    scope: tuple[set[str], str] | None = None,
 ) -> AsyncIterator[dict]:
     """One ask, as the events it passes through (#1171) — what ``/api/pulse/ask/stream`` sends.
 
@@ -401,6 +405,14 @@ async def ask_events(
     catalog, mission_catalog = await asyncio.gather(
         asyncio.to_thread(build_catalog, working_keys=working_keys), _mission_catalog()
     )
+    if scope is not None:
+        # A MISSION'S OWN QUESTION (#1213): only that mission and the sessions it holds are
+        # candidates. Asked "what is the decision?" inside a mission, the fleet-wide catalog
+        # answered with an unrelated session's decision — the retrieval was right about the
+        # fleet and wrong about the question.
+        keys, mission_id = scope
+        catalog = [c for c in catalog if c.get("id") in keys]
+        mission_catalog = [m for m in mission_catalog if m.get("mission_id") == mission_id]
     if not catalog and not mission_catalog:
         yield {
             "type": "answer",
@@ -468,6 +480,7 @@ async def ask(
     *,
     working_keys: set[str] | None = None,
     on_event: Callable[[dict], None] | None = None,
+    scope: tuple[set[str], str] | None = None,
 ) -> dict:
     """One ask: catalog ranking, then transcript-tail confirmation for the top picks.
 
@@ -484,7 +497,7 @@ async def ask(
     copy of it.
     """
     final: dict | None = None
-    async for ev in ask_events(query, history, working_keys=working_keys):
+    async for ev in ask_events(query, history, working_keys=working_keys, scope=scope):
         if ev["type"] == "answer" and ev["final"]:
             final = {k: v for k, v in ev.items() if k not in ("type", "final")}
         elif on_event is not None:

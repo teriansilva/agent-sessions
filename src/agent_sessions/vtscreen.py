@@ -35,6 +35,7 @@ and safer dependency.
 from __future__ import annotations
 
 import re
+from typing import NamedTuple
 
 # One pass over the bytes. Order matters, and two of the alternatives are load-bearing for
 # reasons that are not obvious:
@@ -164,17 +165,117 @@ def infer_rows(data: bytes) -> int:
 
 
 class _Screen:
-    """A character grid with a cursor. Cells only — no attributes, no scrollback."""
+    """A character grid with a cursor. Cells only, no scrollback — and, OPT-IN, two colour layers.
 
-    __slots__ = ("rows", "cols", "grid", "row", "col", "saved")
+    ``colours=True`` (#1213) keeps each cell's foreground and background SGR colour beside its
+    character. It exists for exactly one reader: a TUI whose selection is drawn ONLY as colour
+    (opencode's permission dialog highlights the chosen option by its background), where the text
+    grid alone cannot say which option the cursor is on. Off, the colour grids are never allocated
+    and every existing render is byte-identical.
+    """
 
-    def __init__(self, rows: int, cols: int) -> None:
+    __slots__ = (
+        "rows",
+        "cols",
+        "grid",
+        "row",
+        "col",
+        "saved",
+        "fg",
+        "bg",
+        "fgs",
+        "bgs",
+        "in_alt",
+        "main",
+        "untrusted",
+    )
+
+    def __init__(self, rows: int, cols: int, *, colours: bool = False) -> None:
         self.rows = rows
         self.cols = cols
         self.grid: list[list[str]] = [[" "] * cols for _ in range(rows)]
         self.row = 0
         self.col = 0
         self.saved = (0, 0)
+        # The current pen, as the SGR colour it names (`"2;245;167;66"`, `"5;208"`, `"33"`), or
+        # "" for the terminal default. Only kept when `colours` is on.
+        self.fg = ""
+        self.bg = ""
+        self.fgs: list[list[str]] | None = [[""] * cols for _ in range(rows)] if colours else None
+        self.bgs: list[list[str]] | None = [[""] * cols for _ in range(rows)] if colours else None
+        # The alternate screen (#1218 review): only modelled in colours mode, which is the
+        # authorisation read. `main` holds the normal buffer while the alternate one is up.
+        self.in_alt = False
+        self.main: tuple | None = None
+        #: Why this frame cannot be trusted for authorisation, or None (colours mode only).
+        self.untrusted: str | None = None
+
+    def alt(self, on: bool) -> None:
+        """DECSET/DECRST 1049 / 1047 / 47 — switch between the normal and alternate buffers.
+
+        Entering saves the normal buffer and starts a blank alternate one. Leaving restores the
+        normal buffer — whatever the alternate screen showed (a dialog) is GONE from view. Leaving
+        an alternate screen whose entry this slice never saw (the ring was cut inside it) cannot
+        restore anything true, so the screen is blanked: unknown, never the old dialog.
+        """
+        if on:
+            if not self.in_alt:
+                self.main = (self.grid, self.fgs, self.bgs, self.row, self.col)
+                self.in_alt = True
+            self._blank_all()
+            return
+        if self.in_alt and self.main is not None:
+            self.grid, self.fgs, self.bgs, self.row, self.col = self.main
+        else:
+            self._blank_all()
+        self.in_alt = False
+        self.main = None
+
+    def _blank_all(self) -> None:
+        self.grid = [[" "] * self.cols for _ in range(self.rows)]
+        if self.fgs is not None and self.bgs is not None:
+            self.fgs = [[""] * self.cols for _ in range(self.rows)]
+            self.bgs = [[""] * self.cols for _ in range(self.rows)]
+
+    def sgr(self, params: bytes) -> None:
+        """Track the pen's colours from one SGR sequence. Only called when `colours` is on.
+
+        Colours only: bold, underline, reverse and the rest do not move a cell's colour, which is
+        all a colour-drawn selection needs. Colon sub-parameters are read as semicolons."""
+        try:
+            ps = [int(p) if p else 0 for p in params.replace(b":", b";").split(b";")]
+        except ValueError:
+            return
+        if not ps:
+            ps = [0]
+        i = 0
+        while i < len(ps):
+            p = ps[i]
+            if p == 0:
+                self.fg = self.bg = ""
+            elif p in (38, 48):
+                mode = ps[i + 1] if i + 1 < len(ps) else None
+                if mode == 2 and i + 4 < len(ps):
+                    val = "2;" + ";".join(str(x) for x in ps[i + 2 : i + 5])
+                    i += 4
+                elif mode == 5 and i + 2 < len(ps):
+                    val = f"5;{ps[i + 2]}"
+                    i += 2
+                else:
+                    return  # malformed: stop rather than misread the rest as attributes
+                if p == 38:
+                    self.fg = val
+                else:
+                    self.bg = val
+            elif p == 39:
+                self.fg = ""
+            elif p == 49:
+                self.bg = ""
+            elif 30 <= p <= 37 or 90 <= p <= 97:
+                self.fg = str(p)
+            elif 40 <= p <= 47 or 100 <= p <= 107:
+                self.bg = str(p)
+            i += 1
 
     def save_cursor(self) -> None:
         self.saved = (self.row, self.col)
@@ -190,6 +291,11 @@ class _Screen:
     def _scroll(self) -> None:
         self.grid.pop(0)
         self.grid.append([" "] * self.cols)
+        if self.fgs is not None and self.bgs is not None:
+            self.fgs.pop(0)
+            self.fgs.append([""] * self.cols)
+            self.bgs.pop(0)
+            self.bgs.append([""] * self.cols)
         self.row = self.rows - 1
 
     def _newline(self) -> None:
@@ -210,12 +316,27 @@ class _Screen:
                     self.col = 0
                     self._newline()
                 self.grid[self.row][self.col] = ch
+                if self.fgs is not None and self.bgs is not None:
+                    self.fgs[self.row][self.col] = self.fg
+                    self.bgs[self.row][self.col] = self.bg
                 self.col += 1
 
     def _erase_row(self, row: int, start: int, end: int) -> None:
         line = self.grid[row]
         for c in range(max(0, start), min(self.cols, end)):
             line[c] = " "
+        if self.fgs is not None and self.bgs is not None:
+            # An erase paints the CURRENT background (ECMA-48 "background colour erase").
+            for c in range(max(0, start), min(self.cols, end)):
+                self.fgs[row][c] = ""
+                self.bgs[row][c] = self.bg
+
+    def _blank_rows(self, start: int, end: int) -> None:
+        for r in range(start, end):
+            self.grid[r] = [" "] * self.cols
+            if self.fgs is not None and self.bgs is not None:
+                self.fgs[r] = [""] * self.cols
+                self.bgs[r] = [self.bg] * self.cols
 
     def csi(self, params: bytes, final: str) -> None:
         # Private (``?``) and secondary (``>``/``<``/``=``) parameter forms are DECSET/DECRST
@@ -252,53 +373,177 @@ class _Screen:
         elif final == "J":
             if n == 0:  # cursor → end of screen
                 self._erase_row(self.row, self.col, self.cols)
-                for r in range(self.row + 1, self.rows):
-                    self.grid[r] = [" "] * self.cols
+                self._blank_rows(self.row + 1, self.rows)
             elif n == 1:  # start of screen → cursor
-                for r in range(self.row):
-                    self.grid[r] = [" "] * self.cols
+                self._blank_rows(0, self.row)
                 self._erase_row(self.row, 0, self.col + 1)
             else:  # 2 / 3 — whole screen
-                self.grid = [[" "] * self.cols for _ in range(self.rows)]
+                self._blank_rows(0, self.rows)
         elif final == "K":
             if n == 0:
                 self._erase_row(self.row, self.col, self.cols)
             elif n == 1:
                 self._erase_row(self.row, 0, self.col + 1)
             else:
-                self.grid[self.row] = [" "] * self.cols
+                self._erase_row(self.row, 0, self.cols)
         elif final == "s":  # SCOSC — save cursor
             self.save_cursor()
         elif final == "u":  # SCORC — restore cursor
             self.restore_cursor()
         # Everything else (SGR `m`, DECSTBM `r`, …) leaves cells alone.
 
+    def _kept_rows(self) -> tuple[int, int]:
+        """The row span `display` keeps: blank leading and trailing rows trimmed."""
+        texts = ["".join(row).rstrip() for row in self.grid]
+        end = len(texts)
+        while end and not texts[end - 1]:
+            end -= 1
+        start = 0
+        while start < end and not texts[start]:
+            start += 1
+        return start, end
+
     def display(self) -> str:
-        lines = ["".join(row).rstrip() for row in self.grid]
-        while lines and not lines[-1]:
-            lines.pop()
-        while lines and not lines[0]:
-            lines.pop(0)
-        return "\n".join(lines)
+        start, end = self._kept_rows()
+        return "\n".join("".join(row).rstrip() for row in self.grid[start:end])
+
+    def cells(self) -> list[Cells]:
+        """The rows `display` keeps, each with its per-character colours (colours mode only)."""
+        assert self.fgs is not None and self.bgs is not None
+        start, end = self._kept_rows()
+        out: list[Cells] = []
+        for r in range(start, end):
+            text = "".join(self.grid[r]).rstrip()
+            out.append(
+                Cells(text, tuple(self.fgs[r][: len(text)]), tuple(self.bgs[r][: len(text)]))
+            )
+        return out
 
 
-def _feed(data: bytes, rows: int, cols: int) -> str:
-    screen = _Screen(rows, cols)
+class Cells(NamedTuple):
+    """One rendered row: its text and, per character, the SGR foreground and background colour
+    (`""` = terminal default). The three are always the same length."""
+
+    text: str
+    fg: tuple[str, ...]
+    bg: tuple[str, ...]
+
+
+# ---- the FAIL-CLOSED allow-list for the authorisation read (#1213, #1218 review 5405) -----------
+#
+# `render` skips what it does not model, which is right for a reviewer's text. An ANSWER must not
+# be authorised against a frame that some unmodelled control may have changed (scrolled away,
+# deleted, switched buffers): so in colours mode every token is checked against what this module
+# models exactly, and ANY other one marks the whole frame untrusted — no dialog, no answer.
+#
+# The reference terminal is the app's own (xterm.js), and the list was measured against every
+# claude/opencode ring on the host: string controls (OSC/APC/PM/SOS) draw nothing there; the
+# queries and input/output modes below move no cell.
+
+#: DEC private modes that change no cell: cursor keys/blink/visibility, mouse, focus, paste,
+#: synchronized output, grapheme/theme reports.
+_SAFE_DEC_MODES = frozenset(
+    {1, 12, 25, 1000, 1002, 1003, 1004, 1005, 1006, 1015, 1016, 2004, 2026, 2027, 2031}
+)
+#: The alternate screen, modelled by `_Screen.alt`.
+_ALT_DEC_MODES = frozenset({47, 1047, 1049})
+#: Positional/erase/SGR finals `_Screen.csi` / `sgr` model exactly (no prefix, no intermediate).
+_MODELLED_FINALS = frozenset(b"HfABCDGdJKm")
+
+
+def _dec_modes(params: bytes) -> list[int] | None:
+    try:
+        return [int(p) for p in params.split(b";") if p]
+    except ValueError:
+        return None
+
+
+def _untrusted(m: re.Match) -> str | None:
+    """Why this token makes a coloured frame untrusted, or None when it is modelled or inert."""
+    tok = m.group(0)
+    final = m.group("csi_final")
+    if final:
+        params = m.group("csi_params") or b""
+        inter = tok[2 + len(params) : -1]
+        pre = params[:1] if params[:1] in (b"?", b">", b"<", b"=") else b""
+        if pre == b"?":
+            body = params[1:]
+            if final in b"hl" and not inter:
+                modes = _dec_modes(body)
+                if modes is not None and all(
+                    n in _SAFE_DEC_MODES or n in _ALT_DEC_MODES for n in modes
+                ):
+                    return None
+            if final == b"u" and not body and not inter:
+                return None  # kitty keyboard query
+            if final == b"p" and inter == b"$":
+                return None  # DECRQM query
+            return f"DEC {tok!r}"
+        if pre:
+            # modifyOtherKeys, XTVERSION, kitty keyboard flags, secondary DA: input/queries only.
+            return None if final in b"mqucn" and not inter else f"CSI {tok!r}"
+        if inter:
+            return None if (inter == b" " and final == b"q") else f"CSI {tok!r}"
+        if final[0] in _MODELLED_FINALS:
+            return None
+        if final in b"su" and not params:
+            return None  # SCOSC / SCORC, modelled
+        if final == b"c" and params in (b"", b"0"):
+            return None  # primary DA query
+        if final == b"n" and params in (b"5", b"6"):
+            return None  # status / cursor-position report requests
+        if final == b"t":
+            modes = _dec_modes(params)
+            # Reports and the title stack only; 1–10 would move or resize the window.
+            return None if modes and modes[0] >= 11 else f"CSI {tok!r}"
+        if final == b"r" and not params:
+            return None  # DECSTBM reset to the full screen — the only region this models
+        return f"CSI {tok!r}"
+    if tok.startswith(b"\x1b]") or tok[:2] in (b"\x1b_", b"\x1b^", b"\x1bX"):
+        return None  # OSC / APC / PM / SOS draw no cell in the reference terminal
+    if tok.startswith(b"\x1bP"):
+        return None if tok[2:4] in (b"+q", b"$q") else f"DCS {tok[:8]!r}"
+    if m.group("decsc"):
+        return None
+    if tok == b"\x1b(B":
+        return None  # G0 = ASCII
+    if tok in (b"\x07", b"\x0f", b"\x00"):
+        return None  # BEL; SI (back to G0); NUL
+    return f"control {tok[:8]!r}"
+
+
+def _feed_screen(data: bytes, rows: int, cols: int, *, colours: bool = False) -> _Screen:
+    screen = _Screen(rows, cols, colours=colours)
     pos = 0
     for m in _TOKEN.finditer(data):
         if m.start() > pos:
             screen.write(data[pos : m.start()])
         pos = m.end()
+        if colours and screen.untrusted is None:
+            screen.untrusted = _untrusted(m)
         final = m.group("csi_final")
         if final:
-            screen.csi(m.group("csi_params") or b"", final.decode("ascii", "replace"))
+            params = m.group("csi_params") or b""
+            if colours and final == b"m" and params[:1] not in (b"?", b">", b"<", b"="):
+                screen.sgr(params)
+                continue
+            if colours and final in (b"h", b"l") and params[:1] == b"?":
+                # Numerically: `?01049l` is `?1049l` (#1218 review 5405).
+                if set(_dec_modes(params[1:]) or ()) & _ALT_DEC_MODES:
+                    screen.alt(final == b"h")
+                continue
+            screen.csi(params, final.decode("ascii", "replace"))
             continue
         decsc = m.group("decsc")
         if decsc:
             screen.save_cursor() if decsc == b"7" else screen.restore_cursor()
     if pos < len(data):
         screen.write(data[pos:])
-    return screen.display()
+    return screen
+
+
+def _feed(data: bytes, rows: int, cols: int) -> str:
+    return _feed_screen(data, rows, cols).display()
 
 
 def render(data: bytes, rows: int, cols: int) -> str:
@@ -327,3 +572,23 @@ def render(data: bytes, rows: int, cols: int) -> str:
         if out.strip():
             return out
     return ""
+
+
+def render_cells(data: bytes, rows: int, cols: int) -> list[Cells]:
+    """The CURRENT grid with each character's colours (#1213) — and nothing else.
+
+    Same frame and trimming as :func:`render`, but deliberately WITHOUT its empty-frame fallback:
+    `render` may show the frame from before a trailing full-screen erase (a display nicety for a
+    reviewer), whereas this is what an ANSWER is authorised against, and a screen that was just
+    cleared shows no dialog to answer (#1218 review). ``[]`` when the current grid is empty, which
+    is also the only case where the two differ — the tests pin both halves.
+    """
+    rows = max(1, min(MAX_ROWS, rows))
+    cols = max(1, min(MAX_COLS, cols))
+    if not data:
+        return []
+    screen = _feed_screen(data, rows, cols, colours=True)
+    if screen.untrusted is not None:
+        return []  # something this renderer does not model may have changed the screen
+    cells = screen.cells()
+    return cells if any(c.text.strip() for c in cells) else []

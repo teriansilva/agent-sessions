@@ -260,6 +260,8 @@ class Terminal:
     ready: str
     menu: str
     menu_digit_submits: bool
+    #: `terminal.permission` (#1213): the tool-permission dialog kind, or "none".
+    permission: str = "none"
 
 
 @dataclass(frozen=True)
@@ -658,6 +660,7 @@ def parse(doc: Any, *, source: str = "", digest: str | None = None) -> Manifest:
             ready=r.str("ready", "bytes", one_of=kinds.READY_KINDS),
             menu=r.str("menu", "none", one_of=kinds.MENU_KINDS),
             menu_digit_submits=r.bool("menu_digit_submits"),
+            permission=r.str("permission", "none", one_of=kinds.PERMISSION_KINDS),
         )
         r.done()
         if terminal.menu_digit_submits and terminal.menu == "none":
