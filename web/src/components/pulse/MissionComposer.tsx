@@ -31,7 +31,14 @@ import { Send } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api, ApiError } from "../../lib/api";
-import type { Mission, MissionOpenTurn, MissionTurn } from "../../types/api";
+import type {
+  Mission,
+  MissionOpenTurn,
+  MissionTurn,
+  MissionTurnEvent,
+} from "../../types/api";
+import { AskWorking } from "../ask/AskWorking";
+import type { AskStep } from "../ask/askStep";
 
 import compose from "../terminal/Compose.module.css";
 import styles from "./mission.module.css";
@@ -42,6 +49,24 @@ interface Pending {
   text: string;
   state: "sending" | "in_progress" | "indeterminate" | "failed";
   detail: string;
+  /** While `sending`: the step the turn is on, streamed (#1224). `null` before the first. */
+  step?: AskStep | null;
+  /** While `sending`: a find turn's provisional Stage-1 answer — shown, never stored. */
+  provisional?: string;
+}
+
+/** A progress line as the step `AskWorking` names — Ask's own labels, one vocabulary (#1224). */
+function stepOf(ev: Extract<MissionTurnEvent, { type: "progress" }>): AskStep {
+  switch (ev.step) {
+    case "catalog":
+      return { step: "catalog", sessions: ev.sessions, missions: ev.missions };
+    case "content":
+      return { step: "content", candidates: ev.candidates };
+    case "instruct":
+      return { step: "instruct", sessions: ev.sessions };
+    default:
+      return { step: "classify" };
+  }
 }
 
 /** A `turn_id` the route will accept: required, at most 64 characters. `randomUUID` is 36 and is
@@ -94,12 +119,26 @@ export function MissionComposer({
   const send = useCallback(
     async (turnId: string, body: string) => {
       const asked = missionId; // the mission this turn belongs to, captured once
-      set({ id: turnId, text: body, state: "sending", detail: "" });
+      set({ id: turnId, text: body, state: "sending", detail: "", step: null });
+      // STREAMED (#1224): the steps and a find turn's provisional answer arrive while it runs.
+      // Every line is checked against BOTH identities — the mission (the operator may have moved
+      // on) and the turn (a newer send, or a settlement the timeline already delivered, owns the
+      // row now) — so a late line can never paint over something it does not belong to.
+      const onEvent = (ev: MissionTurnEvent) => {
+        if (!isCurrent(asked)) return;
+        const cur = pendingRef.current;
+        if (!cur || cur.id !== turnId || cur.state !== "sending") return;
+        if (ev.type === "progress") set({ ...cur, step: stepOf(ev) });
+        else if (ev.type === "answer") set({ ...cur, provisional: ev.answer });
+      };
       try {
-        const r: MissionTurn = await api.missionMessage(asked, {
-          message: body,
-          turnId,
-        });
+        // Every exit below REPLACES the pending row, so a settled, failed or cut-off turn never
+        // keeps a provisional answer or a step. The `turn_id` rides on, so a retry replays.
+        const r: MissionTurn = await api.missionMessageStream(
+          asked,
+          { message: body, turnId },
+          onEvent,
+        );
         // The operator moved on. DISCARD — an answer written into a mission they have left is
         // state they never asked to keep and will meet later with no context for it (#878).
         if (!isCurrent(asked)) return;
@@ -270,7 +309,20 @@ export function MissionComposer({
             </>
           ) : null}
           {shown.state === "sending" ? (
-            <div className={styles.objReason}>…</div>
+            <>
+              {pending?.provisional ? (
+                // Ask's provisional answer (#1171), in the mission: marked as unconfirmed, and
+                // replaced by the timeline's own answer once the turn settles.
+                <div
+                  className={styles.turnProvisional}
+                  data-testid="turn-provisional"
+                >
+                  <div className={styles.eventHead}>Answer · checking</div>
+                  <div className={styles.eventText}>{pending.provisional}</div>
+                </div>
+              ) : null}
+              <AskWorking step={pending?.step ?? null} />
+            </>
           ) : shown.state === "in_progress" ? (
             <div className={styles.objReason} data-testid="turn-in-progress">
               Still working on this. {shown.detail}

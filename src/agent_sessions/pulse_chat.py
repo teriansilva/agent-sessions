@@ -45,7 +45,7 @@ import logging
 import re
 import sqlite3
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 
 from . import engines, missions, prompts, pulse, review
 
@@ -462,7 +462,13 @@ async def ask_events(
     }
 
 
-async def ask(query: str, history: object = None, *, working_keys: set[str] | None = None) -> dict:
+async def ask(
+    query: str,
+    history: object = None,
+    *,
+    working_keys: set[str] | None = None,
+    on_event: Callable[[dict], None] | None = None,
+) -> dict:
     """One ask: catalog ranking, then transcript-tail confirmation for the top picks.
 
     Returns ``{"answer", "matches": [PulseCard + "why", …], "mission_matches": [{id, title,
@@ -472,12 +478,17 @@ async def ask(query: str, history: object = None, *, working_keys: set[str] | No
     endpoint isn't configured (route → 409) and :class:`review.ReviewError` when Stage 1
     fails (route → 502) — a chat has no useful non-LLM fallback, unlike a Pulse scan.
 
-    The last event of :func:`ask_events`, without its event fields.
+    The last event of :func:`ask_events`, without its event fields. ``on_event`` is handed every
+    event BEFORE that one — the progress steps and the provisional Stage-1 answer — so a caller
+    that is not a stream route (a mission turn, #1224) can show the same pipeline without a second
+    copy of it.
     """
     final: dict | None = None
     async for ev in ask_events(query, history, working_keys=working_keys):
         if ev["type"] == "answer" and ev["final"]:
             final = {k: v for k, v in ev.items() if k not in ("type", "final")}
+        elif on_event is not None:
+            on_event(ev)
     if final is None:  # unreachable: ask_events ends on a final answer or raises
         raise review.ReviewError("the question ended without an answer")
     return final

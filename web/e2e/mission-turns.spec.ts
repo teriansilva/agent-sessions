@@ -7,6 +7,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { ASK_STREAM, fulfillAsk } from "./askStream";
+import { MISSION_STREAM, fulfillTurn, holdTurnStream } from "./missionStream";
 
 import {
   MISSION,
@@ -123,16 +124,14 @@ test("a turn goes to the MISSION route and its answer comes back from the timeli
       json: { detail: "the composer must not use this route" },
     }),
   );
-  await page.route("**/api/missions/*/message", async (r) => {
+  await page.route(MISSION_STREAM, async (r) => {
     stored.push(r.request().postDataJSON());
     answered = true;
-    return r.fulfill({
-      json: {
-        turn_id: "t1",
-        state: "done",
-        answer: "the branch is there",
-        matches: [],
-      },
+    return fulfillTurn(r, {
+      turn_id: "t1",
+      state: "done",
+      answer: "the branch is there",
+      matches: [],
     });
   });
   // Once the turn settles, the timeline carries both events — the route writes them.
@@ -204,7 +203,7 @@ test("a RELOAD during a turn finds it STILL RUNNING, from the store", async ({
   let turn: unknown = null;
   let events: unknown[] = [];
   await mutableMission(page, () => missionWith(turn, events));
-  await page.route("**/api/missions/*/message", (r) => {
+  await page.route(MISSION_STREAM, (r) => {
     turn = {
       turn_id: "t1",
       state: "in_progress",
@@ -213,9 +212,12 @@ test("a RELOAD during a turn finds it STILL RUNNING, from the store", async ({
       created_at: T,
     };
     events = [evt(1, "operator_msg", "run the tests", { turn_id: "t1" })];
-    return r.fulfill({
-      json: { turn_id: "t1", state: "in_progress", actions: [] },
-    });
+    return fulfillTurn(
+      r,
+      { turn_id: "t1", state: "in_progress", actions: [] },
+      [],
+      202,
+    );
   });
 
   await page.goto("/mission");
@@ -273,9 +275,9 @@ test("a RELOAD finds an AMBIGUOUS turn, and CHECK AGAIN reuses its id", async ({
       [evt(1, "operator_msg", "restart the server", { turn_id: "t9" })],
     ),
   );
-  await page.route("**/api/missions/*/message", (r) => {
+  await page.route(MISSION_STREAM, (r) => {
     sent.push(r.request().postDataJSON());
-    return r.fulfill({ json: { turn_id: "t9", state: "indeterminate" } });
+    return fulfillTurn(r, { turn_id: "t9", state: "indeterminate" });
   });
 
   await page.goto("/mission");
@@ -388,4 +390,127 @@ test("ASK stays transient and says why (#948: was the UNTRACKED view's; #1058: n
   await expect(page.getByTestId("ask-transient")).toContainText(
     "no mission to keep them in",
   );
+});
+
+// --- #1224: the turn STREAMS — Ask's working line and provisional answer, in the mission --------
+
+test("a turn shows its steps and a provisional answer while it runs, then the timeline's answer", async ({
+  page,
+}) => {
+  const stream = await holdTurnStream(page);
+  await stub(page, []);
+  let settled = false;
+  await mutableMission(page, () =>
+    missionWith(
+      null,
+      settled
+        ? [
+            evt(2, "assistant_msg", "mc-e2e broke it at 18:40", {
+              turn_id: "x",
+            }),
+            evt(1, "operator_msg", "which session broke e2e?"),
+          ]
+        : [],
+    ),
+  );
+
+  await page.goto("/mission");
+  await openMission(page);
+  await page.getByTestId("composer-input").fill("which session broke e2e?");
+  await page.getByTestId("composer-send").click();
+
+  // Sent: Ask's scan line, naming the step — not a bare "…".
+  const pending = page.getByTestId("turn-pending");
+  await expect(pending.getByTestId("ask-working")).toBeVisible();
+  await expect(pending.getByTestId("ask-step")).toHaveText(
+    "Reading your question…",
+  );
+  await expect.poll(async () => (await stream.sent()).length).toBe(1);
+
+  await stream.push({ type: "progress", step: "classify" });
+  await stream.push({
+    type: "progress",
+    step: "catalog",
+    sessions: 4,
+    missions: 1,
+  });
+  await expect(pending.getByTestId("ask-step")).toHaveText(
+    "Searching 4 sessions and 1 mission…",
+  );
+
+  // Stage 1's answer shows at once, marked as unconfirmed, while Stage 2 still runs.
+  await stream.push({
+    type: "answer",
+    final: false,
+    answer: "probably mc-e2e",
+  });
+  await stream.push({ type: "progress", step: "content", candidates: 2 });
+  await expect(pending.getByTestId("turn-provisional")).toContainText(
+    "Answer · checking",
+  );
+  await expect(pending.getByTestId("turn-provisional")).toContainText(
+    "probably mc-e2e",
+  );
+  await expect(pending.getByTestId("ask-step")).toHaveText(
+    "Checking against 2 transcripts…",
+  );
+  await expect(page.getByTestId("composer-send")).toBeDisabled();
+
+  // Settled: the recorded answer is the TIMELINE's; the provisional one and the working line go.
+  settled = true;
+  const [sent] = await stream.sent();
+  await stream.push({
+    type: "turn",
+    status: 200,
+    turn: {
+      turn_id: sent.turn_id,
+      state: "done",
+      intent: "find",
+      answer: "mc-e2e broke it at 18:40",
+      matches: [],
+    },
+  });
+  await stream.close();
+  await expect(page.getByTestId("turn-pending")).toHaveCount(0);
+  await expect(page.getByTestId("mission-console")).toContainText(
+    "mc-e2e broke it at 18:40",
+  );
+  await expect(page.getByTestId("mission-console")).not.toContainText(
+    "probably mc-e2e",
+  );
+
+  // Nothing of it pushes a phone sideways.
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - window.innerWidth,
+  );
+  expect(overflow).toBeLessThanOrEqual(0);
+});
+
+test("a stream cut off before its turn clears the provisional answer and retries the SAME turn", async ({
+  page,
+}) => {
+  const stream = await holdTurnStream(page);
+  await stub(page, []);
+  await mutableMission(page, () => missionWith(null, []));
+
+  await page.goto("/mission");
+  await openMission(page);
+  await page.getByTestId("composer-input").fill("where is it?");
+  await page.getByTestId("composer-send").click();
+  await stream.push({ type: "answer", final: false, answer: "maybe here" });
+  await expect(page.getByTestId("turn-provisional")).toBeVisible();
+
+  await stream.close(); // no `turn` line: the connection dropped
+  await expect(page.getByTestId("turn-error")).toContainText(
+    "The connection dropped before the turn finished.",
+  );
+  await expect(page.getByTestId("turn-provisional")).toHaveCount(0);
+  await expect(page.getByTestId("ask-working")).toHaveCount(0);
+
+  // TRY AGAIN asks about the SAME turn — the server replays it rather than running it twice.
+  await page.getByTestId("turn-retry").click();
+  await expect.poll(async () => (await stream.sent()).length).toBe(2);
+  const [first, second] = await stream.sent();
+  expect(second.turn_id).toBe(first.turn_id);
+  expect(second.message).toBe("where is it?");
 });

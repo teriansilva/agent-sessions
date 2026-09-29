@@ -44,6 +44,7 @@ import type {
   MissionObjective,
   MissionPlan,
   MissionTurn,
+  MissionTurnEvent,
   NotificationList,
   OrchestratorAction,
   NeedsYouDetails,
@@ -359,26 +360,84 @@ async function streamAsk(
     if (ev.type === "answer" && ev.final) final = true;
     onEvent(ev);
   };
+  await readLines(r, emit);
+  if (!final) throw cut();
+}
+
+/** Hand each NDJSON line of `r` to `emit` as it arrives — or all at once, when the body cannot be
+ *  read as a stream (the Home Free tunnel may buffer it). Shared by both streamed chats. */
+async function readLines(r: Response, emit: (line: string) => void): Promise<void> {
   const reader = r.body?.getReader();
   if (!reader) {
     for (const line of (await r.text()).split("\n")) emit(line);
-  } else {
-    const decoder = new TextDecoder();
-    let buf = "";
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      let nl = buf.indexOf("\n");
-      while (nl >= 0) {
-        emit(buf.slice(0, nl));
-        buf = buf.slice(nl + 1);
-        nl = buf.indexOf("\n");
-      }
-    }
-    emit(buf + decoder.decode());
+    return;
   }
-  if (!final) throw cut();
+  const decoder = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let nl = buf.indexOf("\n");
+    while (nl >= 0) {
+      emit(buf.slice(0, nl));
+      buf = buf.slice(nl + 1);
+      nl = buf.indexOf("\n");
+    }
+  }
+  emit(buf + decoder.decode());
+}
+
+/** `POST /api/missions/{id}/message/stream`, read line by line (#1224). Resolves with the turn —
+ *  the same `MissionTurn` `/message` answers — and hands every line before it to `onEvent`.
+ *
+ *  A refusal before the stream is an `ApiError` with its status, exactly as `missionMessage`'s;
+ *  an `error` line is one too. A stream that ends WITHOUT its `turn` line (a dropped connection,
+ *  a proxy cutting it) is a failure, never a turn left spinning — and not a statement about the
+ *  turn: it is durable, and sending the same `turn_id` again finds it. */
+async function streamMissionMessage(
+  id: string,
+  body: { message: string; turnId: string },
+  onEvent: (ev: MissionTurnEvent) => void,
+): Promise<MissionTurn> {
+  const path = `/api/missions/${encodeURIComponent(id)}/message/stream`;
+  const r = await apiFetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+    body: JSON.stringify({ message: body.message, turn_id: body.turnId }),
+  });
+  if (r.status === 401 || r.status === 403) await authGate(r);
+  if (!r.ok) {
+    let parsed: unknown;
+    try {
+      parsed = await r.json();
+    } catch {
+      /* non-JSON body */
+    }
+    const detail = (parsed as { detail?: string } | undefined)?.detail ?? "";
+    throw new ApiError(r.status, detail || `POST ${path} → ${r.status}`, parsed);
+  }
+  let turn: MissionTurn | null = null;
+  const cut = () =>
+    new ApiError(502, "The connection dropped before the turn finished.");
+  await readLines(r, (line) => {
+    if (!line.trim()) return;
+    let ev: MissionTurnEvent;
+    try {
+      ev = JSON.parse(line) as MissionTurnEvent;
+    } catch {
+      throw cut();
+    }
+    if (ev.type === "error") throw new ApiError(ev.status, ev.detail);
+    if (ev.type === "turn") {
+      turn = ev.turn;
+      return;
+    }
+    onEvent(ev);
+  });
+  if (!turn) throw cut();
+  return turn;
 }
 
 const patchJson = <T>(path: string, body?: unknown): Promise<T> =>
@@ -1502,6 +1561,11 @@ export const api = {
       `/api/missions/${encodeURIComponent(id)}/message`,
       { message: body.message, turn_id: body.turnId },
     ),
+
+  /** `missionMessage`, streamed (#1224) — what the composer sends. The steps and a find turn's
+   *  provisional answer arrive through `onEvent` while it runs; resolves with the same
+   *  `MissionTurn`. `missionMessage` stays the plain route's client. */
+  missionMessageStream: streamMissionMessage,
 
   /** Dismiss an AMBIGUOUS turn. Only `indeterminate` is dismissible — the server cannot resolve
    *  it, so "I have seen this" has to be durable or the banner returns on every reload (#890). */

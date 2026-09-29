@@ -374,6 +374,11 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         try:
             yield
         finally:
+            # FIRST: a streamed mission turn whose reader has left belongs to no request, so the
+            # server's wait for requests in flight does not cover it (#1224). Let it settle while
+            # everything it uses is still up.
+            with contextlib.suppress(Exception):
+                await missions_routes.drain_turns()
             # Interrupt compaction, then drain its actual SQLite worker before its task/runner
             # or launch-admission lock can be released.
             await _app.state.opencode_compaction.shutdown()

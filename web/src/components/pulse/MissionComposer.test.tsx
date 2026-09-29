@@ -12,7 +12,12 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
 
 import { ApiError, api } from "../../lib/api";
-import type { Mission, MissionOpenTurn } from "../../types/api";
+import type {
+  Mission,
+  MissionOpenTurn,
+  MissionTurn,
+  MissionTurnEvent,
+} from "../../types/api";
 
 import { MissionComposer } from "./MissionComposer";
 
@@ -21,7 +26,7 @@ vi.mock("../../lib/api", async () => {
     await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
   return {
     ...actual,
-    api: { missionMessage: vi.fn(), ackMissionTurn: vi.fn() },
+    api: { missionMessageStream: vi.fn(), ackMissionTurn: vi.fn() },
   };
 });
 
@@ -43,7 +48,7 @@ async function send(text: string) {
 }
 
 beforeEach(() => {
-  vi.mocked(api.missionMessage).mockReset();
+  vi.mocked(api.missionMessageStream).mockReset();
   vi.mocked(api.ackMissionTurn).mockReset().mockResolvedValue({
     turn_id: "x",
     acked: true,
@@ -55,7 +60,7 @@ test("a RETRY reuses the same turn_id", async () => {
   // execution — the double-instruct #871 was built to prevent — so the id has to be minted once
   // per send and kept with the pending turn. Asserted on the WIRE, because the rendered output
   // looks identical either way.
-  vi.mocked(api.missionMessage)
+  vi.mocked(api.missionMessageStream)
     .mockRejectedValueOnce(new ApiError(502, "the chat backend failed"))
     .mockResolvedValueOnce({ turn_id: "x", state: "done", answer: "ok" });
 
@@ -66,10 +71,12 @@ test("a RETRY reuses the same turn_id", async () => {
   );
 
   await userEvent.click(screen.getByTestId("turn-retry"));
-  await waitFor(() => expect(api.missionMessage).toHaveBeenCalledTimes(2));
+  await waitFor(() =>
+    expect(api.missionMessageStream).toHaveBeenCalledTimes(2),
+  );
 
-  const first = vi.mocked(api.missionMessage).mock.calls[0][1];
-  const second = vi.mocked(api.missionMessage).mock.calls[1][1];
+  const first = vi.mocked(api.missionMessageStream).mock.calls[0][1];
+  const second = vi.mocked(api.missionMessageStream).mock.calls[1][1];
   expect(second.turnId).toBe(first.turnId);
   expect(second.message).toBe(first.message);
 });
@@ -77,18 +84,22 @@ test("a RETRY reuses the same turn_id", async () => {
 test("a NEW message gets a new turn_id", async () => {
   // The mirror: stability across a retry must not become one id for the mission's whole life,
   // which would make the second question replay the first one's stored answer.
-  vi.mocked(api.missionMessage).mockResolvedValue({
+  vi.mocked(api.missionMessageStream).mockResolvedValue({
     turn_id: "x",
     state: "done",
     answer: "ok",
   });
   panel();
   await send("first");
-  await waitFor(() => expect(api.missionMessage).toHaveBeenCalledTimes(1));
+  await waitFor(() =>
+    expect(api.missionMessageStream).toHaveBeenCalledTimes(1),
+  );
   await send("second");
-  await waitFor(() => expect(api.missionMessage).toHaveBeenCalledTimes(2));
-  const a = vi.mocked(api.missionMessage).mock.calls[0][1];
-  const b = vi.mocked(api.missionMessage).mock.calls[1][1];
+  await waitFor(() =>
+    expect(api.missionMessageStream).toHaveBeenCalledTimes(2),
+  );
+  const a = vi.mocked(api.missionMessageStream).mock.calls[0][1];
+  const b = vi.mocked(api.missionMessageStream).mock.calls[1][1];
   expect(b.turnId).not.toBe(a.turnId);
 });
 
@@ -96,7 +107,7 @@ test("INDETERMINATE is never retried on its own", async () => {
   // The route answers it precisely when nobody can say whether the instruction went out. An
   // automatic retry could be a second copy of an instruction the agent already has, so the
   // operator is told that and decides.
-  vi.mocked(api.missionMessage).mockResolvedValue({
+  vi.mocked(api.missionMessageStream).mockResolvedValue({
     turn_id: "x",
     state: "indeterminate",
     delivery_error: "TimeoutError",
@@ -108,7 +119,7 @@ test("INDETERMINATE is never retried on its own", async () => {
   );
   // …and nothing happened by itself.
   await new Promise((r) => setTimeout(r, 60));
-  expect(api.missionMessage).toHaveBeenCalledTimes(1);
+  expect(api.missionMessageStream).toHaveBeenCalledTimes(1);
   // The operator's choice is offered, and it is explicit about what it does.
   expect(screen.getByTestId("turn-indeterminate")).toHaveTextContent(
     /will not run\s+a second time/,
@@ -116,7 +127,7 @@ test("INDETERMINATE is never retried on its own", async () => {
 });
 
 test("IN PROGRESS is shown as a server fact, not as a spinner that ended", async () => {
-  vi.mocked(api.missionMessage).mockResolvedValue({
+  vi.mocked(api.missionMessageStream).mockResolvedValue({
     turn_id: "x",
     state: "in_progress",
   });
@@ -133,7 +144,7 @@ test("a completion for a mission the operator LEFT is discarded", async () => {
   // mission is not enough on its own. Liveness is read at RESOLUTION time — a boolean captured
   // when the request started answers the question as it was at the moment that does not matter.
   let release: ((v: unknown) => void) | null = null;
-  vi.mocked(api.missionMessage).mockImplementation(
+  vi.mocked(api.missionMessageStream).mockImplementation(
     () => new Promise((r) => (release = r)) as never,
   );
   let current = true;
@@ -157,7 +168,7 @@ test("the server's own refusal is shown as written", async () => {
   // "turn_id was already used for a different message" and "a question is already running" are
   // different problems with different fixes. They are authored, short and carry no mission
   // content — which is why they are shown rather than flattened (#834, #871).
-  vi.mocked(api.missionMessage).mockRejectedValue(
+  vi.mocked(api.missionMessageStream).mockRejectedValue(
     new ApiError(409, "a question is already running"),
   );
   panel();
@@ -203,7 +214,7 @@ test("a RELOAD finds the running turn, with nothing sent from this component", (
   // this is a fresh mount reading the mission detail, which is exactly what a reload is.
   panel({ detail: withTurn(OPEN) });
   expect(screen.getByTestId("turn-in-progress")).toBeInTheDocument();
-  expect(api.missionMessage).not.toHaveBeenCalled();
+  expect(api.missionMessageStream).not.toHaveBeenCalled();
 });
 
 test("a RELOAD finds an AMBIGUOUS turn, with its stable id and CHECK AGAIN", async () => {
@@ -211,7 +222,7 @@ test("a RELOAD finds an AMBIGUOUS turn, with its stable id and CHECK AGAIN", asy
   // the instruction went out, and the decision is the operator's. Reloading used to turn it into
   // an ordinary settled Answer with no way to ask again — the ambiguity silently resolved itself
   // in the operator's favour, which is the opposite of what the state means.
-  vi.mocked(api.missionMessage).mockResolvedValue({
+  vi.mocked(api.missionMessageStream).mockResolvedValue({
     turn_id: "t-1",
     state: "indeterminate",
   });
@@ -219,10 +230,12 @@ test("a RELOAD finds an AMBIGUOUS turn, with its stable id and CHECK AGAIN", asy
   expect(screen.getByTestId("turn-indeterminate")).toBeInTheDocument();
 
   await userEvent.click(screen.getByTestId("turn-recheck"));
-  await waitFor(() => expect(api.missionMessage).toHaveBeenCalledTimes(1));
+  await waitFor(() =>
+    expect(api.missionMessageStream).toHaveBeenCalledTimes(1),
+  );
   // The SERVER's turn id, not a fresh one — a new id would be a second execution of an
   // instruction the agent may already have.
-  expect(vi.mocked(api.missionMessage).mock.calls[0][1]).toEqual({
+  expect(vi.mocked(api.missionMessageStream).mock.calls[0][1]).toEqual({
     message: "what is it doing?",
     turnId: "t-1",
   });
@@ -238,7 +251,7 @@ test("the operator's message is NOT echoed once the store knows the turn", () =>
 test("a SETTLED turn clears the local copy instead of talking over the answer", async () => {
   // The other direction: the poll sees the settlement, the timeline prints the answer, and an
   // unreconciled local `pending` goes on saying the same turn is still running.
-  vi.mocked(api.missionMessage).mockResolvedValue({
+  vi.mocked(api.missionMessageStream).mockResolvedValue({
     turn_id: "t-1",
     state: "in_progress",
   });
@@ -314,7 +327,7 @@ test("a LOST RESPONSE over a committed turn is reconciled, not left as TRY AGAIN
   // only tell them apart from the durable record: the server can commit and settle a turn and
   // the response can still be lost. Without the discriminator the composer showed TRY AGAIN
   // beside an answer the server had already stored, for ever (#902 review 2, finding 1).
-  vi.mocked(api.missionMessage).mockRejectedValue(
+  vi.mocked(api.missionMessageStream).mockRejectedValue(
     new ApiError(502, "gateway went away"),
   );
   const { rerender } = panel();
@@ -322,7 +335,7 @@ test("a LOST RESPONSE over a committed turn is reconciled, not left as TRY AGAIN
   await waitFor(() =>
     expect(screen.getByTestId("turn-error")).toBeInTheDocument(),
   );
-  const turnId = vi.mocked(api.missionMessage).mock.calls[0][1].turnId;
+  const turnId = vi.mocked(api.missionMessageStream).mock.calls[0][1].turnId;
 
   // The next detail read: no open turn, and the ANSWER carries the turn's own id.
   rerender(
@@ -355,7 +368,7 @@ test("a failure with NO durable answer keeps TRY AGAIN", async () => {
   // The mirror, and the reason this is a discriminator rather than "clear on any reload": a
   // claim that never landed leaves nothing on the timeline, and TRY AGAIN is then exactly the
   // control the operator needs.
-  vi.mocked(api.missionMessage).mockRejectedValue(
+  vi.mocked(api.missionMessageStream).mockRejectedValue(
     new ApiError(502, "gateway went away"),
   );
   const { rerender } = panel();
@@ -379,7 +392,7 @@ test("a failure with NO durable answer keeps TRY AGAIN", async () => {
 test("a failure the SERVER still has as an open turn shows the server's state", async () => {
   // The response was lost while the turn is genuinely still running. "Still working" is the
   // truth; TRY AGAIN would offer to run it a second time.
-  vi.mocked(api.missionMessage).mockRejectedValue(
+  vi.mocked(api.missionMessageStream).mockRejectedValue(
     new ApiError(502, "gateway went away"),
   );
   const { rerender } = panel();
@@ -387,7 +400,7 @@ test("a failure the SERVER still has as an open turn shows the server's state", 
   await waitFor(() =>
     expect(screen.getByTestId("turn-error")).toBeInTheDocument(),
   );
-  const turnId = vi.mocked(api.missionMessage).mock.calls[0][1].turnId;
+  const turnId = vi.mocked(api.missionMessageStream).mock.calls[0][1].turnId;
 
   rerender(
     <MissionComposer
@@ -400,4 +413,121 @@ test("a failure the SERVER still has as an open turn shows the server's state", 
   );
   expect(screen.getByTestId("turn-in-progress")).toBeInTheDocument();
   expect(screen.queryByTestId("turn-error")).toBeNull();
+});
+
+// --- #1224: the turn STREAMS ------------------------------------------------------------------
+
+/** A stream the test drives: `emit` hands a line to the composer, `settle` resolves the turn. */
+function heldStream() {
+  let onEvent: ((ev: MissionTurnEvent) => void) | null = null;
+  let resolve!: (t: MissionTurn) => void;
+  let reject!: (e: unknown) => void;
+  vi.mocked(api.missionMessageStream).mockImplementationOnce(
+    (_id, _body, cb) => {
+      onEvent = cb;
+      return new Promise<MissionTurn>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+    },
+  );
+  return {
+    emit: (ev: MissionTurnEvent) => act(() => onEvent!(ev)),
+    settle: (t: MissionTurn) => act(async () => resolve(t)),
+    fail: (e: unknown) => act(async () => reject(e)),
+  };
+}
+
+test("the step and a provisional answer show while the turn runs; the settlement clears both", async () => {
+  const s = heldStream();
+  panel();
+  await send("which session broke e2e?");
+  expect(screen.getByTestId("ask-step")).toHaveTextContent(
+    "Reading your question…",
+  );
+
+  await s.emit({ type: "progress", step: "catalog", sessions: 4, missions: 1 });
+  expect(screen.getByTestId("ask-step")).toHaveTextContent(
+    "Searching 4 sessions and 1 mission…",
+  );
+  await s.emit({ type: "answer", final: false, answer: "probably mc-e2e" });
+  await s.emit({ type: "progress", step: "content", candidates: 2 });
+  expect(screen.getByTestId("turn-provisional")).toHaveTextContent(
+    "probably mc-e2e",
+  );
+  expect(screen.getByTestId("ask-step")).toHaveTextContent(
+    "Checking against 2 transcripts…",
+  );
+
+  await s.settle({ turn_id: "x", state: "done", answer: "mc-e2e" });
+  expect(screen.queryByTestId("turn-provisional")).toBeNull();
+  expect(screen.queryByTestId("ask-working")).toBeNull();
+});
+
+test("an instruct turn names its own step", async () => {
+  const s = heldStream();
+  panel();
+  await send("rebase both on main");
+  await s.emit({ type: "progress", step: "instruct", sessions: 2 });
+  expect(screen.getByTestId("ask-step")).toHaveTextContent(
+    "Drafting the instruction for 2 sessions…",
+  );
+});
+
+test("a CUT stream clears the provisional answer and keeps the turn_id for the retry", async () => {
+  const s = heldStream();
+  panel();
+  await send("where is it?");
+  await s.emit({ type: "answer", final: false, answer: "maybe here" });
+  await s.fail(
+    new ApiError(502, "The connection dropped before the turn finished."),
+  );
+
+  expect(screen.getByTestId("turn-error")).toHaveTextContent(
+    "The connection dropped before the turn finished.",
+  );
+  expect(screen.queryByTestId("turn-provisional")).toBeNull();
+  expect(screen.queryByTestId("ask-working")).toBeNull();
+
+  vi.mocked(api.missionMessageStream).mockResolvedValueOnce({
+    turn_id: "x",
+    state: "done",
+  });
+  await userEvent.click(screen.getByTestId("turn-retry"));
+  await waitFor(() =>
+    expect(api.missionMessageStream).toHaveBeenCalledTimes(2),
+  );
+  const [first, second] = vi.mocked(api.missionMessageStream).mock.calls;
+  expect(second[1].turnId).toBe(first[1].turnId);
+});
+
+test("a late line for a turn that no longer owns the row paints nothing", async () => {
+  const first = heldStream();
+  panel();
+  await send("first question");
+  await first.fail(new ApiError(502, "down"));
+  expect(screen.getByTestId("turn-error")).toBeInTheDocument();
+
+  // A NEWER turn now owns the row, and is running.
+  heldStream();
+  await send("second question");
+  expect(screen.getByTestId("ask-working")).toBeInTheDocument();
+
+  // The old turn's stream says something late: it must not land on the new turn's row.
+  await first.emit({ type: "answer", final: false, answer: "a stale answer" });
+  await first.emit({ type: "progress", step: "content", candidates: 9 });
+  expect(screen.queryByText("a stale answer")).toBeNull();
+  expect(screen.getByTestId("ask-step")).toHaveTextContent(
+    "Reading your question…",
+  );
+});
+
+test("a line for a mission the operator LEFT paints nothing", async () => {
+  const s = heldStream();
+  let current = "msn_a";
+  panel({ isCurrent: (id) => id === current });
+  await send("question");
+  current = "msn_b";
+  await s.emit({ type: "answer", final: false, answer: "for the old mission" });
+  expect(screen.queryByText("for the old mission")).toBeNull();
 });

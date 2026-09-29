@@ -25,6 +25,7 @@ proposal and goes through approval exactly like a scheduled one.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 import uuid
@@ -89,6 +90,7 @@ async def ask(
     turn_id: str | None = None,
     mission_id: str | None = None,
     reserve_write: Callable[[list[str]], bool] | None = None,
+    on_progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """One chat turn. Raises :class:`review.NotConfiguredError` (→409) /
     :class:`review.ReviewError` (→502), matching ``/api/pulse/ask``.
@@ -105,16 +107,32 @@ async def ask(
       *reservation*, not a check: it commits a durable receipt — including that intended
       identity — so recovery can look for exactly those actions rather than infer from timing.
       A False answer aborts the append entirely: no action is written and none is claimed.
+    * ``on_progress`` (#1224) is told which step the turn is on — ``classify``, the ask pipeline's
+      own ``catalog`` / ``content`` steps with its provisional Stage-1 answer, or ``instruct`` — so
+      the mission composer can show it while it runs. It is OBSERVATIONAL: it is never awaited,
+      what it raises is swallowed, and nothing it does can change what the turn returns.
     """
+
+    def emit(ev: dict) -> None:
+        if on_progress is None:
+            return
+        # A provisional answer is shown as TEXT only: its cards are the final answer's to carry.
+        if ev.get("type") == "answer":
+            ev = {"type": "answer", "final": False, "answer": ev.get("answer") or ""}
+        # A watcher can never fail the turn it watches.
+        with contextlib.suppress(Exception):
+            on_progress(ev)
+
     review._require_config()
     turns = pulse_chat.bound_history(history)
+    emit({"type": "progress", "step": "classify"})
     intent = await _classify(query, turns)
 
     if intent == "history":
         return _history_answer()
 
     if intent == "find":
-        result = await pulse_chat.ask(query, history, working_keys=working_keys)
+        result = await pulse_chat.ask(query, history, working_keys=working_keys, on_event=emit)
         return {"intent": "find", **result, "actions": []}
 
     # instruct — the same path a scheduled pass takes, with no shortcuts.
@@ -136,6 +154,7 @@ async def ask(
         }
 
     slice_ = cards[: orchestrator.DIGEST_MAX]
+    emit({"type": "progress", "step": "instruct", "sessions": len(slice_)})
     sent = {c["id"]: c for c in slice_}
     payload = {
         "instruction": query,

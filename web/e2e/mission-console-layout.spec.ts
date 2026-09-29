@@ -12,6 +12,7 @@
  *  never the presence of a control.
  */
 import { expect, test, type Page } from "@playwright/test";
+import { MISSION_STREAM, fulfillTurn } from "./missionStream";
 
 import {
   MISSION,
@@ -373,11 +374,14 @@ test.describe("#930 review 2 — the details disclosure's lifecycle", () => {
     await stub(page, { missions: [missionRow()] });
     const gate = deferred();
     let sends = 0;
-    await page.route("**/api/missions/*/message", async (r) => {
+    await page.route(MISSION_STREAM, async (r) => {
       sends += 1;
       await gate.promise;
-      await r.fulfill({
-        json: { turn_id: "t1", state: "done", answer: "ok", matches: [] },
+      await fulfillTurn(r, {
+        turn_id: "t1",
+        state: "done",
+        answer: "ok",
+        matches: [],
       });
     });
 

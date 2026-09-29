@@ -71,3 +71,105 @@ test("api.sessions hands its signal to the fetch bound at call time; without one
     setApiFetch(null);
   }
 });
+
+// #1224: the mission turn's stream. The composer's tests mock this whole function, so its own
+// contract — the last `turn` line is the result, an `error` line throws, a stream that ends
+// without its turn is a cut, never a TypeError — is pinned here, against a real NDJSON body.
+function ndjson(lines: unknown[], cut = false): Response {
+  const body =
+    lines.map((l) => JSON.stringify(l)).join("\n") + (cut ? "" : "\n");
+  return new Response(body, {
+    status: 200,
+    headers: { "content-type": "application/x-ndjson" },
+  });
+}
+
+test("missionMessageStream resolves with the turn line and hands every line before it to onEvent", async () => {
+  const turn = { turn_id: "t1", state: "done", answer: "ok" };
+  const fetch = vi.fn<ApiFetch>(async () =>
+    ndjson([
+      { type: "progress", step: "classify" },
+      { type: "answer", final: false, answer: "early" },
+      { type: "turn", status: 200, turn },
+    ]),
+  );
+  const seen: unknown[] = [];
+  try {
+    setApiFetch(fetch);
+    const out = await api.missionMessageStream(
+      "msn 1",
+      { message: "hi", turnId: "t1" },
+      (ev) => seen.push(ev),
+    );
+    expect(out).toEqual(turn);
+    expect(seen).toEqual([
+      { type: "progress", step: "classify" },
+      { type: "answer", final: false, answer: "early" },
+    ]);
+    expect(fetch.mock.calls[0][0]).toBe("/api/missions/msn%201/message/stream");
+    expect(JSON.parse(String(fetch.mock.calls[0][1]?.body))).toEqual({
+      message: "hi",
+      turn_id: "t1",
+    });
+  } finally {
+    setApiFetch(null);
+  }
+});
+
+test("missionMessageStream: a stream that ends without its turn is a CUT, with its own words", async () => {
+  try {
+    setApiFetch(async () => ndjson([{ type: "progress", step: "classify" }]));
+    await expect(
+      api.missionMessageStream("m", { message: "hi", turnId: "t1" }, () => {}),
+    ).rejects.toMatchObject({
+      status: 502,
+      message: "The connection dropped before the turn finished.",
+    });
+    // A half-written last line is the same cut, not a JSON parse error.
+    setApiFetch(
+      async () =>
+        new Response('{"type": "progress", "step": "classify"}\n{"type": "tu', {
+          status: 200,
+        }),
+    );
+    await expect(
+      api.missionMessageStream("m", { message: "hi", turnId: "t1" }, () => {}),
+    ).rejects.toMatchObject({ status: 502 });
+  } finally {
+    setApiFetch(null);
+  }
+});
+
+test("missionMessageStream: an error line and a refusal before the stream both throw their status", async () => {
+  try {
+    setApiFetch(async () =>
+      ndjson([
+        {
+          type: "error",
+          status: 502,
+          detail: "the chat backend failed (ReviewError)",
+        },
+      ]),
+    );
+    await expect(
+      api.missionMessageStream("m", { message: "hi", turnId: "t1" }, () => {}),
+    ).rejects.toMatchObject({
+      status: 502,
+      message: "the chat backend failed (ReviewError)",
+    });
+    setApiFetch(async () =>
+      Response.json(
+        { detail: "a question is already running" },
+        { status: 409 },
+      ),
+    );
+    await expect(
+      api.missionMessageStream("m", { message: "hi", turnId: "t1" }, () => {}),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: "a question is already running",
+    });
+  } finally {
+    setApiFetch(null);
+  }
+});

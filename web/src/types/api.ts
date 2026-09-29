@@ -1824,6 +1824,18 @@ export interface MissionTurn {
   actions?: OrchestratorAction[];
 }
 
+/** One line of `POST /api/missions/{id}/message/stream` (#1224). `progress` names the step the turn
+ *  is on; `answer` is a find turn's PROVISIONAL Stage-1 text (shown, never stored); the last line is
+ *  exactly one `turn` — the very body `/message` returns — or one `error`. */
+export type MissionTurnEvent =
+  | { type: "progress"; step: "classify" }
+  | { type: "progress"; step: "catalog"; sessions: number; missions: number }
+  | { type: "progress"; step: "content"; candidates: number }
+  | { type: "progress"; step: "instruct"; sessions: number }
+  | { type: "answer"; final: false; answer: string }
+  | { type: "turn"; status: number; turn: MissionTurn }
+  | { type: "error"; status: number; detail: string };
+
 /** The timeline kinds the console knows by name. Open-ended (`string & {}`): the server adds kinds,
  *  and an unknown one still renders as a generic row rather than failing to type-check.
  *

@@ -363,6 +363,14 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+/* #1224: a find turn's provisional Stage-1 answer, while Stage 2 confirms it. Muted: it is not the
+ * recorded answer, which lands in the timeline above and replaces it. */
+.turnProvisional {
+  margin-top: 6px;
+}
+.turnProvisional .eventText {
+  color: var(--text-2);
+}
 
 /* --- composer ------------------------------------------------------------------ */
 

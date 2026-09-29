@@ -54,9 +54,12 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import AsyncIterator, Callable, Coroutine
+from dataclasses import dataclass
+from typing import Any
 
 from fastapi import Depends, FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.background import BackgroundTask
 
 from .. import (
@@ -96,6 +99,124 @@ log = logging.getLogger(__name__)
 
 def _fail(e: missions.MissionError) -> JSONResponse:
     return JSONResponse({"detail": str(e)}, status_code=e.status)
+
+
+# --- a turn, streamed (#1224) -----------------------------------------------------------------
+
+
+@dataclass
+class _TurnAnswered:
+    """A turn `_prepare_turn` settled without the model: live (202), replayed, or reconciled."""
+
+    body: dict
+    status: int = 200
+
+
+@dataclass
+class _TurnReady:
+    """A claim `_prepare_turn` took: the model runs, under `_run_turn`'s fence."""
+
+    turn_id: str
+    text: str
+    row: dict | None
+
+
+#: Progress lines buffered for a slow reader before newer ones are dropped. Progress only — the
+#: last line comes from the turn's own result, never from this queue.
+TURN_STREAM_QUEUE_MAX = 64
+
+#: Turns running for a stream. HELD here so a turn whose reader has gone cannot be collected
+#: half-way; each removes itself when it finishes.
+_TURN_TASKS: set[asyncio.Task] = set()
+
+
+def _spawn_turn(coro: Coroutine[Any, Any, dict], mission_id: str) -> asyncio.Task:
+    """Run a turn detached from the response that asked for it.
+
+    The response only watches: a client that goes away cancels the watching, never the turn. The
+    done-callback retrieves the outcome, so a turn whose reader has left never leaves an
+    unobserved exception behind — a refusal (`MissionError`) is an ordinary outcome, anything
+    else is logged by kind (never content, #871)."""
+    task = asyncio.get_running_loop().create_task(coro, name=f"mission-turn:{mission_id}")
+    _TURN_TASKS.add(task)
+
+    def _done(t: asyncio.Task) -> None:
+        _TURN_TASKS.discard(t)
+        if t.cancelled():
+            return
+        e = t.exception()
+        if e is not None and not isinstance(e, missions.MissionError):
+            log.warning("mission %s: streamed turn failed (%s)", mission_id, type(e).__name__)
+
+    task.add_done_callback(_done)
+    return task
+
+
+#: How long shutdown waits for streamed turns to settle — under systemd's default 90 s stop
+#: timeout, so the rest of the teardown still runs inside it.
+TURN_SHUTDOWN_WAIT_S = 80.0
+
+
+async def drain_turns(timeout: float = TURN_SHUTDOWN_WAIT_S) -> None:
+    """Let every streamed turn settle before the app goes away (independent review of #1227).
+
+    `/message` runs its turn INSIDE the request, and the server waits for requests in flight on
+    shutdown, so a restart used to let a turn finish. A streamed turn belongs to no request once
+    its reader has left, so nothing waited for it: the loop closing cancelled it mid-flight —
+    `CancelledError` skips `_run_turn`'s settle-forward handling, leaving it `in_progress`
+    (archive fence shut until the lease lapses) or a delivery half done. The lifespan calls this
+    FIRST, before any other teardown, so a turn finishing now still has everything it uses."""
+    pending = set(_TURN_TASKS)
+    if pending:
+        log.info("waiting for %d streamed mission turn(s) to settle", len(pending))
+        await asyncio.wait(pending, timeout=timeout)
+
+
+def _ndjson(ev: dict) -> str:
+    return json.dumps(ev) + "\n"
+
+
+def _stream(lines: AsyncIterator[str]) -> StreamingResponse:
+    return StreamingResponse(
+        lines,
+        media_type="application/x-ndjson",
+        # Nothing between here and the browser may hold the lines back.
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
+
+
+async def _watch_turn(task: asyncio.Task, queue: asyncio.Queue[dict]) -> AsyncIterator[str]:
+    """Relay a running turn's progress, then exactly one last line from its RESULT.
+
+    Being cancelled (the client left) stops the relay and nothing else: `asyncio.wait` does not
+    cancel what it waits on, so the turn goes on and settles."""
+    get: asyncio.Future | None = None
+    try:
+        while True:
+            get = asyncio.ensure_future(queue.get())
+            done, _ = await asyncio.wait({get, task}, return_when=asyncio.FIRST_COMPLETED)
+            if get in done:
+                yield _ndjson(get.result())
+                get = None
+                continue
+            break
+        get.cancel()
+        get = None
+        while not queue.empty():  # progress that landed before the turn finished
+            yield _ndjson(queue.get_nowait())
+        try:
+            body = task.result()
+        except missions.MissionError as e:
+            # The same authored, content-free detail `/message` answers with.
+            yield _ndjson({"type": "error", "status": e.status, "detail": str(e)})
+            return
+        except Exception:  # noqa: BLE001 — `/message` would 500 here; the 200 is already sent
+            yield _ndjson({"type": "error", "status": 500, "detail": "the turn failed"})
+            return
+        yield _ndjson({"type": "turn", "status": 200, "turn": body})
+    finally:
+        if get is not None:
+            get.cancel()
 
 
 async def _body(request: Request) -> dict:
@@ -1499,6 +1620,136 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             )
         return JSONResponse({"turn_id": turn_id, "acked": True})
 
+    async def _prepare_turn(
+        mission_id: str, request: Request
+    ) -> JSONResponse | _TurnAnswered | _TurnReady:
+        """Everything a turn does BEFORE the model — shared by `/message` and `/message/stream`
+        (#1224), so the two routes cannot disagree about validation, replay, reconcile or the
+        transient preflight. A `JSONResponse` is a refusal; `_TurnAnswered` is a turn settled
+        without the model (live, replayed, reconciled); `_TurnReady` is a claim to run. Raises
+        `MissionError` exactly as the route body did."""
+        body = await _body(request)
+        missions.validate_id(mission_id)
+        raw_msg = body.get("message")
+        # The SAME contract the sibling orchestrator route enforces, refused before anything
+        # is claimed or persisted. `str(...)` on arbitrary JSON quietly turned a dict into
+        # its repr and sent it to the model, and no length bound meant unbounded operator
+        # text became an unbounded durable mission event.
+        if not isinstance(raw_msg, str):
+            return _fail(missions.MissionError("message must be a string", status=422))
+        text = raw_msg.strip()
+        if not text:
+            return _fail(missions.MissionError("message is required", status=422))
+        if len(text) > orchestrator_chat.QUERY_MAX:
+            return _fail(
+                missions.MissionError(
+                    f"message too long (max {orchestrator_chat.QUERY_MAX} chars)", status=422
+                )
+            )
+        turn_id = str(body.get("turn_id") or "").strip()
+        if not turn_id or len(turn_id) > 64:
+            return _fail(
+                missions.MissionError(
+                    "turn_id is required and must be at most 64 characters", status=422
+                )
+            )
+        msg_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        # An unknown mission is a 404 BEFORE the model or the store is touched. Without this
+        # the `mission_turns` foreign key failed deep inside the claim and surfaced as a 500,
+        # which tells the caller "we broke" about a request that was simply wrong.
+        if await missions.run_admitted(lambda: missions.get_mission(mission_id)) is None:
+            return _fail(missions.MissionError("unknown mission", status=404))
+
+        # The reconciler's SECOND call site (#871). A turn whose actions the TTL already
+        # settled stays `in_progress` until somebody writes that conclusion onto it, and an
+        # operator sending the next message is exactly when a stale one costs something:
+        # without this, `claim_turn` reclaims a turn that was never going to produce
+        # anything, and the archive fence stays shut behind it. Opportunistic — it never
+        # raises, and it never re-drives an action.
+        await asyncio.to_thread(lambda: mission_turn_reconcile.reconcile(mission_id=mission_id))
+
+        # THE TRANSIENT CONDITIONS ARE SETTLED BEFORE ANYTHING DURABLE EXISTS (#871
+        # decision 3, corrected). A busy flight and an unconfigured endpoint are conditions
+        # of the SYSTEM, not outcomes of the turn — so they must not consume the operator's
+        # `turn_id`, and they must not leave a message in a timeline for a request that never
+        # reached a model (the recap cap evicts, and no delete restores what eviction drops).
+        #
+        # Checking them HERE, before the claim, is what makes that possible now that the
+        # claim writes the operator event: there is nothing yet to be inconsistent with.
+        #
+        # The decision as first published said to DELETE the preflight, on the grounds that a
+        # check before the call and the check inside it are two moments. The reasoning is
+        # right and the conclusion was wrong: a gap between two checks only matters if the
+        # two sides of it can disagree, and they no longer can — a failure arriving AFTER the
+        # claim settles the turn forward rather than releasing it, so the "released the claim
+        # but not the event" state is gone either way. What the early-out buys back is that
+        # an ordinary misconfigured install neither burns a turn id nor leaves a message
+        # behind for a request that never reached a model.
+        # …and they gate ONLY the paths that can reach the model.
+        #
+        # Putting them ahead of `claim_turn` unconditionally was wrong, and it is the kind of
+        # wrong that looks fine until someone's endpoint breaks: `claim_turn` is what detects
+        # a REPLAY, so a settled turn could no longer be read back while any flight was
+        # running or while the endpoint was unconfigured. Reading a stored answer needs
+        # neither — it is a database read — and a `turn_id` reused for different text would
+        # have come back 409 instead of the 422 that says what is actually wrong.
+        #
+        # So peek first. The peek is an optimisation, never the authority: `claim_turn`
+        # still decides the verdict, and if the turn is claimed by someone else between the
+        # two, it returns TURN_LIVE and this request answers 202. What the peek settles is
+        # only whether this request COULD call the model, which is the exact question the
+        # transient conditions are about.
+        prior = await missions.run_admitted(lambda: missions.get_turn(mission_id, turn_id))
+        may_call_model = prior is None or (
+            prior.get("msg_sha") == msg_sha
+            and prior.get("state") == "in_progress"
+            and not prior.get("write_reserved_at")
+            and float(prior.get("owner_at") or 0) < time.time() - missions.TURN_OWNER_MAX_AGE_S
+        )
+        if may_call_model:
+            if aitasks.is_running("pulse-chat"):
+                return _fail(missions.MissionError("a question is already running", status=409))
+            try:
+                await asyncio.to_thread(review._require_config)
+            except review.NotConfiguredError:
+                return _fail(missions.MissionError("AI endpoint is not configured", status=409))
+
+        # `text=` writes the operator's message IN the claim transaction (#871 decision 3).
+        verdict, row = await missions.run_admitted(
+            lambda: missions.claim_turn(mission_id, turn_id, msg_sha, text=text)
+        )
+        if verdict == missions.TURN_CONFLICT:
+            # The same key with different text is a DIFFERENT turn, not a replay. Returning
+            # the stored answer would answer a question nobody asked.
+            return _fail(
+                missions.MissionError(
+                    "turn_id was already used for a different message", status=422
+                )
+            )
+        if verdict == missions.TURN_LIVE:
+            # Someone is running this right now. Say so; do not call the model again.
+            # From the TURN'S OWN receipt, not a ledger provenance scan. `reserve_turn_write`
+            # records exactly what the turn was about to append, so this is the same list the
+            # running frame reports — two paths deriving it differently is how one turn
+            # answered with actions once and without them the next time.
+            return _TurnAnswered(
+                _in_progress(
+                    turn_id,
+                    _stored_action_ids(row),
+                    delivery_error=_stored_delivery_error(row),
+                ),
+                status=202,
+            )
+        if verdict == missions.TURN_DONE:
+            return _TurnAnswered(_replay(row))
+        if verdict == missions.TURN_RECONCILE:
+            # A write MAY have landed. Never re-ask — settle from provenance if the action is
+            # there, and `indeterminate` if it is not, so the turn always reaches a terminal
+            # state instead of sitting `in_progress` for ever.
+            return _TurnAnswered(await _reconcile(mission_id, turn_id, row))
+        # TURN_CLAIMED or TURN_RECOVER — the only paths that call the model.
+        return _TurnReady(turn_id, text, row)
+
     @app.post("/api/missions/{mission_id}/message")
     async def message_route(
         mission_id: str,
@@ -1515,131 +1766,75 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
 
         The whole shape exists because this crosses two durable stores — the missions store and
         the orchestrator ledger — and ordering alone does not make that idempotent. See #852.
+        The steps before the model live in `_prepare_turn`, shared with `/message/stream`.
         """
         try:
-            body = await _body(request)
-            missions.validate_id(mission_id)
-            raw_msg = body.get("message")
-            # The SAME contract the sibling orchestrator route enforces, refused before anything
-            # is claimed or persisted. `str(...)` on arbitrary JSON quietly turned a dict into
-            # its repr and sent it to the model, and no length bound meant unbounded operator
-            # text became an unbounded durable mission event.
-            if not isinstance(raw_msg, str):
-                return _fail(missions.MissionError("message must be a string", status=422))
-            text = raw_msg.strip()
-            if not text:
-                return _fail(missions.MissionError("message is required", status=422))
-            if len(text) > orchestrator_chat.QUERY_MAX:
-                return _fail(
-                    missions.MissionError(
-                        f"message too long (max {orchestrator_chat.QUERY_MAX} chars)", status=422
-                    )
-                )
-            turn_id = str(body.get("turn_id") or "").strip()
-            if not turn_id or len(turn_id) > 64:
-                return _fail(
-                    missions.MissionError(
-                        "turn_id is required and must be at most 64 characters", status=422
-                    )
-                )
-            msg_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
-            # An unknown mission is a 404 BEFORE the model or the store is touched. Without this
-            # the `mission_turns` foreign key failed deep inside the claim and surfaced as a 500,
-            # which tells the caller "we broke" about a request that was simply wrong.
-            if await missions.run_admitted(lambda: missions.get_mission(mission_id)) is None:
-                return _fail(missions.MissionError("unknown mission", status=404))
-
-            # The reconciler's SECOND call site (#871). A turn whose actions the TTL already
-            # settled stays `in_progress` until somebody writes that conclusion onto it, and an
-            # operator sending the next message is exactly when a stale one costs something:
-            # without this, `claim_turn` reclaims a turn that was never going to produce
-            # anything, and the archive fence stays shut behind it. Opportunistic — it never
-            # raises, and it never re-drives an action.
-            await asyncio.to_thread(lambda: mission_turn_reconcile.reconcile(mission_id=mission_id))
-
-            # THE TRANSIENT CONDITIONS ARE SETTLED BEFORE ANYTHING DURABLE EXISTS (#871
-            # decision 3, corrected). A busy flight and an unconfigured endpoint are conditions
-            # of the SYSTEM, not outcomes of the turn — so they must not consume the operator's
-            # `turn_id`, and they must not leave a message in a timeline for a request that never
-            # reached a model (the recap cap evicts, and no delete restores what eviction drops).
-            #
-            # Checking them HERE, before the claim, is what makes that possible now that the
-            # claim writes the operator event: there is nothing yet to be inconsistent with.
-            #
-            # The decision as first published said to DELETE the preflight, on the grounds that a
-            # check before the call and the check inside it are two moments. The reasoning is
-            # right and the conclusion was wrong: a gap between two checks only matters if the
-            # two sides of it can disagree, and they no longer can — a failure arriving AFTER the
-            # claim settles the turn forward rather than releasing it, so the "released the claim
-            # but not the event" state is gone either way. What the early-out buys back is that
-            # an ordinary misconfigured install neither burns a turn id nor leaves a message
-            # behind for a request that never reached a model.
-            # …and they gate ONLY the paths that can reach the model.
-            #
-            # Putting them ahead of `claim_turn` unconditionally was wrong, and it is the kind of
-            # wrong that looks fine until someone's endpoint breaks: `claim_turn` is what detects
-            # a REPLAY, so a settled turn could no longer be read back while any flight was
-            # running or while the endpoint was unconfigured. Reading a stored answer needs
-            # neither — it is a database read — and a `turn_id` reused for different text would
-            # have come back 409 instead of the 422 that says what is actually wrong.
-            #
-            # So peek first. The peek is an optimisation, never the authority: `claim_turn`
-            # still decides the verdict, and if the turn is claimed by someone else between the
-            # two, it returns TURN_LIVE and this request answers 202. What the peek settles is
-            # only whether this request COULD call the model, which is the exact question the
-            # transient conditions are about.
-            prior = await missions.run_admitted(lambda: missions.get_turn(mission_id, turn_id))
-            may_call_model = prior is None or (
-                prior.get("msg_sha") == msg_sha
-                and prior.get("state") == "in_progress"
-                and not prior.get("write_reserved_at")
-                and float(prior.get("owner_at") or 0) < time.time() - missions.TURN_OWNER_MAX_AGE_S
+            plan = await _prepare_turn(mission_id, request)
+            if isinstance(plan, JSONResponse):
+                return plan
+            if isinstance(plan, _TurnAnswered):
+                return JSONResponse(plan.body, status_code=plan.status)
+            return JSONResponse(
+                await _run_turn(mission_id, plan.turn_id, plan.text, plan.row, registry=registry)
             )
-            if may_call_model:
-                if aitasks.is_running("pulse-chat"):
-                    return _fail(missions.MissionError("a question is already running", status=409))
-                try:
-                    await asyncio.to_thread(review._require_config)
-                except review.NotConfiguredError:
-                    return _fail(missions.MissionError("AI endpoint is not configured", status=409))
-
-            # `text=` writes the operator's message IN the claim transaction (#871 decision 3).
-            verdict, row = await missions.run_admitted(
-                lambda: missions.claim_turn(mission_id, turn_id, msg_sha, text=text)
-            )
-            if verdict == missions.TURN_CONFLICT:
-                # The same key with different text is a DIFFERENT turn, not a replay. Returning
-                # the stored answer would answer a question nobody asked.
-                return _fail(
-                    missions.MissionError(
-                        "turn_id was already used for a different message", status=422
-                    )
-                )
-            if verdict == missions.TURN_LIVE:
-                # Someone is running this right now. Say so; do not call the model again.
-                # From the TURN'S OWN receipt, not a ledger provenance scan. `reserve_turn_write`
-                # records exactly what the turn was about to append, so this is the same list the
-                # running frame reports — two paths deriving it differently is how one turn
-                # answered with actions once and without them the next time.
-                return JSONResponse(
-                    _in_progress(
-                        turn_id,
-                        _stored_action_ids(row),
-                        delivery_error=_stored_delivery_error(row),
-                    ),
-                    status_code=202,
-                )
-            if verdict == missions.TURN_DONE:
-                return JSONResponse(_replay(row))
-            if verdict == missions.TURN_RECONCILE:
-                # A write MAY have landed. Never re-ask — settle from provenance if the action is
-                # there, and `indeterminate` if it is not, so the turn always reaches a terminal
-                # state instead of sitting `in_progress` for ever.
-                return JSONResponse(await _reconcile(mission_id, turn_id, row))
-            # TURN_CLAIMED or TURN_RECOVER — the only paths that call the model.
-            return JSONResponse(await _run_turn(mission_id, turn_id, text, row, registry=registry))
         except missions.MissionError as e:
             return _fail(e)
+
+    @app.post("/api/missions/{mission_id}/message/stream", response_model=None)
+    async def message_stream_route(
+        mission_id: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse | StreamingResponse:
+        """The same turn as `/message`, as NDJSON while it runs (#1224).
+
+        Everything refused before the model is still an HTTP status (422 / 404 / 409), from the
+        same `_prepare_turn`. Then: `progress` lines (`classify`, `catalog`, `content`,
+        `instruct`), a provisional `{"type": "answer", "final": false, "answer"}` for a find
+        turn — shown, never stored — and exactly ONE last line: `{"type": "turn", "status",
+        "turn"}` carrying the very body `/message` returns, or `{"type": "error", "status",
+        "detail"}` with the same authored detail strings.
+
+        **The stream is a view of the turn, not its owner.** Ask cancels its question when the
+        client leaves because an ask is transient; a mission turn is durable, so it runs as a
+        task this response only watches (`_spawn_turn`). Closing the tab cancels the watching,
+        never the turn — it settles, and a reload or a same-id retry finds it.
+        """
+        try:
+            plan = await _prepare_turn(mission_id, request)
+        except missions.MissionError as e:
+            return _fail(e)
+        if isinstance(plan, JSONResponse):
+            return plan
+        if isinstance(plan, _TurnAnswered):
+            answered = plan
+
+            async def one():
+                yield _ndjson({"type": "turn", "status": answered.status, "turn": answered.body})
+
+            return _stream(one())
+
+        queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=TURN_STREAM_QUEUE_MAX)
+
+        def on_progress(ev: dict) -> None:
+            # Observational: a full queue drops PROGRESS, never the turn and never its last line
+            # (that comes from the task's result, not from here).
+            with contextlib.suppress(asyncio.QueueFull):
+                queue.put_nowait(ev)
+
+        task = _spawn_turn(
+            _run_turn(
+                mission_id,
+                plan.turn_id,
+                plan.text,
+                plan.row,
+                registry=registry,
+                on_progress=on_progress,
+            ),
+            mission_id,
+        )
+        return _stream(_watch_turn(task, queue))
 
     @app.get("/api/missions/{mission_id}/context")
     async def context_route(mission_id: str, _user: str = Depends(logged_in)) -> JSONResponse:
@@ -2554,9 +2749,17 @@ def _actions_for_turn(mission_id: str, turn_id: str) -> tuple[str, list[str]]:
 
 
 async def _run_turn(
-    mission_id: str, turn_id: str, text: str, row: dict | None, *, registry=None
+    mission_id: str,
+    turn_id: str,
+    text: str,
+    row: dict | None,
+    *,
+    registry=None,
+    on_progress: Callable[[dict], None] | None = None,
 ) -> dict:
-    """Call the model under this turn's fence, then settle. The only path that calls `ask`."""
+    """Call the model under this turn's fence, then settle. The only path that calls `ask`.
+
+    ``on_progress`` (#1224) watches the steps; it cannot change the outcome."""
     fence = (row or {}).get("fence") or ""
 
     delivery_error: str | None = None
@@ -2600,6 +2803,7 @@ async def _run_turn(
                     turn_id=turn_id,
                     mission_id=mission_id,
                     reserve_write=_reserve,
+                    on_progress=on_progress,
                 )
                 # Inside the single-flight, exactly as the sibling does it.
                 if result.get("intent") == "instruct":
