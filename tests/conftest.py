@@ -824,6 +824,59 @@ def _isolate_plugin_dirs(tmp_path, monkeypatch) -> None:
             monkeypatch.setattr(p, "state_dir", tmp_path / "_plugin-state")
 
 
+def _own_process_tree() -> set[int]:
+    """This process and every live descendant, read from ``/proc/<pid>/stat`` parent links."""
+    children: dict[int, list[int]] = {}
+    for name in os.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        try:
+            with open(f"/proc/{name}/stat", "rb") as fh:
+                stat = fh.read()
+        except OSError:
+            continue  # exited mid-scan
+        # `pid (comm) state ppid …` — comm may hold spaces or parens, so split after the LAST `)`.
+        ppid = int(stat.rsplit(b")", 1)[1].split()[1])
+        children.setdefault(ppid, []).append(int(name))
+    tree: set[int] = set()
+    todo = [os.getpid()]
+    while todo:
+        pid = todo.pop()
+        if pid not in tree:
+            tree.add(pid)
+            todo.extend(children.get(pid, ()))
+    return tree
+
+
+@pytest.fixture(autouse=True)
+def _transcript_probe_sees_only_this_test(monkeypatch) -> None:
+    """The #631 ownership probe sees only THIS test's processes (#1124).
+
+    `transcript_is_owned` matches `<uuid>.jsonl` by basename across every process on the host,
+    and the fixtures share fixed ids (`11111111-…`). A sibling xdist worker, or another PR's job
+    on the shared runner, holding its own copy made an archive here refuse with 409 or skip. The
+    REAL probe still runs — over a `/proc` view holding symlinks to this process and its
+    descendants — so an owner a test spawns is still found. An explicit `proc_root` passes
+    through untouched, and a test that stubs the probe itself overrides this."""
+    from agent_sessions import transcript_owner
+
+    real = transcript_owner.transcript_is_owned
+
+    def scoped(uuid: str, *, proc_root: str = "/proc") -> bool:
+        if proc_root != "/proc":
+            return real(uuid, proc_root=proc_root)
+        view = Path(tempfile.mkdtemp(prefix="proc-view-"))
+        try:
+            for pid in _own_process_tree():
+                (view / str(pid)).symlink_to(f"/proc/{pid}")
+            return real(uuid, proc_root=str(view))
+        finally:
+            shutil.rmtree(view, ignore_errors=True)
+
+    scoped.host_wide = real  # the unscoped probe, for the test that proves the collision
+    monkeypatch.setattr(transcript_owner, "transcript_is_owned", scoped)
+
+
 @pytest.fixture(autouse=True)
 def _no_host_engine_binaries(tmp_path, monkeypatch) -> None:
     """No test may launch through the HOST's real agent binaries (#853 P2).

@@ -2163,6 +2163,56 @@ def test_archive_refuses_when_transcript_owned_by_bg_agent(auth_cfg, fake_jsonl,
     assert not list((fake_jsonl / ".claude" / "projects-archive").glob(f"*/{uuid}.jsonl"))
 
 
+def test_a_foreign_process_holding_the_same_uuid_does_not_refuse_the_archive(
+    auth_cfg, fake_jsonl, monkeypatch, tmp_path
+):
+    # #1124: a process OUTSIDE this test — a sibling xdist worker, or another PR's job on the
+    # shared runner — holding its own `11111111-….jsonl` made this archive answer 409. Reproduce
+    # it deterministically: a double-forked process (reparented away from this test) holds a
+    # same-named file in an unrelated directory.
+    import signal
+    import subprocess
+    import sys
+    import time
+
+    from agent_sessions import transcript_owner
+    from agent_sessions.routes import sessions as sroutes
+
+    async def gone_cleanup(engine, native, *, spare_if=None, **_kw):
+        return "gone"
+
+    monkeypatch.setattr(sroutes.runtime_cleanup, "cleanup_runtime", gone_cleanup)
+    uuid = "11111111-1111-1111-1111-111111111111"
+    foreign = tmp_path / "another-job" / f"{uuid}.jsonl"
+    foreign.parent.mkdir()
+    foreign.write_text("{}\n")
+    pidfile = tmp_path / "foreign.pid"
+    holder = (
+        "import os, sys, time\n"
+        "if os.fork() == 0:\n"
+        "    fh = open(sys.argv[1])\n"
+        "    with open(sys.argv[2] + '.tmp', 'w') as p: p.write(str(os.getpid()))\n"
+        "    os.rename(sys.argv[2] + '.tmp', sys.argv[2])\n"
+        "    time.sleep(60)\n"
+    )
+    subprocess.run([sys.executable, "-c", holder, str(foreign), str(pidfile)], check=True)
+    deadline = time.monotonic() + 10
+    while not pidfile.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    foreign_pid = int(pidfile.read_text())
+    try:
+        # The collision is real: the host-wide probe says another process owns this uuid…
+        assert transcript_owner.transcript_is_owned.host_wide(uuid) is True
+        # …but that process is not this test's, so the archive goes through.
+        c = _client(auth_cfg)
+        csrf = _login(c, auth_cfg)
+        hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+        r = c.post(f"/api/sessions/claude:{uuid}/archive", headers=hdr)
+        assert r.status_code == 200, r.text
+    finally:
+        os.kill(foreign_pid, signal.SIGKILL)
+
+
 # --- Custom per-session tag (#551) ------------------------------------------------------
 
 
