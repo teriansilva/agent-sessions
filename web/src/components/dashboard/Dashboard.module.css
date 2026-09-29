@@ -236,14 +236,19 @@
   font-size: 0.66rem;
   color: var(--text-3);
 }
-/* "no access" (#1167): the vendor refused this account. Status colour carries the meaning; the
-   agent's own refusal is quoted in full underneath and wraps rather than clipping. */
-.qTop span.denied {
-  color: var(--status-down);
-}
-.qSubMsg {
+/* Forecast (the pace since recent readings). Muted when it lasts; status colour only when it does
+   not — degraded for "runs out before the reset", down once it is out. */
+.qFc {
+  margin-top: 3px;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
   color: var(--text-2);
-  overflow-wrap: anywhere;
+}
+.fcWarn {
+  color: var(--status-degraded);
+}
+.fcOver {
+  color: var(--status-down);
 }
 
 /* ---- most recent sessions ---- */

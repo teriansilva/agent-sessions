@@ -1271,6 +1271,7 @@ def refresh(
                 reports[engine] = new
         doc["reports"] = reports
         now = time.time()
+        doc["history"] = record_history(doc.get("history"), reports, list(fresh), now)
         access = doc.get("access")
         access = access if isinstance(access, dict) else {}
         for engine, seen in seen_access.items():
@@ -1279,7 +1280,7 @@ def refresh(
         doc["updated_at"] = now
         # Decided against the reports THIS call is writing, under the same lock, so two sweeps
         # racing can't both see "not yet announced" and each announce the same crossing.
-        rows = build_rows(reports, cfg, now, access)
+        rows = build_rows(reports, cfg, now, access, doc["history"])
         alerts, still = evaluate_alerts(rows, cfg, doc.get("alerted"))
         # **Persist the re-arm bookkeeping, NOT the delivery.** Writing a crossing here would
         # consume it before anything reached the operator, so a single transient bell-store
@@ -1469,7 +1470,13 @@ def live_windows(report: dict, now: float) -> list[dict]:
     return out
 
 
-def build_rows(reports: dict, budgets: dict, now: float, access: dict | None = None) -> list[dict]:
+def build_rows(
+    reports: dict,
+    budgets: dict,
+    now: float,
+    access: dict | None = None,
+    history: dict | None = None,
+) -> list[dict]:
     """One row per engine from an ALREADY-READ reports dict. Pure: no store, no clock.
 
     `refresh` calls this with the document it is holding the lock over, so the alert decision is
@@ -1521,8 +1528,189 @@ def build_rows(reports: dict, budgets: dict, now: float, access: dict | None = N
             "access": clean_access(seen.get(engine)),
         }
         row["used_pct"] = derive_pct(row, cfg)
+        hist = history.get(engine) if isinstance(history, dict) else None
+        row["forecast"] = forecast(row, hist if isinstance(hist, list) else [], now)
         rows.append(row)
     return rows
+
+
+# --- where usage is heading --------------------------------------------------------------------
+
+#: How far back a forecast looks for the pace. A day, so a weekly window's pace includes the
+#: operator's nights rather than extrapolating one busy hour across the week.
+FORECAST_LOOKBACK_S = 24 * 3600.0
+
+#: The least span of readings a pace is taken from. The sweep runs every 15 minutes, so this is
+#: three readings — two points a minute apart would turn one turn's spend into a weekly verdict.
+FORECAST_MIN_SPAN_S = 30 * 60.0
+
+#: Readings kept per engine. The lookback plus slack; the sweep writes ~96 a day.
+HISTORY_KEEP_S = FORECAST_LOOKBACK_S + 3600.0
+HISTORY_MAX = 200
+
+#: Two readings belong to the same quota period when their stated resets agree this closely.
+#: claude's reset is parsed from human text ("resets 3pm"), so it is not exact; the next period's
+#: reset is at least a window (5 h) away.
+SAME_PERIOD_S = 3600.0
+
+
+def _sample(report: dict) -> dict | None:
+    """One reading of a stored report, or None when it carries no figures.
+
+    Only what a forecast needs: each plan window's percentage and reset, or a token count's
+    billable total. The operator's limit is NOT recorded — it is applied at read time, so an edited
+    limit re-prices the whole history instead of mixing two limits in one pace."""
+    at = _epoch(report.get("at"))
+    if not at:
+        return None
+    if report.get("source") == SOURCE_PLAN:
+        ws = []
+        for w in report.get("windows") or []:
+            if not isinstance(w, dict):
+                continue
+            pct = _pct(w.get("used_pct"))
+            if pct is not None:
+                ws.append([str(w.get("label") or ""), pct, _epoch(w.get("resets_at"))])
+        return {"t": at, "w": ws} if ws else None
+    if report.get("source") == SOURCE_TOKENS and isinstance(report.get("tokens"), dict):
+        return {"t": at, "b": billable(report["tokens"])}
+    return None
+
+
+def record_history(history: object, reports: dict, engines: list[str], now: float) -> dict:
+    """Append this sweep's readings. Pure; `refresh` calls it under the store lock.
+
+    A reading is appended only when its figures were observed LATER than the last one kept: a
+    failed probe retains the previous report (same ``at``), and recording it again would draw a
+    flat line through an outage and read as "no usage"."""
+    out: dict[str, list] = {}
+    src = history if isinstance(history, dict) else {}
+    for engine, kept in src.items():
+        if isinstance(engine, str) and isinstance(kept, list):
+            out[engine] = [s for s in kept if isinstance(s, dict) and _epoch(s.get("t"))]
+    for engine in engines:
+        rep = reports.get(engine)
+        sample = _sample(rep) if isinstance(rep, dict) else None
+        if sample is None:
+            continue
+        kept = out.setdefault(engine, [])
+        if kept and sample["t"] <= kept[-1]["t"]:
+            continue
+        kept.append(sample)
+    for engine, kept in out.items():
+        out[engine] = [s for s in kept if now - s["t"] <= HISTORY_KEEP_S][-HISTORY_MAX:]
+    return {e: k for e, k in out.items() if k}
+
+
+def _pace(points: list[tuple[float, float]]) -> float | None:
+    """Units per hour between the first and the last reading, or None when the readings span too
+    little time to say. Endpoints, not a regression: the straight line from first to last IS the
+    average pace over the span, and idle stretches rightly lower it."""
+    if len(points) < 2:
+        return None
+    (t0, v0), (t1, v1) = points[0], points[-1]
+    if t1 - t0 < FORECAST_MIN_SPAN_S:
+        return None
+    return (v1 - v0) * 3600.0 / (t1 - t0)
+
+
+def _period(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """A plan window's readings since the last fall. A drop means the quota reset — the pace
+    before it is not the pace now."""
+    start = 0
+    for i in range(1, len(points)):
+        if points[i][1] < points[i - 1][1]:
+            start = i
+    return points[start:]
+
+
+def _window_forecast(window: dict, hist: list, now: float) -> dict:
+    label, used, resets_at = window["label"], window["used_pct"], window["resets_at"]
+    points = []
+    for s in hist:
+        t = _epoch(s.get("t"))
+        if not t or now - t > FORECAST_LOOKBACK_S or not isinstance(s.get("w"), list):
+            continue
+        for w in s["w"]:
+            if not (isinstance(w, list) and len(w) == 3 and w[0] == label):
+                continue
+            pct, reset = _pct(w[1]), _epoch(w[2])
+            if pct is None:
+                continue
+            if (reset is None) != (resets_at is None):
+                continue
+            if reset is not None and abs(reset - resets_at) > SAME_PERIOD_S:
+                continue
+            points.append((t, pct))
+    rate = _pace(_period(sorted(points)))
+    base = {"window": label, "resets_at": resets_at, "rate_per_h": rate}
+    if used >= EXHAUST_PCT:
+        return {**base, "state": "out", "runs_out_at": None, "pct_at_reset": None}
+    if rate is None:
+        return {**base, "state": "learning", "runs_out_at": None, "pct_at_reset": None}
+    eta = now + (EXHAUST_PCT - used) / rate * 3600.0 if rate > 0 else None
+    if eta is not None and (resets_at is None or eta < resets_at):
+        return {**base, "state": "exhausts", "runs_out_at": round(eta), "pct_at_reset": None}
+    at_reset = None
+    if resets_at is not None:
+        at_reset = round(min(MAX_PCT, used + max(0.0, rate) * (resets_at - now) / 3600.0), 1)
+    return {**base, "state": "ok", "runs_out_at": None, "pct_at_reset": at_reset}
+
+
+_RANK = {"out": 0, "exhausts": 1, "ok": 2, "learning": 3}
+
+
+def forecast(row: dict, hist: list, now: float) -> dict | None:
+    """Where this row is heading at its recent pace, or None when there is nothing to project.
+
+    * ``plan`` — per window, from the readings of the CURRENT period within the lookback. The row
+      reports the window that runs out first; failing that, the one ending highest at its reset.
+    * ``tokens`` with an operator limit — the billable count's pace against the limit. A rolling
+      sum has no reset, so "runs out" is only claimed within its own window: beyond that the
+      usage it is extrapolated from has aged out of the sum.
+    * ``manual`` and unlimited ``tokens`` — nothing: a counter the operator types, or a count
+      with no ceiling, has no "running out".
+
+    ``learning`` is its own answer, never "ok": too few readings is not a safe pace.
+    """
+    source = row.get("source")
+    if source == SOURCE_PLAN:
+        found = [_window_forecast(w, hist, now) for w in row.get("windows") or []]
+        if not found:
+            return None
+        return min(
+            found,
+            key=lambda f: (
+                _RANK[f["state"]],
+                f["runs_out_at"] or 0,
+                -(f["pct_at_reset"] or 0),
+            ),
+        )
+    limit = row.get("limit_tokens") or 0
+    if source != SOURCE_TOKENS or not limit or not isinstance(row.get("tokens"), dict):
+        return None
+    used = billable(row["tokens"])
+    points = sorted(
+        (t, float(_int(s.get("b"))))
+        for s in hist
+        if (t := _epoch(s.get("t"))) and now - t <= FORECAST_LOOKBACK_S and "b" in s
+    )
+    # NOT split at a fall, unlike a plan window: a rolling sum falls whenever old usage ages out
+    # faster than new usage arrives (every idle sweep), and that fall IS the trend — splitting
+    # there would leave an idle agent "learning" forever instead of on pace.
+    tokens_per_h = _pace(points)
+    rate = None if tokens_per_h is None else tokens_per_h * 100.0 / limit
+    base = {"window": None, "resets_at": None, "rate_per_h": rate, "pct_at_reset": None}
+    if used >= limit:
+        return {**base, "state": "out", "runs_out_at": None}
+    if rate is None:
+        return {**base, "state": "learning", "runs_out_at": None}
+    horizon = (row.get("window_days") or 7) * 86400.0
+    if tokens_per_h and tokens_per_h > 0:
+        eta = now + (limit - used) / tokens_per_h * 3600.0
+        if eta - now <= horizon:
+            return {**base, "state": "exhausts", "runs_out_at": round(eta)}
+    return {**base, "state": "ok", "runs_out_at": None}
 
 
 def _text(v: object, cap: int = 500) -> str | None:
@@ -1547,6 +1735,7 @@ def snapshot(*, path: Path | None = None, budgets: dict | None = None, now: floa
         budgets,
         time.time() if now is None else now,
         doc.get("access") or {},
+        doc.get("history") or {},
     )
 
 

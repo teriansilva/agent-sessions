@@ -11,6 +11,7 @@ import { api } from "../../lib/api";
 import {
   billable,
   shortTokens,
+  quotaReadable,
   stalenessNote,
   usageCaption,
   worstWindow,
@@ -26,7 +27,12 @@ import type {
 } from "../../types/api";
 import s from "../ask/AskHome.module.css";
 import { sessionRoute } from "../ask/needsYouLabels";
-import { BAND_LABEL, lowestPlanLeft, resetsAt } from "./dashboard";
+import {
+  BAND_LABEL,
+  forecastLine,
+  lowestPlanLeft,
+  resetsAt,
+} from "./dashboard";
 import d from "./Dashboard.module.css";
 import { readAllRunning, type MissionsSnapshot } from "./sources";
 import type { Polled } from "./usePolled";
@@ -581,7 +587,8 @@ export function QuotaTile({
       setBusy(false);
     }
   };
-  const rows = res.status === "ok" ? res.data.agents : null;
+  const rows =
+    res.status === "ok" ? res.data.agents.filter(quotaReadable) : null;
   return (
     <Section
       id="dash-quota"
@@ -610,7 +617,10 @@ export function QuotaTile({
       ) : null}
       {rows ? (
         rows.length === 0 ? (
-          <p className={s.note}>No agent reports usage yet.</p>
+          <p className={s.note}>
+            No agent’s quota can be read right now. An agent without a plan
+            quota shows here once it has a limit in Settings → Agents & usage.
+          </p>
         ) : (
           rows.map((r) => <QuotaRow key={r.engine} row={r} />)
         )
@@ -620,41 +630,32 @@ export function QuotaTile({
 }
 
 function QuotaRow({ row }: { row: AgentUsageRow }) {
+  // Only rows `quotaReadable` admits get here: a read, current quota — never "not measured" or
+  // a refused account; those are left off the tile altogether.
   const w = row.source === "plan" ? worstWindow(row) : null;
-  const measured = row.source !== "none";
   const leftPct = w ? Math.max(0, 100 - w.used_pct) : null;
   const usedPct = row.used_pct;
-  // The vendor refuses this account outright (#1167): the agent's own answer, never a guess — so
-  // it outranks "not measured" and any stale figures.
-  const denied = row.access?.state === "denied" ? row.access : null;
   // Only a PLAN window is the agent's own percentage. A token count against the operator's limit and
   // the operator's own counter are said as counts (mockup v2), never dressed up as "% left".
-  const headline = denied
-    ? "no access"
-    : row.source === "none"
-      ? "not measured"
-      : w
-        ? `${Math.round(leftPct!)}% left · ${w.label}`
-        : row.limit_tokens
-          ? `${shortTokens(billable(row))} of ${shortTokens(row.limit_tokens)}`
-          : "no limit set";
-  const fill = denied
-    ? null
-    : w
-      ? leftPct!
-      : usedPct !== null && Number.isFinite(usedPct)
-        ? 100 - usedPct
-        : null;
+  const headline = w
+    ? `${Math.round(leftPct!)}% left · ${w.label}`
+    : `${shortTokens(billable(row))} of ${shortTokens(row.limit_tokens)}`;
+  const fill = w
+    ? leftPct!
+    : usedPct !== null && Number.isFinite(usedPct)
+      ? 100 - usedPct
+      : null;
   const tone = fill === null ? "" : fill <= 0 ? d.down : fill < 25 ? d.deg : "";
-  const stale = denied ? null : stalenessNote(row);
+  const stale = stalenessNote(row);
+  const fc = forecastLine(row);
   return (
     <div className={d.q} data-testid="quota-row" data-engine={row.engine}>
       <div className={d.qTop}>
         <span>{row.engine}</span>
-        <span className={denied ? d.denied : undefined}>{headline}</span>
+        <span>{headline}</span>
       </div>
       <div
-        className={`${d.bar} ${measured && fill !== null ? "" : d.barNone}`}
+        className={`${d.bar} ${fill !== null ? "" : d.barNone}`}
         aria-hidden="true"
       >
         {fill !== null ? (
@@ -664,18 +665,19 @@ function QuotaRow({ row }: { row: AgentUsageRow }) {
           />
         ) : null}
       </div>
-      <div
-        className={`${d.qSub} ${stale ? d.warnText : ""} ${denied ? d.qSubMsg : ""}`}
-      >
-        {denied
-          ? `refused: “${denied.message ?? "no access"}”${
-              denied.observed_at ? ` · ${relTime(denied.observed_at)}` : ""
-            }`
-          : row.source === "none"
-            ? "no usage source — set a limit in Settings → Agents & usage"
-            : usageCaption(row)}
+      <div className={`${d.qSub} ${stale ? d.warnText : ""}`}>
+        {usageCaption(row)}
         {stale ? ` · ${row.error ? "" : "stale — taken "}${stale}` : ""}
       </div>
+      {fc ? (
+        <div
+          className={`${d.qFc} ${fc.tone === "over" ? d.fcOver : fc.tone === "warn" ? d.fcWarn : ""}`}
+          data-testid="quota-forecast"
+          data-tone={fc.tone}
+        >
+          {fc.text}
+        </div>
+      ) : null}
     </div>
   );
 }

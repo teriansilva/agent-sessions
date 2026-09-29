@@ -1,8 +1,8 @@
 /** The BattleLab dashboard (#1123 Phase 2): the tiles around Ask's sections, in a real browser on
  *  desktop and mobile, both themes. API mocked. What is pinned is what the issue asks for:
  *  every tile loads and fails ON ITS OWN (a failing tile never blanks the page), a failed read is
- *  never drawn as "0", `none` quota reads "not measured", stale quota says so, counts open exactly
- *  what they count, the phone keeps agent · project under each recent session, and asking opens
+ *  never drawn as "0", the quota tile lists only quotas that were read (an unconfigured, stale or
+ *  refused agent is left off) and says when a pace runs out, counts open exactly what they count, the phone keeps agent · project under each recent session, and asking opens
  *  the conversation on Ask's own page, from which the back arrow returns here (#1171). */
 import { expect, test, type Page } from "@playwright/test";
 
@@ -90,6 +90,14 @@ const USAGE = {
       limit_tokens: 0,
       manual_used: 0,
       used_pct: 82,
+      forecast: {
+        state: "exhausts",
+        window: "weekly",
+        resets_at: NOW + 86400,
+        runs_out_at: NOW + 9 * 3600,
+        pct_at_reset: null,
+        rate_per_h: 2,
+      },
     },
     {
       engine: "codex",
@@ -114,6 +122,14 @@ const USAGE = {
       limit_tokens: 5_000_000,
       manual_used: 0,
       used_pct: 99,
+      forecast: {
+        state: "ok",
+        window: null,
+        resets_at: null,
+        runs_out_at: null,
+        pct_at_reset: null,
+        rate_per_h: 0,
+      },
     },
     {
       engine: "kimi",
@@ -288,80 +304,103 @@ test("plan quota: the strip names the LOWEST plan window; tokens/manual never co
   await expect(page.getByTestId("kpi-quota")).toContainText("claude");
 });
 
-test("quota: 'none' reads NOT MEASURED, never 0 %, and a stale figure says so", async ({
+test("quota: an agent that is not configured, stale or refused is left off the tile", async ({
   page,
 }) => {
-  await mockAll(page);
+  // kimi is `none` (never configured), codex's figures went stale behind "not logged in", and
+  // gemini's vendor refuses the account: none of them has a quota that was read.
+  await mockAll(page, {
+    usage: {
+      json: {
+        ...USAGE,
+        agents: [
+          ...USAGE.agents,
+          {
+            engine: "gemini",
+            source: "plan",
+            windows: [{ label: "day", used_pct: 10, resets_at: NOW + 3600 }],
+            at: NOW - 60,
+            checked_at: NOW - 60,
+            stale: false,
+            limit_tokens: 0,
+            manual_used: 0,
+            used_pct: 10,
+            access: {
+              state: "denied",
+              message: "This client is no longer supported",
+              observed_at: NOW - 60,
+              checked_at: NOW - 60,
+            },
+          },
+        ],
+      },
+    },
+  });
   await page.goto("/dashboard");
-  const kimi = page.locator('[data-testid="quota-row"][data-engine="kimi"]');
-  await expect(kimi).toContainText("not measured");
-  await expect(kimi).not.toContainText("0%");
-  const codex = page.locator('[data-testid="quota-row"][data-engine="codex"]');
-  await expect(codex).toContainText("last good figures");
-  await expect(codex).toContainText("not logged in");
+  const rows = page.getByTestId("quota-row");
+  await expect(rows).toHaveCount(2);
+  await expect(rows.nth(0)).toHaveAttribute("data-engine", "claude");
+  await expect(rows.nth(1)).toHaveAttribute("data-engine", "opencode");
+  await expect(page.getByTestId("dash-quota")).not.toContainText(
+    "not measured",
+  );
+  await expect(page.getByTestId("dash-quota")).not.toContainText("no access");
+});
+
+test("quota: nothing readable says so, and points at where a limit is set", async ({
+  page,
+}) => {
+  await mockAll(page, {
+    usage: {
+      json: {
+        ...USAGE,
+        agents: USAGE.agents.filter((a) => a.source === "none"),
+      },
+    },
+  });
+  await page.goto("/dashboard");
+  await expect(page.getByTestId("quota-row")).toHaveCount(0);
+  await expect(page.getByTestId("dash-quota")).toContainText(
+    "No agent’s quota can be read right now",
+  );
 });
 
 for (const theme of ["dark", "light"] as const) {
-  test(`quota: a refused account reads NO ACCESS with the agent's own words, in full — ${theme} (#1167)`, async ({
+  test(`quota: the forecast says when a pace runs out, in the degraded colour — ${theme}`, async ({
     page,
   }) => {
-    // The longest the API ever sends: a 200-character excerpt, marked as cut.
-    const refusal = (
-      "403 Your current subscription does not have access to Kimi Code right now. Upgrade your plan to keep coding with Kimi Code: https://www.kimi.com/code/#pricing " +
-      "and more words than fit "
-    )
-      .slice(0, 199)
-      .concat("…");
-    await mockAll(page, {
-      usage: {
-        json: {
-          ...USAGE,
-          agents: USAGE.agents.map((a) =>
-            a.engine === "kimi"
-              ? {
-                  ...a,
-                  access: {
-                    state: "denied",
-                    message: refusal,
-                    observed_at: NOW - 3 * 3600,
-                    checked_at: NOW - 60,
-                  },
-                }
-              : a,
-          ),
-        },
-      },
-    });
+    await mockAll(page);
     await page.goto("/dashboard");
     await page.evaluate((t) => {
       document.documentElement.dataset.theme = t;
     }, theme);
-    const kimi = page.locator('[data-testid="quota-row"][data-engine="kimi"]');
-    await expect(kimi).toContainText("no access");
-    await expect(kimi).not.toContainText("not measured");
-    await expect(kimi).toContainText(refusal);
-    // The whole refusal is READABLE: it wraps inside the row, never clipped by it.
-    const row = (await kimi.boundingBox())!;
-    const msg = (await kimi
-      .getByText(refusal, { exact: false })
-      .boundingBox())!;
-    expect(msg.x + msg.width).toBeLessThanOrEqual(row.x + row.width + 1);
-    expect(msg.y + msg.height).toBeLessThanOrEqual(row.y + row.height + 1);
-    const headline = kimi.getByText("no access", { exact: true });
-    const colour = await headline.evaluate((el) => getComputedStyle(el).color);
-    const down = await page.evaluate(() => {
+    const claude = page
+      .locator('[data-testid="quota-row"][data-engine="claude"]')
+      .getByTestId("quota-forecast");
+    await expect(claude).toContainText(/runs out in ~9h \(.+\) at this pace/);
+    await expect(claude).toContainText("15h before the reset");
+    const colour = await claude.evaluate((el) => getComputedStyle(el).color);
+    const degraded = await page.evaluate(() => {
       const probe = document.createElement("span");
-      probe.style.color = "var(--status-down)";
+      probe.style.color = "var(--status-degraded)";
       document.body.append(probe);
       const c = getComputedStyle(probe).color;
       probe.remove();
       return c;
     });
-    expect(colour).toBe(down);
-    // A row with no access verdict is untouched.
+    expect(colour).toBe(degraded);
+    // The line sits inside its row, never clipped by it.
+    const row = (await page
+      .locator('[data-testid="quota-row"][data-engine="claude"]')
+      .boundingBox())!;
+    const line = (await claude.boundingBox())!;
+    expect(line.x + line.width).toBeLessThanOrEqual(row.x + row.width + 1);
+    expect(line.y + line.height).toBeLessThanOrEqual(row.y + row.height + 1);
     await expect(
-      page.locator('[data-testid="quota-row"][data-engine="claude"]'),
-    ).not.toContainText("no access");
+      page
+        .locator('[data-testid="quota-row"][data-engine="opencode"]')
+        .getByTestId("quota-forecast"),
+    ).toHaveText("on pace to stay under the limit");
   });
 }
 
@@ -379,7 +418,7 @@ test("a failing tile never blanks the page, and says it could not read — never
   await expect(
     page.getByTestId("dash-missions").getByTestId("mission-row"),
   ).toHaveCount(3);
-  await expect(page.getByTestId("quota-row")).toHaveCount(4);
+  await expect(page.getByTestId("quota-row")).toHaveCount(2);
 });
 
 test("an unreadable runtime is 'couldn't read', never '0 running'", async ({
@@ -439,7 +478,11 @@ test("asking opens the conversation on Ask's page; the back arrow returns to the
 }) => {
   await mockAll(page);
   await page.route(ASK_STREAM, (r) =>
-    fulfillAsk(r, { answer: "Two sessions ran.", matches: [], mission_matches: [] }),
+    fulfillAsk(r, {
+      answer: "Two sessions ran.",
+      matches: [],
+      mission_matches: [],
+    }),
   );
   await page.goto("/dashboard");
   await page.getByTestId("composer-input").fill("what ran today?");
@@ -475,7 +518,7 @@ for (const theme of ["dark", "light"] as const) {
       document.documentElement.dataset.theme = t;
     }, theme);
     await expect(page.getByTestId("dash-kpis")).toBeVisible();
-    await expect(page.getByTestId("quota-row")).toHaveCount(4);
+    await expect(page.getByTestId("quota-row")).toHaveCount(2);
     await page.screenshot({
       path: `test-results/dashboard-${info.project.name}-${theme}.png`,
       fullPage: true,

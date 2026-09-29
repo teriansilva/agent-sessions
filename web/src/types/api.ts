@@ -1313,6 +1313,24 @@ export interface AgentUsageRow {
   /** Whether the vendor refuses this account (#1167) — the agent's own answer. `null` when it has
    *  no access check or has never answered one. */
   access?: AgentAccess | null;
+  /** Where the row is heading at its recent pace. `null` when there is nothing to project — a
+   *  manual counter, or a token count with no limit. */
+  forecast?: AgentUsageForecast | null;
+}
+
+/** `agent_usage.forecast`: the pace between the sweep's own readings of the agent's answer. */
+export interface AgentUsageForecast {
+  /** `out` = already at 100 %; `exhausts` = runs out before its reset at this pace; `ok` = lasts;
+   *  `learning` = too few readings to say — never read as "ok". */
+  state: "out" | "exhausts" | "ok" | "learning";
+  /** The plan window judged (the one running out first); null for a token count. */
+  window: string | null;
+  resets_at: number | null;
+  runs_out_at: number | null;
+  /** Where a lasting plan window lands at its reset. */
+  pct_at_reset: number | null;
+  /** Percent of the quota (or of the limit) per hour. */
+  rate_per_h: number | null;
 }
 
 export interface AgentAccess {

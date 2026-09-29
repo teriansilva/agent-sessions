@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   billable,
+  quotaReadable,
   shortTokens,
   stalenessNote,
   tone,
@@ -163,5 +164,63 @@ describe("stalenessNote", () => {
   it("says nothing about staleness for a number the operator maintains", () => {
     // A manual counter has no probe behind it; "2h ago" would be meaningless.
     expect(stalenessNote({ ...base, source: "manual", at: 0 }, now)).toBe("");
+  });
+});
+
+describe("quotaReadable — what the dashboard's quota tile lists", () => {
+  const week = [{ label: "week", used_pct: 40, resets_at: null }];
+  it("lists a current plan quota", () => {
+    expect(quotaReadable({ ...base, windows: week })).toBe(true);
+  });
+  it("leaves out an agent nobody configured", () => {
+    expect(quotaReadable({ ...base, source: "none" })).toBe(false);
+    expect(
+      quotaReadable({ ...base, source: "tokens", tokens: { in: 5, out: 1 } }),
+    ).toBe(false);
+    expect(quotaReadable({ ...base, source: "manual", manual_used: 3 })).toBe(
+      false,
+    );
+  });
+  it("lists a count once it has a limit", () => {
+    expect(
+      quotaReadable({
+        ...base,
+        source: "tokens",
+        tokens: { in: 5, out: 1 },
+        limit_tokens: 100,
+      }),
+    ).toBe(true);
+    expect(
+      quotaReadable({ ...base, source: "manual", limit_tokens: 100 }),
+    ).toBe(true);
+  });
+  it("leaves out a quota that could not be read", () => {
+    expect(quotaReadable({ ...base, windows: [] })).toBe(false);
+    expect(quotaReadable({ ...base, windows: week, stale: true })).toBe(false);
+    expect(
+      quotaReadable({
+        ...base,
+        windows: week,
+        access: {
+          state: "denied",
+          message: "x",
+          observed_at: 1,
+          checked_at: 1,
+        },
+      }),
+    ).toBe(false);
+    expect(
+      quotaReadable({
+        ...base,
+        source: "tokens",
+        limit_tokens: 100,
+        error: "locked",
+      }),
+    ).toBe(false);
+  });
+  it("keeps current figures that came with a probe error (a fallback's reading)", () => {
+    expect(
+      quotaReadable({ ...base, windows: week, error: "app-server timed out" }),
+    ).toBe(true);
   });
 });
