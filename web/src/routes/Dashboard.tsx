@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Plus } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 
 import { AskComposer } from "../components/ask/AskComposer";
@@ -28,7 +29,8 @@ import { usePolled } from "../components/dashboard/usePolled";
 import { useConfig, useConfigRefresh } from "../app/config";
 import m from "../components/pulse/mission.module.css";
 import { api } from "../lib/api";
-import { ASK_PATH } from "../lib/routes";
+import type { WizardEntryState } from "../lib/newProject";
+import { ASK_PATH, NEW_PROJECT_PATH } from "../lib/routes";
 import { coerceRecentWindowDays } from "../lib/recentWindow";
 import { settingsPath } from "./settingsTabs";
 import styles from "./Ask.module.css";
@@ -150,7 +152,19 @@ export default function Dashboard() {
         <div className={m.pane} data-testid="dashboard-pane">
           <div className={a.dashboard}>
             <div className={styles.kicker}>Dashboard // what is going on</div>
-            <h1 className={styles.h1}>BattleLab dashboard</h1>
+            {/* The way to start a project (#1187, operator): the New project wizard, which comes
+                back here when it is done. */}
+            <div className={d.headRow}>
+              <h1 className={styles.h1}>BattleLab dashboard</h1>
+              <Link
+                to={NEW_PROJECT_PATH}
+                state={{ from: "dashboard" } satisfies WizardEntryState}
+                className={d.newProject}
+                data-testid="dashboard-new-project"
+              >
+                <Plus size={14} aria-hidden="true" /> New project
+              </Link>
+            </div>
             <p className={styles.sub}>
               What is running, what needs you and what you did — and below, ask
               about anything: answers are read from the transcripts and missions

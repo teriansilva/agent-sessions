@@ -26,7 +26,7 @@ vi.mock("../lib/api", async () => {
 });
 
 import { api } from "../lib/api";
-import { ASK_PATH, DASHBOARD_PATH } from "../lib/routes";
+import { ASK_PATH, DASHBOARD_PATH, NEW_PROJECT_PATH } from "../lib/routes";
 import Ask from "./Ask";
 import Dashboard from "./Dashboard";
 
@@ -103,4 +103,14 @@ test("asking on the dashboard opens Ask's page and asks it there, once (#1171)",
   expect(screen.getByTestId("where")).toHaveAttribute("data-state", "null");
   // …and the dashboard's tiles did not come along.
   expect(screen.queryByTestId("dashboard-page")).toBeNull();
+});
+
+test("New project opens the wizard, keyed to come back here (#1187)", async () => {
+  mount({ pulse: { configured: true } } as Partial<AppConfig>);
+  await userEvent.click(screen.getByRole("link", { name: /new project/i }));
+  expect(screen.getByTestId("where")).toHaveTextContent(NEW_PROJECT_PATH);
+  expect(screen.getByTestId("where")).toHaveAttribute(
+    "data-state",
+    JSON.stringify({ from: "dashboard" }),
+  );
 });

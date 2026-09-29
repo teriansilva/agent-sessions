@@ -4,29 +4,23 @@ import {
   Check,
   Palette,
   Pencil,
+  Plus,
   Star,
   Trash2,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { useConfig, useConfigRefresh } from "../app/config";
 import { FolderPickerModal } from "../components/FolderPickerModal";
+import { ProjectColorPicker } from "../components/ProjectColorPicker";
+import type { WizardEntryState } from "../lib/newProject";
+import { NEW_PROJECT_PATH } from "../lib/routes";
 import { api, ApiError } from "../lib/api";
 import { shortCwd } from "../lib/format";
 import type { Folder, ProjectArchiveReport, ProjectEntity } from "../types/api";
 import settings from "./Settings.module.css";
 import styles from "./ProjectsManager.module.css";
-
-/** Preset entity colors (#361): a deliberately small set — the color is a glanceable
- *  sidebar marker, not a theming surface. "Clear" maps to the store's `color: ""`. */
-const COLOR_PRESETS = [
-  "#ffb000",
-  "#5fd7ff",
-  "#7ee787",
-  "#c792ea",
-  "#ff7a7a",
-  "#e8e8e8",
-];
 
 /** "1 archived · 2 already archived · 1 failed" from the bulk report's counts —
  *  the keys mirror the direction, so the same formatter serves both endpoints. */
@@ -236,37 +230,14 @@ function EntityRow({
       </div>
 
       {showColors && (
-        <div
-          className={styles.swatches}
-          role="group"
-          aria-label={`Color for ${entity.name}`}
-        >
-          {COLOR_PRESETS.map((c) => (
-            <button
-              key={c}
-              type="button"
-              className={styles.swatch}
-              style={{ background: c }}
-              aria-label={`Color ${c}`}
-              disabled={busy}
-              onClick={() =>
-                void patch({ color: c }).then(
-                  (ok) => ok && setShowColors(false),
-                )
-              }
-            />
-          ))}
-          <button
-            type="button"
-            className={styles.smallBtn}
-            disabled={busy}
-            onClick={() =>
-              void patch({ color: "" }).then((ok) => ok && setShowColors(false))
-            }
-          >
-            Clear
-          </button>
-        </div>
+        <ProjectColorPicker
+          label={`Color for ${entity.name}`}
+          disabled={busy}
+          clearClassName={styles.smallBtn}
+          onChange={(color) =>
+            void patch({ color }).then((ok) => ok && setShowColors(false))
+          }
+        />
       )}
 
       {/* Default launch folder (#448): where new sessions in this project start. */}
@@ -371,11 +342,6 @@ export function ProjectsManagerCard() {
   const [folders, setFolders] = useState<Folder[]>([]);
   const [report, setReport] = useState<ProjectArchiveReport | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [newName, setNewName] = useState("");
-  const [newFolder, setNewFolder] = useState(""); // the new project's REQUIRED default folder (#448)
-  const [creating, setCreating] = useState(false);
-  const [picking, setPicking] = useState(false);
-  const [pickReturn, setPickReturn] = useState<HTMLElement | null>(null);
 
   // Starred (default) project id. Optimistic with rollback + a config refresh on success, the
   // same shape as the compose/list-order controls in Settings — New Session reads it from the
@@ -462,23 +428,6 @@ export function ProjectsManagerCard() {
     }
   };
 
-  const create = async () => {
-    const name = newName.trim();
-    if (!name || !newFolder || creating) return; // a default folder is required (#448)
-    setCreating(true);
-    setError(null);
-    try {
-      await api.createProject({ name, default_folder: newFolder });
-      setNewName("");
-      setNewFolder("");
-      await refresh();
-    } catch (e) {
-      setError(errMessage(e, "Couldn’t create the project."));
-    } finally {
-      setCreating(false);
-    }
-  };
-
   const failed = (report?.sessions ?? []).filter((s) => s.result === "failed");
 
   return (
@@ -500,7 +449,7 @@ export function ProjectsManagerCard() {
       {entities === null ? (
         <p className={settings.hint}>Loading projects…</p>
       ) : active.length === 0 ? (
-        <p className={settings.hint}>No projects yet — create one below.</p>
+        <p className={settings.hint}>No projects yet — start one with New project below.</p>
       ) : (
         <ul className={styles.list} aria-label="Projects">
           {active.map((e) => (
@@ -554,48 +503,17 @@ export function ProjectsManagerCard() {
         </div>
       )}
 
+      {/* Creating a project is the New project wizard's job (#1187): name, folder (new or
+          existing), colour and the default star in one pass. Done there returns here. */}
       <div className={styles.newRow}>
-        <input
-          type="text"
-          className={styles.newInput}
-          value={newName}
-          onChange={(e) => setNewName(e.target.value)}
-          placeholder="project name"
-          aria-label="New project name"
-        />
-        {/* A default folder is required on create (#448) — pick existing or create on disk. */}
-        <button
-          type="button"
-          className={styles.smallBtn}
-          onClick={(e) => {
-            setPickReturn(e.currentTarget);
-            setPicking(true);
-          }}
-          aria-label="Choose the default folder"
+        <Link
+          to={NEW_PROJECT_PATH}
+          state={{ from: "settings-projects" } satisfies WizardEntryState}
+          className={styles.newBtn}
         >
-          {newFolder ? `📁 ${shortCwd(newFolder)}` : "Default folder *…"}
-        </button>
-        <button
-          type="button"
-          className={styles.smallBtn}
-          disabled={!newName.trim() || !newFolder || creating}
-          onClick={() => void create()}
-        >
-          {creating ? "Creating…" : "Create"}
-        </button>
+          <Plus size={13} aria-hidden="true" /> New project
+        </Link>
       </div>
-      {picking && (
-        <FolderPickerModal
-          initialPath={newFolder || undefined}
-          title="Choose the project's default folder"
-          onPick={(path) => {
-            setPicking(false);
-            setNewFolder(path);
-          }}
-          onCancel={() => setPicking(false)}
-          returnFocusTo={pickReturn}
-        />
-      )}
 
       {archived.length > 0 && (
         <details className={styles.archivedBox}>

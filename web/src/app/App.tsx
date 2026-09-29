@@ -65,6 +65,7 @@ import {
   DASHBOARD_PATH,
   LEGACY_MISSION_PATH,
   MISSION_PATH,
+  NEW_PROJECT_PATH,
 } from "../lib/routes";
 import { SETTINGS_PATH } from "../routes/settingsTabs";
 import { OperatorMenu } from "../components/shell/OperatorMenu";
@@ -100,6 +101,11 @@ const Dashboard = lazyWithReload(
   "dashboard",
 );
 const Ask = lazyWithReload(() => import("../routes/Ask"), "ask");
+// The New project wizard (#1187). Lazy like the others.
+const NewProject = lazyWithReload(
+  () => import("../routes/NewProject"),
+  "new-project",
+);
 
 const COLLAPSE_KEY = "tr-sidebar-collapsed";
 // Retired key for the old sidebar List ⇄ Map toggle (#139). The sidebar is now list-only and
@@ -275,6 +281,10 @@ function Layout() {
   const settingsRoute =
     location.pathname === SETTINGS_PATH ||
     location.pathname.startsWith(`${SETTINGS_PATH}/`);
+  /** The New project wizard renders without the session sidebar too (#1187, operator): it is a
+   *  focused flow reached from New session, the dashboard and Settings → Projects, and a session
+   *  list beside it is noise. Same mechanism as Settings — hidden, never unmounted. */
+  const noSidebar = settingsRoute || location.pathname === NEW_PROJECT_PATH;
   /** Which of the five work sections the current route belongs to, `null` on Settings (#1058).
    *  One derivation, read by the top bar's nav and the drawer's copy of it. */
   const section = activeSection(location.pathname);
@@ -407,7 +417,7 @@ function Layout() {
     navOpen ? "navOpen" : "",
     collapsed ? "collapsed" : "",
     resizing ? "resizing" : "",
-    settingsRoute ? "noSidebar" : "",
+    noSidebar ? "noSidebar" : "",
   ]
     .filter(Boolean)
     .join(" ");
@@ -428,7 +438,7 @@ function Layout() {
           {/* No toggle on Settings (#1129): the surface it drives does not exist there in
               either viewport form, and a live hamburger on a settings page would only mutate
               the persisted collapse pref for nothing. */}
-          {!settingsRoute && (
+          {!noSidebar && (
             <button
               type="button"
               className="navToggle"
@@ -628,7 +638,7 @@ function Layout() {
         {/* Desktop sidebar resize handle (#507): a focusable separator in the gutter between the
           sidebar and pane panels. Not rendered on mobile (the drawer is fixed-width), while
           collapsed (no sidebar to size), or on Settings (#1129 — no sidebar there either). */}
-        {!isMobile && !collapsed && !settingsRoute && (
+        {!isMobile && !collapsed && !noSidebar && (
           <div
             className="sidebar-resize"
             role="separator"
@@ -690,6 +700,7 @@ function Layout() {
                   <Route path={DASHBOARD_PATH} element={<Dashboard />} />
                   {/* #1171: a conversation has its own page under Dashboard. */}
                   <Route path={ASK_PATH} element={<Ask />} />
+                  <Route path={NEW_PROJECT_PATH} element={<NewProject />} />
                   <Route path="/templates" element={<Templates />} />
                   <Route path="/templates/new" element={<TemplateEditor />} />
                   <Route path="/templates/:id" element={<TemplateEditor />} />

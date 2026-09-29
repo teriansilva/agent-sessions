@@ -128,7 +128,8 @@ const PURPLE_ALLOWED: Record<string, readonly string[]> = {
   "theme/themes.ts": ["#75507b", "#ad7fa8", "#8f2f96", "#7a3fd4"],
   // One of six colours the operator can pick for a project (#361). It shows only where somebody chose
   // it, so it is their content, not app chrome.
-  "routes/ProjectsManager.tsx": ["#c792ea"],
+  // It moved to `lib/projectColors.ts` with the shared picker (#1187).
+  "lib/projectColors.ts": ["#c792ea"],
 };
 
 const allowed = (at: string, hex: string) =>

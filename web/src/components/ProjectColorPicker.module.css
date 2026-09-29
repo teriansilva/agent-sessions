@@ -1,0 +1,56 @@
+/* The project colour picker (#1187), moved from ProjectsManager.module.css unchanged for the
+ * small size; the large size is the wizard's, at the 44 px touch-target floor (design.md §8). */
+.swatches {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.swatch {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  cursor: pointer;
+}
+.swatch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.large {
+  gap: 10px;
+}
+.large .swatch {
+  width: 44px;
+  height: 44px;
+}
+/* The chosen swatch: a reticle ring, never colour alone — the clear button says "selected" by its
+ * pressed border the same way. */
+.swatch[aria-pressed="true"] {
+  outline: 2px solid var(--text);
+  outline-offset: 3px;
+}
+.clear {
+  min-height: 44px;
+  padding: 6px 14px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text-2);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  cursor: pointer;
+}
+.clear[aria-pressed="true"] {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.clear:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.swatch:disabled,
+.clear:disabled {
+  opacity: 0.55;
+  cursor: default;
+}

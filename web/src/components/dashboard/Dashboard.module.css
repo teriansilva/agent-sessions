@@ -382,3 +382,17 @@
     opacity: 0.5;
   }
 }
+
+/* The title row: the heading and the New project entry (#1187). Wraps under the heading on a
+ * narrow screen rather than squeezing it. */
+.headRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+.newProject {
+  composes: ghost from "../ui/actionButton.module.css";
+  text-decoration: none;
+}

@@ -1,5 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { ConfigCtx } from "../app/config";
 import { api, ApiError } from "../lib/api";
@@ -8,7 +9,25 @@ import type {
   ProjectArchiveReport,
   ProjectEntity,
 } from "../types/api";
+import { NEW_PROJECT_PATH } from "../lib/routes";
 import { ProjectsManagerCard } from "./ProjectsManager";
+
+function WizardProbe() {
+  const location = useLocation();
+  return <pre data-testid="wizard-state">{JSON.stringify(location.state)}</pre>;
+}
+
+/** The card links to the New project wizard, so it renders inside a router. */
+function Card() {
+  return (
+    <MemoryRouter>
+      <Routes>
+        <Route path="/" element={<ProjectsManagerCard />} />
+        <Route path={NEW_PROJECT_PATH} element={<WizardProbe />} />
+      </Routes>
+    </MemoryRouter>
+  );
+}
 
 vi.mock("../lib/api", async (orig) => {
   const actual = await orig<typeof import("../lib/api")>();
@@ -66,7 +85,7 @@ afterEach(() => {
 });
 
 test("lists entities with name, member count, and adopted-folder chips", async () => {
-  render(<ProjectsManagerCard />);
+  render(<Card />);
   expect(await screen.findByText("SampleProject")).toBeInTheDocument();
   expect(screen.getByText("3 sessions")).toBeInTheDocument();
   // ~/sampleproject shows both as the default-folder path and the adopted-folder chip (#448).
@@ -78,45 +97,18 @@ test("lists entities with name, member count, and adopted-folder chips", async (
   expect(screen.getByText(/never moves session files/i)).toBeInTheDocument();
 });
 
-test("create requires a default folder, then calls the API and refetches (#448)", async () => {
+test("creating is the wizard's job: New project links there with its return key (#1187)", async () => {
   const user = userEvent.setup();
-  vi.mocked(api.createProject).mockResolvedValue({
-    id: "p-2",
-    name: "Fresh",
-    color: "",
-    folders: ["/picked"],
-    default_folder: "/picked",
-    archived: false,
-    created_at: 0,
-  });
-  render(<ProjectsManagerCard />);
+  render(<Card />);
   await screen.findByText("SampleProject");
-  vi.mocked(api.projectEntities).mockResolvedValue({
-    projects: [
-      ent(),
-      ent({
-        id: "p-2",
-        name: "Fresh",
-        folders: ["/picked"],
-        default_folder: "/picked",
-        session_count: 0,
-      }),
-    ],
+  // The inline create form is gone.
+  expect(screen.queryByLabelText("New project name")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Create" })).toBeNull();
+  await user.click(screen.getByRole("link", { name: /new project/i }));
+  expect(JSON.parse(screen.getByTestId("wizard-state").textContent ?? "null")).toEqual({
+    from: "settings-projects",
   });
-  await user.type(screen.getByLabelText("New project name"), "Fresh");
-  // Create stays disabled until a default folder is chosen (#448).
-  expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
-  await user.click(
-    screen.getByRole("button", { name: "Choose the default folder" }),
-  );
-  await user.click(screen.getByRole("button", { name: "stub-pick" }));
-  await user.click(screen.getByRole("button", { name: "Create" }));
-  expect(api.createProject).toHaveBeenCalledWith({
-    name: "Fresh",
-    default_folder: "/picked",
-  });
-  expect(await screen.findByText("Fresh")).toBeInTheDocument();
-  expect(api.projectEntities).toHaveBeenCalledTimes(2);
+  expect(api.createProject).not.toHaveBeenCalled();
 });
 
 test("changing a project's default folder patches default_folder (#448)", async () => {
@@ -130,7 +122,7 @@ test("changing a project's default folder patches default_folder (#448)", async 
     archived: false,
     created_at: 0,
   });
-  render(<ProjectsManagerCard />);
+  render(<Card />);
   await screen.findByText("SampleProject");
   await user.click(
     screen.getByRole("button", { name: "Change default folder for SampleProject" }),
@@ -153,7 +145,7 @@ test("archive with a failed member shows the failed list and Retry re-calls the 
     counts: { archived: 1, already_archived: 0, failed: 1 },
   };
   vi.mocked(api.archiveProject).mockResolvedValue(report);
-  render(<ProjectsManagerCard />);
+  render(<Card />);
   await screen.findByText("SampleProject");
   await user.click(
     screen.getByRole("button", { name: "Archive project SampleProject" }),
@@ -174,7 +166,7 @@ test("delete asks for confirmation (files-never-touched copy) before calling the
   const user = userEvent.setup();
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
   vi.mocked(api.deleteProject).mockResolvedValue({ deleted: true, id: "p-1" });
-  render(<ProjectsManagerCard />);
+  render(<Card />);
   await screen.findByText("SampleProject");
   await user.click(
     screen.getByRole("button", { name: "Delete project SampleProject" }),
@@ -187,7 +179,7 @@ test("delete asks for confirmation (files-never-touched copy) before calling the
 test("a declined confirm aborts the delete", async () => {
   const user = userEvent.setup();
   vi.spyOn(window, "confirm").mockReturnValue(false);
-  render(<ProjectsManagerCard />);
+  render(<Card />);
   await screen.findByText("SampleProject");
   await user.click(
     screen.getByRole("button", { name: "Delete project SampleProject" }),
@@ -209,7 +201,7 @@ test("archived entities sit in a collapsed subsection with an Unarchive action",
     sessions: [{ id: "claude:cccc", result: "unarchived" }],
     counts: { unarchived: 1, already_unarchived: 0, failed: 0 },
   });
-  render(<ProjectsManagerCard />);
+  render(<Card />);
   expect(await screen.findByText("Archived (1)")).toBeInTheDocument();
   // The archived row is NOT in the active list (no archive/delete actions for it).
   expect(
@@ -234,7 +226,7 @@ test("a 409 folder conflict surfaces the server's detail string inline", async (
       "folder '/home/u/free' conflicts with '/home/u/free' already adopted by project p-7",
     ),
   );
-  render(<ProjectsManagerCard />);
+  render(<Card />);
   await screen.findByText("SampleProject");
   await user.selectOptions(
     await screen.findByLabelText("Adopt a folder into SampleProject"),
@@ -259,7 +251,7 @@ test("releasing a folder chip patches the remaining folder set", async () => {
     archived: false,
     created_at: 0,
   });
-  render(<ProjectsManagerCard />);
+  render(<Card />);
   await screen.findByText("SampleProject");
   await user.click(
     screen.getByRole("button", {
@@ -280,7 +272,7 @@ test("rename commits via patchProject and color swatches set/clear the color", a
     archived: false,
     created_at: 0,
   });
-  render(<ProjectsManagerCard />);
+  render(<Card />);
   await screen.findByText("SampleProject");
   await user.click(
     screen.getByRole("button", { name: "Rename project SampleProject" }),
@@ -316,7 +308,7 @@ function renderWithConfig(config: Partial<AppConfig> = {}) {
   } as AppConfig;
   return render(
     <ConfigCtx.Provider value={cfg}>
-      <ProjectsManagerCard />
+      <Card />
     </ConfigCtx.Provider>,
   );
 }

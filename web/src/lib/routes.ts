@@ -38,6 +38,11 @@ export const TEMPLATES_PATH = "/templates";
  *  tab (Settings → AI → Checklists); `/settings/ai-playbooks` still redirects here. */
 export const CHECKLISTS_PATH = `${MISSION_PATH}/checklists`;
 
+/** The New project wizard (#1187). Under no section of its own: the header nav is measured full at
+ *  320 px (#1058), so the wizard is reached from New session, the dashboard and Settings → Projects,
+ *  and renders without the session sidebar. */
+export const NEW_PROJECT_PATH = "/projects/new";
+
 /** Settings is NOT here: `routes/settingsTabs.ts` already owns `SETTINGS_PATH` and `settingsPath()`
  *  alongside the section list they index, and a second constant for the same path is the drift this
  *  module exists to prevent. It is also not a section — it is an action in the corner cluster and an

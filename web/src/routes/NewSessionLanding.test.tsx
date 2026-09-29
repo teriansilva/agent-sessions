@@ -1,12 +1,14 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
 import { ConfigCtx } from "../app/config";
 import { setRoster } from "../app/engineRoster";
 import fixture from "../test/roster.fixture.json";
 import { api } from "../lib/api";
 import { mintNewSessionId } from "../lib/newSession";
+import type { NewSessionDraft } from "../lib/newProject";
+import { MAP_PATH, NEW_PROJECT_PATH } from "../lib/routes";
 import type { AppConfig, EngineInfo } from "../types/api";
 import { NewSessionLanding } from "./NewSessionLanding";
 
@@ -65,7 +67,11 @@ const ENTITIES = [
   },
 ];
 
-function renderLanding(engines = ["claude"], extra: Partial<AppConfig> = {}) {
+function renderLanding(
+  engines = ["claude"],
+  extra: Partial<AppConfig> = {},
+  state: unknown = null,
+) {
   const config: AppConfig = {
     csrf: "x",
     new_session_engines: engines,
@@ -74,8 +80,10 @@ function renderLanding(engines = ["claude"], extra: Partial<AppConfig> = {}) {
   };
   return render(
     <ConfigCtx.Provider value={config}>
-      <MemoryRouter>
-        <NewSessionLanding />
+      <MemoryRouter initialEntries={[{ pathname: "/", state }]}>
+        <Routes>
+          <Route path="/" element={<NewSessionLanding />} />
+        </Routes>
       </MemoryRouter>
     </ConfigCtx.Provider>,
   );
@@ -200,42 +208,117 @@ test("opencode stamping uses the new-<uuid> placeholder key (#448)", async () =>
   expect(api.setSessionProject).toHaveBeenCalledWith(`opencode:${id}`, "p-a");
 });
 
-test("inline create requires a default folder, then creates with it (#448)", async () => {
+const DRAFT: NewSessionDraft = {
+  engineChoice: "opencode",
+  bypassChoice: false,
+  returnTo: null,
+  projectChoice: "p-b",
+  cwdOverride: "/b/sub",
+};
+
+test("+ New project… saves the draft into this entry, then opens the wizard with it (#1187)", async () => {
   const user = userEvent.setup();
-  vi.mocked(api.createProject).mockResolvedValue({
-    id: "p-new",
-    name: "Zed",
-    color: "",
-    folders: ["/picked"],
-    default_folder: "/picked",
-    archived: false,
-    created_at: 0,
-  });
+  renderLanding(["claude", "opencode"]);
+  const project = await screen.findByRole("combobox", { name: "Project" });
+  await user.selectOptions(project, "");
+  await user.selectOptions(screen.getByRole("combobox", { name: /agent/i }), "opencode");
+  await user.click(screen.getByRole("checkbox", { name: /skip permission/i }));
+  await user.click(screen.getByRole("link", { name: /new project/i }));
+  const draft = {
+    engineChoice: "opencode",
+    bypassChoice: false,
+    returnTo: null,
+    // The explicit "no project" survives as "", distinct from untouched null.
+    projectChoice: "",
+    cwdOverride: null,
+  };
+  // First THIS entry learns the draft (so the browser's Back restores it), then the push.
+  expect(navigateMock.mock.calls).toEqual([
+    ["/", { replace: true, state: { restoreDraft: draft } }],
+    [NEW_PROJECT_PATH, { state: { from: "new-session", draft } }],
+  ]);
+  expect(api.createProject).not.toHaveBeenCalled();
+});
+
+test("a modified click (new tab) is left to the browser — the link's own href (#1187)", async () => {
   renderLanding(["claude"]);
   await screen.findByRole("combobox", { name: "Project" });
-  await user.click(screen.getByRole("button", { name: /new project/i }));
-  await user.type(screen.getByLabelText("New project name"), "Zed");
-  // Create is disabled until a default folder is chosen.
-  expect(screen.getByRole("button", { name: /^create$/i })).toBeDisabled();
-  await user.click(screen.getByRole("button", { name: /default folder/i }));
-  await user.click(screen.getByRole("button", { name: "stub-pick" }));
-  await user.click(screen.getByRole("button", { name: /^create$/i }));
-  expect(api.createProject).toHaveBeenCalledWith({
-    name: "Zed",
-    default_folder: "/picked",
+  const link = screen.getByRole("link", { name: /new project/i });
+  expect(link).toHaveAttribute("href", NEW_PROJECT_PATH);
+  link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true }));
+  expect(navigateMock).not.toHaveBeenCalled();
+});
+
+test("the draft records the map return, so the detour keeps it (#1187)", async () => {
+  const user = userEvent.setup();
+  renderLanding(["claude"], {}, { returnTo: MAP_PATH });
+  await screen.findByRole("combobox", { name: "Project" });
+  await user.click(screen.getByRole("link", { name: /new project/i }));
+  const [, [, pushed]] = navigateMock.mock.calls as [unknown, [string, { state: { draft: unknown } }]];
+  expect(pushed.state.draft).toMatchObject({ returnTo: MAP_PATH, projectChoice: null });
+  expect(navigateMock.mock.calls[0][1]).toMatchObject({ state: { returnTo: MAP_PATH } });
+});
+
+test("finish: the created project and its folder are selected, the agent/bypass choices restored (#1187)", async () => {
+  renderLanding(
+    ["claude", "opencode"],
+    {},
+    {
+      returnTo: MAP_PATH,
+      restoreDraft: { ...DRAFT, projectChoice: null, cwdOverride: null },
+      selectProjectId: "p-b",
+    },
+  );
+  const project = (await screen.findByRole("combobox", { name: "Project" })) as HTMLSelectElement;
+  expect(project.value).toBe("p-b");
+  expect((screen.getByLabelText("Launch folder") as HTMLInputElement).value).toBe("/b");
+  expect((screen.getByRole("combobox", { name: /agent/i }) as HTMLSelectElement).value).toBe(
+    "opencode",
+  );
+  expect(screen.getByRole("checkbox", { name: /skip permission/i })).not.toBeChecked();
+  // One-shot: the restore is dropped from the history entry, the map return is kept.
+  expect(navigateMock).toHaveBeenCalledWith("/", {
+    replace: true,
+    state: { returnTo: MAP_PATH },
   });
-  expect(
-    (await screen.findByRole("combobox", {
-      name: "Project",
-    })) as HTMLSelectElement,
-  ).toBeInTheDocument();
+});
+
+test("cancel: the prior project + folder override come back exactly (#1187)", async () => {
+  renderLanding(["claude"], {}, { restoreDraft: DRAFT });
+  const project = (await screen.findByRole("combobox", { name: "Project" })) as HTMLSelectElement;
+  expect(project.value).toBe("p-b");
+  expect((screen.getByLabelText("Launch folder") as HTMLInputElement).value).toBe("/b/sub");
+  expect(navigateMock).toHaveBeenCalledWith("/", { replace: true, state: null });
+});
+
+test("cancel keeps an explicit “no project” — it never falls back to the default (#1187)", async () => {
+  renderLanding(["claude"], {}, { restoreDraft: { ...DRAFT, projectChoice: "", cwdOverride: null } });
+  const project = (await screen.findByRole("combobox", { name: "Project" })) as HTMLSelectElement;
+  expect(project.value).toBe("");
+});
+
+test("cancel keeps an UNTOUCHED project choice untouched — the default selection applies (#1187)", async () => {
+  renderLanding(
+    ["claude"],
+    { default_project_id: "p-b" },
+    { restoreDraft: { ...DRAFT, projectChoice: null, cwdOverride: null } },
+  );
+  const project = (await screen.findByRole("combobox", { name: "Project" })) as HTMLSelectElement;
+  expect(project.value).toBe("p-b");
+});
+
+test("malformed restore state is ignored, not trusted (#1187)", async () => {
+  renderLanding(["claude"], {}, { restoreDraft: "nope", selectProjectId: 42 });
+  const project = (await screen.findByRole("combobox", { name: "Project" })) as HTMLSelectElement;
+  expect(project.value).toBe("p-a");
+  expect(navigateMock).not.toHaveBeenCalled();
 });
 
 test("no Project select when there are no entities, but New project is offered (#448)", async () => {
   mockEntities.mockResolvedValue({ projects: [] });
   renderLanding(["claude"]);
   expect(
-    await screen.findByRole("button", { name: /new project/i }),
+    await screen.findByRole("link", { name: /new project/i }),
   ).toBeInTheDocument();
   expect(screen.queryByRole("combobox", { name: "Project" })).toBeNull();
 });

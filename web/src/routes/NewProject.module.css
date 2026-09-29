@@ -1,0 +1,318 @@
+/* The New project wizard's steps (#1187). The chrome — rail, progress, heading, Back/Next — is the
+ * shell's (components/wizard). Tokens only, no radius on boxes, no gradient (design.md §9); every
+ * control holds the 44 px floor (§8). */
+
+.lede {
+  margin: 0;
+  font-size: 13.5px;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+  min-width: 0;
+}
+.field input {
+  min-height: 44px;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 14px;
+}
+.field input:hover {
+  border-color: var(--accent);
+}
+.field input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.pathRow {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  min-width: 0;
+}
+.path {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 10px;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* New / existing — two radio cards. */
+.modes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.mode {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  color: var(--text-2);
+}
+.mode:hover {
+  border-color: var(--accent);
+}
+.modeOn {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.mode input {
+  accent-color: var(--accent);
+  margin-top: 2px;
+}
+.mode input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.mode span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.mode b {
+  font-size: 13.5px;
+}
+.mode small {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.preview {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.preview code {
+  font-family: var(--font-mono);
+  color: var(--text);
+}
+.tag,
+.tagWarn {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.tagWarn {
+  color: var(--warn-text);
+  border-color: color-mix(in srgb, var(--status-degraded) 55%, transparent);
+}
+.warn {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--warn-text);
+  overflow-wrap: anywhere;
+}
+.ok {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--ok-text);
+}
+.error {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--danger-text);
+}
+
+/* Colour previews: a sidebar row and a map cluster, as they will look. */
+.previews {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.previewRow,
+.previewCluster {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  min-width: 0;
+  max-width: 100%;
+}
+.previewCluster {
+  border-width: 1px 1px 1px 3px;
+}
+.previewName,
+.previewClusterHead {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.previewClusterHead {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-size: 11.5px;
+}
+.previewMeta {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: none;
+  vertical-align: middle;
+}
+.dotEmpty {
+  border: 1px dashed var(--border);
+}
+
+/* Review. */
+.review {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--line);
+}
+.review > div {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  border-bottom: 1px solid var(--line);
+}
+.review dt {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.review dd {
+  margin: 0;
+  min-width: 0;
+  font-size: 13.5px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.review code {
+  font-family: var(--font-mono);
+}
+.edit {
+  min-height: 44px;
+  padding: 0 8px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--accent);
+  background: none;
+  border: none;
+  cursor: pointer;
+  align-self: flex-start;
+}
+.edit:hover {
+  text-decoration: underline;
+}
+.edit:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  font-size: 13.5px;
+  color: var(--text);
+  cursor: pointer;
+}
+.check input {
+  accent-color: var(--accent);
+  width: 18px;
+  height: 18px;
+}
+.check input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.failure {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--status-down) 55%, transparent);
+  font-size: 13px;
+  color: var(--danger-text);
+  overflow-wrap: anywhere;
+}
+.failure p {
+  margin: 0;
+}
+.failure code {
+  font-family: var(--font-mono);
+}
+
+.doneActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.primaryBtn {
+  composes: primary from "../components/ui/actionButton.module.css";
+}
+.ghostBtn {
+  composes: ghost from "../components/ui/actionButton.module.css";
+  flex: none;
+}
+
+@media (max-width: 800px) {
+  .modes {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .review > div {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .review dt {
+    grid-column: 1 / -1;
+    padding-top: 8px;
+  }
+  .doneActions > * {
+    flex: 1 1 100%;
+  }
+}

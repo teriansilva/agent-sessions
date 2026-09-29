@@ -44,6 +44,7 @@ export function NewMissionForm({
   visit,
   isVisitCurrent,
   focusKey,
+  initialProjectId = "",
 }: {
   /** `focus` says whether the console should SELECT the new mission.
    *
@@ -57,6 +58,9 @@ export function NewMissionForm({
   isVisitCurrent: (at: number) => boolean;
   /** Bumped by "+ New mission" to move focus into the brief (#948). */
   focusKey?: number;
+  /** The project to preselect — the one the New project wizard just created (#1187). Only a
+   *  starting value: an id the list does not contain simply selects nothing. */
+  initialProjectId?: string;
 }) {
   /** Focus the field the operator just asked for — NOT ON ARRIVAL (#948). The landing IS this
    *  form, and focusing the brief the moment the section is entered would pop a phone's keyboard
@@ -81,7 +85,7 @@ export function NewMissionForm({
   }, [focusKey]);
 
   const [instruction, setInstruction] = useState("");
-  const [projectId, setProjectId] = useState("");
+  const [projectId, setProjectId] = useState(initialProjectId);
   /** The checklist for THIS mission (#1061). `null` = untouched, so the pre-selection follows the
    *  configured default even when the config lands after mount; a pick is the operator's and
    *  sticks. */

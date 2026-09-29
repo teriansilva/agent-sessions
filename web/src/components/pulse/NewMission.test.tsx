@@ -250,3 +250,22 @@ test("a create begun in ACTIVE does not steal the selection into the ARCHIVED ra
   await waitFor(() => expect(onCreated).toHaveBeenCalled());
   expect(onCreated.mock.calls.at(-1)?.[1]).toEqual({ focus: false });
 });
+
+test("a project handed over by the New project wizard is preselected (#1187)", async () => {
+  vi.mocked(api.createMission).mockResolvedValue({ id: "msn_7" } as never);
+  render(
+    <NewMissionForm
+      visit={() => 0}
+      isVisitCurrent={() => true}
+      onCreated={vi.fn()}
+      initialProjectId="p2"
+    />,
+  );
+  await waitFor(() =>
+    expect(screen.getByTestId("new-mission-project")).toHaveValue("p2"),
+  );
+  await userEvent.type(screen.getByTestId("new-mission-instruction"), "first mission");
+  await userEvent.click(screen.getByTestId("new-mission-start"));
+  await waitFor(() => expect(api.createMission).toHaveBeenCalled());
+  expect(vi.mocked(api.createMission).mock.calls[0][0].project_id).toBe("p2");
+});

@@ -46,14 +46,44 @@ The first one surprises people, so it is worth restating: hiding a project hides
 work, not the work itself. If you want a folder gone from the listing entirely, that is
 `folder_exclusions`.
 
-## Creating a folder from the app
+## Creating a project
 
-The new-session picker can create a project folder, but only inside a base directory you have
-allowed via `AGENT_SESSIONS_PROJECT_ROOTS` (an `os.pathsep`-separated list). If it is empty or
-unset the feature is **off** and the endpoint is disabled entirely — not merely hidden in the UI.
-When it is set, the target path is `realpath`-resolved and must land strictly under a listed root,
-so neither a symlink nor a `..` can escape it.
+**New project** opens a short wizard at `/projects/new`. It is on the dashboard, under the project
+picker in **New session** ("+ New project…"), and in **Settings → Projects**. The session list is
+hidden while it is open. It asks, one step at a time:
+
+1. **Name**: any name. If an active project already has it, the wizard warns you but lets you
+   keep it.
+2. **Folder**: either a **new folder** (a parent, `~` by default, and a folder name, which is
+   suggested from the project name) or an **existing folder** you browse to. A new-folder name
+   that is already there is labelled *existing folder, reused*: the project uses it as it is. A
+   folder that overlaps one another project owns is flagged here, because a folder belongs to one
+   project.
+3. **Colour**: one of the presets, or none, with a preview of the session-list row and the map
+   cluster. The wizard preselects the first preset no other project uses.
+4. **Review**: everything on one page, each with an Edit link, plus *Make this my default
+   project*.
+
+Nothing is written until you press **Create project**. Then the new folder is made (only if it is
+absent, and only under your home directory), the project is created, and the default is set if you
+asked for it. If the server refuses (for example, the folder already belongs to another project),
+you stay on Review with its reason and a link to the step that fixes it. A folder that was made
+before the refusal is left where it is and named. Trying again is safe.
+
+When it is done you can start a session in the new project, plan a mission in it, see it on the
+map, or go back to where you started. From New session, you return with the new project and its
+folder selected, and your agent and permission choices kept. **Cancel** puts New session back
+exactly as you left it. If you have typed anything, leaving asks first.
+
+## The legacy folder-creation endpoint
+
+`POST /api/folders/mkdir` creates a folder only inside a base directory you have allowed via
+`AGENT_SESSIONS_PROJECT_ROOTS` (an `os.pathsep`-separated list). If it is empty or unset the
+endpoint is **off** entirely, not merely hidden in the UI. When it is set, the target path is
+`realpath`-resolved and must land strictly under a listed root, so neither a symlink nor a `..` can
+escape it. The app itself no longer calls it: the New project wizard and the folder picker use
+`POST /api/fs/mkdir`, which is bounded to your home directory the same way.
 
 ::: info Verified against
-Commit `218cf3a` — `docs/reference.md § Sessions & projects`; `src/agent_sessions/projects.py`; `src/agent_sessions/autosort.py § NEAR_MISS_CAP, CALL_SPACING_S`; `src/agent_sessions/prefs.py § PROJECT_MODES`.
+Commit `218cf3a` — `docs/reference.md § Sessions & projects`; `src/agent_sessions/projects.py`; `src/agent_sessions/fsbrowse.py § make_dir`; `web/src/routes/NewProject.tsx` (#1187); `src/agent_sessions/autosort.py § NEAR_MISS_CAP, CALL_SPACING_S`; `src/agent_sessions/prefs.py § PROJECT_MODES`.
 :::

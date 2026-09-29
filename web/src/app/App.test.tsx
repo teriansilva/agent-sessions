@@ -378,6 +378,17 @@ test("a work route keeps the sidebar and its toggle — the removal is Settings-
   expect(container.querySelector("aside.sidebar")).not.toBeNull();
 });
 
+test("the New project wizard renders without the session sidebar too (#1187)", async () => {
+  window.history.replaceState(null, "", "/projects/new");
+  const { container } = render(<App />);
+  await screen.findByRole("heading", { name: "Name the project" });
+  const app = container.querySelector(".app") as HTMLElement;
+  expect(app).toHaveClass("noSidebar");
+  expect(container.querySelector("header .navToggle")).toBeNull();
+  // Hidden, not unmounted (#1007's continuity contract).
+  expect(container.querySelector("aside.sidebar")).not.toBeNull();
+});
+
 // --- Footer version surface (#661) --------------------------------------------------------------
 
 test("the footer shows the running version as a hud tag (#661)", async () => {

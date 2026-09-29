@@ -162,56 +162,50 @@ test.describe("Settings → Projects manager (#361/#448)", () => {
     ).toHaveCount(0);
   });
 
-  test("create requires a default folder (picker), POSTs it, and refetches (#448)", async ({
+  test("New project opens the wizard; Done comes back to this list (#1187)", async ({
     page,
   }) => {
+    // Creating a project moved from an inline form here to the New project wizard.
     let created: unknown = null;
     const projects: Entity[] = [SAMPLEPROJECT];
     await page.route(/\/api\/projects(\?.*)?$/, async (r) => {
-      if (r.request().method() === "POST") {
-        created = r.request().postDataJSON();
-        projects.push({
-          id: "p-2",
-          name: "Fresh",
-          color: "",
-          folders: ["/home/u/free"],
-          default_folder: "/home/u/free",
-          archived: false,
-          created_at: 0,
-          session_count: 0,
-        });
-        await r.fulfill({
-          json: {
-            id: "p-2",
-            name: "Fresh",
-            color: "",
-            folders: ["/home/u/free"],
-            default_folder: "/home/u/free",
-            archived: false,
-            created_at: 0,
-          },
-        });
-      } else {
-        await r.fulfill({ json: { projects } });
-      }
+      if (r.request().method() !== "POST")
+        return r.fulfill({ json: { projects } });
+      created = r.request().postDataJSON();
+      const p: Entity = {
+        id: "p-2",
+        name: "Fresh",
+        color: "",
+        folders: ["/home/u/free"],
+        default_folder: "/home/u/free",
+        archived: false,
+        created_at: 0,
+        session_count: 0,
+      };
+      projects.push(p);
+      return r.fulfill({ json: p });
     });
     await page.goto(settingsPath("projects"));
-    await page.getByLabel("New project name").fill("Fresh");
-    // A default folder is required → Create stays disabled until one is picked.
-    await expect(
-      page.getByRole("button", { name: "Create", exact: true }),
-    ).toBeDisabled();
-    await page
-      .getByRole("button", { name: "Choose the default folder" })
-      .click();
-    await page.getByRole("button", { name: "free" }).click(); // navigate into ~/free
-    await page.getByRole("button", { name: /^Select/ }).click(); // pick ~/free
-    await page.getByRole("button", { name: "Create", exact: true }).click();
+    await expect(page.getByLabel("New project name")).toHaveCount(0);
+    await page.getByRole("link", { name: /new project/i }).click();
+    await expect(page.getByRole("heading", { name: "Name the project" })).toBeVisible();
+    await page.getByLabel("Project name").fill("Fresh");
+    await page.getByRole("button", { name: "Next", exact: true }).click();
+    // An existing folder: no mkdir, the pick is the project's folder.
+    await page.getByRole("radio", { name: /existing folder/i }).check();
+    await page.getByRole("button", { name: "Choose folder…" }).click();
+    await page.getByRole("button", { name: "free" }).click();
+    await page.getByRole("button", { name: /^Select/ }).click();
+    await page.getByRole("button", { name: "Next", exact: true }).click();
+    await page.getByRole("button", { name: "None", exact: true }).click();
+    await page.getByRole("button", { name: "Next", exact: true }).click();
+    await page.getByRole("button", { name: "Create project" }).click();
     await expect
       .poll(() => created)
-      .toEqual({ name: "Fresh", default_folder: "/home/u/free" });
+      .toEqual({ name: "Fresh", color: "", default_folder: "/home/u/free" });
+    await page.getByRole("button", { name: "Done", exact: true }).click();
     await expect(
-      page.getByRole("region", { name: "Projects" }).getByText("Fresh"),
+      page.getByRole("region", { name: "Projects" }).getByText("Fresh", { exact: true }),
     ).toBeVisible();
   });
 

@@ -846,9 +846,11 @@ export const api = {
     getJson<{ path: string; home: string; dirs: FsDir[] }>(
       `/api/fs/dirs${path ? `?path=${encodeURIComponent(path)}` : ""}`,
     ),
-  /** Create a folder under a browsed parent (#448), bounded to ~/. Idempotent; returns the path. */
+  /** Create a folder under a browsed parent (#448), bounded to ~/. Idempotent; returns the path.
+   *  A refusal carries the server's reason (bad name, outside home) — the New project wizard
+   *  shows it verbatim (#1187). */
   fsMkdir: (parent: string, name: string) =>
-    postJson<{ path: string }>("/api/fs/mkdir", { parent, name }),
+    mutateJson<{ path: string }>("POST", "/api/fs/mkdir", { parent, name }),
   /** File panel (#783): one directory, bounded by an entry cap AND a wall-clock budget. */
   filesList: (path?: string, init?: RequestInit) =>
     getJson<FileListing>(

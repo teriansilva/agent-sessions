@@ -30,7 +30,7 @@ import type {
   PulseCard,
 } from "../../types/api";
 
-import { useSearchParams } from "react-router-dom";
+import { useLocation, useSearchParams } from "react-router-dom";
 
 import { ActionRow } from "./ActionRow";
 import type { DraftEdit } from "./draftDirection";
@@ -952,6 +952,14 @@ export function MissionConsole({
    *  for selection — this console — rather than a query string that can disagree with it. */
   const [searchParams, setSearchParams] = useSearchParams();
   const deepLink = searchParams.get("m");
+  /** "Plan a mission here" from the New project wizard (#1187) names the project to start in, in
+   *  router state. Read once; the form only uses it as its initial choice. */
+  const location = useLocation();
+  const [initialProjectId] = useState(() => {
+    const v = (location.state as { missionProjectId?: unknown } | null)
+      ?.missionProjectId;
+    return typeof v === "string" ? v : "";
+  });
   const [consumedLink, setConsumedLink] = useState<string | null>(null);
   if (deepLink !== consumedLink) {
     setConsumedLink(deepLink);
@@ -1890,6 +1898,7 @@ export function MissionConsole({
                   isVisitCurrent={isVisitCurrent}
                   onCreated={onCreated}
                   focusKey={focusKey}
+                  initialProjectId={initialProjectId}
                 />
               }
               missions={missions}

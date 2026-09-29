@@ -1,10 +1,16 @@
-import { useEffect, useRef, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useConfig } from "../app/config";
 import { MAP_PATH, useMapWindows } from "../app/workspaceWindows";
 import { FolderPickerModal } from "../components/FolderPickerModal";
 import { ApiError, api } from "../lib/api";
 import { mintNewSessionId } from "../lib/newSession";
+import {
+  readLandingRestore,
+  type NewSessionDraft,
+  type WizardEntryState,
+} from "../lib/newProject";
+import { NEW_PROJECT_PATH } from "../lib/routes";
 import {
   engineInfo,
   engineName,
@@ -14,7 +20,6 @@ import {
 } from "../app/engineRoster";
 import { unavailableDefaultNotice } from "../lib/agentDefaults";
 import { owningProjectId } from "../lib/projectTree";
-import { shortCwd } from "../lib/format";
 import type { ProjectEntity } from "../types/api";
 import styles from "./NewSessionLanding.module.css";
 
@@ -38,10 +43,17 @@ export function NewSessionLanding() {
   // provider above the router, and the canvas drains it when it comes back.
   const returnToMap =
     (location.state as { returnTo?: string } | null)?.returnTo === MAP_PATH;
-  const [engineChoice, setEngineChoice] = useState("");
+  // Back from the New project wizard (#1187): its router state restores this form as the operator
+  // left it, and — on finish only — selects the project just created. Read ONCE, on mount.
+  const [restore] = useState(() => readLandingRestore(location.state));
+  const [engineChoice, setEngineChoice] = useState(
+    restore.draft?.engineChoice ?? "",
+  );
   // `null` = untouched: the stored default applies (#1128), and `true` — today's behaviour — until
   // the config has loaded. The operator's choice on this form always wins, for this session.
-  const [bypassChoice, setBypass] = useState<boolean | null>(null);
+  const [bypassChoice, setBypass] = useState<boolean | null>(
+    restore.draft?.bypassChoice ?? null,
+  );
   const bypass = bypassChoice ?? config?.agent_defaults?.bypass ?? true;
 
   const roster = useEngineRoster();
@@ -58,7 +70,10 @@ export function NewSessionLanding() {
   // Project entities own the default launch folder (#448). projectChoice === null = untouched
   // (use the default selection); "" = no project; else an entity id.
   const [entities, setEntities] = useState<ProjectEntity[]>([]);
-  const [projectChoice, setProjectChoice] = useState<string | null>(null);
+  // A created project wins; otherwise the draft's own choice comes back in all three states.
+  const [projectChoice, setProjectChoice] = useState<string | null>(
+    restore.selectProjectId ?? restore.draft?.projectChoice ?? null,
+  );
   // The operator's starred project (#615 Phase 2). `entities` is already archived-filtered, so an
   // id naming an archived — or since-deleted — project simply isn't found, and we fall back to the
   // first project rather than pre-selecting nothing. Before #615 there was no pref at all: the
@@ -70,7 +85,21 @@ export function NewSessionLanding() {
   const selectedProject = entities.find((p) => p.id === projectSel);
 
   // Folder: the project's default unless overridden for this session via the picker.
-  const [cwdOverride, setCwdOverride] = useState<string | null>(null);
+  // A created project brings its own folder, so a finish never restores the old override.
+  const [cwdOverride, setCwdOverride] = useState<string | null>(
+    restore.selectProjectId ? null : (restore.draft?.cwdOverride ?? null),
+  );
+
+  // The restore is one-shot: drop it from the history entry (keeping the map return), so a later
+  // Back/Forward onto this entry does not re-select the project or re-apply the draft.
+  useEffect(() => {
+    if (!restore.draft && !restore.selectProjectId) return;
+    navigate(location.pathname, {
+      replace: true,
+      state: returnToMap ? { returnTo: MAP_PATH } : null,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once, on mount
+  }, []);
   // `||`, not `??`, between the project's folder and the legacy pref: a folderless project stores
   // "" (#448 back-compat), and "" is a *missing* folder, not a chosen one — fall through to the
   // legacy cwd rather than opening the picker on nothing (#615 Phase 2 edge case). `cwdOverride`
@@ -81,25 +110,41 @@ export function NewSessionLanding() {
   const isProjectDefault =
     !!selectedProject && cwd === selectedProject.default_folder && cwd !== "";
 
-  // One folder picker serves two flows: overriding this session's folder, or choosing the
-  // default folder for a "+ New project". `null` = closed.
-  const [picker, setPicker] = useState<null | "cwd" | "newproject">(null);
+  // The folder picker overrides this session's folder. `false` = closed.
+  const [picker, setPicker] = useState(false);
   // Captured at open time (not read from a ref during render) so focus returns to the trigger.
   const [pickerReturn, setPickerReturn] = useState<HTMLElement | null>(null);
-  const openPicker = (
-    mode: "cwd" | "newproject",
-    e: { currentTarget: HTMLElement },
-  ) => {
+  const openPicker = (e: { currentTarget: HTMLElement }) => {
     setPickerReturn(e.currentTarget);
-    setPicker(mode);
+    setPicker(true);
   };
 
-  // Inline "+ New project" (#448): name + a REQUIRED default folder (the picker).
-  const [showNewProject, setShowNewProject] = useState(false);
-  const [newProjectName, setNewProjectName] = useState("");
-  const [newProjectFolder, setNewProjectFolder] = useState("");
-  const [creatingProject, setCreatingProject] = useState(false);
-  const [projectError, setProjectError] = useState<string | null>(null);
+  // Creating a project is the New project wizard's job (#1187). It carries this form's draft so
+  // finishing — or cancelling — brings the form back exactly as it is now.
+  const draft: NewSessionDraft = {
+    engineChoice,
+    bypassChoice,
+    returnTo: returnToMap ? MAP_PATH : null,
+    projectChoice,
+    cwdOverride,
+  };
+  const wizardState: WizardEntryState = { from: "new-session", draft };
+  // …and the browser's Back too: before pushing the wizard, the draft is written into THIS entry's
+  // state, so returning to it (Back, a phone's back gesture) restores the form as well. The replace
+  // is awaited — under the data router `navigate` resolves once it commits — because a push issued
+  // in the same tick would interrupt it.
+  const openWizard = async (e: MouseEvent<HTMLAnchorElement>) => {
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    await navigate(location.pathname, {
+      replace: true,
+      state: {
+        ...(returnToMap ? { returnTo: MAP_PATH } : {}),
+        restoreDraft: draft,
+      },
+    });
+    await navigate(NEW_PROJECT_PATH, { state: wizardState });
+  };
 
   const refreshEntities = () =>
     api
@@ -110,29 +155,6 @@ export function NewSessionLanding() {
   useEffect(() => {
     refreshEntities();
   }, []);
-
-  const createProject = async () => {
-    const name = newProjectName.trim();
-    if (!name || !newProjectFolder || creatingProject) return;
-    setCreatingProject(true);
-    setProjectError(null);
-    try {
-      const created = await api.createProject({
-        name,
-        default_folder: newProjectFolder,
-      });
-      await refreshEntities();
-      setProjectChoice(created.id); // select it; folder follows its default
-      setCwdOverride(null);
-      setShowNewProject(false);
-      setNewProjectName("");
-      setNewProjectFolder("");
-    } catch {
-      setProjectError("Couldn’t create that project.");
-    } finally {
-      setCreatingProject(false);
-    }
-  };
 
   // Nothing launches on a guessed capability (#853 P4): until the roster says whether this engine
   // pins or adopts its id, Start waits. `roster` is read so this re-evaluates when it lands.
@@ -224,9 +246,8 @@ export function NewSessionLanding() {
   };
 
   const onPick = (path: string) => {
-    if (picker === "cwd") setCwdOverride(path);
-    else if (picker === "newproject") setNewProjectFolder(path);
-    setPicker(null);
+    setCwdOverride(path);
+    setPicker(false);
   };
 
   return (
@@ -286,57 +307,14 @@ export function NewSessionLanding() {
             </select>
           </label>
         )}
-        {!showNewProject ? (
-          <button
-            type="button"
-            className={styles.setDefault}
-            onClick={() => setShowNewProject(true)}
-          >
-            + New project…
-          </button>
-        ) : (
-          <div className={styles.newFolder}>
-            <input
-              type="text"
-              value={newProjectName}
-              onChange={(e) => setNewProjectName(e.target.value)}
-              placeholder="project name"
-              aria-label="New project name"
-            />
-            <button
-              type="button"
-              className={styles.newFolderBtn}
-              onClick={(e) => openPicker("newproject", e)}
-            >
-              {newProjectFolder
-                ? `📁 ${shortCwd(newProjectFolder)}`
-                : "Default folder *…"}
-            </button>
-            <button
-              type="button"
-              className={styles.newFolderBtn}
-              onClick={() => void createProject()}
-              disabled={
-                !newProjectName.trim() || !newProjectFolder || creatingProject
-              }
-            >
-              {creatingProject ? "Creating…" : "Create"}
-            </button>
-            <button
-              type="button"
-              className={styles.newFolderBtn}
-              onClick={() => {
-                setShowNewProject(false);
-                setNewProjectName("");
-                setNewProjectFolder("");
-                setProjectError(null);
-              }}
-            >
-              Cancel
-            </button>
-          </div>
-        )}
-        {projectError && <p className={styles.error}>{projectError}</p>}
+        <Link
+          to={NEW_PROJECT_PATH}
+          state={wizardState}
+          className={styles.setDefault}
+          onClick={(e) => void openWizard(e)}
+        >
+          + New project…
+        </Link>
 
         {/* Folder BELOW the project (#448): prefilled from the project's default, overridable. */}
         <label className={styles.field}>
@@ -352,7 +330,7 @@ export function NewSessionLanding() {
             <button
               type="button"
               className={styles.newFolderBtn}
-              onClick={(e) => openPicker("cwd", e)}
+              onClick={openPicker}
             >
               Choose folder…
             </button>
@@ -404,16 +382,10 @@ export function NewSessionLanding() {
 
       {picker && (
         <FolderPickerModal
-          initialPath={
-            picker === "cwd" ? cwd || undefined : newProjectFolder || undefined
-          }
-          title={
-            picker === "newproject"
-              ? "Choose the project's default folder"
-              : "Choose a folder"
-          }
+          initialPath={cwd || undefined}
+          title="Choose a folder"
           onPick={onPick}
-          onCancel={() => setPicker(null)}
+          onCancel={() => setPicker(false)}
           returnFocusTo={pickerReturn}
         />
       )}
