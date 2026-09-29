@@ -101,13 +101,15 @@ def _pct(v: object) -> float | None:
     reproduced: a 400-digit decimal in `claude -p` output parses to `inf` and poisons every
     comparison it touches; a JSON `NaN` in a codex rollout reaches Starlette's `JSONResponse`,
     which raises `ValueError: Out of range float values are not JSON compliant`. Neither is a
-    parsing problem — both are availability holes fed by untrusted input.
+    parsing problem — both are availability holes fed by untrusted input. A third: `json` hands back
+    arbitrary-precision ints, and `float()` of one past the float range RAISES `OverflowError`
+    rather than returning `inf` (Hermes on #1247).
     """
     if isinstance(v, bool) or not isinstance(v, int | float | str):
         return None
     try:
         f = float(v)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     if f != f or f in (float("inf"), float("-inf")):  # NaN / ±inf
         return None
@@ -118,7 +120,10 @@ def _epoch(v: object) -> float | None:
     """One timestamp from an external record, or None. Same reasoning as `_pct`, other range."""
     if isinstance(v, bool) or not isinstance(v, int | float):
         return None
-    f = float(v)
+    try:
+        f = float(v)
+    except OverflowError:  # an int past the float range, as `_pct`
+        return None
     if f != f or f in (float("inf"), float("-inf")):
         return None
     return f if 0.0 < f <= MAX_EPOCH else None
@@ -756,7 +761,12 @@ def parse_kimi_web_usage(
         ratio = block.get("usedRatio")
         if isinstance(ratio, bool) or not isinstance(ratio, int | float):
             continue
-        pct = _pct(ratio * 100.0)
+        try:
+            # The scaling happens BEFORE `_pct` sees the value, so an int past the float range
+            # overflows here, outside the guard's own `OverflowError` catch (#1247).
+            pct = _pct(float(ratio) * 100.0)
+        except OverflowError:
+            continue
         if pct is None:
             continue
         reset = block.get("resetAt")

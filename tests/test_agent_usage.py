@@ -1708,6 +1708,7 @@ def test_kimi_ratio_becomes_a_percentage_and_monthly_windows_are_named():
         {"usedRatio": True},
         {"usedRatio": "0.5"},
         {"usedRatio": 1e300},
+        {"usedRatio": 10**400},  # an int too large for a float: OverflowError, not inf
         {},
         "0.5",
     ],
@@ -1905,3 +1906,76 @@ def test_kimi_is_asked_through_its_manifest():
     assert "kimi-web-usage-probe" in kinds.USAGE_KINDS
     assert au.REPORTERS["kimi"].__wrapped__ is au.probe_kimi_web
     assert "kimi" not in au.MANUAL_ONLY
+
+
+# --- an int past the float range is refused at the guard, on every path (#1247) -----------------
+# `json` yields arbitrary-precision ints; `float()` of one RAISES rather than returning `inf`. The
+# guards must refuse it like any other malformed value, so no reporter and no stored-document read
+# can raise on it.
+
+HUGE = 10**400
+
+
+def test_the_guards_refuse_an_int_past_the_float_range():
+    assert au._pct(HUGE) is None
+    assert au._epoch(HUGE) is None
+    assert au._pct(-HUGE) is None
+
+
+def test_a_codex_rollout_with_a_huge_int_drops_the_value(tmp_path):
+    _rollout(
+        tmp_path,
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "rate_limits": {
+                    "primary": {"used_percent": HUGE, "window_minutes": 300, "resets_at": HUGE},
+                    "secondary": {"used_percent": 40.0, "window_minutes": 10080, "resets_at": HUGE},
+                },
+            },
+        },
+    )
+    rep = au.read_codex_rate_limits(tmp_path, now=1790000000.0, engine="codex")
+    assert [(w.used_pct, w.resets_at) for w in rep.windows] == [(40.0, None)]
+
+
+def test_a_codex_app_server_reply_with_a_huge_int_drops_the_value():
+    reply = json.dumps(
+        {
+            "id": 2,
+            "result": {
+                "rateLimits": {
+                    "primary": {"usedPercent": HUGE, "windowDurationMins": 300},
+                    "secondary": {"usedPercent": 25, "windowDurationMins": 10080, "resetsAt": HUGE},
+                }
+            },
+        }
+    )
+    rep = au.parse_codex_app_server(reply + "\n", now=1790000000.0, engine="codex")
+    assert [(w.used_pct, w.resets_at) for w in rep.windows] == [(25.0, None)]
+
+
+def test_a_stored_document_with_a_huge_int_is_served_not_raised(tmp_path):
+    """A hand-edited or older-build store is in scope for the read path (`live_windows`)."""
+    store = tmp_path / "usage.json"
+    store.write_text(
+        json.dumps(
+            {
+                "reports": {
+                    "claude": {
+                        "engine": "claude",
+                        "source": "plan",
+                        "at": HUGE,
+                        "windows": [
+                            {"label": "week", "used_pct": HUGE, "resets_at": 1_800_000_000},
+                            {"label": "session", "used_pct": 12.0, "resets_at": HUGE},
+                        ],
+                    }
+                }
+            }
+        )
+    )
+    rows = {r["engine"]: r for r in au.snapshot(path=store, budgets=BUDGETS, now=1790000000.0)}
+    assert rows["claude"]["windows"] == [{"label": "session", "used_pct": 12.0, "resets_at": None}]
+    assert rows["claude"]["used_pct"] == 12.0
