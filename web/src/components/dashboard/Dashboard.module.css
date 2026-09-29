@@ -348,3 +348,37 @@
     color: var(--text-3);
   }
 }
+
+/* #1223: the refresh bar — retained data is painted, a re-read runs behind it. Brand accent, not a
+ * status colour: it says "working", not "healthy". Only `transform` moves (design §5). */
+.refreshBar {
+  flex: none;
+  position: relative;
+  height: 2px;
+  overflow: hidden;
+}
+.refreshBarOn {
+  background: var(--line);
+}
+.refreshBlock {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 28%;
+  background: var(--accent);
+  animation: dashRefreshScan 1.3s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+@keyframes dashRefreshScan {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(360%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .refreshBlock {
+    animation: none;
+    width: 100%;
+    opacity: 0.5;
+  }
+}

@@ -44,6 +44,7 @@ import { ChunkErrorBoundary } from "./ChunkErrorBoundary";
 import { lazyWithReload } from "./lazyWithReload";
 import { useAppVersion } from "./useAppVersion";
 import { OverviewPrefsProvider } from "./OverviewPrefsContext";
+import { DashboardRetentionProvider } from "./DashboardRetentionContext";
 import { OverviewSessionsProvider } from "./OverviewSessionsContext";
 import { SessionsProvider } from "./SessionsContext";
 import { WorkspaceProvider } from "./WorkspaceContext";
@@ -796,6 +797,9 @@ export default function App() {
                   behind a blocking spinner. Data only — loading and cancellation stay
                   route-owned, because the route unmount is what cancels. */}
                 <OverviewSessionsProvider>
+                  {/* The dashboard's last reads, retained the same way and for the same reason
+                    (#1223): coming back paints them at once and revalidates behind a bar. */}
+                  <DashboardRetentionProvider>
                   <SessionsProvider>
                     {/* ABOVE the router (#936): the map's window records have to survive the
                       navigations they exist to be resilient to, and a provider inside the routed
@@ -804,6 +808,7 @@ export default function App() {
                       <RouterProvider router={router} />
                     </WorkspaceProvider>
                   </SessionsProvider>
+                  </DashboardRetentionProvider>
                 </OverviewSessionsProvider>
               </OverviewPrefsProvider>
             </TermFontProvider>

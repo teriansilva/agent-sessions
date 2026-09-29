@@ -2,9 +2,11 @@ import { X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
+import { useDashboardRetention } from "../../app/dashboardRetentionStore";
 import { api } from "../../lib/api";
 import { relTime } from "../../lib/format";
 import type { RecentWorkEntry, RecentWorkPayload } from "../../types/api";
+import { useScopeEpoch } from "../dashboard/useScopeEpoch";
 import dlg from "../HudDialog.module.css";
 import { useFocusContainment } from "../pulse/useModalDrawer";
 import s from "./AskHome.module.css";
@@ -26,38 +28,71 @@ const dayLabel = (ts: number) =>
 export function RecentWork({
   windowDays,
   onWindowDays,
+  onRevalidating,
 }: {
   windowDays: number;
   onWindowDays: (d: number) => void;
+  /** Whether the SNAPSHOT read is re-reading a window that is already painted (#1223) — what the
+   *  dashboard's bar tracks. The follow-on AI refresh has its own "updating…" and is not part of
+   *  it. */
+  onRevalidating?: (revalidating: boolean) => void;
 }) {
+  // #1223: the last snapshot per window is retained above the router, so coming back paints it
+  // at once. The read below still runs every mount — retention decides what is drawn first, never
+  // whether to read.
+  const store = useDashboardRetention();
+  const storeRef = useRef(store);
+  useEffect(() => {
+    storeRef.current = store;
+  }, [store]);
   // Everything held is TAGGED with the window it answers (review 5188): a new window must never
   // show the previous window's result — or its "updating…" — as its own.
   const [got, setGot] = useState<{ window: number; payload: RecentWorkPayload } | null>(null);
   const [failed, setFailed] = useState<number | null>(null);
   const [refreshingFor, setRefreshingFor] = useState<number | null>(null);
-  const data = got && got.window === windowDays ? got.payload : null;
+  const [readingFor, setReadingFor] = useState<number | null>(null);
+  const data =
+    got && got.window === windowDays
+      ? got.payload
+      : (store.read<RecentWorkPayload>(`recentWork:${windowDays}`) ?? null);
   const error = failed === windowDays;
   const refreshing = refreshingFor === windowDays;
+  const revalidating = readingFor === windowDays && data !== null;
+  useEffect(() => onRevalidating?.(revalidating), [onRevalidating, revalidating]);
+  useEffect(() => () => onRevalidating?.(false), [onRevalidating]);
   const [more, setMore] = useState(false);
   const refreshedFor = useRef<number | null>(null);
   const gen = useRef(0);
+  // Another scope's summary is not this scope's: drop what is painted and re-read. A new scope is
+  // a new question, so its stale snapshot gets its own AI-refresh attempt too.
+  const scopeEpoch = useScopeEpoch(store.scopeKey, gen, () => {
+    setGot(null);
+    refreshedFor.current = null;
+  });
 
   useEffect(() => {
     const mine = ++gen.current;
     (async () => {
       const w = windowDays;
+      const forScope = storeRef.current.scopeKey;
+      setReadingFor(w);
       try {
         const read = await api.recentWork(w);
         if (mine !== gen.current) return;
+        setReadingFor((cur) => (cur === w ? null : cur));
         setFailed((f) => (f === w ? null : f));
         setGot({ window: w, payload: read });
+        storeRef.current.write(`recentWork:${w}`, read, forScope);
         // One refresh per window per visit, only when a refresh would write something new.
         if (read.stale && read.configured && refreshedFor.current !== w) {
           refreshedFor.current = w;
           setRefreshingFor(w);
           try {
             const fresh = await api.refreshRecentWork(w);
-            if (mine === gen.current) setGot({ window: w, payload: fresh });
+            if (mine === gen.current) {
+              setGot({ window: w, payload: fresh });
+              storeRef.current.write(`recentWork:${w}`, fresh, forScope);
+            }
           } catch {
             /* keep what is showing for THIS window; the next visit tries again */
           } finally {
@@ -66,10 +101,18 @@ export function RecentWork({
           }
         }
       } catch {
-        if (mine === gen.current) setFailed(w);
+        if (mine !== gen.current) return;
+        setReadingFor((cur) => (cur === w ? null : cur));
+        setFailed(w);
       }
     })();
-  }, [windowDays]);
+    // Leaving (or a newer read) retires this one. Its writes land in the SHELL's retention, which
+    // outlives this component: an older read resolving after a newer visit's must not replace it.
+    const generation = gen;
+    return () => {
+      generation.current++;
+    };
+  }, [windowDays, scopeEpoch]);
 
   const entries = data?.entries ?? [];
   const preview = previewEntries(entries);
@@ -106,6 +149,12 @@ export function RecentWork({
           <WindowPicker value={windowDays} onChange={onWindowDays} />
         </div>
       </div>
+      {error && data ? (
+        // A failed re-read over a painted window says so, like every dashboard tile (#1223).
+        <p className={`${s.note} ${s.err}`} role="alert" data-testid="recent-work-refresh-error">
+          Couldn’t refresh — showing the last read.
+        </p>
+      ) : null}
       {error && !data ? (
         <p className={`${s.note} ${s.err}`} role="alert" data-testid="recent-work-error">
           Couldn’t read your recent work for this window.

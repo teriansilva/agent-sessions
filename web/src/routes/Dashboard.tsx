@@ -23,6 +23,7 @@ import {
   readQuota,
   readSessions,
 } from "../components/dashboard/sources";
+import { RefreshBar } from "../components/dashboard/RefreshBar";
 import { usePolled } from "../components/dashboard/usePolled";
 import { useConfig, useConfigRefresh } from "../app/config";
 import m from "../components/pulse/mission.module.css";
@@ -66,21 +67,43 @@ export default function Dashboard() {
 
   const [engine, setEngine] = useState("");
   const [project, setProject] = useState("");
-  const { state, facets, membership, refresh } = useNeedsYou(
-    windowDays,
-    engine,
-    project,
-  );
+  const {
+    state,
+    facets,
+    membership,
+    refresh,
+    refreshing: needsRefreshing,
+  } = useNeedsYou(windowDays, engine, project);
   const [details, setDetails] = useState<string | null>(null);
   const navigate = useNavigate();
 
   // The dashboard's own reads (#1123): each tile loads, fails and retries on its own.
-  const [sessions, retrySessions] = usePolled(readSessions, SESSIONS_POLL_MS);
-  const [missionsRes, retryMissions] = usePolled(
+  const [sessions, retrySessions, sessionsRefreshing] = usePolled(
+    "sessions",
+    readSessions,
+    SESSIONS_POLL_MS,
+  );
+  const [missionsRes, retryMissions, missionsRefreshing] = usePolled(
+    "missions",
     readMissions,
     MISSIONS_POLL_MS,
   );
-  const [quota, retryQuota] = usePolled(readQuota, QUOTA_POLL_MS);
+  const [quota, retryQuota, quotaRefreshing] = usePolled(
+    "quota",
+    readQuota,
+    QUOTA_POLL_MS,
+  );
+  const [recentRefreshing, setRecentRefreshing] = useState(false);
+  // #1223: the bar runs while any PAINTED source re-reads — a cold source shows its own skeleton,
+  // and is not "refreshing" anything. It stays until the last of them settles.
+  const revalidating =
+    (sessionsRefreshing && sessions.status === "ok") ||
+    (missionsRefreshing && missionsRes.status === "ok") ||
+    (quotaRefreshing && quota.status === "ok") ||
+    // NEEDS YOU keeps its list through a failed read (`error` WITH data), so its gate is "is a
+    // list painted", not "was the last read ok" — a Retry over it is a refresh (review 5407).
+    (needsRefreshing && state.data !== null) ||
+    recentRefreshing;
   const running = (
     <RunningTile res={sessions} retry={() => void retrySessions()} />
   );
@@ -94,7 +117,11 @@ export default function Dashboard() {
   };
 
   const recent = (
-    <RecentWork windowDays={windowDays} onWindowDays={changeWindow} />
+    <RecentWork
+      windowDays={windowDays}
+      onWindowDays={changeWindow}
+      onRevalidating={setRecentRefreshing}
+    />
   );
   const needs = (
     <NeedsYou
@@ -119,6 +146,7 @@ export default function Dashboard() {
   return (
     <div className={styles.page} data-testid="dashboard-page">
       <div className={`${m.threadCol} ${a.col}`}>
+        <RefreshBar active={revalidating} />
         <div className={m.pane} data-testid="dashboard-pane">
           <div className={a.dashboard}>
             <div className={styles.kicker}>Dashboard // what is going on</div>
