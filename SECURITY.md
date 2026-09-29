@@ -110,8 +110,9 @@ uv export --frozen --no-dev --no-hashes --no-emit-project \
   --format requirements-txt > /tmp/req.txt
 uv run --with pip-audit pip-audit -r /tmp/req.txt
 
-# Web dependency audit (production, then full incl. dev tooling)
-cd web && pnpm audit --prod && pnpm audit
+# Web dependency audit (production, then full incl. dev tooling). npm is the web package
+# manager: web/package-lock.json is the only lockfile, and what CI, deploy and install.sh use.
+cd web && npm audit --omit=dev && npm audit
 
 # Static analysis
 uv run --extra dev ruff check src tests
