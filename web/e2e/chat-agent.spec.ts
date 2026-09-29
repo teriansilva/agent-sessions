@@ -72,6 +72,7 @@ async function setup(
         max_output_tokens: 4096,
         request_timeout: null,
         configured,
+        tools: "none",
       },
     }),
   );
@@ -361,6 +362,7 @@ test("the Endpoint card: TEST never saves, SAVE activates the agent", async ({
           max_output_tokens: 4096,
           request_timeout: null,
           configured: true,
+          tools: "none",
         },
       });
     }
@@ -373,6 +375,7 @@ test("the Endpoint card: TEST never saves, SAVE activates the agent", async ({
         max_output_tokens: 4096,
         request_timeout: null,
         configured: false,
+        tools: "none",
       },
     });
   });

@@ -28,7 +28,8 @@ IDENTITY_KINDS = frozenset({"agent", "terminal"})
 
 #: `runtime.kind` (#853 §7). `pty`: a binary under `dtach`, shown through xterm. `chat` (#853 P9a,
 #: #1209): no binary and no terminal — BattleLab sends the conversation to an operator-configured
-#: HTTP endpoint and keeps the transcript itself. A chat plugin executes nothing and has no tools.
+#: HTTP endpoint and keeps the transcript itself. A chat plugin executes nothing; its only tools are
+#: the operator-granted, read-only file tools of #1222 (`chat_tools`), never the manifest's to name.
 RUNTIME_KINDS = frozenset({"pty", "chat"})
 #: `endpoint.kind` — the wire format a `chat` plugin speaks. The endpoint's URL, key and model are
 #: the OPERATOR's configuration, never the manifest's: a manifest can name no authority at all.

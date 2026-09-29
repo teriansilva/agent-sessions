@@ -2252,7 +2252,29 @@ export interface ChatTurn {
   truncated: boolean;
   /** Earlier exchanges left out of this request by the context budget. */
   dropped: number;
+  /** The latest attempt's tool calls, in order (#1222). Absent/empty when tools are off. */
+  tools?: ChatToolCall[];
 }
+
+/** One tool call's SUMMARY (#1222). The file contents are never stored or returned. */
+export interface ChatToolCall {
+  call_id: string;
+  name: "list_files" | "read_file" | string;
+  /** Relative to the conversation's folder, as the tool resolved it. */
+  path: string;
+  /** `stopped`: still running when its turn settled (a failure or restart mid-call). */
+  outcome: "ok" | "refused" | "running" | "stopped";
+  /** `read_file`: the lines returned and the file's total line count. */
+  start_line?: number | null;
+  end_line?: number | null;
+  total_lines?: number | null;
+  /** `list_files`: the entries returned. */
+  entries?: number | null;
+  /** Why a call was refused, in the operator's words. */
+  reason?: string | null;
+}
+
+export type AgentTools = "none" | "read";
 
 export interface ChatSession {
   session_id: string;
@@ -2271,6 +2293,8 @@ export interface AgentEndpoint {
   max_output_tokens: number;
   request_timeout: number | null;
   configured: boolean;
+  /** #1222: `read` lets the agent list and read files in the conversation's folder. */
+  tools: AgentTools;
 }
 
 export interface AgentEndpointPatch {
@@ -2280,4 +2304,5 @@ export interface AgentEndpointPatch {
   model?: string;
   context_window?: number;
   max_output_tokens?: number;
+  tools?: AgentTools;
 }

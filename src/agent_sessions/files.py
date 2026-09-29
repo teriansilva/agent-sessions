@@ -276,7 +276,7 @@ def inflight_workers() -> tuple[int, dict[str, int]]:
 # --------------------------------------------------------------------------- descriptor gate
 
 
-def _fd_still_contained(fd: int) -> str:
+def _fd_still_contained(fd: int, root: str | None = None) -> str:
     """Absolute path the descriptor *actually* refers to, verified against the root.
 
     This is the proof the pre-check isn't. ``/proc/self/fd/<n>`` resolves what was really opened,
@@ -287,7 +287,7 @@ def _fd_still_contained(fd: int) -> str:
         real = os.readlink(f"/proc/self/fd/{fd}")
     except OSError as e:
         raise FsError(f"could not verify the open file: {e}", status=400) from None
-    root = home_root()
+    root = root or home_root()
     # A deleted file reads back as "<path> (deleted)"; treat it as gone rather than parsing it.
     if real.endswith(" (deleted)"):
         raise FsError("the file disappeared while it was being read", status=404)
@@ -314,7 +314,9 @@ def _refuse_if_symlink(raw: str | None) -> None:
         return  # missing / unreadable: let the open below produce the real error
 
 
-def _open_verified(path: str, *, directory: bool) -> tuple[int, os.stat_result, str]:
+def _open_verified(
+    path: str, *, directory: bool, root: str | None = None
+) -> tuple[int, os.stat_result, str]:
     """Acquire a descriptor and prove it. Returns ``(fd, fstat, verified_abspath)``.
 
     ``O_NONBLOCK`` is load-bearing: without it a FIFO with no writer blocks in ``open()`` and the
@@ -351,7 +353,7 @@ def _open_verified(path: str, *, directory: bool) -> tuple[int, os.stat_result, 
             # FIFOs, sockets, devices, directories. Refused on the descriptor, before any read —
             # which only works because acquisition was non-blocking.
             raise FsError("not a regular file", status=422)
-        verified = _fd_still_contained(fd)
+        verified = _fd_still_contained(fd, root)
     except BaseException:
         os.close(fd)
         raise
@@ -405,7 +407,7 @@ def _link_fields(dir_fd: int, name: str, base: str) -> dict:
     return out
 
 
-def list_dir(path: str | None) -> dict:
+def list_dir(path: str | None, root: str | None = None) -> dict:
     """One directory, bounded by an entry cap **and** a wall-clock budget.
 
     ``total`` is an integer **iff** ``complete`` is true. A scan stopped by either budget reports
@@ -414,8 +416,8 @@ def list_dir(path: str | None) -> dict:
     since the rest were never seen.
     """
     _refuse_if_symlink(path)
-    base = contained_path(path or "")
-    fd, _st, verified = _open_verified(base, directory=True)
+    base = contained_path(path or "", root)
+    fd, _st, verified = _open_verified(base, directory=True, root=root)
     try:
         entries: list[dict] = []
         unencodable = 0
@@ -452,7 +454,7 @@ def list_dir(path: str | None) -> dict:
         os.close(fd)
 
     entries.sort(key=lambda e: (e["kind"] != "dir", e["name"].lower()))
-    root = home_root()
+    root = root or home_root()
     parent = os.path.dirname(verified) if verified != root else None
     return {
         "path": verified,
@@ -476,7 +478,9 @@ def _guess_mime(path: str) -> str:
     return mimetypes.guess_type(path)[0] or "application/octet-stream"
 
 
-def read_file_bytes(path: str, *, limit: int = FILES_MAX_READ) -> tuple[str, bytes, int, bool]:
+def read_file_bytes(
+    path: str, *, limit: int = FILES_MAX_READ, root: str | None = None
+) -> tuple[str, bytes, int, bool]:
     """Raw bytes of one regular file — the same containment proof as :func:`read_file`, no decoding.
 
     :func:`read_file` is a *display* surface: it decodes with ``errors="replace"``, so every
@@ -487,11 +491,11 @@ def read_file_bytes(path: str, *, limit: int = FILES_MAX_READ) -> tuple[str, byt
     bytes as stored.
 
     Returns ``(verified_path, data, size, truncated)``. Bounded while reading, so a huge file is
-    never materialised.
+    never materialised. ``root`` narrows the boundary as in :func:`list_dir` (#1222).
     """
     _refuse_if_symlink(path)
-    resolved = contained_path(path)
-    fd, st, verified = _open_verified(resolved, directory=False)
+    resolved = contained_path(path, root)
+    fd, st, verified = _open_verified(resolved, directory=False, root=root)
     try:
         chunks: list[bytes] = []
         read_total = 0

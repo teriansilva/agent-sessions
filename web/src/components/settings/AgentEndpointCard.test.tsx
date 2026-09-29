@@ -27,6 +27,7 @@ const STORED: AgentEndpoint = {
   max_output_tokens: 4096,
   request_timeout: null,
   configured: true,
+  tools: "none",
 };
 
 const refresh = vi.fn();
@@ -118,4 +119,31 @@ test("the fields are read-only while a save is in flight, so its result cannot e
   expect(model).toHaveValue("first");
   resolve({ ...STORED, model: "first" });
   await waitFor(() => expect(model).not.toHaveAttribute("readonly"));
+});
+
+// ---- Tools (#1222) --------------------------------------------------------------------------------
+
+test("Tools is chosen by keyboard and saved as its own field; the disclosure says what it costs", async () => {
+  vi.mocked(api.setAgentEndpoint).mockResolvedValue({ ...STORED, tools: "read" });
+  renderCard();
+  const none = await screen.findByRole("radio", { name: /None/ });
+  const read = screen.getByRole("radio", { name: /Read files/ });
+  expect(none).toBeChecked();
+  expect(read.closest("label")).toHaveTextContent(/sent to this endpoint/);
+  expect(read.closest("label")).toHaveTextContent(/may quote them/);
+  expect(read.closest("label")).toHaveTextContent(/ordinary file can still hold a secret/);
+  none.focus();
+  await userEvent.keyboard("{ArrowDown}");
+  expect(read).toBeChecked();
+  await userEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect(api.setAgentEndpoint).toHaveBeenCalledWith("apichat", { tools: "read" });
+  expect(await screen.findByText(/it can read files in the conversation’s folder/)).toBeInTheDocument();
+});
+
+test("an unchanged Tools setting is not sent", async () => {
+  vi.mocked(api.setAgentEndpoint).mockResolvedValue(STORED);
+  renderCard();
+  await screen.findByRole("radio", { name: /None/ });
+  await userEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect(api.setAgentEndpoint).toHaveBeenCalledWith("apichat", {});
 });

@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import { engineBadge, engineInfo, engineLabel, useEngineRoster } from "../../app/engineRoster";
 import { ApiError, api } from "../../lib/api";
 import { agentPath } from "../../routes/settingsTabs";
-import type { AgentEndpoint, ChatSession, ChatTurn } from "../../types/api";
+import type { AgentEndpoint, ChatSession, ChatToolCall, ChatTurn } from "../../types/api";
 import styles from "./ChatPane.module.css";
 
 /** How often a pending turn is re-read. The server owns the request (#1209): the pane only READS,
@@ -36,6 +36,67 @@ function ReplyText({ text }: { text: string }) {
   );
 }
 
+function lineSpan(c: ChatToolCall): string {
+  if (c.start_line == null || c.end_line == null) return "";
+  const of = c.total_lines != null ? ` of ${c.total_lines}` : "";
+  return `lines ${c.start_line}–${c.end_line}${of}`;
+}
+
+/** One tool call, as a one-line summary (#1222). Nothing here renders file contents: the server
+ *  never stores or returns them. */
+function ToolRow({ call }: { call: ChatToolCall }) {
+  const verb =
+    call.outcome === "refused"
+      ? "Refused"
+      : call.outcome === "stopped"
+        ? "Stopped"
+        : call.outcome === "running"
+        ? call.name === "list_files"
+          ? "Listing"
+          : "Reading"
+        : call.name === "list_files"
+          ? "Listed"
+          : "Read";
+  const detail =
+    call.outcome === "refused"
+      ? (call.reason ?? "not allowed")
+      : call.outcome === "stopped"
+        ? "did not finish"
+        : call.outcome === "running"
+        ? "…"
+        : call.name === "list_files"
+          ? `${call.entries ?? 0} ${call.entries === 1 ? "entry" : "entries"}`
+          : lineSpan(call);
+  return (
+    <li
+      className={`${styles.tool} ${call.outcome === "refused" || call.outcome === "stopped" ? styles.toolRefused : ""}`}
+      data-testid="chat-tool"
+      data-outcome={call.outcome}
+    >
+      <span className={styles.toolVerb}>{verb}</span>
+      <code className={styles.toolPath}>{call.path || "."}</code>
+      {detail && <span className={styles.toolDetail}>{detail}</span>}
+    </li>
+  );
+}
+
+function runningCall(t: ChatTurn): string | null {
+  const c = (t.tools ?? []).find((x) => x.outcome === "running");
+  if (!c) return null;
+  return `${c.name === "list_files" ? "listing" : "reading"} ${c.path || "."}`;
+}
+
+function ToolRows({ calls }: { calls: ChatToolCall[] }) {
+  if (calls.length === 0) return null;
+  return (
+    <ul className={styles.tools} aria-label="Files the agent looked at">
+      {calls.map((c) => (
+        <ToolRow key={c.call_id} call={c} />
+      ))}
+    </ul>
+  );
+}
+
 function clock(ts: number | null | undefined): string {
   if (!ts) return "";
   return new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -46,7 +107,7 @@ function tokens(n: number): string {
 }
 
 /** A chat-runtime session (#853 P9a, #1209): BattleLab talks to the agent's endpoint and keeps the
- *  conversation. No terminal, no tools — the agent can only reply. */
+ *  conversation. No terminal; tools only if the operator turned them on (#1222), and read-only. */
 export function ChatPane({ engine, id }: { engine: string; id: string }) {
   useEngineRoster();
   const sid = `${engine}:${id}`;
@@ -264,7 +325,10 @@ export function ChatPane({ engine, id }: { engine: string; id: string }) {
           <div className={styles.center} data-testid="chat-empty">
             <p className={styles.note}>
               No terminal and no CLI: BattleLab sends your messages to the endpoint configured for
-              this agent and keeps the conversation itself. It has no tools — it can only reply.
+              this agent and keeps the conversation itself.{" "}
+              {endpoint?.tools === "read"
+                ? "It can list and read files in this conversation’s folder — never write, delete or run anything. Hidden and credential-shaped files are refused."
+                : "It has no tools — it can only reply."}
             </p>
             {endpoint?.model && (
               <span className={styles.chip}>
@@ -288,6 +352,7 @@ export function ChatPane({ engine, id }: { engine: string; id: string }) {
               </div>
               <div className={styles.txt}>{t.text}</div>
             </div>
+            <ToolRows calls={t.tools ?? []} />
             {t.status === "done" && t.reply !== null && (
               <div className={`${styles.turn} ${styles.asst}`}>
                 <div className={styles.who}>
@@ -314,7 +379,8 @@ export function ChatPane({ engine, id }: { engine: string; id: string }) {
                   <span />
                   <span />
                 </span>
-                waiting for the endpoint · {Math.max(0, Math.round(now / 1000 - t.ts))}s
+                {runningCall(t) ?? "waiting for the endpoint"} ·{" "}
+                {Math.max(0, Math.round(now / 1000 - t.ts))}s
               </div>
             )}
             {t.status === "failed" && (

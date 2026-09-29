@@ -109,9 +109,9 @@ API key and a model. **Test** checks the draft (it lists the endpoint's models) 
 
 What to know:
 
-- **It has no tools.** It can only talk: it cannot run commands, read your files or edit them.
-  Replies are shown as text, never executed and never typed into a terminal, so it is never a
-  handoff target and never driven by a mission.
+- **By default it has no tools.** It can only talk. Replies are shown as text, never executed and
+  never typed into a terminal, so it is never a handoff target and never driven by a mission. You
+  can let it **read** files (below); it can never write, delete or run anything.
 - **Your text leaves the host.** Every message, with the earlier turns that fit, goes to the
   endpoint you configured. Template secrets are redacted on the way out, the same as AI review.
 - **The key stays with its endpoint.** It is encrypted at rest, never shown again, and bound to
@@ -124,6 +124,31 @@ What to know:
 - **Transcripts are BattleLab's.** Each conversation is a JSONL file under
   `~/.local/share/agent-sessions/chat` (`AGENT_SESSIONS_CHAT_DIR`), mode 0600. Removing the
   endpoint keeps them readable.
+
+### Tools: reading files in the conversation's folder
+
+The Endpoint card's **Tools** setting is **None** by default. **Read files** gives the agent two
+read-only tools, `list_files` and `read_file`, confined to the folder the conversation was started
+in:
+
+- **What leaves the host.** Any file it opens is sent to the endpoint you configured, with the
+  conversation. The agent's replies can quote those files, and replies are kept in the transcript
+  like any other. The raw tool output is never stored or shown: the pane lists each call as one
+  line (*Listed*, *Read* with the line span, *Refused* with the reason).
+- **What is refused.** Paths outside the folder; symbolic links as the final path component;
+  hidden paths (`.env`, `.git/`, `.ssh/`, …); key and credential file names (`*.pem`, `*.key`,
+  `id_rsa*`, `credentials*`, `secrets*`, …) — also when reached through a link; binary files;
+  and anything under your excluded folders or outside your project roots. The boundary is the
+  file's *path*: a hard link placed inside the folder reads its target like any other file there.
+  An ordinary file can still hold a secret, so turn this on only for folders you are content to
+  share with the endpoint.
+- **Checked every time.** The setting and your folder rules are read again before every call and
+  before every request. Turning Tools off, or excluding a folder, mid-reply stops the next call —
+  and anything already read that the new rules no longer allow is withdrawn before it is sent.
+- **Bounded.** At most 8 rounds of tool calls per message and 16 calls per round; a read returns
+  at most 2000 lines or 64 KiB, a listing at most 500 entries; everything counts against the
+  context window. After the last round the endpoint must answer. An endpoint or model without
+  tool support fails the message with that reason — turn Tools off for it.
 
 ## Which engines are present
 

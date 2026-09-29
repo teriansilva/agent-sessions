@@ -14,6 +14,12 @@ per record, like every other store reader):
     {"type": "status", "turn_id", "status": pending|done|failed, "reason"?, "ts"}
     {"type": "assistant", "turn_id", "text", "ts", "usage"?, "truncated"?, "dropped"?}
     {"type": "budget", "factor", "ts"}                                   after a context rejection
+    {"type": "tool", "turn_id", "call_id", "name", "path", "outcome": running|ok|refused,
+     "start_line"?, "end_line"?, "total_lines"?, "entries"?, "reason"?, "ts"}   #1222, a SUMMARY
+
+A ``tool`` record never carries file contents — only what the pane shows. A turn's tool list
+belongs to its LATEST attempt: a ``pending`` status (send or Retry) starts it afresh. A call still
+``running`` when its turn settles is shown as ``stopped``.
 
 The store kind below plugs this into the roster exactly as `ShellProvider` plugs its records in:
 ``scan``/``lookup`` list sessions, archive rides the metadata sidecar.
@@ -40,6 +46,9 @@ TEXT_MAX = 200_000
 #: and recorded as `truncated` — where the reply is ACCEPTED (`chat_runtime`), never silently here.
 REPLY_MAX = 4_000_000
 STATUSES = ("pending", "done", "failed")
+TOOL_OUTCOMES = ("running", "ok", "refused")
+_TOOL_TEXT_MAX = 500
+_TOOL_INT_FIELDS = ("start_line", "end_line", "total_lines", "entries")
 
 
 @dataclass
@@ -57,6 +66,18 @@ class ChatTurn:
     truncated: bool = False
     #: Earlier exchanges left out of the request by the history budget (the pane's notice).
     dropped: int = 0
+    #: The latest attempt's tool-call summaries, by call id, in first-seen order (#1222).
+    tools: dict[str, dict] = field(default_factory=dict)
+
+    def tool_list(self) -> list[dict]:
+        settled = self.status != "pending"
+        out = []
+        for c in self.tools.values():
+            c = dict(c)
+            if settled and c["outcome"] == "running":
+                c["outcome"] = "stopped"
+            out.append(c)
+        return out
 
     def as_dict(self) -> dict:
         return {
@@ -70,6 +91,7 @@ class ChatTurn:
             "usage": self.usage,
             "truncated": self.truncated,
             "dropped": self.dropped,
+            "tools": self.tool_list(),
         }
 
 
@@ -127,7 +149,12 @@ def append(root: Path, session_id: str, *records: dict) -> None:
     fd = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CLOEXEC | os.O_NOFOLLOW)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
-        data = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records).encode()
+        # "replace": a lone surrogate from anywhere upstream is written as "?" rather than raising
+        # and losing the whole batch of records (Hermes on #1228). Callers already pass
+        # `chat_tools.printable` text; this is the last line of defence, not the first.
+        data = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records).encode(
+            "utf-8", "replace"
+        )
         size = os.fstat(fd).st_size
         if size and os.pread(fd, 1, size - 1) != b"\n":
             data = b"\n" + data
@@ -207,6 +234,11 @@ def read(root: Path, session_id: str) -> ChatLog | None:
                 turn.reason = reason[:500] if isinstance(reason, str) else None
                 if turn.status == "pending":
                     turn.reply, turn.usage, turn.truncated, turn.dropped = None, None, False, 0
+                    turn.tools = {}
+            elif t == "tool":
+                call = _tool(rec)
+                if call is not None:
+                    turn.tools[call["call_id"]] = call
             elif t == "assistant" and isinstance(rec.get("text"), str):
                 turn.reply = rec["text"][:REPLY_MAX]
                 turn.reply_ts = _num(rec.get("ts"))
@@ -215,6 +247,28 @@ def read(root: Path, session_id: str) -> ChatLog | None:
                 d = rec.get("dropped")
                 turn.dropped = d if isinstance(d, int) and not isinstance(d, bool) and d >= 0 else 0
     return log
+
+
+def _tool(rec: dict) -> dict | None:
+    """A tool record's summary, validated field by field; None when it is not one."""
+    cid, name, outcome = rec.get("call_id"), rec.get("name"), rec.get("outcome")
+    if not (isinstance(cid, str) and 0 < len(cid) <= 128):
+        return None
+    if not isinstance(name, str) or outcome not in TOOL_OUTCOMES:
+        return None
+    path = rec.get("path")
+    out: dict = {
+        "call_id": cid,
+        "name": name[:64],
+        "path": path[:_TOOL_TEXT_MAX] if isinstance(path, str) else "",
+        "outcome": outcome,
+    }
+    for k in _TOOL_INT_FIELDS:
+        v = rec.get(k)
+        out[k] = v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else None
+    reason = rec.get("reason")
+    out["reason"] = reason[:_TOOL_TEXT_MAX] if isinstance(reason, str) else None
+    return out
 
 
 def session_ids(root: Path) -> list[str]:

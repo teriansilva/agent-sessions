@@ -269,3 +269,41 @@
     display: none; /* the header's model chip; the token chip stays */
   }
 }
+/* #1222: what the agent looked at, one line per call. Summaries only — never file contents. */
+.tools {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 14px;
+  border-left: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tool {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  min-width: 0;
+  font: 12px var(--font-mono);
+  color: var(--text-muted);
+}
+.toolVerb {
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 11px;
+  color: var(--text);
+}
+.toolPath {
+  font: inherit;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.toolDetail {
+  color: var(--text-3);
+}
+.toolRefused .toolVerb {
+  color: var(--danger-text);
+}

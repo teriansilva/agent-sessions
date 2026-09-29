@@ -49,8 +49,13 @@ These are pinned by tests and/or CI — regressions fail the build:
   transport (`review._post_chat`), so registered system prompts and template-secret redaction
   apply, and a ratchet test pins every outbound HTTP site. A stored API key is AES-GCM encrypted
   at rest, never returned in a response, and bound to the origin it was saved for — pointing the
-  URL at another host requires a new key. The API agent has no tools: its replies are rendered
-  as text and never executed or typed into a terminal.
+  URL at another host requires a new key. The API agent's replies are rendered as text and never
+  executed or typed into a terminal. Its only tools are **read-only and off by default**: with
+  *Read files* on, it can list and read files in its conversation's folder, and what it opens is
+  sent to that endpoint. Access is proved on the file descriptor against that folder; hidden and
+  credential-shaped paths, links and excluded folders are refused; the setting and the folder
+  rules are re-read before every call and every request, and already-read results the current
+  rules refuse are withdrawn before they are sent. It can never write, delete or run anything.
 - **Supply-chain pin for the vendored Python.** The installer verifies the vendored Python
   download against pinned SHA-256 sums and fails closed when no sha256 tool exists.
 - **Public-mirror scrubbing.** The publish pipeline runs an export-ignore filter, scrub pass and

@@ -24,6 +24,13 @@ from . import prefs, prompts, template_secrets
 
 BLOCK = "chat_agents"
 PROMPT_ID = "chat_agent"
+#: The system prompt when the agent has read tools (#1222) — a second REGISTERED prompt, never a
+#: suffix assembled at the call site.
+TOOLS_PROMPT_ID = "chat_agent_tools"
+#: What the agent may do beyond talking (#1222). `none` is the default and the P9a behaviour;
+#: `read` lets it list and read files in the conversation's folder. A permission, not a flag:
+#: turning it on sends file contents to the configured endpoint.
+TOOLS = ("none", "read")
 #: A non-empty stand-in for "a key is stored" — the origin policy only asks whether one exists.
 _KEY_PRESENT = "<stored>"
 
@@ -38,7 +45,15 @@ BUDGET_MARGIN_TOKENS = 256
 BUDGET_MIN_TOKENS = 1_024
 
 _FIELDS = frozenset(
-    {"base_url", "api_key", "model", "context_window", "max_output_tokens", "request_timeout"}
+    {
+        "base_url",
+        "api_key",
+        "model",
+        "context_window",
+        "max_output_tokens",
+        "request_timeout",
+        "tools",
+    }
 )
 
 
@@ -58,8 +73,11 @@ def _coerce(raw: object) -> dict:
         "context_window": CONTEXT_DEFAULT,
         "max_output_tokens": OUTPUT_DEFAULT,
         "request_timeout": None,
+        "tools": "none",
     }
     if isinstance(raw, dict):
+        if raw.get("tools") in TOOLS:
+            out["tools"] = raw["tools"]
         for k in ("base_url", "model"):
             if isinstance(raw.get(k), str):
                 out[k] = raw[k]
@@ -108,7 +126,20 @@ def public(engine_id: str, path: Path | None = None) -> dict:
         "max_output_tokens": b["max_output_tokens"],
         "request_timeout": b["request_timeout"],
         "configured": is_configured(engine_id, path),
+        "tools": b["tools"],
     }
+
+
+def prompt_id(block: dict) -> str:
+    """The registered system prompt for this configuration (#1222)."""
+    return TOOLS_PROMPT_ID if block.get("tools") == "read" else PROMPT_ID
+
+
+def tools_enabled(engine_id: str, path: Path | None = None) -> bool:
+    """Read tools on, answered from the LIVE prefs (#1222). The turn loop asks this before every
+    round and every call — never from the snapshot the turn started with, so turning tools off
+    mid-turn stops the next call rather than the next turn."""
+    return stored(engine_id, path)["tools"] == "read"
 
 
 def budget_tokens(block: dict, *, system_prompt: str) -> int:
@@ -161,6 +192,10 @@ def validate_patch(patch: object) -> dict:
             if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
                 raise ChatConfigError(f"{k} must be an integer in [{lo}, {hi}]")
             out[k] = v
+    if "tools" in patch:
+        if patch["tools"] not in TOOLS:
+            raise ChatConfigError(f"tools must be one of {list(TOOLS)}")
+        out["tools"] = patch["tools"]
     return out
 
 
@@ -171,7 +206,6 @@ def set_config(engine_id: str, patch: dict, path: Path | None = None) -> dict:
     aborts before anything is written. The budget is validated against the effective system prompt
     so a config that leaves no room for a conversation is refused with the reason."""
     clean = validate_patch(patch)
-    system_prompt = prompts.effective(PROMPT_ID)
 
     def merge(raw: object) -> dict:
         agents = dict(raw) if isinstance(raw, dict) else {}
@@ -180,7 +214,14 @@ def set_config(engine_id: str, patch: dict, path: Path | None = None) -> dict:
         if why is not None:
             raise prefs.KeyOriginError(why)
         new = dict(cur)
-        for k in ("base_url", "model", "context_window", "max_output_tokens", "request_timeout"):
+        for k in (
+            "base_url",
+            "model",
+            "context_window",
+            "max_output_tokens",
+            "request_timeout",
+            "tools",
+        ):
             if k in clean:
                 new[k] = clean[k]
         if "api_key" in clean:
@@ -189,6 +230,7 @@ def set_config(engine_id: str, patch: dict, path: Path | None = None) -> dict:
                 new["key_envelope"] = None  # explicit clear
             elif prefs.is_new_api_key(v):
                 new["key_envelope"] = template_secrets.encrypt(_secret_name(engine_id), v.strip())
+        system_prompt = prompts.effective(prompt_id(new))
         if budget_tokens(new, system_prompt=system_prompt) < BUDGET_MIN_TOKENS:
             raise ChatConfigError(
                 "context_window leaves no room for a conversation after the output reserve and "
@@ -219,6 +261,7 @@ def snapshot(engine_id: str, path: Path | None = None) -> dict | None:
         "context_window": b["context_window"],
         "max_output_tokens": b["max_output_tokens"],
         "request_timeout": b["request_timeout"],
+        "tools": b["tools"],
     }
 
 

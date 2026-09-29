@@ -31,6 +31,7 @@ const ENDPOINT: AgentEndpoint = {
   max_output_tokens: 4096,
   request_timeout: null,
   configured: true,
+  tools: "none",
 };
 
 function turn(over: Partial<ChatTurn>): ChatTurn {
@@ -250,4 +251,57 @@ test("the composer is read-only while a send settles, so a refusal cannot overwr
   reject(new ApiError(413, "too long for this endpoint's context window"));
   await waitFor(() => expect(box).toHaveValue("first"));
   expect(box).not.toHaveAttribute("readonly");
+});
+
+// ---- read tools (#1222) ----------------------------------------------------------------------------
+
+test("each tool call is one summary row: listed, read with its span, refused with the reason", async () => {
+  const long = `src/${"deeply/nested/".repeat(12)}module_with_a_long_name.py`;
+  vi.mocked(api.chatGet).mockResolvedValue(
+    session([
+      turn({
+        reply: "done",
+        tools: [
+          { call_id: "a", name: "list_files", path: "src", outcome: "ok", entries: 42 },
+          { call_id: "b", name: "read_file", path: long, outcome: "ok", start_line: 1, end_line: 200, total_lines: 812 },
+          { call_id: "c", name: "read_file", path: ".env", outcome: "refused", reason: "hidden path — never readable by the agent" },
+          { call_id: "d", name: "read_file", path: "x.py", outcome: "stopped" },
+        ],
+      }),
+    ]),
+  );
+  renderPane();
+  const rows = await screen.findAllByTestId("chat-tool");
+  expect(rows.map((r) => r.textContent)).toEqual([
+    "Listedsrc42 entries",
+    `Read${long}lines 1–200 of 812`,
+    "Refused.envhidden path — never readable by the agent",
+    "Stoppedx.pydid not finish",
+  ]);
+  expect(rows[2]).toHaveAttribute("data-outcome", "refused");
+  expect(screen.getByRole("list", { name: "Files the agent looked at" })).toBeInTheDocument();
+});
+
+test("a running call names itself in the waiting row", async () => {
+  vi.mocked(api.chatGet).mockResolvedValue(
+    session([
+      turn({
+        status: "pending",
+        reply: null,
+        usage: null,
+        tools: [{ call_id: "a", name: "read_file", path: "src/app.py", outcome: "running" }],
+      }),
+    ]),
+  );
+  renderPane();
+  expect(await screen.findByTestId("chat-waiting")).toHaveTextContent(/reading src\/app\.py/);
+});
+
+test.each([
+  ["none", /It has no tools/],
+  ["read", /list and read files in this conversation’s folder/],
+] as const)("the empty conversation says which tools mode is on (%s)", async (tools, copy) => {
+  vi.mocked(api.agentEndpoint).mockResolvedValue({ ...ENDPOINT, tools });
+  renderPane();
+  await waitFor(() => expect(screen.getByTestId("chat-empty")).toHaveTextContent(copy));
 });

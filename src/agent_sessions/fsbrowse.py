@@ -32,7 +32,7 @@ def home_root() -> str:
     return os.path.realpath(os.path.expanduser(os.environ.get("AGENT_SESSIONS_FS_ROOT") or "~"))
 
 
-def contained_path(path: str | None) -> str:
+def contained_path(path: str | None, root: str | None = None) -> str:
     """Realpath of ``path`` (default: home). Must BE home or live under it, else 403. Resolving
     with realpath collapses ``..`` and symlinks, so a crafted path can't escape the root.
 
@@ -42,8 +42,11 @@ def contained_path(path: str | None) -> str:
     layers open-then-verify (``O_NOFOLLOW`` acquisition + ``fstat`` + ``/proc/self/fd``
     re-check) on top. Callers that only need a name (the folder picker) are fine with this
     alone; callers that read content are not.
+
+    ``root`` narrows the boundary to an already realpath-resolved directory (the API agent's
+    conversation folder, #1222). Omitted, it is :func:`home_root` — the file panel's boundary.
     """
-    root = home_root()
+    root = root or home_root()
     real = os.path.realpath(os.path.expanduser(path)) if path and path.strip() else root
     if real != root and not real.startswith(root + os.sep):
         raise FsError("path escapes the home root", status=403)
