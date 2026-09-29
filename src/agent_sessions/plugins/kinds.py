@@ -136,6 +136,8 @@ USAGE_KINDS = frozenset(
         "agy-cli-probe",
         "codex-app-server-probe",
         "codex-rollout-field",
+        # kimi 2.1+: `kimi web` on loopback, one token-gated GET of `/api/v1/oauth/usage` (#1239)
+        "kimi-web-usage-probe",
         "opencode-store-query",
         "chat-response-tokens",  # chat runtime: token counts recorded from each response (#1209)
     }

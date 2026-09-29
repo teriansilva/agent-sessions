@@ -112,7 +112,8 @@ running is refused, not queued (a manual scan answers 409).
 
 The agent CLIs BattleLab found on this host, and what each one has spent. A percentage marked
 *plan* comes from the agent itself; the rest are counted against a token limit you set, with an
-**Alert at** threshold.
+**Alert at** threshold. Kimi Code reports its plan quota from version 2.1 on, so a counter you
+kept for it by hand is no longer used — update kimi if its row shows an error instead.
 
 ### Security · `security`
 

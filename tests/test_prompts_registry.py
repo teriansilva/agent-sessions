@@ -82,7 +82,9 @@ TRANSPORT_FUNC = "_post_chat"
 HTTP_CLIENT_LIBS = frozenset(
     {"httpx", "requests", "aiohttp", "urllib3", "urllib.request", "http.client"}
 )
-HTTP_MODULES = frozenset({"review", "webpush", "appproxy", "forge", "mission_probes", "analytics"})
+HTTP_MODULES = frozenset(
+    {"review", "webpush", "appproxy", "forge", "mission_probes", "analytics", "agent_usage"}
+)
 
 # Layer 2 — inside those modules, every outbound call is pinned to a function AND a count, so
 # a SECOND call added to an already-approved function is a mismatch rather than a free ride.
@@ -125,6 +127,10 @@ POST_SITES = {
     # destination — no request, pref or model output reaches its URL, headers or body — and one
     # call site, so a second report path added beside it is a mismatch here.
     ("analytics", "send_once"): 1,
+    # KIMI'S USAGE READ (#1239): one GET to the loopback server the probe itself just started
+    # (`kimi web`), host and path constants, only the port taken from its banner. It carries no
+    # prompt; kimi's own handler asks the vendor. One site: a second read beside it is a mismatch.
+    ("agent_usage", "_kimi_usage_get"): 1,
 }
 
 # Layer 3 — a module that never imports a client can still be handed one. `.post(` / `.request(`

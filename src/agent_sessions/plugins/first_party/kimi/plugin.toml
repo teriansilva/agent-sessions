@@ -38,7 +38,8 @@ raw_tty = true
 kind = "kimi-wire"
 
 [usage]
-source = "manual"
+source = "plan"
+kind = "kimi-web-usage-probe"  # kimi 2.1+ (#1239)
 access = "kimi-wire-auth-error"
 
 [terminal]

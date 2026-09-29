@@ -128,7 +128,7 @@ Every value a manifest may choose, generated from the kinds this build ships:
 | `capabilities` | `archive`, `handoff_target`, `new`, `orchestrator_input`, `owns_transcript`, `raw_tty`, `resume`, `seed_start` |
 | `transcript.kind` | `antigravity-brain`, `battlelab-chat`, `claude-jsonl`, `codex-rollout`, `gemini-chat`, `kimi-wire`, `none`, `opencode-sqlite` |
 | `usage.source` | `manual`, `none`, `plan`, `tokens` |
-| `usage.kind` | `agy-cli-probe`, `chat-response-tokens`, `claude-cli-probe`, `codex-app-server-probe`, `codex-rollout-field`, `opencode-store-query` |
+| `usage.kind` | `agy-cli-probe`, `chat-response-tokens`, `claude-cli-probe`, `codex-app-server-probe`, `codex-rollout-field`, `kimi-web-usage-probe`, `opencode-store-query` |
 | `usage.probe_token` | `/usage` |
 | `usage.access` | `gemini-acp-auth`, `kimi-wire-auth-error` |
 | `terminal.repaint` | `none`, `wipe` |

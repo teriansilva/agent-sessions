@@ -15,7 +15,8 @@ engine           how it is asked                            what comes back
                  ``account/rateLimits/read`` (the rollout's ``planType`` — asked of the vendor,
                  ``rate_limits`` is the offline fallback)   not only when codex last ran
 ``opencode``     its own database, aggregated               token totals over a window
-``kimi``         — (``/usage`` is TUI-only)                 operator's manual counter
+``kimi``         ``kimi web`` (loopback, token-gated): one  plan % per window (5h, week, month)
+                 ``GET /api/v1/oauth/usage`` (#1239)        + reset times
 ``shell``        — (no agent)                               nothing
 ===============  =========================================  =====================================
 
@@ -185,6 +186,10 @@ def _run(
     written to its stdin, which then stays OPEN — codex exits on EOF before it answers, measured
     — and the probe ends as soon as ``done(output so far)`` is true. Every bound above still
     holds; a server that never answers is the timeout's case like any other.
+
+    ``done`` runs **while the child is still alive** — which is what lets a probe whose answer is
+    fetched FROM the child (``kimi web``: read the banner, then make one loopback read) do that
+    inside ``done`` and still have the group reaped on the way out.
     """
     try:
         proc = subprocess.Popen(  # noqa: S603 — literal argv, no shell, bounded
@@ -262,10 +267,12 @@ def _run(
     if overflowed:
         return _kill(proc, 125, f"output exceeded {MAX_PROBE_BYTES} bytes")
     if answered:
-        # The answer is in hand; how the server leaves is not the probe's concern. A moment to
-        # exit on its own after the EOF, then the group goes either way.
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            proc.wait(timeout=5)
+        # The answer is in hand; how the server leaves is not the probe's concern. A server fed on
+        # stdin gets a moment to exit on its own after the EOF; one that was never listening there
+        # (`kimi web`) would only spend that moment waiting. Then the group goes either way.
+        if send is not None:
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=5)
         _kill(proc, 0, "")
         return 0, b"".join(chunks).decode("utf-8", "replace")
     try:
@@ -639,6 +646,169 @@ def probe_codex(
     # With the error set, `refresh` keeps whichever observation is newer.
     recorded.error = f"{why}; {recorded.error}" if recorded.error else why
     return recorded
+
+
+#: What the kimi probe runs after its binary (#1239): kimi's own local server, and nothing that
+#: widens it. Loopback is kimi's default bind; ``--port 0`` lets the kernel pick a free port, which
+#: kimi prints. Never ``--host`` (all interfaces), ``--dangerous-bypass-auth`` (no token),
+#: ``--rc`` (remote control) or ``--debug-endpoints`` — the server lives for one read, token-gated.
+KIMI_WEB_ARGS = ("web", "--no-open", "--port", "0")
+#: The one route read. kimi's own handler asks the vendor with the operator's existing login and
+#: returns the plan quota; no session, no prompt.
+KIMI_USAGE_PATH = "/api/v1/oauth/usage"
+#: The one read gets its own budget: it runs while the server is alive, inside the probe's loop.
+KIMI_HTTP_TIMEOUT_S = 30.0
+#: kimi's window keys → the labels the usage rows show.
+_KIMI_WINDOWS = (
+    ("limit5h", "5h"),
+    ("limit7d", "week"),
+    ("monthTotal", "month"),
+    ("monthCode", "month (code)"),
+)
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+#: ``Local:    http://127.0.0.1:44433/#token=…`` — only the PORT is taken, and only from a loopback
+#: URL. The host and path of the read are constants, so nothing the banner says can aim it.
+_KIMI_LOCAL = re.compile(r"^\s*Local:\s+http://127\.0\.0\.1:(\d{1,5})/", re.MULTILINE)
+_KIMI_TOKEN = re.compile(r"^\s*Token:\s+([A-Za-z0-9._~-]{16,512})\s*$", re.MULTILINE)
+
+
+def parse_kimi_web_banner(text: str) -> tuple[int, str] | None:
+    """``(port, token)`` from ``kimi web``'s startup banner, or None until both are printed."""
+    clean = _ANSI.sub("", text)
+    port = _KIMI_LOCAL.search(clean)
+    token = _KIMI_TOKEN.search(clean)
+    if port is None or token is None:
+        return None
+    n = int(port.group(1))
+    return (n, token.group(1)) if 0 < n < 65536 else None
+
+
+def _kimi_banner_error(text: str) -> str:
+    """What to say when the server never came up — its first line, with anything carrying the
+    token removed. The banner prints the token twice (``#token=`` and ``Token:``), and an error
+    string is stored and served, so no line mentioning it may become one."""
+    kept = "\n".join(
+        line for line in _ANSI.sub("", text).splitlines() if "token" not in line.lower()
+    )
+    return _first_line(kept)
+
+
+def _kimi_usage_get(port: int, token: str) -> tuple[int | None, bytes]:
+    """The probe's ONE HTTP read: ``GET 127.0.0.1:<port>`` + `KIMI_USAGE_PATH`, bearer-gated.
+
+    Loopback only, to the server the probe itself started; `http.client` follows no redirects, and
+    the body is read to `MAX_PROBE_BYTES` at most. Inventoried as an outbound call in
+    `tests/test_prompts_registry.py` — it carries no prompt, but it is a request all the same.
+    Returns ``(status, body)``, or ``(None, reason)`` when the request could not be made.
+    """
+    import http.client
+
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=KIMI_HTTP_TIMEOUT_S)
+    try:
+        conn.request("GET", KIMI_USAGE_PATH, headers={"Authorization": f"Bearer {token}"})
+        resp = conn.getresponse()
+        return resp.status, resp.read(MAX_PROBE_BYTES)
+    except (OSError, http.client.HTTPException) as exc:
+        return None, type(exc).__name__.encode()
+    finally:
+        conn.close()
+
+
+def parse_kimi_web_usage(
+    status: int | None, body: bytes, now: float | None = None, *, engine: str | None = None
+) -> Report:
+    """Parse kimi's ``/api/v1/oauth/usage`` answer.
+
+    The envelope is ``{"code": 0, "data": {"kind": "ok", "quota": {"usages": {...}}}}``; each
+    window is ``{"usedRatio": 0..1, "resetAt": ISO}``. ``kind: "error"`` is kimi saying the vendor
+    read failed (logged out, network) and carries its own message.
+    """
+    now = time.time() if now is None else now
+    engine = engine or _engine_for("kimi-web-usage-probe")
+
+    def failed(why: str) -> Report:
+        return Report(engine=engine, source=SOURCE_PLAN, at=now, error=why[:200])
+
+    if status is None:
+        return failed(f"kimi web: {body.decode('utf-8', 'replace')[:100] or 'request failed'}")
+    try:
+        doc = json.loads(body)
+    except ValueError:
+        return failed(f"kimi web: HTTP {status}, not JSON")
+    if not isinstance(doc, dict):
+        return failed(f"kimi web: HTTP {status}, unexpected answer")
+    data = doc.get("data")
+    if status != 200 or doc.get("code") not in (0, None) or not isinstance(data, dict):
+        msg = doc.get("msg") or doc.get("message")
+        return failed(f"kimi web: HTTP {status}" + (f": {msg}" if isinstance(msg, str) else ""))
+    if data.get("kind") == "error":
+        msg = data.get("message")
+        return failed(str(msg) if isinstance(msg, str) and msg else "usage read failed")
+    quota = data.get("quota")
+    usages = quota.get("usages") if isinstance(quota, dict) else None
+    if data.get("kind") != "ok" or not isinstance(usages, dict):
+        return failed("no quota in kimi's answer")
+    windows = []
+    for key, label in _KIMI_WINDOWS:
+        block = usages.get(key)
+        if not isinstance(block, dict):
+            continue
+        ratio = block.get("usedRatio")
+        if isinstance(ratio, bool) or not isinstance(ratio, int | float):
+            continue
+        pct = _pct(ratio * 100.0)
+        if pct is None:
+            continue
+        reset = block.get("resetAt")
+        resets_at = _epoch(_parse_iso(reset)) if isinstance(reset, str) else None
+        if resets_at is not None and resets_at <= now:
+            continue  # an expired window is not the current period
+        windows.append(Window(label=label, used_pct=round(pct, 1), resets_at=resets_at))
+    return Report(
+        engine=engine,
+        source=SOURCE_PLAN,
+        windows=windows,
+        at=now,
+        error=None if windows else "no quota windows reported",
+    )
+
+
+def probe_kimi_web(
+    binary: str | None = None, *, engine: str | None = None, now: float | None = None
+) -> Report:
+    """Ask kimi for its plan quota through its own local server (#1239).
+
+    ``kimi -p "/usage"`` is a model turn, not a command (#1167), and ACP has no usage call. What
+    kimi 2.1 does have is ``kimi web``: a loopback server whose ``/api/v1/oauth/usage`` is the
+    route its own UI reads. So the probe starts that server, waits for the banner that names the
+    port and the per-start token, makes the one read WHILE the server is up (inside `_run`'s
+    ``done``, so every bound of `_run` still holds), and the group is killed on the way out.
+
+    The token exists only in this call's locals: never logged, never in an error, never stored.
+    """
+    engine = engine or _engine_for("kimi-web-usage-probe")
+    exe = binary or _probe_binary(engine)
+    if not exe:
+        return Report(
+            engine=engine,
+            source=SOURCE_PLAN,
+            at=time.time(),
+            error=f"{_binary_name(engine)} not found",
+        )
+    answer: list[tuple[int | None, bytes]] = []
+
+    def ready(out: bytes) -> bool:
+        seen = parse_kimi_web_banner(out.decode("utf-8", "replace"))
+        if seen is None:
+            return False
+        answer.append(_kimi_usage_get(*seen))
+        return True
+
+    code, out = _run([exe, *KIMI_WEB_ARGS], done=ready)
+    if answer:
+        return parse_kimi_web_usage(*answer[0], now, engine=engine)
+    why = _kimi_banner_error(out) or f"{_binary_name(engine)} web exited {code}"
+    return Report(engine=engine, source=SOURCE_PLAN, at=time.time(), error=why)
 
 
 # --- file-backed reporters (no subprocess) ------------------------------------------------------
@@ -1136,6 +1306,7 @@ KIND_REPORTERS: dict[str, object] = {
     "agy-cli-probe": probe_agy,
     "codex-rollout-field": read_codex_rate_limits,
     "codex-app-server-probe": probe_codex,
+    "kimi-web-usage-probe": probe_kimi_web,
     "opencode-store-query": read_opencode_tokens,
     "chat-response-tokens": read_chat_tokens,
 }

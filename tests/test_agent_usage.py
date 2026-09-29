@@ -407,15 +407,15 @@ BUDGETS = {"threshold_pct": 90, "notify": True, "engines": {}}
 
 def test_unreported_unconfigured_engine_is_none_not_zero():
     rows = {r["engine"]: r for r in au.build_rows({}, BUDGETS, time.time())}
-    assert rows["kimi"]["source"] == au.SOURCE_NONE
-    assert rows["kimi"]["used_pct"] is None
+    assert rows["gemini"]["source"] == au.SOURCE_NONE
+    assert rows["gemini"]["used_pct"] is None
 
 
 def test_configuring_a_counter_turns_an_unreported_engine_manual():
-    budgets = {**BUDGETS, "engines": {"kimi": {"limit_tokens": 1000, "manual_used": 950}}}
+    budgets = {**BUDGETS, "engines": {"gemini": {"limit_tokens": 1000, "manual_used": 950}}}
     rows = {r["engine"]: r for r in au.build_rows({}, budgets, time.time())}
-    assert rows["kimi"]["source"] == au.SOURCE_MANUAL
-    assert rows["kimi"]["used_pct"] == 95.0
+    assert rows["gemini"]["source"] == au.SOURCE_MANUAL
+    assert rows["gemini"]["used_pct"] == 95.0
 
 
 def test_shell_never_gets_a_usage_row():
@@ -746,10 +746,10 @@ def test_a_bounded_probe_still_returns_a_normal_answer(monkeypatch):
     assert au.parse_claude_usage(out).windows[0].used_pct == 7.0
 
 
-@pytest.mark.parametrize("engine", ["kimi", "gemini"])
+@pytest.mark.parametrize("engine", ["gemini"])
 def test_manual_only_engines_are_never_probed(engine):
-    """These two have nothing to ask. Registering a probe for them would spawn a process per
-    sweep to learn nothing."""
+    """Nothing to ask here. Registering a probe for it would spawn a process per sweep to learn
+    nothing. (kimi left this list with #1239 — `kimi web` answers its plan quota.)"""
     assert engine not in au.REPORTERS
     assert engine in au.MANUAL_ONLY
 
@@ -1654,3 +1654,254 @@ def test_run_keeps_stdin_open_until_the_answer_then_ends_the_server():
     )
     assert "answer:ping" in out
     assert time.monotonic() - t0 < 30
+
+
+# --- kimi, asked (`kimi web`, #1239) ------------------------------------------------------------
+#
+# Both fixtures are captured from kimi 2.1.0 on this host: the startup banner (its per-start token
+# and port replaced by stand-ins) and the body of `GET /api/v1/oauth/usage`.
+
+KIMI_NOW = 1790679000.0  # 2026-09-29T09:30Z — before both of the fixture's resets
+KIMI_FAKE_TOKEN = "kW" + "0" * 30
+
+
+def _kimi_body(**usages) -> bytes:
+    return json.dumps(
+        {"code": 0, "msg": "success", "data": {"kind": "ok", "quota": {"usages": usages}}}
+    ).encode()
+
+
+def test_kimi_usage_reads_every_window_from_real_output():
+    rep = au.parse_kimi_web_usage(
+        200, (FIXTURES / "kimi-web-usage.json").read_bytes(), KIMI_NOW, engine="kimi"
+    )
+    assert rep.error is None
+    assert rep.source == au.SOURCE_PLAN
+    assert [(w.label, w.used_pct, w.resets_at) for w in rep.windows] == [
+        ("5h", 0.0, 1790696376.0),
+        ("week", 0.0, 1791283176.0),
+    ]
+    assert rep.at == KIMI_NOW
+
+
+def test_kimi_ratio_becomes_a_percentage_and_monthly_windows_are_named():
+    body = _kimi_body(
+        limit5h={"usedRatio": 0.25, "resetAt": "2026-09-29T15:39:36Z"},
+        monthTotal={"usedRatio": 1.2},
+        monthCode={"usedRatio": 0.5},
+        limitSomethingNew={"usedRatio": 0.9},  # an unknown window is not guessed at
+    )
+    rep = au.parse_kimi_web_usage(200, body, KIMI_NOW, engine="kimi")
+    assert [(w.label, w.used_pct) for w in rep.windows] == [
+        ("5h", 25.0),
+        ("month", 120.0),  # an overshot plan is reported as such, not clamped
+        ("month (code)", 50.0),
+    ]
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"usedRatio": float("nan")},
+        {"usedRatio": float("inf")},
+        {"usedRatio": -0.1},
+        {"usedRatio": True},
+        {"usedRatio": "0.5"},
+        {"usedRatio": 1e300},
+        {},
+        "0.5",
+    ],
+)
+def test_kimi_malformed_ratios_are_dropped_not_served(entry):
+    rep = au.parse_kimi_web_usage(200, _kimi_body(limit5h=entry), KIMI_NOW, engine="kimi")
+    assert rep.windows == []
+    assert rep.error == "no quota windows reported"
+
+
+def test_kimi_bad_or_expired_reset_times():
+    body = _kimi_body(
+        limit5h={"usedRatio": 0.1, "resetAt": "not a time"},  # kept, reset unknown
+        limit7d={"usedRatio": 0.2, "resetAt": "2026-09-01T00:00:00Z"},  # already over: dropped
+        monthTotal={"usedRatio": 0.3, "resetAt": "9999-12-31T00:00:00Z"},  # out of range: unknown
+    )
+    rep = au.parse_kimi_web_usage(200, body, KIMI_NOW, engine="kimi")
+    assert [(w.label, w.resets_at) for w in rep.windows] == [("5h", None), ("month", None)]
+
+
+def test_kimi_error_answers_are_reported_not_guessed():
+    err = json.dumps(
+        {"code": 0, "data": {"kind": "error", "message": "not logged in", "status": 401}}
+    ).encode()
+    assert au.parse_kimi_web_usage(200, err, engine="kimi").error == "not logged in"
+    # kimi's own 401 envelope, as it answers a request without the token (measured)
+    unauth = b'{"code":40101,"msg":"Unauthorized","data":null}'
+    assert au.parse_kimi_web_usage(401, unauth, engine="kimi").error == (
+        "kimi web: HTTP 401: Unauthorized"
+    )
+    assert "not JSON" in au.parse_kimi_web_usage(200, b"<html>", engine="kimi").error
+    assert au.parse_kimi_web_usage(None, b"ConnectionRefusedError", engine="kimi").error == (
+        "kimi web: ConnectionRefusedError"
+    )
+
+
+def test_kimi_banner_gives_the_port_and_the_token():
+    banner = _fixture("kimi-web-banner.txt")
+    assert au.parse_kimi_web_banner(banner) == (44433, KIMI_FAKE_TOKEN)
+    # Colour codes around the lines do not hide them.
+    assert au.parse_kimi_web_banner("\x1b[1m" + banner.replace("Token:", "\x1b[2mToken:"))
+
+
+@pytest.mark.parametrize(
+    "banner",
+    [
+        # Not loopback: the probe reads only from 127.0.0.1, whatever the banner claims.
+        f"  Local:    http://10.0.0.5:44433/\n  Token:    {KIMI_FAKE_TOKEN}\n",
+        f"  Local:    http://127.0.0.1.evil.test:44433/\n  Token:    {KIMI_FAKE_TOKEN}\n",
+        "  Local:    http://127.0.0.1:44433/\n",  # no token (yet)
+        f"  Token:    {KIMI_FAKE_TOKEN}\n",  # no port (yet)
+        f"  Local:    http://127.0.0.1:0/\n  Token:    {KIMI_FAKE_TOKEN}\n",
+        f"  Local:    http://127.0.0.1:99999/\n  Token:    {KIMI_FAKE_TOKEN}\n",
+        "  Local:    http://127.0.0.1:44433/\n  Token:    short\n",
+        "  Local:    http://127.0.0.1:44433/\n  Token:    has space in it and more\n",
+    ],
+)
+def test_kimi_banner_that_is_not_one_is_refused(banner):
+    assert au.parse_kimi_web_banner(banner) is None
+
+
+def test_kimi_banner_error_never_carries_the_token():
+    text = _fixture("kimi-web-banner.txt")
+    assert KIMI_FAKE_TOKEN not in au._kimi_banner_error(text)
+    assert au._kimi_banner_error(f"  token={KIMI_FAKE_TOKEN}\nerror: boom\n") == "error: boom"
+
+
+# The fake `kimi`: prints kimi's real banner shape for a loopback server it runs, answers
+# `/api/v1/oauth/usage` only with the right bearer token, and records what it was asked.
+_FAKE_KIMI = r"""
+import http.server, json, os, sys, threading
+log = os.environ["FAKE_KIMI_LOG"]
+mode = os.environ.get("FAKE_KIMI_MODE", "ok")
+TOKEN = "fakeTok_" + "x" * 30
+def note(**kw):
+    with open(log, "a") as fh:
+        fh.write(json.dumps(kw) + "\n")
+note(argv=sys.argv[1:], pid=os.getpid())
+if mode == "old":
+    print("error: unknown command 'web'", flush=True)
+    sys.exit(1)
+if mode == "flood":
+    while True:
+        sys.stdout.write("x" * 65536)
+if mode == "hang":
+    print("starting...", flush=True)
+    threading.Event().wait()
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+    def do_GET(self):
+        auth = self.headers.get("Authorization")
+        note(path=self.path, auth=auth)
+        if auth != "Bearer " + TOKEN:
+            body, code = {"code": 40101, "msg": "Unauthorized", "data": None}, 401
+        elif mode == "vendor-error":
+            body, code = {"code": 0, "data": {"kind": "error", "message": "not logged in"}}, 200
+        else:
+            body, code = {"code": 0, "data": {"kind": "ok", "quota": {"usages": {
+                "limit5h": {"usedRatio": 0.42, "resetAt": "2099-01-01T00:00:00Z"}}}}}, 200
+        raw = json.dumps(body).encode()
+        self.send_response(code)
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+port = srv.server_address[1]
+print(f"  Kimi server ready  2.1.0\n\n  Local:    http://127.0.0.1:{port}/#token={TOKEN}\n"
+      f"  Network:  off\n\n  Token:    {TOKEN}\n\n  Stop:     Ctrl+C", flush=True)
+srv.serve_forever()
+"""
+
+
+def _fake_kimi(tmp_path, monkeypatch, mode="ok"):
+    exe = tmp_path / "kimi"
+    exe.write_text(f"#!{sys.executable}\n{_FAKE_KIMI}")
+    exe.chmod(0o755)
+    log = tmp_path / "fake-kimi.log"
+    monkeypatch.setenv("FAKE_KIMI_LOG", str(log))
+    monkeypatch.setenv("FAKE_KIMI_MODE", mode)
+    return str(exe), log
+
+
+def _kimi_log(log):
+    return [json.loads(line) for line in log.read_text().splitlines()]
+
+
+def _gone(pid: int) -> bool:
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().split(") ", 1)[1].startswith("Z")
+    except OSError:
+        return True
+
+
+def test_the_kimi_probe_starts_a_loopback_server_reads_once_and_ends_it(tmp_path, monkeypatch):
+    exe, log = _fake_kimi(tmp_path, monkeypatch)
+    rep = au.probe_kimi_web(binary=exe, engine="kimi")
+    assert rep.error is None, rep.error
+    assert [(w.label, w.used_pct) for w in rep.windows] == [("5h", 42.0)]
+    started, asked = _kimi_log(log)
+    # Exactly this argv: no --host, no auth bypass, no remote control.
+    assert started["argv"] == ["web", "--no-open", "--port", "0"]
+    # One read, of the one route, with the token the banner printed.
+    assert asked == {"path": "/api/v1/oauth/usage", "auth": "Bearer fakeTok_" + "x" * 30}
+    # The token went nowhere else: not into the report the store and the API serve.
+    assert "fakeTok_" not in json.dumps(rep.as_dict())
+    # And the server did not outlive the probe.
+    assert _gone(started["pid"])
+
+
+def test_the_kimi_probe_reports_a_vendor_refusal(tmp_path, monkeypatch):
+    exe, _ = _fake_kimi(tmp_path, monkeypatch, mode="vendor-error")
+    rep = au.probe_kimi_web(binary=exe, engine="kimi")
+    assert rep.windows == []
+    assert rep.error == "not logged in"
+
+
+def test_an_older_kimi_without_web_says_so(tmp_path, monkeypatch):
+    exe, _ = _fake_kimi(tmp_path, monkeypatch, mode="old")
+    rep = au.probe_kimi_web(binary=exe, engine="kimi")
+    assert rep.windows == []
+    assert rep.error == "error: unknown command 'web'"
+
+
+def test_a_kimi_server_that_never_comes_up_is_timed_out_and_ended(tmp_path, monkeypatch):
+    exe, log = _fake_kimi(tmp_path, monkeypatch, mode="hang")
+    monkeypatch.setattr(au, "PROBE_TIMEOUT_S", 2.0)
+    rep = au.probe_kimi_web(binary=exe, engine="kimi")
+    assert rep.error == "timed out"
+    assert _gone(_kimi_log(log)[0]["pid"])
+
+
+def test_a_kimi_that_floods_its_output_is_capped_and_ended(tmp_path, monkeypatch):
+    exe, log = _fake_kimi(tmp_path, monkeypatch, mode="flood")
+    rep = au.probe_kimi_web(binary=exe, engine="kimi")
+    assert rep.error == f"output exceeded {au.MAX_PROBE_BYTES} bytes"
+    assert _gone(_kimi_log(log)[0]["pid"])
+
+
+def test_no_kimi_binary_is_an_error_not_a_crash(monkeypatch):
+    monkeypatch.setattr(au, "_probe_binary", lambda engine: None)
+    rep = au.probe_kimi_web(engine="kimi")
+    assert rep.source == au.SOURCE_PLAN
+    assert rep.error == "kimi not found"
+
+
+def test_kimi_is_asked_through_its_manifest():
+    """The plugin contract (#853): kimi's manifest selects the kind; the reporter names none."""
+    from agent_sessions import engines
+    from agent_sessions.plugins import kinds
+
+    m = engines.manifest_of("kimi")
+    assert (m.usage.source, m.usage.kind) == ("plan", "kimi-web-usage-probe")
+    assert m.usage.access == "kimi-wire-auth-error"  # access stays its own observation (#1167)
+    assert "kimi-web-usage-probe" in kinds.USAGE_KINDS
+    assert au.REPORTERS["kimi"].__wrapped__ is au.probe_kimi_web
+    assert "kimi" not in au.MANUAL_ONLY

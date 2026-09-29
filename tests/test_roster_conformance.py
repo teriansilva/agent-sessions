@@ -375,8 +375,10 @@ def test_every_moved_table_answers_what_the_old_one_did():
     seven = [e for e in roster if engines.manifest_of(e).runtime == "pty"]
     assert len(seven) == 7
     old_wipe = {"codex", "kimi"}
-    old_manual = {"kimi", "gemini"}
-    old_reporters = {"claude", "antigravity", "codex", "opencode"}
+    # kimi moved from the manual counter to a plan reporter on purpose (#1239: kimi 2.1's
+    # `kimi web` answers its quota) — the one recorded delta from the pre-P3 usage tables.
+    old_manual = {"gemini"}
+    old_reporters = {"claude", "antigravity", "codex", "opencode", "kimi"}
     old_start_evidence = {"claude"}
     old_painted = {"claude"}
     old_menu = {"claude"}

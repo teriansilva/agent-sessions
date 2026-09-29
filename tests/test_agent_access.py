@@ -30,8 +30,10 @@ def test_gemini_and_kimi_declare_their_access_check():
     assert engines.manifest_of("gemini").usage.access == "gemini-acp-auth"
     assert engines.manifest_of("kimi").usage.access == "kimi-wire-auth-error"
     assert set(au.ACCESS_CHECKS) == {"gemini", "kimi"}
-    # Access is independent of the source: both are manual-only for quota.
-    assert "gemini" not in au.REPORTERS and "kimi" not in au.REPORTERS
+    # Access is independent of the source: gemini is manual-only for quota, while kimi's quota is
+    # asked through `kimi web` (#1239) and its access verdict is still the separate wire read.
+    assert "gemini" not in au.REPORTERS and "kimi" in au.REPORTERS
+    assert engines.manifest_of("kimi").usage.kind == "kimi-web-usage-probe"
 
 
 # --- gemini: denied / ok / unknown --------------------------------------------------------------

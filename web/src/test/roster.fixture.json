@@ -233,7 +233,7 @@
       },
       "models": [],
       "usage": {
-        "source": "manual"
+        "source": "plan"
       },
       "terminal": {
         "repaint": "wipe"

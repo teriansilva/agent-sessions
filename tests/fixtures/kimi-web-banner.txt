@@ -1,0 +1,11 @@
+
+  ▐█▛█▛█▌  Kimi server ready  2.1.0
+  ▐█████▌  Local web UI is available from this machine.
+
+  Local:    http://127.0.0.1:44433/#token=kW000000000000000000000000000000
+  Network:  off  use --host to enable
+
+  Token:    kW000000000000000000000000000000
+
+  Logs:     off  use --log-level info to enable
+  Stop:     Ctrl+C
