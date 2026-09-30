@@ -328,7 +328,15 @@ def test_both_published_identities_are_signed_by_the_trusted_key(world):
 
 def test_the_mirror_snapshot_stays_filtered(world):
     _cut(world)
-    _git(world["src"], "fetch", "-q", "--no-tags", str(world["mirror"]), "main:pub", "--force")
+    _git(
+        world["src"],
+        "fetch",
+        "-q",
+        "--no-tags",
+        str(world["mirror"]),
+        "refs/tags/v0.20.0:refs/tags/pub",
+        "--force",
+    )
     files = _git(world["src"], "ls-tree", "-r", "--name-only", "pub").stdout.split()
     assert "app.py" in files
     assert "INTERNAL.md" not in files, "an export-ignored file reached the public mirror"

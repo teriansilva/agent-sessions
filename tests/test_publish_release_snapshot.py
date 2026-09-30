@@ -133,7 +133,16 @@ def test_the_snapshot_is_filtered(world):
     """`export-ignore` must still be honoured — determinism must not have bypassed the filter."""
     _publish(world)
     subprocess.run(
-        ["git", "-C", str(world["src"]), "fetch", "-q", str(world["mirror"]), "main:pub"],
+        [
+            "git",
+            "-C",
+            str(world["src"]),
+            "fetch",
+            "-q",
+            "--no-tags",
+            str(world["mirror"]),
+            "refs/tags/v0.20.0:refs/tags/pub",
+        ],
         check=True,
         capture_output=True,
     )
@@ -304,3 +313,162 @@ def test_the_release_workflow_cannot_verify_a_tag_against_that_tags_own_trust_ro
         "the release checkout now pins a ref; if that ref is the tag, the trust root comes from "
         "the artefact being verified"
     )
+
+
+# ---- --only-if-tip: the rolling `main` never moves backwards (#1250) -------------
+
+
+def _publish_branch(w, source, *extra):
+    return subprocess.run(
+        [
+            "sh",
+            str(w["src"] / "scripts/publish-release-snapshot"),
+            "main",
+            str(w["mirror"]),
+            "--source",
+            source,
+            *extra,
+        ],
+        cwd=w["src"],
+        capture_output=True,
+        text=True,
+    )
+
+
+@pytest.fixture
+def forge(world, tmp_path):
+    """A forge remote whose main has moved past the first commit: A, then B on top."""
+    forge = tmp_path / "forge.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(forge)], check=True)
+    src = world["src"]
+    _git(src, "remote", "add", "forge", str(forge))
+    a = _git(src, "rev-parse", "HEAD").stdout.strip()
+    (src / "app.py").write_text("app v2\n")
+    _git(src, "commit", "-qam", "b")
+    b = _git(src, "rev-parse", "HEAD").stdout.strip()
+    _git(src, "push", "-q", "forge", "main")
+    return {"a": a, "b": b}
+
+
+def test_an_older_run_finishing_last_does_not_rewind_the_mirror(world, forge):
+    """Hermes' reproduction on #1250: B publishes, then A's delayed run force-pushed and the
+    mirror's main went back to A. With the guard, A's run sees B is the tip and pushes nothing."""
+    r = _publish_branch(world, forge["b"], "--only-if-tip", "forge")
+    assert r.returncode == 0, r.stdout + r.stderr
+    after_b = _refs(world["mirror"])["refs/heads/main"]
+    assert after_b, "B's publish produced no main — the comparison below would be vacuous"
+
+    r = _publish_branch(world, forge["a"], "--only-if-tip", "forge")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "superseded" in r.stdout
+    assert _refs(world["mirror"])["refs/heads/main"] == after_b, "the older run rewound main"
+
+
+def test_without_the_guard_the_older_run_does_rewind(world, forge):
+    """Pins that the test above measures the guard, not an accident of the fixture."""
+    _publish_branch(world, forge["b"])
+    after_b = _refs(world["mirror"])["refs/heads/main"]
+    _publish_branch(world, forge["a"])
+    assert _refs(world["mirror"])["refs/heads/main"] != after_b
+
+
+def test_an_unreadable_forge_fails_closed(world, forge, tmp_path):
+    r = _publish_branch(world, forge["b"], "--only-if-tip", str(tmp_path / "nowhere.git"))
+    assert r.returncode != 0
+    assert "refs/heads/main" not in _refs(world["mirror"]), "published blind"
+
+
+def _publish_release(w, *extra):
+    return subprocess.run(
+        [
+            "sh",
+            str(w["src"] / "scripts/publish-release-snapshot"),
+            "v0.20.0",
+            str(w["mirror"]),
+            "--signers",
+            str(w["signers"]),
+            "--key",
+            str(w["key"]),
+            *extra,
+        ],
+        cwd=w["src"],
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_a_release_never_writes_main(world, forge):
+    """Hermes round 2 on #1250: the cut runs outside the workflow's concurrency group, so its
+    tip check could not be atomic — it read A, B merged and was published, then the cut pushed A.
+    The fix is structural: a release publishes its tag and nothing else, so the workflow is the
+    mirror main's only writer. Holds with and without --only-if-tip."""
+    _publish_branch(world, forge["b"], "--only-if-tip", "forge")
+    after_b = _refs(world["mirror"])["refs/heads/main"]
+    for extra in ((), ("--only-if-tip", "forge")):
+        r = _publish_release(world, *extra)
+        assert r.returncode == 0, r.stdout + r.stderr
+        refs = _refs(world["mirror"])
+        assert "refs/tags/v0.20.0" in refs
+        assert refs["refs/heads/main"] == after_b, f"a release moved main ({extra})"
+
+
+def test_a_release_on_an_empty_mirror_leaves_it_without_main(world):
+    r = _publish_release(world)
+    assert r.returncode == 0, r.stdout + r.stderr
+    refs = _refs(world["mirror"])
+    assert "refs/tags/v0.20.0" in refs
+    assert "refs/heads/main" not in refs
+
+
+def test_a_merge_landing_after_the_tip_read_is_published_by_its_own_run(world, forge, tmp_path):
+    """The interleaving the single writer leaves: run A reads the tip (A), merge C lands, A
+    pushes A. The mirror is briefly behind, and C's run — queued behind A by `concurrency` —
+    carries it forward. Driven through a git wrapper that lands C on the forge right after A's
+    tip read, i.e. between the read and the push."""
+    src = world["src"]
+    # rewind the forge to A so A is the tip when its run reads it
+    _git(src, "push", "-q", "-f", "forge", f"{forge['a']}:refs/heads/main")
+    (src / "app.py").write_text("app v3\n")
+    _git(src, "commit", "-qam", "c")
+    c = _git(src, "rev-parse", "HEAD").stdout.strip()
+
+    real_git = subprocess.run(["which", "git"], capture_output=True, text=True).stdout.strip()
+    shim = tmp_path / "bin"
+    shim.mkdir()
+    (shim / "git").write_text(
+        "#!/bin/sh\n"
+        f'"{real_git}" "$@"; rc=$?\n'
+        'case "$*" in *ls-remote*) '
+        f'"{real_git}" -C "{src}" push -q -f forge {c}:refs/heads/main >/dev/null 2>&1;; esac\n'
+        "exit $rc\n"
+    )
+    (shim / "git").chmod(0o755)
+    env = {**__import__("os").environ, "PATH": f"{shim}:{__import__('os').environ['PATH']}"}
+    r = subprocess.run(
+        [
+            "sh",
+            str(src / "scripts/publish-release-snapshot"),
+            "main",
+            str(world["mirror"]),
+            "--source",
+            forge["a"],
+            "--only-if-tip",
+            "forge",
+        ],
+        cwd=src,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert (
+        _git(src, "ls-remote", "forge", "refs/heads/main").stdout.split()[0] == c
+    ), "the wrapper never landed C mid-run — this test would be vacuous"
+    after_a = _refs(world["mirror"])["refs/heads/main"]
+
+    r = _publish_branch(world, c, "--only-if-tip", "forge")
+    assert r.returncode == 0, r.stdout + r.stderr
+    after_c = _refs(world["mirror"])["refs/heads/main"]
+    assert after_c != after_a, "C's run did not carry the mirror forward"
+    snap_c = _publish_branch(world, c, "--dry-run").stdout.strip().splitlines()[-1]
+    assert after_c == snap_c
