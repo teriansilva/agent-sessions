@@ -338,7 +338,10 @@ export function useFocusContainment({
         host.querySelectorAll<HTMLElement>(
           'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
         ),
-      );
+        // A control inside a `hidden` subtree is not a tab stop (#1233): the shell keeps the
+        // session list mounted but hidden beside the mission rail, and "wrapping" to one of its
+        // links focused nothing, so the press escaped the panel.
+      ).filter((el) => !el.closest("[hidden]"));
       // NOTHING ENABLED TO CYCLE (#997 review 4880). A dialog disables every control while its save
       // is pending, and returning here handed the press to the browser, which moved focus to the
       // page behind the still-open dialog. So the press is held: focus stays on the panel, or is put

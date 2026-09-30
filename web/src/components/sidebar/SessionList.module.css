@@ -4,6 +4,11 @@
   min-height: 0;
   flex: 1;
 }
+/* `display: flex` above outranks the UA `[hidden]` rule, so the hidden-in-place list (#1233)
+   needs its own. */
+.wrap[hidden] {
+  display: none;
+}
 .newBtn {
   display: flex;
   align-items: center;

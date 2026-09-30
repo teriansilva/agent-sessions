@@ -20,6 +20,8 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
 import { ConfigCtx } from "../app/config";
+import { SectionStateContext } from "../app/sectionState";
+import { DashboardRetentionProvider } from "../app/DashboardRetentionContext";
 import { api } from "../lib/api";
 import type {
   AppConfig,
@@ -566,4 +568,110 @@ test("the route carries no scan chrome — that lives in Settings now (#929)", a
   expect(screen.queryByText(/not scanned yet/i)).toBeNull();
   // (The "N live sessions" count that replaced the scan window, `console-counts`, went with the
   // untracked view in #948 P3 — there is no session list on this route left for it to count.)
+});
+
+// =============================================================================================
+// #1233 — the rail paints its last read on return, and always revalidates.
+//
+// The shell's retention provider stays mounted; the route under it mounts and unmounts, which is
+// what leaving Missions and coming back does. `roots` stands in for the server's hard scope.
+// =============================================================================================
+
+function RetainedPulse({
+  show,
+  roots,
+  memory,
+}: {
+  show: boolean;
+  roots: string[];
+  /** The shell's section memory — where the rail's scope and filters live across a visit. */
+  memory?: Map<string, unknown>;
+}) {
+  const config = {
+    csrf: "t",
+    new_session_engines: [],
+    terminal_backend: "ws",
+    project_roots: roots,
+  } as unknown as AppConfig;
+  return (
+    <MemoryRouter>
+      <SectionStateContext.Provider value={memory ?? null}>
+        <ConfigCtx.Provider value={config}>
+          <DashboardRetentionProvider>{show ? <Pulse /> : null}</DashboardRetentionProvider>
+        </ConfigCtx.Provider>
+      </SectionStateContext.Provider>
+    </MemoryRouter>
+  );
+}
+
+const railList = (title: string) => ({
+  missions: [listRow({ title })],
+  total: 1,
+  limit: 50,
+  offset: 0,
+  facets: { projects: [], states: [] },
+  store_error: null,
+  snapshot: "snap",
+});
+
+/** Visit once so a read is retained, then leave. */
+async function visitAndLeave(roots = ["/r"]) {
+  vi.mocked(api.missions).mockResolvedValue(railList("Retained mission"));
+  const view = render(<RetainedPulse show roots={roots} />);
+  expect(await within(rail()).findByText("Retained mission")).toBeInTheDocument();
+  view.rerender(<RetainedPulse show={false} roots={roots} />);
+  return view;
+}
+
+test("a return to Missions paints the last read at once and still asks the server (#1233)", async () => {
+  const view = await visitAndLeave();
+  // The revalidation is held open: whatever is on the rail now came from the retained read.
+  vi.mocked(api.missions).mockReset().mockReturnValue(new Promise(() => {}));
+  view.rerender(<RetainedPulse show roots={["/r"]} />);
+  expect(within(rail()).getByText("Retained mission")).toBeInTheDocument();
+  // Retention decides what is drawn first, never whether to fetch.
+  await waitFor(() => expect(api.missions).toHaveBeenCalledTimes(1));
+});
+
+test("the revalidation replaces the retained rows (#1233)", async () => {
+  const view = await visitAndLeave();
+  vi.mocked(api.missions).mockReset().mockResolvedValue(railList("Fresh mission"));
+  view.rerender(<RetainedPulse show roots={["/r"]} />);
+  expect(await within(rail()).findByText("Fresh mission")).toBeInTheDocument();
+  expect(within(rail()).queryByText("Retained mission")).toBeNull();
+});
+
+test("a failed revalidation keeps the retained rows on the rail (#1233)", async () => {
+  const view = await visitAndLeave();
+  vi.mocked(api.missions).mockReset().mockRejectedValue(new Error("down"));
+  view.rerender(<RetainedPulse show roots={["/r"]} />);
+  await waitFor(() => expect(api.missions).toHaveBeenCalledTimes(1));
+  expect(within(rail()).getByText("Retained mission")).toBeInTheDocument();
+});
+
+test("a read retained under another hard scope is never painted (#1233)", async () => {
+  const view = await visitAndLeave(["/r"]);
+  vi.mocked(api.missions).mockReset().mockReturnValue(new Promise(() => {}));
+  view.rerender(<RetainedPulse show={false} roots={["/other"]} />);
+  view.rerender(<RetainedPulse show roots={["/other"]} />);
+  await waitFor(() => expect(api.missions).toHaveBeenCalledTimes(1));
+  expect(within(rail()).queryByText("Retained mission")).toBeNull();
+});
+
+test("a read retained for another scope or filter set is never painted (#1233)", async () => {
+  // The store fences the HARD scope; which rail a read answers for — Active vs Archived, and the
+  // filters — is the rail's own key. The active rail is retained, then the operator's section
+  // memory says the next visit opens on Archived.
+  const memory = new Map<string, unknown>();
+  vi.mocked(api.missions).mockResolvedValue(railList("Retained mission"));
+  const view = render(<RetainedPulse show roots={["/r"]} memory={memory} />);
+  expect(await within(rail()).findByText("Retained mission")).toBeInTheDocument();
+  view.rerender(<RetainedPulse show={false} roots={["/r"]} memory={memory} />);
+
+  memory.set("missions.archived", true);
+  vi.mocked(api.missions).mockReset().mockReturnValue(new Promise(() => {}));
+  view.rerender(<RetainedPulse show roots={["/r"]} memory={memory} />);
+  await waitFor(() => expect(api.missions).toHaveBeenCalledTimes(1));
+  expect(vi.mocked(api.missions).mock.calls[0][0]).toMatchObject({ archived: true });
+  expect(within(rail()).queryByText("Retained mission")).toBeNull();
 });

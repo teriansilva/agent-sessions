@@ -67,6 +67,7 @@ import {
   LEGACY_MISSION_PATH,
   MISSION_PATH,
   NEW_PROJECT_PATH,
+  TEMPLATES_PATH,
 } from "../lib/routes";
 import { SETTINGS_PATH } from "../routes/settingsTabs";
 import { OperatorMenu } from "../components/shell/OperatorMenu";
@@ -284,8 +285,16 @@ function Layout() {
     location.pathname.startsWith(`${SETTINGS_PATH}/`);
   /** The New project wizard renders without the session sidebar too (#1187, operator): it is a
    *  focused flow reached from New session, the dashboard and Settings → Projects, and a session
-   *  list beside it is noise. Same mechanism as Settings — hidden, never unmounted. */
-  const noSidebar = settingsRoute || location.pathname === NEW_PROJECT_PATH;
+   *  list beside it is noise. So do Dashboard (with Ask's page under it) and Templates (#1233,
+   *  operator): neither acts on the list, and the column only took width from the page. Same
+   *  mechanism as Settings — hidden, never unmounted, so returning to Sessions is instant. */
+  const noSidebar =
+    settingsRoute ||
+    location.pathname === NEW_PROJECT_PATH ||
+    location.pathname === DASHBOARD_PATH ||
+    location.pathname === ASK_PATH ||
+    location.pathname === TEMPLATES_PATH ||
+    location.pathname.startsWith(`${TEMPLATES_PATH}/`);
   /** Which of the five work sections the current route belongs to, `null` on Settings (#1058).
    *  One derivation, read by the top bar's nav and the drawer's copy of it. */
   const section = activeSection(location.pathname);
@@ -605,7 +614,7 @@ function Layout() {
               which stays in the top bar at every width, and the drawer does not repeat the
               section nav either (#1069). */}
           <div className="sidebarBody">
-            {railInSidebar ? (
+            {railInSidebar && (
               /* The portal DESTINATION, part of the shell's own markup rather than created on
                  demand. The ref callback publishes the element on commit, which is what lets the
                  console read it from context instead of hunting for it by id in an effect. */
@@ -614,9 +623,11 @@ function Layout() {
                 className="missionRailSlot"
                 ref={setRailSlotEl}
               />
-            ) : (
-              <SessionList onNavigate={closeMobileDrawer} />
             )}
+            {/* THE SESSION LIST STAYS MOUNTED on mission routes (#1233) — hidden, never unmounted,
+                the same contract Settings keeps (#1129). Swapping it out for the rail threw away
+                its rows and pages, so every return from Missions was a blocking reload. */}
+            <SessionList onNavigate={closeMobileDrawer} hidden={railInSidebar} />
           </div>
           <footer className="sidebar-foot">
             {railInSidebar ? (

@@ -464,11 +464,18 @@ interface SessionListProps {
   /** Close the mobile off-canvas drawer on tap. Threaded onto New session and the session
    *  rows because those can be same-route no-ops that the route-change effect misses (#283). */
   onNavigate?: () => void;
+  /** Hidden in place while the mission rail owns the sidebar (#1233). The list stays MOUNTED so
+   *  its rows, filters, loaded pages and poll survive a Missions visit — unmounting it made every
+   *  return from Missions a blocking reload. */
+  hidden?: boolean;
 }
 
 /** Sidebar: filters + facets + paginated session list. Rows link to the session
  *  URL (open/switch) and expose rename + archive/unarchive actions. */
-export function SessionList({ onNavigate }: SessionListProps = {}) {
+export function SessionList({
+  onNavigate,
+  hidden = false,
+}: SessionListProps = {}) {
   // Does "+ New session" hand its result back to the map? Only when a map is actually up and
   // can host a window — the same single boolean the rows use, so the two entrances can never
   // disagree about whether window mode is available.
@@ -656,7 +663,7 @@ export function SessionList({ onNavigate }: SessionListProps = {}) {
   }, []);
 
   return (
-    <div className={styles.wrap}>
+    <div className={styles.wrap} hidden={hidden}>
       {/* Pressing this with the map up should land the new session ON the map, not full screen
         (#936). The landing form is still a page — it needs the room, and the map has none to
         spare — so the map's address rides along in router state and the form returns there. The

@@ -133,7 +133,8 @@ test.describe("opening BattleLab links", () => {
     await page.goto("/settings/appearance");
     await page.getByTestId("opening-links").getByRole("radio", { name: /Ask each time/ }).click();
 
-    await page.goto("/dashboard");
+    // A page WITH the session sidebar: Dashboard has none since #1233, so the landing stands in.
+    await page.goto("/");
     await page.locator('.sidebar a[href="/s/claude/s2"]').first().click();
     await expect(page).toHaveURL(/\/s\/claude\/s2$/);
     await page.reload();
@@ -160,7 +161,8 @@ test.describe("opening BattleLab links", () => {
     const first = await context.newPage();
     await mockRoster(first);
     await first.setViewportSize({ width: 1600, height: 1000 });
-    await first.goto("/dashboard");
+    // Any BattleLab page with the sidebar up — the landing, since Dashboard has none (#1233).
+    await first.goto("/");
     await expect(first.locator(".sidebar")).toBeVisible();
 
     const second = await context.newPage();
@@ -194,7 +196,8 @@ test.describe("opening BattleLab links", () => {
     const first = await context.newPage();
     await mockRoster(first);
     await first.setViewportSize({ width: 1600, height: 1000 });
-    await first.goto("/dashboard");
+    // Any BattleLab page with the sidebar up — the landing, since Dashboard has none (#1233).
+    await first.goto("/");
     await expect(first.locator(".sidebar")).toBeVisible();
     const [opened] = await Promise.all([
       context.waitForEvent("page"),
@@ -205,7 +208,7 @@ test.describe("opening BattleLab links", () => {
     await expect(opened.getByTestId("link-handoff-stub")).toHaveCount(0);
     await expect(dialog(opened)).toHaveCount(0);
     await expect(dialog(first)).toHaveCount(0);
-    await expect(first).toHaveURL(/\/dashboard$/);
+    await expect(first).toHaveURL(/\/$/);
   });
 
   test("Share link copies the session's canonical URL when there is no share sheet", async ({

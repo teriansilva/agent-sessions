@@ -13,6 +13,7 @@ import {
 import { createPortal } from "react-dom";
 
 import { useConfig, useConfigRefresh } from "../../app/config";
+import { useDashboardRetention } from "../../app/dashboardRetentionStore";
 import { useSectionState } from "../../app/sectionState";
 import { MissionFilters, type MissionFiltersValue } from "./MissionFilters";
 import { MissionLanding } from "./MissionLanding";
@@ -93,6 +94,39 @@ function dedupe(rows: MissionListRow[], have: MissionListRow[] = []) {
  *  its own. What remains is `isCurrent`'s "nothing is selected" answer, below. */
 const LANDING_VIEW = "__landing__";
 
+/** The rail's rows, count, cursor and snapshot — see the notes on each half below. */
+interface RailState {
+  rows: MissionListRow[];
+  total: number;
+  /** HOW MANY SERVER ROWS HAVE BEEN CONSUMED, which is not `rows.length` (#896 review 17,
+   *  finding 1). Deduping drops rows the server DID return, so using the rendered count as the
+   *  next offset asks for a row already on screen — and LOAD MORE then sticks there for ever,
+   *  one short, with the missing mission unreachable. The cursor counts what was asked for and
+   *  answered; the rows are what survived the merge. */
+  consumed: number;
+  /** The last read was STITCHED from several pages, so it cannot prove it saw one snapshot
+   *  (#896 review 17, finding 2). The rail offers a re-read rather than pretending. */
+  stitched?: boolean;
+  /** WHICH ordered set the cursor counts into — the server's digest of the full filtered list
+   *  (#896 review 19, finding 1). A later page is a continuation of this read only if it was
+   *  cut from the same one; otherwise the offsets index into two different lists and the rail
+   *  cannot be proved whole, however consistent its counts look. */
+  snapshot?: string | null;
+}
+
+/** What the shell retains of a rail read (#1233): the rows and the facets drawn beside them.
+ *  NOT the store error: a failed read is the moment's news, and the revalidation every mount
+ *  runs reports its own — a retained one would flash a stale outage over a healthy store. */
+interface RetainedRail {
+  list: RailState;
+  facets: { projects: string[]; states: string[] };
+}
+
+/** One retained entry per scope + filter set: a rail read under other filters is another list. */
+function railKey(archived: boolean, f: MissionFiltersValue): string {
+  const which = archived ? "archived" : "active";
+  return `missionRail:${which}:${JSON.stringify([f.q, f.project, f.state])}`;
+}
 
 /** Everything that belongs to ONE mission. Keyed by the parent — see the module note. */
 function MissionBody({
@@ -856,35 +890,42 @@ export function MissionConsole({
    *  the shell's slot — with no slot there is no sidebar to fill, and the page has its own body. */
   railOnly?: { onSelect: (id: string) => void; onNewMission: () => void };
 }) {
+  /** Which scope the rail lists. Archiving is not deletion, so there has to be a way back in:
+   *  without one, a mission's objectives, timeline and decisions become unreachable the moment
+   *  it is put away. Read ABOVE the rail's state because the retained read is keyed by it. */
+  const [archived, setArchived] = useSectionState("missions.archived", false);
+  const [filters, saveFilters] = useSectionState<MissionFiltersValue>(
+    "missions.filters",
+    { q: "", project: "", state: "" },
+  );
+  /** THE RAIL'S LAST READ, RETAINED ABOVE THE ROUTER (#1233).
+   *
+   *  This console unmounts with its route, so every return to Missions used to start from an
+   *  empty rail and wait for `/api/missions`. The last successful read for this scope and these
+   *  filters is kept in the shell's retention store (the dashboard's, #1223 — a generic,
+   *  hard-scope-stamped map) and SEEDS the rail on mount. It decides what is drawn first, never
+   *  whether to fetch: the mount effect below always revalidates, and its answer goes through
+   *  `applyList`'s fences like any other (#1007's rule — no freshness window). */
+  const retention = useDashboardRetention();
+  const [seed] = useState(() =>
+    retention.read<RetainedRail>(railKey(archived, filters)),
+  );
+  /** Which rail the rows on screen are an answer FOR, or null while they are not an answer at
+   *  all (the empty rail a scope or filter change clears to). Set only in `applyList`, so a
+   *  cleared or half-switched rail is never retained under a key it does not describe. */
+  const railKeyRef = useRef<string | null>(
+    seed ? railKey(archived, filters) : null,
+  );
   /** THE RAIL'S ROWS AND ITS COUNT, as ONE value (#896 review 13, finding 1).
    *
    *  "How many are there" is a fact about the same list the rows came from, and holding them in
    *  two `useState`s let them disagree — a local removal decremented the count whether or not it
    *  removed anything, and `rows.length >= total` then hid LOAD MORE over a mission that is
    *  still there. Every write below sets both halves in one updater. */
-  const [list, setRail] = useState<{
-    rows: MissionListRow[];
-    total: number;
-    /** HOW MANY SERVER ROWS HAVE BEEN CONSUMED, which is not `rows.length` (#896 review 17,
-     *  finding 1). Deduping drops rows the server DID return, so using the rendered count as the
-     *  next offset asks for a row already on screen — and LOAD MORE then sticks there for ever,
-     *  one short, with the missing mission unreachable. The cursor counts what was asked for and
-     *  answered; the rows are what survived the merge. */
-    consumed: number;
-    /** The last read was STITCHED from several pages, so it cannot prove it saw one snapshot
-     *  (#896 review 17, finding 2). The rail offers a re-read rather than pretending. */
-    stitched?: boolean;
-    /** WHICH ordered set the cursor counts into — the server's digest of the full filtered list
-     *  (#896 review 19, finding 1). A later page is a continuation of this read only if it was
-     *  cut from the same one; otherwise the offsets index into two different lists and the rail
-     *  cannot be proved whole, however consistent its counts look. */
-    snapshot?: string | null;
-  }>({ rows: [], total: 0, consumed: 0 });
-  const missions = list.rows;
-  const [filters, saveFilters] = useSectionState<MissionFiltersValue>(
-    "missions.filters",
-    { q: "", project: "", state: "" },
+  const [list, setRail] = useState<RailState>(
+    () => seed?.list ?? { rows: [], total: 0, consumed: 0 },
   );
+  const missions = list.rows;
   const filtersRef = useRef(filters);
   const missionFiltered = Boolean(
     filters.q || filters.project || filters.state,
@@ -892,7 +933,7 @@ export function MissionConsole({
   const [facets, setFacets] = useState<{
     projects: string[];
     states: string[];
-  }>({ projects: [], states: [] });
+  }>(() => seed?.facets ?? { projects: [], states: [] });
   const [projectNames, setProjectNames] = useState<Record<string, string>>({});
   useEffect(() => {
     let live = true;
@@ -925,7 +966,7 @@ export function MissionConsole({
    *  is gated on this, deliberately: showing "start your first mission" because the store could
    *  not be read would be the same absence-read-as-evidence mistake the mission work has already
    *  paid for twice. Set only in `applyList`, which runs on a fenced success. */
-  const [listLoaded, setListLoaded] = useState(false);
+  const [listLoaded, setListLoaded] = useState(seed !== undefined);
   /** WHICH MISSION IS OPEN — plain state, deliberately NOT retained for the visit (#948).
    *
    *  Entering the section opens the new-mission page; that is what the operator asked the front
@@ -1062,10 +1103,6 @@ export function MissionConsole({
   const needsReRead =
     Boolean(list.stitched) || (!hasMore && missions.length < total);
   const [loadingMore, setLoadingMore] = useState(false);
-  /** Which scope the rail lists. Archiving is not deletion, so there has to be a way back in:
-   *  without one, a mission's objectives, timeline and decisions become unreachable the moment
-   *  it is put away. */
-  const [archived, setArchived] = useSectionState("missions.archived", false);
   /** Which SCOPE a list response belongs to, as a monotonic counter.
    *
    *  A list request outlives the scope it was issued for. "Load more" on the active rail can
@@ -1141,6 +1178,7 @@ export function MissionConsole({
       // reason; the success path was the half that did not.
       if (gen < listGen.current || scope !== archivedRef.current) return;
       setListLoaded(true); // a fenced, in-scope answer arrived — see `listLoaded`
+      railKeyRef.current = railKey(scope, filtersRef.current);
       appliedGen.current = gen;
       // …AND THE WINDOW IS WHAT THIS ANSWER OPENED. An authoritative read replaces the rail, so
       // it also decides how wide the rail now is — including narrower, when the scope changed or
@@ -1196,6 +1234,17 @@ export function MissionConsole({
     },
     [],
   );
+
+  /** Retain every committed rail — the fenced answers `applyList` installs AND the local edits
+   *  made on top of them (a removal, a Load More page) — under the key it answers for (#1233).
+   *  `railKeyRef` is null while the rail is a cleared placeholder, so an empty rail waiting on a
+   *  scope or filter switch is never recorded as that scope's list. */
+  const { write: retain, scopeKey } = retention;
+  useEffect(() => {
+    const key = railKeyRef.current;
+    if (!listLoaded || key === null) return;
+    retain<RetainedRail>(key, { list, facets }, scopeKey);
+  }, [list, facets, listLoaded, retain, scopeKey]);
 
   useEffect(() => {
     archivedRef.current = archived;
@@ -1517,6 +1566,7 @@ export function MissionConsole({
       setLoadingMore(false);
       setArchived(next);
       setSelected(null);
+      railKeyRef.current = null;
       setRail({ rows: [], total: 0, consumed: 0 });
       setStoreError(null);
       // …AND THE EVIDENCE THAT A LIST WAS READ, which belongs to the scope that produced it
@@ -1710,6 +1760,7 @@ export function MissionConsole({
       openRef.current = PAGE;
       setSelected(shownRef.current);
       saveFilters(next);
+      railKeyRef.current = null;
       setRail({ rows: [], total: 0, consumed: 0 });
       setLoadingMore(false);
       setStoreError(null);
