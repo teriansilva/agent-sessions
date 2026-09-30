@@ -36,8 +36,19 @@ npm run test:e2e  # Playwright (desktop + emulated mobile); installs chromium on
 ```
 
 Run all of the above locally before opening a PR — CI runs the same checks. The `e2e_install`
-deselect is a local-iteration convenience only; CI always runs the full suite, so land nothing
-that hasn't passed a plain `pytest` at least once.
+deselect is a local-iteration convenience only; CI runs the full suite for any change under
+`src/`, `tests/`, `scripts/`, `deploy/`, `.forgejo/` or to packaging and the installer scripts, so
+land nothing that hasn't passed a plain `pytest` at least once.
+
+**What CI runs is scoped to the diff (#1244).** A PR that touches none of those paths (web, docs,
+landing only) runs just the test files that mention a path it changes. Several tests pin files
+under `web/` and `docs/`, so this is never zero by design. It also skips the installer contract,
+the deploy-shape smoke and `installer-smoke` (the last only for docs/landing-only changes).
+`.forgejo/scripts/pr_scope.py` decides, and any doubt means the full suite. **A red check stops its
+siblings:** the long steps (pytest, the e2e shards, app-mode e2e) run under
+`.forgejo/scripts/sibling_watch.py`. When another check for the same commit has failed, it stops
+them within ~30 s and says so (`aborted: sibling "…" failed`), so a red commit stops holding
+runners. An aborted check did not fail on its own: fix the sibling it names.
 
 Test-suite policies worth knowing:
 
@@ -60,7 +71,8 @@ Test-suite policies worth knowing:
   once, in the editable pass — re-running it against the wheel catches nothing (a wheel built
   with no templates at all still passes 283 of the non-rendering tests).
 
-`install.sh` / `uninstall.sh` are smoke-tested on **every PR** (`installer-smoke.yml`): a pristine
+`install.sh` / `uninstall.sh` are smoke-tested on **every PR that touches the app, packaging, the
+installer or CI** (`installer-smoke.yml`): a pristine
 container (no usable Python/Node — the vendored-toolchain path) installs from your checkout, the
 installed app must serve `/healthz` → `{"ok":true}`, and the uninstall must remove the install
 root + prefs + cache while a seeded `~/.claude` survives. It takes ~5–10 min (vendors both

@@ -367,12 +367,23 @@ def test_a_client_that_leaves_never_cancels_the_turn(
         ends_now = spec < "2.4" or gone_after == 0
         # A bound, not a delay, where the stream is expected to end: `wait` returns the moment it
         # does. 2 s flaked red on a loaded shared runner (#1218's CI) with the response simply not
-        # yet over. Where it is expected to stay open, a short look is all the case needs.
-        await asyncio.wait({drive}, timeout=15 if ends_now else 2)
+        # yet over.
         if ends_now:
+            await asyncio.wait({drive}, timeout=15)
             # The response is over (a 2.4 server only learns of the leave on its next write,
             # which a held model does not produce — that stream ends when the turn does).
             assert drive.done()
+        # Wait for the turn to START before judging whether it survived. A fixed 2 s look flaked
+        # red on a loaded runner (#1244's own CI, [1-2.4]): the request had not reached the model
+        # yet, so no turn task existed — not cancelled, just not begun. `calls` fills when the
+        # model starts, inside the turn task, so it is the proof the turn is running.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 15
+        while not calls and loop.time() < deadline:
+            await asyncio.sleep(0.02)
+        assert calls == ["hi"], "the turn never started"
+        # Then a short look, long enough for a wrongful cancel on the leave to land.
+        await asyncio.wait({drive}, timeout=0.5)
         # Either way the turn is running with nobody watching it, and it is not cancelled.
         assert mroutes._TURN_TASKS, "the turn must outlive the stream that asked for it"
         gate.set()
