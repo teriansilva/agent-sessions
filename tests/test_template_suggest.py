@@ -156,6 +156,11 @@ def test_collect_sends_only_the_operators_in_scope_recent_messages_scrubbed(sess
     assert out["stats"]["sessions"] == 2
 
 
+# A Stripe-shaped live key, assembled at runtime so no key-shaped literal sits in the source:
+# GitHub push protection blocks the public-mirror publish on one (it did, #1250). Invented value.
+_STRIPE_SHAPED = "sk_" + "live_" + "0tdxkGyy2L3lpZh5MgGDDspT"
+
+
 @pytest.mark.parametrize(
     "text, gone",
     [
@@ -169,7 +174,7 @@ def test_collect_sends_only_the_operators_in_scope_recent_messages_scrubbed(sess
             "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAAB3Nza\n-----END OPENSSH PRIVATE KEY-----",
             "AAAAB3Nza",
         ),
-        ("key sk_" + "live_51H8xYzAbCdEfGh1234567890Qw", "sk_" + "live_51H8xYzAbCdEfGh1234567890Qw"),
+        ("key " + _STRIPE_SHAPED, _STRIPE_SHAPED),
     ],
 )
 def test_scrub_removes_each_credential_shape(text, gone):
