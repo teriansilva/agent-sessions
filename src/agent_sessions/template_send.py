@@ -33,6 +33,7 @@ import hashlib
 import re
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from . import engines, prefs, project_dirs, session_input, template_secrets, template_vars
@@ -52,10 +53,17 @@ _TEMPLATE = "template:"
 class SendRefused(Exception):
     """A send that must not happen (or did not complete). ``status`` is the HTTP status."""
 
-    def __init__(self, status: int, detail: str) -> None:
+    def __init__(
+        self, status: int, detail: str, *, partial: bool = False, busy: bool = False
+    ) -> None:
         super().__init__(detail)
         self.status = status
         self.detail = detail
+        #: Another send into the same session holds it (this process or another): nothing was sent.
+        self.busy = busy
+        #: Part of the message may be in front of the agent (a paste landed, its Enter did not, or
+        #: a write was cut off). A caller must never retry such a send on its own.
+        self.partial = partial
 
 
 @dataclass(frozen=True)
@@ -228,14 +236,60 @@ _in_flight: set[str] = set()
 _in_flight_lock = threading.Lock()
 
 
+#: How long a send waits for ANOTHER process's send into the same session to finish (#1201).
+SEND_LOCK_WAIT_S = 2.0
+SEND_LOCK_POLL_S = 0.02
+_BUSY = "Another template is being sent into this session — wait for it"
+
+
+def send_lock_path(phys: str):
+    """``<lock dir>/send-<sha256(physical key)[:32]>.lock`` — the key never becomes a path."""
+    from . import sessionlock
+
+    digest = hashlib.sha256(phys.encode("utf-8", "surrogatepass")).hexdigest()[:32]
+    return sessionlock.lock_dir() / f"send-{digest}.lock"
+
+
+@contextlib.contextmanager
+def session_send_lock(phys: str, timeout: float | None = None):
+    """The CROSS-PROCESS single-sender lock for one session, held across a whole multi-write
+    delivery so two app processes (or a manual send and an automation) never interleave their
+    clear / paste / Enter. ``flock`` on an ``O_CLOEXEC`` fd in the shared lock dir, bounded wait,
+    then ``SendRefused(409, busy=True)``. BLOCKING: taken on the worker thread doing the writes,
+    whose ``finally`` releases it however the send ends."""
+    import fcntl
+    import os
+
+    p = send_lock_path(phys)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + (SEND_LOCK_WAIT_S if timeout is None else timeout)
+    fd = os.open(p, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    try:
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise SendRefused(409, _BUSY, busy=True) from None
+                time.sleep(SEND_LOCK_POLL_S)
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
 @contextlib.contextmanager
 def _reserve(phys: str):
+    # The in-process set is the fast path (no wait, no file); the flock covers other processes.
     with _in_flight_lock:
         if phys in _in_flight:
-            raise SendRefused(409, "Another template is being sent into this session — wait for it")
+            raise SendRefused(409, _BUSY, busy=True)
         _in_flight.add(phys)
     try:
-        yield
+        with session_send_lock(phys):
+            yield
     finally:
         with _in_flight_lock:
             _in_flight.discard(phys)
@@ -260,6 +314,7 @@ def _map(outcome: session_input.Outcome, *, stage: str) -> SendRefused:
             502,
             "Sending was interrupted; part of the message may have reached the agent — "
             "check the terminal",
+            partial=True,
         )
     # failed / timeout: zero bytes of THIS write reached the session.
     if stage == "clear":
@@ -277,6 +332,7 @@ def deliver(
     has_images: bool,
     bound: str | None = None,
     library_names: tuple[str, ...] = (),
+    extra_guard: Callable[[], tuple[bool, str]] | None = None,
 ) -> None:
     """Clear, paste, Enter — three fenced writes. BLOCKING; run under ``asyncio.to_thread``.
 
@@ -299,6 +355,10 @@ def deliver(
             return False, f"{_TEMPLATE} the template was edited"
         if current() != bound:
             return False, f"{_TEMPLATE} the template, its variables or the secret key changed"
+        if extra_guard is not None:
+            # The caller's own authority (an automation's consent, #1201), re-checked at EVERY
+            # stage exactly like the facts above. Absent for the operator's own send.
+            return extra_guard()
         return True, ""
 
     def write(payload: bytes, *, quiet: bool) -> session_input.Outcome:
@@ -325,11 +385,18 @@ def deliver(
     o = write(b"\r", quiet=False)
     if not o.ok:
         raise SendRefused(
-            502, "The message was typed but not submitted — press Enter in the terminal"
+            502,
+            "The message was typed but not submitted — press Enter in the terminal",
+            partial=True,
         )
 
 
-def send(template_id: str, payload: object) -> dict:
+def send(
+    template_id: str,
+    payload: object,
+    *,
+    extra_guard: Callable[[], tuple[bool, str]] | None = None,
+) -> dict:
     """The whole route body, blocking. Returns ``{masked, template}``; raises ``SendRefused`` /
     ``TemplateError`` / ``TemplateNotFound``."""
     if not isinstance(payload, dict):
@@ -368,6 +435,7 @@ def send(template_id: str, payload: object) -> dict:
             has_images=bool(template["images"]),
             bound=bound,
             library_names=library_names,
+            extra_guard=extra_guard,
         )
     # The message IS delivered. Nothing after this line may turn that into a failure: a 503 "try
     # again" here would invite a retry that submits the instruction twice (Hermes on #1105,

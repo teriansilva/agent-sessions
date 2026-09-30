@@ -29,6 +29,7 @@ from fastapi.templating import Jinja2Templates
 
 from . import (
     ai_review_loop,
+    automation_loop,
     autosort_loop,
     engines,
     metadata,
@@ -66,6 +67,7 @@ from .auth import (
 from .devicelink import DeviceLinkStore
 from .routes import ai_review as ai_review_routes
 from .routes import auth as auth_routes
+from .routes import automations as automations_routes
 from .routes import chat as chat_routes
 from .routes import files as files_routes
 from .routes import handoff as handoff_routes
@@ -371,9 +373,16 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # Needs-you notifications (#1086 Phase 4): one withdrawable notification per episode, synced
         # from the Ask page's NEEDS YOU read. Env kill-switch AGENT_SESSIONS_NEEDS_YOU_LOOP=0.
         needs_you_task = asyncio.create_task(needs_you_notify.run())
+        # Automations (#1201): the scheduler takes its kernel ownership lock before recovering or
+        # firing anything. Env kill-switch AGENT_SESSIONS_AUTOMATION_LOOP=0 stops every trigger.
+        automation_task = automation_loop.start(registry)
         try:
             yield
         finally:
+            # Automations stop FIRING first, then drain the runs already started (their outcome is
+            # recorded honestly, `interrupted` when it cannot be known), while their paths are up.
+            with contextlib.suppress(Exception):
+                await automation_loop.stop()
             # FIRST: a streamed mission turn whose reader has left belongs to no request, so the
             # server's wait for requests in flight does not cover it (#1224). Let it settle while
             # everything it uses is still up.
@@ -394,6 +403,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 mission_task,
                 usage_task,
                 needs_you_task,
+                automation_task,
             ):
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -596,6 +606,10 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     # MISSION CONTROL (#846, Phase 1 of #840): the mission record — list/get/create/adopt/detach/
     # state/archive/objectives. No new decision endpoint; approve/reject stay on the pulse routes.
     missions_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry)
+    # Automations (#1201): same auth surface as missions; Run now dispatches with this registry.
+    automations_routes.register(
+        app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry
+    )
 
     # Web-terminal websocket (``/ws/term/{sid}``). ``_must_change`` gates new sessions;
     # ``_reconcile_new_session`` is passed in (it + its tunables stay module-level for tests).

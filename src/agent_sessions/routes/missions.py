@@ -52,6 +52,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import os
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Coroutine
@@ -479,6 +480,235 @@ def _reap_dead_spawns(mission_id: str) -> int:
         except Exception:  # noqa: BLE001
             log.debug("mission %s: could not close spawn %s", mission_id, r["plan_id"])
     return freed
+
+
+async def dispatch_approved(
+    mission_id: str,
+    body: dict,
+    *,
+    registry,
+    bypass_ceiling: bool | None = None,
+    pinned_real_cwd: str | None = None,
+    authorize=None,
+) -> JSONResponse:
+    """Run the plan the operator SAW. The highest-privilege call in the app (#893).
+
+    What it starts is an UNATTENDED agent — see the module note on why it is not also
+    permission-bypassed — so every fence this route has is load-bearing:
+
+    * **The plan id is compare-and-set.** The operator dispatches the proposal on their
+      screen, not "whatever the mission's current plan is" — a re-plan or an edit mints a new
+      id, and a stale one is a 409 that tells them to read it again.
+    * **`claim_plan` is the arbiter**, not a check before this call. It moves
+      `planned -> dispatching` under its own state predicate in the same transaction that
+      consumes the plan, so two taps cannot become two unattended agents.
+    * **The cwd is the one the server resolved** from the project entity at plan time and
+      re-stamped on the mission by the claim. No client value reaches the launch.
+    * **The tier and the master switch are re-read HERE**, immediately before the spawn — not
+      at plan time, which is minutes and a model call earlier (`stale policy across the
+      await`, #887's family).
+
+    Every outcome resolves the mission forward: `running` on start evidence, `failed` with a
+    reason otherwise. A crash between them is recovered by the startup pass, never left as a
+    stuck `dispatching`.
+
+    Automations (#1201) call this too, with ``bypass_ceiling=False``, their pinned folder and an
+    ``authorize`` check that runs inside the launch fence.
+    """
+    try:
+        missions.validate_id(mission_id)
+        plan_id = body.get("plan_id")
+        if not isinstance(plan_id, str) or not plan_id.strip():
+            return _fail(
+                missions.MissionError(
+                    "plan_id is required and names the plan you are dispatching", status=422
+                )
+            )
+
+        # THE POLICY, READ AT THE WRITE BOUNDARY. A plan can sit on screen for as long as the
+        # operator likes, and orchestration can be switched off in that time. Reading it at
+        # plan time and trusting it here is exactly the shape #887 was about.
+        #
+        # …AND THE EPOCH IS CAPTURED FIRST (#904 review 4). A read is not a fence: the switch
+        # can be flipped after this line and before the spawn, and the agent would start under
+        # authority the operator has withdrawn. The epoch captured BEFORE the read is what the
+        # launch fence compares immediately before `create_subprocess_exec` — before, because
+        # a change landing between the capture and the read would otherwise carry the new
+        # epoch and the old reading.
+        policy_epoch = session_input.policy_fingerprint()
+        cfg = prefs.get_mission_orchestration()
+        if not cfg.get("enabled"):
+            return _fail(
+                missions.MissionError(
+                    "orchestration is switched off, so nothing may be launched", status=409
+                )
+            )
+        # …AND THE TIER, which is a different switch and says a stronger thing (#904 review 2,
+        # finding 1). `enabled` is "the orchestrator runs at all"; `autonomy` is what it may
+        # DO, and the settings page states the `off` contract in the operator's own words:
+        # "watch and propose, never send anything". Starting an unattended, permission-shaped
+        # agent is the largest thing this app can send, so a route that read only `enabled`
+        # was doing the one thing that tier promises it will not.
+        if str(cfg.get("autonomy") or "") == prefs.ORCH_TIERS[0]:
+            return _fail(
+                missions.MissionError(
+                    "autonomy is off — this instance watches and proposes, and may not "
+                    "start an agent",
+                    status=409,
+                )
+            )
+
+        # …and the containment boundary must EXIST before an unattended agent does (#898
+        # review 7, the non-blocking note, made blocking here because this is the caller that
+        # makes it matter). Without a transient scope the teardown boundary is a pid snapshot,
+        # and a target that forks a survivor during SIGTERM walks out of it and is reported as
+        # a clean stop. A launch we could not clean up is not one to start unattended.
+        if not (scopedspawn.enabled() and scopedspawn.available()):
+            return _fail(
+                missions.MissionError(
+                    "this host cannot put a session in its own scope, so an unattended agent "
+                    "could not be reliably stopped again; dispatch is refused",
+                    status=409,
+                )
+            )
+
+        # THE PROJECT PATH, RE-RESOLVED NOW (#904 review 5). The plan carries the cwd the
+        # entity meant when it was written, and a project can be archived or repointed in the
+        # minutes a proposal sits on screen. Launching an unattended agent into the
+        # directory a project USED to mean is the `stale policy across the await` family with
+        # a filesystem path on the end of it, so the entity is read again here and the answer
+        # is what `claim_plan` stamps on the mission.
+        current = await missions.run_admitted(lambda: missions.get_plan(mission_id))
+        if current is None:
+            return _fail(missions.MissionError("this mission has no plan to dispatch", status=409))
+        fresh_project, fresh_cwd = _resolve_cwd(current.get("project_id"))
+        if not fresh_cwd:
+            return _fail(
+                missions.MissionError("a plan without a project cannot be dispatched", status=422)
+            )
+        # THE PATH SHOWN IS THE PATH LAUNCHED (#904 review 2, finding 6).
+        #
+        # Re-resolving is required — a project can be repointed while a proposal sits on
+        # screen, and launching where it USED to point is the stale-policy family with a
+        # filesystem path on the end. But re-resolving alone means the operator confirms
+        # `/old` and the agent starts in `/new`, which is the same defect wearing the fix's
+        # clothes. So the client asserts which resolution it showed, and a mismatch refuses.
+        #
+        # It is a COMPARAND, never a launch argument: `expect_cwd` is compared and discarded,
+        # and the path that reaches the spawn is the one this server resolved.
+        expect_cwd = body.get("expect_cwd")
+        if not isinstance(expect_cwd, str) or not expect_cwd.strip():
+            return _fail(
+                missions.MissionError(
+                    "expect_cwd is required and names the directory you approved", status=422
+                )
+            )
+        # WHAT DONE MEANS MUST BE SETTLED, AND MUST BE WHAT WAS SHOWN (#904 review 3,
+        # finding 5). A new mission starts with `objectives_state='pending'` — the producer
+        # is a background task — so a fast operator could launch before the mission knew what
+        # finishing means, and the supervisor would then follow through against a checklist
+        # that arrived afterwards. The card shows the set; `expect_objectives` is the digest
+        # of what it showed, so "final" and "the same one you read" are one check.
+        row = await missions.run_admitted(lambda: missions.get_mission(mission_id))
+        if row is None:
+            return _fail(missions.MissionError(f"unknown mission {mission_id}", status=404))
+        # FINALIZED **AND NOT EMPTY** (#904 review 4, finding 3). `pending` was the only
+        # refusal, so a settled-but-empty checklist dispatched — and #893's acceptance
+        # invariant is that the mission knows what finishing means BEFORE it starts. An agent
+        # running against nothing is one the supervisor cannot follow through on, which is
+        # the entire reason the objectives exist.
+        #
+        # The gate is deliberately NOT `objectives_state == "done"`. Production settles
+        # `skipped` on an install with no AI endpoint configured and `failed` when the model
+        # call breaks — and in both cases the operator writing the checklist by hand is the
+        # intended flow, not a bypass. Keying on the producer's verdict would make DISPATCH
+        # permanently unreachable on those installs while proving nothing: what matters is
+        # that nobody is still writing the list (`pending`) and that a list exists.
+        obj_state = str(row.get("objectives_state") or "")
+        if obj_state == "pending":
+            return _fail(
+                missions.MissionError(
+                    "what done means is still being worked out; try again in a moment",
+                    status=409,
+                )
+            )
+        if not (row.get("objectives") or []):
+            return _fail(
+                missions.MissionError(
+                    "this mission has no objectives, so it does not know what finishing "
+                    "means; add at least one before dispatching",
+                    status=409,
+                )
+            )
+        expect_obj = body.get("expect_objectives")
+        if not isinstance(expect_obj, str):
+            return _fail(
+                missions.MissionError(
+                    "expect_objectives is required and names the checklist you approved",
+                    status=422,
+                )
+            )
+        if expect_obj != missions.objectives_digest(row.get("objectives") or []):
+            return _fail(
+                missions.MissionError(
+                    "the objectives changed since you read them; read the plan again",
+                    status=409,
+                )
+            )
+        if expect_cwd.strip() != fresh_cwd:
+            return _fail(
+                missions.MissionError(
+                    "that project now resolves somewhere else; read the plan again",
+                    status=409,
+                )
+            )
+        plan = await missions.run_admitted(
+            lambda: missions.claim_plan(
+                mission_id,
+                plan_id,
+                cwd=fresh_cwd,
+                project_id=fresh_project,
+                # RE-COMPARED INSIDE THE CLAIM (#904 review 4, finding 2). The checks above
+                # are a separate transaction and `patch_objectives` is legal in the gap, so
+                # they answer "was this the checklist a moment ago" — the claim answers "is
+                # it the checklist now", which is the one the launch runs against.
+                expect_objectives=expect_obj,
+                require_objectives=True,
+            )
+        )
+    except missions.MissionError as e:
+        return _fail(e)
+
+    extra: dict = {}
+    if bypass_ceiling is not None:
+        extra["bypass_ceiling"] = bypass_ceiling
+    if authorize is not None:
+        extra["extra_authorize"] = authorize
+    verify = lambda: _resolve_cwd(plan.get("project_id"))[1]  # noqa: E731
+    if pinned_real_cwd is not None:
+        # AN AUTOMATION'S FOLDER IS ITS PINNED IDENTITY (#1201): the fence re-resolves the project
+        # and compares its REALPATH with the pin, and the launch uses the pinned real path, never
+        # the literal (possibly symlinked) string a later swap could redirect.
+        plan = {**plan, "cwd": pinned_real_cwd}
+
+        def verify() -> str | None:
+            now = _resolve_cwd(plan.get("project_id"))[1]
+            return pinned_real_cwd if now and os.path.realpath(now) == pinned_real_cwd else None
+
+    out = await mission_dispatch.run(
+        mission_id,
+        plan,
+        registry=registry,
+        policy_epoch=policy_epoch,
+        # …AND AGAIN, INSIDE THE LAUNCH FENCE. The window between this route's resolution and
+        # `create_subprocess_exec` is the second half of the same finding: a project moved in
+        # it would still be launched. `run` calls this immediately before the spawn, while
+        # holding the fence, and refuses on a mismatch.
+        verify_cwd=verify,
+        # Only an automation passes these (#1201); the manual route's call is unchanged.
+        **extra,
+    )
+    return JSONResponse(out)
 
 
 def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
@@ -1127,208 +1357,12 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         _user: str = Depends(logged_in),
         _csrf: None = Depends(csrf_guard),
     ) -> JSONResponse:
-        """Run the plan the operator SAW. The highest-privilege call in the app (#893).
-
-        What it starts is an UNATTENDED agent — see the module note on why it is not also
-        permission-bypassed — so every fence this route has is load-bearing:
-
-        * **The plan id is compare-and-set.** The operator dispatches the proposal on their
-          screen, not "whatever the mission's current plan is" — a re-plan or an edit mints a new
-          id, and a stale one is a 409 that tells them to read it again.
-        * **`claim_plan` is the arbiter**, not a check before this call. It moves
-          `planned -> dispatching` under its own state predicate in the same transaction that
-          consumes the plan, so two taps cannot become two unattended agents.
-        * **The cwd is the one the server resolved** from the project entity at plan time and
-          re-stamped on the mission by the claim. No client value reaches the launch.
-        * **The tier and the master switch are re-read HERE**, immediately before the spawn — not
-          at plan time, which is minutes and a model call earlier (`stale policy across the
-          await`, #887's family).
-
-        Every outcome resolves the mission forward: `running` on start evidence, `failed` with a
-        reason otherwise. A crash between them is recovered by the startup pass, never left as a
-        stuck `dispatching`.
-        """
+        """Run the plan the operator SAW; :func:`dispatch_approved` carries every fence."""
         try:
             body = await _body(request)
-            missions.validate_id(mission_id)
-            plan_id = body.get("plan_id")
-            if not isinstance(plan_id, str) or not plan_id.strip():
-                return _fail(
-                    missions.MissionError(
-                        "plan_id is required and names the plan you are dispatching", status=422
-                    )
-                )
-
-            # THE POLICY, READ AT THE WRITE BOUNDARY. A plan can sit on screen for as long as the
-            # operator likes, and orchestration can be switched off in that time. Reading it at
-            # plan time and trusting it here is exactly the shape #887 was about.
-            #
-            # …AND THE EPOCH IS CAPTURED FIRST (#904 review 4). A read is not a fence: the switch
-            # can be flipped after this line and before the spawn, and the agent would start under
-            # authority the operator has withdrawn. The epoch captured BEFORE the read is what the
-            # launch fence compares immediately before `create_subprocess_exec` — before, because
-            # a change landing between the capture and the read would otherwise carry the new
-            # epoch and the old reading.
-            policy_epoch = session_input.policy_fingerprint()
-            cfg = prefs.get_mission_orchestration()
-            if not cfg.get("enabled"):
-                return _fail(
-                    missions.MissionError(
-                        "orchestration is switched off, so nothing may be launched", status=409
-                    )
-                )
-            # …AND THE TIER, which is a different switch and says a stronger thing (#904 review 2,
-            # finding 1). `enabled` is "the orchestrator runs at all"; `autonomy` is what it may
-            # DO, and the settings page states the `off` contract in the operator's own words:
-            # "watch and propose, never send anything". Starting an unattended, permission-shaped
-            # agent is the largest thing this app can send, so a route that read only `enabled`
-            # was doing the one thing that tier promises it will not.
-            if str(cfg.get("autonomy") or "") == prefs.ORCH_TIERS[0]:
-                return _fail(
-                    missions.MissionError(
-                        "autonomy is off — this instance watches and proposes, and may not "
-                        "start an agent",
-                        status=409,
-                    )
-                )
-
-            # …and the containment boundary must EXIST before an unattended agent does (#898
-            # review 7, the non-blocking note, made blocking here because this is the caller that
-            # makes it matter). Without a transient scope the teardown boundary is a pid snapshot,
-            # and a target that forks a survivor during SIGTERM walks out of it and is reported as
-            # a clean stop. A launch we could not clean up is not one to start unattended.
-            if not (scopedspawn.enabled() and scopedspawn.available()):
-                return _fail(
-                    missions.MissionError(
-                        "this host cannot put a session in its own scope, so an unattended agent "
-                        "could not be reliably stopped again; dispatch is refused",
-                        status=409,
-                    )
-                )
-
-            # THE PROJECT PATH, RE-RESOLVED NOW (#904 review 5). The plan carries the cwd the
-            # entity meant when it was written, and a project can be archived or repointed in the
-            # minutes a proposal sits on screen. Launching an unattended agent into the
-            # directory a project USED to mean is the `stale policy across the await` family with
-            # a filesystem path on the end of it, so the entity is read again here and the answer
-            # is what `claim_plan` stamps on the mission.
-            current = await missions.run_admitted(lambda: missions.get_plan(mission_id))
-            if current is None:
-                return _fail(
-                    missions.MissionError("this mission has no plan to dispatch", status=409)
-                )
-            fresh_project, fresh_cwd = _resolve_cwd(current.get("project_id"))
-            if not fresh_cwd:
-                return _fail(
-                    missions.MissionError(
-                        "a plan without a project cannot be dispatched", status=422
-                    )
-                )
-            # THE PATH SHOWN IS THE PATH LAUNCHED (#904 review 2, finding 6).
-            #
-            # Re-resolving is required — a project can be repointed while a proposal sits on
-            # screen, and launching where it USED to point is the stale-policy family with a
-            # filesystem path on the end. But re-resolving alone means the operator confirms
-            # `/old` and the agent starts in `/new`, which is the same defect wearing the fix's
-            # clothes. So the client asserts which resolution it showed, and a mismatch refuses.
-            #
-            # It is a COMPARAND, never a launch argument: `expect_cwd` is compared and discarded,
-            # and the path that reaches the spawn is the one this server resolved.
-            expect_cwd = body.get("expect_cwd")
-            if not isinstance(expect_cwd, str) or not expect_cwd.strip():
-                return _fail(
-                    missions.MissionError(
-                        "expect_cwd is required and names the directory you approved", status=422
-                    )
-                )
-            # WHAT DONE MEANS MUST BE SETTLED, AND MUST BE WHAT WAS SHOWN (#904 review 3,
-            # finding 5). A new mission starts with `objectives_state='pending'` — the producer
-            # is a background task — so a fast operator could launch before the mission knew what
-            # finishing means, and the supervisor would then follow through against a checklist
-            # that arrived afterwards. The card shows the set; `expect_objectives` is the digest
-            # of what it showed, so "final" and "the same one you read" are one check.
-            row = await missions.run_admitted(lambda: missions.get_mission(mission_id))
-            if row is None:
-                return _fail(missions.MissionError(f"unknown mission {mission_id}", status=404))
-            # FINALIZED **AND NOT EMPTY** (#904 review 4, finding 3). `pending` was the only
-            # refusal, so a settled-but-empty checklist dispatched — and #893's acceptance
-            # invariant is that the mission knows what finishing means BEFORE it starts. An agent
-            # running against nothing is one the supervisor cannot follow through on, which is
-            # the entire reason the objectives exist.
-            #
-            # The gate is deliberately NOT `objectives_state == "done"`. Production settles
-            # `skipped` on an install with no AI endpoint configured and `failed` when the model
-            # call breaks — and in both cases the operator writing the checklist by hand is the
-            # intended flow, not a bypass. Keying on the producer's verdict would make DISPATCH
-            # permanently unreachable on those installs while proving nothing: what matters is
-            # that nobody is still writing the list (`pending`) and that a list exists.
-            obj_state = str(row.get("objectives_state") or "")
-            if obj_state == "pending":
-                return _fail(
-                    missions.MissionError(
-                        "what done means is still being worked out; try again in a moment",
-                        status=409,
-                    )
-                )
-            if not (row.get("objectives") or []):
-                return _fail(
-                    missions.MissionError(
-                        "this mission has no objectives, so it does not know what finishing "
-                        "means; add at least one before dispatching",
-                        status=409,
-                    )
-                )
-            expect_obj = body.get("expect_objectives")
-            if not isinstance(expect_obj, str):
-                return _fail(
-                    missions.MissionError(
-                        "expect_objectives is required and names the checklist you approved",
-                        status=422,
-                    )
-                )
-            if expect_obj != missions.objectives_digest(row.get("objectives") or []):
-                return _fail(
-                    missions.MissionError(
-                        "the objectives changed since you read them; read the plan again",
-                        status=409,
-                    )
-                )
-            if expect_cwd.strip() != fresh_cwd:
-                return _fail(
-                    missions.MissionError(
-                        "that project now resolves somewhere else; read the plan again",
-                        status=409,
-                    )
-                )
-            plan = await missions.run_admitted(
-                lambda: missions.claim_plan(
-                    mission_id,
-                    plan_id,
-                    cwd=fresh_cwd,
-                    project_id=fresh_project,
-                    # RE-COMPARED INSIDE THE CLAIM (#904 review 4, finding 2). The checks above
-                    # are a separate transaction and `patch_objectives` is legal in the gap, so
-                    # they answer "was this the checklist a moment ago" — the claim answers "is
-                    # it the checklist now", which is the one the launch runs against.
-                    expect_objectives=expect_obj,
-                    require_objectives=True,
-                )
-            )
         except missions.MissionError as e:
             return _fail(e)
-
-        out = await mission_dispatch.run(
-            mission_id,
-            plan,
-            registry=registry,
-            policy_epoch=policy_epoch,
-            # …AND AGAIN, INSIDE THE LAUNCH FENCE. The window between this route's resolution and
-            # `create_subprocess_exec` is the second half of the same finding: a project moved in
-            # it would still be launched. `run` calls this immediately before the spawn, while
-            # holding the fence, and refuses on a mismatch.
-            verify_cwd=lambda: _resolve_cwd(plan.get("project_id"))[1],
-        )
-        return JSONResponse(out)
+        return await dispatch_approved(mission_id, body, registry=registry)
 
     @app.post("/api/missions/{mission_id}/spawn")
     async def spawn_route(

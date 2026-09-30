@@ -433,6 +433,18 @@ async def _orphaned_after_launch(
     return _Reconciled(state or "dispatching", outcome, not (discharged and terminal))
 
 
+def _decided_bypass() -> bool:
+    """What this path decides about unattended bypass, before any caller's ceiling. Always
+    ``False`` today (see the launch call in :func:`run`)."""
+    return False
+
+
+def apply_bypass_ceiling(decided: bool, ceiling: bool | None) -> bool:
+    """A ceiling only ever LOWERS the grant: ``False`` forces no bypass, ``None`` changes nothing,
+    ``True`` never grants what the path did not decide (#1201)."""
+    return bool(decided) and ceiling is not False
+
+
 async def run(
     mission_id: str,
     plan: dict,
@@ -440,6 +452,8 @@ async def run(
     registry,
     policy_epoch: str | None = None,
     verify_cwd=None,
+    bypass_ceiling: bool | None = None,
+    extra_authorize=None,
 ) -> dict:
     """Launch the plan and settle the mission. Returns what the console renders.
 
@@ -510,6 +524,15 @@ async def run(
                     "this dispatch was superseded while the launch was being authorised, "
                     "so nothing was started"
                 )
+        # …AND THE CALLER'S OWN AUTHORITY, under the same fence (#1201): an automation re-reads its
+        # consent here, so a disable that lands while the launch waits for the fence stops it.
+        if extra_authorize is not None:
+            try:
+                why = extra_authorize()
+            except Exception:  # noqa: BLE001 — an unreadable authority is not permission
+                why = "the caller's authority could not be re-read, so nothing was started"
+            if why:
+                return why
         return None
 
     # WHAT WAS MINTED, if anything (#904 review 18, finding 1). The launcher can raise AFTER the
@@ -559,7 +582,11 @@ async def run(
             # answer here is no: an operator approving a PLAN approved the work, not the removal
             # of every tool prompt from an agent nobody is watching. It stays off until it is a
             # grant somebody explicitly makes.
-            bypass=False,
+            #
+            # …AND A CALLER'S CEILING CAN ONLY LOWER IT (#1201): an automation passes
+            # `bypass_ceiling=False`, so whatever this path decides, an automated mission never
+            # launches permission-bypassed. `None` (the manual route) leaves the decision as is.
+            bypass=apply_bypass_ceiling(_decided_bypass(), bypass_ceiling),
             on_key=on_key,
             authorize=authorize,
             nonce=nonce,

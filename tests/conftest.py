@@ -47,6 +47,7 @@ _REAL_HOME = pwd.getpwuid(os.getuid()).pw_dir
 # them to follow it.
 STORE_ENV_PATHS: dict[str, str] = {
     "AGENT_SESSIONS_MISSIONS_DB": ".config/agent-sessions/missions.db",
+    "AGENT_SESSIONS_AUTOMATIONS_DB": ".config/agent-sessions/automations.db",  # #1201
     "AGENT_SESSIONS_PREFS": ".config/agent-sessions/prefs.json",
     "AGENT_SESSIONS_METADATA": ".config/agent-sessions/metadata.json",
     "AGENT_SESSIONS_PROJECTS": ".config/agent-sessions/projects.json",
@@ -177,6 +178,10 @@ _pin_store_env()
 # store on its first pass. A test that enters the lifespan would get rows it never asked for, at a
 # moment it does not control. Its tests call `needs_you_notify.sync_once` directly instead.
 os.environ.setdefault("AGENT_SESSIONS_NEEDS_YOU_LOOP", "0")
+# The automation scheduler (#1201) fires unattended work from the lifespan. No test that merely
+# enters the lifespan may start one; its tests drive `automation_loop.Scheduler.tick` directly and
+# opt back in with `monkeypatch.setenv("AGENT_SESSIONS_AUTOMATION_LOOP", "1")`.
+os.environ.setdefault("AGENT_SESSIONS_AUTOMATION_LOOP", "0")
 _install_tripwire()
 
 
@@ -510,6 +515,22 @@ def _isolate_missions_db(tmp_path, monkeypatch) -> None:
     missions.reset_schema_cache_for_test()
     yield
     missions.reset_schema_cache_for_test()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_automations_db(tmp_path, monkeypatch) -> None:
+    """Point the automations store (#1201) at a per-test tmp file, like the missions store above.
+
+    Its owner lock lives beside the file, so this isolates the scheduler's kernel lock too."""
+    from agent_sessions import automations_store
+
+    monkeypatch.setenv(
+        "AGENT_SESSIONS_AUTOMATIONS_DB",
+        str(tmp_path / ".config" / "agent-sessions" / "automations.db"),
+    )
+    automations_store.reset_schema_cache_for_test()
+    yield
+    automations_store.reset_schema_cache_for_test()
 
 
 @pytest.fixture(autouse=True)
