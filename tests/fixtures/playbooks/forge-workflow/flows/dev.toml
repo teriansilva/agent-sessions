@@ -1,0 +1,95 @@
+format = 1
+title = "Issue to live"
+description = "The development flow: plan, implement, review with bounded rework, merge, deploy."
+
+[[steps]]
+id = "plan"
+title = "Plan"
+brief = "Write an issue for the work in {{repo}} with the required sections."
+actor = { kind = "agent", engine = "claude", model = "default" }
+
+[[steps.checklist]]
+key = "issue_ready"
+title = "The issue has every required section"
+probe = "supervisor_judged"
+
+[[steps]]
+id = "implement"
+title = "Implement on its own branch"
+brief = "Implement the issue on a new branch and open a pull request. Run {{test_cmd}} first."
+actor = { kind = "agent", engine = "claude" }
+after = ["plan"]
+outputs = ["pr_number", "head_branch", "head_sha"]
+memory = "read-write"
+
+[[steps.checklist]]
+key = "pr_open"
+title = "A pull request is open"
+probe = "forge_pr"
+probe_args = { repo = "{{repo}}" }
+
+[[steps.checklist]]
+key = "checks_green"
+title = "Checks are green"
+probe = "forge_checks"
+probe_args = { repo = "{{repo}}" }
+
+[[steps]]
+id = "review"
+title = "Independent review"
+actor = { kind = "external", label = "Reviewer bot" }
+after = ["implement"]
+memory = "read"
+
+[[steps.checklist]]
+key = "review_approved"
+title = "Approved at the head commit"
+probe = "forge_review"
+probe_args = { repo = "{{repo}}", branch = "{{steps.implement.head_branch}}" }
+
+[steps.rework]
+to = "implement"
+when = "review_approved"
+max_rounds = 5
+
+[[steps.distinct_from]]
+step = "implement"
+constraint = "session"
+
+[[steps]]
+id = "merge"
+title = "Merge"
+actor = { kind = "operator" }
+after = ["review"]
+
+[[steps.checklist]]
+key = "merged"
+title = "The pull request is merged"
+probe = "forge_merged"
+probe_args = { repo = "{{repo}}", branch = "{{steps.implement.head_branch}}" }
+
+[[steps]]
+id = "deploy"
+title = "Deploy and verify live"
+actor = { kind = "none" }
+after = ["merge"]
+
+[[steps.checklist]]
+key = "live"
+title = "The service answers healthy"
+probe = "http_status"
+probe_args = { url = "{{deploy_url}}", expect_status = "{{healthy_status}}" }
+
+[[steps.checklist]]
+key = "revision_live"
+title = "The merged revision is live"
+probe = "http_revision"
+required = false
+probe_args = { url = "{{deploy_url}}", expect = "{{steps.implement.head_sha}}" }
+
+[[steps]]
+id = "retro"
+title = "What to remember next time"
+brief = "A note: nothing waits on this step."
+actor = { kind = "none" }
+after = ["deploy"]
