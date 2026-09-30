@@ -35,6 +35,7 @@ import { useLocation, useSearchParams } from "react-router-dom";
 import { ActionRow } from "./ActionRow";
 import type { DraftEdit } from "./draftDirection";
 import { announceActionResolved } from "../../lib/actionEvents";
+import { MISSION_ID_RE } from "../../lib/missionLink";
 import { NewMissionForm } from "./NewMissionForm";
 import { MissionComposer } from "./MissionComposer";
 import { MissionQuestionCard } from "./MissionQuestionCard";
@@ -84,9 +85,6 @@ function dedupe(rows: MissionListRow[], have: MissionListRow[] = []) {
   return rows.filter((m) => (seen.has(m.id) ? false : (seen.add(m.id), true)));
 }
 
-/** The server's mission id shape (`missions.MISSION_ID_RE`). A deep link that does not match it
- *  is never used to select, so it can never become a request. */
-const MISSION_ID_RE = /^msn_[0-9a-f]{32}$/;
 
 /** What the console is showing when no mission is selected: the new-mission page (#948). A real
  *  mission id is `msn_…`, so the sentinel cannot collide with one.

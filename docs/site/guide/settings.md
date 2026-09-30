@@ -23,6 +23,9 @@ exception: they are saved per device, so a phone and a desktop can differ.
   device does not have are greyed out rather than quietly falling back.
 - **Terminal text size** — decides how many columns the agent lays out against. Smaller text means
   a wider terminal, which is what a column-laid-out interface like opencode needs on a phone.
+- **Opening links** — how a session link from outside the app opens on this device: *Ask each
+  time*, *Full screen* or *In map*. Desktop only; *Ask each time* resets a remembered choice. See
+  [Opening links](/guide/sessions#opening-links).
 
 ### Session defaults · `session-defaults`
 

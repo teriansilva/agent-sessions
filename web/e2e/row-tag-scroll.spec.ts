@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { openLinksFullScreen } from "./linkMode";
 
 // #551: real-browser proof for the custom per-session tag + the selected-row auto-scroll.
 //   1. A tag renders (in the accent voice) BEFORE the AI summary on the row's second line.
@@ -175,6 +176,7 @@ test.describe("selected-row auto-scroll (#551)", () => {
     browser,
   }) => {
     const context = await browser.newContext({ reducedMotion: "reduce" });
+    await openLinksFullScreen(context);
     const page = await context.newPage();
     await setup(page, "desktop");
     await page.goto("/s/claude/longrow");

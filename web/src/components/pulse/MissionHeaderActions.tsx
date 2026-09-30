@@ -52,11 +52,14 @@ import {
   CircleX,
   FileText,
   RotateCw,
+  Share2,
   Undo2,
 } from "lucide-react";
 import { useCallback, useState, type ReactNode } from "react";
 
 import { ApiError, api } from "../../lib/api";
+import { missionLink } from "../../lib/missionLink";
+import { shareLink } from "../../lib/shareLink";
 import type { Mission } from "../../types/api";
 
 import action from "../ui/actionButton.module.css";
@@ -330,8 +333,6 @@ export function MissionHeaderActions({
      accessible names, their testids and their two-tap confirmations; only their prominence changes.
      An archived mission has nothing here but Unarchive, so it has no menu at all. */
   const planning = !archived && start?.active ? start : null;
-  /** Anything above the destructive group, so the hairline has something to separate. */
-  const hasLead = planning !== null || state === "running" || state === "review";
   const icon = (node: ReactNode) => (
     <span className={styles.menuIcon} aria-hidden="true">
       {node}
@@ -423,9 +424,29 @@ export function MissionHeaderActions({
         </button>
       ) : null}
 
+      {/* Share link (#1232): the installed app has no address bar, so this is how a mission is passed
+          on from it. Present in every state the menu is, which is also why the hairline below is. */}
+      <button
+        type="button"
+        className={styles.menuItem}
+        onClick={() =>
+          void shareLink({ title: mission.title, path: missionLink(mission.id) }).then(
+            (outcome) => {
+              if (outcome === "copied") onNote("Link copied.");
+              else if (outcome === "failed") onNote("Copying the link needs a secure origin.");
+            },
+          )
+        }
+        role="menuitem"
+        data-testid="mission-share-link"
+      >
+        {icon(<Share2 size={15} />)}
+        Share link
+      </button>
+
       {/* The hairline before the destructive group, as RowMenu draws one. Not a menuitem, so the roving
           focus skips it. */}
-      {hasLead ? <div className={styles.menuSep} role="separator" /> : null}
+      <div className={styles.menuSep} role="separator" />
 
       {/* ABANDON is available from every non-terminal state — it is the operator saying "not
         this", and `_ALLOWED` accepts it from all of them. It is terminal in the strong sense:

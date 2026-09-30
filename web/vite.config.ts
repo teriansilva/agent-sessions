@@ -72,6 +72,16 @@ export default defineConfig({
         background_color: "#0d0e10",
         display: "standalone",
         start_url: "./",
+        // Link capture (#1232): the installed app owns its whole origin, and a link into it
+        // focuses the open window and is delivered through `window.launchQueue` (handled by
+        // `EntryLinks`) instead of opening a browser tab or a second app window. `focus-existing`,
+        // not `navigate-existing`: the latter RELOADS the window onto the URL — losing whatever is
+        // unsaved in it — where this routes in-app. Chromium honours both fields; other browsers
+        // ignore them and fall back to the tab hand-off.
+        id: "/",
+        scope: "/",
+        launch_handler: { client_mode: ["focus-existing", "auto"] },
+        handle_links: "preferred",
         icons: [
           { src: "favicon.svg", sizes: "any", type: "image/svg+xml", purpose: "any" },
           { src: "icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },

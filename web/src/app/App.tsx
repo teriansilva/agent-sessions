@@ -48,6 +48,7 @@ import { DashboardRetentionProvider } from "./DashboardRetentionContext";
 import { OverviewSessionsProvider } from "./OverviewSessionsContext";
 import { SessionsProvider } from "./SessionsContext";
 import { WorkspaceProvider } from "./WorkspaceContext";
+import { EntryLinks } from "../components/links/EntryLinks";
 import { EngineRosterProvider } from "./EngineRosterProvider";
 import { useSessionsStore } from "./sessionsStore";
 import {
@@ -711,6 +712,9 @@ function Layout() {
             </Suspense>
           </ChunkErrorBoundary>
         </main>
+        {/* A session or mission link from outside the app: open it the way this device was told
+            to, or ask (#1232). Renders nothing unless it is asking. */}
+        <EntryLinks />
         <footer className="hud-classbar">
           <span className="hud-footer-left">
             <span className="hud-tag">

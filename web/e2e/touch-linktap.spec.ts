@@ -20,7 +20,7 @@ window.WebSocket = class {
     setTimeout(() => {
       this.readyState = 1;
       if (this.onopen) this.onopen();
-      const s = "\\x1b[H\\x1b[2J" + ${JSON.stringify(line)};
+      const s = "\\x1b[H\\x1b[2J" + ${JSON.stringify(line)}.replace("{{ORIGIN}}", location.origin);
       const buf = new TextEncoder().encode(s).buffer;
       if (this.onmessage) this.onmessage({ data: buf });
       if (this.onmessage) this.onmessage({ data: JSON.stringify({ t: "seq", n: s.length }) });
@@ -78,7 +78,7 @@ async function openSession(
     .poll(async () => page.locator(".xterm-screen").innerText(), {
       timeout: 5000,
     })
-    .toContain("example.com");
+    .toContain(line.includes("{{ORIGIN}}") ? "/s/claude/" : "example.com");
   return surface;
 }
 
@@ -128,4 +128,17 @@ test("tap on a wrapped URL's first row opens the full URL, not a truncated fragm
     .poll(async () => (await openedUrls(page)).length, { timeout: 3000 })
     .toBe(1);
   expect(await openedUrls(page)).toEqual([WRAPPED_URL]);
+});
+
+test("tap on a BattleLab link opens it HERE, not in a new tab that hands it back (#1232)", async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "touch-only behavior");
+  // Agents print session links (every session record does). A new tab would find this tab open and
+  // hand the link straight back, leaving a stub tab behind — so it opens in-app instead, and on a
+  // phone that is full screen.
+  const surface = await openSession(page, "{{ORIGIN}}/s/claude/linktarget", "linktapsrc");
+  await tapRow(surface, 0);
+  await expect(page).toHaveURL(/\/s\/claude\/linktarget$/);
+  expect(await openedUrls(page)).toEqual([]);
 });

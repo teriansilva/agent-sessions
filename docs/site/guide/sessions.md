@@ -60,6 +60,27 @@ relaunches from history. Archive frees resources; it never destroys conversation
 
 Teardown is best-effort and never blocks the archive itself.
 
+## Opening links
+
+A BattleLab link from outside the app — a comment, a chat, a mail — opens in the BattleLab you
+already have instead of starting another copy.
+
+- **Installed app.** Install BattleLab from the browser and it claims its own links: a link opens
+  in the app's window, which moves to it. This works in Chrome and Edge on desktop and on
+  Android. Safari on iOS and macOS does not support it, so there a link opens in Safari.
+  The app claims the whole address, so its server pages — sign-in, and approving a linked
+  device — open in the app window too.
+- **Browser tab.** A link that opens in a new tab hands itself to the BattleLab tab that is already
+  open, and the new tab says so. A browser does not let a page switch to another tab or close a
+  tab it did not open, so you close the new one yourself — or pick **Open here instead**. With no
+  other BattleLab tab open, the link just opens where it landed.
+- **Full screen or map.** On a desktop, a session link asks whether to open it **full screen** or
+  **in the map**, and *Remember my choice* makes that the answer from then on. Change or reset it
+  in Settings → Appearance → Opening links. A phone always opens full screen, and a mission link
+  always opens in Missions.
+- **Share link.** The session's actions and the mission's **⋯** menu carry **Share link**: the
+  system share sheet where the device has one, otherwise the link is copied.
+
 ## Organising the list
 
 Titles, project assignment, favourites and archive state all live in BattleLab's own metadata

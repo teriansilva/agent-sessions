@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { clickHeadAction, FILES_ACTION } from "./headActions";
+import { openLinksFullScreen } from "./linkMode";
 
 /** Uploading into the browsed directory (#807) — real-browser proof, desktop AND mobile.
  *
@@ -370,6 +371,7 @@ test("a browser with no webkitdirectory says so instead of offering a broken Fol
   // iOS Safari's actual shape. Simulated by removing the property before the app loads, which is
   // the only honest way to test a capability this engine happens to have.
   const ctx = await browser.newContext();
+  await openLinksFullScreen(ctx);
   const page = await ctx.newPage();
   await page.addInitScript(() => {
     const proto = HTMLInputElement.prototype as unknown as Record<string, unknown>;

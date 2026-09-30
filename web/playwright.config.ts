@@ -44,6 +44,18 @@ export default defineConfig({
   expect: { timeout: 15_000 },
   use: {
     baseURL: process.env.E2E_BASE_URL ?? PREVIEW_URL,
+    // A session URL opened from outside the app asks "Full screen or map?" on desktop (#1232).
+    // Every spec navigates straight to session URLs, so the suite starts with the choice made —
+    // full screen, which is what those specs were written against. `link-open.spec.ts` clears it.
+    storageState: {
+      cookies: [],
+      origins: [
+        {
+          origin: new URL(process.env.E2E_BASE_URL ?? PREVIEW_URL).origin,
+          localStorage: [{ name: "battlelab.linkOpenMode", value: "fullscreen" }],
+        },
+      ],
+    },
     trace: "on-first-retry",
     screenshot: "only-on-failure",
   },

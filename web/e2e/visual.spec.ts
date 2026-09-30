@@ -24,6 +24,7 @@ import {
   emptyManifest,
   type ManifestEntry,
 } from "../visual/manifest";
+import { openLinksFullScreen } from "./linkMode";
 
 const OUT = process.env.VISUAL_OUT ?? "visual-out";
 const USER = process.env.VISUAL_USER ?? "admin";
@@ -138,6 +139,8 @@ test("visual capture", async ({ browser }, info) => {
   // canvas's randomness is fine.
   const anon = await browser.newContext({ baseURL: BASE });
   const authed = await browser.newContext({ baseURL: BASE });
+  // Captures show a session full screen, not the #1232 "Full screen or map?" prompt.
+  await openLinksFullScreen(authed);
   // Authenticate the authed context. Prefer a directly-minted session cookie (set by
   // run-local.sh from the known SECRET_KEY via the app's own signer) — faithful, reliable, and
   // 2FA-agnostic, with no flaky form round-trip. Fall back to the server /login form when no

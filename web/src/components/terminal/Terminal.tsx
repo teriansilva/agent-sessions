@@ -12,6 +12,7 @@ import {
   ScrollText,
   SquareDashedBottom,
   Crosshair,
+  Share2,
 } from "lucide-react";
 import {
   type Ref,
@@ -73,6 +74,8 @@ import { HeadFacts } from "./HeadFacts";
 import { SessionRecapModal } from "./SessionRecapModal";
 import styles from "./Terminal.module.css";
 import { missionLink } from "../../lib/missionLink";
+import { shareLink } from "../../lib/shareLink";
+import { openTerminalLink } from "../../lib/terminalLink";
 import { isAgent, useEngineRoster } from "../../app/engineRoster";
 
 // #554: how long the auto copy-on-select "Copied" toast stays up (matches the CSS fade).
@@ -331,6 +334,11 @@ export function Terminal({
     tick: 0,
     ok: true,
   });
+  // Share link (#1232): what the clipboard fallback did — the share sheet reports itself.
+  const [linkToast, setLinkToast] = useState<{ tick: number; ok: boolean }>({
+    tick: 0,
+    ok: true,
+  });
   // Scroll-up lazy-load (#348 Phase 3): pill state (loading / start-of-history / error)
   // + whether the viewport sits at the very top of the scrollback (the end pill only
   // shows there). `histRetryRef` holds the effect-scoped retry closure for the error pill.
@@ -471,12 +479,12 @@ export function Terminal({
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
-    // Make URLs in agent output clickable (#158). Opens in a new tab, deliberately denying
-    // window.opener access (so the linked page can't navigate this tab) + the Referer header
-    // (privacy + don't leak which agent-sessions session we came from).
+    // Make URLs in agent output clickable (#158). A BattleLab link on this origin opens here, the
+    // way an outside link would; anything else opens in a new tab with no opener and no Referer
+    // (#1232, see lib/terminalLink).
     term.loadAddon(
-      new WebLinksAddon((_e, uri) => {
-        window.open(uri, "_blank", "noopener,noreferrer");
+      new WebLinksAddon((e, uri) => {
+        openTerminalLink(uri, e.metaKey || e.ctrlKey);
       }),
     );
     term.open(host);
@@ -1480,7 +1488,7 @@ export function Terminal({
         // line (as WebLinksAddon does on desktop), never a single row's fragment.
         const url = urlAtCell(buf, buf.viewportY + vrow, col, cols);
         if (url) {
-          window.open(url, "_blank", "noopener,noreferrer");
+          openTerminalLink(url);
           return;
         }
       }
@@ -1934,6 +1942,35 @@ export function Terminal({
       disabled: termFontSize >= TERM_FONT_SIZE_MAX,
       run: () => setTermFontSize(stepTermFontSize(termFontSize, 1)),
     },
+    // Share link (#1232) — the installed app has no address bar, so this is how a session is passed
+    // on from it. AFTER the zoom pair, the new last entry: HeadActions folds from the END (#783), so
+    // nothing already on the bar moves. Withheld on an unreconciled `new-<uuid>` placeholder, whose
+    // URL names a session the server does not have yet; it acts on `actionKey`, the settled id.
+    ...(!isNewSessionPlaceholder(actionKey)
+      ? [
+          {
+            id: "share-link",
+            label: "Share link",
+            aria: "Share a link to this session",
+            title: "Share link: send or copy a link that opens this session",
+            icon: <Share2 size={13} aria-hidden="true" />,
+            run: () => {
+              void shareLink({
+                title: row?.title || "BattleLab session",
+                path: `/s/${actionKey.slice(0, actionKey.indexOf(":"))}/${actionNative}`,
+              }).then((outcome) => {
+                if (outcome !== "copied" && outcome !== "failed") return;
+                const tick = Date.now();
+                setLinkToast({ tick, ok: outcome === "copied" });
+                window.setTimeout(
+                  () => setLinkToast((t) => (t.tick === tick ? { tick: 0, ok: true } : t)),
+                  outcome === "copied" ? COPIED_TOAST_MS : COPY_FAILED_TOAST_MS,
+                );
+              });
+            },
+          },
+        ]
+      : []),
   ];
 
   return (
@@ -2050,6 +2087,21 @@ export function Terminal({
             data-copy-failed={copied.ok ? undefined : ""}
           >
             {copied.ok ? "Copied" : "Copy needs a secure origin"}
+          </div>
+        )}
+        {linkToast.tick !== 0 && (
+          <div
+            key={linkToast.tick}
+            className={
+              linkToast.ok
+                ? styles.copiedToast
+                : `${styles.copiedToast} ${styles.copyFailed}`
+            }
+            role="status"
+            aria-live="polite"
+            data-link-toast=""
+          >
+            {linkToast.ok ? "Link copied" : "Copy needs a secure origin"}
           </div>
         )}
         {/* Scroll-up lazy-load pills (#348 Phase 3, per the issue mockup): absolutely

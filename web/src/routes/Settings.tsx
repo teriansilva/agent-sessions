@@ -105,6 +105,7 @@ import {
   type SettingsSectionId,
 } from "./settingsTabs";
 import styles from "./Settings.module.css";
+import { OpeningLinksSetting } from "../components/links/OpeningLinksSetting";
 import { UpdateProgressPanel } from "../components/updates/UpdateProgressPanel";
 import { UpdateWhatsNew } from "../components/updates/UpdateWhatsNew";
 import { SOURCE_URL } from "../lib/links";
@@ -2402,6 +2403,7 @@ export function Settings() {
                 </p>
               </div>
 
+              <OpeningLinksSetting />
             </section>
           </>
         )}
