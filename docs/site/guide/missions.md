@@ -58,6 +58,18 @@ never confirm itself finished.
 
 Objectives arrive a moment after the mission does; see below.
 
+### Permission bypass
+
+An agent a mission starts runs with nobody watching, so whether it skips tool prompts is your call:
+it follows **Permission bypass for new sessions and missions** in **Settings › Agents › Defaults**
+(on by default), and the **Orchestrator** panel of [Mission control settings](/guide/settings)
+shows which way it is set. The setting is read as each agent starts, and the timeline records which
+posture it started with. Turning it off does not reach an agent that is already running. With it
+off, an agent asks before using tools and can stall until you answer.
+
+Scheduled mission automations always keep permission bypass off, as their consent specifies,
+even when this default is on. Their timeline records bypass off.
+
 ## Adopting a session you already started
 
 Work started from the sidebar is not orphaned. Adopt it from the session itself: the **⋯** menu on

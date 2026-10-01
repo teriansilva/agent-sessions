@@ -5,7 +5,7 @@ import { useConfig, useConfigRefresh } from "../app/config";
 import { api, ApiError } from "../lib/api";
 import type { OrchestratorConfig, OrchestratorTier } from "../types/api";
 import styles from "./Settings.module.css";
-import { promptPath } from "./settingsTabs";
+import { promptPath, settingsPath } from "./settingsTabs";
 
 const FALLBACK: OrchestratorConfig = {
   enabled: false,
@@ -51,7 +51,13 @@ const TIER_LABELS: Record<OrchestratorTier, string> = {
  *  context (without that refresh, remounting the panel shows pre-save values as if the save had
  *  been lost — the #667 failure mode). */
 export function OrchestratorSettings() {
-  const cfgBlock = useConfig()?.orchestrator;
+  const config = useConfig();
+  const cfgBlock = config?.orchestrator;
+  // THE BYPASS GRANT MISSION LAUNCHES TAKE (#1215). Stored with the agent defaults and edited
+  // there; stated here because this is where missions are configured, so the grant is visible
+  // where the operator decides what mission control may do. `mission_bypass` is the server's
+  // STRICT reading — the one a launch uses — never the lenient form default.
+  const missionBypass = config?.mission_bypass ?? false;
   const refreshConfig = useConfigRefresh();
   // Rides on the in-app prompt link so the #155 "Back to sessions" target survives the hop.
   const location = useLocation();
@@ -318,6 +324,25 @@ export function OrchestratorSettings() {
               its own, with nobody reading it first.
             </>
           ) : null}
+        </p>
+      </div>
+
+      <div className={styles.aiField} data-testid="orchestrator-mission-bypass">
+        <p className={styles.hint}>
+          Missions run with permission bypass:{" "}
+          <strong>{missionBypass ? "on" : "off"}</strong>.{" "}
+          {missionBypass
+            ? "Agents a mission starts skip tool prompts, with nobody watching."
+            : "Agents a mission starts ask before using tools, and can stall until you answer."}{" "}
+          Scheduled mission automations always keep bypass off. Change it in{" "}
+          <Link
+            className={styles.nameLink}
+            to={settingsPath("agents-defaults")}
+            state={location.state}
+          >
+            Agents › Defaults
+          </Link>
+          ; it applies to each agent as it starts.
         </p>
       </div>
 

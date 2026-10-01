@@ -71,8 +71,8 @@ def test_registry_covers_every_system_prompt():
         "mission_objectives",
         # `mission_plan` writes the BRIEF that is pasted verbatim into a fresh agent running
         # UNATTENDED — the shortest path from prompt text to autonomous action anywhere in the
-        # app, so it is guarded for a more direct reason than the two above (#893). Not
-        # permission-bypassed: `mission_dispatch.run` passes `bypass=False` (#904 review 3).
+        # app, so it is guarded for a more direct reason than the two above (#893). Permission-
+        # bypassed only under the operator's `agent_defaults.bypass` grant (#1215).
         "mission_plan",
         "mission_question",
         "mission_supervisor",

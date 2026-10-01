@@ -354,19 +354,21 @@ def _set(key: str, value: object, path: Path | None = None):
     return value
 
 
-def _mutate(key: str, merge, path: Path | None = None):
+def _mutate(key: str, merge, path: Path | None = None, *, absent: object = None):
     """Read-modify-write ONE top-level pref block under a single exclusive flock.
 
     ``_set`` locks only its own write, so the common ``get_x() -> merge -> set_x()`` shape has
     a read-modify-write race: two concurrent partial saves both read the same base document,
     each merges its own field, and whichever writes last erases the other's — an acknowledged
-    setting silently reverts. ``merge`` receives the raw stored block (or ``None``) and returns
-    the block to persist; everything between the read and the write happens under the lock.
+    setting silently reverts. ``merge`` receives the raw stored block (or ``absent`` — ``None``
+    by default — when the key is missing) and returns the block to persist; everything between
+    the read and the write happens under the lock. Pass a sentinel as ``absent`` when a stored
+    JSON ``null`` must not read the same as a missing key.
     """
     path = path or _default_path()
     with json_write_lock(path):
         data = read_json_doc(path)
-        value = merge(data.get(key))
+        value = merge(data[key] if key in data else absent)
         data[key] = value
         atomic_write_json(path, data)
     return value
@@ -2226,6 +2228,10 @@ def _coerce_agent_budgets(raw: object) -> dict:
 # permission-bypass default. Both are STARTING values — the new-session form (or a handoff) can
 # still choose differently for itself, and changing a default never rewrites a mission plan or a
 # stored session. Strict on write (422, never coerce), lenient on read, like `term_font_size`.
+#
+# `bypass` is ALSO the operator's grant for UNATTENDED launches (#1215): a mission dispatch or
+# spawn reads it at launch time and re-checks it inside the launch fence. That is why a change to
+# it commits under the same fence — see `set_agent_defaults`.
 
 AGENT_DEFAULTS_KEYS = ("default_engine", "bypass", "models")
 _ENGINE_ID_SHAPE = re.compile(r"\A[a-z][a-z0-9-]{0,23}\Z")
@@ -2322,6 +2328,27 @@ def get_agent_defaults(path: Path | None = None) -> dict:
     return coerce_agent_defaults(_load(path or _default_path()).get("agent_defaults"))
 
 
+def unattended_bypass_granted(path: Path | None = None) -> bool:
+    """The permission-bypass grant for UNATTENDED launches (#1215) — fail closed.
+
+    The same stored `agent_defaults.bypass` the interactive default reads, with one difference:
+    this is a grant, so only an explicit `true` or an ABSENT value (the default the operator
+    approved, the same `true` the new-session form starts from) grants it. A document that cannot
+    be read or parsed, a block that is not an object, or a value that is not a boolean is no grant
+    — where `get_agent_defaults` stays lenient so an edited file cannot strand the form. Raises
+    nothing.
+    """
+    try:
+        data = _read_policy_doc(path or _default_path())
+    except Exception:  # noqa: BLE001 — an unreadable authority record is not a grant
+        return False
+    block = data.get("agent_defaults", {})
+    if not isinstance(block, dict):
+        return False
+    value = block.get("bypass", True)
+    return value is True
+
+
 def validate_agent_defaults_patch(patch: object, path: Path | None = None) -> str | None:
     """A 422 detail, or None. `bypass` is a real JSON boolean only (a string or number is refused,
     never coerced). `default_engine` is `null` or a loaded engine that can start a new session —
@@ -2350,13 +2377,38 @@ def validate_agent_defaults_patch(patch: object, path: Path | None = None) -> st
 
 
 def set_agent_defaults(patch: dict, path: Path | None = None) -> dict:
-    """Merge a VALIDATED partial block under the prefs lock; unmentioned fields are kept."""
+    """Merge a VALIDATED partial block under the prefs lock; unmentioned fields are kept.
+
+    **A `bypass` change commits inside the launch fence** (#1215). It is the grant a mission
+    launch re-checks under that fence, so the change either lands before the check — and a launch
+    built with bypass refuses — or waits until the spawn it could not have prevented anyway. The
+    same ordering `set_orchestrator` gets. Raises `session_input.AuthorityFenceBusy` rather than
+    committing unordered; call it off the event loop.
+    """
 
     def merge(raw):
-        cur = coerce_agent_defaults(raw)
+        cur = coerce_agent_defaults(None if raw is _ABSENT else raw)
         for k in ("default_engine", "bypass"):
             if k in patch:
                 cur[k] = patch[k]
+        # A SAVE THAT DOES NOT NAME `bypass` MUST NOT CHANGE THE UNATTENDED GRANT (#1215 issue
+        # review 2). The lenient coercion above turns a malformed stored value into `True`, which
+        # the strict grant reader treats as a grant — so an engine-only save would silently
+        # enable unattended bypass, outside the fence. The stored value is kept literally, and a
+        # block that was not an object at all — an explicit `null` included (PR review 1) — gets
+        # `null`: no grant for a launch, the same lenient `True` for the form. Only a genuinely
+        # ABSENT block or value stays absent, which is why `_mutate` hands us `_ABSENT` (defined
+        # below) for a missing key instead of the `None` a stored `null` also reads as.
+        if "bypass" not in patch:
+            if raw is _ABSENT:
+                cur.pop("bypass", None)
+            elif isinstance(raw, dict):
+                if "bypass" in raw:
+                    cur["bypass"] = raw["bypass"]
+                else:
+                    cur.pop("bypass", None)
+            else:
+                cur["bypass"] = None
         if "models" in patch:
             # Per-engine replacement under the lock: engines the patch does not name keep theirs.
             models = dict(cur["models"])
@@ -2368,7 +2420,13 @@ def set_agent_defaults(patch: dict, path: Path | None = None) -> dict:
             cur["models"] = models
         return cur
 
-    return _mutate("agent_defaults", merge, path)
+    # The CALLER gets the coerced block, whatever is stored literally (see `merge`).
+    if "bypass" not in patch:
+        return coerce_agent_defaults(_mutate("agent_defaults", merge, path, absent=_ABSENT))
+    from . import session_input
+
+    with session_input.policy_transaction("mission"):
+        return coerce_agent_defaults(_mutate("agent_defaults", merge, path, absent=_ABSENT))
 
 
 def get_agent_budgets(path: Path | None = None) -> dict:

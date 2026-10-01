@@ -526,7 +526,8 @@ async def dispatch(
     section says so — it must stay gated by the autonomy tier and the write fence, and stay
     approval-required until it has been exercised in anger. A default of `True` here would have
     made this function that grant, decided by the module that implements it. The caller opts in
-    explicitly, at the layer that knows whether an operator authorised it.
+    explicitly, at the layer that knows whether an operator authorised it — for missions that is
+    `mission_dispatch.run`, which passes the operator's `agent_defaults.bypass` grant (#1215).
 
     **`on_key` sees the session key before anything is spawned.** A caller that has to be able to
     reconcile a crash needs the id written down while the launch is still only an intention — a

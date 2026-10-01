@@ -83,7 +83,8 @@ _CLAUDE_NON_ANSWERS = frozenset({"Type something.", "Chat about this"})
 # want to proceed? ❯ 1. Yes / 2. Yes, and don't ask again / 3. No") is a numbered list too, and a
 # one-tap "don't ask again" is exactly the button this module must never produce: it widens what the
 # agent may do without the operator having decided it here. Sessions BattleLab launches run with
-# permissions bypassed, but a mission's own dispatch does not, so the prompt is reachable. No real
+# permissions bypassed, and so does a mission's own dispatch unless the operator's bypass default is
+# off (#1215) — then it does not, and the prompt is reachable. No real
 # capture exists on the host for that reason, so this is refused by its TEXT, anywhere between the
 # title and the footer, whatever chrome it is drawn in. The OPERATOR can answer one (#1213), through
 # `permission_prompts` — a separate reader no autonomous path imports — never through this module.

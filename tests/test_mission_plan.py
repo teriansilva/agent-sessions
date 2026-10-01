@@ -5,8 +5,8 @@ model-authored value becomes a launch argument.** The model picks an INDEX into 
 list; the cwd comes from the project entity, server-side. That is a stronger claim than "we
 validate what it sends", and it is the only one worth making when the thing on the end of the
 launch is an agent running UNATTENDED, in a real working directory, with nobody watching it.
-It is deliberately NOT permission-bypassed: `mission_dispatch.run` passes `bypass=False`,
-because unattended bypass is a broad privilege nobody has approved (#904 review 3, finding 6).
+It is permission-bypassed only under the operator's `agent_defaults.bypass` grant (#1215): approving
+a plan is not that grant (#904 review 3, finding 6); the setting is, and it defaults on.
 
 The other half is that `/plan` launches nothing. It produces a proposal, stores it, and stops.
 """
@@ -607,15 +607,21 @@ def test_a_STARTED_AND_BRIEFED_launch_is_adopted_before_the_mission_reports_runn
     assert row["state"] == "running"
     assert missions.active_session_keys(mid) == ["claude:aaa"]
     # The launch used the SERVER's resolved cwd and the stored brief...
-    assert seen == ["claude|/repo|go|bypass=False"]
+    # The operator's grant, which defaults on (#1215); `test_mission_bypass_grant.py` covers off.
+    assert seen == ["claude|/repo|go|bypass=True"]
 
 
-def test_UNATTENDED_BYPASS_IS_NOT_INHERITED_from_the_operators_approval(store, monkeypatch):
+@pytest.mark.parametrize("granted", [False, True])
+def test_UNATTENDED_BYPASS_IS_NOT_INHERITED_from_the_operators_approval(
+    store, monkeypatch, granted
+):
     """An operator approving a PLAN approved the work, not the removal of every tool prompt from
-    an agent nobody is watching. #898 defaults it off so the decision belongs to the layer that
-    knows whether somebody authorised it, and the answer here is no."""
-    from agent_sessions import mission_dispatch
+    an agent nobody is watching. #898 defaults it off in the launcher so the decision belongs to
+    the layer that knows whether somebody authorised it — and since #1215 that is the operator's
+    own `agent_defaults.bypass` grant, whichever way it is set, never the plan approval."""
+    from agent_sessions import mission_dispatch, prefs
 
+    prefs.set_agent_defaults({"bypass": granted})
     mid, plan = _planned(store)
     claimed = missions.claim_plan(mid, plan["plan_id"])
     got: list[bool] = []
@@ -626,7 +632,7 @@ def test_UNATTENDED_BYPASS_IS_NOT_INHERITED_from_the_operators_approval(store, m
 
     monkeypatch.setattr(mission_dispatch.headless_dispatch, "dispatch", fake)
     asyncio.run(mission_dispatch.run(mid, claimed, registry=object()))
-    assert got == [False]
+    assert got == [granted]
 
 
 def test_a_session_that_could_not_be_ADOPTED_is_not_reported_as_running(store, monkeypatch):

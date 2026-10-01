@@ -1182,22 +1182,21 @@ def real_dispatch(real_project, monkeypatch):
 
 @pytest.mark.parametrize("path_decides_bypass", [False, True])
 def test_an_automated_mission_never_launches_with_bypass(
-    real_dispatch, real_project, monkeypatch, path_decides_bypass
+    real_dispatch, real_project, path_decides_bypass
 ):
-    """#1220 makes the dispatch path honour a bypass grant; simulated here by making the path's own
-    decision True. The automation's ceiling must still force False at the launcher."""
-    monkeypatch.setattr(real_dispatch["md"], "_decided_bypass", lambda: path_decides_bypass)
+    """The real stored grant reaches dispatch; automation consent still forces bypass off."""
+    prefs.set_agent_defaults({"bypass": path_decides_bypass})
     aid = _made(_real_mission_config(real_project["id"], "dispatch"))
     asyncio.run(automation_runner.execute(_manual_run(aid), registry=object()))
     assert real_dispatch["seen"] == [False]
 
 
-def test_the_bypass_seam_is_live_for_the_manual_route(real_dispatch, real_project, monkeypatch):
+def test_the_bypass_seam_is_live_for_the_manual_route(real_dispatch, real_project):
     """Control for the tripwire: without a ceiling, the path's decision DOES reach the launcher —
     so the test above is not passing because nothing is wired."""
     from agent_sessions.routes import missions as mroutes
 
-    monkeypatch.setattr(real_dispatch["md"], "_decided_bypass", lambda: True)
+    prefs.set_agent_defaults({"bypass": True})
     row = missions.create_mission("x", project_id=real_project["id"], cwd=real_project["a"])
     asyncio.run(mroutes._produce_for_new_mission(row["id"]))
     plan = missions.get_plan(row["id"])

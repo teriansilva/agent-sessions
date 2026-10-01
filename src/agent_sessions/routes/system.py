@@ -609,6 +609,11 @@ def register(
                 # What a NEW session starts with (#853 P4): the default engine (or null) and the
                 # permission-bypass default. Starting values only; the form may still differ.
                 "agent_defaults": prefs.get_agent_defaults(),
+                # Whether mission launches run with permission bypass (#1215): the STRICT,
+                # fail-closed reading of the same stored value, which is what a launch uses. The
+                # lenient `agent_defaults.bypass` above can say true over a malformed value that
+                # grants nothing, so the missions settings line reads this instead.
+                "mission_bypass": prefs.unattended_bypass_granted(),
                 # Brand accent (#211 Phase 2): #rrggbb driving --accent + the xterm cursor.
                 # Applied at load like the theme; localStorage is the device cache.
                 "accent": prefs.get_accent(),
@@ -799,11 +804,21 @@ def register(
                 raise HTTPException(status_code=422, detail="unknown theme")
             out["theme"] = prefs.set_theme(payload["theme"])
         if "agent_defaults" in payload:
-            # #853 P4: the default engine + permission-bypass default for NEW sessions.
+            # #853 P4: the default engine + permission-bypass default for NEW sessions — and,
+            # since #1215, the bypass grant mission launches take. A bypass change commits inside
+            # the launch fence, so it runs OFF THE LOOP like the orchestrator branch below.
             err = prefs.validate_agent_defaults_patch(payload["agent_defaults"])
             if err is not None:
                 raise HTTPException(status_code=422, detail=err)
-            out["agent_defaults"] = prefs.set_agent_defaults(payload["agent_defaults"])
+            try:
+                out["agent_defaults"] = await asyncio.to_thread(
+                    prefs.set_agent_defaults, payload["agent_defaults"]
+                )
+            except session_input.AuthorityFenceBusy:
+                raise HTTPException(
+                    status_code=503,
+                    detail="the authorization fence is busy; retry",
+                ) from None
         if "accent" in payload:
             if not prefs.is_valid_accent(payload["accent"]):
                 raise HTTPException(status_code=422, detail="invalid accent")

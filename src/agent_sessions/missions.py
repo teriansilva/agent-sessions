@@ -71,7 +71,7 @@ SCHEMA_VERSION = 33
 #:
 #: **A RESOURCE GUARD, NEVER A SECURITY CONTROL**, and the distinction is load-bearing rather than
 #: pedantic: nothing here decides what a sub-agent may DO — that is the autonomy tier, the write
-#: fence, `bypass=False` and the containment scope, none of which this number touches. What it
+#: fence, the bypass grant and the containment scope, none of which this number touches. What it
 #: bounds is fan-out: a mission that can spawn without limit is a mission that can fill the host
 #: with unattended agents by being approved repeatedly. Treating it as a safety boundary would be
 #: the mistake, because an operator can raise it and it is enforced only where missions launch.
@@ -9168,10 +9168,15 @@ def settle_dispatch(
     expect_plan: str | None = None,
     discharge_resource: bool = True,
     physical_key: str | None = None,
+    launch_meta: dict | None = None,
     now: float | None = None,
     path: Path | None = None,
 ) -> dict:
     """End a dispatch: adopt its session and leave `dispatching`, in ONE transaction.
+
+    `launch_meta` is merged into the settlement's own `state` event — how the launch was made,
+    e.g. the permission posture it started with (#1215) — so the timeline records it in the same
+    commit as the transition it describes. It never overrides the transition's own fields.
 
     `physical_key` names the placeholder a late-bound `session_key` runs under (#989), recorded in
     `session_runtime_bindings` in this same transaction — a table of its own, never a column on the
@@ -9488,6 +9493,7 @@ def settle_dispatch(
                 at=ts,
                 text=f"dispatching -> {to}" + (f": {detail}" if detail else ""),
                 meta={
+                    **(launch_meta or {}),
                     "from": "dispatching",
                     "to": to,
                     "detail": detail,

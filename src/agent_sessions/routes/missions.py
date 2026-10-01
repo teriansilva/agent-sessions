@@ -30,14 +30,15 @@ Plan and dispatch are deliberately TWO routes: one spends a model call and write
 other starts an UNATTENDED agent, and a single endpoint that did both would be a button whose
 consequences the operator learns about afterwards.
 
-**Unattended, and NOT permission-bypassed** (#904 review 3, finding 6). Every interactive launch
-in this app bypasses tool prompts; this one deliberately does not, because unattended bypass is a
-different grant — an agent with prompts suppressed and nobody watching what it does — and #898
-defaults it off precisely so the decision belongs to a layer that knows whether an operator
-authorised it. Nobody has. The cost is real and is stated rather than hidden: a dispatched agent
-can stop on a tool or trust prompt with no one present, which reads as a stalled session and is
-what the supervisor's follow-through is for. Turning it on is its own change with its own
-recorded approval, not a default this route picks.
+**Unattended, and permission-bypassed ONLY BY THE OPERATOR'S GRANT** (#904 review 3, finding 6;
+#1215). Unattended bypass is a different grant from the interactive one — an agent with prompts
+suppressed and nobody watching what it does — and #898 defaults it off so the decision belongs to
+a layer that knows whether an operator authorised it. Since #1215 the operator has: a mission
+launch takes their `agent_defaults.bypass` (Agents › Defaults, which says it governs missions),
+read at launch time by `mission_dispatch.run` and re-checked inside the launch fence, and the
+posture is recorded on the timeline. The operator's approval of that grant is their own comment on
+#1215. With the default off, a dispatched agent can stop on a tool or trust prompt with no one
+present, which reads as a stalled session and is what the supervisor's follow-through is for.
 
 Still absent, on purpose: the playbook templates are edited through ``PATCH /api/prompts`` and
 ``POST /api/prefs`` rather than through a mission route, because they are operator config rather
@@ -493,8 +494,9 @@ async def dispatch_approved(
 ) -> JSONResponse:
     """Run the plan the operator SAW. The highest-privilege call in the app (#893).
 
-    What it starts is an UNATTENDED agent — see the module note on why it is not also
-    permission-bypassed — so every fence this route has is load-bearing:
+    What it starts is an UNATTENDED agent — permission-bypassed only when the operator's
+    `agent_defaults.bypass` grant is on (module note, #1215) and the caller permits it — so
+    every fence this route has is load-bearing:
 
     * **The plan id is compare-and-set.** The operator dispatches the proposal on their
       screen, not "whatever the mission's current plan is" — a re-plan or an edit mints a new
@@ -1384,17 +1386,15 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         the capability allowlist. A spawn that were cheaper to authorise than a dispatch would be
         a way around the dispatch gate rather than a feature.
 
-        **`bypass=False`, like every mission launch.** #894's text says a spawn "inherits Phase 4's
-        posture — permission bypass"; Phase 4 as SHIPPED passes `bypass=False`, and
-        `headless_dispatch` says why: unattended bypass is a separate grant that stays
-        approval-required until it has been exercised in anger. Inheriting the posture therefore
-        means inheriting `False`. Widening it would be introducing a broad-permission grant and
-        needs the operator's own recorded sign-off, which is not something this code may assume.
+        **The same bypass posture as every mission launch** (#1215). A spawn runs through
+        `mission_dispatch.run` like a dispatch, so it takes the operator's `agent_defaults.bypass`
+        grant, read at launch time and re-checked inside the launch fence — never a value this
+        route or the client picks. The grant is recorded on #1215 in the operator's own words.
 
         **The cap is a RESOURCE GUARD, never a security control.** It bounds fan-out — a mission
         that could spawn without limit could fill the host by being approved repeatedly — and
-        decides nothing about what a sub-agent may do. That is the tier, the write fence,
-        `bypass=False` and the scope, none of which this number touches.
+        decides nothing about what a sub-agent may do. That is the tier, the write fence, the
+        bypass grant and the scope, none of which this number touches.
 
         **Cap and reservation are ONE transaction** (`claim_spawn`), because "count, then start" is
         check-then-act: two approvals both read a count under the cap, both start, and the mission

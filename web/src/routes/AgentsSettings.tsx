@@ -1418,10 +1418,12 @@ export function AgentDefaultsPage() {
           </p>
           <label className={a.tog}>
             <span className={a.togText}>
-              <b>Permission bypass for new sessions</b>
+              <b>Permission bypass for new sessions and missions</b>
               <small>
                 The starting value of the new-session form; each session can
-                still change it.
+                still change it. Mission launches use it as set when each agent
+                starts — turning it off doesn&rsquo;t reach agents already
+                running. Scheduled mission automations always keep bypass off.
               </small>
             </span>
             <span className={a.togState} aria-hidden="true">
@@ -1463,6 +1465,10 @@ export function AgentDefaultsPage() {
             <div>
               <dt>New-session form</dt>
               <dd>preselected agent · bypass</dd>
+            </div>
+            <div>
+              <dt>Mission launches</dt>
+              <dd>bypass</dd>
             </div>
             <div>
               <dt>Handoff</dt>

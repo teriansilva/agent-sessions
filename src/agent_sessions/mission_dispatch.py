@@ -41,6 +41,26 @@ from . import engines, headless_dispatch, launch_binding, missions, session_inpu
 log = logging.getLogger(__name__)
 
 
+def bypass_granted() -> bool:
+    """Whether the operator has granted permission bypass to unattended launches (#1215).
+
+    The grant is `agent_defaults.bypass` — the same default an interactive launch starts from —
+    read fresh on every call, and FAIL CLOSED: an unreadable or corrupt prefs document, or a stored
+    value that is not a boolean, is no grant (`prefs.unattended_bypass_granted`).
+    """
+    from . import prefs
+
+    try:
+        return prefs.unattended_bypass_granted()
+    except Exception:  # noqa: BLE001 — an unreadable grant is no grant
+        return False
+
+
+def posture_phrase(bypass: bool) -> str:
+    """How the timeline names a launch's permission posture."""
+    return "permission bypass on" if bypass else "permission bypass off"
+
+
 def publish_binding(physical_key: str, logical_key: str) -> bool:
     """Publish the alias of a late-bound adoption. Idempotent; returns whether it wrote (#989).
 
@@ -100,6 +120,7 @@ def fenced_settle(
     expect_plan: str | None = None,
     discharge_resource: bool = True,
     physical_key: str | None = None,
+    launch_meta: dict | None = None,
     path=None,
 ) -> dict:
     """Settle a dispatch UNDER THE ADOPTION FENCE when it adopts. Raises what the store raises.
@@ -132,6 +153,7 @@ def fenced_settle(
             # under another mission, and only the caller knows which of those happened.
             discharge_resource=discharge_resource,
             physical_key=physical_key,
+            launch_meta=launch_meta,
             path=path,
         )
 
@@ -187,6 +209,7 @@ async def settle_offloop(
     keep_record: bool = False,
     expect_plan: str | None = None,
     physical_key: str | None = None,
+    launch_meta: dict | None = None,
     path=None,
 ) -> dict:
     """`fenced_settle` on a WORKER THREAD. The only shape a coroutine may settle in (#904 rev 9).
@@ -209,6 +232,7 @@ async def settle_offloop(
             keep_record=keep_record,
             expect_plan=expect_plan,
             physical_key=physical_key,
+            launch_meta=launch_meta,
             path=path,
         )
     )
@@ -433,12 +457,6 @@ async def _orphaned_after_launch(
     return _Reconciled(state or "dispatching", outcome, not (discharged and terminal))
 
 
-def _decided_bypass() -> bool:
-    """What this path decides about unattended bypass, before any caller's ceiling. Always
-    ``False`` today (see the launch call in :func:`run`)."""
-    return False
-
-
 def apply_bypass_ceiling(decided: bool, ceiling: bool | None) -> bool:
     """A ceiling only ever LOWERS the grant: ``False`` forces no bypass, ``None`` changes nothing,
     ``True`` never grants what the path did not decide (#1201)."""
@@ -476,6 +494,14 @@ async def run(
     # degrades to the old mission-keyed behaviour rather than refusing a legitimate dispatch.
     plan_id = str(plan.get("plan_id") or "") or None
     epoch = session_input.policy_fingerprint() if policy_epoch is None else policy_epoch
+    # THE OPERATOR'S PERMISSION-BYPASS GRANT, read for THIS launch (#1215). Not at plan time: a
+    # plan can sit on screen for minutes, and the grant is whatever the operator has set when the
+    # agent starts. It is read here because the launcher builds the argv before it enters the
+    # fence, and it is CHECKED AGAIN under the fence in `authorize` below, so a revocation that
+    # lands in between refuses the launch rather than starting a bypassed agent.
+    # Scheduled automations retain their separately consented bypass-off ceiling (#1201).
+    # Apply it before construction, fenced authorization and settlement so all three agree.
+    bypass = apply_bypass_ceiling(bypass_granted(), bypass_ceiling)
 
     def authorize(observed: str | None) -> str | None:
         # Under the fence, immediately before the spawn. The comparand is a digest of the POLICY
@@ -485,6 +511,17 @@ async def run(
         if observed is None or epoch is None or observed != epoch:
             return (
                 "orchestration policy changed while this launch was being authorised, "
+                "so nothing was started"
+            )
+        # …AND THE BYPASS GRANT IS STILL GIVEN (#1215). The argv was built with `bypass` before
+        # the fence; the operator switching the default off since then must stop this launch, not
+        # be overtaken by it. `set_agent_defaults` commits a bypass change under the same fence,
+        # so the change either landed before this read or waits for the spawn. The other way round
+        # (off -> on) is not refused: launching with prompts on is the safer of the two postures,
+        # and it is the one recorded.
+        if bypass and not bypass_granted():
+            return (
+                "permission bypass was switched off while this launch was being authorised, "
                 "so nothing was started"
             )
         # …AND THE DIRECTORY (#904 review 2, finding 6). The route resolved the project and the
@@ -578,16 +615,12 @@ async def run(
             cwd=cwd,
             brief=brief,
             registry=registry,
-            # UNATTENDED BYPASS IS NOT INHERITED. #898 defaults it to False precisely so the
-            # decision belongs to a layer that knows whether an operator authorised it, and the
-            # answer here is no: an operator approving a PLAN approved the work, not the removal
-            # of every tool prompt from an agent nobody is watching. It stays off until it is a
-            # grant somebody explicitly makes.
-            #
-            # …AND A CALLER'S CEILING CAN ONLY LOWER IT (#1201): an automation passes
-            # `bypass_ceiling=False`, so whatever this path decides, an automated mission never
-            # launches permission-bypassed. `None` (the manual route) leaves the decision as is.
-            bypass=apply_bypass_ceiling(_decided_bypass(), bypass_ceiling),
+            # UNATTENDED BYPASS IS AN EXPLICIT GRANT (#1215). #898 defaults it to False so the
+            # decision belongs to a layer that knows whether an operator authorised it. This is
+            # that layer, and the grant is the operator's own `agent_defaults.bypass` — the setting
+            # in Agents › Defaults, which says it governs mission launches too — approved on #1215
+            # in their own words. Approving a PLAN is still not the grant; the setting is.
+            bypass=bypass,
             on_key=on_key,
             authorize=authorize,
             nonce=nonce,
@@ -670,7 +703,7 @@ async def run(
     # So the sequence runs as ONE task the request's cancellation cannot reach: shielded, joined to
     # completion, and only then is the cancellation re-raised. Nothing inside it changed order.
     concluding = asyncio.ensure_future(
-        _conclude(mission_id, out, engine=engine, cwd=cwd, plan_id=plan_id)
+        _conclude(mission_id, out, engine=engine, cwd=cwd, plan_id=plan_id, bypass=bypass)
     )
     try:
         return await asyncio.shield(concluding)
@@ -697,7 +730,9 @@ async def _join_conclusion(mission_id: str, task: asyncio.Future) -> None:
         )
 
 
-async def _conclude(mission_id: str, out, *, engine: str, cwd: str, plan_id: str | None) -> dict:
+async def _conclude(
+    mission_id: str, out, *, engine: str, cwd: str, plan_id: str | None, bypass: bool = False
+) -> dict:
     """Everything `run` does once the launcher has returned: record the evidence, then settle.
 
     Runs as its own task so a cancelled request cannot interrupt it part-way (see `run`). If the
@@ -782,7 +817,11 @@ async def _conclude(mission_id: str, out, *, engine: str, cwd: str, plan_id: str
             settle_offloop(
                 mission_id,
                 to="running",
-                detail=f"dispatched {engine} in {cwd}",
+                # THE POSTURE IT LAUNCHED WITH, on the timeline (#1215). Revoking the grant does
+                # not reach an agent that is already running, so the operator has to be able to
+                # see which of their sessions started with tool prompts suppressed.
+                detail=f"dispatched {engine} in {cwd} · {posture_phrase(bypass)}",
+                launch_meta={"bypass": bool(bypass)},
                 # THE SESSION IT BECAME, under the key its runtime lives under (#989). A pinned-id
                 # launch has no `bound_key`: its key is the session and there is no mapping. A
                 # late-id launch adopts the real id it bound, and names the placeholder so this

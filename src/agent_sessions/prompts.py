@@ -681,8 +681,8 @@ REGISTRY: tuple[Prompt, ...] = (
         field="mission_plan",
         # GUARDED. The brief it writes is pasted verbatim into a fresh agent running UNATTENDED
         # — the most direct route from prompt text to autonomous action in the app, so this is
-        # the last prompt that could reasonably be left unguarded. (Not permission-bypassed:
-        # `mission_dispatch.run` passes `bypass=False`; nobody approved that grant — #904 rev 3.)
+        # the last prompt that could reasonably be left unguarded — and the agent may be
+        # permission-bypassed, under the operator's `agent_defaults.bypass` grant (#1215).
         guarded=True,
     ),
     Prompt(

@@ -1117,6 +1117,9 @@ export interface AppConfig {
    *  resolves it through `resolveDefault` rather than reading it directly. `bypass` is the new-
    *  session form's starting value; each session can still change it. Absent on an older server. */
   agent_defaults?: AgentDefaults;
+  /** Whether mission launches run with permission bypass — the strict, fail-closed reading the
+   *  launch itself uses (#1215). Absent from an older server. */
+  mission_bypass?: boolean;
   /** Legacy preferred new-session start directory (#335 Phase 2), superseded by
    *  `default_project_id`. Retained as the fallback for a start directory no project has adopted
    *  (the migration cannot map it to an id), and as Onboarding's seed. With a project selected

@@ -12,6 +12,7 @@ import threading
 import time
 import tty
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 import pytest
 from fastapi.testclient import TestClient
@@ -420,6 +421,13 @@ def test_terminal_release_and_retention_keep_the_generation():
 @pytest.mark.parametrize("scope", ["session", "mission"])
 @pytest.mark.parametrize("change", ["same", "other", "roundtrip", "ownership", "sibling"])
 def test_real_delivery_checks_original_authority_at_byte_one(scope, change, monkeypatch):
+    # This tests withdrawal at byte one, not the production five-second write deadline. The
+    # injected policy transaction (or sibling interpreter) can exhaust that deadline under CI
+    # load, returning a timeout before the authority guard is reached. Keep a bounded budget
+    # with enough room for the interleaving; production timeouts remain unchanged.
+    monkeypatch.setattr(
+        session_input, "send_input", partial(session_input.send_input, timeout_s=30.0)
+    )
     prefs.set_orchestrator({"enabled": True, "autonomy": "yolo"})
     mid = mission()
     if scope == "mission":
@@ -463,7 +471,7 @@ def test_real_delivery_checks_original_authority_at_byte_one(scope, change, monk
     monkeypatch.setattr(session_input, "_wait_quiet", quiet)
     try:
         result = asyncio.run(actuator.deliver(rec["id"]))
-        assert result["state"] == ("delivered" if change == "other" else "stale")
+        assert result["state"] == ("delivered" if change == "other" else "stale"), result
         os.set_blocking(slave, False)
         payload = b""
         with contextlib.suppress(BlockingIOError):

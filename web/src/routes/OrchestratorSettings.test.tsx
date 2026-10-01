@@ -44,12 +44,17 @@ function block(over: Partial<OrchestratorConfig> = {}): OrchestratorConfig {
   };
 }
 
-function renderPanel(b = block(), refresh: () => void = () => {}) {
+function renderPanel(
+  b = block(),
+  refresh: () => void = () => {},
+  missionBypass?: boolean,
+) {
   const config = {
     csrf: "t",
     new_session_engines: [],
     terminal_backend: "ws",
     orchestrator: b,
+    ...(missionBypass === undefined ? {} : { mission_bypass: missionBypass }),
   } as unknown as AppConfig;
   return render(
     <MemoryRouter>
@@ -291,4 +296,20 @@ test("the judgment threshold saves ONCE, on release, and cannot go under its flo
   const field = screen.getByTestId("orchestrator-judge");
   expect(field).toHaveTextContent(/0\.90 is the floor and cannot be lowered/);
   expect(field).toHaveTextContent(/at most move a mission to review/);
+});
+
+// #1215: the bypass grant mission launches take is stored with the agent defaults, and stated here
+// because this is where missions are configured.
+test("it states whether missions run with permission bypass, and where to change it", () => {
+  renderPanel(block(), () => {}, true);
+  const line = screen.getByTestId("orchestrator-mission-bypass");
+  expect(line).toHaveTextContent(/Missions run with permission bypass: on/);
+  expect(within(line).getByRole("link", { name: /Agents › Defaults/ })).toBeInTheDocument();
+});
+
+test("with the grant off it says agents ask before using tools", () => {
+  renderPanel(block(), () => {}, false);
+  const line = screen.getByTestId("orchestrator-mission-bypass");
+  expect(line).toHaveTextContent(/Missions run with permission bypass: off/);
+  expect(line).toHaveTextContent(/ask before using tools/);
 });
