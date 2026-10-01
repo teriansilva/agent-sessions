@@ -252,10 +252,16 @@ def record(key: str, sel: Selection) -> None:
     launch produced a master. `default` writes nothing — except an explicit `default` resume
     (`replaces_record`), which writes the `default` marker over the previous model. The marker (not
     a blank) so it also shadows a placeholder's record; `metadata.requested_model` reads it as "".
+
+    The write goes to `metadata.resolve_key(key)`, never blindly to `key`: for an adopted late-id
+    session whose title/sticky/archive live only on the placeholder entry, a write to the logical
+    key would create a sparse logical entry that the rows read first, hiding all of that. The
+    resolved key is one `metadata.requested_model` reads (logical entry first, then the physical
+    one), so the record — or the `default` marker — is still what the next read finds.
     Best-effort: a sidecar write never fails a launch that already happened."""
     if sel.model is None and not sel.replaces_record:
         return
     try:
-        metadata.patch(key, model_requested=sel.model or DEFAULT)
+        metadata.patch(metadata.resolve_key(key), model_requested=sel.model or DEFAULT)
     except Exception:  # noqa: BLE001
         log.warning("could not record the requested model for %s", key, exc_info=True)

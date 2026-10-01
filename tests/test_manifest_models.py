@@ -756,6 +756,59 @@ def test_a_renamed_late_id_session_keeps_its_requested_model_on_every_row(
     assert (sel.model, sel.flag) == ("gpt-5", "--model")
 
 
+def test_a_resume_record_on_an_adopted_late_id_session_keeps_its_placeholder_metadata(
+    auth_cfg, fake_jsonl, monkeypatch, tmp_path
+):
+    # The title and sticky flag were set while the session was still under its placeholder, so
+    # they live ONLY on the placeholder entry. A resume record (an engine that honours the flag on
+    # resume) must not create a sparse logical entry: the rows read the logical entry first, so
+    # one would hide the title and sticky. The record lands on the entry `resolve_key` names.
+    root = tmp_path / "codex-sessions"
+    monkeypatch.setenv("AGENT_SESSIONS_CODEX_SESSIONS_DIR", str(root))
+    native = "019e2ba1-1590-7003-8e4a-51ab62cec9dd"
+    ph = "codex:new-dddddddd-dddd-dddd-dddd-dddddddddddd"
+    real = f"codex:{native}"
+    d = root / "2026" / "05" / "15"
+    d.mkdir(parents=True)
+    (d / f"rollout-2026-05-15T15-33-57-{native}.jsonl").write_text(
+        "\n".join(
+            json.dumps(x)
+            for x in (
+                {"type": "session_meta", "payload": {"id": native, "cwd": str(fake_jsonl)}},
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "hello codex"}],
+                    },
+                },
+            )
+        )
+        + "\n"
+    )
+    engines.invalidate_scan_cache()
+    prov = _entry(monkeypatch, "codex")
+    metadata.patch(ph, title="my title", sticky=True)
+    metadata.set_alias(ph, real)
+    _model_on_resume(monkeypatch, prov, True)
+    model_choice.record(real, model_choice.select_resume(prov, "gpt-5", real))
+    # No sparse logical entry: the record sits beside the title and sticky.
+    assert real not in metadata.load()
+    assert metadata.get(ph).title == "my title" and metadata.get(ph).sticky
+    assert metadata.requested_model(real) == "gpt-5"
+    c = _client(auth_cfg)
+    listed = next(s for s in c.get("/api/sessions?limit=100").json()["sessions"] if s["id"] == real)
+    looked = c.get(f"/api/sessions/{real}").json()
+    for row in (listed, looked):
+        assert row["title"] == "my title"
+        assert row["sticky"] is True
+        assert row["model_requested"] == "gpt-5"
+    # …and a later model-less resume applies the recorded model.
+    sel = model_choice.select_resume(prov, None, real)
+    assert (sel.model, sel.flag) == ("gpt-5", "--model")
+
+
 def test_the_default_marker_reads_as_null_on_every_row(auth_cfg, fake_jsonl):
     metadata.patch(_GOOD, model_requested=manifest.MODEL_DEFAULT)
     c = _client(auth_cfg)
@@ -1193,7 +1246,8 @@ def test_ws_explicit_default_resume_keeps_the_record_where_the_engine_ignores_th
 
 def test_default_marker_shadows_a_placeholder_record(fake_jsonl):
     # A late-id session recorded its model under the placeholder; an explicit default resume
-    # writes the marker on the logical key, and the placeholder's model must not resurface.
+    # writes the marker on the entry the session's metadata lives on (here the placeholder's, as
+    # no logical entry exists), and the placeholder's model must not resurface.
     ph = "codex:new-88888888-8888-8888-8888-888888888888"
     real = "codex:019e2ba1-1590-7003-8e4a-51ab62cec9aa"
     model_choice.record(ph, model_choice.select(_prov("codex"), "gpt-5", added=[]))
