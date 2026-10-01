@@ -83,7 +83,16 @@ HTTP_CLIENT_LIBS = frozenset(
     {"httpx", "requests", "aiohttp", "urllib3", "urllib.request", "http.client"}
 )
 HTTP_MODULES = frozenset(
-    {"review", "webpush", "appproxy", "forge", "mission_probes", "analytics", "agent_usage"}
+    {
+        "review",
+        "webpush",
+        "appproxy",
+        "forge",
+        "mission_probes",
+        "analytics",
+        "agent_usage",
+        "artifacts",
+    }
 )
 
 # Layer 2 — inside those modules, every outbound call is pinned to a function AND a count, so
@@ -96,6 +105,9 @@ HTTP_MODULES = frozenset(
 # extensible at all.
 HTTP_VERBS = frozenset({"get", "post", "put", "patch", "delete", "request", "stream", "send"})
 POST_SITES = {
+    # Plugin artifacts (#1259): one streamed GET, no credentials/prompts, recipe-bound HTTPS
+    # authorities checked before every redirect; digest checked before any extraction.
+    ("artifacts", "_fetch"): 1,
     # THE chat-completions transport and its two ORDERED degrade retries (#841): attempt 1
     # carries both optional fields; a refusal drops `chat_template_kwargs` (the thinking
     # opt-out) and retries; a further refusal drops `response_format` and retries again. Three

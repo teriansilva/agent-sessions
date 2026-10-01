@@ -550,6 +550,8 @@ def parse(doc: Any, *, source: str = "", digest: str | None = None) -> Manifest:
         version=r.str("version", pattern=_SEMVERISH_RE),
         kind=r.str("kind", "agent", one_of=kinds.IDENTITY_KINDS),
     )
+    if identity.id in kinds.ROUTE_RESERVED_IDS:
+        raise ManifestError("identity.id", "is reserved for an Agents settings route")
     r.done()
 
     # `runtime` (#853 §7) is read FIRST: it decides which blocks are required and which are

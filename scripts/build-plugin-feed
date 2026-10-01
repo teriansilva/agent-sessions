@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+"""Build an atomic feed directory from reviewed entry JSON files and optionally SSH-sign it.
+
+No downloads or publishing. Unlock the primary key with ssh-add separately and provide its
+PUBLIC key path; private passphrases never enter this command or the application runtime.
+"""
+
+from __future__ import annotations
+
+import argparse
+import ctypes
+import json
+import os
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from agent_sessions.plugins import feed, runner  # noqa: E402
+
+
+def _fsync_directory(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _publish_directory(staged: Path, output: Path) -> None:
+    # Linux is the supported release-builder platform. RENAME_NOREPLACE also refuses a raced
+    # empty directory or dangling symlink; plain rename could silently replace the former.
+    libc = ctypes.CDLL(None, use_errno=True)
+    rename = libc.renameat2
+    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    rename.restype = ctypes.c_int
+    if rename(-100, os.fsencode(staged), -100, os.fsencode(output), 1) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), str(output))
+
+
+def publish(output: Path, data: bytes, signature: bytes | None) -> None:
+    """Expose both files with one no-replace rename; interrupted staging is never a public cut.
+
+    OUTPUT is a new directory, not a feed filename. A crash before rename leaves at most a
+    hidden staging directory; a rerun uses a new staging name. A crash after rename leaves the
+    complete pair. The parent fsync makes the acknowledged publication durable.
+    """
+    if os.path.lexists(output):
+        raise FileExistsError(f"release directory already exists: {output}")
+    with tempfile.TemporaryDirectory(prefix=".plugin-feed-stage-", dir=output.parent) as tmp:
+        staged = Path(tmp)
+        files = {"plugin-feed.json": data}
+        if signature is not None:
+            files["plugin-feed.json.sig"] = signature
+        for name, content in files.items():
+            with (staged / name).open("xb") as target:
+                target.write(content)
+                target.flush()
+                os.fsync(target.fileno())
+        _fsync_directory(staged)
+        _publish_directory(staged, output)
+        _fsync_directory(output.parent)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("entries", type=Path)
+    parser.add_argument("output", type=Path, help="new directory for the complete feed cut")
+    parser.add_argument("--sequence", type=int, required=True)
+    parser.add_argument("--issued-at", type=int, default=None)
+    parser.add_argument("--valid-for", type=int, default=7 * 86400)
+    parser.add_argument("--sign-public-key", type=Path)
+    args = parser.parse_args()
+    issued = args.issued_at if args.issued_at is not None else int(time.time())
+    entries = []
+    for path in sorted(args.entries.glob("*.json")):
+        if path.stat().st_size > feed.MAX_BYTES:
+            parser.error(f"entry is too large: {path.name}")
+        entries.append(
+            json.loads(
+                path.read_text(),
+                object_pairs_hook=feed._pairs,
+                parse_float=feed._no_float,
+                parse_constant=feed._no_float,
+            )
+        )
+    if not entries:
+        parser.error("the entry directory is empty")
+    data = feed.canonical(
+        {
+            "contract": 1,
+            "sequence": args.sequence,
+            "issued_at": issued,
+            "expires_at": issued + args.valid_for,
+            "plugins": entries,
+        }
+    )
+    snapshot = feed.parse(data, now=issued)
+    signature = None
+    if args.sign_public_key:
+        public = args.sign_public_key.read_text().strip()
+        if not public.startswith("ssh-ed25519 ") or "PRIVATE" in public:
+            parser.error("provide an Ed25519 PUBLIC key; unlock the private key with ssh-add")
+        env = {k: os.environ[k] for k in ("PATH", "SSH_AUTH_SOCK", "LANG") if k in os.environ}
+        result = runner.run(
+            [
+                "/usr/bin/ssh-keygen",
+                "-Y",
+                "sign",
+                "-f",
+                str(args.sign_public_key.resolve()),
+                "-n",
+                feed.NAMESPACE,
+            ],
+            data=data,
+            env=env,
+            timeout=10,
+        )
+        if result.code != 0:
+            parser.error("signing failed; the identity must already be unlocked in ssh-agent")
+        # The runner merges stderr, including ssh-keygen's announcement. Keep only the armor.
+        start = result.output.find(b"-----BEGIN SSH SIGNATURE-----")
+        marker = b"-----END SSH SIGNATURE-----"
+        end = result.output.find(marker, start)
+        if start < 0 or end < 0:
+            parser.error("the signer returned no SSH signature")
+        signature = result.output[start : end + len(marker)] + b"\n"
+        feed.verify(data, signature)
+    publish(args.output, data, signature)
+    print(
+        f"feed sequence {snapshot.sequence}, {len(snapshot.entries)} agents, "
+        f"sha256 {snapshot.digest}"
+    )
+
+
+if __name__ == "__main__":
+    main()

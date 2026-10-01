@@ -803,7 +803,11 @@ def test_no_shell_layer_in_the_plugin_package():
     src = Path(manifest_mod.__file__).parent
     for f in src.glob("*.py"):
         text = f.read_text()
-        assert "subprocess" not in text, f  # P1 spawns nothing
+        # P5 admits only the fixed SSH signer/verifier transport. Schema/provider/storage code
+        # still spawns nothing; its argv refusal and limits are exercised in test_plugin_feed.
+        if f.name != "runner.py":
+            assert "subprocess" not in text, f
+        assert "shell=" not in text, f
         assert "os.system" not in text, f
 
 

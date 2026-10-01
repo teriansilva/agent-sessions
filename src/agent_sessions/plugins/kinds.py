@@ -342,6 +342,9 @@ RESERVED_IDS = frozenset(
     {"claude", "opencode", "codex", "gemini", "antigravity", "kimi", "shell", "apichat"}
 )
 
+# Route segments in Settings → Agents, which can never be plugin identities.
+ROUTE_RESERVED_IDS = frozenset({"defaults"})
+
 
 def is_cli_probe(kind: str) -> bool:
     return kind in _CLI_PROBE_KINDS

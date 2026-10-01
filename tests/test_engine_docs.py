@@ -206,6 +206,7 @@ _NOT_MANIFEST_VALUES = {
     # Guard lists and internal subsets, not values a manifest chooses.
     "FORBIDDEN_ENTRYPOINTS",
     "RESERVED_IDS",
+    "ROUTE_RESERVED_IDS",
     "AGENT_ONLY_CAPABILITIES",
     "_CLI_PROBE_KINDS",
     "PTY_ONLY_BLOCKS",  # a guard list: which blocks a chat manifest may not declare

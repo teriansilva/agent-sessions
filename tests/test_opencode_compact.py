@@ -628,14 +628,26 @@ def test_launch_site_inventory_requires_review_when_another_route_can_spawn():
     ]
     assert "subprocess" not in imports
     # Since #853 P2 the live opencode provider is a manifest-built `PluginProvider` wrapping that
-    # kind: the provider, provenance and manifest code are argv/path-only too.
+    # kind: the provider, provenance and manifest code are argv/path-only too. P5 adds a bounded
+    # runner whose ONLY current plugin caller verifies a feed using ssh-keygen. Any agent probe
+    # caller added later must enter this inventory and prove its maintenance admission ordering.
+    runner_consumers = Counter()
     for path in Path(plugins.__file__).parent.glob("*.py"):
         tree = ast.parse(path.read_text())
         mods = [
             n.name for node in ast.walk(tree) if isinstance(node, ast.Import) for n in node.names
         ]
         mods += [node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
-        assert "subprocess" not in mods, path.name
+        assert "subprocess" not in mods or path.name == "runner.py", path.name
+        for call in ast.walk(tree):
+            if (
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and isinstance(call.func.value, ast.Name)
+                and call.func.value.id == "runner"
+            ):
+                runner_consumers[path.name, call.func.attr] += 1
+    assert runner_consumers == {("feed.py", "run"): 1}
 
 
 @pytest.mark.anyio
