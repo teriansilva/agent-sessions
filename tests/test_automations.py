@@ -3492,3 +3492,28 @@ def test_run_now_after_a_template_rename_is_refused_and_flagged(live_target):
     res = asyncio.run(automation_runner.execute(_manual_run(aid), registry=None))
     assert res["run"]["outcome"] == "refused" and "name changed" in res["run"]["reason"]
     assert store.get(aid)["needs_reapproval"] and live_target["writes"] == []
+
+
+def test_a_checklist_rename_is_flagged_for_reapproval(mission_env, spawned):
+    """Renaming the checklist an automation uses (same objectives) is a drift (#1201)."""
+    _set_books(_book("release"), default="release")
+    h = _hour_start()
+    aid = _made(_mission_config("propose") | {"trigger": _hourly()["trigger"]}, active_since=h + 60)
+    assert routes.public(store.get(aid))["pins"]["checklist"]["label"] == "Release"
+    _set_books({**_book("release"), "label": "Ship it"}, default="release")
+    sched = automation_loop.Scheduler(clock=Clock(h + 3600 + 5), started_at=h)
+    assert asyncio.run(sched.tick())["fired"] == []
+    sched.release()
+    row = store.get(aid)
+    assert row["needs_reapproval"] is True
+    assert "checklist" in row["reapproval_reason"]
+
+
+def test_a_checklist_label_alone_is_a_drift():
+    """The label is pinned on its own, not only through the digest: a stored pin whose label
+    differs from the current one is a drift even when the id and digest match (#1201)."""
+    pin = {"id": "release", "default": False, "label": "Release", "digest": "d" * 64}
+    base = {"template": None, "checklist": pin, "cwd": None}
+    assert model.pins_drift(base, base) == ""
+    renamed = {**base, "checklist": {**pin, "label": "Ship it"}}
+    assert model.pins_drift(base, renamed) == "the checklist's name changed"

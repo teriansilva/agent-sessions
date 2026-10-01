@@ -119,3 +119,62 @@ test("a down server is asked at most once per capped interval", async () => {
   expect(spy.mock.calls.length).toBeLessThanOrEqual(expected);
   expect(spy.mock.calls.length).toBeGreaterThanOrEqual(expected - 1);
 });
+
+/** Stand-in for the tab's visibility: jsdom's `document.hidden` is a prototype getter, so an own
+ *  property shadows it and deleting that property restores it. */
+function setHidden(hidden: boolean): void {
+  Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
+}
+
+test("a retry that comes due while the tab is hidden waits for the tab to be visible", async () => {
+  const { RETRY_MS } = await import("./automationOrigins");
+  let fail = true;
+  const spy = vi.spyOn(api, "automationOrigins").mockImplementation(async () => {
+    if (fail) throw new Error("down");
+    return { origins: {} };
+  });
+  try {
+    noteKeys(["claude:x"]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(spy).toHaveBeenCalledTimes(1); // failed: a retry is scheduled
+    fail = false;
+    setHidden(true);
+    await vi.advanceTimersByTimeAsync(RETRY_MS[0]);
+    expect(spy).toHaveBeenCalledTimes(1); // due, but hidden: no background traffic
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(spy).toHaveBeenCalledTimes(1);
+    setHidden(false);
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(spy).toHaveBeenCalledTimes(2); // visible again: exactly one retry
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(spy).toHaveBeenCalledTimes(2); // answered: nothing more
+  } finally {
+    delete (document as unknown as { hidden?: boolean }).hidden;
+  }
+});
+
+test("a success resets the backoff: the next failure retries after the FIRST delay again", async () => {
+  const { RETRY_MS } = await import("./automationOrigins");
+  let fail = true;
+  const spy = vi.spyOn(api, "automationOrigins").mockImplementation(async () => {
+    if (fail) throw new Error("down");
+    return { origins: {} };
+  });
+  noteKeys(["claude:x"]);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(spy).toHaveBeenCalledTimes(1); // fail
+  fail = false;
+  await vi.advanceTimersByTimeAsync(RETRY_MS[0]);
+  expect(spy).toHaveBeenCalledTimes(2); // succeed
+  fail = true;
+  await vi.advanceTimersByTimeAsync(MIN_REFRESH_MS + 1);
+  noteKeys(["claude:y"]); // a new row asks, and that read fails
+  await vi.advanceTimersByTimeAsync(0);
+  expect(spy).toHaveBeenCalledTimes(3);
+  fail = false;
+  await vi.advanceTimersByTimeAsync(RETRY_MS[0] - 1);
+  expect(spy).toHaveBeenCalledTimes(3);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(spy).toHaveBeenCalledTimes(4); // 5 s, not the 30 s the step before the success had reached
+});

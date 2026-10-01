@@ -218,3 +218,18 @@ test("runs that land BEHIND the cursor are reached: a short page walks again fro
   const shown = new Set(result.current.runs!.map((r) => r.id));
   for (const r of s.list) expect(shown.has(r.id)).toBe(true);
 });
+
+test("more arrivals than a head page: ONE load walks the head until it meets a held run", async () => {
+  // A single head page would count only `page` arrivals: the older read would start inside the
+  // arrivals, come back FULL (so no walk from the top is triggered), and the list would show a
+  // hole — arrivals the head page did not reach, and the older page it should have read.
+  const s = server(10);
+  const { result } = renderHook(() => useRunPages("a1", 2));
+  await act(() => result.current.loadFirst()); // r0010, r0009
+  for (let i = 0; i < 5; i++) s.insertNewest(); // 5 arrivals: more than two head pages
+  s.calls.length = 0;
+  await act(() => result.current.loadMore());
+  // Contiguous: the five arrivals, the two held runs, and the next two older ones — no hole.
+  expect(result.current.runs!.map((r) => r.id)).toEqual(s.list.slice(0, 9).map((r) => r.id));
+  expect(s.calls).toEqual([0, 2, 4, 7]); // three head pages, then the older page at 2 + 5
+});
