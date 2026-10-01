@@ -38,6 +38,20 @@ export const TEMPLATES_PATH = "/templates";
  *  tab (Settings → AI → Checklists); `/settings/ai-playbooks` still redirects here. */
 export const CHECKLISTS_PATH = `${MISSION_PATH}/checklists`;
 
+/** Missions → Automations (#1201): missions and sessions that run on a schedule, once, or on Run
+ *  now. The list lives here; one automation's run history is `automationPath(id)`, its editor
+ *  `automationEditPath(id)`, a new one `AUTOMATION_NEW_PATH`. The server links a failure
+ *  notification to `automationPath(id)` too (`notifications.AUTOMATION_PATH`). */
+export const AUTOMATIONS_PATH = `${MISSION_PATH}/automations`;
+export const AUTOMATION_NEW_PATH = `${AUTOMATIONS_PATH}/new`;
+export function automationPath(id: string, runId?: string): string {
+  const base = `${AUTOMATIONS_PATH}/${encodeURIComponent(id)}`;
+  return runId ? `${base}?run=${encodeURIComponent(runId)}` : base;
+}
+export function automationEditPath(id: string): string {
+  return `${AUTOMATIONS_PATH}/${encodeURIComponent(id)}/edit`;
+}
+
 /** The New project wizard (#1187). Under no section of its own: the header nav is measured full at
  *  320 px (#1058), so the wizard is reached from New session, the dashboard and Settings → Projects,
  *  and renders without the session sidebar. */

@@ -24,6 +24,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -1364,7 +1365,16 @@ def drop_endpoint(endpoint: str, path: Path | None = None) -> None:
             _write(p, keep)
 
 
+#: An automation's failure episode key (`automation_runner.notify`): the link opens its run history.
+_AUTOMATION_ACTION_RE = re.compile(r"^automation:([a-z0-9]{1,64}):")
+#: The SPA's run-history route for one automation (`web/src/lib/routes.ts` `automationPath`).
+AUTOMATION_PATH = "/mission/automations/"
+
+
 def _link(notification: dict, base_url: str = "") -> str:
+    m = _AUTOMATION_ACTION_RE.match(str(notification.get("action_id") or ""))
+    if m and not notification.get("session_id"):
+        return f"{base_url}{AUTOMATION_PATH}{m.group(1)}"
     uuid = notification.get("session_id", "")
     engine = notification.get("engine", "")
     return f"{base_url}/s/{engine}/{uuid.split(':', 1)[-1]}" if uuid else f"{base_url}/mission"

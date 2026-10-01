@@ -22,6 +22,7 @@
  */
 import {
   BookMarked,
+  CalendarClock,
   Crosshair,
   ListChecks,
   LayoutDashboard,
@@ -33,6 +34,7 @@ import {
 
 import {
   ASK_PATH,
+  AUTOMATIONS_PATH,
   CHECKLISTS_PATH,
   DASHBOARD_PATH,
   LEGACY_MISSION_PATH,
@@ -45,15 +47,16 @@ import {
 export type SectionId = "ask" | "sessions" | "mission" | "templates";
 
 /** An entry inside a section's sub-menu: Sessions has the session view and its map; Dashboard
- *  has the dashboard and Ask's conversation page (#1171); Missions has the console and its
- *  checklists. */
+ *  has the dashboard and Ask's conversation page (#1171); Missions has the console, its
+ *  checklists and its automations (#1201). */
 export type SubsectionId =
   | "sessions"
   | "map"
   | "dashboard"
   | "ask"
   | "mission"
-  | "checklists";
+  | "checklists"
+  | "automations";
 
 export interface Subsection {
   id: SubsectionId;
@@ -109,6 +112,9 @@ export const SECTIONS: Section[] = [
     children: [
       { id: "mission", label: "Missions", Icon: Crosshair, to: MISSION_PATH },
       { id: "checklists", label: "Checklists", Icon: ListChecks, to: CHECKLISTS_PATH },
+      // Work that runs while the operator is away (#1201): everything it starts is a mission or a
+      // session, so it lives beside the console rather than as a section of its own.
+      { id: "automations", label: "Automations", Icon: CalendarClock, to: AUTOMATIONS_PATH },
     ],
   },
   { id: "templates", label: "Templates", Icon: BookMarked, to: TEMPLATES_PATH },
@@ -118,13 +124,14 @@ export const SECTIONS: Section[] = [
  *  section — the nav then highlights nothing, which is the honest answer.
  *
  *  Matching is EXACT except where a section genuinely owns a subtree (`/s/…` is a session,
- *  `/templates/…` is a template). A blanket `startsWith` would claim `/askew` for Ask and paint
- *  "you are here" on the wrong entry the first time someone adds a route sharing a prefix. */
+ *  `/templates/…` is a template, `/mission/automations/…` is an automation). A blanket
+ *  `startsWith` would claim `/askew` for Ask and paint "you are here" on the wrong entry the first
+ *  time someone adds a route sharing a prefix. */
 export function activeSection(pathname: string): SectionId | null {
   const sub = activeSubsection(pathname);
   if (sub === "sessions" || sub === "map") return "sessions";
   if (sub === "dashboard" || sub === "ask") return "ask";
-  if (sub === "mission" || sub === "checklists") return "mission";
+  if (sub === "mission" || sub === "checklists" || sub === "automations") return "mission";
   if (pathname === TEMPLATES_PATH || pathname.startsWith(`${TEMPLATES_PATH}/`))
     return "templates";
   return null;
@@ -142,5 +149,8 @@ export function activeSubsection(pathname: string): SubsectionId | null {
   if (pathname === MISSION_PATH || pathname === LEGACY_MISSION_PATH)
     return "mission";
   if (pathname === CHECKLISTS_PATH) return "checklists";
+  // Automations OWNS its subtree: one automation's run history and editor live under it.
+  if (pathname === AUTOMATIONS_PATH || pathname.startsWith(`${AUTOMATIONS_PATH}/`))
+    return "automations";
   return null;
 }

@@ -54,13 +54,21 @@ class SendRefused(Exception):
     """A send that must not happen (or did not complete). ``status`` is the HTTP status."""
 
     def __init__(
-        self, status: int, detail: str, *, partial: bool = False, busy: bool = False
+        self,
+        status: int,
+        detail: str,
+        *,
+        partial: bool = False,
+        busy: bool = False,
+        lock_unavailable: bool = False,
     ) -> None:
         super().__init__(detail)
         self.status = status
         self.detail = detail
         #: Another send into the same session holds it (this process or another): nothing was sent.
         self.busy = busy
+        #: The send lock itself could not be taken (its directory is unwritable): nothing was sent.
+        self.lock_unavailable = lock_unavailable
         #: Part of the message may be in front of the agent (a paste landed, its Enter did not, or
         #: a write was cut off). A caller must never retry such a send on its own.
         self.partial = partial
@@ -240,6 +248,9 @@ _in_flight_lock = threading.Lock()
 SEND_LOCK_WAIT_S = 2.0
 SEND_LOCK_POLL_S = 0.02
 _BUSY = "Another template is being sent into this session — wait for it"
+#: The lock file could not be created or opened (an unwritable lock directory): a clean refusal,
+#: never a 500 — and never a send without the lock.
+SEND_LOCK_UNAVAILABLE = "can't take the send lock right now — nothing was sent"
 
 
 def send_lock_path(phys: str):
@@ -261,9 +272,12 @@ def session_send_lock(phys: str, timeout: float | None = None):
     import os
 
     p = send_lock_path(phys)
-    p.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(p, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    except OSError:
+        raise SendRefused(503, SEND_LOCK_UNAVAILABLE, lock_unavailable=True) from None
     deadline = time.monotonic() + (SEND_LOCK_WAIT_S if timeout is None else timeout)
-    fd = os.open(p, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
     try:
         while True:
             try:

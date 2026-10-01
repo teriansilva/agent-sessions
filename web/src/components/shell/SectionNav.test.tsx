@@ -26,6 +26,8 @@ describe("activeSection", () => {
     ["/templates", "templates"],
     ["/templates/new", "templates"],
     ["/templates/tpl_1", "templates"],
+    ["/mission/automations", "mission"],
+    ["/mission/automations/abc123", "mission"],
   ])("%s → %s", (path, expected) => {
     expect(activeSection(path)).toBe(expected);
   });
@@ -48,6 +50,11 @@ describe("activeSection", () => {
     ["/ask", "ask"],
     ["/askew", null],
     ["/overviewer", null],
+    // #1201: Automations owns its subtree (one automation's runs and editor live under it).
+    ["/mission/automations", "automations"],
+    ["/mission/automations/new", "automations"],
+    ["/mission/automations/abc123/edit", "automations"],
+    ["/mission/automationsx", null],
   ])("sub-entry of %s → %s (#1069)", (path, expected) => {
     expect(activeSubsection(path)).toBe(expected);
   });

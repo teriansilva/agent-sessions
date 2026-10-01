@@ -35,7 +35,11 @@ test("Missions has a Checklists entry, and it opens the checklist editor as a pa
 }) => {
   await page.goto(MISSION_PATH);
   const menu = await missionsMenu(page);
-  await expect(menu.locator("a[data-subsection]")).toHaveText(["Missions", "Checklists"]);
+  await expect(menu.locator("a[data-subsection]")).toHaveText([
+    "Missions",
+    "Checklists",
+    "Automations",
+  ]);
   await menu.locator('a[data-subsection="checklists"]').click();
 
   await expect(page).toHaveURL(new RegExp(`${CHECKLISTS_PATH}$`));

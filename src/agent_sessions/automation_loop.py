@@ -44,6 +44,7 @@ ON_TIME_S = 120.0
 STARTUP_GRACE_S = 600.0
 RETENTION_EVERY_S = 3600.0
 ONCE_LATE_S = 24 * 3600.0
+RECEIPT_OUTDATED = store.RECEIPT_MISMATCH
 
 
 def loop_enabled() -> bool:
@@ -168,16 +169,35 @@ class Scheduler:
         if (
             config is None
             or not row["enabled"]
-            or row["paused"]
             or row["needs_reapproval"]
             or row["consented_at"] is None
         ):
             return None
-        trigger = config["trigger"]
-        if trigger["kind"] not in ("once", "schedule"):
-            return None
+        # A row that can never fire again reads EXPIRED or FINISHED; asking the operator to
+        # re-approve something that will never run is noise, so nothing below applies to it.
         expires = config["policy"]["expires_at"]
         if expires is not None and now >= expires:
+            return None
+        if config["trigger"]["kind"] == "once":
+            mark = await asyncio.to_thread(store.watermark, row["id"])
+            base = max(float(row["active_since"] or 0), float(mark["fire_at"]) if mark else 0.0)
+            if model.next_slot(config["trigger"], base) is None:
+                return None
+        # EVERY other enabled automation — Run-now-only and paused ones too — is checked for a
+        # receipt that no longer matches its config BEFORE the remaining early returns: the claim
+        # refuses such a row, and without the flag a Run-now-only automation would stay refused
+        # with nothing to approve (#1252 review). One expected cause: a receipt from before the
+        # consent lines disclosed every field.
+        if row["consented_scope"] != model.scope_of(config, row["pins"]):
+            await asyncio.to_thread(
+                store.flag_reapproval,
+                row["id"],
+                RECEIPT_OUTDATED,
+                observed_revision=row["revision"],
+                receipt_mismatch=True,
+            )
+            return None
+        if row["paused"]:
             return None
         # An approved input that changed pauses the automation for re-approval (#1201 round 2) —
         # but only an AFFIRMATIVE drift. An input that cannot be resolved right now (an unreadable
@@ -194,6 +214,11 @@ class Scheduler:
             await asyncio.to_thread(
                 store.flag_reapproval, row["id"], drift, observed_revision=row["revision"]
             )
+            return None
+        # Only now does the trigger matter: a Run-now-only automation is checked for drift above
+        # like every other, so its approval path exists before anyone presses Run now (#1252).
+        trigger = config["trigger"]
+        if trigger["kind"] not in ("once", "schedule"):
             return None
         mark = await asyncio.to_thread(store.watermark, row["id"])
         base = max(

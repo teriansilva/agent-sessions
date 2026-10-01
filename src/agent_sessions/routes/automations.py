@@ -105,11 +105,16 @@ def _in_flight(got: bool) -> dict:
     return {"in_flight": not got, "in_flight_detail": "" if got else effect_lock.IN_FLIGHT_DETAIL}
 
 
+def scope_lines(scope: dict, config: dict | None) -> list[str]:
+    """The consent lines for ``scope``, with the template's rendered preview from ``config``."""
+    return model.describe(scope, model.message_preview(config))
+
+
 def scope_digest(scope: dict) -> str:
     return hashlib.sha256(json.dumps(scope, sort_keys=True).encode()).hexdigest()[:32]
 
 
-def _consent(body: dict, scope: dict, receipt: dict | None) -> bool:
+def _consent(body: dict, scope: dict, receipt: dict | None, config: dict | None = None) -> bool:
     consent = body.get("consent", False)
     if not isinstance(consent, bool):
         raise model.AutomationError("consent must be true or false")
@@ -118,7 +123,7 @@ def _consent(body: dict, scope: dict, receipt: dict | None) -> bool:
             "what this automation would do changed since you read it — review it again",
             status=409,
             scope=scope,
-            scope_lines=model.describe(scope),
+            scope_lines=scope_lines(scope, config),
             scope_digest=scope_digest(scope),
             # What widens NOW against the approved receipt, so the dialog can say it.
             widened=model.widened(receipt, scope),
@@ -200,7 +205,7 @@ def public(row: dict, *, now: float | None = None) -> dict:
         "consented_scope": row["consented_scope"],
         # What enabling (or a widening save) would approve NOW — the consent dialog's content.
         "scope": scope,
-        "scope_lines": model.describe(scope) if scope else [],
+        "scope_lines": scope_lines(scope, config) if scope else [],
         "scope_digest": scope_digest(scope) if scope else None,
         "pins": row["pins"],
         "consecutive_failures": row["consecutive_failures"],
@@ -295,12 +300,12 @@ def _patch(aid: str, body: dict) -> dict:
             # "catch-up" on the next tick.
             updates["active_since"] = time.time()
         widened = model.widened(row["consented_scope"], new_scope)
-        if widened and not _consent(body, new_scope, row["consented_scope"]):
+        if widened and not _consent(body, new_scope, row["consented_scope"], config):
             raise model.AutomationError(
                 "this change widens what the automation may do; confirm it again",
                 widened=widened,
                 scope=new_scope,
-                scope_lines=model.describe(new_scope),
+                scope_lines=scope_lines(new_scope, config),
                 scope_digest=scope_digest(new_scope),
             )
         # The receipt FOLLOWS the current scope — narrowing too — so a later widening of a narrowed
@@ -336,10 +341,10 @@ def _enable(aid: str, body: dict) -> dict:
         raise model.AutomationError(
             "enabling needs your consent to its full scope",
             scope=scope,
-            scope_lines=model.describe(scope),
+            scope_lines=scope_lines(scope, config),
             scope_digest=scope_digest(scope),
         )
-    _consent(body, scope, row["consented_scope"])
+    _consent(body, scope, row["consented_scope"], config)
     now = time.time()
     with effect_lock.writer(aid) as got:
         row = store.mutate(
@@ -400,10 +405,26 @@ def _delete(aid: str, rev: int) -> dict:
     return _in_flight(got)
 
 
+def _unattended_engines() -> list[dict]:
+    """Every engine in the roster with whether it may be started UNATTENDED right now, and why not.
+
+    The editor offers only the ``ok`` ones and shows the reason beside the rest; the same
+    ``engine_state`` refuses the save and the run, so the offer is never wider than the check."""
+    out = []
+    for eid in automation_runner.engines.engine_ids():
+        try:
+            ok, why = automation_runner.engine_state(eid)
+        except Exception:  # noqa: BLE001 — an engine that cannot answer is not offered
+            ok, why = False, "this agent could not be checked"
+        out.append({"id": eid, "ok": ok, "reason": "" if ok else why})
+    return out
+
+
 def _list() -> dict:
     sched = automation_loop.SCHEDULER
     return {
         "automations": [public(r) for r in store.list_all()],
+        "engines": _unattended_engines(),
         "loop": {
             "enabled": automation_runner.loop_enabled(),
             "owner": bool(sched and sched.owner),

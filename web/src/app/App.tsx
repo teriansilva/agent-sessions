@@ -62,6 +62,8 @@ import {
 } from "./sidebarWidth";
 import {
   ASK_PATH,
+  AUTOMATION_NEW_PATH,
+  AUTOMATIONS_PATH,
   CHECKLISTS_PATH,
   DASHBOARD_PATH,
   LEGACY_MISSION_PATH,
@@ -92,6 +94,19 @@ const Templates = lazyWithReload(
 const Checklists = lazyWithReload(
   () => import("../routes/Checklists"),
   "checklists",
+);
+// MISSIONS → AUTOMATIONS (#1201): the list, one automation's run history, and its editor.
+const Automations = lazyWithReload(
+  () => import("../routes/Automations"),
+  "automations",
+);
+const AutomationRuns = lazyWithReload(
+  () => import("../routes/AutomationRuns"),
+  "automation-runs",
+);
+const AutomationEditor = lazyWithReload(
+  () => import("../routes/AutomationEditor"),
+  "automation-editor",
 );
 const TemplateEditor = lazyWithReload(
   () => import("../routes/TemplateEditor"),
@@ -267,7 +282,9 @@ function Layout() {
   const missionRoute =
     location.pathname === MISSION_PATH ||
     location.pathname === LEGACY_MISSION_PATH ||
-    location.pathname === CHECKLISTS_PATH;
+    location.pathname === CHECKLISTS_PATH ||
+    location.pathname === AUTOMATIONS_PATH ||
+    location.pathname.startsWith(`${AUTOMATIONS_PATH}/`);
   const railInSidebar = missionRoute;
   /** SETTINGS RENDERS WITHOUT THE SESSION SIDEBAR (#1129), at every width. Settings is a
    *  utility surface, not a work section (#1058) — the shell carries no session list there in
@@ -709,6 +726,10 @@ function Layout() {
                   <Route path={MISSION_PATH} element={<MissionControl />} />
                   <Route path={LEGACY_MISSION_PATH} element={<LegacyMissionRedirect />} />
                   <Route path={CHECKLISTS_PATH} element={<Checklists />} />
+                  <Route path={AUTOMATIONS_PATH} element={<Automations />} />
+                  <Route path={AUTOMATION_NEW_PATH} element={<AutomationEditor />} />
+                  <Route path={`${AUTOMATIONS_PATH}/:id`} element={<AutomationRuns />} />
+                  <Route path={`${AUTOMATIONS_PATH}/:id/edit`} element={<AutomationEditor />} />
                   <Route path={DASHBOARD_PATH} element={<Dashboard />} />
                   {/* #1171: a conversation has its own page under Dashboard. */}
                   <Route path={ASK_PATH} element={<Ask />} />

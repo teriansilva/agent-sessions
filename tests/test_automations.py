@@ -13,6 +13,7 @@ import json
 import math
 import os
 import sqlite3
+import threading
 import time
 from datetime import UTC, datetime
 
@@ -42,6 +43,49 @@ SESSION = "claude:11111111-2222-3333-4444-555555555555"
 # ---- helpers ------------------------------------------------------------------------------------
 
 
+#: Threads a test may leave behind: the missions store's own long-lived pool, reused by design.
+_LONG_LIVED_THREADS = ("missions-db",)
+
+
+@pytest.fixture(autouse=True)
+def _nothing_outlives_the_test():
+    """No automations test may leave a run task, a scheduler, or a thread running behind it.
+
+    A leak here outlives the test into whatever file the same xdist worker runs next — against that
+    test's stores, at a moment it does not control. Checked after every test, so the one that
+    leaked is the one that fails."""
+    before = {t.ident for t in threading.enumerate()}
+    yield
+    sched = automation_loop.SCHEDULER
+    assert sched is None or not sched.owner, "a scheduler still holds the ownership lock"
+    # ANY scheduler — the lifespan's or a local `Scheduler()` a test dropped — still holding the
+    # ownership lock: probe the lock itself, non-blocking, rather than trusting references.
+    import fcntl
+
+    lp = automation_loop.lock_path()
+    if lp.exists():
+        fd = os.open(lp, os.O_RDWR | os.O_CLOEXEC)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise AssertionError(
+                "a Scheduler took the ownership lock and never released it"
+            ) from None
+        finally:
+            os.close(fd)
+    deadline = time.monotonic() + 2.0
+    while True:
+        extra = [
+            t
+            for t in threading.enumerate()
+            if t.ident not in before and t.is_alive() and not t.name.startswith(_LONG_LIVED_THREADS)
+        ]
+        if not extra or time.monotonic() > deadline:
+            break
+        time.sleep(0.02)
+    assert not extra, f"threads still running after the test: {[t.name for t in extra]}"
+
+
 @pytest.fixture(autouse=True)
 def _loop_on(monkeypatch):
     """conftest defaults the kill switch OFF for every test; these tests are about the loop."""
@@ -50,7 +94,10 @@ def _loop_on(monkeypatch):
     monkeypatch.setattr(effect_lock, "WRITER_WAIT_S", 0.2)
     automation_runner._TASKS.clear()
     yield
+    # Checked BEFORE the clear, or a leaked run would be forgotten rather than reported.
+    pending = [t for t in automation_runner._TASKS if not t.done()]
     automation_runner._TASKS.clear()
+    assert not pending, f"run tasks still pending after the test: {pending}"
 
 
 def _send_config(**over) -> dict:
@@ -1320,7 +1367,7 @@ def test_a_config_that_disagrees_with_its_receipt_never_runs(spawned):
     con.execute("UPDATE automations SET consented_scope=? WHERE id=?", (json.dumps(tampered), aid))
     con.commit()
     con.close()
-    with pytest.raises(automation_runner.RunRefused, match="doesn't match"):
+    with pytest.raises(automation_runner.RunRefused, match="approval is out of date"):
         asyncio.run(automation_runner.run_now(aid, registry=None))
     assert spawned == []
 
@@ -2945,3 +2992,503 @@ def test_an_acquisition_shutdown_cannot_see_still_lets_go_after_the_release():
     peer = automation_loop.Scheduler()
     assert peer.try_own() is True
     peer.release()
+
+
+# ---- PR B: what the editor reads ----------------------------------------------------------------
+
+
+def test_the_list_says_which_engines_may_start_unattended_and_why_not(monkeypatch):
+    monkeypatch.setattr(automation_runner.engines, "engine_ids", lambda: ["alpha", "beta"])
+    monkeypatch.setattr(
+        automation_runner,
+        "engine_state",
+        lambda e: (True, "") if e == "alpha" else (False, "beta needs a terminal"),
+    )
+    out = routes._list()
+    assert out["engines"] == [
+        {"id": "alpha", "ok": True, "reason": ""},
+        {"id": "beta", "ok": False, "reason": "beta needs a terminal"},
+    ]
+
+
+def test_an_automation_failure_notification_links_to_its_run_history(live_target):
+    live_target["state"]["live"] = False
+    aid = _made(_send_config())
+    asyncio.run(automation_runner.execute(_manual_run(aid), registry=None))
+    [row] = notifications.listing()["notifications"]
+    assert notifications._link(row, "https://x") == f"https://x/mission/automations/{aid}"
+    # Anything else keeps its link: a session row, and a mission-control row with no session.
+    assert notifications._link({"session_id": "claude:u1", "engine": "claude"}) == "/s/claude/u1"
+    assert notifications._link({"action_id": "act_1"}) == "/mission"
+
+
+# ---- PR B: send-lock follow-ups from #1249's final review ---------------------------------------
+
+
+def _template_send_config(tid: str) -> dict:
+    return _send_config(
+        action={
+            "kind": "send_to_session",
+            "session_key": SESSION,
+            "message": {"template_id": tid, "values": {}},
+        }
+    )
+
+
+def test_a_busy_template_send_is_skipped_not_failed(live_target, monkeypatch):
+    t = _text_template()
+    aid = _made(_template_send_config(t["id"]))
+
+    def busy(*a, **k):
+        raise template_send.SendRefused(409, template_send._BUSY, busy=True)
+
+    monkeypatch.setattr(template_send, "send", busy)
+    res = asyncio.run(automation_runner.execute(_manual_run(aid), registry=None))
+    assert res["run"]["outcome"] == "skipped"
+    assert res["run"]["reason"] == automation_runner.SEND_BUSY
+    assert store.get(aid)["consecutive_failures"] == 0
+
+
+def test_the_send_lock_waits_its_two_seconds_for_another_holder_then_refuses():
+    assert template_send.SEND_LOCK_WAIT_S == 2.0
+    phys = "claude:phys-wait"
+    fd = _hold_send_lock(phys)
+    t0 = time.monotonic()
+    try:
+        with pytest.raises(template_send.SendRefused) as e:
+            with template_send.session_send_lock(phys):
+                pass
+    finally:
+        os.close(fd)
+    waited = time.monotonic() - t0
+    assert 2.0 <= waited < 4.0, waited
+    assert e.value.status == 409 and e.value.busy
+
+
+def test_the_in_process_refusal_is_flagged_busy():
+    phys = "claude:phys-inproc"
+    with template_send._reserve(phys):
+        with pytest.raises(template_send.SendRefused) as e:
+            with template_send._reserve(phys):
+                pass
+    assert e.value.status == 409 and e.value.busy is True
+
+
+def test_release_clears_the_ownership_fd():
+    sched = automation_loop.Scheduler()
+    assert sched.try_own() and sched.owner
+    sched.release()
+    assert sched._fd is None and sched.owner is False
+
+
+@pytest.fixture
+def unwritable_lock_dir(tmp_path, monkeypatch):
+    # Only the SEND lock's directory: the other fences share the lock dir and stay writable.
+    d = tmp_path / "ro-send-locks"
+    d.mkdir()
+    d.chmod(0o500)
+    monkeypatch.setattr(template_send, "send_lock_path", lambda phys: d / "sub" / "send-x.lock")
+    yield d
+    d.chmod(0o700)
+
+
+def test_an_unwritable_send_lock_is_a_clean_refusal_never_a_500(unwritable_lock_dir, monkeypatch):
+    monkeypatch.setattr(template_send, "resolve_target", lambda s: ("claude:phys-ro", "/x"))
+    written = []
+    monkeypatch.setattr(
+        session_input,
+        "send_input",
+        lambda *a, **k: written.append(a) or session_input.Outcome("delivered", ""),
+    )
+    t = tstore.create_template({"name": "t", "body": "hi", "fields": []})
+    with pytest.raises(template_send.SendRefused) as e:
+        template_send.send(
+            t["id"], {"session": "claude:x", "values": {}, "expected_updated_at": t["updated_at"]}
+        )
+    assert e.value.status == 503 and e.value.lock_unavailable
+    assert "send lock" in e.value.detail and written == []
+
+
+def test_an_unwritable_send_lock_skips_an_automation_send(unwritable_lock_dir, live_target):
+    aid = _made(_send_config())
+    res = asyncio.run(automation_runner.execute(_manual_run(aid), registry=None))
+    assert res["run"]["outcome"] == "skipped"
+    assert res["run"]["reason"] == automation_runner.SEND_LOCK_UNAVAILABLE
+    assert live_target["writes"] == [] and store.get(aid)["consecutive_failures"] == 0
+
+
+# ---- PR B (Hermes on #1252): the consent lines disclose every field the digest covers ------------
+
+#: Scope keys that are the document's FORMAT, not a grant. Nothing else may be left undescribed.
+_UNDESCRIBED_SCOPE_KEYS = {"version"}
+
+
+def _mutations(value):
+    """Every way to change one scope value, recursing into dicts so each nested field counts."""
+    if isinstance(value, bool):
+        yield (not value), "flip"
+    elif isinstance(value, int | float):
+        yield value + 1, "+1"
+    elif isinstance(value, str):
+        # At the START and at the END, so a line that shows only part of a value (a digest cut to
+        # a prefix, a text cut to its head) has to change either way.
+        yield "x" + value, "x+"
+        if value:
+            yield value[:-1] + ("y" if value[-1] != "y" else "z"), "+y"
+    elif value is None:
+        yield "x", "set"
+    elif isinstance(value, list):
+        yield [*value, "x"], "append"
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            for new, how in _mutations(v):
+                yield {**value, k: new}, f"{k}:{how}"
+
+
+def _scopes() -> dict[str, dict]:
+    tpin = {
+        "template": {
+            "id": "tpl_1",
+            "digest": "d" * 64,
+            "library": {"repo": "text", "token": "secret"},
+            "name": "Review PR",
+        },
+        "checklist": {"id": "ship", "default": False, "label": "Ship a change", "digest": "c" * 64},
+        "cwd": {"path": "/w/p", "real": "/srv/p"},
+    }
+    mission = {
+        "name": "m",
+        "trigger": {
+            "kind": "schedule",
+            "cadence": {"kind": "weekly", "days": ["mon", "fri"], "time": "07:30"},
+            "tz": "Europe/Berlin",
+        },
+        "action": {
+            "kind": "start_mission",
+            "project_id": "p1",
+            "instruction": {"template_id": "tpl_1", "values": {"pr": "12"}},
+            "checklist_id": "ship",
+            "autonomy": "dispatch",
+        },
+        "policy": model.validate_policy({"expires_at": 2_000_000_000}),
+    }
+    session = {
+        "name": "s",
+        "trigger": {"kind": "once", "at": "2099-01-01T09:00", "tz": "UTC"},
+        "action": {
+            "kind": "start_session",
+            "engine": "claude",
+            "model": None,
+            "folder": "/w/p",
+            "bypass": True,
+            "message": {"text": "review the open PRs"},
+        },
+        "policy": model.validate_policy({"concurrency": "allow", "max_concurrent": 2}),
+    }
+    send = {
+        "name": "t",
+        "trigger": {
+            "kind": "schedule",
+            "cadence": {"kind": "interval", "every": 15, "unit": "minutes"},
+            "tz": "UTC",
+        },
+        "action": {"kind": "send_to_session", "session_key": SESSION, "message": {"text": "go"}},
+        "policy": model.validate_policy(None),
+    }
+    return {
+        "mission": model.scope_of(mission, tpin),
+        "session": model.scope_of(
+            session, {"template": None, "checklist": None, "cwd": tpin["cwd"]}
+        ),
+        "send": model.scope_of(send, {"template": None, "checklist": None}),
+    }
+
+
+@pytest.mark.parametrize("kind", ["mission", "session", "send"])
+def test_describe_discloses_every_field_the_digest_covers(kind):
+    scope = _scopes()[kind]
+    base_lines = model.describe(scope)
+    base_digest = routes.scope_digest(scope)
+    checked = 0
+    for key, value in scope.items():
+        if key in _UNDESCRIBED_SCOPE_KEYS:
+            continue
+        for new, how in _mutations(value):
+            mutated = {**scope, key: new}
+            assert routes.scope_digest(mutated) != base_digest, (key, how)
+            assert (
+                model.describe(mutated) != base_lines
+            ), f"{kind}: changing {key} ({how}) changes the digest but not the consent lines"
+            checked += 1
+    assert checked >= len(scope) - len(_UNDESCRIBED_SCOPE_KEYS)
+
+
+def test_the_exempt_scope_keys_are_only_the_format_marker():
+    # Growing this set is how a field escapes disclosure; it must stay the version marker alone.
+    assert _UNDESCRIBED_SCOPE_KEYS == {"version"}
+    assert all("version" in s for s in _scopes().values())
+
+
+def test_the_consent_lines_show_the_content_and_the_exact_schedule():
+    lines = model.describe(_scopes()["mission"])
+    text = "\n".join(lines)
+    assert "Every week on Mon, Fri at 07:30 (Europe/Berlin)" in text
+    assert "template “Review PR” (tpl_1)" in text and "  pr = 12" in text
+    assert "token = [secret: token]" in text
+    assert "Stops on 2033-05-18" in text
+    lines = model.describe(_scopes()["session"])
+    assert "Message (plain text):\nreview the open PRs" in lines
+    assert "Once, on 2099-01-01 at 09:00 (UTC)" in lines
+    assert "If a run is still going: starts anyway, up to 2 at once" in lines
+    assert "Runs until you turn it off" in lines
+
+
+def test_a_receipt_from_before_the_full_disclosure_asks_for_approval_again(spawned):
+    h = _hour_start()
+    aid = _made(_hourly(), active_since=h + 60)
+    row = store.get(aid)
+    old = {k: v for k, v in row["consented_scope"].items() if k not in ("message", "template_name")}
+    store.mutate(aid, lambda _r: {"consented_scope": old})
+    sched = automation_loop.Scheduler(clock=Clock(h + 3600 + 5), started_at=h)
+    assert asyncio.run(sched.tick())["fired"] == []
+    sched.release()
+    got = store.get(aid)
+    assert got["needs_reapproval"] and "approve it again" in got["reapproval_reason"]
+
+
+def test_an_unwritable_send_lock_skips_an_automation_template_send(
+    unwritable_lock_dir, live_target
+):
+    t = _text_template()
+    aid = _made(_template_send_config(t["id"]))
+    res = asyncio.run(automation_runner.execute(_manual_run(aid), registry=None))
+    assert res["run"]["outcome"] == "skipped", res["run"]
+    assert res["run"]["reason"] == automation_runner.SEND_LOCK_UNAVAILABLE
+    assert live_target["writes"] == [] and store.get(aid)["consecutive_failures"] == 0
+
+
+# ---- PR B (Hermes round 2): no silent refresh, full revisions, the rendered template -------------
+
+
+def _legacy_receipt(aid: str, drop=("message", "template_name")) -> dict:
+    row = store.get(aid)
+    old = {k: v for k, v in row["consented_scope"].items() if k not in drop}
+    store.mutate(aid, lambda _r: {"consented_scope": old})
+    return old
+
+
+def test_a_patch_can_never_refresh_a_legacy_receipt_without_consent(spawned):
+    aid = _made(_send_config())
+    old = _legacy_receipt(aid)
+    rev = store.get(aid)["revision"]
+    with pytest.raises(model.AutomationError) as e:
+        routes._patch(aid, {"revision": rev, "name": "renamed only"})
+    assert e.value.status == 422 and "what it sends changed" in e.value.extra["widened"]
+    row = store.get(aid)
+    assert row["consented_scope"] == old and row["name"] == "nightly nudge"
+    # …and the claim still refuses to run the receipt it does not match.
+    res = store.begin_run(aid, trigger="manual", slot="manual:legacy", fire_at=None)
+    assert res["claimed"] is False and res["reason"] == store.RECEIPT_MISMATCH
+
+
+def test_a_receipt_missing_any_scope_key_needs_consent_for_any_patch(spawned):
+    aid = _made(_send_config())
+    full = store.get(aid)["consented_scope"]
+    for key in sorted(k for k in full if k != "version"):
+        store.mutate(
+            aid, lambda _r, k=key: {"consented_scope": {x: v for x, v in full.items() if x != k}}
+        )
+        rev = store.get(aid)["revision"]
+        with pytest.raises(model.AutomationError) as e:
+            routes._patch(aid, {"revision": rev, "name": f"renamed {key}"})
+        assert e.value.status == 422, key
+        assert e.value.extra["widened"], key
+    store.mutate(aid, lambda _r: {"consented_scope": full})
+
+
+def test_narrowing_a_ladder_field_still_needs_no_consent(spawned):
+    aid = _made(_hourly(max_runs_per_day=10, pause_after_failures=5))
+    rev = store.get(aid)["revision"]
+    out = routes._patch(
+        aid, {"revision": rev, "policy": {"max_runs_per_day": 4, "pause_after_failures": 2}}
+    )
+    assert out["consented_scope"]["max_runs_per_day"] == 4
+
+
+def test_a_template_action_shows_its_rendered_message_and_never_a_secret(spawned):
+    t = _secret_template()
+    cfg = _send_config(
+        action={
+            "kind": "send_to_session",
+            "session_key": SESSION,
+            "message": {"template_id": t["id"], "values": {"env": "prod"}},
+        }
+    )
+    config = model.validate_config(cfg)
+    scope = model.scope_of(config, model.compute_pins(config))
+    lines = routes.scope_lines(scope, config)
+    text = "\n".join(lines)
+    assert "Message as it would be sent now:\ndeploy with [secret: token] to prod" in lines
+    assert SECRET not in text
+    assert f"revision {scope['template']}" in text  # the WHOLE revision digest
+
+
+def test_a_changed_template_body_changes_the_consent_lines(spawned):
+    t = _text_template("check {{thing}}")
+    cfg = model.validate_config(
+        _send_config(
+            action={
+                "kind": "send_to_session",
+                "session_key": SESSION,
+                "message": {"template_id": t["id"], "values": {}},
+            }
+        )
+    )
+    before = routes.scope_lines(model.scope_of(cfg, model.compute_pins(cfg)), cfg)
+    tstore.update_template(
+        t["id"],
+        {"name": t["name"], "body": "delete {{thing}}", "fields": t["fields"]},
+        expected_updated_at=t["updated_at"],
+    )
+    after = routes.scope_lines(model.scope_of(cfg, model.compute_pins(cfg)), cfg)
+    assert before != after
+    assert any("delete ci" in line for line in after)
+
+
+def test_revisions_that_differ_only_after_a_prefix_read_differently():
+    base = _scopes()["mission"]
+    a = {**base, "template": "a" * 63 + "b"}
+    b = {**base, "template": "a" * 63 + "c"}
+    assert model.describe(a) != model.describe(b)
+
+
+def test_the_in_lock_recheck_refuses_a_stale_receipt_mismatch(spawned):
+    """The due check SAW a mismatch, but the receipt was re-consented before the flag's own
+    transaction: the in-lock recheck finds them equal and flags nothing."""
+    aid = _made(_send_config())
+    row = store.get(aid)
+    got = store.flag_reapproval(
+        aid, "stale observation", observed_revision=row["revision"], receipt_mismatch=True
+    )
+    assert got["needs_reapproval"] is False and got["reapproval_reason"] == ""
+
+
+# ---- PR B (Hermes round 3): the legacy-receipt upgrade, for Run-now-only automations too -------
+
+
+def test_a_manual_automation_with_a_legacy_receipt_is_flagged_approved_and_runs_again(spawned):
+    aid = _made(_send_config())  # trigger: manual (Run now only)
+    _legacy_receipt(aid)
+    sched = automation_loop.Scheduler()
+    asyncio.run(sched.tick())
+    sched.release()
+    pub = routes.public(store.get(aid))
+    assert pub["state"] == "needs_reapproval" and pub["needs_reapproval"]
+    assert pub["reapproval_reason"] == store.RECEIPT_MISMATCH
+    # The operator approves the full scope, and Run now works again.
+    routes._enable(
+        aid, {"revision": pub["revision"], "consent": True, "scope_digest": pub["scope_digest"]}
+    )
+    run = asyncio.run(automation_runner.run_now(aid, registry=None))
+    assert run["state"] == "dispatching" and spawned and spawned[-1]["id"] == run["id"]
+
+
+def test_run_now_on_a_legacy_receipt_says_so_and_flags_it_for_approval(spawned):
+    aid = _made(_send_config())
+    _legacy_receipt(aid)
+    with pytest.raises(automation_runner.RunRefused) as e:
+        asyncio.run(automation_runner.run_now(aid, registry=None))
+    assert e.value.status == 409 and e.value.detail == store.RECEIPT_MISMATCH
+    row = store.get(aid)
+    assert row["needs_reapproval"] and row["reapproval_reason"] == store.RECEIPT_MISMATCH
+    assert spawned == []
+
+
+def test_a_paused_automation_with_a_legacy_receipt_is_flagged_too(spawned):
+    aid = _made(_hourly())
+    store.mutate(aid, lambda _r: {"paused": 1, "paused_reason": "paused by you"})
+    _legacy_receipt(aid)
+    sched = automation_loop.Scheduler()
+    asyncio.run(sched.tick())
+    sched.release()
+    assert store.get(aid)["needs_reapproval"]
+
+
+def test_a_rename_alone_still_needs_consent_and_says_so():
+    base = _scopes()["mission"]
+    renamed = {**base, "template_name": "Review PR v2"}
+    assert model.widened(base, renamed) == ["the template's name changed"]
+    both = {**renamed, "template": "e" * 64}
+    assert model.widened(base, both) == ["the template changed"]
+    moved = {**base, "checklist_name": "Ship it"}
+    assert model.widened(base, moved) == ["the checklist's name changed"]
+
+
+def test_an_expired_or_finished_automation_is_never_flagged_for_approval(spawned):
+    h = _hour_start()
+    expired = _made(_hourly(expires_at=h + 600), active_since=h)
+    _legacy_receipt(expired)
+    at = datetime.fromtimestamp(time.time() + 3600, UTC).strftime("%Y-%m-%dT%H:%M")
+    once = _made(_send_config(trigger={"kind": "once", "at": at, "tz": "UTC"}))
+    fire = model.next_slot(store.get(once)["config"]["trigger"], 0)[1]
+    # Its one slot is claimed (it ran), then its receipt turns out to be a legacy one.
+    store.begin_run(once, trigger="once", slot=at, fire_at=fire)
+    _legacy_receipt(once)
+    sched = automation_loop.Scheduler(clock=Clock(fire + 7200), started_at=h)
+    asyncio.run(sched.tick())
+    sched.release()
+    for aid, state in ((expired, "expired"), (once, "finished")):
+        row = store.get(aid)
+        assert not row["needs_reapproval"], aid
+        assert routes.public(row, now=fire + 7200)["state"] == state
+
+
+def test_a_paused_row_does_not_recompute_its_pins_every_tick(spawned, monkeypatch):
+    aid = _made(_hourly())
+    store.mutate(aid, lambda _r: {"paused": 1, "paused_reason": "paused by you"})
+    calls = []
+    real = model.compute_pins
+    monkeypatch.setattr(model, "compute_pins", lambda c: calls.append(1) or real(c))
+    sched = automation_loop.Scheduler()
+    asyncio.run(sched.tick())
+    asyncio.run(sched.tick())
+    sched.release()
+    assert calls == []
+
+
+# ---- PR B (Hermes round 5): a rename reaches re-approval, and the send works after it ----------
+
+
+def _rename(t: dict, name: str) -> dict:
+    return tstore.update_template(
+        t["id"],
+        {"name": name, "body": t["body"], "fields": t["fields"]},
+        expected_updated_at=t["updated_at"],
+    )
+
+
+def test_a_template_rename_is_flagged_approved_and_then_sends(live_target):
+    t = _text_template()
+    aid = _made(_template_send_config(t["id"]))
+    _rename(t, "check, renamed")
+    sched = automation_loop.Scheduler()
+    asyncio.run(sched.tick())
+    sched.release()
+    row = store.get(aid)
+    assert row["needs_reapproval"] and row["reapproval_reason"] == "the template's name changed"
+    pub = routes.public(row)
+    routes._enable(
+        aid, {"revision": pub["revision"], "consent": True, "scope_digest": pub["scope_digest"]}
+    )
+    res = asyncio.run(automation_runner.execute(_manual_run(aid), registry=None))
+    assert res["run"]["outcome"] == "ok", res["run"]
+    assert live_target["writes"]
+
+
+def test_run_now_after_a_template_rename_is_refused_and_flagged(live_target):
+    t = _text_template()
+    aid = _made(_template_send_config(t["id"]))
+    _rename(t, "check, renamed")
+    res = asyncio.run(automation_runner.execute(_manual_run(aid), registry=None))
+    assert res["run"]["outcome"] == "refused" and "name changed" in res["run"]["reason"]
+    assert store.get(aid)["needs_reapproval"] and live_target["writes"] == []

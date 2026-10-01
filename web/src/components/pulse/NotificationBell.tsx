@@ -10,6 +10,7 @@ import { engineBadge, relTime } from "../../lib/format";
 import type { PulseNotification } from "../../types/api";
 import styles from "./NotificationBell.module.css";
 import { MISSION_PATH } from "../../lib/missionLink";
+import { automationPath } from "../../lib/routes";
 import { reconcileDeviceNotifications } from "../../swPush";
 import { useEngineRoster } from "../../app/engineRoster";
 
@@ -32,8 +33,15 @@ function reconcileDevice(closeTags: string[] | undefined) {
     .catch(() => undefined);
 }
 
-/** Deep link for a notification: the session it concerns, or mission control when it has none. */
+/** An automation's failure episode (`automation:<id>:<run>`, #1201) opens that automation's run
+ *  history — the same link the server puts in its push (`notifications._link`). */
+const AUTOMATION_ACTION_RE = /^automation:([a-z0-9]{1,64}):/;
+
+/** Deep link for a notification: the session it concerns, an automation's run history, or mission
+ *  control when it has neither. */
 function targetPath(n: PulseNotification): string {
+  const auto = !n.session_id && AUTOMATION_ACTION_RE.exec(n.action_id ?? "");
+  if (auto) return automationPath(auto[1]);
   if (!n.session_id) return MISSION_PATH;
   const uuid = n.session_id.slice(n.session_id.indexOf(":") + 1);
   return `/s/${encodeURIComponent(n.engine)}/${encodeURIComponent(uuid)}`;

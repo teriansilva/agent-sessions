@@ -198,6 +198,7 @@ def _render_plain(config: dict, pins: dict) -> tuple[str, dict]:
 #: is skipped — never a failure, never a notification.
 LOCK_BUSY = "skipped: previous run still in its effect"
 SEND_BUSY = "skipped: another send to that session is in progress"
+SEND_LOCK_UNAVAILABLE = "skipped: " + template_send.SEND_LOCK_UNAVAILABLE
 
 
 def authority(run: dict) -> tuple[bool, str, str]:
@@ -586,6 +587,8 @@ def _send_text(run: dict, phys: str, cwd: str | None, text: str) -> tuple[str, s
     except template_send.SendRefused as e:
         if e.busy:
             return "skipped", SEND_BUSY
+        if e.lock_unavailable:
+            return "skipped", SEND_LOCK_UNAVAILABLE
         raise
     outcome, words = _SEND_OUTCOME.get(out.state, ("failed", out.state))
     if outcome in ("ok", "partial") or not out.detail:
@@ -664,6 +667,8 @@ def _send_locked(run: dict, config: dict, pins: dict) -> tuple[str, str]:
     except template_send.SendRefused as e:
         if e.busy:
             return "skipped", SEND_BUSY
+        if e.lock_unavailable:
+            return "skipped", SEND_LOCK_UNAVAILABLE
         if getattr(e, "partial", False):
             return "partial", store.PARTIAL_REASON
         return ("failed" if e.status >= 500 else "refused"), e.detail
@@ -827,6 +832,18 @@ async def run_now(aid: str, *, registry) -> dict:
         store.begin_run, aid, trigger="manual", slot=f"manual:{uuid.uuid4().hex}", fire_at=None
     )
     if not res["claimed"]:
+        if res["reason"] == store.RECEIPT_MISMATCH:
+            # Flag it now, not only on the next tick: the refusal and the "Review and approve"
+            # the list offers must say the same thing (#1252 review).
+            with contextlib.suppress(Exception):
+                row = await asyncio.to_thread(store.get, aid)
+                await asyncio.to_thread(
+                    store.flag_reapproval,
+                    aid,
+                    store.RECEIPT_MISMATCH,
+                    observed_revision=row["revision"],
+                    receipt_mismatch=True,
+                )
         raise RunRefused(409, res["reason"])
     run = res["run"]
     if run["state"] == "dispatching":

@@ -12,6 +12,8 @@ import type { SessionNodeData } from "../../lib/overviewGraph";
 import { HudFrame } from "../hud/HudFrame";
 import { useOverviewActions } from "./overviewActions";
 import { useEngineRoster } from "../../app/engineRoster";
+import { originOf, useAutomationOrigins } from "../../app/automationOrigins";
+import { OriginBadge } from "../automations/OriginBadge";
 
 /** A session chip inside a project cluster — at information parity with the sidebar list row
  *  (#424 Phase 4): a working/idle LED, the title, an intervention "!" badge, the AI summary,
@@ -32,6 +34,8 @@ export function SessionNode({ data }: NodeProps) {
   const { session, active, working, selected, folderLabel, opened } =
     data as SessionNodeData;
   const { openSessionMenu } = useOverviewActions();
+  // Started by an automation (#1201): the sidebar's badge, from the same origins map.
+  const origin = originOf(useAutomationOrigins(), session.id);
   const color = engineColor(session.engine);
   // #284: the server already resolves the meaningful display title (manual rename → AI
   // title → meaningful first message, else ""). Never fall back to the RAW first message
@@ -112,6 +116,7 @@ export function SessionNode({ data }: NodeProps) {
         </span>
       )}
       <span className="tr-ov-chip-foot">
+        {origin ? <OriginBadge origin={origin} /> : null}
         {session.project.kind === "project" && (
           <>
             <span className="tr-ov-chip-proj">

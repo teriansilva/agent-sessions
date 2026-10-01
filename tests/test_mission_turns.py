@@ -467,7 +467,11 @@ def test_every_terminal_turn_carries_both_events_including_the_recovered_ones(
     _, b = missions.claim_turn(mid2, "t2", "sha", path=store)
     missions.append_turn_event(mid2, "t2", "operator", "operator_msg", text="do it", path=store)
     missions.reserve_turn_write(mid2, "t2", b["fence"], ["never-written"], path=store)
-    verdict2, row2 = missions.claim_turn(mid2, "t2", "sha", now=future, path=store)
+    # "Past the owner's max age" is measured from THIS turn's claim, so the clock is read again
+    # here. Reusing the first `future` gave this claim a budget of one second from line 456, and
+    # the first reconcile above could take longer on a loaded CI worker (#1252).
+    future2 = time.time() + missions.TURN_OWNER_MAX_AGE_S + 1
+    verdict2, row2 = missions.claim_turn(mid2, "t2", "sha", now=future2, path=store)
     assert verdict2 == missions.TURN_RECONCILE
     asyncio.run(mroutes._reconcile(mid2, "t2", row2))
 

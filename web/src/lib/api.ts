@@ -1,6 +1,18 @@
 // Typed client for the FastAPI `/api/*` surface. Same-origin; cookie session auth.
 // Mutations (later) attach the CSRF token + are origin-checked server-side.
-import { DIRECTION_PREVIEW_PATH } from "./apiPaths";
+import {
+  AUTOMATION_ORIGINS_API,
+  AUTOMATIONS_API,
+  DIRECTION_PREVIEW_PATH,
+} from "./apiPaths";
+import type {
+  Automation,
+  AutomationConfig,
+  AutomationDeleted,
+  AutomationList,
+  AutomationOrigin,
+  AutomationRun,
+} from "../types/automations";
 import { uploadStoredName } from "./templateMessage";
 import type {
   AgentEndpoint,
@@ -545,6 +557,9 @@ async function upload(
 
 /** A session key's URL segment (`engine:native`). */
 const chatPath = (sid: string) => `/api/chat/${encodeURIComponent(sid)}`;
+
+/** One automation's URL (#1201). */
+const autoPath = (id: string) => `${AUTOMATIONS_API}/${encodeURIComponent(id)}`;
 
 export const api = {
   // ---- API agents (#1209) ------------------------------------------------------------------------
@@ -1812,6 +1827,47 @@ export const api = {
       `/api/missions/${encodeURIComponent(id)}/objectives/${encodeURIComponent(objectiveKey)}/stand-down`,
       { episode },
     ),
+
+  // ---- automations (#1201) -----------------------------------------------------------------------
+  automations: () => getJsonWithDetail<AutomationList>(AUTOMATIONS_API),
+  automation: (id: string) => getJsonWithDetail<Automation>(autoPath(id)),
+  /** Always created OFF: enabling is a separate, consented step. */
+  createAutomation: (config: AutomationConfig) =>
+    mutateJson<Automation>("POST", AUTOMATIONS_API, config),
+  /** Fenced by `revision`. A widening of an enabled automation is a 422 whose body
+   *  (`ApiError.record`) is a `ConsentRequired`; resend with `consent` + that `scope_digest`. */
+  patchAutomation: (
+    id: string,
+    body: Partial<AutomationConfig> & {
+      revision: number;
+      consent?: boolean;
+      scope_digest?: string;
+    },
+  ) => mutateJson<Automation>("PATCH", autoPath(id), body),
+  deleteAutomation: (id: string, revision: number) =>
+    mutateJson<AutomationDeleted>(
+      "DELETE",
+      `${autoPath(id)}?revision=${encodeURIComponent(String(revision))}`,
+    ),
+  enableAutomation: (
+    id: string,
+    body: { revision: number; consent: boolean; scope_digest?: string },
+  ) => mutateJson<Automation>("POST", `${autoPath(id)}/enable`, body),
+  automationVerb: (id: string, verb: "disable" | "pause" | "resume") =>
+    mutateJson<Automation>("POST", `${autoPath(id)}/${verb}`),
+  /** Run now. 202 with the run; a 409 `detail` says why it was refused. */
+  runAutomation: (id: string) =>
+    mutateJson<AutomationRun>("POST", `${autoPath(id)}/run`),
+  automationRuns: (id: string, limit = 50, offset = 0) =>
+    getJsonWithDetail<{ runs: AutomationRun[]; total: number }>(
+      `${autoPath(id)}/runs?limit=${limit}&offset=${offset}`,
+    ),
+  automationRun: (runId: string) =>
+    getJsonWithDetail<AutomationRun>(
+      `${AUTOMATIONS_API}/runs/${encodeURIComponent(runId)}`,
+    ),
+  automationOrigins: () =>
+    getJson<{ origins: Record<string, AutomationOrigin> }>(AUTOMATION_ORIGINS_API),
 
   /** Hide the settled rows the client DISPLAYED — never "the current window" (#862). Passing
    *  what was on screen is what stops a decision that settled between the render and the click

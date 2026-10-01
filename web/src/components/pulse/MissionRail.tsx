@@ -9,7 +9,15 @@
 import { Plus } from "lucide-react";
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { useEffect } from "react";
 import { relTime } from "../../lib/format";
+import {
+  missionOriginKey,
+  noteKeys,
+  originOf,
+  useAutomationOrigins,
+} from "../../app/automationOrigins";
+import { OriginBadge } from "../automations/OriginBadge";
 import type { MissionListRow } from "../../types/api";
 import filterStyles from "../sidebar/Filters.module.css";
 import listStyles from "../sidebar/SessionList.module.css";
@@ -96,6 +104,13 @@ export function MissionRail({
   headEl = null,
   footEl = null,
 }: MissionRailProps) {
+  // Missions an automation started carry its badge (#1201); a mission the rail has not shown
+  // before asks the origins map again.
+  const origins = useAutomationOrigins();
+  const idSig = missions.map((m) => missionOriginKey(m.id)).join("\n");
+  useEffect(() => {
+    noteKeys(idSig ? idSig.split("\n") : []);
+  }, [idSig]);
   // Counted over the LOADED rows, like the rail's own dots — a count of what is on screen.
   const needsYou = missions.filter((m) => m.needs_you).length;
   const counts = (
@@ -261,6 +276,9 @@ export function MissionRail({
                 </span>
                 <span className={listStyles.meta}>
                   <span className={listStyles.engineTag}>{stateLabel(m)}</span>
+                  {originOf(origins, missionOriginKey(m.id)) ? (
+                    <OriginBadge origin={originOf(origins, missionOriginKey(m.id))!} />
+                  ) : null}
                   <span className={listStyles.metaText}>
                     {" · "}
                     {m.project_id

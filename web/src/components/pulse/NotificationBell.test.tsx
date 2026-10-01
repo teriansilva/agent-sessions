@@ -233,3 +233,29 @@ test("Clear sends exactly the settled ids that were DISPLAYED (#862)", async () 
   await waitFor(() => expect(clear).toHaveBeenCalled());
   expect(clear).toHaveBeenCalledWith(["s1"]);
 });
+
+test("an automation's failure opens its run history, not the mission console (#1201)", async () => {
+  mockWidth(false);
+  vi.spyOn(api, "notifications").mockResolvedValue({
+    notifications: [
+      {
+        ...NOTIFICATION,
+        id: "n2",
+        title: "Automation failed: nightly",
+        session_id: "",
+        engine: "",
+        action_id: "automation:abc123:run9",
+      },
+    ],
+    unread: 1,
+  });
+  render(
+    <MemoryRouter>
+      <NotificationBell />
+    </MemoryRouter>,
+  );
+  await userEvent.click(await screen.findByRole("button", { name: /notifications/i }));
+  const panel = screen.getByRole("dialog", { name: /notifications/i });
+  await waitFor(() => expect(panel).toHaveTextContent("Automation failed: nightly"));
+  expect(panel.querySelector('a[href="/mission/automations/abc123"]')).not.toBeNull();
+});

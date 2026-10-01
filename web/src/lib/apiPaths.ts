@@ -6,3 +6,10 @@
 
 /** `POST` — what a direction would type, filled with example facts (#983 P2). Read-only. */
 export const DIRECTION_PREVIEW_PATH = "/api/mission-directions/preview";
+
+/** The automations API (#1201): list/create at the root, one automation at `/{id}`. */
+export const AUTOMATIONS_API = "/api/automations";
+
+/** `GET` — `{origins: {key: {automation_id, name, …}}}`: which sessions and missions an automation
+ *  started, for the origin badges. */
+export const AUTOMATION_ORIGINS_API = `${AUTOMATIONS_API}/origins`;

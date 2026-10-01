@@ -33,6 +33,14 @@ from pathlib import Path
 from . import automations as model
 
 SCHEMA_VERSION = 1
+
+#: The claim's refusal when the consent receipt no longer equals the config's scope (a receipt from
+#: before a scope field existed, or a hand edit). Never run; the due check and Run now both flag it
+#: *needs re-approval* so the operator can approve the full scope.
+RECEIPT_MISMATCH = (
+    "this automation's approval is out of date — the consent now shows everything it does; "
+    "review it and approve it again"
+)
 BUSY_TIMEOUT_MS = 5000
 
 #: Run history bounds (retention prunes runs only).
@@ -560,7 +568,7 @@ def _eligibility(con, row: dict, *, manual: bool, now: float) -> tuple[str, str]
     if row["consented_scope"] != model.scope_of(config, row["pins"]):
         # The config and the receipt disagree — possible only through a hand edit or a bug. Never
         # run a scope nobody approved.
-        return "no", "this automation's approved scope doesn't match its settings"
+        return "no", RECEIPT_MISMATCH
     policy = config["policy"]
     if policy["expires_at"] is not None and now >= policy["expires_at"]:
         return "no", "this automation has expired"
@@ -908,7 +916,9 @@ def recover_interrupted(*, now: float | None = None) -> list[str]:
         return ids
 
 
-def flag_reapproval(aid: str, reason: str, *, observed_revision: int | None) -> dict:
+def flag_reapproval(
+    aid: str, reason: str, *, observed_revision: int | None, receipt_mismatch: bool = False
+) -> dict:
     """Mark an automation *needs re-approval* and pause it — but only if the drift that was
     observed is STILL true: the row still has ``observed_revision`` and its consented pins still
     differ from the inputs as they are NOW. A consent (or an edit) that landed after the
@@ -919,6 +929,12 @@ def flag_reapproval(aid: str, reason: str, *, observed_revision: int | None) -> 
             return None
         if observed_revision is not None and row["revision"] != observed_revision:
             return None
+        if receipt_mismatch:
+            # The receipt no longer matches its own config (a receipt from before a scope field
+            # was added): still true under the lock, or this is a no-op.
+            if row["consented_scope"] == model.scope_of(row["config"], row["pins"]):
+                return None
+            return {"needs_reapproval": 1, "reapproval_reason": reason, "paused": 1}
         try:
             current = model.compute_pins(row["config"])
         except model.PinsUnavailable:

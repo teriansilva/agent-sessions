@@ -34,6 +34,12 @@ import { RowMenu } from "./RowMenu";
 import { sessionPeers, useSessionMenu } from "../sessions/useSessionMenu";
 import styles from "./SessionList.module.css";
 import { useEngineRoster } from "../../app/engineRoster";
+import {
+  noteKeys,
+  originOf,
+  useAutomationOrigins,
+} from "../../app/automationOrigins";
+import { OriginBadge } from "../automations/OriginBadge";
 
 /** Activity since the last successful review makes the summary stale (#356): the AI's
  *  one-liner describes an older state, so the row exposes the review's age instead of
@@ -157,6 +163,8 @@ function Row({
   // Re-render when the engine roster lands or changes (#853 P4): this renders agent names,
   // badges or colours, which come from the roster, not from a client-side list.
   useEngineRoster();
+  // Started by an automation (#1201): the one small origins map, shared by every row.
+  const origin = originOf(useAutomationOrigins(), s.id);
   // Inline editor (#551): the row's title (Rename) OR its custom tag (Set tag…) share one
   // input row. "none" = not editing; `draft` holds whichever value is being edited.
   const [editMode, setEditMode] = useState<"none" | "title" | "tag">("none");
@@ -404,6 +412,7 @@ function Row({
                 <span className={styles.missionTagText}>{s.mission.title}</span>
               </span>
             ) : null}
+            {origin ? <OriginBadge origin={origin} /> : null}
             {/* Handoff provenance (#597): where this session came from (accent) or where
                 it was handed to (muted). Non-interactive by construction — the row IS a
                 NavLink, and an anchor may not contain interactive content, so the
@@ -637,6 +646,13 @@ export function SessionList({
   useEffect(() => {
     setCounts(counts);
   }, [counts, setCounts]);
+
+  // A row the list has not shown before may be an automation's new session: ask the origins map
+  // again (#1201). Keyed on the ids, so a steady poll asks nothing.
+  const idSig = sessions.map((s) => s.id).join("\n");
+  useEffect(() => {
+    noteKeys(idSig ? idSig.split("\n") : []);
+  }, [idSig]);
 
   // Relative-time labels otherwise stay frozen ("2m ago", "2m ago", …) until something else
   // re-renders the list. Bump a counter every ~30s while the tab is visible so `relTime` is
