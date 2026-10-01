@@ -26,6 +26,16 @@ import nudge_harness as H
 from agent_sessions import scopedspawn
 
 
+def _unique_secs(whole: int) -> str:
+    """A `sleep` duration no other process on this host is running: ``<whole>.<random digits>``.
+
+    `_pids_running` matches by exact argv across the WHOLE host, and CI runs several pr-validate
+    jobs on one shared runner. A fixed ``sleep 297`` therefore matched a sibling run's live
+    grandchild, and teardown was reported as having left a survivor it never started.
+    """
+    return f"{whole}.{uuid.uuid4().int % 10**9:09d}"
+
+
 def _pids_running(*argv: str) -> list[str]:
     """PIDs whose cmdline is exactly ``argv``, read from /proc.
 
@@ -108,11 +118,12 @@ def test_teardown_reaps_the_master_not_just_the_client(tmp_path):
     """
     sleep = shutil.which("sleep")
     assert sleep, "sleep required"
+    child_secs = _unique_secs(300)
     s = H.RealSession(
         engine="claude",
         cwd=str(tmp_path),
         native_id=str(uuid.uuid4()),
-        argv_override=[sleep, "300"],
+        argv_override=[sleep, child_secs],
     )
     with s:
         deadline = time.time() + 10
@@ -122,7 +133,7 @@ def test_teardown_reaps_the_master_not_just_the_client(tmp_path):
         # Scanned from /proc rather than `pgrep -f`: the pattern would appear in pgrep's own
         # cmdline and match itself, which is a documented way to "find" a process that is
         # really just your own probe.
-        child = _pids_running(sleep, "300")
+        child = _pids_running(sleep, child_secs)
         assert child, "the sleep child never started"
 
     assert not s.master_alive(), f"master survived teardown (reap outcome: {s.reap_outcome!r})"
@@ -217,11 +228,12 @@ def test_startup_failure_after_spawn_still_reaps_the_master(tmp_path, monkeypatc
     door (review on #858). Injecting the failure is the only way to see it.
     """
     sleep = shutil.which("sleep")
+    child_secs = _unique_secs(300)
     s = H.RealSession(
         engine="claude",
         cwd=str(tmp_path),
         native_id=str(uuid.uuid4()),
-        argv_override=[sleep, "300"],
+        argv_override=[sleep, child_secs],
     )
 
     boom = RuntimeError("injected: drain thread failed to start")
@@ -239,7 +251,7 @@ def test_startup_failure_after_spawn_still_reaps_the_master(tmp_path, monkeypatc
         f"master survived a failed __enter__ (reap outcome: {s.reap_outcome!r}) — a live agent "
         "was left running with nothing scheduled to reap it"
     )
-    assert not _pids_running(sleep, "300"), "the child survived a failed __enter__"
+    assert not _pids_running(sleep, child_secs), "the child survived a failed __enter__"
 
 
 def _RETIRED_test_stale_output():
@@ -261,26 +273,27 @@ def test_teardown_reaps_a_child_that_escaped_the_group_and_carries_no_session_id
     setsid = shutil.which("setsid")
     if not setsid:
         pytest.skip("setsid required")
+    escaped_secs = _unique_secs(297)
     s = H.RealSession(
         engine="claude",
         cwd=str(tmp_path),
         native_id=str(uuid.uuid4()),
-        argv_override=[sh, "-c", f"{setsid} {sleep} 297 & exec {sleep} 298"],
+        argv_override=[sh, "-c", f"{setsid} {sleep} {escaped_secs} & exec {sleep} 298"],
     )
     with s:
         deadline = time.time() + 15
-        while time.time() < deadline and not _pids_running(sleep, "297"):
+        while time.time() < deadline and not _pids_running(sleep, escaped_secs):
             time.sleep(0.2)
-        escaped = _pids_running(sleep, "297")
+        escaped = _pids_running(sleep, escaped_secs)
         assert escaped, "the escaped grandchild never started"
         # It really is out of the master's group and carries no id.
         assert s.native_id not in open(f"/proc/{escaped[0]}/cmdline").read()
         time.sleep(1.5)  # let the descendant sampler observe it
 
     deadline = time.time() + 10
-    while time.time() < deadline and _pids_running(sleep, "297"):
+    while time.time() < deadline and _pids_running(sleep, escaped_secs):
         time.sleep(0.25)
-    assert not _pids_running(sleep, "297"), "the escaped child survived teardown"
+    assert not _pids_running(sleep, escaped_secs), "the escaped child survived teardown"
 
 
 def test_a_recycled_pid_is_never_signalled():
@@ -318,23 +331,30 @@ def test_teardown_reaps_an_escaped_child_with_no_grace_period(tmp_path):
     exercises exactly that window.
     """
     sh, sleep, setsid = shutil.which("sh"), shutil.which("sleep"), shutil.which("setsid")
+    escaped_secs = _unique_secs(291)
     s = H.RealSession(
         engine="claude",
         cwd=str(tmp_path),
         native_id=str(uuid.uuid4()),
-        argv_override=[sh, "-c", f"printf x; sleep 2; {setsid} {sleep} 291 & exec {sleep} 292"],
+        argv_override=[
+            sh,
+            "-c",
+            f"printf x; sleep 2; {setsid} {sleep} {escaped_secs} & exec {sleep} 292",
+        ],
     )
     with s:
         deadline = time.time() + 25
-        while time.time() < deadline and not _pids_running(sleep, "291"):
+        while time.time() < deadline and not _pids_running(sleep, escaped_secs):
             time.sleep(0.05)
-        assert _pids_running(sleep, "291"), "the escaped child never started"
+        assert _pids_running(sleep, escaped_secs), "the escaped child never started"
         # NO grace period: exit immediately, so the child may never have been sampled.
 
     deadline = time.time() + 10
-    while time.time() < deadline and _pids_running(sleep, "291"):
+    while time.time() < deadline and _pids_running(sleep, escaped_secs):
         time.sleep(0.25)
-    assert not _pids_running(sleep, "291"), "the escaped child survived an immediate teardown"
+    assert not _pids_running(
+        sleep, escaped_secs
+    ), "the escaped child survived an immediate teardown"
 
 
 def test_a_dropped_nudge_is_ALWAYS_a_red_cell_now(monkeypatch):
@@ -543,18 +563,19 @@ def test_scope_reaps_a_child_the_inventory_never_saw(tmp_path, monkeypatch):
         pytest.skip("systemd-run --user scopes unavailable on this host")
     sh, sleep, setsid = shutil.which("sh"), shutil.which("sleep"), shutil.which("setsid")
     monkeypatch.setattr(H.RealSession, "_sample_descendants", lambda self, force=False: None)
+    escaped_secs = _unique_secs(287)
 
     s = H.RealSession(
         engine="claude",
         cwd=str(tmp_path),
         native_id=str(uuid.uuid4()),
-        argv_override=[sh, "-c", f"{setsid} {sleep} 287 & exec {sleep} 288"],
+        argv_override=[sh, "-c", f"{setsid} {sleep} {escaped_secs} & exec {sleep} 288"],
     )
     with s:
         deadline = time.time() + 20
-        while time.time() < deadline and not _pids_running(sleep, "287"):
+        while time.time() < deadline and not _pids_running(sleep, escaped_secs):
             time.sleep(0.1)
-        assert _pids_running(sleep, "287"), "the escaped child never started"
+        assert _pids_running(sleep, escaped_secs), "the escaped child never started"
 
     assert s.scope_unit, "no transient scope was created — nothing would contain the subtree"
     assert s.scope_stopped, "the scope was never stopped"
@@ -562,9 +583,9 @@ def test_scope_reaps_a_child_the_inventory_never_saw(tmp_path, monkeypatch):
     assert not s.straggler_pids, "the sweep must not be what reaped it"
 
     deadline = time.time() + 10
-    while time.time() < deadline and _pids_running(sleep, "287"):
+    while time.time() < deadline and _pids_running(sleep, escaped_secs):
         time.sleep(0.25)
-    assert not _pids_running(sleep, "287"), "the cgroup did not reap the escaped child"
+    assert not _pids_running(sleep, escaped_secs), "the cgroup did not reap the escaped child"
 
 
 def test_a_real_agent_is_refused_when_no_transient_scope_is_available(monkeypatch):
@@ -825,11 +846,7 @@ _CLAUDE_DIALOG = (
     "  Yes, I trust this folder\n"
 )
 _INVERSE_DIALOG = (
-    "Do you trust the files in this folder?\n"
-    "\n"
-    "\u276f Yes, I trust this folder\n"
-    "\n"
-    "  No, exit\n"
+    "Do you trust the files in this folder?\n\n\u276f Yes, I trust this folder\n\n  No, exit\n"
 )
 
 
