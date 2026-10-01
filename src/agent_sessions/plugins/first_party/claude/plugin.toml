@@ -29,6 +29,8 @@ archive = "projects-archive"
 resume = { kind = "flag", flag = "--resume" }
 new = { kind = "pin-flag", flag = "--session-id" }
 bypass = ["--dangerously-skip-permissions"]
+# `--model` on new AND resume: claude honours it when it resumes a conversation (#1189).
+model = { kind = "flag", flag = "--model", on_resume = true }
 
 [capabilities]
 resume = true
@@ -57,6 +59,38 @@ permission = "claude-permission"
 
 [unattended]
 start_evidence = "claude-sessions"
+
+[instructions]
+files = ["CLAUDE.md"]
+
+# Vendor-documented ids at authoring time (#1189). Aliases are claude's own `--model` shorthands,
+# canonicalised to the id before anything is stored or launched. Newer ids: Settings → Agents.
+[[models.list]]
+id = "claude-opus-5"
+context_window = 1000000
+aliases = ["opus"]
+
+[[models.list]]
+id = "claude-sonnet-5"
+context_window = 1000000
+aliases = ["sonnet"]
+
+[[models.list]]
+id = "claude-haiku-4-5"
+context_window = 200000
+aliases = ["haiku"]
+
+[[models.list]]
+id = "claude-fable-5-1"
+context_window = 1000000
+
+[[models.list]]
+id = "claude-opus-4-8"
+context_window = 1000000
+
+[[models.list]]
+id = "claude-sonnet-4-6"
+context_window = 1000000
 
 [display]
 order = 10

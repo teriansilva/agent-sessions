@@ -31,7 +31,98 @@
       "session_id": {
         "mint": "pinned"
       },
-      "models": [],
+      "models": [
+        {
+          "id": "claude-opus-5",
+          "context_window": 1000000,
+          "aliases": [
+            "opus"
+          ]
+        },
+        {
+          "id": "claude-sonnet-5",
+          "context_window": 1000000,
+          "aliases": [
+            "sonnet"
+          ]
+        },
+        {
+          "id": "claude-haiku-4-5",
+          "context_window": 200000,
+          "aliases": [
+            "haiku"
+          ]
+        },
+        {
+          "id": "claude-fable-5-1",
+          "context_window": 1000000,
+          "aliases": []
+        },
+        {
+          "id": "claude-opus-4-8",
+          "context_window": 1000000,
+          "aliases": []
+        },
+        {
+          "id": "claude-sonnet-4-6",
+          "context_window": 1000000,
+          "aliases": []
+        }
+      ],
+      "model_select": {
+        "supported": true,
+        "on_resume": true,
+        "configured_elsewhere": false,
+        "offered": [
+          {
+            "id": "claude-opus-5",
+            "aliases": [
+              "opus"
+            ],
+            "context_window": 1000000,
+            "source": "manifest"
+          },
+          {
+            "id": "claude-sonnet-5",
+            "aliases": [
+              "sonnet"
+            ],
+            "context_window": 1000000,
+            "source": "manifest"
+          },
+          {
+            "id": "claude-haiku-4-5",
+            "aliases": [
+              "haiku"
+            ],
+            "context_window": 200000,
+            "source": "manifest"
+          },
+          {
+            "id": "claude-fable-5-1",
+            "aliases": [],
+            "context_window": 1000000,
+            "source": "manifest"
+          },
+          {
+            "id": "claude-opus-4-8",
+            "aliases": [],
+            "context_window": 1000000,
+            "source": "manifest"
+          },
+          {
+            "id": "claude-sonnet-4-6",
+            "aliases": [],
+            "context_window": 1000000,
+            "source": "manifest"
+          }
+        ]
+      },
+      "instructions": {
+        "files": [
+          "CLAUDE.md"
+        ]
+      },
       "usage": {
         "source": "plan"
       },
@@ -72,6 +163,17 @@
         "mint": "adopt"
       },
       "models": [],
+      "model_select": {
+        "supported": false,
+        "on_resume": false,
+        "configured_elsewhere": true,
+        "offered": []
+      },
+      "instructions": {
+        "files": [
+          "AGENTS.md"
+        ]
+      },
       "usage": {
         "source": "tokens"
       },
@@ -111,7 +213,42 @@
       "session_id": {
         "mint": "adopt"
       },
-      "models": [],
+      "models": [
+        {
+          "id": "gpt-5-codex",
+          "context_window": null,
+          "aliases": []
+        },
+        {
+          "id": "gpt-5",
+          "context_window": null,
+          "aliases": []
+        }
+      ],
+      "model_select": {
+        "supported": true,
+        "on_resume": false,
+        "configured_elsewhere": false,
+        "offered": [
+          {
+            "id": "gpt-5-codex",
+            "aliases": [],
+            "context_window": null,
+            "source": "manifest"
+          },
+          {
+            "id": "gpt-5",
+            "aliases": [],
+            "context_window": null,
+            "source": "manifest"
+          }
+        ]
+      },
+      "instructions": {
+        "files": [
+          "AGENTS.md"
+        ]
+      },
       "usage": {
         "source": "plan"
       },
@@ -151,7 +288,42 @@
       "session_id": {
         "mint": "pinned"
       },
-      "models": [],
+      "models": [
+        {
+          "id": "gemini-2.5-pro",
+          "context_window": 1048576,
+          "aliases": []
+        },
+        {
+          "id": "gemini-2.5-flash",
+          "context_window": 1048576,
+          "aliases": []
+        }
+      ],
+      "model_select": {
+        "supported": true,
+        "on_resume": false,
+        "configured_elsewhere": false,
+        "offered": [
+          {
+            "id": "gemini-2.5-pro",
+            "aliases": [],
+            "context_window": 1048576,
+            "source": "manifest"
+          },
+          {
+            "id": "gemini-2.5-flash",
+            "aliases": [],
+            "context_window": 1048576,
+            "source": "manifest"
+          }
+        ]
+      },
+      "instructions": {
+        "files": [
+          "GEMINI.md"
+        ]
+      },
       "usage": {
         "source": "manual"
       },
@@ -192,6 +364,17 @@
         "mint": "adopt"
       },
       "models": [],
+      "model_select": {
+        "supported": false,
+        "on_resume": false,
+        "configured_elsewhere": true,
+        "offered": []
+      },
+      "instructions": {
+        "files": [
+          "GEMINI.md"
+        ]
+      },
       "usage": {
         "source": "plan"
       },
@@ -232,6 +415,17 @@
         "mint": "adopt"
       },
       "models": [],
+      "model_select": {
+        "supported": false,
+        "on_resume": false,
+        "configured_elsewhere": true,
+        "offered": []
+      },
+      "instructions": {
+        "files": [
+          "AGENTS.md"
+        ]
+      },
       "usage": {
         "source": "plan"
       },
@@ -272,6 +466,15 @@
         "mint": "pinned"
       },
       "models": [],
+      "model_select": {
+        "supported": false,
+        "on_resume": false,
+        "configured_elsewhere": true,
+        "offered": []
+      },
+      "instructions": {
+        "files": []
+      },
       "usage": {
         "source": "tokens"
       },
@@ -312,6 +515,15 @@
         "mint": "pinned"
       },
       "models": [],
+      "model_select": {
+        "supported": false,
+        "on_resume": false,
+        "configured_elsewhere": false,
+        "offered": []
+      },
+      "instructions": {
+        "files": []
+      },
       "usage": {
         "source": "none"
       },

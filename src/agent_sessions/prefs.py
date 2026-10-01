@@ -2227,8 +2227,81 @@ def _coerce_agent_budgets(raw: object) -> dict:
 # still choose differently for itself, and changing a default never rewrites a mission plan or a
 # stored session. Strict on write (422, never coerce), lenient on read, like `term_font_size`.
 
-AGENT_DEFAULTS_KEYS = ("default_engine", "bypass")
+AGENT_DEFAULTS_KEYS = ("default_engine", "bypass", "models")
 _ENGINE_ID_SHAPE = re.compile(r"\A[a-z][a-z0-9-]{0,23}\Z")
+#: Operator-added model ids (#1189), per engine: vendor churn without a release. Capped per engine
+#: and in engines per patch, so a write is bounded work; each id is matched by the manifest's
+#: `_MODEL_ID_RE`, the same grammar a launch accepts.
+AGENT_MODELS_MAX = 16
+_AGENT_MODELS_ENGINES_MAX = 32
+
+
+def _model_id_re():
+    from .plugins.manifest import _MODEL_ID_RE
+
+    return _MODEL_ID_RE
+
+
+def _coerce_agent_models(raw: object) -> dict[str, list[str]]:
+    """Lenient read: engine-shaped keys, model-shaped ids, no `default`, de-duplicated, capped."""
+    if not isinstance(raw, dict):
+        return {}
+    rx = _model_id_re()
+    out: dict[str, list[str]] = {}
+    for eid, ids in raw.items():
+        if not (isinstance(eid, str) and _ENGINE_ID_SHAPE.match(eid) and isinstance(ids, list)):
+            continue
+        clean: list[str] = []
+        for m in ids:
+            if (
+                isinstance(m, str)
+                and rx.fullmatch(m)
+                and m.lower() != "default"
+                and m not in clean
+                and len(clean) < AGENT_MODELS_MAX
+            ):
+                clean.append(m)
+        if clean:
+            out[eid] = clean
+    return out
+
+
+def validate_agent_models_patch(models: object, path: Path | None = None) -> str | None:
+    """Strict write for `agent_defaults.models` (#1189): `{engine: [id, …]}`, each list REPLACING
+    that engine's stored ids (`[]` clears them). An engine must take a model at launch — or be one
+    already stored, so a removed engine's ids stay clearable. Every id: a string of the launch
+    grammar, not `default`, not repeated, and not already a name the manifest gives any model (id
+    or alias): a collision would make canonicalisation ambiguous."""
+    if not isinstance(models, dict):
+        return "agent_defaults.models must be an object"
+    if len(models) > _AGENT_MODELS_ENGINES_MAX:
+        return "agent_defaults.models names too many engines"
+    from . import engines
+
+    stored = set(get_agent_defaults(path)["models"])
+    rx = _model_id_re()
+    for eid, ids in models.items():
+        if not isinstance(eid, str) or not _ENGINE_ID_SHAPE.match(eid):
+            return "agent_defaults.models keys must be engine ids"
+        m = engines.manifest_of(eid)
+        takes_model = m is not None and m.launch is not None and m.launch.model is not None
+        if not takes_model and eid not in stored:
+            return f"agent_defaults.models: {eid!r} does not take a model at launch"
+        if not isinstance(ids, list) or len(ids) > AGENT_MODELS_MAX:
+            return f"agent_defaults.models.{eid} must be a list of at most {AGENT_MODELS_MAX} ids"
+        taken = {n for x in (m.models if m is not None else ()) for n in (x.id, *x.aliases)}
+        seen: set[str] = set()
+        for mid in ids:
+            if not isinstance(mid, str) or not rx.fullmatch(mid):
+                return f"agent_defaults.models.{eid}: invalid model id"
+            if mid.lower() == "default":
+                return f"agent_defaults.models.{eid}: 'default' is reserved"
+            if mid in seen:
+                return f"agent_defaults.models.{eid}: duplicate model id {mid!r}"
+            if mid in taken:
+                return f"agent_defaults.models.{eid}: {mid!r} is already offered by the agent"
+            seen.add(mid)
+    return None
 
 
 def coerce_agent_defaults(raw: object) -> dict:
@@ -2241,6 +2314,7 @@ def coerce_agent_defaults(raw: object) -> dict:
     return {
         "default_engine": eid if isinstance(eid, str) and _ENGINE_ID_SHAPE.match(eid) else None,
         "bypass": bypass if isinstance(bypass, bool) else True,
+        "models": _coerce_agent_models(raw.get("models")),
     }
 
 
@@ -2270,6 +2344,8 @@ def validate_agent_defaults_patch(patch: object, path: Path | None = None) -> st
             stored = get_agent_defaults(path)["default_engine"]
             if not isinstance(eid, str) or (eid not in startable and eid != stored):
                 return "agent_defaults.default_engine must be an engine that can start a session"
+    if "models" in patch:
+        return validate_agent_models_patch(patch["models"], path)
     return None
 
 
@@ -2278,9 +2354,18 @@ def set_agent_defaults(patch: dict, path: Path | None = None) -> dict:
 
     def merge(raw):
         cur = coerce_agent_defaults(raw)
-        for k in AGENT_DEFAULTS_KEYS:
+        for k in ("default_engine", "bypass"):
             if k in patch:
                 cur[k] = patch[k]
+        if "models" in patch:
+            # Per-engine replacement under the lock: engines the patch does not name keep theirs.
+            models = dict(cur["models"])
+            for eid, ids in patch["models"].items():
+                if ids:
+                    models[eid] = list(ids)
+                else:
+                    models.pop(eid, None)
+            cur["models"] = models
         return cur
 
     return _mutate("agent_defaults", merge, path)

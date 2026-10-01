@@ -64,6 +64,12 @@ export interface Session {
    *  half (peer archived/deleted) is tolerated — display strings, never dereferenced. */
   handoff_from?: string;
   handoff_to?: string;
+  /** The model this session's launch ASKED for (#1189), canonical; null/absent = default or never
+   *  recorded. A request, never evidence of what ran. */
+  model_requested?: string | null;
+  /** What the engine's own transcript says it ran (#1189) — only on the single-session lookup.
+   *  null = unknown. */
+  model_effective?: string | null;
   /** The mission holding this session (#948): `null` when none does. ABSENT when the server
    *  could not read the mission store — unknown, so no adopt/open control is offered. */
   mission?: SessionMissionRef | null;
@@ -1260,11 +1266,32 @@ export interface EngineInfo {
   capabilities: EngineCapabilities;
   session_id: { mint: "pinned" | "adopt" | string };
   models: { id: string; context_window: number | null; aliases: string[] }[];
+  /** What a launch can choose (#1189). `offered` excludes `default`, which pickers put first;
+   *  empty ⇒ `default` only. Optional so an older server's rows read as default-only. */
+  model_select?: ModelSelect;
+  /** Workspace-root instruction files the engine reads (#1189). */
+  instructions?: { files: string[] };
   usage: { source: "plan" | "tokens" | "manual" | "none" | string };
   terminal: { repaint: "none" | "wipe" | string };
   /** `retiring` (#1126 PR B): manifest gone, live sessions attach-only. Absent ⇒ active. */
   status?: "active" | "retiring" | string;
   status_reason?: string | null;
+}
+
+/** One model a launch may request (#1189). `source`: the manifest's list, or an id the operator
+ *  added in Settings → Agents. */
+export interface OfferedModel {
+  id: string;
+  aliases: string[];
+  context_window: number | null;
+  source: "manifest" | "operator" | string;
+}
+
+export interface ModelSelect {
+  supported: boolean;
+  on_resume: boolean;
+  configured_elsewhere: boolean;
+  offered: OfferedModel[];
 }
 
 /** A manifest that failed to load (#853 P4) — diagnostics only, never an engine. */
@@ -1358,6 +1385,9 @@ export interface AgentUsageResponse {
 export interface AgentDefaults {
   default_engine: string | null;
   bypass: boolean;
+  /** Operator-added model ids per engine (#1189). A patch REPLACES the named engines' lists;
+   *  `[]` clears one. Optional: an older server does not send it. */
+  models?: Record<string, string[]>;
 }
 
 /** `GET /api/engines/{id}` (#853 P4): one engine as its manifest declares it — the Agents detail
@@ -1395,6 +1425,8 @@ export interface EngineDetail {
   usage: { source: string; kind: string | null };
   capabilities: Record<string, boolean>;
   models: { id: string; context_window: number | null; aliases: string[] }[];
+  model_select?: ModelSelect;
+  instructions?: { files: string[] };
   maintenance: string[];
 }
 

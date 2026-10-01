@@ -454,6 +454,7 @@ async def run(
     verify_cwd=None,
     bypass_ceiling: bool | None = None,
     extra_authorize=None,
+    model: str | None = None,
 ) -> dict:
     """Launch the plan and settle the mission. Returns what the console renders.
 
@@ -590,6 +591,10 @@ async def run(
             on_key=on_key,
             authorize=authorize,
             nonce=nonce,
+            # An optional model (#1189), resolved by the launcher's own resolver: a refusal is a
+            # `DispatchError` below (nothing spawned). Passed only when set, so `None` is exactly
+            # the launch this path made before a model could be chosen. #1194 is the first caller.
+            **({"model": model} if model is not None else {}),
         )
     except headless_dispatch.DispatchError as e:
         # Could not be ATTEMPTED — an ineligible engine, a brief the sanitiser refused. Nothing

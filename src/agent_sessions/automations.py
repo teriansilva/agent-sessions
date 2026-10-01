@@ -327,9 +327,11 @@ def validate_action(raw: object) -> dict:
         if not isinstance(engine, str) or not _ID_RE.match(engine):
             raise AutomationError("engine must be an engine id")
         if a.get("model") is not None:
-            # #1189 (model per session) is not merged: no launch path takes a model yet, and a
-            # field that is accepted and ignored would be a consent to something that never runs.
-            raise AutomationError("choosing a model is not available yet (#1189)")
+            # Launches can take a model since #1189, but an automation's consent does not cover
+            # one yet: what a stored consent means when the model it named is later removed or
+            # renamed is its own decision (a follow-up), and a field accepted here and ignored by
+            # the runner would be consent to something that never runs. Null only, until then.
+            raise AutomationError("choosing a model for an automation is not available yet")
         folder = _text(a["folder"], "folder", 4096)
         if not folder.startswith("/"):
             raise AutomationError("folder must be an absolute path")

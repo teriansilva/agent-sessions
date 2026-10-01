@@ -323,10 +323,47 @@ class PluginProvider:
         if not isinstance(cwd, str) or not os.path.isabs(cwd) or "\x00" in cwd:
             raise EngineError("cwd must be an absolute path")
 
+    def _model_argv(self, model) -> list[str]:
+        """The `[flag, id]` pair for a RESOLVED selection (#1189), or nothing.
+
+        Only a `model_choice.Selection` is accepted — a raw string from a route, a playbook or a
+        model reply is refused here, whatever it says — and it must be this engine's and carry the
+        flag this manifest declares. `Selection.argv()` re-checks the id's shape at the point of
+        use, so the id validated is the id appended.
+        """
+        if model is None:
+            return []
+        from ..model_choice import ModelRefused, Selection, still_offered
+
+        if not isinstance(model, Selection) or model.engine != self.engine_id:
+            raise EngineError(f"{self.engine_id}: refusing an unresolved model selection")
+        if model.flag is None:
+            return []
+        declared = self.manifest.launch.model if self.manifest.launch is not None else None
+        if declared is None or model.flag != declared.flag:
+            raise EngineError(f"{self.engine_id}: takes no model flag {model.flag!r}")
+        try:
+            argv = model.argv()  # shape re-checked here, at the point of use
+        except ModelRefused as e:
+            raise EngineError(f"{self.engine_id}: {e}") from None
+        # …and MEMBERSHIP too: a `Selection` is a plain dataclass anyone can construct, so the id
+        # must still be one this engine offers (manifest list or operator additions) right now.
+        if not still_offered(self.manifest, model.model):
+            raise EngineError(f"{self.engine_id}: model {model.model!r} is not offered")
+        return argv
+
     def _assemble(
-        self, step: ArgvStep, native: str, *, cwd: str, bypass: bool, new: bool
+        self,
+        step: ArgvStep,
+        native: str,
+        *,
+        cwd: str,
+        bypass: bool,
+        new: bool,
+        model=None,
     ) -> list[str]:
         launch = self.manifest.launch
+        model_args = self._model_argv(model)
         argv = [self._entry_path(), *launch.base_args]
         k = step.kind
         if k in ("flag", "pin-flag"):
@@ -343,19 +380,20 @@ class PluginProvider:
             argv += [step.flag, cwd]
         elif k not in ("fresh", "bare"):  # pragma: no cover — the validator admits no other kind
             raise EngineError(f"{self.engine_id}: unknown launch kind {k!r}")
+        argv += model_args
         if bypass and (launch.bypass_on == "both" or new):
             argv += list(launch.bypass)
         return argv
 
-    def launch_argv(self, native_id: str, *, cwd: str, bypass: bool) -> list[str]:
+    def launch_argv(self, native_id: str, *, cwd: str, bypass: bool, model=None) -> list[str]:
         self._check_native(native_id)
         if self.manifest.launch is None:
             self._entry_path()  # raises the runtime refusal, naming why
         return self._assemble(
-            self.manifest.launch.resume, native_id, cwd=cwd, bypass=bypass, new=False
+            self.manifest.launch.resume, native_id, cwd=cwd, bypass=bypass, new=False, model=model
         )
 
-    def new_launch_argv(self, native_id: str, *, cwd: str, bypass: bool) -> list[str]:
+    def new_launch_argv(self, native_id: str, *, cwd: str, bypass: bool, model=None) -> list[str]:
         step = self.manifest.launch.new if self.manifest.launch is not None else None
         if step is None and self.manifest.launch is None:
             self._entry_path()  # raises the runtime refusal, naming why
@@ -368,7 +406,7 @@ class PluginProvider:
                 raise EngineError(f"{self.engine_id}: malformed new-session placeholder")
         else:
             self._check_native(native_id)
-        return self._assemble(step, native_id, cwd=cwd, bypass=bypass, new=True)
+        return self._assemble(step, native_id, cwd=cwd, bypass=bypass, new=True, model=model)
 
     def archive(self, native_id: str) -> None:
         self._check_native(native_id)

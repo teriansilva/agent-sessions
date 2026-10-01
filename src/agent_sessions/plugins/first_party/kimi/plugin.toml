@@ -45,6 +45,13 @@ access = "kimi-wire-auth-error"
 [terminal]
 repaint = "wipe"
 
+[instructions]
+files = ["AGENTS.md"]
+
+# The model is chosen in the engine's own configuration (#1189): pickers offer `default` only.
+[models]
+configured_elsewhere = true
+
 [display]
 order = 60
 name = "kimi"

@@ -242,6 +242,21 @@
   padding: 0 4px;
   line-height: 15px;
 }
+/* The requested model (#1189): the engine tag's voice without its box, truncated so a long id
+ * never pushes the time off the line. */
+.modelTag {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 14ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  color: var(--text-3);
+  line-height: 15px;
+}
 /* Project chip on the meta line (#361 Phase 3): same mono voice + same line as the
  * engine tag · time — an entity name leads with its color dot. Inline (not flex) so the
  * metaText ellipsis keeps truncating the whole line. */

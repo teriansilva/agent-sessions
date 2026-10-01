@@ -490,3 +490,85 @@ test("a chat creation that completes after the form is gone does not navigate (H
   await new Promise((r) => setTimeout(r, 0));
   expect(navigateMock).not.toHaveBeenCalled();
 });
+
+// ---- #1189: the model picker ---------------------------------------------------------------------
+
+test("the model select starts on `default`, and `default` launches exactly as before (#1189)", async () => {
+  setRoster(FIXTURE);
+  const user = userEvent.setup();
+  renderLanding(["claude"]);
+  await screen.findByRole("combobox", { name: "Project" });
+  const model = screen.getByRole("combobox", { name: "Model" }) as HTMLSelectElement;
+  expect(model.value).toBe("default");
+  expect(model.options[0].value).toBe("default");
+  // The roster's own list, aliases shown beside the id.
+  expect(Array.from(model.options).map((o) => o.value)).toContain("claude-opus-5");
+  expect(screen.getByRole("option", { name: "claude-opus-5 (opus)" })).toBeInTheDocument();
+  const [, opts] = await startAndReadFresh(user);
+  expect(opts.state.fresh).toEqual({ cwd: "/a", bypass: true });
+});
+
+test("a chosen model rides the launch (#1189)", async () => {
+  setRoster(FIXTURE);
+  const user = userEvent.setup();
+  renderLanding(["claude"]);
+  await screen.findByRole("combobox", { name: "Project" });
+  await user.selectOptions(screen.getByRole("combobox", { name: "Model" }), "claude-sonnet-5");
+  const [, opts] = await startAndReadFresh(user);
+  expect(opts.state.fresh).toEqual({ cwd: "/a", bypass: true, model: "claude-sonnet-5" });
+});
+
+test("switching engine clears the model (#1189)", async () => {
+  setRoster(FIXTURE);
+  const user = userEvent.setup();
+  renderLanding(["claude", "codex"]);
+  await screen.findByRole("combobox", { name: "Project" });
+  await user.selectOptions(screen.getByRole("combobox", { name: "Model" }), "claude-opus-5");
+  await user.selectOptions(screen.getByRole("combobox", { name: "Agent" }), "codex");
+  expect((screen.getByRole("combobox", { name: "Model" }) as HTMLSelectElement).value).toBe(
+    "default",
+  );
+  // …and back: the claude choice does not come back either.
+  await user.selectOptions(screen.getByRole("combobox", { name: "Agent" }), "claude");
+  expect((screen.getByRole("combobox", { name: "Model" }) as HTMLSelectElement).value).toBe(
+    "default",
+  );
+  const [, opts] = await startAndReadFresh(user);
+  expect(opts.state.fresh).toEqual({ cwd: "/a", bypass: true });
+});
+
+test("an engine whose model is configured elsewhere offers no select, and says why (#1189)", async () => {
+  setRoster(FIXTURE);
+  const user = userEvent.setup();
+  renderLanding(["opencode"]);
+  await screen.findByRole("combobox", { name: "Project" });
+  expect(screen.queryByRole("combobox", { name: "Model" })).not.toBeInTheDocument();
+  expect(screen.getByTestId("new-session-model-elsewhere")).toHaveTextContent(
+    "own configuration",
+  );
+  const [, opts] = await startAndReadFresh(user);
+  expect(opts.state.fresh).toEqual({ cwd: "/a", bypass: true });
+});
+
+test("a restored choice the roster no longer offers is shown and SENT, never swapped for default (#1189)", async () => {
+  setRoster(FIXTURE);
+  const user = userEvent.setup();
+  const draft: NewSessionDraft = {
+    engineChoice: "claude",
+    bypassChoice: null,
+    returnTo: null,
+    projectChoice: null,
+    cwdOverride: null,
+    modelChoice: { engine: "claude", model: "claude-retired-1" },
+  };
+  renderLanding(["claude"], {}, { restoreDraft: draft });
+  await screen.findByRole("combobox", { name: "Project" });
+  const model = screen.getByRole("combobox", { name: "Model" }) as HTMLSelectElement;
+  expect(model.value).toBe("claude-retired-1");
+  expect(screen.getByRole("option", { name: /no longer offered/ })).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  // calls[0] is the one-shot restore `replace`; the launch is the last navigation.
+  const [, opts] = navigateMock.mock.calls.at(-1) as [string, { state: { fresh: unknown } }];
+  // The server refuses it (4422); the form never quietly launches on `default` instead.
+  expect(opts.state.fresh).toEqual({ cwd: "/a", bypass: true, model: "claude-retired-1" });
+});

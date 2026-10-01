@@ -56,6 +56,13 @@ permission = "opencode-permission"
 [unattended]
 start_evidence = "opencode-log"
 
+[instructions]
+files = ["AGENTS.md"]
+
+# The model is chosen in the engine's own configuration (#1189): pickers offer `default` only.
+[models]
+configured_elsewhere = true
+
 [display]
 order = 20
 name = "opencode"

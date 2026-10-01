@@ -635,3 +635,46 @@
     flex: 1;
   }
 }
+
+/* Operator-added model ids (#1189). */
+.addedModels {
+  margin-top: 12px;
+}
+.subhead {
+  margin: 0 0 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.addModelRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.addModelRow input {
+  flex: 1 1 14ch;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 10px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg-2, transparent);
+  border: 1px solid var(--border);
+  border-radius: 0;
+}
+.addModelRow input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.addedModels .models li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 0 0 10px;
+}

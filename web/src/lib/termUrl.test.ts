@@ -57,3 +57,20 @@ test("the initial grid (cols/rows) is forwarded so the server sizes the pty up f
   expect(bare.has("cols")).toBe(false);
   expect(bare.has("rows")).toBe(false);
 });
+
+test("a chosen model rides the fresh launch; default sends nothing (#1189)", () => {
+  const q = (fresh: Parameters<typeof termWsUrl>[3]) =>
+    new URL(termWsUrl("claude", "id1", 0, fresh).replace(/^ws/, "http"))
+      .searchParams;
+  expect(q({ cwd: "/x", bypass: true, model: "claude-opus-5" }).get("model")).toBe(
+    "claude-opus-5",
+  );
+  expect(q({ cwd: "/x", bypass: true, model: "default" }).has("model")).toBe(false);
+  expect(q({ cwd: "/x", bypass: true }).has("model")).toBe(false);
+  // An attach never carries one: attaching never changes a running session's model.
+  expect(q(undefined).has("model")).toBe(false);
+  // A hostile value is still ONE query parameter; the server refuses it.
+  const hostile = q({ cwd: "/x", bypass: true, model: "x&bypass=1 --yolo" });
+  expect(hostile.get("model")).toBe("x&bypass=1 --yolo");
+  expect(hostile.getAll("bypass")).toEqual(["1"]);
+});

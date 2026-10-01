@@ -15,6 +15,7 @@ import {
   engineInfo,
   engineName,
   mintsOwnId,
+  offeredModels,
   resolveDefault,
   useEngineRoster,
 } from "../app/engineRoster";
@@ -66,6 +67,17 @@ export function NewSessionLanding() {
     "new",
   );
   const engine = engineChoice || defaultChoice.engine || engines[0] || "";
+
+  // The model (#1189), BOUND to the engine it was chosen for: switching engine — by the select or
+  // by the default resolving differently — reads as `default` again, never as a model the other
+  // engine happens to share a name with. A choice the server no longer offers is sent as chosen and
+  // refused there (4422), never quietly swapped for `default` here.
+  const [modelChoice, setModelChoice] = useState<{ engine: string; model: string } | null>(
+    restore.draft?.modelChoice ?? null,
+  );
+  const model = modelChoice?.engine === engine ? modelChoice.model : "default";
+  const models = offeredModels(engine);
+  const modelSelect = engineInfo(engine)?.model_select;
 
   // Project entities own the default launch folder (#448). projectChoice === null = untouched
   // (use the default selection); "" = no project; else an entity id.
@@ -127,6 +139,7 @@ export function NewSessionLanding() {
     returnTo: returnToMap ? MAP_PATH : null,
     projectChoice,
     cwdOverride,
+    ...(modelChoice ? { modelChoice } : {}),
   };
   const wizardState: WizardEntryState = { from: "new-session", draft };
   // …and the browser's Back too: before pushing the wizard, the draft is written into THIS entry's
@@ -217,7 +230,7 @@ export function NewSessionLanding() {
     }
     const id = mintNewSessionId(engine);
     if (!id) return;
-    const fresh = { cwd, bypass };
+    const fresh = model === "default" ? { cwd, bypass } : { cwd, bypass, model };
     // Back to the map as a window, when that is where this came from AND the workspace has room
     // under the operator's cap. The request is queued on the workspace and drained by the canvas
     // once it has mounted and measured — the anchor and the overlay box are facts only the map
@@ -266,7 +279,10 @@ export function NewSessionLanding() {
             <span>Agent</span>
             <select
               value={engine}
-              onChange={(e) => setEngineChoice(e.target.value)}
+              onChange={(e) => {
+                setEngineChoice(e.target.value);
+                setModelChoice(null); // a model belongs to the engine it was chosen for
+              }}
             >
               {engines.map((id) => (
                 <option key={id} value={id}>
@@ -276,6 +292,34 @@ export function NewSessionLanding() {
             </select>
           </label>
         )}
+
+        {models.length > 0 ? (
+          <label className={styles.field}>
+            <span>Model</span>
+            <select
+              aria-label="Model"
+              data-testid="new-session-model"
+              value={model}
+              onChange={(e) => setModelChoice({ engine, model: e.target.value })}
+            >
+              <option value="default">default</option>
+              {models.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.aliases.length ? `${m.id} (${m.aliases.join(", ")})` : m.id}
+                </option>
+              ))}
+              {/* A restored choice the roster no longer lists stays visible, so what is shown is
+                  what will be sent — and refused, rather than silently becoming `default`. */}
+              {model !== "default" && !models.some((m) => m.id === model) && (
+                <option value={model}>{model} (no longer offered)</option>
+              )}
+            </select>
+          </label>
+        ) : modelSelect?.configured_elsewhere && engineInfo(engine)?.runtime !== "chat" ? (
+          <p className={styles.hint} data-testid="new-session-model-elsewhere">
+            Model: set in {engineName(engine)}’s own configuration.
+          </p>
+        ) : null}
 
         {roster.loaded && defaultChoice.unavailableDefault && (
           <p className={styles.hint} role="status">

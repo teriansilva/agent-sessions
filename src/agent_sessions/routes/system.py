@@ -20,6 +20,7 @@ from .. import (
     handoff,
     mission_directions,
     missions,
+    model_choice,
     perfstats,
     prefs,
     project_dirs,
@@ -34,6 +35,16 @@ from .. import (
 from ..auth import AuthConfig, current_csrf, session_uid
 from ..plugins import kinds
 from ..version import get_version
+
+
+def _model_select(m, added: list[str]) -> dict:
+    """The launch-model block of an engine row (#1189), from THE resolver's own view."""
+    return {
+        "supported": model_choice.takes_model(m),
+        "on_resume": bool(m.launch is not None and m.launch.model and m.launch.model.on_resume),
+        "configured_elsewhere": m.models_configured_elsewhere,
+        "offered": model_choice.offered(m, added),
+    }
 
 
 def _dtach_master_sock(parts: list[bytes]) -> str | None:
@@ -221,7 +232,7 @@ def register(
         # The roster the SPA renders from (#853 P3): every engine the app knows, in display
         # order, with what its manifest declares and what this host can do with it. Nothing
         # client-side keeps its own copy of any of this. Authed; GET, so no CSRF.
-        def row(p: engines.EngineProvider) -> dict:
+        def row(p: engines.EngineProvider, added: dict[str, list[str]]) -> dict:
             # What a launch would exec (#853 P2) — the launcher's own answer, not a PATH probe.
             bin_path = engines.launchable_bin(p)
             # The launcher's own answer (#853 P2) — for a `chat` engine (#1209), "its endpoint is
@@ -262,6 +273,12 @@ def register(
                     {"id": x.id, "context_window": x.context_window, "aliases": list(x.aliases)}
                     for x in m.models
                 ],
+                # What a launch can choose (#1189): the manifest's models plus the operator's added
+                # ids, `default` excluded (pickers put it first). Empty = `default` only — the
+                # engine takes no model flag, or its model is configured elsewhere.
+                "model_select": _model_select(m, added.get(m.id, [])),
+                # Workspace-root instruction files the engine reads (#1189), bare names.
+                "instructions": {"files": list(m.instructions)},
                 "usage": {"source": m.usage.source},
                 "terminal": {"repaint": m.terminal.repaint},
                 # Lifecycle (#853 P3), distinct from `present` (which is about the binary):
@@ -276,9 +293,13 @@ def register(
                 ),
             }
 
-        rows = await asyncio.to_thread(
-            lambda: [row(p) for p in [*engines.all_providers(), *engines.retiring_providers()]]
-        )
+        def rows_now() -> list[dict]:
+            added = prefs.get_agent_defaults()["models"]
+            return [
+                row(p, added) for p in [*engines.all_providers(), *engines.retiring_providers()]
+            ]
+
+        rows = await asyncio.to_thread(rows_now)
         # Manifests that failed to load (#853 P4): diagnostics only, SEPARATE from `engines`, so
         # nothing that lists engines can ever offer one. First-party-only today, so a problem
         # here is a build defect in an in-tree manifest.
@@ -358,6 +379,10 @@ def register(
                     {"id": x.id, "context_window": x.context_window, "aliases": list(x.aliases)}
                     for x in m.models
                 ],
+                "model_select": _model_select(
+                    m, prefs.get_agent_defaults()["models"].get(m.id, [])
+                ),
+                "instructions": {"files": list(m.instructions)},
                 "maintenance": list(m.maintenance),
             }
 

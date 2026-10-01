@@ -40,6 +40,10 @@ kind = "battlelab-chat"
 source = "tokens"
 kind = "chat-response-tokens"
 
+# The model is part of the operator's endpoint configuration, never the manifest's (#1189).
+[models]
+configured_elsewhere = true
+
 [display]
 order = 80
 name = "API agent"

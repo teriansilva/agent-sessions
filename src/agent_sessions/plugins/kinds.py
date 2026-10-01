@@ -19,6 +19,13 @@ from __future__ import annotations
 #: refused with "needs a newer BattleLab" rather than half-read: an unknown field in a newer
 #: contract may be a restriction, and ignoring a restriction widens what the plugin can do. That is
 #: also the rollback behaviour — downgrading the app disables such a plugin, it never misreads it.
+#:
+#: **An ADDITIVE field does not bump it** (the precedent of `runtime` #1212, `terminal.permission`
+#: #1213, `usage.access` #1167, and `launch.model` / `instructions` #1189). A build that predates a
+#: new optional key meets it as an UNKNOWN field and refuses the whole manifest — the same
+#: fail-closed, fail-soft-per-manifest outcome a bump would buy, because unknown fields are
+#: rejected at every level. The contract moves only when an EXISTING field changes meaning, the
+#: one change unknown-field rejection cannot catch (an old reader would parse it and misread it).
 CONTRACT_CURRENT = 1
 
 #: `identity.kind`. A `terminal` plugin has no agent behind it (the `shell` engine, #636): the
@@ -36,7 +43,18 @@ RUNTIME_KINDS = frozenset({"pty", "chat"})
 ENDPOINT_KINDS = frozenset({"openai-chat"})
 #: Blocks that only make sense for a process in a terminal. A `chat` manifest declaring any of them
 #: is refused rather than silently ignoring them.
-PTY_ONLY_BLOCKS = ("binary", "launch", "terminal", "unattended", "install", "signin", "verify")
+PTY_ONLY_BLOCKS = (
+    "binary",
+    "launch",
+    "terminal",
+    "unattended",
+    "install",
+    "signin",
+    "verify",
+    # A chat agent reads no workspace file on its own (#1189): the only files it sees are the
+    # operator-granted read tools of #1222, so an instruction-file claim would be false.
+    "instructions",
+)
 #: Capabilities a `chat` plugin may never assert: each presumes a terminal to type into, a TTY to
 #: repair, a session to hand off into, or a process that owns its transcript.
 PTY_ONLY_CAPABILITIES = frozenset(
@@ -87,6 +105,14 @@ RESUME_KINDS = frozenset({"flag", "subcommand", "positional-dir", "fresh"})
 #:   positional-dir  [<cwd>]
 #:   bare            []
 NEW_KINDS = frozenset({"pin-flag", "cwd-flag", "positional-dir", "bare"})
+
+#: Flags that take a model id as their value (`launch.model`, #1189). claude/codex/gemini `--model`
+#: (codex and gemini also spell it `-m`). The VALUE is never the manifest's: it is a model id the
+#: launch path resolved against the manifest's `models.list` and the operator's added ids, and the
+#: kind appends the pair `[flag, id]` as two argv elements.
+MODEL_FLAGS = frozenset({"--model", "-m"})
+#: `launch.model.kind`. `flag`: `[flag, <model id>]` after the new/resume step, before bypass.
+MODEL_KINDS = frozenset({"flag"})
 
 #: `launch.admission`. `sqlite-store-shared`: the engine's store has maintenance that must fence
 #: launches (opencode, #993 — `opencode_admission`).
@@ -165,6 +191,14 @@ PERMISSION_KINDS = frozenset({"none", "claude-permission", "opencode-permission"
 START_EVIDENCE_KINDS = frozenset({"none", "claude-sessions", "opencode-log"})
 #: `maintenance` — store maintenance a plugin admits (#993).
 MAINTENANCE_KINDS = frozenset({"sqlite-vacuum"})
+
+# --- instructions -------------------------------------------------------------------------------
+
+#: `instructions.files` (#1189): the workspace-ROOT instruction files an engine reads at start.
+#: Bare file names only — never a path, so nothing a manifest names can point outside the folder a
+#: playbook writes into (#1096 P2 does that write, descriptor-relative). claude `CLAUDE.md`;
+#: codex/opencode/kimi `AGENTS.md`; gemini `GEMINI.md`.
+INSTRUCTION_FILES = frozenset({"CLAUDE.md", "AGENTS.md", "GEMINI.md"})
 
 # --- display -------------------------------------------------------------------------------------
 

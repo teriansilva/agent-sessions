@@ -400,6 +400,17 @@ function Row({
               </span>
             )}
             <span className={styles.engineTag}>{engineBadge(s.engine)}</span>
+            {/* The model this session's launch asked for (#1189) — a request, so the tooltip
+                says so. Absent for `default` and for sessions that recorded none. */}
+            {s.model_requested ? (
+              <span
+                className={styles.modelTag}
+                title={`Requested model: ${s.model_requested}`}
+                data-testid="row-model-tag"
+              >
+                {s.model_requested}
+              </span>
+            ) : null}
             {/* Held by a mission (#948 P5): the mark and the mission's own title, truncated —
                 membership, not a status, so the handoff badge's accent vocabulary. */}
             {s.mission ? (

@@ -40,19 +40,20 @@ be a restriction, and a reader that skipped it would grant what the author meant
 |---|---|---|
 | `contract` | yes | The manifest format version (an integer). A higher contract than this build reads is refused as "needs a newer BattleLab", and rolling the app back disables such a plugin instead of misreading it. |
 | `[identity]` | yes | `id` (lowercase, 2–24 characters: the `<engine>` in every session id), `label`, `publisher`, `version`, and `kind`: `agent`, or `terminal` for a plugin with no agent behind it. |
-| `[runtime]` | no | `kind`. Absent means `pty`: a binary under `dtach`, shown in the terminal. `chat` means no process at all: BattleLab sends the conversation to an HTTP model endpoint **you** configure and keeps the transcript itself. A `chat` manifest may not declare `binary`, `launch`, `terminal`, `unattended`, `install`, `signin` or `verify`, nor any capability that presumes a terminal (`seed_start`, `orchestrator_input`, `raw_tty`, `handoff_target`, `owns_transcript`). |
+| `[runtime]` | no | `kind`. Absent means `pty`: a binary under `dtach`, shown in the terminal. `chat` means no process at all: BattleLab sends the conversation to an HTTP model endpoint **you** configure and keeps the transcript itself. A `chat` manifest may not declare `binary`, `launch`, `terminal`, `unattended`, `install`, `signin`, `verify` or `instructions`, nor any capability that presumes a terminal (`seed_start`, `orchestrator_input`, `raw_tty`, `handoff_target`, `owns_transcript`). |
 | `[endpoint]` | for `chat` only | `kind`: the wire format (`openai-chat`). **Nothing else**: the URL, API key and model are your configuration, never the manifest's, so a manifest cannot point BattleLab at a server. A `chat` agent executes nothing: by default it can only talk, and the most its operator can grant is reading files in the conversation's folder ([Tools](./engines#tools-reading-files-in-the-conversation-s-folder)). |
 | `[binary]` | for `pty` | `name` (the plugin id or one of `aliases`), `env_var` (its `AGENT_SESSIONS_*_BIN` override), `search_paths` (absolute or `~/` directories, no globs, no `..`), `version_flag`, and `search_npm_global` for CLIs installed with `npm i -g`. |
 | `[session_id]` | yes | `pattern`, the native-id shape (grammar below); `mint` (`pinned` or `adopt`, see [Engines](./engines#two-ways-a-new-session-gets-its-id)); `legacy_bare_id` (claimed by at most one in-tree manifest). |
 | `[store]` | no | Where the engine keeps its sessions: `root`, `env_override`, `layout` (the built-in reader), and named auxiliary `paths` (`db`, `log`, …) relative to the root, each with an optional override in `path_env`. |
-| `[launch]` | for `pty` | `resume` and `new`, each a kind plus the flag or subcommand it takes; `base_args`; `bypass` (the permission-bypass flags) and `bypass_on`; `admission`. The kind assembles the argv — the manifest never writes one. |
+| `[launch]` | for `pty` | `resume` and `new`, each a kind plus the flag or subcommand it takes; `base_args`; `bypass` (the permission-bypass flags) and `bypass_on`; `admission`; and `model` (`{ kind = "flag", flag, on_resume }`): the flag that takes a model id, and whether the engine honours it on a resume. The kind assembles the argv — the manifest never writes one, and never names the model value: that is a model the launch resolved against `[models]` and your added ids. |
 | `[capabilities]` | no | Booleans, **all off unless declared**: `resume`, `new`, `archive`, `handoff_target`, `seed_start`, `orchestrator_input`, `raw_tty`, `owns_transcript`. A `terminal` plugin may not declare `seed_start`, `orchestrator_input`, `raw_tty` or `owns_transcript`. |
 | `[transcript]` | no | `kind`, the built-in adapter that renders the conversation for scroll-up and AI review; `strict`. Absent means none. |
 | `[usage]` | no | `source`: `plan` (a subscription window), `tokens`, `manual` (you enter it), or `none`. `plan` and `tokens` need a `kind` naming the built-in reporter; a CLI probe also names its `probe_token`. `access` names the check that notices when the vendor refuses the account. |
 | `[terminal]` | no | `repaint` (`wipe` for a TUI that redraws its scrollback), `ready` (the first-paint rule), `menu` (the numbered-menu parser) and `menu_digit_submits`. |
 | `[unattended]` | no | `start_evidence`: the artifact that proves an agent started. Absent means missions will not dispatch to it unattended. |
 | `maintenance` | no | Store maintenance the plugin admits, e.g. `sqlite-vacuum`. |
-| `[models]` | no | `list` of `{ id, context_window, aliases }`, and `configured_elsewhere`. |
+| `[models]` | no | `list` of `{ id, context_window, aliases }`, and `configured_elsewhere` (the engine's model is set in its own configuration, so pickers offer `default` only). Every id and alias names exactly one model, and none may be `default`. A `chat` plugin's list must be empty: its model is your endpoint configuration. |
+| `[instructions]` | no | `files`: the workspace-root instruction files the engine reads (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`) — bare names from a fixed set, never a path. Forbidden for `chat`. |
 | `[display]` | yes | `name`, `badge` (2–3 lowercase letters), `accent` (a colour **token**, never a hex), `id_prefix` (stripped when an id is shown), and `order` in the roster. |
 | `[install]` | no | `kind`, `authority`, `package`, `version`, `digest` (`sha256:…`) and `entrypoint`. Validated today and executed by nothing: there is no install step yet. |
 | `[signin]` | no | `kind` and the login `subcommand`, chosen from a fixed set. Validated today and executed by nothing. |
@@ -60,8 +61,13 @@ be a restriction, and a reader that skipped it would grant what the author meant
 
 The validator also checks the blocks against each other. For example: `capabilities.new` needs
 `launch.new`; a `pin-flag` new session needs `mint = "pinned"`; `owns_transcript` needs a
-transcript kind; `sqlite-vacuum` and store admission need `store.paths.db`; and an `install` block
-needs `binary.env_var`.
+transcript kind; `sqlite-vacuum` and store admission need `store.paths.db`; an `install` block
+needs `binary.env_var`; and `launch.model` needs a non-empty `models.list` and may not be combined
+with `configured_elsewhere`.
+
+A field added to the format after your BattleLab was built is an unknown field to it, so an older
+build refuses a manifest that uses one rather than skipping it. The `contract` number moves only
+when an existing field changes meaning.
 
 ## The session-id pattern
 
@@ -125,6 +131,9 @@ Every value a manifest may choose, generated from the kinds this build ships:
 | `launch.bypass` | `--dangerously-bypass-approvals-and-sandbox`, `--dangerously-skip-permissions`, `--skip-trust`, `--yolo`, `-y` |
 | `launch.bypass_on` | `both`, `new` |
 | `launch.admission` | `none`, `sqlite-store-shared` |
+| `launch.model.kind` | `flag` |
+| `launch.model.flag` | `--model`, `-m` |
+| `instructions.files` | `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` |
 | `capabilities` | `archive`, `handoff_target`, `new`, `orchestrator_input`, `owns_transcript`, `raw_tty`, `resume`, `seed_start` |
 | `transcript.kind` | `antigravity-brain`, `battlelab-chat`, `claude-jsonl`, `codex-rollout`, `gemini-chat`, `kimi-wire`, `none`, `opencode-sqlite` |
 | `usage.source` | `manual`, `none`, `plan`, `tokens` |

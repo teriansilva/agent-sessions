@@ -1342,3 +1342,112 @@ async def test_opencode_admission_covers_cancelled_auth_worker_until_exit(
         await task
     with opencode_admission.acquire(exclusive=True):
         pass
+
+
+# ---- #1189: a model on an unattended launch ------------------------------------------------------
+
+
+class ModelProv(FakeProv):
+    """A fake that TAKES a model, recording the selection the launcher handed it."""
+
+    def new_launch_argv(self, native, *, cwd, bypass, model=None):
+        self.launched_with = (native, cwd, bypass)
+        self.model = model
+        return ["/bin/true", *(model.argv() if model is not None else [])]
+
+
+@pytest.mark.anyio
+async def test_a_REFUSED_model_is_a_dispatch_that_could_not_be_attempted(env, reg, monkeypatch):
+    p = ModelProv()
+    monkeypatch.setattr(headless_dispatch.engines, "get", lambda e: p)
+    spawned = []
+    monkeypatch.setattr(headless_dispatch, "_popen", lambda a, **k: spawned.append(a))
+    keys = []
+    for bad in ("--dangerously-skip-permissions", "gpt-5", ["claude-opus-5"], 7):
+        with pytest.raises(headless_dispatch.DispatchError):
+            await headless_dispatch.dispatch(
+                registry=reg,
+                engine="claude",
+                cwd=str(env),
+                brief="go",
+                model=bad,
+                on_key=keys.append,
+            )
+    # Refused before the dispatch was recorded, before the lock, before the spawn — and never
+    # retried on `default`.
+    assert spawned == [] and keys == [] and p.launched_with is None
+
+
+@pytest.mark.anyio
+async def test_the_RESOLVED_model_reaches_the_launch_and_is_recorded(env, reg, monkeypatch):
+    from agent_sessions import model_choice
+
+    p = ModelProv()
+    monkeypatch.setattr(headless_dispatch.engines, "get", lambda e: p)
+    _stub_spawn(monkeypatch)
+    _stub_started(monkeypatch)
+    recorded = []
+    monkeypatch.setattr(model_choice, "record", lambda key, sel: recorded.append((key, sel.model)))
+    out = await headless_dispatch.dispatch(
+        registry=reg, engine="claude", cwd=str(env), brief="go", model="opus"
+    )
+    assert out.ok
+    assert isinstance(p.model, model_choice.Selection)
+    assert p.model.argv() == ["--model", "claude-opus-5"]  # the alias, canonicalised
+    assert recorded == [(out.key, "claude-opus-5")]
+
+
+@pytest.mark.anyio
+async def test_NO_model_is_exactly_the_launch_before_1189(env, prov, reg, monkeypatch):
+    # `prov` is the plain FakeProv whose `new_launch_argv` takes NO `model` keyword: a default
+    # dispatch must not pass one, or every provider without the parameter would break.
+    _stub_spawn(monkeypatch)
+    _stub_started(monkeypatch)
+    for m in (None, "default"):
+        out = await headless_dispatch.dispatch(
+            registry=reg, engine="claude", cwd=str(env), brief="go", model=m
+        )
+        assert out.ok
+
+
+@pytest.mark.anyio
+async def test_an_UNATTENDED_LAUNCH_hook_cannot_drop_a_requested_model(env, reg, monkeypatch):
+    class Hook(ModelProv):
+        def unattended_launch(self, native, *, cwd, bypass, env):
+            raise AssertionError("must be refused before the hook runs")
+
+    p = Hook()
+    monkeypatch.setattr(headless_dispatch.engines, "get", lambda e: p)
+    _stub_spawn(monkeypatch)
+    _stub_started(monkeypatch)
+    keys = []
+    with pytest.raises(headless_dispatch.DispatchError, match="cannot take a model"):
+        await headless_dispatch.dispatch(
+            registry=reg,
+            engine="claude",
+            cwd=str(env),
+            brief="go",
+            model="opus",
+            on_key=keys.append,
+        )
+    assert keys == []  # refused before anything was recorded
+
+
+@pytest.mark.anyio
+async def test_a_FAILED_spawn_records_no_model(env, reg, monkeypatch):
+    """The record follows a master into existence (#1189), exactly as the interactive launch
+    records only after its argv is accepted: a spawn that failed leaves no requested model."""
+    from agent_sessions import model_choice
+
+    p = ModelProv()
+    monkeypatch.setattr(headless_dispatch.engines, "get", lambda e: p)
+    _stub_spawn(monkeypatch, returncode=1, make_socket=False)
+    _stub_started(monkeypatch)
+    recorded = []
+    monkeypatch.setattr(model_choice, "record", lambda key, sel: recorded.append((key, sel.model)))
+    out = await headless_dispatch.dispatch(
+        registry=reg, engine="claude", cwd=str(env), brief="go", model="opus"
+    )
+    assert not out.ok and not out.launched
+    assert p.model is not None  # the launch argv WAS built with the model…
+    assert recorded == []  # …but nothing was recorded for a master that never existed

@@ -26,6 +26,9 @@ resume = { kind = "subcommand", subcommand = "resume" }
 new = { kind = "cwd-flag", flag = "--cd" }  # the rollout records this cwd; the reconcile diff filters on it
 bypass = ["--dangerously-bypass-approvals-and-sandbox"]
 bypass_on = "new"  # resume has no per-launch bypass flag (sandbox/approvals are config-driven)
+# `--model` on NEW sessions only: whether `codex resume` honours a per-launch override is not
+# verified, so a resume asking for a different model is refused rather than guessed (#1189).
+model = { kind = "flag", flag = "--model" }
 
 [capabilities]
 resume = true
@@ -45,6 +48,15 @@ kind = "codex-app-server-probe"
 
 [terminal]
 repaint = "wipe"
+
+[instructions]
+files = ["AGENTS.md"]
+
+[[models.list]]
+id = "gpt-5-codex"
+
+[[models.list]]
+id = "gpt-5"
 
 [display]
 order = 30

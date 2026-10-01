@@ -8,6 +8,9 @@ export interface FreshSession {
   cwd: string;
   /** Permission-bypass choice (claude --dangerously-skip-permissions); default on. */
   bypass: boolean;
+  /** The model the new-session form chose (#1189). Absent or `default` ⇒ no `model` param, which
+   *  is exactly the launch before a model could be chosen. The server validates it. */
+  model?: string;
 }
 
 export function termWsUrl(
@@ -31,6 +34,7 @@ export function termWsUrl(
     params.set("new", "1");
     params.set("cwd", fresh.cwd);
     params.set("bypass", fresh.bypass ? "1" : "0");
+    if (fresh.model && fresh.model !== "default") params.set("model", fresh.model);
   }
   // Per-tab claim (#184): fp + tab let the server's SessionRegistry recognise
   // owner vs secondary; force=1 demotes the current owner.

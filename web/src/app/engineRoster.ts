@@ -20,7 +20,7 @@
  * roster lands.
  */
 import { useSyncExternalStore } from "react";
-import type { EngineInfo, EngineProblem } from "../types/api";
+import type { EngineInfo, EngineProblem, OfferedModel } from "../types/api";
 
 export type RosterStatus = "loading" | "ready" | "failed";
 
@@ -204,6 +204,13 @@ export function mintsOwnId(id: string): boolean | undefined {
 }
 
 /** Does this engine's TUI wipe and repaint scrollback (codex, kimi — #969)? */
+/** The models a new session of `id` may request (#1189), `default` excluded — the server's own
+ *  list (manifest + operator-added). Empty ⇒ the picker offers `default` only. */
+export function offeredModels(id: string): OfferedModel[] {
+  const sel = byId.get(id)?.model_select;
+  return sel?.supported ? sel.offered : [];
+}
+
 export function wipesOnRepaint(id: string): boolean {
   return byId.get(id)?.terminal.repaint === "wipe";
 }

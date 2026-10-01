@@ -65,6 +65,9 @@ def test_engines_lists_all_providers(auth_cfg, fake_jsonl, tmp_home, monkeypatch
             "capabilities",
             "session_id",
             "models",
+            # #1189 — what a launch may choose, and the instruction files the engine reads.
+            "model_select",
+            "instructions",
             "usage",
             "terminal",
             "status",
@@ -84,6 +87,13 @@ def test_engines_lists_all_providers(auth_cfg, fake_jsonl, tmp_home, monkeypatch
         assert e["session_id"] == {"mint": m.session_id.mint}
         assert e["usage"] == {"source": m.usage.source}
         assert e["terminal"] == {"repaint": m.terminal.repaint}
+        assert set(e["model_select"]) == {
+            "supported",
+            "on_resume",
+            "configured_elsewhere",
+            "offered",
+        }
+        assert e["instructions"] == {"files": list(m.instructions)}
         assert (e["status"], e["status_reason"]) == ("active", None)
         assert isinstance(e["present"], bool)
         assert isinstance(e["supports_new"], bool)
@@ -96,6 +106,22 @@ def test_engines_lists_all_providers(auth_cfg, fake_jsonl, tmp_home, monkeypatch
     assert claude["present"] is True
     assert claude["supports_new"] is True
     assert claude["bin"] == str(claude_bin)
+    # #1189: claude takes `--model` (also on resume) and offers its manifest's models, `default`
+    # excluded; opencode's model is its own configuration, so it offers nothing.
+    sel = claude["model_select"]
+    assert (sel["supported"], sel["on_resume"], sel["configured_elsewhere"]) == (True, True, False)
+    offered = {o["id"]: o for o in sel["offered"]}
+    assert offered["claude-opus-5"] == {
+        "id": "claude-opus-5",
+        "aliases": ["opus"],
+        "context_window": 1000000,
+        "source": "manifest",
+    }
+    assert "default" not in offered
+    assert claude["instructions"] == {"files": ["CLAUDE.md"]}
+    opencode = next(e for e in d["engines"] if e["id"] == "opencode")
+    assert opencode["model_select"]["offered"] == []
+    assert opencode["model_select"]["configured_elsewhere"] is True
 
 
 def test_engines_marks_binary_only_opencode_installed(auth_cfg, tmp_home, monkeypatch):

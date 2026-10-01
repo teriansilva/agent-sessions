@@ -41,6 +41,13 @@ source = "plan"
 kind = "agy-cli-probe"
 probe_token = "/usage"
 
+[instructions]
+files = ["GEMINI.md"]
+
+# The model is chosen in the engine's own configuration (#1189): pickers offer `default` only.
+[models]
+configured_elsewhere = true
+
 [display]
 order = 50
 name = "antigravity"

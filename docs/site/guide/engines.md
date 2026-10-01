@@ -80,6 +80,39 @@ BattleLab snapshots the engine's store *before* launch, starts the session under
 `new-<uuid>` placeholder, then diffs the store afterwards and adopts whichever id appeared. A
 reconciling engine's row therefore carries a placeholder id for the first moments of its life.
 
+## Choosing a model, and the instruction files an engine reads
+
+The new-session form offers a **Model** select for an engine whose manifest declares
+`launch.model`. `default` is always first and selected: it adds no flag, which is exactly how a
+session started before the picker existed. Any other choice is one of the manifest's models (an
+alias such as `opus` is replaced by its id before anything is stored or launched) or an id you
+added under **Settings → Agents → *engine***, for a model released after this build.
+
+- A choice that is no longer offered — an added id you have since removed, a model from another
+  engine — is **refused before anything starts**, never quietly replaced by `default`.
+- An engine whose model is set in its own configuration (opencode, Kimi Code, Antigravity) or, for
+  the API agent, in its endpoint settings, offers `default` only.
+- **A resume keeps its model.** Where the engine takes the flag on resume (Claude Code), a session
+  started on a model resumes on it; if that model is no longer offered, the resume is refused
+  rather than quietly using the default. Asking a Codex or Gemini session to resume on a
+  different model is refused, and you start a new session instead. Attaching to a session that is
+  already running never changes its model.
+- The session records the model it **asked for**. What it actually ran on is read only from the
+  engine's own transcript (Claude Code and Codex write it); anywhere else it is shown as unknown.
+
+<!-- BEGIN generated:engine-models -->
+| Engine | Model at launch | Models offered | Instruction files |
+|---|---|---|---|
+| **Claude Code** (`claude`) | `--model <id>` on new sessions and on resume | `claude-opus-5` (`opus`), `claude-sonnet-5` (`sonnet`), `claude-haiku-4-5` (`haiku`), `claude-fable-5-1`, `claude-opus-4-8`, `claude-sonnet-4-6` | `CLAUDE.md` |
+| **opencode** (`opencode`) | set in the agent's own configuration | `default` only | `AGENTS.md` |
+| **Codex** (`codex`) | `--model <id>` on new sessions (a resume keeps its model) | `gpt-5-codex`, `gpt-5` | `AGENTS.md` |
+| **Gemini CLI** (`gemini`) | `--model <id>` on new sessions (a resume keeps its model) | `gemini-2.5-pro`, `gemini-2.5-flash` | `GEMINI.md` |
+| **Antigravity** (`antigravity`) | set in the agent's own configuration | `default` only | `GEMINI.md` |
+| **Kimi Code** (`kimi`) | set in the agent's own configuration | `default` only | `AGENTS.md` |
+| **API agent** (`apichat`) | set in the agent's own configuration | `default` only | — |
+| **Shell** (`shell`) | — | — | — |
+<!-- END generated:engine-models -->
+
 ## The shell engine: a terminal with no agent
 
 `shell` is a plain `bash -l` login shell, declared with `identity.kind = "terminal"`. It exists

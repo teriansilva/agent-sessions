@@ -1046,9 +1046,22 @@ export function AgentDetail({ id }: { id: string }) {
           ) : (
             <div className={a.empty}>
               <b>None declared</b>
-              This manifest lists no models, so no model picker is shown.{" "}
-              {d.label} picks its own.
+              {d.model_select?.configured_elsewhere
+                ? `${d.label} takes its model from its own configuration, so a new session offers “default” only.`
+                : `This manifest lists no models, so no model picker is shown. ${d.label} picks its own.`}
             </div>
+          )}
+          {d.model_select?.supported && (
+            <AddedModels
+              engine={d.id}
+              ids={d.model_select.offered
+                .filter((m) => m.source === "operator")
+                .map((m) => m.id)}
+              onSaved={() => {
+                setNonce((n) => n + 1);
+                void refreshRoster();
+              }}
+            />
           )}
         </section>
 
@@ -1090,6 +1103,126 @@ export function AgentDetail({ id }: { id: string }) {
           </Link>
         </section>
       </div>
+    </div>
+  );
+}
+
+/** The launch grammar (#1189), mirrored for an immediate hint. The server's check is the gate. */
+const MODEL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,95}$/;
+const ADDED_MODELS_MAX = 16;
+
+/** Operator-added model ids for one engine (#1189): vendor churn without a release. Each save
+ *  sends the engine's WHOLE list (the server replaces it), and a removed id stops being offered —
+ *  a session form still holding it is refused at launch, never switched to `default`.
+ *
+ *  Because a save replaces the list, the list it is built from must be the one the LAST save
+ *  stored, not the `ids` prop: the detail refetch a save triggers lands later, so an add then a
+ *  remove built from the prop would erase the id just added. After our first save the list is
+ *  local and authoritative (the save's answer, or what we sent when the answer carries no list),
+ *  and edits are serialised — every control is disabled while a save is in flight. */
+function AddedModels({
+  engine,
+  ids,
+  onSaved,
+}: {
+  engine: string;
+  ids: string[];
+  onSaved: () => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  // What our last successful save stored; `null` until then (the prop is all we know).
+  const [stored, setStored] = useState<string[] | null>(null);
+  const list = stored ?? ids;
+
+  const save = async (next: string[]) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api.setAgentDefaults({ models: { [engine]: next } });
+      const got = res?.agent_defaults?.models?.[engine];
+      setStored(Array.isArray(got) ? got : next);
+      setDraft("");
+      onSaved();
+    } catch (e) {
+      setError(e instanceof ApiError && e.message ? e.message : "Couldn’t save the model list.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const add = () => {
+    const id = draft.trim();
+    if (!MODEL_ID_RE.test(id) || id.toLowerCase() === "default") {
+      setError(
+        "A model id is letters, digits and . _ : / - only, and starts with a letter or digit.",
+      );
+      return;
+    }
+    if (list.includes(id)) {
+      setError(`${id} is already on the list.`);
+      return;
+    }
+    void save([...list, id]);
+  };
+
+  return (
+    <div className={a.addedModels} data-testid="added-models">
+      <h3 className={a.subhead}>Added by you</h3>
+      {list.length ? (
+        <ul className={a.models}>
+          {list.map((id) => (
+            <li key={id}>
+              <b>{id}</b>
+              <button
+                type="button"
+                className={button.ghost}
+                disabled={busy}
+                aria-label={`Remove ${id}`}
+                onClick={() => void save(list.filter((x) => x !== id))}
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className={styles.hint}>
+          None. Add a model id the vendor released after this build.
+        </p>
+      )}
+      {list.length < ADDED_MODELS_MAX && (
+        <form
+          className={a.addModelRow}
+          onSubmit={(e) => {
+            e.preventDefault();
+            add();
+          }}
+        >
+          <input
+            type="text"
+            aria-label="Model id to add"
+            placeholder="model id"
+            value={draft}
+            maxLength={96}
+            disabled={busy}
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
+            onChange={(e) => setDraft(e.target.value)}
+          />
+          <button type="submit" className={button.ghost} disabled={busy || !draft.trim()}>
+            Add model
+          </button>
+        </form>
+      )}
+      {error && (
+        <p className={styles.hint} role="alert" data-testid="added-models-error">
+          {error}
+        </p>
+      )}
     </div>
   );
 }

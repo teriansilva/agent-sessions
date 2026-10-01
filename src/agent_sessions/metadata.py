@@ -187,6 +187,12 @@ class SessionMeta:
     handoff_to: str = ""
     handoff_mode: str = ""
     handoff_at: str = ""
+    # The model a launch ASKED for (#1189): the canonical id `model_choice` resolved, written only
+    # when a launch requested a non-default model. "" = default or never recorded, and "" is never
+    # taken to match anything. Keyed like every sidecar field, so a late-id session's placeholder
+    # entry carries it through adoption (`requested_model`). A REQUEST, never evidence of what ran:
+    # that is `transcript.effective_model`.
+    model_requested: str = ""
 
 
 # Schema-known field names frozen at module-import time — used by ``patch()`` to
@@ -623,8 +629,46 @@ def _index_from_raw(raw: dict, *, normalized: bool = False) -> dict[str, Session
             handoff_to=str(val.get("handoff_to", "") or ""),
             handoff_mode=str(val.get("handoff_mode", "") or ""),
             handoff_at=str(val.get("handoff_at", "") or ""),
+            model_requested=_model_or_blank(val.get("model_requested")),
         )
     return out
+
+
+def _model_or_blank(value: object) -> str:
+    """Read-time fail-soft: a hand-edited value that is not model-shaped reads as "" (unrecorded),
+    which matches nothing — never as a model id a resume could be judged against."""
+    from .plugins.manifest import _MODEL_ID_RE
+
+    return value if isinstance(value, str) and _MODEL_ID_RE.fullmatch(value) else ""
+
+
+def requested_model(key: str, path: Path | None = None) -> str:
+    """The recorded requested model for ``key``, following a late-id session's placeholder alias
+    (#127): the logical entry first, then the physical one. "" when none is recorded.
+
+    The `default` marker (an explicit default resume replaced the record, #1189) reads as "" —
+    and, on the logical entry, stops the fall-through, so a placeholder's older model never
+    resurfaces."""
+    return requested_model_in(load(path), load_aliases(path), key)
+
+
+def requested_model_in(index: dict[str, SessionMeta], aliases: dict[str, str], key: str) -> str:
+    """`requested_model` over an index + alias map the caller already loaded — THE one precedence
+    (logical entry first, then the physical one; the `default` marker reads as "") for every
+    reader, so a session row and a resume can never disagree about the request. A row must not
+    read `model_requested` off whichever entry it took as a whole: a rename creates the logical
+    entry WITHOUT the field, and the placeholder's record lives on the physical one."""
+    from .plugins.manifest import MODEL_DEFAULT
+
+    m = index.get(key)
+    if m is not None and m.model_requested:
+        return "" if m.model_requested == MODEL_DEFAULT else m.model_requested
+    from . import engines
+
+    phys = engines.physical_key(key, aliases)
+    pm = index.get(phys) if phys != key else None
+    got = pm.model_requested if pm is not None else ""
+    return "" if got == MODEL_DEFAULT else got
 
 
 def patch(
@@ -674,6 +718,9 @@ def patch(
         "handoff_to",
         "handoff_mode",
         "handoff_at",
+        # The requested model (#1189) — written by `model_choice.record` only, after the launch
+        # path validated it; never by a user-facing rename/tag path.
+        "model_requested",
     }
     bad = set(fields) - allowed
     if bad:
@@ -824,6 +871,18 @@ def set_alias(placeholder_key: str, real_key: str) -> None:
             aliases = {}
         aliases[placeholder_key] = real_key
         data[_ALIAS_KEY] = aliases
+        # The requested model (#1189) follows the session through adoption. With no logical entry
+        # the reads fall back to the placeholder's (and a sparse logical row is never CREATED
+        # here: it would shadow the placeholder's title/sticky, `resolve_key`). A logical entry
+        # that already exists would shadow the record instead, so it gets a copy — never an
+        # overwrite of a model it recorded itself.
+        src_row = data.get(placeholder_key)
+        dst = data.get(real_key)
+        requested = _model_or_blank(
+            src_row.get("model_requested") if isinstance(src_row, dict) else None
+        )
+        if requested and isinstance(dst, dict) and not _model_or_blank(dst.get("model_requested")):
+            data[real_key] = {**dst, "model_requested": requested}
         _rewrite_in_place(fh, data)
 
 

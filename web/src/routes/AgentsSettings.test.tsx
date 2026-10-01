@@ -501,3 +501,113 @@ test("defaults: a refused save shows the server's words", async () => {
     "agent_defaults.bypass must be a boolean",
   );
 });
+
+// ---- #1189: operator-added model ids ------------------------------------------------------------
+
+const WITH_MODELS: EngineDetail = {
+  ...DETAIL,
+  models: byId("claude").models,
+  model_select: {
+    supported: true,
+    on_resume: true,
+    configured_elsewhere: false,
+    offered: [
+      ...byId("claude").model_select!.offered,
+      { id: "claude-next", aliases: [], context_window: null, source: "operator" },
+    ],
+  },
+};
+
+test("agent page: added model ids are listed, and adding one saves the WHOLE list (#1189)", async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.engineDetail).mockResolvedValue(WITH_MODELS);
+  vi.mocked(api.setAgentDefaults).mockResolvedValue({
+    agent_defaults: { default_engine: null, bypass: true },
+  });
+  renderPage(<AgentDetail id="claude" />);
+  const box = await screen.findByTestId("added-models");
+  expect(within(box).getByText("claude-next")).toBeInTheDocument();
+  // The manifest's own models are not in the operator list.
+  expect(within(box).queryByText("claude-opus-5")).not.toBeInTheDocument();
+  await user.type(within(box).getByRole("textbox", { name: "Model id to add" }), "claude-later");
+  await user.click(within(box).getByRole("button", { name: "Add model" }));
+  expect(vi.mocked(api.setAgentDefaults).mock.calls[0][0]).toEqual({
+    models: { claude: ["claude-next", "claude-later"] },
+  });
+  // The remove is built from what the add STORED, not the stale prop (the detail refetch the
+  // save triggered still says ["claude-next"]): the id just added survives.
+  await user.click(within(box).getByRole("button", { name: "Remove claude-next" }));
+  expect(vi.mocked(api.setAgentDefaults).mock.calls[1][0]).toEqual({
+    models: { claude: ["claude-later"] },
+  });
+  expect(within(box).getByText("claude-later")).toBeInTheDocument();
+  expect(within(box).queryByText("claude-next")).not.toBeInTheDocument();
+});
+
+test("agent page: model-list edits are serialised, and the save's answer is the list (#1189)", async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.engineDetail).mockResolvedValue(WITH_MODELS);
+  let resolve!: (v: { agent_defaults: AgentDefaults }) => void;
+  vi.mocked(api.setAgentDefaults).mockImplementationOnce(
+    () => new Promise((r) => (resolve = r)),
+  );
+  renderPage(<AgentDetail id="claude" />);
+  const box = await screen.findByTestId("added-models");
+  await user.type(within(box).getByRole("textbox", { name: "Model id to add" }), "claude-later");
+  await user.click(within(box).getByRole("button", { name: "Add model" }));
+  // In flight: nothing else can be edited, so no second request can race the first.
+  expect(within(box).getByRole("button", { name: "Remove claude-next" })).toBeDisabled();
+  expect(within(box).getByRole("textbox", { name: "Model id to add" })).toBeDisabled();
+  await act(async () => {
+    // The server's stored list wins over what was sent.
+    resolve({
+      agent_defaults: {
+        default_engine: null,
+        bypass: true,
+        models: { claude: ["claude-next", "claude-later", "claude-server"] },
+      },
+    });
+  });
+  expect(within(box).getByText("claude-server")).toBeInTheDocument();
+  vi.mocked(api.setAgentDefaults).mockResolvedValue({
+    agent_defaults: { default_engine: null, bypass: true },
+  });
+  await user.click(within(box).getByRole("button", { name: "Remove claude-next" }));
+  expect(vi.mocked(api.setAgentDefaults).mock.calls).toHaveLength(2);
+  expect(vi.mocked(api.setAgentDefaults).mock.calls[1][0]).toEqual({
+    models: { claude: ["claude-later", "claude-server"] },
+  });
+});
+
+test("agent page: a malformed id is refused before saving; a server refusal is shown (#1189)", async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.engineDetail).mockResolvedValue(WITH_MODELS);
+  vi.mocked(api.setAgentDefaults).mockRejectedValue(
+    new ApiError(422, "agent_defaults.models.claude: 'opus' is already offered by the agent"),
+  );
+  renderPage(<AgentDetail id="claude" />);
+  const box = await screen.findByTestId("added-models");
+  const input = within(box).getByRole("textbox", { name: "Model id to add" });
+  await user.type(input, "--model=x");
+  await user.click(within(box).getByRole("button", { name: "Add model" }));
+  expect(api.setAgentDefaults).not.toHaveBeenCalled();
+  expect(within(box).getByTestId("added-models-error")).toHaveTextContent("letters, digits");
+  await user.clear(input);
+  await user.type(input, "opus");
+  await user.click(within(box).getByRole("button", { name: "Add model" }));
+  expect(await within(box).findByTestId("added-models-error")).toHaveTextContent(
+    "already offered",
+  );
+});
+
+test("agent page: a configured-elsewhere agent offers no add field and says why (#1189)", async () => {
+  vi.mocked(api.engineDetail).mockResolvedValue({
+    ...DETAIL,
+    id: "opencode",
+    label: "opencode",
+    model_select: { supported: false, on_resume: false, configured_elsewhere: true, offered: [] },
+  });
+  renderPage(<AgentDetail id="opencode" />);
+  expect(await screen.findByText(/own configuration/)).toBeInTheDocument();
+  expect(screen.queryByTestId("added-models")).not.toBeInTheDocument();
+});

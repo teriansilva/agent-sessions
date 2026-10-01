@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { TermSocket, type TermStatus } from "./termSocket";
+import { rejectReason, TermSocket, type TermStatus } from "./termSocket";
 
 // Minimal fake WebSocket: lets a test drive open/message/close and capture sends.
 class FakeWS {
@@ -9,7 +9,7 @@ class FakeWS {
   sent: string[] = [];
   onopen: (() => void) | null = null;
   onmessage: ((ev: { data: unknown }) => void) | null = null;
-  onclose: ((ev: { code: number }) => void) | null = null;
+  onclose: ((ev: { code: number; reason?: string }) => void) | null = null;
   onerror: (() => void) | null = null;
   constructor(public url: string) {
     FakeWS.instances.push(this);
@@ -27,9 +27,9 @@ class FakeWS {
   message(data: unknown) {
     this.onmessage?.({ data });
   }
-  drop(code: number) {
+  drop(code: number, reason = "") {
     this.readyState = 3;
-    this.onclose?.({ code });
+    this.onclose?.({ code, reason });
   }
 }
 
@@ -118,7 +118,7 @@ test("an id control frame fires onId with the real engine-qualified id (#127)", 
 });
 
 describe("close codes", () => {
-  test.each([4401, 4403, 4404, 4500])(
+  test.each([4401, 4403, 4404, 4422, 4500])(
     "deliberate reject %i → no reconnect",
     (code) => {
       vi.useFakeTimers();
@@ -222,7 +222,7 @@ test("a wake-created socket survives the previous (watchdog-closed) socket's lat
   expect(FakeWS.instances).toHaveLength(2); // and no spurious extra reconnect was scheduled
 });
 
-test.each([4401, 4403, 4404, 4500])(
+test.each([4401, 4403, 4404, 4422, 4500])(
   "a deliberate no-retry %i reject is not resurrected by an online wake (#236)",
   (code) => {
     vi.useFakeTimers();
@@ -292,4 +292,17 @@ test("a hist control frame fires onHist with the exact attach cursor (#348)", ()
   ws.message(JSON.stringify({ t: "hist" })); // malformed (no cursor) → ignored
   expect(cursors).toEqual([7]);
   expect(ts.consumed).toBe(123); // the hist frame never disturbs the seq offset
+});
+
+test("a 4422 model refusal shows the server's reason, bounded; other codes keep their wording (#1189)", () => {
+  const { ts, statuses } = makeSocket();
+  ts.connect();
+  FakeWS.instances[0].drop(4422, "claude: model 'x' is not offered");
+  expect(statuses.at(-1)).toEqual({
+    kind: "rejected",
+    reason: "claude: model 'x' is not offered",
+  });
+  expect(rejectReason(4422, "")).toBe("that model isn’t offered for this session");
+  expect(rejectReason(4422, "y".repeat(500))).toHaveLength(160);
+  expect(rejectReason(4404, "server text")).toBe("session not found or ended");
 });

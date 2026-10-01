@@ -41,6 +41,9 @@ export interface NewSessionDraft {
   returnTo: string | null;
   projectChoice: string | null;
   cwdOverride: string | null;
+  /** The model chosen for `engine` (#1189); absent ⇒ `default`. Bound to the engine it was chosen
+   *  for, so switching engine clears it. */
+  modelChoice?: { engine: string; model: string };
 }
 
 const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
@@ -55,7 +58,16 @@ export function readDraft(v: unknown): NewSessionDraft | null {
     returnTo: d.returnTo === MAP_PATH ? MAP_PATH : null,
     projectChoice: str(d.projectChoice),
     cwdOverride: str(d.cwdOverride),
+    ...readModelChoice(d.modelChoice),
   };
+}
+
+function readModelChoice(v: unknown): Pick<NewSessionDraft, "modelChoice"> {
+  if (!v || typeof v !== "object") return {};
+  const m = v as Record<string, unknown>;
+  const engine = str(m.engine);
+  const model = str(m.model);
+  return engine && model ? { modelChoice: { engine, model } } : {};
 }
 
 /** Router state the entry points hand the wizard. */

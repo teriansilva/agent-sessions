@@ -28,6 +28,8 @@ MANIFEST_FIELDS = (
     "capabilities",
     "session_id",
     "models",
+    "model_select",
+    "instructions",
     "usage",
     "terminal",
     "status",

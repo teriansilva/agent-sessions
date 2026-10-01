@@ -38,7 +38,7 @@ from agent_sessions.plugins import kinds, load_first_party  # noqa: E402
 #: file with nothing to compare (Hermes on #1178).
 TARGETS: dict[str, tuple[str, ...]] = {
     "README.md": ("engine-table",),
-    "docs/site/guide/engines.md": ("engine-table", "engine-env"),
+    "docs/site/guide/engines.md": ("engine-table", "engine-env", "engine-models"),
     "docs/site/guide/plugins.md": ("manifest-vocab",),
     "docs/site/start/uninstall.md": ("engine-stores",),
 }
@@ -145,6 +145,34 @@ def engine_env() -> str:
     return "\n".join(rows) + "\n"
 
 
+def engine_models() -> str:
+    """Per engine: how a launch picks a model and which instruction files it reads (#1189)."""
+    manifests, _ = _manifests()
+    rows = [
+        "| Engine | Model at launch | Models offered | Instruction files |",
+        "|---|---|---|---|",
+    ]
+    for m in manifests:
+        model = m.launch.model if m.launch is not None else None
+        if model is not None and not m.models_configured_elsewhere:
+            how = f"`{model.flag} <id>` on new sessions" + (
+                " and on resume" if model.on_resume else " (a resume keeps its model)"
+            )
+            offered = ", ".join(
+                _code(x.id) + (f" ({', '.join(_code(a) for a in x.aliases)})" if x.aliases else "")
+                for x in m.models
+            )
+        elif m.models_configured_elsewhere:
+            how = "set in the agent's own configuration"
+            offered = "`default` only"
+        else:
+            how = "—"
+            offered = "—"
+        files = ", ".join(_code(f) for f in m.instructions) or "—"
+        rows.append(f"| **{m.identity.label}** (`{m.id}`) | {how} | {offered} | {files} |")
+    return "\n".join(rows) + "\n"
+
+
 def engine_stores() -> str:
     manifests, _ = _manifests()
     return "".join(
@@ -179,6 +207,9 @@ def manifest_vocab() -> str:
         ("`launch.bypass`", _vals(kinds.BYPASS_FLAGS)),
         ("`launch.bypass_on`", _vals(kinds.BYPASS_ON)),
         ("`launch.admission`", _vals(kinds.ADMISSION_KINDS)),
+        ("`launch.model.kind`", _vals(kinds.MODEL_KINDS)),
+        ("`launch.model.flag`", _vals(kinds.MODEL_FLAGS)),
+        ("`instructions.files`", _vals(kinds.INSTRUCTION_FILES)),
         ("`capabilities`", _vals(kinds.CAPABILITIES)),
         ("`transcript.kind`", _vals(kinds.TRANSCRIPT_KINDS)),
         ("`usage.source`", _vals(kinds.USAGE_SOURCES)),
@@ -217,6 +248,7 @@ BLOCKS = {
     "engine-table": engine_table,
     "engine-env": engine_env,
     "engine-stores": engine_stores,
+    "engine-models": engine_models,
     "manifest-vocab": manifest_vocab,
 }
 

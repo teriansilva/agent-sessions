@@ -1089,3 +1089,23 @@ test("a chained session shows BOTH provenance relationships (#703 review)", asyn
   );
   expect(screen.getByTestId("loc")).toHaveTextContent("/s/opencode/t2");
 });
+
+test("a row shows the model its launch requested; a default row shows none (#1189)", async () => {
+  mockSessions.mockResolvedValue(
+    pageOf([
+      { ...sess("claude:a", "Asked"), model_requested: "claude-sonnet-5" },
+      sess("claude:b", "Default"),
+    ]),
+  );
+  render(
+    <MemoryRouter>
+      <SessionList />
+    </MemoryRouter>,
+  );
+  await screen.findByText("Asked");
+  const tags = screen.getAllByTestId("row-model-tag");
+  expect(tags).toHaveLength(1);
+  expect(tags[0]).toHaveTextContent("claude-sonnet-5");
+  // A REQUEST, and the tooltip says so — never presented as what ran.
+  expect(tags[0]).toHaveAttribute("title", "Requested model: claude-sonnet-5");
+});

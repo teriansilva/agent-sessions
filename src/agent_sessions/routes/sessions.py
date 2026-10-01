@@ -31,6 +31,7 @@ from .. import (
     ptybridge,
     runtime_cleanup,
     scanner,
+    transcript,
     transcript_owner,
     webterm,
 )
@@ -265,7 +266,12 @@ def _reserve_or_refuse(session_key: str) -> str:
 
 
 def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
-    def _row(s, m: metadata.SessionMeta, project_index: dict[str, projects.Project]) -> dict:
+    def _row(
+        s,
+        m: metadata.SessionMeta,
+        project_index: dict[str, projects.Project],
+        requested_model: str,
+    ) -> dict:
         key = engines.session_key(s)
         # #156 working signal: last byte we observed flowing into the shared ring.
         # Slice 2 (#183): the server-owned SessionStream writes under the PHYSICAL
@@ -347,6 +353,17 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # it's a display string, nothing dereferences it blindly.
             "handoff_from": m.handoff_from,
             "handoff_to": m.handoff_to,
+            # The model the launch ASKED for (#1189), canonical; null = default or never recorded.
+            # A request, not evidence — the pane's lookup adds `model_effective` for that.
+            # Read through `metadata.requested_model_in` by the caller, never off `m`: `m` is ONE
+            # entry, and after a late-id adoption + rename the request lives on the other one.
+            # The `default` marker (an explicit default resume, #1189) is "no flag": null here.
+            "model_requested": requested_model or None,
+            # What the engine's OWN transcript says it ran (#1189). Every row carries the key so the
+            # list and the lookup keep ONE shape; `null` means "not read / unknown". The list never
+            # reads it (a transcript tail per row would make the list a walk); the one-session
+            # lookup fills it in `_lookup_row`.
+            "model_effective": None,
         }
 
     def _membership_index() -> dict[str, dict] | None:
@@ -568,7 +585,14 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         scoped = [
             row
             for s in sessions
-            for row in [_row(s, _meta_for(s), project_index)]
+            for row in [
+                _row(
+                    s,
+                    _meta_for(s),
+                    project_index,
+                    metadata.requested_model_in(meta_index, aliases, engines.session_key(s)),
+                )
+            ]
             if keep(row["cwd"], row["project"], archived=row["archived"], want_archived=archived)
         ]
         # Which mission holds each row (#948). Read ONCE per request, after scoping and before
@@ -813,7 +837,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             if engines.session_key(s) != key:
                 continue
             m = meta_index.get(key) or meta_index.get(phys) or metadata.SessionMeta()
-            row = _row(s, m, project_index)
+            row = _row(s, m, project_index, metadata.requested_model_in(meta_index, aliases, key))
             # The HARD boundary still applies (#867 review). Roots/exclusions are not a listing
             # preference: the ws resume path enforces the same predicate and calls bypassing it
             # a back door, so a session outside it cannot be opened at all — and a caller holding
@@ -829,6 +853,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             _stamp_mission(row, _membership_index(), aliases)
             # Same stamp as the list (#1085), so the lookup stays the list's row shape exactly.
             row["running"] = engines.physical_key(row["id"], aliases) in _running_keys()
+            # Filled only here (#1189): the key is on every row (`_row`), null = not read/unknown.
+            row["model_effective"] = transcript.effective_model(s.engine, s.uuid, Path.home())
             return row
         return _NOT_FOUND
 

@@ -99,7 +99,11 @@ def test_a_manifest_that_did_not_load_is_a_PROBLEM_never_an_engine(auth_cfg, tmp
 
 def test_defaults_start_as_today(auth_cfg):
     c = _client(auth_cfg)
-    assert c.get("/api/config").json()["agent_defaults"] == {"default_engine": None, "bypass": True}
+    assert c.get("/api/config").json()["agent_defaults"] == {
+        "default_engine": None,
+        "bypass": True,
+        "models": {},
+    }
 
 
 @pytest.mark.parametrize(
@@ -118,7 +122,11 @@ def test_defaults_are_STRICT_on_write(auth_cfg, patch):
     c = _client(auth_cfg)
     r = _post_prefs(c, auth_cfg, {"agent_defaults": patch})
     assert r.status_code == 422, r.text
-    assert c.get("/api/config").json()["agent_defaults"] == {"default_engine": None, "bypass": True}
+    assert c.get("/api/config").json()["agent_defaults"] == {
+        "default_engine": None,
+        "bypass": True,
+        "models": {},
+    }
 
 
 def test_a_422_in_agent_defaults_writes_NOTHING_else_in_the_patch(auth_cfg):
@@ -131,7 +139,7 @@ def test_a_422_in_agent_defaults_writes_NOTHING_else_in_the_patch(auth_cfg):
 def test_defaults_are_LENIENT_on_read(tmp_path):
     p = tmp_path / "prefs.json"
     p.write_text('{"agent_defaults": {"default_engine": "../x", "bypass": "yes", "junk": 1}}')
-    assert prefs.get_agent_defaults(p) == {"default_engine": None, "bypass": True}
+    assert prefs.get_agent_defaults(p) == {"default_engine": None, "bypass": True, "models": {}}
 
 
 def test_a_partial_write_keeps_the_other_field(auth_cfg):
@@ -143,6 +151,7 @@ def test_a_partial_write_keeps_the_other_field(auth_cfg):
     assert c.get("/api/config").json()["agent_defaults"] == {
         "default_engine": "codex",
         "bypass": False,
+        "models": {},  # #1189: operator-added model ids, none stored
     }
 
 
@@ -184,4 +193,5 @@ def test_an_ABSENT_stored_default_survives_saving_bypass_and_returns_on_re_add(a
     assert c.get("/api/config").json()["agent_defaults"] == {
         "default_engine": "gemini",
         "bypass": True,
+        "models": {},
     }

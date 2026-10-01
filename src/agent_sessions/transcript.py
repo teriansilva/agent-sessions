@@ -1235,3 +1235,87 @@ register_adapter("battlelab-chat", _chat_adapter)
 register_locator("battlelab-chat", _path_locator(chat_log_path))
 # Append-only: the file's size is the monotonic, uncapped growth signal stall detection needs.
 register_growth("battlelab-chat", _path_growth(chat_log_path))
+
+
+# --- the model a session ran on, as its OWN transcript reports it (#1189) ------------------------
+#
+# `model_effective` is evidence, never inference: it is filled only when the engine wrote the model
+# into its transcript (claude stamps `message.model` on each assistant record, codex writes a
+# `turn_context` record carrying `model`). A requested model, a picker default, or an engine's
+# configured default is NOT evidence and never lands here — #1194 relies on that. A reader returns
+# the NEWEST model the transcript names, or None.
+ModelReader = Callable[[str, Path], "str | None"]
+_MODEL_READERS: dict[str, ModelReader] = {}
+_MODEL_TAIL_BYTES = 256 * 1024
+
+
+def register_model_reader(kind: str, fn: ModelReader) -> None:
+    """Register the effective-model reader for a `transcript.kind`."""
+    _MODEL_READERS[kind] = fn
+
+
+def _model_shaped(value: object) -> str | None:
+    """A model id as the transcript wrote it, when it has the shape of one. The same grammar a
+    launch accepts, so a transcript's odd value (claude's `<synthetic>`) is not shown as a model."""
+    from .plugins.manifest import _MODEL_ID_RE
+
+    return value if isinstance(value, str) and _MODEL_ID_RE.fullmatch(value) else None
+
+
+def _tail_records(path: Path | None) -> list[dict]:
+    if path is None:
+        return []
+    try:
+        with Path(path).open("rb") as fh:
+            size = Path(path).stat().st_size
+            if size > _MODEL_TAIL_BYTES:
+                fh.seek(size - _MODEL_TAIL_BYTES)
+                fh.readline()
+            return _jsonl_dicts(fh.read())
+    except OSError:
+        return []
+
+
+def claude_model_from_records(recs: list[dict]) -> str | None:
+    for o in reversed(recs):
+        if o.get("type") != "assistant":
+            continue
+        msg = o.get("message")
+        found = _model_shaped(msg.get("model")) if isinstance(msg, dict) else None
+        if found:
+            return found
+    return None
+
+
+def codex_model_from_records(recs: list[dict]) -> str | None:
+    for o in reversed(recs):
+        if o.get("type") != "turn_context":
+            continue
+        p = o.get("payload")
+        found = _model_shaped(p.get("model")) if isinstance(p, dict) else None
+        if found:
+            return found
+    return None
+
+
+register_model_reader(
+    "claude-jsonl",
+    lambda native, home: claude_model_from_records(_tail_records(claude_jsonl_path(native, home))),
+)
+register_model_reader(
+    "codex-rollout",
+    lambda native, home: codex_model_from_records(_tail_records(codex_rollout_path(native, home))),
+)
+
+
+def effective_model(engine_id: str, native_id: str, home: Path) -> str | None:
+    """The model ``engine_id``'s session ran on per its own transcript, or None (= unknown).
+    Fail-soft: an unreadable store is unknown, never an error and never a guess."""
+    k = _kind(engine_id)
+    fn = _scoped(_MODEL_READERS.get(k), engine_id, None) if k else None
+    if fn is None:
+        return None
+    try:
+        return fn(native_id, home)
+    except Exception:
+        return None

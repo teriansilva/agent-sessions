@@ -43,6 +43,7 @@ from .. import (
     fsbrowse,
     handoff,
     missions,
+    model_choice,
     opencode_admission,
     owner,
     perfstats,
@@ -117,6 +118,37 @@ _PUBLISH_RETRY_DELAY_S = 2.0
 # timeout plus a margin, then apply the instant-exit check on top.
 _SPAWN_APPEAR_MARGIN_S = 3.0
 _SPAWN_APPEAR_POLL_S = 0.25
+# Model-record watches (#1189) — strong refs for the same reason. Each one records a LAUNCH's model
+# only once that launch's dtach master is accepting connections (the same appear-poll as the
+# handoff watch above), and gives up — recording nothing — past the window. Past the spawn
+# timeout so a spawn held in admission still records.
+_MODEL_RECORD_WATCHES: set[asyncio.Task] = set()
+_MODEL_RECORD_WAIT_S = webterm.SPAWN_TIMEOUT_S + 5.0
+_MODEL_RECORD_POLL_S = 0.1
+
+
+async def _record_model_once_live(
+    engine: str, phys_native: str, key: str, sel: model_choice.Selection
+) -> None:
+    """Record `sel` under `key` once the master this LAUNCH spawns is live (#1189).
+
+    The route holds the single-writer lock and `open_action` unlinked any stale socket before a
+    LAUNCH, so a master accepting on this socket is the one this connection created. A refused
+    argv never starts the watch; a failed spawn (4502, a bridge error, a client gone before the
+    spawn) never brings a master up, so the prior record stays untouched — the route's teardown
+    cancels the watch then, before it releases the lock, so it cannot outlive its connection and
+    record for a master a LATER launch brings up on the same socket. The window is the backstop.
+    """
+    deadline = time.monotonic() + _MODEL_RECORD_WAIT_S
+    while True:
+        with contextlib.suppress(Exception):
+            if await asyncio.to_thread(ptybridge.session_exists, engine, phys_native):
+                await asyncio.to_thread(model_choice.record, key, sel)
+                return
+        if time.monotonic() >= deadline:
+            log.info("no master for %s:%s came up; its model was not recorded", engine, phys_native)
+            return
+        await asyncio.sleep(_MODEL_RECORD_POLL_S)
 
 
 async def _handoff_spawn_watch(engine: str, phys_native: str) -> None:
@@ -351,9 +383,12 @@ def register(
         # (open_action socket-probe + scan_all + role setup) right before webterm.run.
         accept_at = time.monotonic()
 
-        async def reject(code: int) -> None:
+        async def reject(code: int, reason: str = "") -> None:
             with contextlib.suppress(Exception):
-                await ws.close(code=code)
+                # A close reason is at most 123 bytes on the wire; the code carries the meaning.
+                await ws.close(
+                    code=code, reason=reason.encode("utf-8")[:120].decode("utf-8", "ignore")
+                )
 
         if session_uid(cfg, ws) is None:
             return await reject(4401)
@@ -436,6 +471,11 @@ def register(
         # discover the engine's real id, persist the alias, and converge the client URL.
         reconcile_task = None
         maintenance_admission = None
+        # A requested model to record once the launched master is live (#1189): the key it is
+        # recorded under and the resolved selection. Never set on ATTACH — `dtach -a` carries no
+        # agent argv, so an attach cannot change the model and must not change the record.
+        model_record: tuple[str, model_choice.Selection] | None = None
+        model_watch: asyncio.Task | None = None
         try:
             if action == sessions.LAUNCH:
                 try:
@@ -542,6 +582,17 @@ def register(
                     return await reject(4404)
                 # Honor the modal's permission-bypass choice (default on); only "0" is off.
                 bypass = ws.query_params.get("bypass") != "0"
+                # The requested model (#1189), resolved by THE resolver before anything is
+                # snapshotted, recorded or spawned: shape, membership in the manifest's list or the
+                # operator's added ids, alias → id. A refusal is terminal (4422, never retried) and
+                # never a silent fall back to `default`. The Selection it returns is the only thing
+                # the launch argv accepts, so the id validated is the id launched.
+                try:
+                    model_sel = await asyncio.to_thread(
+                        model_choice.select, prov, ws.query_params.get("model")
+                    )
+                except model_choice.ModelRefused as e:
+                    return await reject(4422, e.detail)  # the finally hands back the lock
                 # Mint-its-own-id engines (opencode, codex) can't pin a new-session id: they
                 # launch under the placeholder and we diff the engine's store to find the real
                 # id (#127/#315). Snapshot the cwd's existing ids BEFORE launch so the diff
@@ -566,7 +617,11 @@ def register(
                     # OFF the loop: provenance walks every directory up to the binary (#853 P2),
                     # and on a host with networked user lookups that must not stall every stream.
                     launch = await asyncio.to_thread(
-                        prov.new_launch_argv, native, cwd=new_cwd, bypass=bypass
+                        prov.new_launch_argv,
+                        native,
+                        cwd=new_cwd,
+                        bypass=bypass,
+                        **({"model": model_sel} if model_sel.flag else {}),
                     )
                 except NotImplementedError:
                     return await reject(4404)  # engine can't pin a new-session id
@@ -575,6 +630,8 @@ def register(
                     # misconfigured launch has always had.
                     return await reject(4500)
                 cwd = new_cwd
+                if model_sel.model is not None:  # a new `default` launch has nothing to record
+                    model_record = (f"{prov.engine_id}:{native}", model_sel)
                 # Auto-include the launch cwd in `included` mode (#335): now that the new-session
                 # request has PASSED validation (cwd is a real pickable project) and the launch is
                 # accepted, add the dir to the allowlist so the session is visible in the curated
@@ -653,13 +710,31 @@ def register(
                 # retrying. Claude-only (background agents are a Claude concept).
                 if transcript_owner.owned_elsewhere(prov, native):
                     return await reject(4404)
+                # A model on RESUME (#1189): applied only where the manifest says the engine honours
+                # it (`on_resume`); otherwise only the model the session recorded is accepted — and
+                # a session with nothing recorded matches nothing. Refused before spawn.
+                try:
+                    model_sel = await asyncio.to_thread(  # a sidecar read: off the loop
+                        model_choice.select_resume,
+                        prov,
+                        ws.query_params.get("model"),
+                        transcript_key,
+                    )
+                except model_choice.ModelRefused as e:
+                    return await reject(4422, e.detail)  # the finally hands back the lock
                 try:
                     launch = await asyncio.to_thread(  # off the loop, as above
-                        prov.launch_argv, native, cwd=match.cwd, bypass=True
+                        prov.launch_argv,
+                        native,
+                        cwd=match.cwd,
+                        bypass=True,
+                        **({"model": model_sel} if model_sel.flag else {}),
                     )
                 except engines.EngineError:
                     return await reject(4500)  # no binary / refused by provenance (#853 §2b)
                 cwd = match.cwd
+                if model_sel.flag or model_sel.replaces_record:
+                    model_record = (transcript_key, model_sel)
             try:
                 # Mode-explicit dtach (#165): on ATTACH the server has already verified
                 # a live master exists, so `dtach -a` is correct (and refuses to silently
@@ -692,6 +767,15 @@ def register(
                         with contextlib.suppress(Exception):
                             on_fail(native)
                 return await reject(4500)  # misconfigured launch (e.g. bare-name binary)
+            if model_record is not None:
+                # The launch argv was accepted; record what was asked for once the master it
+                # spawns is actually live — never before (a failed spawn keeps the prior record).
+                # Keyed like every sidecar field (a placeholder carries it through adoption).
+                model_watch = asyncio.create_task(
+                    _record_model_once_live(prov.engine_id, phys_native, *model_record)
+                )
+                _MODEL_RECORD_WATCHES.add(model_watch)
+                model_watch.add_done_callback(_MODEL_RECORD_WATCHES.discard)
             # Delta-resume: a reconnecting client reports the absolute byte offset it
             # last saw; we stream only the bytes since then (never re-blank). Bad/absent
             # value → 0 → full replay. buf_key is the PHYSICAL key (placeholder for an
@@ -851,6 +935,19 @@ def register(
                     lived = time.monotonic() - launch_started_at
                     master_alive = ptybridge.session_exists(prov.engine_id, phys_native)
                     relaunch.note_exit(phys_key, lived, master_alive=master_alive)
+            # A LAUNCH that left no master behind (the spawn failed, 4502, a bridge error, the
+            # client gone before the spawn) stops its model-record watch HERE, while this
+            # connection still holds the launch lock: once the lock is released a later connection
+            # may bring a master up on the same socket, and this watch must never record its own
+            # model for that one (#1189). A master that did come up outlives this client, so its
+            # watch keeps running. Unknown liveness counts as no master — recording nothing keeps
+            # the prior record, the strictly safer miss.
+            if model_watch is not None and not model_watch.done():
+                master_up = False
+                with contextlib.suppress(Exception):
+                    master_up = bool(ptybridge.session_exists(prov.engine_id, phys_native))
+                if not master_up:
+                    model_watch.cancel()
             # Cancel the reconcile probe, but NEVER let its cancellation (a BaseException,
             # not Exception) bypass the lock handoff below — nest it in its own try/finally
             # and suppress CancelledError too (#127 review).

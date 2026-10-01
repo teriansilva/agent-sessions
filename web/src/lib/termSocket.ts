@@ -56,13 +56,25 @@ export interface TermSocketHandlers {
 // and 4502 (transient start failure: spawn timeout / EAGAIN under resource pressure — the
 // condition clears, so the client must keep trying rather than die on a momentary blip).
 // Kept explicit, not a numeric range.
-const NO_RETRY = new Set([4401, 4403, 4404, 4500]);
+// 4422 (#1189): the launch refused the requested model (no longer offered, or not changeable on a
+// resume) BEFORE anything started — terminal, and never silently retried on `default`.
+const NO_RETRY = new Set([4401, 4403, 4404, 4422, 4500]);
 const REJECT_REASON: Record<number, string> = {
   4401: "session expired — please sign in again",
   4403: "blocked (origin mismatch)",
   4404: "session not found or ended",
+  4422: "that model isn’t offered for this session",
   4500: "couldn’t start this session",
 };
+
+/** A model refusal (4422, #1189) says WHICH model and why, so the server's own reason is shown —
+ *  as text, trimmed and bounded. Every other code keeps its fixed wording. */
+export function rejectReason(code: number, serverReason?: string): string {
+  const fixed = REJECT_REASON[code] ?? "unavailable";
+  if (code !== 4422) return fixed;
+  const r = typeof serverReason === "string" ? serverReason.trim().slice(0, 160) : "";
+  return r || fixed;
+}
 
 const BACKOFF_BASE_MS = 600;
 const BACKOFF_MAX_MS = 10_000;
@@ -188,7 +200,7 @@ export class TermSocket {
     ws.onclose = (ev: CloseEvent) => {
       if (this.ws !== ws) return;
       this.clearConnectTimer();
-      this.onClose(ev.code);
+      this.onClose(ev.code, ev.reason);
     };
     ws.onerror = () => {
       try {
@@ -263,14 +275,14 @@ export class TermSocket {
     this.handlers.onOutput(bytes);
   }
 
-  private onClose(code: number): void {
+  private onClose(code: number, reason?: string): void {
     this.ws = null;
     if (this.stopped) return;
     if (NO_RETRY.has(code)) {
       this.rejected = true;
       this.handlers.onStatus({
         kind: "rejected",
-        reason: REJECT_REASON[code] ?? "unavailable",
+        reason: rejectReason(code, reason),
       });
       return;
     }

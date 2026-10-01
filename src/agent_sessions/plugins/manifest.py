@@ -12,7 +12,9 @@ Ignoring it would be wrong in the direction that matters: a key added by a later
 know is refused — higher: "needs a newer BattleLab"; lower or missing: invalid. When contract 2
 exists, `MIGRATIONS[1]` rewrites a contract-1 document into contract-2 shape before validation, so
 an old manifest keeps loading on a new app. The reverse is deliberately impossible: rolling the app
-back disables a newer plugin with a stated reason instead of misreading it.
+back disables a newer plugin with a stated reason instead of misreading it. An ADDITIVE optional
+field (`runtime`, `launch.model`, `instructions`) stays on the current contract: an older build
+refuses it as an unknown field, which is the same outcome (`kinds.CONTRACT_CURRENT`).
 
 Parse failures raise `ManifestError` naming the field, so one bad manifest reports what is wrong
 with it and the loader (fail-soft per plugin) carries on with the rest.
@@ -42,7 +44,12 @@ _ENV_DIR_RE = re.compile(r"^AGENT_SESSIONS_[A-Z0-9_]{1,48}$")
 _BIN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _BADGE_RE = re.compile(r"^[a-z]{2,3}$")
 _PREFIX_RE = re.compile(r"^[a-z]{1,16}_$")
-_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,95}$")
+# A model id reaches argv (#1189) as the value after a `MODEL_FLAGS` flag: ASCII only, no space, no
+# `=`, and a first character that cannot start an option. `\Z`, never `$`, so a trailing newline
+# cannot ride through a `.match`/`.fullmatch` caller that forgets the difference.
+_MODEL_ID_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._:/-]{0,95}\Z")
+#: The picker's "no flag" choice. Never a model id or an alias, so it can never be launched AS one.
+MODEL_DEFAULT = "default"
 _SEMVERISH_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$")
 _PACKAGE_RE = re.compile(r"^(@[a-z0-9][a-z0-9._-]{0,63}/)?[a-z0-9][a-z0-9._-]{0,127}$")
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -236,6 +243,17 @@ class ArgvStep:
 
 
 @dataclass(frozen=True)
+class ModelLaunch:
+    """`launch.model` (#1189): how the engine takes a model at launch. The VALUE is never here."""
+
+    kind: str
+    flag: str
+    #: Whether the engine honours the flag on a RESUME. False: a resume asking for a model other
+    #: than the one the session recorded is refused before spawn; a new session must be started.
+    on_resume: bool = False
+
+
+@dataclass(frozen=True)
 class Launch:
     resume: ArgvStep
     new: ArgvStep | None
@@ -243,6 +261,7 @@ class Launch:
     bypass: tuple[str, ...]
     bypass_on: str
     admission: str
+    model: ModelLaunch | None = None
 
 
 @dataclass(frozen=True)
@@ -328,6 +347,9 @@ class Manifest:
     digest: str = field(default="", compare=False)
     #: `[endpoint]` (#1209): present exactly for a `chat` runtime. The wire format only.
     endpoint: Endpoint | None = None
+    #: `instructions.files` (#1189): workspace-root instruction files the engine reads, bare names
+    #: from `kinds.INSTRUCTION_FILES`. Empty = declares none.
+    instructions: tuple[str, ...] = ()
 
     @property
     def id(self) -> str:
@@ -695,6 +717,21 @@ def parse(doc: Any, *, source: str = "", digest: str | None = None) -> Manifest:
         r.done()
     if len({m.id for m in models}) != len(models):
         raise ManifestError("models.list", "duplicate model id")
+    # Aliases are accepted on input and canonicalised to their model's id before anything is stored
+    # or launched (#1189), so every name must resolve to exactly one model: an alias that is also
+    # another model's id or alias is ambiguous, and `default` is the picker's no-flag sentinel.
+    names: set[str] = set()
+    for i, mdl in enumerate(models):
+        for name in (mdl.id, *mdl.aliases):
+            if name.lower() == MODEL_DEFAULT:
+                raise ManifestError(f"models.list[{i}]", f"{MODEL_DEFAULT!r} is reserved")
+            if name in names:
+                raise ManifestError(
+                    f"models.list[{i}]", f"{name!r} names more than one model (ambiguous alias)"
+                )
+            names.add(name)
+
+    instructions = _instructions(top)
 
     r = top.table("display")
     display = Display(
@@ -764,6 +801,7 @@ def parse(doc: Any, *, source: str = "", digest: str | None = None) -> Manifest:
         source=source,
         digest=digest,
         endpoint=endpoint,
+        instructions=instructions,
     )
     _cross_check(m)
     return m
@@ -795,7 +833,35 @@ def _launch(r: _Reader) -> Launch:
     bypass = r.strs("bypass", one_of=kinds.BYPASS_FLAGS, max_items=3)
     bypass_on = r.str("bypass_on", "both", one_of=kinds.BYPASS_ON)
     admission = r.str("admission", "none", one_of=kinds.ADMISSION_KINDS)
-    return Launch(resume, new, base_args, bypass, bypass_on, admission)
+    model = _launch_model(r)
+    return Launch(resume, new, base_args, bypass, bypass_on, admission, model)
+
+
+def _launch_model(r: _Reader) -> ModelLaunch | None:
+    """`launch.model` (#1189): a kind and a flag from closed sets, and `on_resume`. The table is
+    closed like every other: an unknown key inside it is refused."""
+    mr = r.table("model", required=False)
+    if mr is None:
+        return None
+    kind = mr.str("kind", one_of=kinds.MODEL_KINDS)
+    flag = mr.str("flag", one_of=kinds.MODEL_FLAGS)
+    on_resume = mr.bool("on_resume")
+    mr.done()
+    return ModelLaunch(kind, flag, on_resume)
+
+
+def _instructions(top: _Reader) -> tuple[str, ...]:
+    """`instructions.files` (#1189): bare workspace-root names from a closed set. The vocabulary
+    already excludes separators; the explicit check keeps that true if a member is ever added."""
+    r = top.table("instructions", required=False)
+    if r is None:
+        return ()
+    files = r.strs("files", one_of=kinds.INSTRUCTION_FILES, max_items=len(kinds.INSTRUCTION_FILES))
+    r.done()
+    for i, f in enumerate(files):
+        if "/" in f or "\\" in f or f in (".", ".."):
+            raise ManifestError(f"instructions.files[{i}]", "must be a bare file name")
+    return files
 
 
 def _cross_check(m: Manifest) -> None:
@@ -823,6 +889,12 @@ def _cross_check(m: Manifest) -> None:
             raise ManifestError("transcript.kind", "must be 'battlelab-chat' for runtime 'chat'")
         if m.store.read_only:
             raise ManifestError("store.read_only", "must be false: BattleLab writes this store")
+        if m.models:
+            # A chat agent's model is the OPERATOR's endpoint configuration (#1209), never the
+            # manifest's: a list here would offer choices no launch could honour (#1189).
+            raise ManifestError(
+                "models.list", "must be empty for runtime 'chat' (the endpoint config picks it)"
+            )
     else:
         if m.store is not None and m.store.layout == "battlelab-chat":
             raise ManifestError("store.layout", "'battlelab-chat' is only for runtime 'chat'")
@@ -867,6 +939,17 @@ def _cross_check_launch(m: Manifest) -> None:
         )
     if m.launch.admission != "none" and (m.store is None or "db" not in m.store.paths):
         raise ManifestError("launch.admission", "needs store.paths.db")
+    if m.launch.model is not None:
+        # A model flag with nothing to choose from, or on an engine whose model is its own config,
+        # would be a picker that can only ever offer `default` — or one that lies (#1189).
+        if m.models_configured_elsewhere:
+            raise ManifestError(
+                "launch.model", "an engine whose model is configured elsewhere takes no model flag"
+            )
+        if not m.models:
+            raise ManifestError("launch.model", "needs a non-empty models.list")
+        if m.identity.kind == "terminal":
+            raise ManifestError("launch.model", "a terminal plugin has no model")
 
 
 # --- files ---------------------------------------------------------------------------------------

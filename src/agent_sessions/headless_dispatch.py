@@ -85,6 +85,7 @@ from . import (
     engines,
     handoff,
     launch_binding,
+    model_choice,
     opencode_admission,
     ptybridge,
     scopedspawn,
@@ -510,6 +511,7 @@ async def dispatch(
     on_key: Callable[[str], None] | None = None,
     authorize: Callable[[int], str | None] | None = None,
     nonce: str | None = None,
+    model: object = None,
 ) -> Dispatch:
     """Launch `engine` in `cwd` with nobody watching, and deliver `brief`.
 
@@ -560,6 +562,16 @@ async def dispatch(
     supported, why = handoff.seed_start_state(prov, present=prov.is_present())
     if not supported:
         raise DispatchError(why or f"{engine} cannot be dispatched to")
+    # THE SAME MODEL RESOLVER the interactive launch uses (#1189), before anything is recorded or
+    # spawned: a stale, unknown or unsupported model is a dispatch that could not be attempted,
+    # never a silent fall back to the engine's default. `None` / `default` is today's launch.
+    try:
+        model_sel = model_choice.select(prov, model)
+    except model_choice.ModelRefused as e:
+        raise DispatchError(e.detail) from None
+    if model_sel.flag and getattr(prov, "unattended_launch", None) is not None:
+        # A kind's own unattended argv takes no model: refuse up front rather than drop it.
+        raise DispatchError(f"{engine} cannot take a model on an unattended launch")
 
     # ONE sanitiser, the handoff picker's. It strips control bytes (an `ESC` could otherwise end
     # the bracketed paste early and smuggle raw key input into the new session) and REFUSES
@@ -702,12 +714,13 @@ async def dispatch(
         launch_env: dict[str, str] = {}
         try:
             unattended_launch = getattr(prov, "unattended_launch", None)
+            model_kw = {"model": model_sel} if model_sel.flag else {}
             if unattended_launch is not None:
                 launch, launch_env = unattended_launch(
                     native, cwd=cwd, bypass=bypass, env=dict(os.environ)
                 )
             else:
-                launch = prov.new_launch_argv(native, cwd=cwd, bypass=bypass)
+                launch = prov.new_launch_argv(native, cwd=cwd, bypass=bypass, **model_kw)
             argv = ptybridge.launch_argv(
                 engine=engine, session_id=native, launch_argv=launch, detached=True
             )
@@ -1036,6 +1049,10 @@ async def dispatch(
             maintenance_admission = None
         out.launched = True
         out.events.append("launched")
+        # What was asked for (#1189), recorded only now that a master exists — the same rule as the
+        # interactive launch, which waits for its master too. A failed spawn records nothing.
+        # Best-effort inside `record`: a sidecar write never fails a live launch.
+        await asyncio.to_thread(model_choice.record, key, model_sel)
         # The lock now belongs to the master. `transfer()`, never `release()` — `LOCK_UN` frees it
         # for the whole shared open file description, which would unlock the running agent's.
         lock.transfer()
