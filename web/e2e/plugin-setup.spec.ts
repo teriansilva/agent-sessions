@@ -24,6 +24,7 @@ async function fixture(page: Page, staged = false) {
     operations: [], roster_generation: 1, roster_revision: null };
   const writes: { path: string; body: Record<string, unknown> }[] = [];
   const sockets: string[] = [];
+  const sent: string[] = [];
   let verifyPass = true;
   let installState: PluginOperation["state"] = "installed";
   let loseResponse = false;
@@ -92,10 +93,11 @@ async function fixture(page: Page, staged = false) {
     const current = data.operations.find(o => ws.url().endsWith(o.id))!;
     current.state = "running";
     ws.send(Buffer.from("Sign in: ephemeral-secret-marker\r\n"));
+    ws.onMessage(msg => sent.push(typeof msg === "string" ? msg : new TextDecoder().decode(msg as ArrayBuffer)));
     ws.onClose(() => { current.state = "interrupted"; });
   });
   page.on("dialog", dialog => void dialog.accept());
-  return { data, gen, writes, sockets, dropNext: (kind: string) => neverReceived.add(kind), rejectNext: (kind: string, detail: string) => rejected.set(kind, detail), loseNext: (kind: string) => lost.add(kind), setVerify: (value: boolean) => { verifyPass = value; },
+  return { data, gen, writes, sockets, sent, dropNext: (kind: string) => neverReceived.add(kind), rejectNext: (kind: string, detail: string) => rejected.set(kind, detail), loseNext: (kind: string) => lost.add(kind), setVerify: (value: boolean) => { verifyPass = value; },
     setInstall: (value: PluginOperation["state"], lost = false) => { installState = value; loseResponse = lost; } };
 }
 const posts = (m: Awaited<ReturnType<typeof fixture>>, suffix: string) => m.writes.filter(w => w.path.endsWith(suffix));
@@ -200,6 +202,19 @@ test(`temporary ${signinKind} sign-in opens once and closing it never reconnects
   expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain("ephemeral-secret-marker");
 });
 }
+
+test("the sign-in terminal forwards a pasted vendor code as terminal input", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  const m = await fixture(page, true);
+  m.gen.review.entry.manifest.signin = { kind: "cli-subcommand", subcommand: "login" };
+  await page.goto(`${PATH}?plugin=sample-agent&generation=${GEN}`);
+  await page.getByRole("button", { name: "Start sign-in", exact: true }).click();
+  await expect.poll(() => m.sockets.length).toBe(1);
+  await page.getByLabel("Temporary vendor sign-in terminal").click();
+  await page.evaluate(() => navigator.clipboard.writeText("oauth-code-123"));
+  await page.keyboard.press("Control+V");
+  await expect.poll(() => m.sent.join("")).toContain("oauth-code-123");
+});
 
 test("remove confirmation preserves data and Escape returns focus", async ({ page }) => {
   const m = await fixture(page, true);
