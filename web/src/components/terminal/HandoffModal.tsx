@@ -21,6 +21,12 @@ import { useFocusContainment } from "../pulse/useModalDrawer";
  *  Confirm commits the (possibly edited) seed and navigates to the normal fresh-launch
  *  route — the seed itself never travels through the URL.
  *
+ *  Archive (#1274): "Archive current session after handoff" (on by default) fires the
+ *  existing per-session archive route best-effort after a successful commit, then navigates —
+ *  never awaited, so a slow/refused archive can't strand the operator. It is mutually
+ *  exclusive with the source reference (#716), which archiving would invalidate: turning archive
+ *  on while the reference is on goes through the same discard guard as a target switch.
+ *
  *  Accessibility mirrors SessionRecapModal: dialog/aria-modal, focus in on open + back to
  *  the trigger on close, Esc + backdrop click close. Every dismissal path is disabled while
  *  a commit is in flight, so a late commit response can't redirect a user who left. */
@@ -50,6 +56,13 @@ export function HandoffModal({
   // prepared result + the edit exactly like `mode` does, so toggling can never leave a stale
   // handle on screen or silently drop typed prose.
   const [srcRef, setSrcRef] = useState(false);
+  // Archive the SOURCE session once the handoff commits (#1274). On by default — a handed-off
+  // session usually has no further job. It reuses the per-session archive route (#523), so the
+  // runtime is reaped and the transcript preserved (reversible via unarchive). It is best-effort:
+  // a refusal (mission-owned, background agent) leaves the session active rather than failing the
+  // handoff. Archiving can MOVE the source transcript, so it is mutually exclusive with the
+  // source reference below.
+  const [archiveSource, setArchiveSource] = useState(true);
   // Forces a re-prepare of the SAME target+mode (expired-handle recovery).
   const [nonce, setNonce] = useState(0);
   // The prepare result is keyed by what it was built FOR: a tile/mode switch instantly
@@ -74,11 +87,15 @@ export function HandoffModal({
     for: string;
     text: string;
   } | null>(null);
-  // A target/mode switch the user must confirm because it would discard a dirty edit.
+  // A target/mode/source-reference switch the user must confirm because it would discard a
+  // dirty edit. `archive` rides along so turning archive on while the source reference is on is the
+  // SAME atomic switch: keeping the edit cancels it (archive stays off, the reference and its seed
+  // survive), discarding applies it (archive on, reference cleared, seed rebuilt).
   const [pendingSwitch, setPendingSwitch] = useState<{
     target: string;
     mode: HandoffMode;
     srcRef: boolean;
+    archive: boolean;
   } | null>(null);
   const [committing, setCommitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -261,18 +278,21 @@ export function HandoffModal({
   }, [sessionId, target, mode, srcRef, nonce]);
 
   // A switch that would throw away typed prose asks first; a clean preview switches
-  // immediately (nothing to lose).
+  // immediately (nothing to lose). `archive` is not part of the seed, so a target/mode/source-
+  // reference switch carries the CURRENT archive state through unchanged.
   const requestSwitch = (next: {
     target?: string;
     mode?: HandoffMode;
     srcRef?: boolean;
+    archive?: boolean;
   }) => {
     const t = next.target ?? target ?? "";
     const m = next.mode ?? mode;
     const s = next.srcRef ?? srcRef;
-    if (t === target && m === mode && s === srcRef) return;
+    const a = next.archive ?? archiveSource;
+    if (t === target && m === mode && s === srcRef && a === archiveSource) return;
     if (dirty) {
-      setPendingSwitch({ target: t, mode: m, srcRef: s });
+      setPendingSwitch({ target: t, mode: m, srcRef: s, archive: a });
       return;
     }
     setError(null);
@@ -280,6 +300,20 @@ export function HandoffModal({
     setTarget(t);
     setMode(m);
     setSrcRef(s);
+    setArchiveSource(a);
+  };
+
+  /** Toggle "archive after handoff". Unlike a target/mode switch this normally does NOT change
+   *  the seed, so it applies directly — but turning it ON while the source reference is on DOES
+   *  change the seed (the locator has to go, or archiving moves the file it points at), so that
+   *  one case goes through the same discard guard a target switch uses. */
+  const requestArchive = (next: boolean) => {
+    if (next === archiveSource) return;
+    if (next && srcRef) {
+      requestSwitch({ srcRef: false, archive: true });
+      return;
+    }
+    setArchiveSource(next);
   };
 
   const applyPendingSwitch = () => {
@@ -290,6 +324,7 @@ export function HandoffModal({
     setTarget(pendingSwitch.target);
     setMode(pendingSwitch.mode);
     setSrcRef(pendingSwitch.srcRef);
+    setArchiveSource(pendingSwitch.archive);
     setPendingSwitch(null);
   };
 
@@ -303,6 +338,16 @@ export function HandoffModal({
     setRenewalNotice(null);
     try {
       const r = await api.commitHandoff(prep.handle, edited ?? undefined);
+      // Archive the source session (#1274) once the handoff is COMMITTED — before the
+      // unmount check, so an operator who left mid-request still gets the archive they asked
+      // for. Fired WITHOUT await: the archive route's runtime teardown waits a 3 s SIGTERM
+      // grace, and the handoff already succeeded — a slow or refused archive must not strand
+      // the operator here. The SPA navigation below does not unload the page, so the request
+      // still lands. Best-effort: a refusal (mission-owned, background agent) leaves the
+      // session active, archived from its row menu instead.
+      if (archiveSource) {
+        api.archive(sessionId).catch(() => {});
+      }
       // If the modal unmounted while the request was in flight (browser Back, external
       // route change), the user has already navigated — this stale continuation must NOT
       // yank them to the new session (Hermes on #703 review 2586). The committed handoff
@@ -453,28 +498,60 @@ export function HandoffModal({
           </p>
         </div>
 
+        {/* Archive the source session (#1274). On by default — a handed-off session usually
+            has no further job. The copy states the commit-time promise and the row-menu
+            recovery for a refusal, because the archive is best-effort. */}
+        <div className={styles.section}>
+          <span className={styles.label}>After handoff //</span>
+          <label
+            className={`${styles.optRow} ${archiveSource ? styles.optRowOn : ""}`}
+          >
+            <input
+              type="checkbox"
+              className={styles.optBox}
+              checked={archiveSource}
+              disabled={committing}
+              onChange={(e) => requestArchive(e.target.checked)}
+            />
+            <span className={styles.optText}>
+              Archive current session after handoff
+              <span className={styles.optHint}>
+                Archived once the handoff is committed. Its history is kept — you
+                can unarchive it later. If it can&apos;t be archived (a mission
+                owns it, or a background agent is running), it stays active —
+                archive it from the row menu.
+              </span>
+            </span>
+          </label>
+        </div>
+
         {/* Source reference (#716). The session id is ALWAYS in the seed (free provenance);
             this opts in to the transcript's LOCATION, which is what lets the target agent read
             past the cap — and what can spend tokens, so the cost is stated on the control
             itself rather than buried in the privacy note. Routed through `requestSwitch` so a
-            dirty edit gets the same discard confirmation a target/mode switch gets. */}
+            dirty edit gets the same discard confirmation a target/mode switch gets.
+            Disabled while archiving (#1274): archive can MOVE the transcript, so the embedded
+            locator would go stale. */}
         <div className={styles.section}>
           <span className={styles.label}>Source reference //</span>
           <label
-            className={`${styles.optRow} ${srcRef ? styles.optRowOn : ""}`}
+            className={`${styles.optRow} ${
+              srcRef ? styles.optRowOn : ""
+            } ${archiveSource ? styles.optRowOff : ""}`}
           >
             <input
               type="checkbox"
               className={styles.optBox}
               checked={srcRef}
-              disabled={committing}
+              disabled={committing || archiveSource}
               onChange={(e) => requestSwitch({ srcRef: e.target.checked })}
             />
             <span className={styles.optText}>
               Reference the source session
               <span className={styles.optHint}>
-                Adds where the transcript lives so the new agent can read the
-                full history. Uses extra tokens.
+                {archiveSource
+                  ? "Not available while archiving — the archived transcript may move, so the reference would go stale. Uncheck archive to use it."
+                  : "Adds where the transcript lives so the new agent can read the full history. Uses extra tokens."}
               </span>
             </span>
           </label>

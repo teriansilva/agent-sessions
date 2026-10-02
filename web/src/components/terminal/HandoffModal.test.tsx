@@ -27,6 +27,7 @@ vi.mock("../../lib/api", async (importOriginal) => {
       engines: vi.fn(),
       prepareHandoff: vi.fn(),
       commitHandoff: vi.fn(),
+      archive: vi.fn(),
     },
   };
 });
@@ -56,6 +57,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(api.engines).mockResolvedValue(ENGINES as never);
   vi.mocked(api.prepareHandoff).mockResolvedValue(PREPARED as never);
+  vi.mocked(api.archive).mockResolvedValue({
+    id: "claude:11111111-1111-1111-1111-111111111111",
+    archived: true,
+  } as never);
 });
 
 function renderModal() {
@@ -548,9 +553,18 @@ test("a commit that resolves after the modal unmounts does not navigate (#703 re
 // the prepared result and the edit exactly like target/mode do — otherwise a toggle can leave a
 // stale handle on screen or silently discard typed prose.
 
+/** Archive is on by default (#1274) and makes the source reference unavailable, so the
+ *  reference tests turn it off first. */
+async function uncheckArchive() {
+  await userEvent.click(
+    screen.getByRole("checkbox", { name: /archive current session after handoff/i }),
+  );
+}
+
 test("toggling the source reference re-prepares with the flag set", async () => {
   renderModal();
   await screen.findByLabelText(/seed preview/i);
+  await uncheckArchive();
   const opt = screen.getByRole("checkbox", {
     name: /reference the source session/i,
   });
@@ -570,6 +584,7 @@ test("toggling the source reference re-prepares with the flag set", async () => 
 test("the extra privacy disclosure appears only while the source reference is on", async () => {
   renderModal();
   await screen.findByLabelText(/seed preview/i);
+  await uncheckArchive();
   expect(screen.queryByText(/a local path that can reveal/i)).toBeNull();
   await userEvent.click(
     screen.getByRole("checkbox", { name: /reference the source session/i }),
@@ -601,6 +616,7 @@ test("a late prepare for the previous flag value cannot overwrite the current pr
   const opt = await screen.findByRole("checkbox", {
     name: /reference the source session/i,
   });
+  await uncheckArchive();
   await userEvent.click(opt); // → ON, resolves immediately
   await waitFor(() =>
     expect(screen.getByLabelText(/seed preview/i)).toHaveValue("WITH LOCATOR"),
@@ -615,6 +631,7 @@ test("a late prepare for the previous flag value cannot overwrite the current pr
 test("toggling the source reference asks before discarding a dirty edit", async () => {
   renderModal();
   const preview = await screen.findByLabelText(/seed preview/i);
+  await uncheckArchive();
   await userEvent.clear(preview);
   await userEvent.type(preview, "hand-written brief");
   await userEvent.click(
@@ -631,6 +648,149 @@ test("toggling the source reference asks before discarding a dirty edit", async 
   expect(
     screen.getByRole("checkbox", { name: /reference the source session/i }),
   ).not.toBeChecked();
+});
+
+// --- archive the source after handoff (#1274) ------------------------------------------------
+// The checkbox is on by default and fires the existing archive route after a successful commit.
+// It is best-effort (a refusal never blocks the navigation) and mutually exclusive with the
+// source reference (archiving can move the transcript the reference points at).
+
+function archiveBox() {
+  return screen.getByRole("checkbox", {
+    name: /archive current session after handoff/i,
+  });
+}
+
+test("archive after handoff is on by default, and the source reference is unavailable", async () => {
+  renderModal();
+  await screen.findByLabelText(/seed preview/i);
+  expect(archiveBox()).toBeChecked();
+  const ref = screen.getByRole("checkbox", {
+    name: /reference the source session/i,
+  });
+  expect(ref).toBeDisabled();
+  expect(screen.getByText(/not available while archiving/i)).toBeVisible();
+});
+
+test("a handoff with archive checked archives the source, at commit not launch", async () => {
+  vi.mocked(api.commitHandoff).mockResolvedValue({
+    id: "codex:new-9",
+    engine: "codex",
+    native: "new-9",
+    cwd: "/repo",
+  } as never);
+  renderModal();
+  const go = await screen.findByRole("button", { name: /^hand off$/i });
+  await waitFor(() => expect(go).toBeEnabled());
+  await userEvent.click(go);
+  expect(api.archive).toHaveBeenCalledWith(
+    "claude:11111111-1111-1111-1111-111111111111",
+  );
+  // The commit only mints/binds the target; its launch happens after navigation, so the
+  // archive firing here pins the commit-not-launch decision.
+  expect(vi.mocked(api.archive).mock.invocationCallOrder[0]).toBeLessThan(
+    mockNavigate.mock.invocationCallOrder[0],
+  );
+  expect(mockNavigate).toHaveBeenCalledWith("/s/codex/new-9", {
+    state: { fresh: { cwd: "/repo", bypass: true } },
+  });
+});
+
+test("unchecking archive leaves the source session alone", async () => {
+  vi.mocked(api.commitHandoff).mockResolvedValue({
+    id: "codex:new-9",
+    engine: "codex",
+    native: "new-9",
+    cwd: "/repo",
+  } as never);
+  renderModal();
+  await screen.findByLabelText(/seed preview/i);
+  await userEvent.click(archiveBox()); // off
+  expect(archiveBox()).not.toBeChecked();
+  const go = await screen.findByRole("button", { name: /^hand off$/i });
+  await waitFor(() => expect(go).toBeEnabled());
+  await userEvent.click(go);
+  expect(api.archive).not.toHaveBeenCalled();
+  expect(mockNavigate).toHaveBeenCalledWith("/s/codex/new-9", {
+    state: { fresh: { cwd: "/repo", bypass: true } },
+  });
+});
+
+test("a refused archive (mission-owned / background agent) does not block the handoff", async () => {
+  // A mission reservation (#846), a live background Claude agent (#631) or an unresolvable
+  // runtime key (#994) refuses the archive (409/503). The handoff already succeeded, so the
+  // operator still navigates; the source is archived from its row menu instead.
+  vi.mocked(api.archive).mockRejectedValue(
+    new ApiError(409, "session is a running background agent — not archivable"),
+  );
+  vi.mocked(api.commitHandoff).mockResolvedValue({
+    id: "codex:new-9",
+    engine: "codex",
+    native: "new-9",
+    cwd: "/repo",
+  } as never);
+  renderModal();
+  const go = await screen.findByRole("button", { name: /^hand off$/i });
+  await waitFor(() => expect(go).toBeEnabled());
+  await userEvent.click(go);
+  await waitFor(() =>
+    expect(mockNavigate).toHaveBeenCalledWith("/s/codex/new-9", {
+      state: { fresh: { cwd: "/repo", bypass: true } },
+    }),
+  );
+});
+
+test("checking archive with a dirty reference asks first, and Keep editing leaves it off", async () => {
+  renderModal();
+  await screen.findByLabelText(/seed preview/i);
+  await uncheckArchive(); // reference now available
+  await userEvent.click(
+    screen.getByRole("checkbox", { name: /reference the source session/i }),
+  );
+  // The reference re-prepare swaps the textarea out; edit the NEW one.
+  const preview = await screen.findByLabelText(/seed preview/i);
+  await userEvent.clear(preview);
+  await userEvent.type(preview, "keep me");
+  // Turning archive back on clears the reference (its seed changes), so the dirty-edit
+  // guard must fire — same atomic switch as a target/mode change.
+  await userEvent.click(archiveBox());
+  expect(
+    await screen.findByRole("alertdialog", { name: /discard your edits/i }),
+  ).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: /keep editing/i }));
+  expect(archiveBox()).not.toBeChecked(); // the switch never happened
+  expect(
+    screen.getByRole("checkbox", { name: /reference the source session/i }),
+  ).toBeChecked();
+  expect(screen.getByLabelText(/seed preview/i)).toHaveValue("keep me");
+});
+
+test("Discard & rebuild turns archive on and clears the source reference", async () => {
+  renderModal();
+  await screen.findByLabelText(/seed preview/i);
+  await uncheckArchive();
+  await userEvent.click(
+    screen.getByRole("checkbox", { name: /reference the source session/i }),
+  );
+  const preview = await screen.findByLabelText(/seed preview/i);
+  await userEvent.clear(preview);
+  await userEvent.type(preview, "rebuild me");
+  await userEvent.click(archiveBox());
+  await userEvent.click(
+    await screen.findByRole("button", { name: /discard & rebuild/i }),
+  );
+  await waitFor(() => expect(archiveBox()).toBeChecked());
+  expect(
+    screen.getByRole("checkbox", { name: /reference the source session/i }),
+  ).not.toBeChecked();
+  await waitFor(() =>
+    expect(api.prepareHandoff).toHaveBeenLastCalledWith(
+      "claude:11111111-1111-1111-1111-111111111111",
+      "codex",
+      "quick",
+      false,
+    ),
+  );
 });
 
 // ---- the stored default agent (#1128) ---------------------------------------------------------------

@@ -271,6 +271,11 @@ test("the source-reference toggle re-prepares and adds the transcript locator (#
   const dialog = page.getByRole("dialog", { name: /hand off/i });
   const preview = dialog.getByLabel(/seed preview/i);
 
+  // Archive is on by default (#1274) and makes the reference unavailable — turn it off first.
+  await dialog
+    .getByRole("checkbox", { name: /archive current session after handoff/i })
+    .uncheck();
+
   // Opt-in: off by default, so no locator and no extra disclosure.
   const opt = dialog.getByRole("checkbox", {
     name: /reference the source session/i,
@@ -296,4 +301,58 @@ test("the source-reference toggle re-prepares and adds the transcript locator (#
   await expect(preview).not.toHaveValue(
     new RegExp(LOCATOR.replace(/[/.-]/g, "\\$&")),
   );
+});
+
+test("archive after handoff is on by default and archives the source (#1274)", async ({
+  page,
+}) => {
+  // The archive is best-effort and fired off the navigation path; record it so the
+  // assertion proves it reached the EXISTING per-session archive route.
+  const archived: string[] = [];
+  await page.route(/\/api\/sessions\/.+\/archive$/, async (route) => {
+    archived.push(route.request().url());
+    await route.fulfill({ json: { id: `claude:${UUID}`, archived: true } });
+  });
+
+  await mockRoster(page, { only: ["claude", "codex", "gemini", "shell"] }); // the manifest-generated roster (#853 P4)
+  await page.goto(`/s/${ENGINE}/${UUID}`);
+  await clickHeadAction(page, /hand off session/i);
+  const dialog = page.getByRole("dialog", { name: /hand off/i });
+
+  const archive = dialog.getByRole("checkbox", {
+    name: /archive current session after handoff/i,
+  });
+  await expect(archive).toBeChecked(); // on by default
+  // The source reference is unavailable while archiving (the transcript may move).
+  await expect(
+    dialog.getByRole("checkbox", { name: /reference the source session/i }),
+  ).toBeDisabled();
+  await expect(dialog.getByText(/not available while archiving/i)).toBeVisible();
+
+  await dialog.getByRole("button", { name: /^hand off$/i }).click();
+  await page.waitForURL(`**/s/codex/${TARGET_NATIVE}`);
+  expect(
+    archived.some((u) => decodeURIComponent(u).includes(UUID)),
+  ).toBe(true);
+});
+
+test("unchecking archive leaves the source session alone (#1274)", async ({
+  page,
+}) => {
+  const archived: string[] = [];
+  await page.route(/\/api\/sessions\/.+\/archive$/, async (route) => {
+    archived.push(route.request().url());
+    await route.fulfill({ json: { id: `claude:${UUID}`, archived: true } });
+  });
+
+  await mockRoster(page, { only: ["claude", "codex", "gemini", "shell"] });
+  await page.goto(`/s/${ENGINE}/${UUID}`);
+  await clickHeadAction(page, /hand off session/i);
+  const dialog = page.getByRole("dialog", { name: /hand off/i });
+  await dialog
+    .getByRole("checkbox", { name: /archive current session after handoff/i })
+    .uncheck();
+  await dialog.getByRole("button", { name: /^hand off$/i }).click();
+  await page.waitForURL(`**/s/codex/${TARGET_NATIVE}`);
+  expect(archived).toHaveLength(0);
 });

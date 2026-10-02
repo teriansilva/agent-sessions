@@ -372,6 +372,14 @@
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 9%, var(--bg-2));
 }
+/* A row whose control is unavailable (#1274): the source-reference option cannot be
+ * used while archiving (the archived transcript may move). Dim the whole row — the input
+ * already carries `disabled` for semantics — so it reads as unavailable, not merely
+ * unchecked. */
+.optRowOff {
+  opacity: 0.5;
+  cursor: default;
+}
 .optBox {
   width: 17px;
   height: 17px;
