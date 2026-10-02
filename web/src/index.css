@@ -1,0 +1,30 @@
+/* App-wide base rules. The design TOKENS moved to tokens.css (#829) so the docs site can
+ * import the same palette the app ships; this file keeps everything that is not a token.
+ * The @import must stay first — CSS requires it before any other rule. */
+@import "./tokens.css";
+
+* {
+  box-sizing: border-box;
+}
+
+/* Legacy CTA layout helper; all enabled buttons share the HUD glitch in
+ * components/hud/buttonGlitch.css (#946). Disabled/reduced-motion controls stay quiet. */
+.shine {
+  position: relative;
+  overflow: hidden;
+}
+/* The old gold reflection SWEEP (a gradient ::after) is gone (#211) — the HUD has no
+   gradients. The helper keeps its positioning/overflow for existing CTA layouts. */
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+}
+/* 100dvh so the mobile URL bar / bottom nav don't crop the app (the classic 100vh bug). */
+body {
+  height: 100dvh;
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+}

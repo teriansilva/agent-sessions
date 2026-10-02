@@ -1,0 +1,50 @@
+/* Slideshow position controls (#971), shared by the setup tour and What's new. Dots are the one
+ * round thing here, as design.md allows for dots. */
+
+.dots {
+  display: flex;
+  align-items: center;
+}
+
+.dot {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.dot i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--line-strong);
+}
+.dot[aria-current="step"] i {
+  width: 18px;
+  border-radius: 0;
+  background: var(--accent);
+}
+.dot:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.counter {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+@media (max-width: 800px) {
+  .dots {
+    display: none;
+  }
+}

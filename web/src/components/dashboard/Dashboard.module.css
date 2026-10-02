@@ -1,0 +1,403 @@
+/* The BattleLab dashboard (#1123): the tiles around Ask's sections. HUD vocabulary (docs/design.md):
+ * flat square panels, no radius except LEDs, no gradients, mono uppercase callsigns, status colour
+ * ONLY for state (LEDs, bands, quota bars), `--accent` only for brand / primary. Tokens only. Every
+ * control is ≥ 44px tall. The section chrome itself is Ask's (`AskHome.module.css`). */
+
+.layout {
+  width: 100%;
+}
+
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.kpi {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-height: 92px;
+  padding: 10px 14px 12px;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  color: var(--text-1);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.kpi:hover {
+  border-color: var(--line-strong);
+}
+.kpi:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.kpiLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.kpiValue {
+  font-family: var(--font-mono);
+  font-size: 1.55rem;
+  font-weight: 700;
+  color: var(--text-1);
+}
+.kpiValue small {
+  font-size: 0.72rem;
+  font-weight: 400;
+  color: var(--text-3);
+  letter-spacing: 0.03em;
+}
+.kpiSub {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--text-3);
+}
+.per {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: var(--text-2);
+}
+.per b {
+  color: var(--text-1);
+}
+
+.cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+/* Grid children default to `min-width: auto`, which lets one long unbroken title widen the column
+ * past the viewport (Hermes 5240, finding 4). */
+.cols > * {
+  min-width: 0;
+}
+
+/* ---- rows ---- */
+.lrow {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-height: 44px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line);
+  color: inherit;
+  text-decoration: none;
+}
+.lrow:hover {
+  background: var(--glass-strong);
+}
+.lbody {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.tt {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mm {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rr {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--status-unknown);
+}
+.up {
+  background: var(--status-up);
+}
+.deg {
+  background: var(--status-degraded);
+}
+.down {
+  background: var(--status-down);
+}
+.idle {
+  background: var(--text-3);
+}
+.foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 44px;
+  padding: 0 14px;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  color: var(--text-3);
+}
+.go {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  border: 0;
+  background: transparent;
+  color: var(--brand, var(--accent));
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  text-decoration: none;
+  cursor: pointer;
+}
+.scrollList {
+  max-height: 320px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.failRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.warnText {
+  color: var(--warn-text, var(--status-degraded));
+}
+
+/* ---- quota ---- */
+.q {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.q:last-child {
+  border-bottom: 0;
+}
+.qTop {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+.qTop span:last-child {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0.02em;
+  color: var(--text-2);
+}
+.bar {
+  position: relative;
+  height: 8px;
+  margin: 7px 0 4px;
+  border: 1px solid var(--line);
+  background: var(--glass-strong);
+}
+.bar i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--status-up);
+}
+.bar i.deg {
+  background: var(--status-degraded);
+}
+.bar i.down {
+  background: var(--status-down);
+}
+/* Not measured: a dashed, empty track — visibly not a 0 % bar. */
+.barNone {
+  background: transparent;
+  border-style: dashed;
+  border-color: var(--line-strong);
+}
+.qSub {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  color: var(--text-3);
+}
+/* Forecast (the pace since recent readings). Muted when it lasts; status colour only when it does
+   not — degraded for "runs out before the reset", down once it is out. */
+.qFc {
+  margin-top: 3px;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  color: var(--text-2);
+}
+.fcWarn {
+  color: var(--status-degraded);
+}
+.fcOver {
+  color: var(--status-down);
+}
+
+/* ---- most recent sessions ---- */
+/* FIXED layout: column widths come from the header, not from the longest title, so arbitrary
+ * agent-authored text wraps inside its cell instead of pushing the table off the screen. */
+.rtable {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.rtable th:nth-child(2),
+.rtable td:nth-child(2) {
+  width: 8.5rem;
+}
+.rtable th:nth-child(4),
+.rtable td:nth-child(4) {
+  width: 7.5rem;
+}
+.rtable th {
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.rtable td {
+  height: 44px;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.82rem;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.tdTitle a {
+  color: var(--text-1);
+  font-weight: 600;
+  text-decoration: none;
+}
+.tdMeta {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  color: var(--text-3);
+}
+.narrowMeta {
+  display: none;
+}
+.band {
+  padding: 1px 6px;
+  border: 1px solid var(--line-strong);
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.band_needs_you {
+  border-color: var(--status-degraded);
+  color: var(--warn-text, var(--status-degraded));
+}
+.band_in_flight {
+  border-color: var(--status-up);
+  color: var(--ok-text, var(--status-up));
+}
+
+@media (max-width: 800px) {
+  .kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .kpi {
+    min-height: 84px;
+    padding: 9px 10px;
+  }
+  .kpiValue {
+    font-size: 1.3rem;
+  }
+  .cols {
+    grid-template-columns: 1fr;
+  }
+  .wideOnly {
+    display: none;
+  }
+  .rtable th:nth-child(2),
+  .rtable td:nth-child(2) {
+    width: 6.5rem;
+  }
+  .rtable th:nth-child(4),
+  .rtable td:nth-child(4) {
+    width: 5.5rem;
+  }
+  /* Agent · project is stacked under the title on a phone, never hidden (review 75977). */
+  .narrowMeta {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: 0.64rem;
+    color: var(--text-3);
+  }
+}
+
+/* #1223: the refresh bar — retained data is painted, a re-read runs behind it. Brand accent, not a
+ * status colour: it says "working", not "healthy". Only `transform` moves (design §5). */
+.refreshBar {
+  flex: none;
+  position: relative;
+  height: 2px;
+  overflow: hidden;
+}
+.refreshBarOn {
+  background: var(--line);
+}
+.refreshBlock {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 28%;
+  background: var(--accent);
+  animation: dashRefreshScan 1.3s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+@keyframes dashRefreshScan {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(360%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .refreshBlock {
+    animation: none;
+    width: 100%;
+    opacity: 0.5;
+  }
+}
+
+/* The title row: the heading and the New project entry (#1187). Wraps under the heading on a
+ * narrow screen rather than squeezing it. */
+.headRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+.newProject {
+  composes: ghost from "../ui/actionButton.module.css";
+  text-decoration: none;
+}

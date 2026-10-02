@@ -1,0 +1,2695 @@
+/* MISSION CONTROL — the console shell (#878, Phase 2b of #840).
+ *
+ * Tactical-HUD vocabulary (#211): 1px borders, NO radii, no gradients, mono tags.
+ *
+ * Colour discipline, which is load-bearing rather than stylistic (docs/design.md):
+ *   - SEMANTIC tokens carry state. `--status-up` running, `--status-degraded` needs-you,
+ *     a hollow ring for done, `--status-unknown` for a state we could not establish.
+ *   - The BRAND `--accent` marks affordances only — ADOPT, JUMP IN, SEND, selection. It never
+ *     means a state. A green LED as a bullet is exactly the confusion this separation removes.
+ *
+ * The shell owns the rail breakpoint (800px). At 1400px the workspace shows conversation
+ * beside collapsible details; narrower workspaces select Conversation or Details.
+ */
+
+/* The shell owns the rail. The console holds one centre column; `.split` lays out
+ * conversation and details inside that column only while a mission is selected. */
+.console {
+  display: grid;
+  grid-template-columns: 1fr;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* --- rail ---------------------------------------------------------------------- */
+
+.rail {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--line);
+  background: var(--glass);
+  padding: 10px 0;
+}
+
+/* Below 1100 the rail is not laid out at all — it is portalled into a drawer. */
+.railInline {
+  display: none;
+}
+@media (min-width: 1100px) {
+  .railInline {
+    display: flex;
+  }
+}
+
+/* The state dot. Semantic tokens only. */
+.dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  background: var(--status-unknown);
+}
+.dotRunning {
+  background: var(--status-up);
+}
+/* STARTING is not running (#967): a neutral solid dot, as board A2 draws it. Green stays the claim that
+ * work is underway (§3). */
+.dotStarting {
+  background: var(--text-2);
+}
+.dotNeedsYou {
+  background: var(--status-degraded);
+}
+.dotDone {
+  /* A hollow ring, not a filled dot — done is not a status light. */
+  background: transparent;
+  border: 1.5px solid var(--text-3);
+}
+.dotFailed {
+  background: var(--status-down);
+}
+
+.adopt {
+  flex: 0 0 auto;
+  min-height: 44px;
+  min-width: 76px;
+  padding: 4px 10px;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+}
+.adopt:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.adopt[disabled] {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* --- centre column ------------------------------------------------------------- */
+
+.centre {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* ONE ROW WHERE THERE IS ROOM, TWO WHERE THERE IS NOT (#942).
+ *
+ * The header carries the mission's title AND its state + primary + `⋯`. At 412px those do not fit
+ * beside each other: the phone geometry sweep caught ABANDON at `x=305..424` on a 412px viewport —
+ * the `⋯` trigger itself had been pushed past the right edge, taking the menu anchored to it with
+ * it. `flex-wrap` is the fix, and it is honest about the constraint: "one header row" was always a
+ * claim about the desktop, where the alternative was a title above a SECOND BAR of four buttons.
+ * A title that wraps to its own line above its own controls is not that. */
+.topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  min-height: 52px;
+}
+
+.drawerBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.drawerBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+@media (min-width: 1100px) {
+  .drawerBtn {
+    display: none;
+  }
+}
+
+.missionTitle {
+  overflow-wrap: anywhere;
+  font-size: 0.95rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+/* --- mobile stops: THREAD · OBJECTIVES · TIMELINE ------------------------------- */
+
+.stops {
+  display: flex;
+  border-bottom: 1px solid var(--line);
+}
+.stop {
+  flex: 1 1 0;
+  min-height: 44px;
+  padding: 10px 6px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.12em;
+  cursor: pointer;
+}
+.stop:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.stopOn {
+  color: var(--text-1);
+  background: var(--row-hover);
+  border-bottom-color: var(--accent);
+}
+
+/* The viewport below the mission header owns the conversation and details (#944).
+ * Narrow layouts show one view at a time. At 1400px the details become a second
+ * column; neither layout lets the surrounding route acquire a scrollbar. */
+.split {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* A SHORT THREAD SITS AT THE BOTTOM (#942).
+ *
+ * Pinning the composer to the bottom edge fixed half of the dead band and moved the other half:
+ * the events stayed top-aligned, so a four-turn mission on a 950px screen put ~350px of void
+ * between the last answer and the box you type into. Chats do not do that — messages grow UP from
+ * the composer, which is why a quiet conversation reads as quiet rather than as broken.
+ *
+ * `margin-top: auto` on the inner box is the whole mechanism, and it is chosen over
+ * `justify-content: flex-end` on the scroller for one non-obvious reason: when the content is
+ * TALLER than the box, flex-end pushes the overflow past `scrollTop: 0` and makes the earliest
+ * events unreachable in some engines. An auto margin absorbs only POSITIVE free space, so a full
+ * pane behaves exactly as it did before.
+ *
+ * ONLY THE THREAD. A list starts at the top — bottom-aligning OBJECTIVES or the TIMELINE would
+ * push the first row down the screen for no reason, which is the same defect wearing the opposite
+ * sign. The class is applied per stop rather than to `.paneInner` itself. */
+.paneAtBottom {
+  margin-top: auto;
+}
+
+.pane {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  /* `overflow-y: auto` PROMOTES overflow-x to auto — that is #494's root cause, and it is why
+   * every text class below sets `overflow-wrap: anywhere`. A single unbroken token (an AI
+   * summary, an intervention reason, a path) is otherwise wider than the box and the operator
+   * gets a sideways scroll on a phone. Wrapping is the fix; hiding the overflow would only make
+   * the text unreachable instead of unreadable. */
+  overflow-y: auto;
+  min-width: 0;
+  padding: 12px 14px;
+}
+
+/* --- objectives ---------------------------------------------------------------- */
+
+/* The objective row (#942, re-laid out by #967 P3) is defined in the P3 block at the end of this
+ * sheet: handle | dot | title with one meta line | ⋯. */
+/* A probe that could not run reports its LAST OBSERVED state, visibly stale, naming the reason.
+ * Nothing is ever marked met or failed on data the server could not fetch.
+ *
+ * `--git-mod-fg`, not the raw `--status-degraded` this shipped with (#878): it is the SAME amber,
+ * already darkened toward `--text-1` for the light ground, where the raw hue measures ~2.15:1 as
+ * small text. Reusing the existing text-safe amber rather than minting a third one keeps the
+ * palette one palette; the meaning (attention, not failure) is unchanged. */
+.objStale {
+  overflow-wrap: anywhere;
+  display: block;
+  font-size: 0.68rem;
+  color: var(--git-mod-fg);
+}
+.objReason {
+  overflow-wrap: anywhere;
+  display: block;
+  font-size: 0.68rem;
+  color: var(--text-3);
+}
+
+/* --- context ------------------------------------------------------------------- */
+
+.cwd {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.gitLine {
+  overflow-wrap: anywhere;
+  font-size: 0.74rem;
+  color: var(--text-2);
+  margin-top: 4px;
+}
+.roster {
+  font-size: 0.72rem;
+  color: var(--text-3);
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+.jumpIn {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  margin-top: 8px;
+  padding: 4px 12px;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.1em;
+  text-decoration: none;
+  cursor: pointer;
+}
+.jumpIn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* --- timeline ------------------------------------------------------------------ */
+
+.tlRow {
+  display: flex;
+  gap: 10px;
+  padding: 5px 0;
+  font-size: 0.75rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.tlAt {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--text-3);
+}
+.tlKind {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+}
+.tlText {
+  min-width: 0;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.more {
+  min-height: 44px;
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.75rem;
+}
+.more:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.more[disabled] {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* --- thread -------------------------------------------------------------------- */
+
+.event {
+  min-width: 0;
+  border: 1px solid var(--line);
+  background: var(--glass);
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+.eventHead {
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin-bottom: 4px;
+}
+.eventText {
+  font-size: 0.82rem;
+  color: var(--text-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* #1224: a find turn's provisional Stage-1 answer, while Stage 2 confirms it. Muted: it is not the
+ * recorded answer, which lands in the timeline above and replaces it. */
+.turnProvisional {
+  margin-top: 6px;
+}
+.turnProvisional .eventText {
+  color: var(--text-2);
+}
+
+/* --- composer ------------------------------------------------------------------ */
+
+.composer {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+}
+.composerInput {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 44px;
+  padding: 10px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-3);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 0.82rem;
+  resize: vertical;
+}
+.composerInput:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+.send {
+  flex: 0 0 auto;
+  min-height: 44px;
+  min-width: 76px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+}
+.send:focus-visible {
+  outline: 2px solid var(--text-1);
+  outline-offset: 2px;
+}
+.send[disabled] {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* --- honest empty / degraded states -------------------------------------------- */
+
+.empty {
+  overflow-wrap: anywhere;
+  padding: 18px 4px;
+  color: var(--text-2);
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+.emptyLead {
+  overflow-wrap: anywhere;
+  color: var(--text-1);
+  font-size: 0.95rem;
+  margin-bottom: 6px;
+}
+
+/* A degraded surface names its cause. `--status-degraded` (amber) means "needs a human /
+ * not current"; `--status-down` (red) stays reserved for errors and failure. */
+.notice {
+  overflow-wrap: anywhere;
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--status-degraded);
+  background: var(--glass);
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  font-size: 0.78rem;
+  color: var(--text-2);
+}
+.noticeLead {
+  overflow-wrap: anywhere;
+  color: var(--text-1);
+  margin-bottom: 3px;
+}
+
+/* The verb tag on an untracked row's last-action line. Mono, so it reads as a token rather than
+ * as prose — the same treatment the card gave it. */
+.verb {
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+}
+
+/* Untracked rows are a real list — `<ul>`/`<li>` rather than a pile of divs, so the count and the
+ * position are available to a screen reader as they were on the grid. */
+.railList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* The session block in the UNTRACKED view. `position: relative` hosts the HUD corner brackets,
+ * which are the repo's card treatment (docs/design.md) — the grid's cards carried them and this
+ * is what replaced those cards. */
+.sessionBlock {
+  position: relative;
+  min-width: 0;
+}
+.openSession {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  /* Pushed to the row's right edge — and still right-aligned on the line it wraps to. */
+  margin-left: auto;
+  min-height: 44px;
+  padding: 2px 10px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 0.74rem;
+  text-decoration: none;
+}
+.openSession:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.sessionList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* ADOPT, on the session block in the UNTRACKED view. */
+.adoptInline {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  min-width: 76px;
+  justify-content: center;
+  margin-top: 6px;
+  padding: 2px 10px;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+}
+.adoptInline:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.adoptInline[disabled] {
+  opacity: 0.55;
+  cursor: default;
+  border-color: var(--line-strong);
+  color: var(--text-3);
+}
+
+/* A matched session inside an Ask answer. Indented so it reads as evidence for the answer rather
+ * than as a peer of it.
+ *
+ * ONE ROW: the session and why it matched on the left, the way in on the right (#1058). The three
+ * were block siblings, so "Jump in" landed under the reason as a bordered box of its own — three
+ * stacked pieces where the operator reads one fact ("this session, because of that, open it").
+ * Both surfaces that draw a match row use this sheet, so the mission thread gets the same shape.
+ *
+ * It WRAPS rather than crushing the title: below roughly 230px of usable width the link drops to
+ * its own line and stays right-aligned, which is why `.openSession` keeps `margin-left: auto`
+ * instead of relying on the body being the only flexible child. */
+.matchRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  min-width: 0;
+  margin: 8px 0 0 10px;
+  padding-left: 10px;
+  border-left: 1px solid var(--line-strong);
+}
+/* The session and its reason, stacked, taking the room the link does not. */
+.matchBody {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+/* ---- supervisor follow-through board (#885) -------------------------------
+ * Colour is load-bearing here, so it follows the semantics declared at the top of this file
+ * rather than inventing a palette: `--status-up` the supervisor may act, `--status-degraded`
+ * amber for "needs a human" (a spent budget IS that), `--status-unknown` for a state we chose
+ * not to act on or could not establish. A met objective is a hollow ring, never a green dot —
+ * done is an absence of work, not a running light. */
+/* THE SUPERVISOR'S READING, ON THE OBJECTIVE ROW (#942).
+ *
+ * This replaces `.supRow`'s three-column grid, and the change of layout model is the point: the
+ * grid was sized for a list of its own, so the same badge/budget/prose set is now a WRAPPING flex
+ * line under the objective's title. `why_not` is server prose of unbounded length landing in a
+ * 412px column — it has to be allowed to take a line of its own rather than being squeezed into a
+ * fixed track, which is what `flex-wrap` plus `.supWhy`'s own `flex-basis` below do. */
+.supCell {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.6rem;
+  margin-top: 0.3rem;
+  min-width: 0;
+}
+
+.supBadge {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  padding: 0.15rem 0.35rem;
+  border: 1px solid currentColor;
+  text-align: center;
+  align-self: center;
+}
+
+/* TEXT TOKENS, not the raw hues. These badges are small mono WORDS, and the raw status hues are
+   signal colours sized for LEDs and borders — `--status-degraded` measures ≈2.15:1 as small text
+   on the light ground, well under AA. `contrast.test.ts` asserts the rule rather than the
+   instance, which is how this pairing was caught the moment the two branches met. */
+.supReady {
+  color: var(--ok-text);
+}
+.supSpent {
+  color: var(--warn-text);
+}
+/* NEEDS YOU — the rail's own `needs you` hue, in its TEXT-SAFE form. `.dotNeedsYou` paints
+   `--status-degraded` as a background on a 6px dot, which has no contrast requirement; the same
+   raw hue as small text fails AA on the light ground, and `contrast.test.ts` refuses it. So this
+   is `--warn-text`, which IS that hue mixed toward `--text-1` — one vocabulary across the two
+   surfaces reporting one fact, without borrowing a signal colour for prose. The label carries the
+   distinction from SPENT and UNKNOWN; the colour carries the family. */
+.supAsked {
+  color: var(--warn-text);
+}
+
+.supWaiting {
+  color: var(--git-unknown-fg);
+}
+/* An unreadable ledger is a fact about the FILE, not about the objective — amber, because it
+ * needs a human, and never the same paint as a budget the supervisor genuinely spent. */
+.supUnknown {
+  color: var(--warn-text);
+}
+.supHeld {
+  color: var(--git-unknown-fg);
+}
+.supMet {
+  color: var(--text-3);
+  border-style: dashed;
+}
+
+.supGate {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  letter-spacing: 0.08em;
+  /* Text-safe amber, same reason as `.objStale` above — and this one is 0.6rem, the smallest
+     type on the surface, where the raw hue is least readable. */
+  color: var(--git-mod-fg);
+  margin-left: 0.5rem;
+}
+
+.supBudget {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.supEpisode {
+  color: var(--text-3);
+}
+
+/* The refusal sentence spans the full row under the title — it is prose, and cramming it into the
+ * title column makes every row a different height. */
+/* THE SERVER'S REFUSAL SENTENCE — prose of unbounded length, in a 412px column.
+ * `flex-basis: 100%` puts it on its own line inside `.supCell` rather than fighting the badge and
+ * the counter for a share of one, which is what `grid-column: 2 / -1` did while it lived in a
+ * grid. `overflow-wrap` is what keeps a long path from widening the whole page (#494). */
+.supWhy {
+  flex: 1 0 100%;
+  font-size: 0.78rem;
+  color: var(--text-3);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.supProposal,
+.supGates,
+.supEmpty {
+  padding: 0.6rem 0.75rem;
+  font-size: 0.82rem;
+  color: var(--text-2);
+  border-left: 3px solid var(--status-unknown);
+  background: var(--glass);
+}
+
+.supProposal {
+  border-left-color: var(--status-up);
+}
+.supGates {
+  border-left-color: var(--status-degraded);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-3);
+}
+
+/* ---------------------------------------------------------------------------------------------
+   #889 — the operator's controls.
+
+   Every interactive element here carries `min-height: 44px` and a visible `:focus-visible` ring,
+   because the Playwright inventory measures EVERY interactive control on the mobile viewport, not
+   a list somebody remembered to update. A control added without them fails that gate.
+
+   Colour follows the same rule as the rest of the console: `--accent` is brand and affordance
+   (the primary action), the semantic `--status-*` tokens carry state. Nothing here means a state,
+   so nothing here uses a status token. No radius, no gradients.
+   --------------------------------------------------------------------------------------------- */
+
+/* The mode control (#889): a segmented pair that rides first in the composer box's footer (#967).
+   The pressed mode carries the edge; the other is text on the box's ground. */
+.composerModes {
+  display: flex;
+  flex: none;
+  gap: 0;
+}
+.modeBtn {
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.12em;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.modeBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.modeOn {
+  color: var(--text-1);
+  border-color: var(--accent);
+  background: var(--row-hover);
+}
+
+/* The project picker, in the footer: a ghost-looking select with the project's name in mono. It is
+   the one control a mission cannot start without, so it holds the 44px floor like every other. */
+.newMissionProject {
+  flex: 0 1 180px;
+  min-width: 96px;
+  min-height: 44px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-1);
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  /* A squeezed state clips — read as clipped, not chopped mid-glyph (#1133). */
+  text-overflow: ellipsis;
+}
+.newMissionProject:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+/* The checklist picker (#1061) takes the project picker's look but sizes to its longest option: a
+   playbook label is the operator's own text, and "Checklist: Ship a P…" clipped at 180px. */
+.newMissionPlaybook {
+  /* It GIVES WAY like the project picker when the row is tight (#1133): with an AI endpoint the
+     "No checklist — AI writes the objectives" option is wider than any playbook name, and an
+     unshrinkable picker overflowed its squeezed lead onto the Template button — the row needs
+     ~734px against a landing box capped at 720px, and the project picker was already pinned at
+     its 96px floor to absorb it. The 96px floor here is the project picker's; a wide box still
+     sizes the picker to its longest option (capped at 300px), and the narrow-box wrap branch
+     (below) still gives it a row of its own. */
+  flex: 0 1 auto;
+  min-width: 96px;
+  max-width: 300px;
+  text-overflow: ellipsis;
+}
+/* The line under the box saying what the chosen checklist means (#1061). */
+.playbookNote {
+  overflow-wrap: anywhere;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--text-2);
+}
+.playbookNote strong {
+  color: var(--text-1);
+  font-weight: 600;
+}
+/* "No checklist" states its cost — attention, not failure — in the TEXT-SAFE amber. */
+.playbookNoteWarn {
+  color: var(--warn-text);
+}
+
+/* --- ONE COMPOSER BOX (#967) ----------------------------------------------------------------------
+   The start screen used to be four loose pieces: the mode strip above, the project picker beside the
+   text, a hint line under it, and the buttons on a row of their own. Each mode is now one box, a 1px
+   `--line-strong` edge on `--bg-1`, holding the text, a hairline and ONE footer row:
+   [mode] [project] [Template] … [Ctrl + Enter] [Start mission]. The count and any error sit under the
+   box, never in the row. e2e/mission-control-polish.spec.ts measures it. */
+.composerBox {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-1);
+  container-type: inline-size;
+}
+/* Inside the box the text has no edge of its own: the hairline above the footer divides them. */
+.boxInput {
+  border: 0;
+  background: transparent;
+  padding: 12px 14px;
+}
+.composerFoot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border-top: 1px solid var(--line);
+}
+.footLead,
+.footTrail {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.footLead {
+  flex: 0 1 auto;
+}
+.footTrail {
+  flex: 1 0 auto;
+}
+.footSpacer {
+  flex: 1 1 0;
+}
+.footHint {
+  flex: none;
+  padding: 0 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+/* What the form needs from the operator, under the box and a little apart from it. */
+.boxNote {
+  margin-top: 8px;
+}
+/* A NARROW BOX WRAPS the new-mission footer into [mode][project] / [Template][Start mission], the
+   second control of each row taking the rest of it, and drops the shortcut hint. On a phone (≤800px)
+   by the viewport, as #967 specifies, and in a narrow desktop pane by the box's own width, which is
+   the fact that decides whether one row fits. The ASK footer is two controls and never needs it. */
+@container (max-width: 660px) {
+  .newMissionForm .composerFoot {
+    flex-wrap: wrap;
+  }
+  .newMissionForm .footLead,
+  .newMissionForm .footTrail {
+    flex: 1 1 100%;
+  }
+  .newMissionForm .newMissionProject,
+  .newMissionForm .footTrail > [type="submit"] {
+    flex: 1 1 0;
+  }
+  /* The checklist gets a row of its own: at half a phone's width both pickers clipped. */
+  .newMissionForm .footLead {
+    flex-wrap: wrap;
+  }
+  .newMissionForm .newMissionProject.newMissionPlaybook {
+    flex: 1 1 100%;
+    max-width: none;
+  }
+  .newMissionForm .footSpacer,
+  .newMissionForm .footHint {
+    display: none;
+  }
+}
+@media (max-width: 800px) {
+  .newMissionForm .composerFoot {
+    flex-wrap: wrap;
+  }
+  .newMissionForm .footLead,
+  .newMissionForm .footTrail {
+    flex: 1 1 100%;
+  }
+  .newMissionForm .newMissionProject,
+  .newMissionForm .footTrail > [type="submit"] {
+    flex: 1 1 0;
+  }
+  /* The checklist gets a row of its own: at half a phone's width both pickers clipped. */
+  .newMissionForm .footLead {
+    flex-wrap: wrap;
+  }
+  .newMissionForm .newMissionProject.newMissionPlaybook {
+    flex: 1 1 100%;
+    max-width: none;
+  }
+  .newMissionForm .footSpacer,
+  .newMissionForm .footHint {
+    display: none;
+  }
+}
+
+/* A secondary control in mono: the ⋯ menu's items and the unarchive choice. The header's own buttons
+   are the shared action buttons (ui/actionButton.module.css, #967). */
+.missionBtn {
+  flex: 0 0 auto;
+  min-height: 44px;
+  min-width: 76px;
+  padding: 8px 12px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+}
+.missionBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.missionBtn[disabled] {
+  opacity: 0.5;
+  cursor: default;
+}
+/* The destructive controls. `--danger-text`, NOT a raw status hue.
+   `--status-degraded` (#f59e0b) is a signal colour sized for LEDs and borders; as small text on
+   the light ground it measures ~1.93:1 on `--panel`, well under AA's 4.5:1 — and `tokens.css`
+   documents exactly that ("the raw status hues are unreadable as small text"). `--danger-text` is
+   the repo's existing text-safe destructive token, theme-aware and measured at 5.5:1 on `--panel`.
+   It also reads better: a control that terminates agents is DANGER, not "degraded".
+   The BORDER may stay a signal colour — a 1px edge is not text — but it uses the same token so the
+   control reads as one thing. */
+.missionBtnDanger {
+  border-color: var(--danger-text);
+  color: var(--danger-text);
+}
+
+/* The mission header's actions (#942, #967): ONE row of a state chip, at most one primary and ⋯,
+ * drawn by one component. It renders inside the console's header row, so it carries no padding and
+ * no rule of its own.
+ *
+ * IT NO LONGER WRAPS, because nothing that wraps lives in it. It once hosted the start reason and the
+ * UNARCHIVE confirmation, a full sentence plus two buttons, and `nowrap` ran that straight off the
+ * right edge (the phone sweep caught RECORD ONLY at `x=724..951` on 412px). The reason moved to the
+ * plan card and the choice opens in `.headerConfirm` below the row, which this box anchors. `.topbar`
+ * decides whether the whole cluster fits beside the title. */
+.headerActions {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+/* The state chip: the rail's dot, at the session LED's 6px, and its label in an `.engineTag`-style
+ * 1px box. */
+.stateChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--line-strong);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+/* A failed mission's label is the text-safe `--danger-text`, its edge the status hue — never the
+ * accent (§3). */
+.stateChipFailed {
+  color: var(--danger-text);
+  border-color: var(--status-down);
+}
+.chipDot {
+  width: 6px;
+  height: 6px;
+  margin: 0;
+  border-radius: 50%;
+}
+/* The unarchive choice. A sentence and two buttons do not belong in a header row, so they open under
+ * it, against the right edge, and never wider than the viewport. */
+.headerConfirm {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  width: min(340px, calc(100vw - 16px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-2);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+.headerConfirmActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.missionConfirm {
+  flex: 1 1 100%;
+  color: var(--text-2);
+  font-size: 0.76rem;
+  line-height: 1.5;
+}
+
+/* The objective row's old button column (`.objEdit`) is gone: its actions are in the row's ⋯ menu
+ * (#967 P3, see the P3 block at the end of this sheet). `.objEditBtn` stays for the roster and
+ * spawn controls that still use it. */
+.objEditBtn {
+  min-height: 44px;
+  padding: 6px 10px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+}
+.objEditBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.objEditBtn[disabled] {
+  opacity: 0.5;
+  cursor: default;
+}
+.objAddRow {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  margin-top: 10px;
+}
+.objAddInput {
+  flex: 1 1 160px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 10px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-3);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 0.82rem;
+}
+.objAddInput:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* The session roster, now a list because each row carries a control (#889). */
+.rosterList {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+}
+.rosterRow {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 4px 0;
+}
+.rosterKey {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-2);
+}
+/* A control inside a turn's own block — retry, dismiss, check again (#890). Sized to the 44px
+   touch floor the rest of the console holds to, and inline rather than a bar, because it belongs
+   to the one turn it is about rather than to the thread. */
+/* VIEW SCREEN (#894). A `pre` because it is terminal output: proportional text turns a TUI's
+   box drawing and column alignment into noise, which is most of what the operator is looking at.
+   Scrolls in BOTH axes rather than wrapping — a wrapped 120-column screen is unreadable in a way
+   a scrolled one is not. */
+.screenBlock {
+  margin: 10px 0;
+  /* A visible seam between blocks, because on a mission holding two sessions the boundary is
+     what tells the operator that the SEND box below belongs to the heading above it and not to
+     the one before (#903 review 2, finding 2). */
+  border-left: 2px solid var(--border);
+  padding-left: 10px;
+}
+
+/* WHICH SESSION. Not decoration: these blocks are otherwise identical, and typing into the wrong
+   one types into the wrong live agent. */
+.screenTarget {
+  font-size: 0.72rem;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.screenBar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.screenNote {
+  font-size: 10.5px;
+  color: var(--text-3);
+  line-height: 1.4;
+}
+
+.screen {
+  margin: 8px 0 0;
+  padding: 10px;
+  max-height: 340px;
+  overflow: auto;
+  background: var(--term-bg);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  font: 11.5px/1.35 var(--font-mono);
+  white-space: pre;
+  tab-size: 8;
+}
+
+/* A control inside a mission block — view, hide, retry (#894) — and inside a TURN's own block —
+   retry, dismiss, check again (#890). One rule for both: they are the same control in the same
+   place, sized to the 44px touch floor the rest of the console holds to, and inline rather than a
+   bar because each belongs to the one thing it is about rather than to the thread. */
+.missionQBtn {
+  min-height: 44px;
+  margin: 8px 8px 0 0;
+  padding: 0 12px;
+  background: var(--bg-2);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  /* `inherit`, which is what these controls have always rendered (#948). The old
+     `font: 11px var(--font-sans, inherit)` named a token that does not exist, and its fallback
+     made the shorthand invalid, so the whole declaration fell back to inheriting. Same for the
+     relay and question inputs and the option buttons below. */
+  font: inherit;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+
+.missionQBtn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.missionQBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.missionQBtn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* The relay line, beside the screen it answers (#894). */
+.relayRow {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.relayInput {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  /* A textarea since #983 P3, so a prefilled AI draft keeps its line breaks. Sized to read as the
+     one-line field it was until it holds more. */
+  padding: 11px;
+  line-height: 1.4;
+  resize: vertical;
+  background: var(--bg-2);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  font: inherit;
+}
+
+/* Editing an AI-drafted direction (#983 P3), STACKED: the note, a full-width field that grows with
+   its text, then Cancel and Send on one row. The Context column is ~330px, and a field sharing its
+   row with the button wrapped a draft at about twenty characters. */
+.relayDraftForm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+.relayDraft {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-2);
+}
+/* `flex: none`, because `.relayInput`'s `flex: 1` would stretch it down a column. Its height is set
+   from its content by MissionScreen, up to this cap, and then it scrolls. */
+.relayDraftInput {
+  flex: none;
+  width: 100%;
+  max-height: 280px;
+  overflow-y: auto;
+  resize: none;
+}
+.relayDraftActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+@media (max-width: 800px) {
+  .relayDraftActions > * {
+    flex: 1 1 0;
+  }
+}
+
+.relayInput:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* What happened to a relayed message, beside the message (#894). Status colour is load-bearing
+ * here rather than decorative: amber is "needs a human / not current" and red is failure, which
+ * is exactly the distinction between "we cannot tell whether this arrived" and "it did not".
+ *
+ * Through the *-TEXT tokens, not the raw status hues (#889's contrast gate). The raw signal
+ * colours fail AA as small text on the light ground, and this is small monospace text — the
+ * token is the same hue mixed toward `--text-1` so the meaning survives and the reading does
+ * too. The gate is a test, so this is not a matter of remembering. */
+.tlRelay {
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--text-2);
+}
+.tlRelay[data-relay-kind="warn"] {
+  color: var(--warn-text);
+}
+.tlRelay[data-relay-kind="bad"] {
+  color: var(--danger-text);
+}
+
+/* --- the dispatch proposal (#893 Phase 4) --------------------------------------- */
+
+/* A CARD, not a form in the flow: what it holds is a decision the operator has to read before
+ * they take it. Bordered on the accent so it reads as the thing asking for a choice, in a thread
+ * whose other rows are history. */
+.planCard {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--accent);
+  background: var(--glass);
+  padding: 10px;
+  margin-bottom: 10px;
+}
+.planLead {
+  overflow-wrap: anywhere;
+  color: var(--text-1);
+  font-size: 0.9rem;
+}
+.planLabel {
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-top: 4px;
+}
+/* 44px, like every other control the operator taps — the picker is not a lesser control for
+ * being a `<select>`, and it is the one a dispatch cannot happen without. */
+.planField {
+  min-height: 44px;
+  width: 100%;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-3);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 0.82rem;
+  padding: 8px;
+}
+.planField:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+.planBrief {
+  min-height: 44px;
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-3);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 0.82rem;
+  padding: 8px;
+}
+.planBrief:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+.planWhy {
+  overflow-wrap: anywhere;
+  color: var(--text-2);
+  font-size: 0.76rem;
+}
+/* The consequence, in the operator's own terms, on the tap BEFORE the one that does it. */
+.planConfirm {
+  overflow-wrap: anywhere;
+  border-left: 3px solid var(--status-degraded);
+  padding-left: 8px;
+  color: var(--text-1);
+  font-size: 0.78rem;
+  /* The warning above its Cancel (#967). It is armed from the fixed header while this card scrolls
+   * with the thread, so it is scrolled into view when it appears; the margin keeps it off the edge. */
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  scroll-margin: 12px;
+}
+/* It takes focus when armed. A pointer press shows no ring; a keyboard arrival shows the accent reticle. */
+.planConfirm:focus {
+  outline: none;
+}
+.planConfirm:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.planConfirmText {
+  margin: 0;
+}
+.planError {
+  overflow-wrap: anywhere;
+  border-left: 3px solid var(--status-down);
+  padding-left: 8px;
+  color: var(--text-1);
+  font-size: 0.78rem;
+}
+
+/* The empty-checklist recovery, on the card itself (#904 review 7, finding 3). One row, because
+   it is one field and one button — and 44px on both, because a control that only appears when
+   the operator is already blocked is the last one to be reachable by accident. */
+.planAddObjective {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+  margin: 6px 0 2px;
+}
+.planAddObjective .planField {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.planAddObjective .planBtn {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 0 14px;
+}
+
+/* What done means, on the plan card (#893 Phase 4). A list rather than prose: the operator is
+   checking a set, and a sentence would make them parse one. */
+.planObjectives {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 0.78rem;
+  color: var(--text-1);
+}
+.planObjGate {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+/* The mission's open question (#892). Framed in the attention accent because it is the one thing
+   on the page that is waiting on the operator — and above the thread, so `needs_you` points at
+   something on screen rather than at something to scroll for. A section, not a modal: the page's
+   only focus trap is the rail drawer (#878) and this does not add a second. */
+.question {
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  padding: 12px;
+}
+
+.questionHead {
+  font-size: 10.5px;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 7px;
+}
+
+.questionText {
+  font-size: 13.5px;
+  line-height: 1.45;
+  margin: 0 0 11px;
+  color: var(--text-1);
+}
+
+/* WRAPS rather than truncating: an option the operator cannot read in full is one they cannot
+   choose safely, and on a phone three concrete options do not fit on one line. */
+.questionOptions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+/* One option: the model's label on the button, the SERVER's consequence under it. Stacked rather
+   than inline so the consequence cannot be pushed off a phone by a long label. */
+.questionOption {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-width: 100%;
+}
+
+.questionConsequence {
+  font-size: 10.5px;
+  color: var(--text-3);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.questionFree {
+  display: flex;
+  gap: 8px;
+}
+
+.questionInput {
+  flex: 1;
+  min-height: 44px;
+  padding: 0 11px;
+  background: var(--bg-2);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  font: inherit;
+  min-width: 0;
+}
+
+.questionInput:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.questionNote {
+  color: var(--text-3);
+  font-size: 10.5px;
+  margin: 9px 0 0;
+  line-height: 1.45;
+}
+
+/* The option buttons. >=44px because they are the primary control of a card whose whole job is to
+   be tapped, and because #878's inventory already holds every other control on this page to it. */
+.questionBtn {
+  min-height: 44px;
+  padding: 0 13px;
+  background: var(--bg-2);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  font: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  text-align: left;
+  max-width: 100%;
+}
+
+.questionBtn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.questionBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.questionBtn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.questionBtnPrimary {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
+  flex: none;
+}
+
+/* ONE COMPOSER, TWO POSITIONS (#930 review 1, finding 1).
+ * The untracked pane shows the composer above the session list on a fresh install and below it
+ * otherwise. Expressing that as two conditional mounts made it a REMOUNT rather than a move, and
+ * a remount discards the operator's draft — which lands exactly when the mission list resolves
+ * empty, i.e. while they are most likely to be typing. The mount is therefore fixed in the DOM
+ * and only its ORDER changes, which needs the pane to be a flex column. */
+.untrackedPane {
+  display: flex;
+  flex-direction: column;
+}
+.composerBelow {
+  order: 1;
+}
+
+/* --- the thread column: a chat that fills, with its input on the bottom edge (#942) ---------
+ *
+ * The composer used to be the last child of `.pane`, so it scrolled with the transcript and came
+ * to rest directly under the final event — leaving the remainder of the column empty. On a
+ * 1600×950 desktop with a quiet mission that measured roughly 60% of the content area, and it is
+ * what the operator reported as "a mess". The pane and the dock are now siblings: the pane takes
+ * the slack and scrolls, the dock never shrinks and never scrolls away. */
+.threadCol {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  /* Without this a flex child refuses to shrink below its content and the dock is pushed off the
+   * bottom of the viewport — the classic flexbox min-height:auto trap. */
+  min-height: 0;
+  min-width: 0;
+}
+
+.composerDock {
+  flex: none;
+  border-top: 1px solid var(--line);
+  background: var(--bg-1);
+  padding: 8px 14px;
+}
+
+/* --- the secondary-lifecycle overflow (#942) ------------------------------------------------ */
+.overflowWrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.overflowMenu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 40;
+  min-width: 180px;
+  /* As wide as its longest item, and as wide as a confirmation sentence needs, up to 300px (#967). */
+  width: max-content;
+  max-width: min(300px, calc(100vw - 16px));
+  border: 1px solid var(--line-strong);
+  background: var(--bg-2);
+  /* Rows run edge to edge, as RowMenu's do (#967). */
+  padding: 4px 0;
+  /* Flat fill, hairline border, zero radius — `docs/design.md`. The elevation cue is the border
+   * and the ground change, never a shadow gradient. */
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+
+.overflowItems {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+}
+.overflowItems:focus-visible {
+  outline: none;
+}
+/* Full-width rows inside the menu: side by side they were competing controls, stacked they are a
+ * list of choices, which is the whole point of moving them here. */
+.overflowItems > button {
+  width: 100%;
+  text-align: left;
+  /* The coarse-pointer floor, as everywhere else. */
+  min-height: 44px;
+}
+/* The consequence of the confirmation an item is waiting on, under the items and outside the menu
+ * role (#967). */
+.overflowMenu > .missionConfirm {
+  margin: 8px 12px 4px;
+}
+
+/* THE MENU'S ROWS ARE THE PLATFORM'S CONTEXT-MENU ROWS (#967). The header ⋯ drew each item as a
+ * bordered mono button, which read as a stack of buttons rather than a menu. The rows compose RowMenu's
+ * own `.item`, `.itemIcon` and `.sep` (borderless, full width, an icon and a label, a hover and focus
+ * tint, a hairline before the destructive group), so the two menus cannot drift. Added here is only
+ * what this menu needs on top: the 44px floor (above), a disabled look for a real `disabled` attribute
+ * where RowMenu uses `aria-disabled`, and danger TEXT for the destructive items, never a red border.
+ * The danger rules carry the panel's classes so they outrank RowMenu's hover and focus colours without
+ * depending on which sheet loads first. */
+.menuItem {
+  composes: item from "../sidebar/RowMenu.module.css";
+}
+.menuIcon {
+  composes: itemIcon from "../sidebar/RowMenu.module.css";
+}
+.menuSep {
+  composes: sep from "../sidebar/RowMenu.module.css";
+}
+.overflowMenu .overflowItems .menuItem:disabled {
+  opacity: 0.4;
+  cursor: default;
+  pointer-events: none;
+}
+.overflowMenu .overflowItems .menuDanger,
+.overflowMenu .overflowItems .menuDanger:hover,
+.overflowMenu .overflowItems .menuDanger:focus,
+.overflowMenu .overflowItems .menuDanger .menuIcon,
+.overflowMenu .overflowItems .menuDanger:hover .menuIcon,
+.overflowMenu .overflowItems .menuDanger:focus .menuIcon {
+  color: var(--danger-text);
+}
+.headerConfirm .missionConfirm {
+  flex: none;
+  margin: 0;
+}
+
+/* The header's action slot (#942), where `MissionHeaderActions` renders on the title's row (#967).
+ * `margin-left: auto` makes it a right-hand cluster without a second grid, and on a wrap it starts the
+ * next line, still right-aligned. `flex-shrink: 0` keeps the controls at their real size: a shrunk
+ * Mark done is a control the operator cannot read, and the title is the thing that gives way. */
+.topbarActions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+/* #944: bounded workspace, searchable rail and Context-first disclosures. */
+.console {
+  flex: 1 1 0;
+  height: auto;
+  min-width: 0;
+}
+.rail {
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+}
+
+.railScroll {
+  overflow-y: auto;
+  min-height: 0;
+  flex: 1;
+  scrollbar-gutter: stable;
+  padding: 0;
+}
+
+.rail .dot {
+  border-radius: 50%;
+}
+.split {
+  flex-direction: row;
+  overflow: hidden;
+}
+.threadCol {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.detailsWrap {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+}
+.detailsColumn {
+  overflow-y: auto;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  padding: 0 18px;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+}
+.disclosure {
+  border-bottom: 1px solid var(--line);
+}
+.disclosureToggle {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text-1);
+  min-height: 60px;
+  padding: 12px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  cursor: pointer;
+  font: 600 11px var(--font-mono);
+  text-transform: uppercase;
+}
+.disclosureToggle > svg {
+  flex: none;
+}
+.disclosureToggle[aria-expanded="true"] > svg {
+  transform: rotate(90deg);
+}
+.disclosureToggle small {
+  margin-left: auto;
+  color: var(--text-2);
+  font-size: 10px;
+  font-weight: 400;
+  text-transform: none;
+}
+.disclosureToggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.disclosureContent {
+  padding-bottom: 20px;
+  overflow-wrap: anywhere;
+}
+.disclosureContent[hidden] {
+  display: none;
+}
+.hideThread {
+  display: none;
+}
+.hideDetails {
+  display: none;
+}
+/* ONE HEADER ROW, VERTICALLY CENTRED (#967): the title on the left, the actions on the right, on one
+ * line wherever they fit. The title's flex basis is 0, so it never pushes the actions onto a second
+ * line by itself: the row wraps only when even the title's minimum width and the actions cannot share
+ * a line (a 320px phone mid-confirmation), and then the actions start the next line, right-aligned. */
+.topbar {
+  flex: none;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 8px 14px;
+}
+.missionTitle {
+  padding-top: 8px;
+  font-size: 1.2rem;
+  line-height: 1.4;
+}
+.titleButton {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 0;
+  min-width: min(4.5rem, 100%);
+  max-width: 100%;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-1);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.titleButton .missionTitle {
+  padding-top: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.titleButton > svg {
+  flex: none;
+}
+.titleButton:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+.titleDialog {
+  width: 460px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+  padding: 20px;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-1);
+  color: var(--text-1);
+}
+.titleDialog::backdrop {
+  background: color-mix(in srgb, var(--bg-0) 75%, transparent);
+}
+.titleDialog h2 {
+  margin: 0;
+  font: 600 12px var(--font-mono);
+  text-transform: uppercase;
+}
+.titleDialog p {
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+.topbarActions {
+  max-width: 100%;
+  justify-content: flex-end;
+  min-width: 0;
+}
+/* The start reason and the armed launch, in the plan card beside the plan they describe (#967). They
+ * used to sit in a 460px box under the header's buttons, which is what wrapped the header. */
+.planStatus {
+  overflow-wrap: anywhere;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.planStatusActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.linkButton {
+  display: inline-block;
+  background: transparent;
+  border: 0;
+  color: var(--text-1);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  min-height: 44px;
+  padding: 8px;
+  cursor: pointer;
+  font: inherit;
+}
+.planFields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.planFields select {
+  margin-top: 6px;
+}
+.planCard {
+  margin-bottom: 20px;
+  padding: 16px;
+}
+.filterNotice {
+  flex: none;
+  padding: 0 14px;
+  color: var(--text-2);
+  font-size: 12px;
+}
+.filterNotice button {
+  min-height: 44px;
+  border: 0;
+  color: var(--text-1);
+  background: transparent;
+  text-decoration: underline;
+}
+@media (min-width: 1400px) {
+  .hasDetails {
+    display: none;
+  }
+  .detailsWrap {
+    flex: 0 0 330px;
+    border-left: 1px solid var(--line);
+  }
+  .hideDetails {
+    display: flex;
+  }
+  .hideThread {
+    display: flex;
+  }
+}
+@media (max-width: 800px) {
+  .topbar {
+    padding: 10px 8px;
+  }
+  .planFields {
+    grid-template-columns: 1fr;
+  }
+  .planCard {
+    padding: 12px;
+  }
+  .pane {
+    padding: 12px 8px;
+  }
+}
+
+.disclosureContent .empty {
+  padding: 16px 0;
+}
+
+@media (max-height: 680px) {
+  .rail {
+    overflow-y: auto;
+  }
+  .railScroll {
+    flex: none;
+    overflow: visible;
+  }
+}
+
+.railWithSessions {
+  overflow-y: auto;
+}
+.railWithSessions .railScroll {
+  flex: none;
+  overflow: visible;
+}
+
+/* #948 P2 — a mission row is a <button> wearing the SESSION list's `.row` / `.active` classes, and
+   "+ New mission" is a <button> wearing `.newBtn` (a link in the sessions sidebar). These reset only
+   what a button brings with it; every visible value comes from SessionList.module.css. `font`
+   is not reset as a shorthand, because that would also reset the weight `.newBtn` sets. */
+.railButton,
+.railButtonReset {
+  border-top: 0;
+  border-right: 0;
+  border-bottom: 0;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  cursor: pointer;
+}
+.railButtonReset {
+  border-left: 0;
+}
+.railButton {
+  width: 100%;
+  text-align: left;
+  background-color: transparent;
+}
+/* The attribute selector outranks the reset above, so the selected row keeps `.active`'s ground. */
+.railButton[aria-current="true"] {
+  background-color: var(--row-hover);
+}
+/* Title spans need a block box for `.title`'s ellipsis to apply inside a button. */
+.railText {
+  display: block;
+}
+/* The session row's LED is 6px; the mission state dot matches it in the rail. */
+.railDot {
+  width: 6px;
+  height: 6px;
+}
+
+/* --- #948 P3: the new-mission page ------------------------------------------------ */
+/* Nothing selected = the section's front door. Centred, the composer as its centrepiece, prose at
+ * the §4 body size. The composer keeps its own classes; only its box grows here. */
+.landing {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  display: flex;
+  justify-content: center;
+  padding: 9vh 16px 24px;
+}
+.landingInner {
+  width: 100%;
+  max-width: 720px;
+}
+.landingHeading {
+  margin: 0;
+  text-align: center;
+  font-family: inherit;
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--text-1);
+}
+.landingSub {
+  margin: 8px 0 24px;
+  text-align: center;
+  font-size: 14px;
+  color: var(--text-2);
+}
+.landing .composerInput {
+  min-height: 120px;
+  font-size: 16px;
+  line-height: 1.5;
+}
+.landingNote {
+  margin: 16px 0 0;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-2);
+}
+.landingNote b {
+  color: var(--text-1);
+  font-weight: 600;
+}
+.landingNeeds {
+  margin-top: 40px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.landingNeedsHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.landingClear {
+  margin-left: auto;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.landingClear:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.landingEmpty {
+  padding: 12px 0;
+  font-size: 14px;
+  color: var(--text-2);
+}
+.landingRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  margin-top: 8px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-left: 2px solid transparent;
+  background: var(--glass);
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.landingRow:hover,
+.landingRow:focus-visible {
+  border-left-color: var(--accent);
+  background: var(--row-hover);
+  outline: none;
+}
+.landingRow .dot {
+  margin-top: 7px;
+}
+.landingRowBody {
+  display: block;
+  flex: 1;
+  min-width: 0;
+}
+.landingRowTitle {
+  display: block;
+  font-size: 14px;
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.landingRowMeta {
+  display: block;
+  margin-top: 3px;
+  /* An unbroken project name or path must wrap, never widen the landing past a 360px phone. */
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+}
+
+/* --- #948 P3: details are ONE disclosure below 1400px, not a tab --------------------- */
+.detailsToggle {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 14px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--glass);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  text-align: left;
+  cursor: pointer;
+}
+.detailsToggle small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  text-transform: none;
+  color: var(--text-3);
+}
+.detailsToggle > svg {
+  flex: none;
+}
+.detailsToggle[aria-expanded="true"] > svg {
+  transform: rotate(90deg);
+}
+.detailsToggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+@media (max-width: 1399px) {
+  /* The toggle, then the band, then the thread — by ORDER, so the DOM (and the thread's mount)
+     stays exactly where it is at every width. */
+  .split {
+    flex-direction: column;
+  }
+  .detailsToggle {
+    order: -2;
+  }
+  .detailsWrap {
+    order: -1;
+    flex: 0 0 auto;
+    max-height: 40%;
+    overflow: hidden;
+    border-bottom: 1px solid var(--line);
+  }
+  .threadCol {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+}
+@media (min-width: 1400px) {
+  .detailsToggle {
+    display: none;
+  }
+}
+
+/* --- #948 P3: the workspace type scale, on the §4 specs ----------------------------- */
+/* Prose and the composer at the 14px body size; the mode control at 11px mono; the mission title at
+ * 16px/600. These used to run at 0.66–0.84rem. The composer's Send is not in this sheet: it is the
+ * session pane's Send (#967). The section navigation, which #944/#946 pinned to the old mono Send,
+ * declares its own values in App.css. */
+.composerInput {
+  font-size: 14px;
+}
+.modeBtn {
+  font-size: 11px;
+}
+.empty {
+  font-size: 14px;
+}
+.missionTitle {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+/* --- #967 P3: objective rows — handle, dot, title, ⋯; drag to reorder ---------------------------
+ *
+ * One row: a 44×44 drag handle, the state dot, the title with one meta line under it, and a 44×44
+ * ⋯. Every action on the row is in ⋯ (the shared RowMenu), so a row never grows a strip of wrapping
+ * buttons; the old third column and its `.disclosureContent` override went with it. Flex rather than
+ * a grid: a read-only row has no handle and no ⋯, and the title takes what is left either way.
+ *
+ * The handle and ⋯ top-align with the FIRST title line: the body is padded so that line's centre sits
+ * at the 22px centre of a 44px control, and the dot is placed on the same centre. */
+.objList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.objRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-height: 44px;
+  border-bottom: 1px solid var(--line);
+}
+.objRow:last-child {
+  border-bottom: 0;
+}
+/* The row being dragged: lifted onto the raised ground with a 1px accent edge (affordance, not
+ * status), above the rows it slides past. The others move aside to show where it will land. */
+.objRowDragging {
+  position: relative;
+  z-index: 2;
+  background: var(--bg-2);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+.objHandle,
+.objMenuBtn {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+}
+/* THE ONLY PLACE A DRAG STARTS, and the only element that turns off the browser's own touch panning.
+ * Everything else on the row keeps `touch-action: auto`, so a swipe that starts on the title scrolls
+ * the column instead of picking the row up. */
+.objHandle {
+  touch-action: none;
+  cursor: grab;
+}
+.objRowDragging .objHandle {
+  cursor: grabbing;
+  color: var(--accent);
+}
+.objHandle:hover,
+.objMenuBtn:hover,
+.objMenuBtn[aria-expanded="true"] {
+  color: var(--text-1);
+  background: var(--row-hover);
+}
+.objHandle:focus-visible,
+.objMenuBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+/* A row built from the assessment alone, in a list that can be reordered: it cannot be dragged, and
+ * holds the handle's column so its dot and title line up with the rows above. */
+.objHandleSpace {
+  flex: none;
+  width: 44px;
+}
+.objDot {
+  margin-top: 18px;
+}
+.objBody {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 13px 0 10px;
+}
+.objRow .objTitle {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+/* The state word, where the dot draws a state (met, waived, failed): never colour alone (§8). */
+.objState {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+}
+/* The neutral dot's state word, for screen readers only. */
+.objSr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+/* The supervisor's mission-level refusal, said once for the section (`sharedReason`). The server's
+ * sentence starts in lower case because it is written to follow a title; here it opens a notice. */
+.objNotice {
+  margin: 0 0 4px;
+  padding: 0.6rem 0.75rem;
+  font-size: 13px;
+  color: var(--text-2);
+  border-left: 3px solid var(--text-3);
+  background: var(--glass);
+}
+.objNotice::first-letter {
+  text-transform: uppercase;
+}
+/* A refused reorder: a write that failed, so the failure edge and the text-safe red. */
+.objRefused {
+  margin: 0 0 4px;
+  padding: 0.5rem 0.75rem;
+  font-size: 13px;
+  color: var(--danger-text);
+  border-left: 3px solid var(--status-down);
+  background: var(--glass);
+}
+/* The title's own disclosure (#967 P3, Hermes on #985). Only a title that is actually clipped at two
+ * lines is a control; the rest stay plain text. It keeps `touch-action` as it is: a swipe that starts
+ * on a title still scrolls, and only the handle starts a drag. */
+.objTitleBox {
+  display: block;
+}
+.objTitleToggle {
+  cursor: pointer;
+}
+.objTitleToggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* Open: the whole requirement, however many lines it takes. Same specificity as the clamp, later. */
+.objRow .objTitleOpen {
+  display: block;
+  -webkit-line-clamp: unset;
+  overflow: visible;
+}
+.objTitleMore {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.objTitleToggle:hover .objTitleMore,
+.objTitleToggle:focus-visible .objTitleMore {
+  color: var(--text-1);
+}
+/* A finger's target (§8): the title and its "more" line together reach the floor. */
+@media (max-width: 800px) {
+  .objTitleToggle {
+    min-height: 44px;
+  }
+}
+
+/* =================================================================================================
+ * #967 P2b: THE PLAN CARD'S STATES. Planning, ready (with Review plan) and could not plan (with Plan
+ * manually), as mockup B3 draws them. One block, appended, so a parallel append to this sheet merges.
+ * ================================================================================================= */
+
+/* The line the card leads with: the state on the left, its one action on the right. Wraps on a phone
+ * rather than squeezing the sentence; the action keeps its 44px floor either way. */
+.planHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  min-height: 44px;
+}
+.planHeadText {
+  flex: 1 1 16rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-1);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.planHead .linkButton {
+  flex: none;
+  white-space: nowrap;
+}
+.planDim {
+  color: var(--text-2);
+}
+.planMono {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+/* The working indicator: three square pips stepping in opacity. Square because only LEDs and dots
+ * round (§9); no gradient and no spinner; still under reduced motion (§8). Opacity only, never
+ * geometry. The words carry the state, and the pips are aria-hidden. */
+.planDots {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: 10px;
+  vertical-align: middle;
+}
+.planDots i {
+  width: 4px;
+  height: 4px;
+  background: var(--text-2);
+  animation: planPip 1.2s steps(1, end) infinite;
+}
+.planDots i:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.planDots i:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes planPip {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .planDots i {
+    animation: none;
+  }
+  .planDots i:nth-child(2) {
+    opacity: 0.6;
+  }
+  .planDots i:nth-child(3) {
+    opacity: 0.3;
+  }
+}
+/* The unfolded plan (Review plan) and Plan manually's form: the same column of fields. */
+.planOpen,
+.planManual {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* THE TOP OF THE MISSION BODY (#967 P2b review): the no-AI notice, the open question and the plan
+ * card, directly under the Details band. They used to share the thread's bottom-anchored box, so a
+ * one-line card rode `.paneAtBottom`'s auto margin down to the composer. `flex: none` holds this box at
+ * its content height; a short thread's free space goes to the auto margin of the box below it, and a
+ * long thread overflows the pane and scrolls with this group at its top. */
+.paneTop {
+  flex: none;
+  min-width: 0;
+}
+
+/* --- #1064 P2: the live strip above the thread ---------------------------------------------------
+ * Neutral by design. Green (`--status-up`) only for a session producing output right now; "at a
+ * prompt" is a solid neutral dot — the bell and the decision cards own asking for attention, so
+ * amber here would compete with them. Quiet is a hollow ring; not observed is `--status-unknown`. */
+.nowStrip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  padding: 8px 4px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.8rem;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.nowHead {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.nowList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  flex: 1 1 240px;
+  min-width: 0;
+}
+.nowRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  min-width: 0;
+}
+.nowDot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  align-self: center;
+  box-sizing: border-box;
+}
+.nowProducing {
+  background: var(--status-up);
+}
+.nowAtPrompt {
+  background: var(--text-2);
+}
+.nowQuiet {
+  background: transparent;
+  border: 1.5px solid var(--text-3);
+}
+.nowUnobserved {
+  background: var(--status-unknown);
+}
+.nowWho {
+  font-family: var(--font-mono);
+  color: var(--text-1);
+}
+.nowWhat {
+  color: var(--text-1);
+}
+.nowMuted {
+  color: var(--text-3);
+}
+.nowStale {
+  font-style: italic;
+}
+
+/* --- #1061 P3: what the launch confirmation says it will track -----------------------------------
+ * One row per objective: a REQUIRED / GOAL mark, the title, and the probe with its target in mono.
+ * Required is the solid mark and goal the dashed one, as the issue's mockup draws them — neither is a
+ * status colour, because nothing here is a state yet. The "worth a look" line is attention, not
+ * failure: the text-safe amber. */
+.confirmObjectives {
+  display: flex;
+  flex-direction: column;
+  margin: 8px 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--border);
+  padding-right: 8px;
+}
+.confirmRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  min-width: 0;
+}
+.confirmGate,
+.confirmGoal {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.confirmGate {
+  border: 1px solid var(--line-strong);
+  color: var(--text-1);
+}
+.confirmGoal {
+  border: 1px dashed var(--line-strong);
+  color: var(--text-3);
+}
+.confirmTitle {
+  flex: 1 1 12em;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-1);
+}
+/* What it checks sits on its own line under the title at every width: beside it, a long title was
+   squeezed into a narrow column and the mono target ran to the pane's edge. */
+.confirmChecks {
+  flex: 1 1 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-3);
+}
+.confirmWhy {
+  margin: 4px 0 8px;
+  overflow-wrap: anywhere;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--warn-text);
+}
+
+/* --- judged objectives (#1088) ---------------------------------------------------------------
+ * A JUDGMENT is not an OBSERVATION, and the row says which. The tag is a small outlined mono word:
+ * `observed` in the neutral text colour, `judged` in the text-safe amber (`--git-mod-fg`, the
+ * attention hue already used for "stale") — never a status LED, never the brand accent. No radius,
+ * no gradient (design §3). Every control is ≥44px (§8). Quotes are plain text in the mono face on
+ * the editor's ground, wrapped, never markup. */
+.objTag {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  padding: 0.05rem 0.3rem;
+  border: 1px solid var(--line-strong);
+  color: var(--text-3);
+}
+.objTagJudged {
+  border-color: currentColor;
+  color: var(--git-mod-fg);
+}
+.judgedToggle {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 13px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.judgedToggle:hover {
+  color: var(--text-1);
+}
+.judgedToggle:focus-visible,
+.judgedReject:focus-visible,
+.judgedLink:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.judgedLink {
+  color: var(--text-2);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.judgedPanel {
+  margin: 2px 0 6px;
+  padding: 0.6rem 0.75rem;
+  border-left: 2px solid var(--git-mod-fg);
+  background: var(--bg-2);
+  min-width: 0;
+}
+.judgedHead {
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin-bottom: 0.45rem;
+  overflow-wrap: anywhere;
+}
+.judgedQuoteBox {
+  margin: 0 0 0.5rem;
+}
+.judgedSource {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  color: var(--text-3);
+  margin-bottom: 0.2rem;
+  overflow-wrap: anywhere;
+}
+.judgedQuote {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-1);
+  background: var(--surface-3);
+  padding: 0.45rem 0.6rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.judgedWhy {
+  margin: 0.4rem 0 0.2rem;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.judgedWhy b {
+  color: var(--text-1);
+}
+.judgedHolds {
+  margin: 0 0 0.4rem;
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  color: var(--text-3);
+}
+.judgedReject {
+  min-height: 44px;
+  padding: 0 1rem;
+  border: 1px solid var(--line-strong);
+  background: none;
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.judgedReject:hover {
+  border-color: var(--text-2);
+}
+.judgedReject[disabled] {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* --- #1060 P4: the per-mission opt-in to autonomous menu answers -------------------------------- */
+.autoChoose {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 0 10px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.autoChooseRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  font-size: 0.84rem;
+  color: var(--text-1);
+  cursor: pointer;
+}
+.autoChooseRow input {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+}
+.autoChooseHint {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.74rem;
+  line-height: 1.45;
+  color: var(--text-3);
+}

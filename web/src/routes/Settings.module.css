@@ -1,0 +1,2031 @@
+.wrap {
+  height: 100%;
+  overflow-y: auto;
+  padding: 16px clamp(16px, 5vw, 40px) 48px;
+  background: var(--bg);
+  color: var(--text);
+}
+.head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0 18px;
+}
+.head h1 {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  margin: 0;
+  color: var(--text-1, var(--brand-soft));
+}
+.back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 0;
+  color: var(--text);
+  border: 1px solid var(--border);
+  background: var(--panel);
+}
+.back:hover {
+  border-color: var(--accent);
+}
+
+/* Settings navigation (#956). Desktop: a fixed sidebar of grouped section links beside the
+ * page, each scrolling on its own so the last section stays reachable on a short viewport.
+ * Phone (<=800px): `/settings` is a grouped index and each section opens full-width. The old
+ * horizontally scrolling tab bar held seven tabs; sixteen sections do not fit that shape. */
+.split {
+  display: grid;
+  grid-template-columns: 236px minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+.sidebar {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 10px 32px;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+}
+.sidebar .head {
+  margin: 4px 6px 16px;
+}
+.page {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px clamp(16px, 4vw, 40px) 48px;
+}
+.crumb {
+  max-width: 640px;
+  margin: 0 auto 14px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-3, var(--text-muted));
+}
+/* The AGENTS pages are wider than a settings column (#1128); the crumb lines up with them. */
+.crumbWide {
+  max-width: 1100px;
+}
+.crumb b {
+  color: var(--text-2, var(--text));
+  font-weight: 600;
+}
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.navGroupLabel {
+  margin: 0 10px 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-3, var(--text-muted));
+}
+.navList,
+.indexList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.navLink {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 10px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2, var(--text));
+  text-decoration: none;
+  border-left: 2px solid transparent;
+}
+/* An agent's own page (#1128), listed under Roster while it is the page on screen. */
+.navSub {
+  padding-left: 22px;
+  text-transform: none;
+}
+.navLink:hover {
+  color: var(--text);
+  border-left-color: var(--accent);
+}
+.navLink[aria-current="page"] {
+  color: var(--on-accent, #14161a);
+  background: var(--accent);
+  border-left-color: var(--accent);
+  font-weight: 700;
+}
+.navLink:focus-visible,
+.indexLink:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.index {
+  margin: 0 -4px;
+}
+.indexGroupLabel {
+  margin: 18px 4px 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-3, var(--text-muted));
+}
+.indexList {
+  border-top: 1px solid var(--border-subtle);
+}
+.indexLink {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 0 14px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text);
+  text-decoration: none;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.indexLink [data-section-label] {
+  flex: 1;
+  min-width: 0;
+}
+.indexLink svg {
+  flex: none;
+  color: var(--text-3, var(--text-muted));
+}
+/* The phone back link is a 44px target (docs/design.md §8). */
+@media (max-width: 800px) {
+  .back {
+    width: 44px;
+    height: 44px;
+  }
+}
+/* The active panel — sections inside keep their own spacing. */
+.panel {
+  min-width: 0;
+}
+
+.section {
+  position: relative;
+  max-width: 640px;
+  margin: 0 auto 26px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 16px 18px;
+}
+/* HUD corner brackets (#211 4d): accent ticks at two opposing corners frame each settings
+ * panel like the floating shell panels, without per-section JSX. */
+.section::before,
+.section::after {
+  content: "";
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-color: var(--accent);
+  border-style: solid;
+  pointer-events: none;
+}
+.section::before {
+  top: -1px;
+  left: -1px;
+  border-width: 1px 0 0 1px;
+}
+.section::after {
+  right: -1px;
+  bottom: -1px;
+  border-width: 0 1px 1px 0;
+}
+/* Section title → mono HUD label with a leading accent tick. */
+.section h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin: 0 0 8px;
+  color: var(--text-2, var(--text));
+}
+.section h2::before {
+  content: "";
+  flex: none;
+  width: 3px;
+  height: 13px;
+  background: var(--accent);
+}
+.hint {
+  margin: 0 0 12px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+/* A link inside running hint copy (#1009): underlined at rest, like the setup wizard's `.copy a`. */
+.inlineLink {
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-color: var(--brand);
+  text-underline-offset: 3px;
+}
+.inlineLink:hover {
+  color: var(--brand-soft);
+}
+.inlineLink:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.blurb {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Theme picker */
+.themes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+.themeCard {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  padding: 12px;
+  border-radius: 0;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+.themeCard:hover {
+  border-color: var(--accent);
+}
+.themeCard.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent) inset;
+}
+.swatch {
+  height: 30px;
+  border-radius: 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+/* Fixed preview swatches — show each theme's identity regardless of the active theme.
+   BattleLab HUD palette: ground + phosphor-amber accent (#211). */
+.sw_dark {
+  background: linear-gradient(120deg, #0d0e10 50%, #ffb000 50%);
+}
+.sw_light {
+  background: linear-gradient(120deg, #e7e8ea 50%, #ffb000 50%);
+}
+.themeName {
+  font-weight: 700;
+  font-size: 13px;
+}
+.themeDesc {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+/* Accent picker (#211 Phase 2): preset dots + a native colour input + a free-text hex. */
+.subhead {
+  margin: 18px 0 2px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2, var(--text));
+}
+.accents {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+.accentDot {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: var(--dot);
+  cursor: pointer;
+  /* Selected ring uses the chosen accent itself so the active dot reads at a glance. */
+  box-shadow: 0 0 0 2px var(--panel);
+}
+.accentDot.active {
+  box-shadow:
+    0 0 0 2px var(--panel),
+    0 0 0 4px var(--accent);
+}
+.accentDot:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.accentCustom {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px dashed var(--border);
+  cursor: pointer;
+  overflow: hidden;
+}
+/* The native colour well fills the round label so it reads as one more preset dot. */
+.accentCustom input[type="color"] {
+  width: 150%;
+  height: 150%;
+  margin: -25%;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+.accentHex {
+  width: 9ch;
+  padding: 5px 8px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+  text-transform: lowercase;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 0;
+}
+.accentHex:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* About */
+.brandLine {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--brand-soft);
+}
+.brandLine b {
+  color: var(--brand);
+}
+.meta {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 8px 0 0;
+  font-size: 13px;
+}
+.meta dt {
+  color: var(--text-muted);
+}
+.meta dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  /* #289 mobile breakage: long values (platform strings, paths) overflowed the System card
+   * at narrow widths — let the grid cell shrink and the value wrap instead. */
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.nameLink {
+  color: var(--brand-soft);
+  text-decoration: none;
+}
+.nameLink:hover {
+  text-decoration: underline;
+}
+.aboutLinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin-top: 12px;
+}
+.aboutLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+}
+/* What's new (#971): a button that reads as one of the About links beside it. */
+.aboutLinkButton {
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  border-radius: 0;
+  font-family: inherit;
+  cursor: pointer;
+}
+.aboutLinkButton:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.aboutLink:hover {
+  color: var(--brand-soft);
+  border-bottom-color: var(--brand);
+}
+
+/* Connected agents */
+.agents {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.agent {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 0;
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+}
+.dotOn {
+  background: #36d399;
+  box-shadow: 0 0 6px rgba(54, 211, 153, 0.7);
+}
+.dotOff {
+  background: var(--text-muted);
+  opacity: 0.5;
+}
+.agentName {
+  font-weight: 700;
+  font-size: 13px;
+}
+.agentState {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+.newBadge {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 0;
+  background: var(--badge-bg);
+  color: var(--badge-fg);
+}
+.agentBin {
+  margin-left: auto;
+  font:
+    11.5px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Consolas,
+    monospace;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+/* Host / Updates definition lists: the `<div>` only groups a dt/dd pair. It must NOT be a grid
+ * item of its own — `.meta` is already the two-column label/value grid, so a row-as-item put
+ * two ROWS side by side ("OS …  Platform …") and squeezed the second row's value to a character
+ * per line on a phone. `contents` hands dt and dd to `.meta`: one pair per line, labels and
+ * values each in one aligned column, exactly like the About list's bare dt/dd. */
+.metaRow {
+  display: contents;
+}
+
+/* Support */
+.coffee {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  border-radius: 0;
+  font-weight: 700;
+  text-decoration: none;
+  background: var(--cta-bg-1);
+  color: var(--cta-text);
+}
+.coffee:hover {
+  background: color-mix(in srgb, var(--accent) 84%, #fff);
+}
+.coffee:active {
+  background: var(--cta-bg-2);
+}
+
+/* Updates */
+.updateActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+.updateBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 0;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+.updateBtn:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--row-hover);
+}
+.updateBtn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.updateApply {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 0;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  border: 0;
+  background: var(--cta-bg-1);
+  color: var(--cta-text);
+}
+.updateApply:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* --- Two-factor authentication (#116) --- */
+.twofaStatus {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  margin: 2px 0 10px;
+}
+.twofaBadge {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 0;
+}
+/* 2FA on is a healthy state, so it wears the up status hue. `--ok` was never a token, and its blue
+ * fallback painted instead (#948). */
+.twofaOn {
+  background: color-mix(in srgb, var(--status-up) 28%, transparent);
+  color: var(--text, #fff);
+}
+.twofaOff {
+  background: var(--surface-2, #222);
+  color: var(--text-muted);
+}
+.twofaActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.secBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 0;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  border: 0;
+  background: var(--cta-bg-1);
+  color: var(--cta-text);
+}
+.secBtn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.secBtnGhost {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 0;
+  font: inherit;
+  cursor: pointer;
+  background: var(--surface-2, #1c1c1c);
+  color: var(--text, #ddd);
+  border: 1px solid var(--border, #333);
+}
+.secBtnGhost:hover {
+  background: var(--surface-3, #262626);
+}
+.secBtnGhost:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+/* Caution accent for the bulk-archive confirm step (#142). */
+.danger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 0;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  color: #ffd9d2;
+  background: #5a2018;
+  border: 1px solid #8a3324;
+}
+.danger:hover {
+  background: #6d271d;
+}
+.danger:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+/* Maintenance / cleanup row (#142). */
+.cleanupRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+.cleanupLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.hoursInput {
+  width: 84px;
+  background: var(--surface-3);
+  color: var(--text, #fff);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 7px 9px;
+  font: inherit;
+}
+/* Settings → Maintenance: Prune + Archive old missions (#993). Every new action button is a
+   ≥44px hit area (the per-component pattern — there is no shared button primitive). */
+.actionBtn {
+  min-height: 44px;
+}
+.subhead {
+  margin: 14px 0 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.pruneList {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  border-top: 1px solid var(--border);
+}
+.pruneRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 2px 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.pruneLabel {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 44px;
+  flex: 1 1 260px;
+  min-width: 0;
+  cursor: pointer;
+}
+.pruneLabel input {
+  margin-top: 3px;
+}
+.pruneText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.pruneName {
+  color: var(--text);
+  font-size: 13px;
+}
+.pruneHint {
+  color: var(--text-3);
+  font-size: 11.5px;
+}
+.pruneCount {
+  padding-left: 24px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.confirmText {
+  margin: 10px 0 4px;
+  color: var(--text);
+  font-size: 13px;
+}
+.inlineHint {
+  font-size: 12px;
+  color: var(--text-3);
+}
+.resultList {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.resultLine {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+.resultLine > :global(.hud-led) {
+  display: inline-block;
+  flex: none;
+  transform: translateY(-1px);
+}
+/* Default-project picker (#357 Phase 2) — same field language as the other inputs. */
+.defaultProject {
+  width: 100%;
+  max-width: 420px;
+  background: var(--surface-3);
+  color: var(--text, #fff);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 8px 10px;
+  font: inherit;
+  cursor: pointer;
+}
+.defaultProject:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.defaultProject:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.confirmRow {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+/* Excluded-projects checklist (#152). */
+.excludeList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.excludeRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 0;
+  cursor: pointer;
+}
+.excludeRow:hover {
+  background: var(--row-hover);
+}
+.excludeRow input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  accent-color: var(--accent);
+}
+.excludeMeta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.excludeName {
+  color: var(--text);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Per-project custom-name input (#148). */
+.nameInput {
+  width: 100%;
+  background: var(--surface-3);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12.5px;
+}
+.nameInput::placeholder {
+  color: var(--text-muted);
+}
+/* Clickable project name (#174) — opens RenameProjectModal. Looks like text, behaves
+ * like a button: hover underline, focus ring. */
+.nameButton {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 2px 0;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.nameButton:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.nameButton:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* Adopted folders are named by their project (#615 Phase 3): the row shows the path as static
+   text, no rename affordance. Same metrics as .nameButton minus the button chrome, so the row
+   height doesn't jump between adopted and unadopted folders. */
+.nameStatic {
+  display: inline-block;
+  padding: 2px 0;
+  font-size: 13px;
+  color: inherit;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.excludePath {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.excludeStale {
+  margin-left: auto;
+  flex: none;
+  font-size: 10px;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 2px 8px;
+}
+.enrollPanel {
+  margin-top: 12px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--surface-2);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.qr {
+  width: 184px;
+  height: 184px;
+  align-self: center;
+  background: #fff;
+  padding: 8px;
+  border-radius: 0;
+  image-rendering: pixelated;
+}
+.manualKey {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  word-break: break-all;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 7px 9px;
+}
+.codeInput {
+  width: 100%;
+  background: var(--surface-3);
+  color: var(--text, #fff);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 9px 11px;
+  font: inherit;
+  letter-spacing: 0.12em;
+}
+.recoveryBox {
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 10px 12px;
+}
+.recoveryList {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 4px 16px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+}
+.warn {
+  color: var(--warn-text);
+  font-size: 12px;
+}
+.err {
+  color: var(--danger-text);
+  font-size: 12px;
+}
+/* Confirmed endpoint-validation state (#394). */
+.ok {
+  color: var(--ok-text);
+  font-size: 12px;
+}
+
+/* Project-visibility mode toggle (#335). */
+.modeRow {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin: 4px 0 8px;
+}
+.modeOpt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+/* Cap + brand the native radio so it matches the HUD (amber accent, square scale) and the
+ * folder-row checkboxes below — without a size cap the browser default renders oversized and
+ * the label drifts, especially on narrow/streamed viewports (#683). */
+.modeOpt input[type="radio"] {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  flex: none;
+  accent-color: var(--accent);
+}
+
+/* AI session review (#356). */
+.aiField {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 10px 0;
+  max-width: 560px;
+}
+.aiFieldLabel {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.aiInput {
+  background: var(--surface-3);
+  color: var(--text, #fff);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 8px 10px;
+  font: inherit;
+}
+.aiInput:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+/* A disabled control must LOOK disabled (#834). The model select/input is locked while the
+ * endpoint above has unsaved edits (#394); with no rule here it rendered identically to a
+ * live control, so the lock was only discoverable by clicking and getting nothing. */
+.aiInput:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  border-style: dashed;
+}
+/* The stored-key readout that stands in for an input once a key is on file (#834) — a
+ * static element, so a password manager has nothing to fill. Matches the input's box so the
+ * row doesn't reflow when "Replace key" swaps one for the other. */
+.aiSecretReadout {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px dashed var(--border);
+  background: var(--surface-3);
+  color: var(--text-muted);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.aiKeyBadge {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  padding: 1px 6px;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+.aiModelRow {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.aiModelRow > select,
+.aiModelRow > input {
+  flex: 1;
+  min-width: 0;
+}
+/* The API-key row (#834). It carries a field plus up to two actions — one more than the
+ * model row it used to borrow — which at phone width squeezed the key readout down to
+ * "*****…". Wrapping is the fix: the field claims a full line and the buttons drop below it
+ * rather than the field collapsing. */
+.aiKeyRow {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.aiKeyRow > input,
+.aiKeyRow > .aiSecretReadout {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+/* Touch targets ≥44px (docs/design.md §8) — the desktop 35px ghost buttons are too small to
+ * hit reliably, and "Remove key" sitting next to "Replace key" makes a mis-tap expensive. */
+@media (pointer: coarse) {
+  .aiKeyRow button {
+    min-height: 44px;
+  }
+
+  /* THE PLAYBOOK EDITOR IS A PHONE SURFACE TOO (#900 review 2, finding 5).
+     `docs/design.md` sets a >=44px floor for touch targets, and these controls were sized by
+     padding alone — which lands around 33px and is exactly the kind of control that gets
+     mis-tapped when the thing it edits is what a mission checks before calling itself done.
+     Scoped to this panel rather than applied to `.aiInput` globally, so it cannot silently
+     re-lay-out every other Settings form. */
+  [data-testid="mission-playbooks"] input,
+  [data-testid="mission-playbooks"] select,
+  [data-testid="mission-playbooks"] button {
+    min-height: 44px;
+  }
+
+  /* …except the checkbox, which is a control the browser sizes itself and whose 44px target is
+     the LABEL around it. Stretching the box itself would make a giant square, not a bigger
+     target — so the height goes on the label and the box keeps its own size. */
+  [data-testid="mission-playbooks"] input[type="checkbox"] {
+    min-height: 0;
+  }
+  [data-testid="mission-playbooks"] label {
+    min-height: 44px;
+  }
+
+  /* THE MANUAL PASS CAME FROM A SURFACE THAT ALREADY MET THIS FLOOR (#929).
+     "Run now" used to live in the Pulse orchestrator panel, where a browser test pinned it at
+     >=44px on a phone; moving it here must not quietly shrink it to the 35px a padding-sized
+     `.secBtn` lands on. Scoped to this control, like the playbook editor above, rather than
+     widening `.secBtn` for every secondary button in Settings. */
+  [data-testid="orchestrator-run"] button {
+    min-height: 44px;
+  }
+}
+.aiIntervalRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.aiIntervalInput {
+  width: 90px;
+}
+.aiPrompt {
+  width: 100%;
+  min-height: 140px;
+  resize: vertical;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.aiActions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+  /* Without this the row stretches the button to the status line's margin box, so the button
+   * visibly grew 36px → 41px the moment the form went dirty (#834). */
+  align-items: center;
+}
+/* Closes a field group after its action row. The endpoint's Save & validate commits the two
+ * fields ABOVE it, but the collapsed 10px margin below it left the button nearer to MODEL
+ * than to what it saves — it read as the dropdown's button (#834). */
+.aiGroupEnd {
+  margin-bottom: 22px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.aiToggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+/* Same treatment as the mode radios / folder checkboxes: cap the native checkbox and brand it
+ * so it doesn't render oversized and shove the label out of line on narrow viewports (#683). */
+.aiToggle input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  flex: none;
+  accent-color: var(--accent);
+}
+.aiExcludedList {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.aiExcludedRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border-subtle);
+  padding: 7px 10px;
+}
+.aiExcludedTitle {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- AI activity panel (#441 Phase 6) ----------------------------------------- */
+.activityList {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.activityRow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 2px;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.82rem;
+}
+.activityRow:last-child {
+  border-bottom: 0;
+}
+.activityName {
+  flex: 0 0 auto;
+  color: var(--text-1);
+  min-width: 9ch;
+}
+.activityState {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--text-3);
+}
+
+/* --- Folder discovery card (#465) ------------------------------------------------ */
+/* A small uppercase sub-label above each discovery subsection (root dirs / exclusions),
+ * matching the .aiFieldLabel style used by the AI panel. */
+.discoverySub {
+  margin: 14px 0 6px;
+}
+.discoverySub:first-of-type {
+  margin-top: 4px;
+}
+/* One path row in a discovery list: the path text + a Remove button on the right.
+ * Reuses the .excludeRow box but is not a label/checkbox row. */
+.discoveryRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 0;
+}
+.discoveryPath {
+  min-width: 0;
+  flex: 1;
+  font-size: 12.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.discoveryRemove {
+  margin-left: auto;
+  flex: none;
+  appearance: none;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.discoveryRemove:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+/* --- Entity-grouped Session overview (#465) -------------------------------------- */
+/* One group per owning project entity (+ the synthetic Unassigned group). */
+.overviewGroup {
+  margin-top: 12px;
+}
+.overviewGroupHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+}
+.overviewGroupDot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: none;
+}
+.overviewGroupDotEmpty {
+  border: 1px dashed var(--border);
+}
+.overviewGroupName {
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.overviewGroupCount {
+  flex: none;
+  font-size: 10px;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 1px 6px;
+}
+
+/* --- Prompt catalog (#824) --------------------------------------------------------------
+ * Eleven collapsed rows in one panel. No radius, no gradients (docs/design.md), 44px rows,
+ * and the error treatment is a flat status-down rule + text rather than an LED — these are
+ * failures of THIS panel, not session state, and a status LED means session state. */
+.promptNote {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--accent);
+}
+.promptGroup {
+  margin: 16px 0 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3, var(--text-muted));
+}
+.promptRow {
+  margin-bottom: 6px;
+  padding: 4px 10px 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+}
+.promptToggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px; /* touch target (docs/design.md §8) */
+  padding: 4px 0;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.promptChev {
+  flex: none;
+  width: 10px;
+  font-size: 11px;
+  color: var(--text-3, var(--text-muted));
+}
+.promptMain {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.promptTitle {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+}
+.promptDesc {
+  display: block;
+  margin-top: 2px;
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--text-muted);
+}
+.promptBadge {
+  flex: none;
+  padding: 2px 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  background: var(--badge-bg);
+  color: var(--badge-fg);
+  border: 1px solid var(--badge-bg);
+}
+.promptBadgeGuard {
+  background: transparent;
+  color: var(--text-muted);
+  border-color: var(--border);
+}
+.promptContract {
+  margin: 8px 0;
+  padding: 6px 8px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-3, var(--text-muted));
+  background: var(--surface-3);
+  border: 1px solid var(--border-subtle);
+  overflow-x: auto;
+}
+.promptState {
+  margin-left: auto;
+}
+.promptLockLabel {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 4px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3, var(--text-muted));
+}
+.promptLockLabel::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  background: var(--accent);
+}
+.promptLocked {
+  margin: 0;
+  padding: 7px 10px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-3, var(--text-muted));
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+.promptOver {
+  border-color: var(--status-down);
+}
+.promptInlineError {
+  margin: 8px 0 0;
+  padding: 4px 0 4px 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--danger-text);
+  border-left: 3px solid var(--status-down);
+}
+.promptError {
+  padding: 9px 11px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  background: var(--surface-2);
+  border: 1px solid var(--status-down);
+  border-left-width: 3px;
+}
+.promptCount {
+  margin-left: auto;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  color: var(--text-3, var(--text-muted));
+}
+.promptOverText {
+  font-weight: 700;
+  color: var(--danger-text);
+}
+
+/* Per-agent usage (#839). The meter is a bar, not a gauge or a ring: the design system has no
+   radius and no gradients, and a straight bar reads at a glance on a phone. */
+.agent {
+  flex-direction: column;
+  align-items: stretch;
+}
+.agentHead {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.budgetBar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+.budgetField,
+.budgetToggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.budgetToggle input {
+  min-width: 20px;
+  min-height: 20px;
+}
+/* The LABEL is the hit area, so the label is what has to be 44px — the comment here used to
+   claim that while nothing enforced it, leaving a 20px target. docs/design.md §8: ≥44px. */
+.budgetToggle {
+  min-height: 44px;
+}
+.budgetPct,
+.budgetTokens {
+  border-radius: 0;
+  border: 1px solid var(--border);
+  background: var(--bg-2, var(--bg));
+  color: var(--text-1);
+  padding: 6px 8px;
+  min-height: 44px; /* touch target (docs/design.md §8) */
+  font-variant-numeric: tabular-nums;
+  font:
+    12px ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Consolas,
+    monospace;
+}
+.budgetPct {
+  width: 64px;
+}
+.budgetTokens {
+  width: 120px;
+}
+.budgetRefresh {
+  margin-left: auto;
+  border-radius: 0;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-1);
+  padding: 8px 12px;
+  min-height: 44px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.budgetRefresh:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.budgetError {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--danger-text);
+}
+.usage {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.usageRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.meter {
+  flex: 1;
+  height: 8px;
+  background: color-mix(in srgb, var(--text-muted) 22%, transparent);
+  overflow: hidden;
+}
+.meterFill {
+  display: block;
+  height: 100%;
+  background: var(--status-unknown);
+}
+/* Status colour is the signal, never the brand accent (docs/design.md). */
+.meter_ok .meterFill {
+  background: var(--status-up);
+}
+.meter_warn .meterFill {
+  background: var(--status-degraded);
+}
+.meter_over .meterFill {
+  background: var(--status-down);
+}
+.meter_none .meterFill {
+  background: var(--status-unknown);
+}
+.usagePct {
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  font-weight: 700;
+  min-width: 40px;
+  text-align: right;
+}
+.pct_warn {
+  color: var(--status-degraded);
+}
+.pct_over {
+  color: var(--danger-text);
+}
+.pct_none {
+  color: var(--text-muted);
+}
+.usageSource {
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  min-width: 48px;
+}
+.usageCaption {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+.usageStale {
+  opacity: 0.85;
+}
+.usageInputs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+/* Terminal text size (#859). The stepper is the one control here whose value is not a colour
+ * or a mode but a NUMBER the operator nudges, so it gets a real stepper rather than a radio
+ * row. 44px minimum on both axes per docs/design.md — this is tapped on a phone, usually
+ * while squinting at an unreadable pane, which is the worst possible moment for a 30px hit
+ * target. Pinned at runtime by the Playwright geometry check, not by this declaration alone. */
+.termSize {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 9px;
+}
+.termSizeStepper {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  width: 100%;
+  max-width: 320px;
+}
+.termSizeStep {
+  flex: none;
+  width: 44px;
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--bg-2);
+  color: var(--text);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.termSizeStep:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.termSizeStep:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.termSizeValue {
+  flex: 1;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--accent);
+  background: var(--bg-2);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 13px;
+  color: var(--text);
+}
+.termSizeReset {
+  min-height: 44px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  cursor: pointer;
+}
+.termSizeReset:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.termSizeReset:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+/* Terminal FONT picker (#866). A card radiogroup like the theme picker above, because the
+ * choice is made by LOOKING: every card renders its own name and specimen in its own face.
+ * Same grid geometry as .themes, so the two controls read as one family of choices. */
+.fonts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+.fontCard {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  text-align: left;
+  /* 44px coarse-pointer floor is met by the content (three stacked lines) plus this padding;
+     min-height keeps it true if a note ever wraps to nothing. */
+  min-height: 44px;
+  padding: 10px 11px;
+  border-radius: 0;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+.fontCard:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.fontCard.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent) inset;
+}
+.fontCard:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* Unavailable = the primary face is not installed on THIS device. Disabled rather than hidden:
+   an operator moving between a phone and a desktop should see that the card exists and simply
+   isn't offered here, instead of the list silently changing length. */
+.fontCard:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+.fontCard.custom {
+  border-style: dashed;
+}
+.fontName {
+  font-weight: 700;
+  font-size: 13px;
+}
+/* The specimen renders in the card's OWN face — that is the entire point of the control. */
+.fontSpecimen {
+  font-size: 13px;
+  color: var(--text-2, var(--text-muted));
+  white-space: pre;
+  overflow: hidden;
+}
+.fontNote {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-3, var(--text-muted));
+}
+.fontCustomRow {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  /* A long stack must scroll INSIDE the input, never widen the panel: min-width:0 is what
+     stops a flex item from refusing to shrink below its content on a 412px phone. */
+  min-width: 0;
+  max-width: 420px;
+}
+.fontCustomInput {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 10px;
+  border: 1px solid var(--accent);
+  border-radius: 0;
+  background: var(--bg-2);
+  color: var(--text);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+}
+.fontCustomInput:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.fontCustomInput.invalid {
+  border-color: var(--danger-text, var(--status-down));
+}
+.fontCustomError {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  color: var(--danger-text, var(--status-down));
+}
+
+/* The sample line renders at the CHOSEN size, so it must not inherit .hint's size. Mono,
+ * because what you are judging is agent output. */
+.termSizeSample {
+  margin: 2px 0 0;
+  padding: 7px 9px;
+  width: 100%;
+  border: 1px solid var(--border);
+  background: var(--term-bg, var(--bg-1));
+  color: var(--text-muted);
+  white-space: pre;
+  overflow-x: auto;
+  /* #866: NO font-family here. The face is set inline from the operator's choice — a preview
+     that renders in the chrome's --font-mono stack (as it did) shows a face the terminal will
+     not use, which is worse than no preview. Line-height 1.15 so the box rules join, the way
+     they do in xterm. */
+  line-height: 1.15;
+}
+
+/* Mission playbooks (#892). A playbook is a small nested form — a header row and a list of
+   objective rows — so it gets a frame of its own rather than sitting flush against the section:
+   without one, two adjacent playbooks read as a single long list of inputs. */
+.playbook {
+  border: 1px solid var(--border);
+  padding: 10px;
+  margin: 10px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.playbookHead {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.playbookId {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+}
+
+/* WRAPS rather than scrolls: an objective carries a key, a title, a probe, its arguments and a
+   gate, and on a phone that is more controls than a row can hold. A horizontal scroller would
+   hide the gate checkbox off-screen, which is the one control whose meaning is "this can block
+   the mission from ever finishing". */
+.objective {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 8px;
+  border: 1px solid var(--border);
+}
+
+.objective > input[type="text"],
+.objective > input:not([type]),
+.objective > select {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+/* Endpoint & model (#956): a status strip, then two cards, each saved by the button at its own
+ * foot. The foot sits on a dashed rule inside the card, so a save can never read as belonging
+ * to the card below it (the #834 complaint about "Save & validate" in the middle). */
+.endpointStrip {
+  display: flex;
+  flex-wrap: wrap;
+  max-width: 640px;
+  margin: 0 auto 18px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+.endpointStrip > span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 7px 12px;
+  border-right: 1px solid var(--border);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-3, var(--text-muted));
+}
+.endpointStrip b {
+  color: var(--text-2, var(--text));
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  overflow-wrap: anywhere;
+}
+.endpointStrip > .endpointStripState {
+  margin-left: auto;
+  border-right: 0;
+}
+.stepNum {
+  color: var(--brand, var(--accent));
+}
+.endpointPlain {
+  margin: 0 0 18px;
+}
+.endpointPlain h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-2, var(--text));
+}
+.cardFoot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  margin: 16px -18px -16px;
+  padding: 11px 18px;
+  border-top: 1px dashed var(--border);
+}
+.endpointPlain .cardFoot {
+  margin: 12px 0 0;
+  padding: 10px 0 0;
+}
+.cardFoot > p {
+  flex: 1 1 220px;
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.cardActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}
+.cardActions button {
+  justify-content: center;
+  text-align: center;
+}
+.lockBand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 2px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+/* Every control on this page is a 44px target on a phone (docs/design.md §8). */
+@media (max-width: 800px), (pointer: coarse) {
+  .endpointCard input,
+  .endpointCard select,
+  .endpointCard button {
+    min-height: 44px;
+  }
+  .endpointCard .aiModelRow button {
+    min-width: 44px;
+  }
+  .cardFoot > p {
+    flex-basis: 100%;
+  }
+  .cardActions {
+    width: 100%;
+  }
+  .cardActions button {
+    flex: 1;
+  }
+}
+/* The sidebar / index LED on Endpoint & model. */
+.navLed {
+  margin-left: auto;
+}
+.indexModel {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* `inherit`, which is what this always rendered: `--font-sans` is not a token (#948). */
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-muted);
+}
+
+/* OpenCode compaction shares the Prune card; figures wrap as whole label/value pairs. */
+.databaseSection {
+  margin-top: 20px;
+  border-top: 1px solid var(--border);
+}
+.databaseStats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin: 10px 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+}
+.databaseStats > div {
+  display: flex;
+  gap: 8px;
+}
+.databaseStats dt {
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+.databaseStats dd {
+  margin: 0;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}

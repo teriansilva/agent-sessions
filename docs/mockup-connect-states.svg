@@ -1,0 +1,212 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="1220" viewBox="0 0 1240 1220" font-family="'JetBrains Mono','DejaVu Sans Mono',ui-monospace,monospace">
+  <defs>
+    <!-- corner-bracket: 2px amber L, drawn as a group referenced at each corner -->
+    <g id="cnr-tl"><path d="M0 14 V0 H14" fill="none" stroke="#ffb000" stroke-width="2"/></g>
+    <g id="cnr-tr"><path d="M-14 0 H0 V14" fill="none" stroke="#ffb000" stroke-width="2"/></g>
+    <g id="cnr-bl"><path d="M0 -14 V0 H14" fill="none" stroke="#ffb000" stroke-width="2"/></g>
+    <g id="cnr-br"><path d="M-14 0 H0 V-14" fill="none" stroke="#ffb000" stroke-width="2"/></g>
+  </defs>
+
+  <!-- page ground -->
+  <rect width="1240" height="1220" fill="#08090b"/>
+
+  <!-- ===== title band ===== -->
+  <text x="32" y="34" fill="#ffb000" font-size="15" font-weight="700" letter-spacing="3">◢ BATTLELAB</text>
+  <text x="176" y="34" fill="#a7abb3" font-size="12" letter-spacing="1.5">// REMOTE CONNECT — full-app states (P3 · #579)</text>
+  <text x="32" y="56" fill="#6f747d" font-size="11" letter-spacing="1">LOADING // ERROR — app-only connect states; the streamed surface is the existing app</text>
+  <line x1="32" y1="70" x2="1208" y2="70" stroke="rgba(255,255,255,.14)" stroke-width="1"/>
+
+  <!-- ============================================================= -->
+  <!-- ROW 1 — DARK / DESKTOP                                         -->
+  <!-- ============================================================= -->
+  <text x="32" y="100" fill="#6f747d" font-size="10" letter-spacing="2">DARK // DESKTOP</text>
+
+  <!-- Card: Card A: LOADING (dark) -->
+  <g transform="translate(32,112)">
+    <rect width="368" height="300" fill="#131418" stroke="rgba(255,255,255,.14)" stroke-width="1"/>
+    <use href="#cnr-tl" x="0" y="0"/><use href="#cnr-tr" x="368" y="0"/>
+    <use href="#cnr-bl" x="0" y="300"/><use href="#cnr-br" x="368" y="300"/>
+    <text x="18" y="30" fill="#ffb000" font-size="12" font-weight="700" letter-spacing="2">◢ BATTLELAB</text>
+    <text x="150" y="30" fill="#6f747d" font-size="9" letter-spacing="1.5">REMOTE // CONNECT</text>
+    <line x1="0" y1="46" x2="368" y2="46" stroke="rgba(255,255,255,.08)"/>
+    <!-- state tag + LED -->
+    <circle cx="24" cy="70" r="4" fill="#ffb000"/>
+    <text x="38" y="74" fill="#e8e9ec" font-size="12" letter-spacing="1">CONNECTING // nightjar-box</text>
+    <!-- handshake checklist -->
+    <text x="24" y="108" fill="#3fbf6f" font-size="12">✓</text>
+    <text x="44" y="108" fill="#a7abb3" font-size="12">human verification solved</text>
+    <text x="24" y="134" fill="#3fbf6f" font-size="12">✓</text>
+    <text x="44" y="134" fill="#a7abb3" font-size="12">end-to-end channel established</text>
+    <text x="24" y="160" fill="#ffb000" font-size="12">⟳</text>
+    <text x="44" y="160" fill="#e8e9ec" font-size="12">loading app shell…</text>
+    <text x="24" y="186" fill="#6f747d" font-size="12">·</text>
+    <text x="44" y="186" fill="#6f747d" font-size="12">streaming your sessions</text>
+    <!-- progress rail -->
+    <rect x="24" y="210" width="320" height="4" fill="#1a1c21"/>
+    <rect x="24" y="210" width="205" height="4" fill="#ffb000"/>
+    <!-- blind-relay reassurance -->
+    <line x1="0" y1="244" x2="368" y2="244" stroke="rgba(255,255,255,.08)"/>
+    <text x="24" y="268" fill="#6f747d" font-size="10">🔒 end-to-end encrypted · the relay is blind</text>
+    <text x="24" y="286" fill="#6f747d" font-size="10">SEC // ZERO-KNOWLEDGE   ·   TTL // 59:12</text>
+  </g>
+
+  <!-- Card: Card B: ERROR (dark) -->
+  <g transform="translate(436,112)">
+    <rect width="368" height="300" fill="#131418" stroke="rgba(255,255,255,.14)" stroke-width="1"/>
+    <use href="#cnr-tl" x="0" y="0"/><use href="#cnr-tr" x="368" y="0"/>
+    <use href="#cnr-bl" x="0" y="300"/><use href="#cnr-br" x="368" y="300"/>
+    <text x="18" y="30" fill="#ffb000" font-size="12" font-weight="700" letter-spacing="2">◢ BATTLELAB</text>
+    <text x="150" y="30" fill="#6f747d" font-size="9" letter-spacing="1.5">REMOTE // CONNECT</text>
+    <line x1="0" y1="46" x2="368" y2="46" stroke="rgba(255,255,255,.08)"/>
+    <!-- red status = active failure (reserved treatment) -->
+    <circle cx="24" cy="70" r="4" fill="#c02020"/>
+    <text x="38" y="74" fill="#e5484d" font-size="12" letter-spacing="1">COULD NOT CONNECT</text>
+    <text x="24" y="104" fill="#a7abb3" font-size="12">connection_failed —</text>
+    <text x="24" y="122" fill="#a7abb3" font-size="12">the box isn't reachable through the</text>
+    <text x="24" y="140" fill="#a7abb3" font-size="12">relay, or the access key is wrong.</text>
+    <text x="24" y="176" fill="#6f747d" font-size="11">Check the console name + access key,</text>
+    <text x="24" y="192" fill="#6f747d" font-size="11">then retry. Nothing was exposed.</text>
+    <!-- CTA primary (amber) + ghost -->
+    <rect x="24" y="216" width="150" height="38" fill="#ffb000"/>
+    <text x="99" y="240" fill="#120c00" font-size="12" font-weight="700" letter-spacing="2" text-anchor="middle">RETRY</text>
+    <text x="186" y="238" fill="#6f747d" font-size="10">no shell fallback</text>
+    <line x1="0" y1="272" x2="368" y2="272" stroke="rgba(255,255,255,.08)"/>
+    <text x="24" y="290" fill="#6f747d" font-size="10">no retry on 4401/4404 — surfaced, not looped</text>
+  </g>
+
+  <!-- Card: Card C: REFUSED (dark) -->
+  <g transform="translate(840,112)">
+    <rect width="368" height="300" fill="#131418" stroke="rgba(255,255,255,.14)" stroke-width="1"/>
+    <use href="#cnr-tl" x="0" y="0"/><use href="#cnr-tr" x="368" y="0"/>
+    <use href="#cnr-bl" x="0" y="300"/><use href="#cnr-br" x="368" y="300"/>
+    <text x="18" y="30" fill="#ffb000" font-size="12" font-weight="700" letter-spacing="2">◢ BATTLELAB</text>
+    <text x="150" y="30" fill="#6f747d" font-size="9" letter-spacing="1.5">REMOTE // CONNECT</text>
+    <line x1="0" y1="46" x2="368" y2="46" stroke="rgba(255,255,255,.08)"/>
+    <!-- degraded = amber STATUS tone (distinct from brand amber usage), on a default frame -->
+    <circle cx="24" cy="70" r="4" fill="#f59e0b"/>
+    <text x="38" y="74" fill="#e8e9ec" font-size="12" letter-spacing="1">STREAM MODE REFUSED</text>
+    <text x="24" y="104" fill="#a7abb3" font-size="12">This install is not loopback-bound,</text>
+    <text x="24" y="122" fill="#a7abb3" font-size="12">or the app-mode handshake failed.</text>
+    <text x="24" y="146" fill="#a7abb3" font-size="12">Re-run with 127.0.0.1 or use</text>
+    <text x="24" y="164" fill="#a7abb3" font-size="12">ordinary self-host mode.</text>
+    <rect x="24" y="196" width="320" height="40" fill="#ffb000"/>
+    <text x="184" y="221" fill="#120c00" font-size="12" font-weight="700" letter-spacing="2" text-anchor="middle">USE LOOPBACK BIND</text>
+    <text x="24" y="262" fill="#6f747d" font-size="10">Home Free now streams the full app only;</text>
+    <text x="24" y="278" fill="#6f747d" font-size="10">no terminal fallback is exposed.</text>
+  </g>
+
+  <!-- ============================================================= -->
+  <!-- ROW 2 — LIGHT / DESKTOP                                        -->
+  <!-- ============================================================= -->
+  <text x="32" y="460" fill="#6f747d" font-size="10" letter-spacing="2">LIGHT // DESKTOP</text>
+
+  <!-- Card: Card A: LOADING (light) -->
+  <g transform="translate(32,472)">
+    <rect width="368" height="300" fill="#f2f3f5" stroke="rgba(10,12,16,.2)" stroke-width="1"/>
+    <use href="#cnr-tl" x="0" y="0"/><use href="#cnr-tr" x="368" y="0"/>
+    <use href="#cnr-bl" x="0" y="300"/><use href="#cnr-br" x="368" y="300"/>
+    <text x="18" y="30" fill="#b3760a" font-size="12" font-weight="700" letter-spacing="2">◢ BATTLELAB</text>
+    <text x="150" y="30" fill="#6f747d" font-size="9" letter-spacing="1.5">REMOTE // CONNECT</text>
+    <line x1="0" y1="46" x2="368" y2="46" stroke="rgba(10,12,16,.12)"/>
+    <circle cx="24" cy="70" r="4" fill="#ffb000"/>
+    <text x="38" y="74" fill="#14161a" font-size="12" letter-spacing="1">CONNECTING // nightjar-box</text>
+    <text x="24" y="108" fill="#2f9e57" font-size="12">✓</text>
+    <text x="44" y="108" fill="#41454d" font-size="12">human verification solved</text>
+    <text x="24" y="134" fill="#2f9e57" font-size="12">✓</text>
+    <text x="44" y="134" fill="#41454d" font-size="12">end-to-end channel established</text>
+    <text x="24" y="160" fill="#b3760a" font-size="12">⟳</text>
+    <text x="44" y="160" fill="#14161a" font-size="12">loading app shell…</text>
+    <text x="24" y="186" fill="#6f747d" font-size="12">·</text>
+    <text x="44" y="186" fill="#6f747d" font-size="12">streaming your sessions</text>
+    <rect x="24" y="210" width="320" height="4" fill="#dfe1e4"/>
+    <rect x="24" y="210" width="205" height="4" fill="#ffb000"/>
+    <line x1="0" y1="244" x2="368" y2="244" stroke="rgba(10,12,16,.12)"/>
+    <text x="24" y="268" fill="#6f747d" font-size="10">🔒 end-to-end encrypted · the relay is blind</text>
+    <text x="24" y="286" fill="#6f747d" font-size="10">SEC // ZERO-KNOWLEDGE   ·   TTL // 59:12</text>
+  </g>
+
+  <!-- Card: Card B: ERROR (light) -->
+  <g transform="translate(436,472)">
+    <rect width="368" height="300" fill="#f2f3f5" stroke="rgba(10,12,16,.2)" stroke-width="1"/>
+    <use href="#cnr-tl" x="0" y="0"/><use href="#cnr-tr" x="368" y="0"/>
+    <use href="#cnr-bl" x="0" y="300"/><use href="#cnr-br" x="368" y="300"/>
+    <text x="18" y="30" fill="#b3760a" font-size="12" font-weight="700" letter-spacing="2">◢ BATTLELAB</text>
+    <text x="150" y="30" fill="#6f747d" font-size="9" letter-spacing="1.5">REMOTE // CONNECT</text>
+    <line x1="0" y1="46" x2="368" y2="46" stroke="rgba(10,12,16,.12)"/>
+    <circle cx="24" cy="70" r="4" fill="#c02020"/>
+    <text x="38" y="74" fill="#c02020" font-size="12" letter-spacing="1">COULD NOT CONNECT</text>
+    <text x="24" y="104" fill="#41454d" font-size="12">connection_failed —</text>
+    <text x="24" y="122" fill="#41454d" font-size="12">the box isn't reachable through the</text>
+    <text x="24" y="140" fill="#41454d" font-size="12">relay, or the access key is wrong.</text>
+    <text x="24" y="176" fill="#6f747d" font-size="11">Check the console name + access key,</text>
+    <text x="24" y="192" fill="#6f747d" font-size="11">then retry. Nothing was exposed.</text>
+    <rect x="24" y="216" width="150" height="38" fill="#ffb000"/>
+    <text x="99" y="240" fill="#120c00" font-size="12" font-weight="700" letter-spacing="2" text-anchor="middle">RETRY</text>
+    <text x="186" y="238" fill="#6f747d" font-size="10">no shell fallback</text>
+    <line x1="0" y1="272" x2="368" y2="272" stroke="rgba(10,12,16,.12)"/>
+    <text x="24" y="290" fill="#6f747d" font-size="10">no retry on 4401/4404 — surfaced, not looped</text>
+  </g>
+
+  <!-- Card: Card C: REFUSED (light) -->
+  <g transform="translate(840,472)">
+    <rect width="368" height="300" fill="#f2f3f5" stroke="rgba(10,12,16,.2)" stroke-width="1"/>
+    <use href="#cnr-tl" x="0" y="0"/><use href="#cnr-tr" x="368" y="0"/>
+    <use href="#cnr-bl" x="0" y="300"/><use href="#cnr-br" x="368" y="300"/>
+    <text x="18" y="30" fill="#b3760a" font-size="12" font-weight="700" letter-spacing="2">◢ BATTLELAB</text>
+    <text x="150" y="30" fill="#6f747d" font-size="9" letter-spacing="1.5">REMOTE // CONNECT</text>
+    <line x1="0" y1="46" x2="368" y2="46" stroke="rgba(10,12,16,.12)"/>
+    <circle cx="24" cy="70" r="4" fill="#f59e0b"/>
+    <text x="38" y="74" fill="#14161a" font-size="12" letter-spacing="1">STREAM MODE REFUSED</text>
+    <text x="24" y="104" fill="#41454d" font-size="12">This install is not loopback-bound,</text>
+    <text x="24" y="122" fill="#41454d" font-size="12">or the app-mode handshake failed.</text>
+    <text x="24" y="146" fill="#41454d" font-size="12">Re-run with 127.0.0.1 or use</text>
+    <text x="24" y="164" fill="#41454d" font-size="12">ordinary self-host mode.</text>
+    <rect x="24" y="196" width="320" height="40" fill="#ffb000"/>
+    <text x="184" y="221" fill="#120c00" font-size="12" font-weight="700" letter-spacing="2" text-anchor="middle">USE LOOPBACK BIND</text>
+    <text x="24" y="262" fill="#6f747d" font-size="10">Home Free now streams the full app only;</text>
+    <text x="24" y="278" fill="#6f747d" font-size="10">no terminal fallback is exposed.</text>
+  </g>
+
+  <!-- ============================================================= -->
+  <!-- ROW 3 — MOBILE reflow (dark) — ≤800px single column            -->
+  <!-- ============================================================= -->
+  <text x="32" y="820" fill="#6f747d" font-size="10" letter-spacing="2">MOBILE // DARK (≤800px reflow — near-opaque chrome, stacked)</text>
+
+  <g transform="translate(32,832)">
+    <rect width="300" height="352" fill="#131418" stroke="rgba(255,255,255,.14)" stroke-width="1"/>
+    <use href="#cnr-tl" x="0" y="0"/><use href="#cnr-tr" x="300" y="0"/>
+    <use href="#cnr-bl" x="0" y="352"/><use href="#cnr-br" x="300" y="352"/>
+    <text x="16" y="28" fill="#ffb000" font-size="12" font-weight="700" letter-spacing="2">◢ BATTLELAB</text>
+    <line x1="0" y1="42" x2="300" y2="42" stroke="rgba(255,255,255,.08)"/>
+    <circle cx="20" cy="64" r="4" fill="#ffb000"/>
+    <text x="34" y="68" fill="#e8e9ec" font-size="12">CONNECTING</text>
+    <text x="20" y="98" fill="#3fbf6f" font-size="12">✓ human verification</text>
+    <text x="20" y="122" fill="#3fbf6f" font-size="12">✓ encrypted channel</text>
+    <text x="20" y="146" fill="#ffb000" font-size="12">⟳ loading app shell…</text>
+    <rect x="20" y="166" width="260" height="4" fill="#1a1c21"/>
+    <rect x="20" y="166" width="150" height="4" fill="#ffb000"/>
+    <!-- stacked inputs (form reflow) -->
+    <rect x="20" y="192" width="260" height="34" fill="#0d0e10" stroke="#25282e"/>
+    <text x="30" y="214" fill="#6f747d" font-size="11">console name</text>
+    <rect x="20" y="232" width="260" height="34" fill="#0d0e10" stroke="#25282e"/>
+    <text x="30" y="254" fill="#6f747d" font-size="11">access key</text>
+    <rect x="20" y="276" width="260" height="42" fill="#ffb000"/>
+    <text x="150" y="302" fill="#120c00" font-size="12" font-weight="700" letter-spacing="2" text-anchor="middle">CONNECT</text>
+    <text x="20" y="340" fill="#6f747d" font-size="9">🔒 blind relay · zero-knowledge · TTL 59:12</text>
+  </g>
+
+  <!-- annotations beside the mobile card -->
+  <g transform="translate(360,860)" fill="#a7abb3" font-size="12">
+    <text x="0" y="0" fill="#ffb000" font-size="11" letter-spacing="1">NOTES</text>
+    <text x="0" y="26">• States are the ONLY new UI — once paired, the streamed surface</text>
+    <text x="0" y="44">  is the existing BattleLab app (sidebar / Pulse / terminals), unchanged.</text>
+    <text x="0" y="70">• Tokens: --accent #ffb000 (brand) kept separate from status hues;</text>
+    <text x="0" y="88">  red (#c02020) reserved for active failure; amber-status (#f59e0b)</text>
+    <text x="0" y="106">  for refusal / setup-required states — never the brand accent.</text>
+    <text x="0" y="132">• No rounded corners; 2px amber corner-bracket frames + 1px hairline.</text>
+    <text x="0" y="150">• LEDs paired with text (never colour-only); mono uppercase // chrome.</text>
+    <text x="0" y="176">• Mobile ≤800px: single column, stacked inputs, ≥44px touch targets,</text>
+    <text x="0" y="194">  near-opaque chrome (mobile Chrome drops backdrop-filter).</text>
+    <text x="0" y="220" fill="#6f747d">Rendered to docs/design.md HUD tokens · light + dark · desktop + mobile.</text>
+  </g>
+</svg>

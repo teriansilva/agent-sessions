@@ -1,0 +1,2669 @@
+"""The /ws/term route's auth + validation gates (issue #49 Phase 2b).
+
+The happy-path PTY bridge needs a real dtach + engine binary, so it's validated
+on staging; here we pin that an unauthenticated / cross-origin / unknown-session
+client is rejected BEFORE the socket is accepted — no raw shell stream is ever
+exposed without the same gate as the HTTP routes.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from unittest import mock
+
+import pytest
+from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
+
+from agent_sessions import webterm
+from agent_sessions.auth import hash_password  # noqa: F401  (kept for parity w/ conftest)
+from agent_sessions.main import create_app
+
+_GOOD = "claude:11111111-1111-1111-1111-111111111111"
+
+
+def _client(cfg):
+    return TestClient(create_app(cfg), base_url="https://testserver")
+
+
+def _login_headers(c, cfg, origin=None):
+    """Log in and return ws headers carrying the session cookie explicitly.
+
+    TestClient's websocket_connect does not reliably forward the cookie jar, so we
+    pin the session cookie as a header — exactly what a browser sends."""
+    r = c.post(
+        "/login",
+        data={"username": "marcus", "password": "hunter2"},
+        follow_redirects=False,
+        headers={"Origin": cfg.origin},
+    )
+    assert r.status_code == 303
+    cookie = c.cookies.get("agent_sessions")
+    return {"Origin": origin or cfg.origin, "Cookie": f"agent_sessions={cookie}"}
+
+
+def _close_code(c, url, headers):
+    """The route accepts, then closes with a code on rejection (so the browser gets
+    the real code, not a 1006 handshake failure that would reconnect-loop). Connect,
+    then read the deliberate close — TestClient may raise WebSocketDisconnect or
+    return a {'type':'websocket.close','code':…} message depending on version."""
+    try:
+        with c.websocket_connect(url, headers=headers) as ws:
+            msg = ws.receive()
+            if isinstance(msg, dict) and msg.get("type") == "websocket.close":
+                return msg.get("code")
+            return None
+    except WebSocketDisconnect as e:
+        return e.code
+
+
+def test_ws_rejects_unauthenticated(auth_cfg):
+    c = _client(auth_cfg)
+    assert _close_code(c, f"/ws/term/{_GOOD}", {"Origin": auth_cfg.origin}) == 4401
+
+
+def test_ws_rejects_bad_origin(auth_cfg):
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg, origin="https://evil.example")
+    assert _close_code(c, f"/ws/term/{_GOOD}", headers) == 4403
+
+
+def test_ws_rejects_bad_engine_id(auth_cfg):
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    assert _close_code(c, "/ws/term/claude:not-a-uuid", headers) == 4404
+
+
+def test_ws_rejects_unknown_session(fake_jsonl, auth_cfg):
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    # valid auth + origin + uuid shape, but not in the scanned set → 4404
+    code = _close_code(c, "/ws/term/claude:99999999-9999-9999-9999-999999999999", headers)
+    assert code == 4404
+
+
+def test_ws_resume_rejected_outside_roots(fake_jsonl, auth_cfg, monkeypatch):
+    # Hard root scope (#465/#467): a scanned session whose cwd is OUTSIDE the configured roots is
+    # NOT resumable via the ws either — otherwise the ws is a back door to scoped-out sessions.
+    # _GOOD is scanned at /home/user/claude/demoapp.io; a root elsewhere → out of scope → 4404.
+    from agent_sessions import prefs, project_dirs
+
+    monkeypatch.setattr(project_dirs, "effective_roots", lambda: ["/home/user/claude/other"])
+    monkeypatch.setattr(prefs, "get_folder_exclusions", lambda path=None: [])
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    assert _close_code(c, f"/ws/term/{_GOOD}", headers) == 4404
+
+
+def test_ws_resume_allowed_when_no_roots(fake_jsonl, auth_cfg, monkeypatch):
+    # Empty roots ⇒ unscoped (today's behaviour): the scanned session clears the resume gate and
+    # only fails later on the unresolvable bare binary (4500) — proving it passed the scope check.
+    from agent_sessions import prefs, project_dirs
+
+    monkeypatch.setattr(project_dirs, "effective_roots", lambda: [])
+    monkeypatch.setattr(prefs, "get_folder_exclusions", lambda path=None: [])
+    monkeypatch.setenv("AGENT_SESSIONS_CLAUDE_BIN", "claude")  # bare name → 4500 past the gate
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    assert _close_code(c, f"/ws/term/{_GOOD}", headers) == 4500
+
+
+def test_ws_new_session_rejected_outside_roots(auth_cfg, tmp_home, monkeypatch):
+    # A NEW session may launch only in an in-scope cwd when roots are set (#465/#467): a browsable
+    # $HOME dir OUTSIDE the root is rejected (it would be accepted unscoped, being browsable).
+    from agent_sessions import prefs, project_dirs
+
+    root = tmp_home / "code"
+    outside = tmp_home / "elsewhere"
+    root.mkdir()
+    outside.mkdir()
+    monkeypatch.setattr(project_dirs, "effective_roots", lambda: [str(root)])
+    monkeypatch.setattr(prefs, "get_folder_exclusions", lambda path=None: [])
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    fresh = "claude:22222222-2222-2222-2222-222222222222"
+    assert _close_code(c, f"/ws/term/{fresh}?new=1&cwd={outside}", headers) == 4404
+
+
+def test_ws_closes_on_unresolvable_binary(fake_jsonl, auth_cfg, monkeypatch):
+    # A valid, authed, scanned session whose engine binary resolved to a bare name
+    # (not an absolute path) must close deterministically (4500). Regression for #51.
+
+    monkeypatch.setenv("AGENT_SESSIONS_CLAUDE_BIN", "claude")  # bare name → refused → 4500
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    code = _close_code(c, "/ws/term/claude:11111111-1111-1111-1111-111111111111", headers)
+    assert code == 4500
+
+
+def test_webterm_scrollback_ring_caps():
+    # Per-session scrollback ring replays history on reattach; it must stay bounded.
+    # #652 T1: the ring is trimmed AMORTIZED — it may overshoot _MAX_BUF by up to
+    # _MAX_BUF//_RING_TRIM_DIVISOR before dropping back to exactly _MAX_BUF. A big append
+    # (well past cap + slack) fires a trim, so the oldest bytes are dropped.
+    from agent_sessions import webterm
+
+    webterm._BUFFERS.clear()
+    webterm._buffer_append("claude:x", b"a" * 100)
+    assert len(webterm._BUFFERS["claude:x"]) == 100
+    # 2×_MAX_BUF is far past cap + slack → a trim fires and the ring drops back to the cap.
+    webterm._buffer_append("claude:x", b"b" * (2 * webterm._MAX_BUF))
+    buf = webterm._BUFFERS["claude:x"]
+    assert len(buf) == webterm._MAX_BUF  # trimmed back to exactly the cap
+    assert buf[-1:] == b"b"
+    webterm._BUFFERS.clear()
+
+
+def test_buffer_append_records_last_output_at(monkeypatch):
+    # #156: every observed byte stamps the key's wall-clock so /api/sessions can flag
+    # "agent working". get_last_output_at returns None before the first byte and the
+    # latest timestamp after each append.
+    from agent_sessions import webterm
+
+    webterm._BUFFERS.clear()
+    webterm._LAST_OUTPUT_AT.clear()
+    assert webterm.get_last_output_at("claude:y") is None
+
+    monkeypatch.setattr(webterm.time, "time", lambda: 1000.0)
+    webterm._buffer_append("claude:y", b"first")
+    assert webterm.get_last_output_at("claude:y") == 1000.0
+
+    monkeypatch.setattr(webterm.time, "time", lambda: 1042.5)
+    webterm._buffer_append("claude:y", b"second")
+    assert webterm.get_last_output_at("claude:y") == 1042.5
+
+    # _drop_buffer evicts the stamp too — no leak between session lifetimes.
+    webterm._drop_buffer("claude:y")
+    assert webterm.get_last_output_at("claude:y") is None
+    webterm._BUFFERS.clear()
+    webterm._LAST_OUTPUT_AT.clear()
+
+
+def test_attach_replay_grace_suppresses_working_stamp(monkeypatch):
+    # #195: bytes ingested within the post-attach grace window are the dtach screen
+    # replay, not agent activity — they must fill the scrollback ring but NOT stamp the
+    # working signal. Output after the window stamps normally.
+    from agent_sessions import webterm
+
+    webterm._BUFFERS.clear()
+    webterm._LAST_OUTPUT_AT.clear()
+    webterm._SUPPRESS_OUTPUT_UNTIL.clear()
+    k = "claude:z"
+
+    # Attach at t=1000 → grace covers up to t=1000 + _ATTACH_REPLAY_GRACE_S.
+    monkeypatch.setattr(webterm.time, "time", lambda: 1000.0)
+    webterm.note_attach(k)
+    webterm._buffer_append(k, b"\x1b[2Jreplayed screen")  # the replay burst
+    # Scrollback got the bytes, but the working signal did NOT (still inside the window).
+    assert bytes(webterm._BUFFERS[k]) == b"\x1b[2Jreplayed screen"
+    assert webterm.get_last_output_at(k) is None
+
+    # A byte still inside the window (just before it closes) is also suppressed.
+    grace = webterm._ATTACH_REPLAY_GRACE_S
+    monkeypatch.setattr(webterm.time, "time", lambda: 1000.0 + grace - 0.01)
+    webterm._buffer_append(k, b"more replay")
+    assert webterm.get_last_output_at(k) is None
+
+    # Past the window, genuine output stamps the working signal.
+    monkeypatch.setattr(webterm.time, "time", lambda: 1000.0 + grace + 0.5)
+    webterm._buffer_append(k, b"real output")
+    assert webterm.get_last_output_at(k) == 1000.0 + grace + 0.5
+
+    webterm._drop_buffer(k)
+    assert k not in webterm._SUPPRESS_OUTPUT_UNTIL  # grace state evicted with the buffer
+    webterm._BUFFERS.clear()
+    webterm._LAST_OUTPUT_AT.clear()
+    webterm._SUPPRESS_OUTPUT_UNTIL.clear()
+
+
+def test_claude_new_launch_argv_honors_bypass(engine_bin):
+    # Hermes PR #56: the bypass choice must actually affect the launch, not be ignored.
+    from agent_sessions import engines
+
+    engine_bin("claude")
+    p = engines.get("claude")
+    u = "11111111-1111-1111-1111-111111111111"
+    assert "--dangerously-skip-permissions" in p.new_launch_argv(u, cwd="/x", bypass=True)
+    assert "--dangerously-skip-permissions" not in p.new_launch_argv(u, cwd="/x", bypass=False)
+
+
+def test_in_alt_screen_detection():
+    from agent_sessions import webterm
+
+    assert webterm._in_alt_screen(b"hi\x1b[?1049hFRAME") is True  # entered, not left
+    assert webterm._in_alt_screen(b"hi\x1b[?1049hF\x1b[?1049ldone") is False  # left again → inline
+    assert webterm._in_alt_screen(b"plain inline output, no alt") is False  # neither present
+
+
+def test_ws_busy_rejects_4409(fake_jsonl, auth_cfg, monkeypatch):
+    # open_action says the id is held by another writer (no local master) → 4409,
+    # never a second relaunch. The client treats 4409 as "retry → attach".
+    from agent_sessions import sessions
+
+    monkeypatch.setattr(sessions, "open_action", lambda e, n: (sessions.BUSY, None))
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    assert _close_code(c, f"/ws/term/{_GOOD}", headers) == 4409
+
+
+def test_ws_releases_launch_lock_on_launch_failure(fake_jsonl, auth_cfg, monkeypatch):
+    # A LAUNCH that then fails to build argv (4500) must release the launch lock —
+    # otherwise the id would be wedged BUSY until the app restarts. No master was
+    # spawned, so transfer() closes the last fd and the lock frees.
+    from agent_sessions import sessionlock
+
+    key = _GOOD
+    monkeypatch.setenv("AGENT_SESSIONS_CLAUDE_BIN", "claude")  # bare name → refused → 4500
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    assert _close_code(c, f"/ws/term/{key}", headers) == 4500
+    assert sessionlock.is_locked(key) is False  # launch lock released (no wedge)
+
+
+def test_webterm_run_passes_lock_fd_to_spawned_master(tmp_path, monkeypatch):
+    # The launch lock's fd must be in pass_fds so the dtach master inherits it and
+    # holds the flock for its lifetime (the cross-instance / restart guarantee).
+    import asyncio
+
+    from agent_sessions import sessionlock, webterm
+
+    monkeypatch.setenv("AGENT_SESSIONS_LOCK_DIR", str(tmp_path / "locks"))
+    lock = sessionlock.acquire("claude:passfd")
+    assert lock is not None
+    captured = {}
+
+    async def fake_exec(*argv, **kwargs):
+        captured["pass_fds"] = kwargs.get("pass_fds")
+        raise OSError("stop before pumping")  # → webterm closes + ws.close(4502), returns
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    class FakeWS:
+        async def close(self, code=None):
+            pass
+
+    asyncio.run(webterm.run(FakeWS(), ["dtach"], cwd=str(tmp_path), lock=lock))
+    assert lock.fd in (captured["pass_fds"] or ())
+    lock.transfer()
+
+
+def test_webterm_run_spawn_failure_closes_4502(tmp_path, monkeypatch):
+    # #346 Phase A: a transient spawn failure (fork EAGAIN at the cgroup task ceiling)
+    # must close 4502 (client retries with backoff) — NOT 4500, which the client treats
+    # as terminal and would leave a dead terminal until a page reload.
+    import asyncio
+
+    from agent_sessions import webterm
+
+    async def fake_exec(*argv, **kwargs):
+        raise OSError(11, "Resource temporarily unavailable")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    codes = []
+
+    class FakeWS:
+        async def close(self, code=None):
+            codes.append(code)
+
+    asyncio.run(webterm.run(FakeWS(), ["dtach"], cwd=str(tmp_path)))
+    assert codes == [4502]
+
+
+def test_webterm_run_spawn_hang_times_out_to_4502(tmp_path, monkeypatch):
+    # A spawn that hangs (resource pressure) must not wedge the connection coroutine
+    # forever — SPAWN_TIMEOUT_S bounds it, then the same retryable close fires.
+    import asyncio
+
+    from agent_sessions import webterm
+
+    async def hung_exec(*argv, **kwargs):
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", hung_exec)
+    monkeypatch.setattr(webterm, "SPAWN_TIMEOUT_S", 0.05)
+    codes = []
+
+    class FakeWS:
+        async def close(self, code=None):
+            codes.append(code)
+
+    asyncio.run(webterm.run(FakeWS(), ["dtach"], cwd=str(tmp_path)))
+    assert codes == [4502]
+
+
+def test_set_winsize_floors_zero_to_one():
+    # A 0×0 controlling tty makes Ink-style agents render into nothing (the #293/#292
+    # garble at the source). _set_winsize must never pass 0 to TIOCSWINSZ.
+    import os
+    import struct
+    import termios
+
+    from agent_sessions import webterm
+
+    master, slave = os.openpty()
+    try:
+        webterm._set_winsize(slave, 0, 0)
+        rows, cols, _, _ = struct.unpack(
+            "HHHH", __import__("fcntl").ioctl(slave, termios.TIOCGWINSZ, b"\0" * 8)
+        )
+        assert rows >= 1 and cols >= 1  # floored, never 0
+    finally:
+        os.close(master)
+        os.close(slave)
+
+
+def test_pump_in_drops_degenerate_resize_keeps_valid(tmp_path, monkeypatch):
+    # #293 Phase 3: a spurious 0×0 / 1-col resize (mobile layout glitch) must NOT reach the
+    # agent pty — sizing it to 0×0 while the VT mirror floors at 2×2 desyncs the widths and
+    # garbles scroll-up. A real resize still applies.
+    import asyncio
+    import json as _json
+
+    from agent_sessions import webterm
+
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(webterm, "_set_winsize", lambda fd, rows, cols: calls.append((rows, cols)))
+
+    class FakeWS:
+        def __init__(self, frames):
+            self._frames = list(frames)
+
+        async def receive(self):
+            return self._frames.pop(0) if self._frames else {"type": "websocket.disconnect"}
+
+        async def send_bytes(self, b):
+            pass
+
+        async def send_text(self, t):
+            pass
+
+        async def close(self, code=None):
+            pass
+
+    frames = [
+        {"text": _json.dumps({"t": "r", "cols": 0, "rows": 0})},  # degenerate → dropped
+        {"text": _json.dumps({"t": "r", "cols": 100, "rows": 40})},  # real → applied
+    ]
+    # A silent, short-lived agent; buf_key=None so we isolate the pty-sizing path.
+    asyncio.run(webterm.run(FakeWS(frames), ["sleep", "1"], cwd=str(tmp_path), buf_key=None))
+    assert (0, 0) not in calls  # the degenerate resize never sized the pty
+    assert (40, 100) in calls  # the real resize did
+
+
+def test_resume_payload_tracks_total_and_serves_full_then_delta():
+    # Delta-resume: _TOTALS counts every byte; have=0 → full replay; have within the
+    # ring → only the bytes since `have`; have==total → nothing new.
+    from agent_sessions import webterm
+
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
+    k = "claude:dr"
+    webterm._buffer_append(k, b"hello ")
+    webterm._buffer_append(k, b"world")
+    assert webterm._TOTALS[k] == 11
+    assert webterm._resume_payload(k, 0) == (b"hello world", 11)  # fresh attach → full
+    assert webterm._resume_payload(k, 6) == (b"world", 11)  # reconnect → delta
+    assert webterm._resume_payload(k, 11) == (b"", 11)  # caught up → nothing
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
+
+
+def test_resume_payload_full_replay_when_have_fell_behind_ring(monkeypatch):
+    # If the client's offset fell behind the capped ring, send the whole ring (it can't
+    # reconstruct the gap), not a wrong partial slice.
+    from agent_sessions import webterm
+
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
+    monkeypatch.setattr(webterm.scrollback, "_MAX_BUF", 10)
+    k = "claude:dr2"
+    webterm._buffer_append(k, b"abcdefghijklmnop")  # 16 bytes → ring trimmed to last 10
+    assert webterm._TOTALS[k] == 16
+    payload, total = webterm._resume_payload(k, 3)  # 3 < ring_start(6) → full ring
+    assert total == 16 and payload == bytes(webterm._BUFFERS[k]) and len(payload) == 10
+    assert webterm._resume_payload(k, 12)[0] == b"mnop"  # within ring → delta
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
+
+
+def test_resume_payload_alt_screen_sends_nothing():
+    # Alt-screen TUI: never replay (repaints via SIGWINCH) and never blank — empty
+    # payload, but still report the authoritative total.
+    from agent_sessions import webterm
+
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
+    k = "opencode:alt"
+    webterm._buffer_append(k, b"\x1b[?1049h a tui frame")  # entered alt screen
+    payload, total = webterm._resume_payload(k, 0)
+    assert payload == b"" and total == webterm._TOTALS[k]
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
+
+
+_UUID = "11111111-1111-1111-1111-111111111111"
+
+
+def test_transcript_payload_renders_clear_plus_conversation_for_claude(monkeypatch):
+    # #242 PR2: a fresh load resolves the engine's transcript adapter, renders it at the client
+    # width, and returns clear + rendered conversation (which scrolls into xterm scrollback)
+    # plus the exact history cursor for the {"t":"hist"} frame (#348 / Hermes #365 r2).
+    from agent_sessions import transcript, webterm
+
+    monkeypatch.setattr(webterm.scrollback, "_TRANSCRIPT_SCROLLBACK", True)
+    turns = [transcript.Turn("user", "do the thing"), transcript.Turn("assistant", "done")]
+    monkeypatch.setattr(
+        transcript,
+        "adapter_for",
+        lambda eid: (lambda native, home: turns) if eid == "claude" else None,
+    )
+    res = webterm._transcript_payload(f"claude:{_UUID}", 80)
+    assert res is not None
+    out, cursor = res
+    assert out.startswith(webterm._CLEAN_LOAD_CLEAR)  # clears first
+    assert b"do the thing" in out and b"done" in out  # the conversation
+    assert cursor == 0  # nothing truncated → the payload covers the whole transcript
+
+
+def test_transcript_payload_exports_exact_truncation_boundary(monkeypatch):
+    # Hermes #365 r2 finding 1: when the attach render truncates, the payload must carry the
+    # EXACT first rendered turn index — the {"t":"hist"} cursor the client seeds `before=` from —
+    # not leave the server to re-derive the boundary at the (possibly resized) request width.
+    from agent_sessions import transcript, webterm
+
+    monkeypatch.setattr(webterm.scrollback, "_TRANSCRIPT_SCROLLBACK", True)
+    # 10 turns, each rendering as a blank spacer + one content line (2 lines/turn).
+    turns = [
+        transcript.Turn("user" if i % 2 == 0 else "assistant", f"T{i:02d} msg") for i in range(10)
+    ]
+    monkeypatch.setattr(
+        transcript,
+        "adapter_for",
+        lambda eid: (lambda native, home: turns) if eid == "claude" else None,
+    )
+    monkeypatch.setattr(transcript, "DEFAULT_MAX_LINES", 6)  # keeps the newest 3 turns exactly
+    res = webterm._transcript_payload(f"claude:{_UUID}", 80)
+    assert res is not None
+    out, cursor = res
+    assert b"T07" in out and b"T09" in out and b"T06" not in out
+    assert cursor == 7  # exact: turns[7:] delivered → first lazy page must use before=7
+
+
+def test_ws_attach_sends_hist_frame_with_exact_boundary_after_seq(tmp_path, monkeypatch):
+    """Hermes #365 r2 finding 1, wire-level: a transcript attach must EXPORT its exact turn
+    boundary — {"t":"hist","cursor":N} right after the seq frame — so the client's first
+    lazy-load request carries `before=N` instead of trusting the server's width-dependent
+    re-derivation (a resize between attach and first lazy-load skipped turns)."""
+    import asyncio
+    import json as _json
+
+    from agent_sessions import transcript, webterm
+
+    monkeypatch.setattr(webterm.scrollback, "_TRANSCRIPT_SCROLLBACK", True)
+    turns = [
+        transcript.Turn("user" if i % 2 == 0 else "assistant", f"T{i:02d} msg") for i in range(10)
+    ]
+    monkeypatch.setattr(
+        transcript,
+        "adapter_for",
+        lambda eid: (lambda native, home: turns) if eid == "claude" else None,
+    )
+    monkeypatch.setattr(transcript, "DEFAULT_MAX_LINES", 6)  # newest 3 turns → boundary 7
+
+    sent_text: list[str] = []
+    sent_bytes: list[bytes] = []
+
+    class FakeWS:
+        async def receive(self):
+            return {"type": "websocket.disconnect"}
+
+        async def send_bytes(self, b):
+            sent_bytes.append(bytes(b))
+
+        async def send_text(self, t):
+            sent_text.append(t)
+
+        async def close(self, code=None):
+            pass
+
+    asyncio.run(webterm.run(FakeWS(), ["sleep", "1"], cwd=str(tmp_path), buf_key=f"claude:{_UUID}"))
+    frames = [_json.loads(t) for t in sent_text]
+    kinds = [f.get("t") for f in frames]
+    assert "seq" in kinds and "hist" in kinds
+    assert kinds.index("hist") == kinds.index("seq") + 1  # hist follows seq directly
+    assert next(f for f in frames if f["t"] == "hist") == {"t": "hist", "cursor": 7}
+    # And the attach payload itself was the transcript render (clear + newest turns).
+    assert sent_bytes and sent_bytes[0].startswith(webterm._CLEAN_LOAD_CLEAR)
+    assert b"T09" in sent_bytes[0] and b"T06" not in sent_bytes[0]
+
+
+def _run_attach_collect_bytes(tmp_path, key, *, cols, have):
+    """Drive a single attach through ``webterm.run`` and return the binary frames it sent.
+
+    FakeWS disconnects immediately, so ``run`` sends the resume payload (mode prefix +
+    scroll-up) and tears down without entering the live pump — enough to observe whether the
+    attach decided on a clean-load clear or a raw continuation."""
+    import asyncio
+
+    from agent_sessions import webterm
+
+    sent_bytes: list[bytes] = []
+
+    class FakeWS:
+        async def receive(self):
+            return {"type": "websocket.disconnect"}
+
+        async def send_bytes(self, b):
+            sent_bytes.append(bytes(b))
+
+        async def send_text(self, t):
+            pass
+
+        async def close(self, code=None):
+            pass
+
+    asyncio.run(
+        webterm.run(FakeWS(), ["sleep", "1"], cwd=str(tmp_path), buf_key=key, cols=cols, have=have)
+    )
+    return sent_bytes
+
+
+def test_ws_attach_clears_when_client_is_ahead_of_rehydrated_ring(tmp_path, monkeypatch):
+    """#484 caller-level: after an app restart the ring is rehydrated head-trimmed while the
+    authored width is restored, so a SAME-width reconnect can carry a pre-restart ``have`` that
+    now exceeds the smaller ``total``. The attach must NOT treat that as a continuation — it must
+    take the width-correct path whose payload begins with the clean-load clear, wiping the client's
+    stale scrollback. Without the fix the predicate said "continuation" → the full ring was replayed
+    UNDER the stale screen and the conversation rendered twice."""
+    from agent_sessions import scrollback, transcript, webterm
+
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
+    scrollback._LAST_COLS.clear()
+    scrollback._LOADED_FROM_DISK.clear()
+    monkeypatch.setattr(webterm.scrollback, "_TRANSCRIPT_SCROLLBACK", True)
+    turns = [
+        transcript.Turn("user" if i % 2 == 0 else "assistant", f"T{i:02d} msg") for i in range(6)
+    ]
+    monkeypatch.setattr(
+        transcript,
+        "adapter_for",
+        lambda eid: (lambda native, home: turns) if eid == "claude" else None,
+    )
+
+    key = "claude:22222222-2222-2222-2222-222222222222"
+    scrollback.note_cols(key, 80)
+    scrollback._buffer_append(key, b"OLD-RING-BYTES")  # total == 14, authored at width 80
+    assert scrollback.ring_cols(key) == 80
+
+    # have (99) far exceeds total (14) at the SAME width → not a continuation → clean-load clear.
+    ahead = _run_attach_collect_bytes(tmp_path, key, cols=80, have=99)
+    assert ahead and ahead[0].startswith(webterm._CLEAN_LOAD_CLEAR)  # stale scrollback wiped first
+    assert any(b"T05" in b for b in ahead)  # ...then the width-correct transcript render
+    assert not any(
+        b"OLD-RING-BYTES" in b for b in ahead
+    )  # raw ring NOT stacked under the stale screen
+
+    # Contrast: an in-ring same-width offset is still a seamless continuation — raw delta, NO clear
+    # (the #304/#359/#374 no-flicker reconnect must not be demoted to a clear).
+    cont = _run_attach_collect_bytes(tmp_path, key, cols=80, have=4)
+    assert cont and not cont[0].startswith(webterm._CLEAN_LOAD_CLEAR)
+    assert cont[0] == b"RING-BYTES"  # exactly the bytes since have=4
+
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
+
+
+def test_transcript_payload_none_when_disabled(monkeypatch):
+    from agent_sessions import webterm
+
+    monkeypatch.setattr(webterm.scrollback, "_TRANSCRIPT_SCROLLBACK", False)
+    assert webterm._transcript_payload(f"claude:{_UUID}", 80) is None
+
+
+def test_transcript_payload_none_without_adapter_or_turns(monkeypatch):
+    from agent_sessions import transcript, webterm
+
+    monkeypatch.setattr(webterm.scrollback, "_TRANSCRIPT_SCROLLBACK", True)
+    # no adapter for the engine → fall back (None)
+    monkeypatch.setattr(transcript, "adapter_for", lambda eid: None)
+    assert webterm._transcript_payload(f"claude:{_UUID}", 80) is None
+    # adapter but empty conversation → fall back (None)
+    monkeypatch.setattr(transcript, "adapter_for", lambda eid: lambda native, home: [])
+    assert webterm._transcript_payload(f"claude:{_UUID}", 80) is None
+
+
+def test_transcript_payload_none_on_unparseable_key(monkeypatch):
+    from agent_sessions import webterm
+
+    monkeypatch.setattr(webterm.scrollback, "_TRANSCRIPT_SCROLLBACK", True)
+    assert webterm._transcript_payload("no-such-engine:whatever", 80) is None
+
+
+def test_clean_load_payload_clears_on_a_width_mismatch():
+    # #244/#262: the clean-load fallback (no transcript adapter) clears — skipping the width-fragile
+    # replay — whenever the client width differs from the buffer's written width. The caller only
+    # invokes it on a non-continuation, so `have` is no longer a parameter.
+    from agent_sessions import webterm
+
+    clear = webterm._CLEAN_LOAD_CLEAR
+    # Width MISMATCH (e.g. mobile after a desktop session) → clear.
+    assert webterm._clean_load_payload(100, client_cols=40, buffer_cols=120) == clear
+    # Width MATCHES (desktop reload at the same width) → replay, keep scrollback.
+    assert webterm._clean_load_payload(100, client_cols=120, buffer_cols=120) is None
+    # Unknown buffer width (e.g. right after a restart) is treated as a MISMATCH → clear: never
+    # trust bytes of unproven width (the ring is reset + rebuilt at the client width, Hermes #245).
+    assert webterm._clean_load_payload(100, client_cols=40, buffer_cols=None) == clear
+    # Brand-new session (no output yet) → nothing to clear.
+    assert webterm._clean_load_payload(0, client_cols=40, buffer_cols=120) is None
+
+
+def test_same_width_continuation_gates_raw_vs_transcript():
+    # #262: only a have>0 reconnect whose width matches the last-served width keeps the raw
+    # byte-delta (a brief same-width blip). Fresh load, cross-width, and post-restart
+    # (buffer_cols=None) all return False → the caller renders the transcript, not the raw ring.
+    from agent_sessions import webterm
+
+    cont = webterm._is_same_width_continuation
+    assert cont(have=120, total=200, buffer_cols=80, cols=80) is True  # same-width blip → raw delta
+    assert cont(have=0, total=200, buffer_cols=80, cols=80) is False  # fresh load → transcript
+    assert cont(have=120, total=200, buffer_cols=120, cols=40) is False  # cross-width → transcript
+    assert (
+        cont(have=120, total=200, buffer_cols=None, cols=40) is False
+    )  # post-restart → transcript
+    # #484: client ahead of the rehydrated (head-trimmed) ring → NOT a continuation, even at the
+    # same width — else the full ring replays under the stale scrollback (dup conversation).
+    assert cont(have=300, total=200, buffer_cols=80, cols=80) is False
+
+
+def test_reset_ring_clears_content_keeps_total_and_removes_disk(monkeypatch, tmp_path):
+    # #244/#245: a width change resets the retained ring (in-memory + disk mirror) but keeps the
+    # monotonic _TOTALS offset, so a stale/mixed-width ring can't be replayed garbled by a later
+    # same-width attach (the bug Hermes flagged on the first cut).
+    from agent_sessions import webterm
+
+    monkeypatch.setattr(webterm.scrollback, "_SCROLLBACK_DIR", tmp_path)
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
+    webterm._LOADED_FROM_DISK.clear()
+    k = "claude:reset"
+    webterm._buffer_append(k, b"x" * 50)
+    assert len(webterm._BUFFERS[k]) == 50
+    assert webterm._TOTALS[k] == 50
+    assert webterm._scrollback_path(k).exists()  # mirrored to disk
+
+    webterm._reset_ring(k)
+    assert bytes(webterm._BUFFERS[k]) == b""  # content gone — no stale bytes to replay
+    assert webterm._TOTALS[k] == 50  # offset preserved → delta-resume math stays valid
+    assert not webterm._scrollback_path(k).exists()  # disk mirror removed too
+
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
+    webterm._LOADED_FROM_DISK.clear()
+
+
+def test_buffer_cap_evicts_dead_sessions_oldest_first(monkeypatch):
+    # Audit MEDIUM: the retained-buffer set stays bounded. When every retained session
+    # is dead (no surviving dtach master), the cap sweep evicts the oldest first.
+    # (#678: enforcement moved OFF `_buffer_append` — the sweep is invoked explicitly
+    # here, as the background sweeper task does in production.)
+    from agent_sessions import webterm
+
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
+    webterm.scrollback._PROBE_CACHE.clear()
+    monkeypatch.setattr(webterm.scrollback, "_MAX_BUFFERS", 4)
+    monkeypatch.setattr(  # all dead → evict
+        webterm.scrollback, "_session_verdict", lambda k: webterm.scrollback.ptybridge.DEAD
+    )
+
+    for i in range(10):
+        webterm._buffer_append(f"claude:s{i}", b"y")
+    webterm.scrollback._enforce_buffer_cap()
+
+    assert len(webterm._BUFFERS) == 4  # bounded
+    assert "claude:s0" not in webterm._BUFFERS  # oldest evicted
+    assert "claude:s9" in webterm._BUFFERS and "claude:s9" in webterm._TOTALS  # newest kept
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
+
+
+def test_idle_live_session_never_evicted(monkeypatch):
+    # Regression (Hermes #121): an idle/attached LIVE session produces no output to
+    # refresh its LRU recency, yet its scrollback must survive churn from other
+    # sessions so a later reconnect can still delta-resume. The cap only evicts
+    # buffers whose dtach master is gone — never a live one.
+    from agent_sessions import webterm
+
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
+    webterm.scrollback._PROBE_CACHE.clear()
+    monkeypatch.setattr(webterm.scrollback, "_MAX_BUFFERS", 4)
+    live = "claude:live-idle"
+    # Only `live` is alive; every other (churning) session is dead/evictable.
+    monkeypatch.setattr(
+        webterm.scrollback,
+        "_session_verdict",
+        lambda k: webterm.scrollback.ptybridge.ALIVE
+        if k == live
+        else webterm.scrollback.ptybridge.DEAD,
+    )
+
+    webterm._buffer_append(live, b"important history")  # written ONCE, then idle
+    for i in range(20):  # heavy churn from other sessions, well past the cap
+        webterm._buffer_append(f"claude:dead{i}", b"y")
+    webterm.scrollback._enforce_buffer_cap()  # #678: the sweep enforces, not the append
+
+    assert live in webterm._BUFFERS  # live session preserved despite being the oldest + idle
+    assert bytes(webterm._BUFFERS[live]) == b"important history"  # buffer intact for resume
+    assert "claude:dead0" not in webterm._BUFFERS  # dead sessions evicted instead
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
+
+
+def test_maybe_evict_ended_drops_dead_keeps_live(monkeypatch):
+    # On run-end we drop a session's scrollback only when its dtach master is gone;
+    # a still-alive master keeps its buffer so a later reconnect can delta-resume.
+    from agent_sessions import ptybridge, webterm
+
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
+    key = "claude:11111111-1111-1111-1111-111111111111"
+    webterm._buffer_append(key, b"history")
+
+    monkeypatch.setattr(ptybridge, "session_exists", lambda e, n: True)
+    webterm._maybe_evict_ended(key)
+    assert key in webterm._BUFFERS  # master alive → kept
+
+    monkeypatch.setattr(ptybridge, "session_exists", lambda e, n: False)
+    webterm._maybe_evict_ended(key)
+    assert key not in webterm._BUFFERS  # master gone → reclaimed
+    assert key not in webterm._TOTALS
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
+
+
+# ---- opencode new-session launch-then-reconcile (#127) ------------------------
+
+_OC_PLACEHOLDER = "opencode:new-11111111-1111-1111-1111-111111111111"
+
+
+def test_ws_opencode_placeholder_passes_validation_on_new(
+    fake_jsonl, opencode_db, auth_cfg, monkeypatch
+):
+    # The new-<uuid> placeholder must pass the ws id-validation gate on new=1 and reach the
+    # LAUNCH path (it would 4404 if parse_key rejected it). We force the launch to fail at
+    # argv-build (bare-name bin → 4500) to prove validation passed without needing a real
+    # opencode/dtach. The launch cwd must be a pickable project.
+    from agent_sessions import scanner
+
+    monkeypatch.setenv("AGENT_SESSIONS_OPENCODE_BIN", "opencode")  # bare → refused → 4500
+    cwd = next(iter(scanner.pickable_projects()))
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    url = f"/ws/term/{_OC_PLACEHOLDER}?new=1&cwd={cwd}"
+    assert _close_code(c, url, headers) == 4500  # past validation, into launch (not 4404)
+
+
+def test_ws_opencode_placeholder_rejected_on_resume(fake_jsonl, opencode_db, auth_cfg):
+    # Without new=1 the placeholder is not a valid id (resume/attach requires ses_…) → 4404.
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    assert _close_code(c, f"/ws/term/{_OC_PLACEHOLDER}", headers) == 4404
+
+
+def test_ws_opencode_placeholder_rejects_unpickable_cwd(fake_jsonl, opencode_db, auth_cfg):
+    # new=1 with a cwd that isn't a pickable project AND escapes $HOME → 4404.
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    url = f"/ws/term/{_OC_PLACEHOLDER}?new=1&cwd=/not/a/project"
+    assert _close_code(c, url, headers) == 4404
+
+
+# ---- new-session cwd validation: ~/ folder-picker subdirs (#457) ---------------
+
+_NEW_UUID = "12345678-1234-1234-1234-123456789abc"
+
+
+def test_ws_new_claude_accepts_browsable_home_dir(fake_jsonl, auth_cfg, monkeypatch):
+    # #457: a new-session cwd the ~/ folder picker can browse to (a real dir under $HOME) but
+    # that isn't yet a pickable project must PASS validation, not 4404. Force the launch to fail
+    # at argv-build (bare-name bin → 4500) to prove validation passed without a real claude/dtach.
+    from agent_sessions import scanner
+
+    monkeypatch.setenv("AGENT_SESSIONS_CLAUDE_BIN", "claude")  # bare → refused → 4500
+    browsed = fake_jsonl / "fresh-proj"  # real $HOME subdir, no sessions → not pickable
+    browsed.mkdir()
+    assert str(browsed) not in set(scanner.pickable_projects(home=fake_jsonl))
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    url = f"/ws/term/claude:{_NEW_UUID}?new=1&cwd={browsed}"
+    assert _close_code(c, url, headers) == 4500  # past validation, into launch (not 4404)
+
+
+def test_ws_new_claude_rejects_cwd_outside_home(fake_jsonl, auth_cfg):
+    # #457: a cwd that escapes $HOME and isn't a pickable project is still rejected.
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    url = f"/ws/term/claude:{_NEW_UUID}?new=1&cwd=/etc"
+    assert _close_code(c, url, headers) == 4404
+
+
+_CDX_PLACEHOLDER = "codex:new-22222222-2222-2222-2222-222222222222"
+_CDX_REAL = "codex:019e2ba1-1590-7003-8e4a-51ab62cec96e"
+
+
+def test_ws_codex_placeholder_passes_validation_on_new(fake_jsonl, auth_cfg, monkeypatch, tmp_path):
+    # codex new-session (#315): the new-<uuid> placeholder passes the ws id gate AND the
+    # reconciling-provider placeholder guard on new=1, reaching LAUNCH (forced to 4500 via a
+    # bare bin) — proving validation accepted it without needing a real codex/dtach.
+    from agent_sessions import scanner
+
+    monkeypatch.setenv("AGENT_SESSIONS_CODEX_SESSIONS_DIR", str(tmp_path / "cdx"))  # empty baseline
+    monkeypatch.setenv("AGENT_SESSIONS_CODEX_BIN", "codex")  # bare → refused → 4500
+    cwd = next(iter(scanner.pickable_projects()))
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    url = f"/ws/term/{_CDX_PLACEHOLDER}?new=1&cwd={cwd}"
+    assert _close_code(c, url, headers) == 4500  # past validation + guard, into launch
+
+
+def test_ws_codex_real_uuid_rejected_on_new(fake_jsonl, auth_cfg, monkeypatch, tmp_path):
+    # Regression (Hermes #318): a NON-placeholder (real/arbitrary) codex uuid on new=1 must be
+    # REJECTED before launch. codex mints its own id, so a real id here would key the
+    # socket/lock/scrollback by an existing session's identity and never reconcile. The cwd is
+    # pickable, so the 4404 is the reconciling-provider placeholder guard, not the cwd check.
+    from agent_sessions import scanner
+
+    monkeypatch.setenv("AGENT_SESSIONS_CODEX_SESSIONS_DIR", str(tmp_path / "cdx"))
+    cwd = next(iter(scanner.pickable_projects()))
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    url = f"/ws/term/{_CDX_REAL}?new=1&cwd={cwd}"
+    assert _close_code(c, url, headers) == 4404
+
+
+def test_ws_codex_placeholder_rejected_on_resume(fake_jsonl, auth_cfg):
+    # Without new=1 the placeholder isn't a valid id (resume/attach requires a real uuid) → 4404.
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    assert _close_code(c, f"/ws/term/{_CDX_PLACEHOLDER}", headers) == 4404
+
+
+def test_ws_codex_alias_attach_uses_physical_runtime_and_logical_transcript(
+    fake_jsonl, auth_cfg, monkeypatch, tmp_path
+):
+    # Codex new sessions launch under a placeholder dtach key, then reconcile to the real rollout
+    # uuid. Attaching by the real URL must still attach to the placeholder runtime, while transcript
+    # replay reads the real/logical key where Codex history is stored — and the session's cwd is
+    # resolved by the LOGICAL id, from the real rollout, without walking the store (#991).
+    from agent_sessions import engines, metadata, sessions
+    from agent_sessions.routes import terminal
+
+    placeholder = "codex:new-141532f2-58f7-4ba3-9d35-dd1f21e60a5b"
+    real = "codex:019f45cb-50fa-7fb0-a1c2-1164c47f11f8"
+    real_native = real.split(":", 1)[1]
+    placeholder_native = placeholder.split(":", 1)[1]
+    metadata.set_alias(placeholder, real)
+
+    monkeypatch.setattr(terminal.owner, "takeover_enabled", lambda: False)
+    rollouts = tmp_path / "cdx" / "2026" / "07" / "01"
+    rollouts.mkdir(parents=True)
+    (rollouts / f"rollout-2026-07-01T10-00-00-{real_native}.jsonl").write_text(
+        json.dumps({"type": "session_meta", "payload": {"id": real_native, "cwd": "/tmp/project"}})
+        + "\n"
+    )
+    monkeypatch.setenv("AGENT_SESSIONS_CODEX_SESSIONS_DIR", str(tmp_path / "cdx"))
+
+    def no_walk():
+        raise AssertionError("an ATTACH walked every store to resolve one session")
+
+    monkeypatch.setattr(engines, "scan_all", no_walk)
+    actions = []
+
+    def fake_open_action(engine, native):
+        actions.append((engine, native))
+        return sessions.ATTACH, None
+
+    seen = {}
+
+    async def fake_run(ws, argv, *, cwd, buf_key=None, transcript_key=None, **kwargs):
+        seen.update(
+            argv=argv,
+            cwd=cwd,
+            buf_key=buf_key,
+            transcript_key=transcript_key,
+            kwargs=kwargs,
+        )
+        await ws.close(code=1000)
+
+    monkeypatch.setattr(sessions, "open_action", fake_open_action)
+    monkeypatch.setattr(terminal.webterm, "run", fake_run)
+
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    try:
+        with c.websocket_connect(f"/ws/term/{real}", headers=headers) as ws:
+            for _ in range(4):
+                if seen:
+                    break
+                ws.receive()
+    except WebSocketDisconnect:
+        pass
+
+    assert actions == [("codex", placeholder_native)]
+    assert seen["cwd"] == "/tmp/project"
+    assert seen["buf_key"] == placeholder
+    assert seen["transcript_key"] == real
+
+
+class _FakeWS:
+    """Minimal ws stand-in capturing control frames sent by the reconcile coroutine."""
+
+    def __init__(self):
+        self.sent: list[str] = []
+
+    async def send_text(self, text):
+        self.sent.append(text)
+
+
+def test_reconcile_single_id_persists_alias_and_converges(tmp_home, monkeypatch):
+    # The reconcile coroutine: one new id → persist placeholder→real alias + send the
+    # {"t":"id","sid":real} converge frame, then stop.
+    import asyncio
+    import json
+
+    from agent_sessions import ai_review_loop, engines, main, metadata
+
+    monkeypatch.setattr(main, "_RECONCILE_INTERVAL_S", 0.001)
+    kicks = []
+    monkeypatch.setattr(ai_review_loop, "request_review_soon", lambda: kicks.append(1))
+    prov = engines.get("opencode")
+    placeholder = "new-11111111-1111-1111-1111-111111111111"
+    real = "ses_reconciled000000000000000"
+    monkeypatch.setattr(prov, "reconcile_new_session", lambda cwd, snap: real)
+
+    ws = _FakeWS()
+    asyncio.run(main._reconcile_new_session(ws, prov, placeholder, "/cwd", set()))
+
+    assert metadata.load_aliases() == {f"opencode:{placeholder}": f"opencode:{real}"}
+    assert ws.sent and json.loads(ws.sent[-1]) == {"t": "id", "sid": f"opencode:{real}"}
+    # The reconciled real session is woken for prompt AI review (#413).
+    assert kicks == [1]
+
+
+def test_reconcile_ambiguous_no_alias_no_converge(tmp_home, monkeypatch):
+    # Two new same-cwd ids → ambiguous: never guess. No alias, no converge frame.
+    import asyncio
+
+    from agent_sessions import ai_review_loop, engines, main, metadata
+
+    monkeypatch.setattr(main, "_RECONCILE_INTERVAL_S", 0.001)
+    kicks = []
+    monkeypatch.setattr(ai_review_loop, "request_review_soon", lambda: kicks.append(1))
+    prov = engines.get("opencode")
+    monkeypatch.setattr(prov, "reconcile_new_session", lambda cwd, snap: ["ses_a000", "ses_b000"])
+
+    ws = _FakeWS()
+    asyncio.run(main._reconcile_new_session(ws, prov, "new-x", "/cwd", set()))
+
+    assert metadata.load_aliases() == {}  # no alias recorded
+    assert ws.sent == []  # no converge frame
+    assert kicks == []  # ambiguous → no real session → no review kick
+
+
+def test_reconcile_timeout_when_row_never_written(tmp_home, monkeypatch):
+    # opencode never writes the row (reconcile always None) → poll budget exhausts, the
+    # coroutine returns quietly with no alias/frame (session keeps serving on placeholder).
+    import asyncio
+
+    from agent_sessions import engines, main, metadata
+
+    monkeypatch.setattr(main, "_RECONCILE_INTERVAL_S", 0.0001)
+    monkeypatch.setattr(main, "_RECONCILE_MAX_POLLS", 3)
+    prov = engines.get("opencode")
+    monkeypatch.setattr(prov, "reconcile_new_session", lambda cwd, snap: None)
+
+    ws = _FakeWS()
+    asyncio.run(main._reconcile_new_session(ws, prov, "new-x", "/cwd", set()))
+
+    assert metadata.load_aliases() == {}
+    assert ws.sent == []
+
+
+def test_ws_opencode_resume_real_id_with_aliased_dead_master(
+    fake_jsonl, opencode_db, auth_cfg, monkeypatch
+):
+    # #127 review (bug 2): an alias placeholder→real must NOT make a real ``ses_…`` URL
+    # 4404 when the placeholder master is gone. With the alias set + NO live dtach master,
+    # attaching by the real id must RESUME the scanned opencode session (reach launch →
+    # 4500 on a bare-name bin), not 4404 — which is what would happen if `native` were
+    # overwritten to the placeholder before the resume scan.
+    from agent_sessions import metadata
+
+    OC_TOP = "ses_aaaaaaaaaaaaaaaaaaaaaaaa"  # the scanned opencode session in opencode_db
+    monkeypatch.setenv("AGENT_SESSIONS_OPENCODE_BIN", "opencode")  # bare → refused → 4500
+    metadata.set_alias(_OC_PLACEHOLDER, f"opencode:{OC_TOP}")  # placeholder → real
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    # real id, no new=1, no live master → must resume (4500), not 4404.
+    assert _close_code(c, f"/ws/term/opencode:{OC_TOP}", headers) == 4500
+
+
+def test_ws_opencode_placeholder_launch_failure_releases_lock(
+    fake_jsonl, opencode_db, auth_cfg, monkeypatch
+):
+    # #127 review (bug 1): a new=1 opencode placeholder arms the reconcile task BEFORE the
+    # launch; if the launch then fails (4500), the finally cancels that task — whose
+    # CancelledError must NOT bypass lock.transfer(). Proven by reconnecting to the same
+    # placeholder: the launch lock was released, so the 2nd attempt LAUNCHes again (4500),
+    # not BUSY (4409).
+    from agent_sessions import scanner
+
+    monkeypatch.setenv("AGENT_SESSIONS_OPENCODE_BIN", "opencode")  # bare → refused → 4500
+    cwd = next(iter(scanner.pickable_projects()))
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    url = f"/ws/term/{_OC_PLACEHOLDER}?new=1&cwd={cwd}"
+    assert _close_code(c, url, headers) == 4500
+    assert _close_code(c, url, headers) == 4500  # lock released → not 4409 BUSY
+
+
+# ---- persistent scrollback (#206) --------------------------------------------
+
+
+# The `_isolate_scrollback` autouse fixture (conftest) points `_SCROLLBACK_DIR` at a
+# per-test tmp dir and resets the in-memory ring, so these tests start clean.
+
+
+def test_scrollback_persists_and_rehydrates_across_restart():
+    """#206: output is mirrored to a per-session file; after a (simulated) restart wipes
+    the in-memory ring, a fresh attach rehydrates scrollback from disk."""
+    from agent_sessions import webterm
+
+    k = "claude:11111111-1111-1111-1111-111111111111"
+    webterm._buffer_append(k, b"hello ")
+    webterm._buffer_append(k, b"world")
+    assert webterm._scrollback_path(k).read_bytes() == b"hello world"  # mirrored to disk
+
+    # Simulate an app restart: in-memory state gone, disk file remains.
+    webterm._BUFFERS.clear()
+    webterm._TOTALS.clear()
+    webterm._LOADED_FROM_DISK.clear()
+
+    payload, total = webterm._resume_payload(k, 0)  # fresh attach
+    assert payload == b"hello world"  # restored from disk
+    assert total == len(b"hello world")
+
+
+def test_clear_scrollback_by_key_and_all():
+    """#206: clear_scrollback removes the right files and drops the in-memory ring so a
+    cleared session is not re-served from memory."""
+    from agent_sessions import webterm
+
+    k1 = "claude:11111111-1111-1111-1111-111111111111"
+    k2 = "claude:22222222-2222-2222-2222-222222222222"
+    webterm._buffer_append(k1, b"one")
+    webterm._buffer_append(k2, b"two")
+
+    res = webterm.clear_scrollback([k1])
+    assert res["removed"] == 1
+    assert not webterm._scrollback_path(k1).exists()
+    assert webterm._scrollback_path(k2).exists()
+    assert k1 not in webterm._BUFFERS  # ring dropped too
+
+    res_all = webterm.clear_scrollback(None)
+    assert res_all["removed"] == 1  # only k2 left
+    assert webterm.scrollback_cache_stats()["files"] == 0
+
+
+def test_drop_buffer_keeps_disk_then_rehydrates():
+    """#206: an in-memory eviction (`_drop_buffer`) must NOT delete the durable disk file;
+    a later touch rehydrates from it."""
+    from agent_sessions import webterm
+
+    k = "claude:33333333-3333-3333-3333-333333333333"
+    webterm._buffer_append(k, b"persist me")
+    webterm._drop_buffer(k)
+    assert webterm._scrollback_path(k).exists()  # disk survives eviction
+    assert k not in webterm._BUFFERS
+
+    payload, total = webterm._resume_payload(k, 0)
+    assert payload == b"persist me"
+    assert total == len(b"persist me")
+
+
+def test_nudge_plan_fires_immediately_for_a_fresh_attach():
+    """#652 T-P1: the fresh-attach repaint must not sit behind the 0.3 s pre-settle — a blank
+    screen has nothing else to fill it, and the #443 out_bytes wait keeps the shrink→restore safe
+    without the settle. A live (have>0, non-blank) continuation still skips the nudge (no flicker);
+    a blank reconnect (have>0) keeps the settle to let the continuation payload quiesce first."""
+    from agent_sessions import webterm
+
+    # Fresh page load / launch (have<=0): fire immediately (0.0 settle), regardless of blank flag.
+    assert webterm._nudge_plan(0, True) == 0.0
+    assert webterm._nudge_plan(0, False) == 0.0
+    assert webterm._nudge_plan(-1, True) == 0.0
+    # Live continuation that holds its own screen: no nudge at all (would flicker, #304).
+    assert webterm._nudge_plan(5, False) is None
+    # Blank reconnect (have>0 but nothing visible, #349): keep the small settle.
+    assert webterm._nudge_plan(5, True) == webterm._NUDGE_SETTLE_S
+
+
+def test_force_repaint_shrinks_2d_then_restores(monkeypatch):
+    """#304/#329: a fresh attach to a dtach session shows nothing (a same-size attach delivers no
+    SIGWINCH, so a winch-only-repaint agent like claude never redraws → blank/fragments on switch).
+    _force_repaint shrinks the pty in BOTH dims, then restores — SIGWINCHing the dtach client each
+    time, mirroring the resize path — to force one clean full repaint. The shrink is 2-D (not a
+    1-col nudge) so the intermediate frame can't render byte-identical for a width-stable idle frame
+    (#329: that left 'only some sessions' blank). Pin the sequence so the fix can't regress."""
+    import asyncio
+    import signal as _signal
+
+    from agent_sessions import webterm
+
+    calls: list = []
+    monkeypatch.setattr(webterm, "_set_winsize", lambda fd, r, c: calls.append(("size", r, c)))
+    monkeypatch.setattr(webterm, "_NUDGE_GAP_S", 0)  # drop the real inter-nudge delay
+
+    class _Proc:
+        def send_signal(self, sig):
+            calls.append(("sig", sig))
+
+    asyncio.run(webterm._force_repaint(7, _Proc(), 24, 80))
+    assert calls == [
+        ("size", 24 - webterm._NUDGE_ROWS_DELTA, 80 - webterm._NUDGE_COLS_DELTA),  # 2-D shrink
+        ("sig", _signal.SIGWINCH),
+        ("size", 24, 80),  # restore the real geometry
+        ("sig", _signal.SIGWINCH),
+    ]
+
+
+def test_force_repaint_floors_small_terminals(monkeypatch):
+    # On a tiny terminal the shrink must never go below 2 (TIOCSWINSZ 0/1 desyncs agent vs mirror).
+    import asyncio
+
+    from agent_sessions import webterm
+
+    calls: list = []
+    monkeypatch.setattr(webterm, "_set_winsize", lambda fd, r, c: calls.append((r, c)))
+    monkeypatch.setattr(webterm, "_NUDGE_GAP_S", 0)
+    asyncio.run(
+        webterm._force_repaint(7, type("P", (), {"send_signal": lambda s, x: None})(), 3, 4)
+    )
+    assert calls[0] == (2, 2)  # floored, not 1 or 0
+
+
+def test_force_repaint_holds_shrink_until_agent_repaints(monkeypatch):
+    """#443: the restore must be a resize the agent can't coalesce with the shrink. When given the
+    live byte counter, _force_repaint holds the shrunk geometry until the agent has actually
+    repainted it (out_bytes advances) BEFORE restoring — so a busy agent's SIGWINCH debounce can't
+    merge shrink+restore into a net-zero geometry change (which left the live region blank). Pin
+    that the restore does NOT happen while the agent is still silent on the shrink."""
+    import asyncio
+    import signal as _signal
+
+    from agent_sessions import webterm
+
+    calls: list = []
+    monkeypatch.setattr(webterm, "_set_winsize", lambda fd, r, c: calls.append(("size", r, c)))
+    monkeypatch.setattr(webterm, "_NUDGE_GAP_S", 0)  # isolate the output-gate from the settle
+    monkeypatch.setattr(webterm, "_NUDGE_POLL_S", 0.001)
+    # High timeout: the output gate (not the bounded fallback) must be what releases the restore.
+    monkeypatch.setattr(webterm, "_NUDGE_MAX_WAIT_S", 5.0)
+    out_bytes = {"n": 0}
+
+    class _Proc:
+        def send_signal(self, sig):
+            calls.append(("sig", sig))
+
+    restore = ("size", 24, 80)
+
+    async def drive():
+        task = asyncio.create_task(webterm._force_repaint(7, _Proc(), 24, 80, out_bytes=out_bytes))
+        await asyncio.sleep(0.05)  # let the shrink land; the agent is still "silent"
+        assert restore not in calls, "restored before the agent repainted the shrink (coalescable)"
+        out_bytes["n"] += 7  # the agent's shrink-repaint arrives → gate releases
+        await asyncio.wait_for(task, timeout=2)
+
+    asyncio.run(drive())
+    assert calls == [
+        ("size", 24 - webterm._NUDGE_ROWS_DELTA, 80 - webterm._NUDGE_COLS_DELTA),  # 2-D shrink
+        ("sig", _signal.SIGWINCH),
+        restore,  # only AFTER the agent rendered the shrink
+        ("sig", _signal.SIGWINCH),
+    ]
+
+
+def test_force_repaint_restores_after_timeout_when_agent_silent(monkeypatch):
+    """#443: a wedged/exited agent never repaints — the output gate must be BOUNDED so the restore
+    still fires and the nudge can't hang the connection."""
+    import asyncio
+    import signal as _signal
+
+    from agent_sessions import webterm
+
+    calls: list = []
+    monkeypatch.setattr(webterm, "_set_winsize", lambda fd, r, c: calls.append(("size", r, c)))
+    monkeypatch.setattr(webterm, "_NUDGE_GAP_S", 0)
+    monkeypatch.setattr(webterm, "_NUDGE_POLL_S", 0.005)
+    monkeypatch.setattr(webterm, "_NUDGE_MAX_WAIT_S", 0.05)
+    out_bytes = {"n": 0}  # never advances → agent is silent
+
+    class _Proc:
+        def send_signal(self, sig):
+            calls.append(("sig", sig))
+
+    asyncio.run(webterm._force_repaint(7, _Proc(), 24, 80, out_bytes=out_bytes))
+    # Restored despite the silence (bounded wait), full shrink→restore sequence intact.
+    assert calls == [
+        ("size", 24 - webterm._NUDGE_ROWS_DELTA, 80 - webterm._NUDGE_COLS_DELTA),
+        ("sig", _signal.SIGWINCH),
+        ("size", 24, 80),
+        ("sig", _signal.SIGWINCH),
+    ]
+
+
+# ---- #349: resize-vs-nudge coalescing + blank-attach nudge ------------------------
+
+
+class _FakeProc:
+    """Stands in for the dtach client: keeps the slave end open so the master doesn't
+    EOF, records signals, and resolves wait() once terminated."""
+
+    def __init__(self, slave_fd):
+        import os as _os
+
+        self.pid = 4242
+        self._slave_dup = _os.dup(slave_fd)
+        self._done = None  # asyncio.Event, created lazily on the running loop
+        self.signals = []
+
+    def send_signal(self, sig):
+        self.signals.append(sig)
+
+    def _finish(self):
+        import asyncio as _aio
+        import os as _os
+
+        if self._slave_dup is not None:
+            with __import__("contextlib").suppress(OSError):
+                _os.close(self._slave_dup)
+            self._slave_dup = None
+        if self._done is None:
+            self._done = _aio.Event()
+        self._done.set()
+
+    def terminate(self):
+        self._finish()
+
+    def kill(self):
+        self._finish()
+
+    async def wait(self):
+        import asyncio as _aio
+
+        if self._done is None:
+            self._done = _aio.Event()
+        await self._done.wait()
+        return 0
+
+
+class _ScriptedWS:
+    """Feeds a scripted message sequence to pump_in; sends are no-ops."""
+
+    def __init__(self, script):
+        self._script = list(script)  # items: ("sleep", s) | dict ws message
+
+    async def receive(self):
+        import asyncio as _aio
+
+        while self._script:
+            item = self._script.pop(0)
+            if isinstance(item, tuple) and item[0] == "sleep":
+                await _aio.sleep(item[1])
+                continue
+            return item
+        return {"type": "websocket.disconnect"}
+
+    async def send_bytes(self, b):
+        pass
+
+    async def send_text(self, t):
+        pass
+
+    async def close(self, code=None):
+        pass
+
+
+def _run_349(monkeypatch, *, key, have, script, settle=0.05):
+    """Drive webterm.run with a fake dtach proc; return the _force_repaint call log."""
+    import asyncio
+
+    from agent_sessions import webterm
+
+    calls = []
+
+    async def record_repaint(master, proc, rows, cols, *, out_bytes=None):
+        calls.append((rows, cols))
+
+    monkeypatch.setattr(webterm, "_force_repaint", record_repaint)
+    monkeypatch.setattr(webterm, "_NUDGE_SETTLE_S", settle)
+
+    async def fake_exec(*argv, **kwargs):
+        return _FakeProc(kwargs["stdin"])
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    ws = _ScriptedWS(script)
+    asyncio.run(webterm.run(ws, ["dtach"], cwd="/tmp", buf_key=key, have=have))
+    return calls
+
+
+def _resize(cols, rows):
+    import json
+
+    return {"type": "websocket.receive", "text": json.dumps({"t": "r", "cols": cols, "rows": rows})}
+
+
+def test_resize_burst_in_attach_window_yields_one_trailing_repaint(monkeypatch):
+    # #349 core: width changes during the attach window must re-arm exactly ONE
+    # debounced trailing repaint, restored at the LATEST accepted geometry — not the
+    # attach-time grid, and not one repaint per resize.
+    from agent_sessions import webterm
+
+    key = "claude:renudge-1"
+    webterm._BUFFERS[key] = bytearray(b"0123456789")  # have<total → real delta payload
+    webterm._TOTALS[key] = 10  # total≥have so this stays a same-width continuation (#484 guard)
+    webterm.scrollback._LAST_COLS[key] = 80  # same-width continuation at cols=80
+    try:
+        calls = _run_349(
+            monkeypatch,
+            key=key,
+            have=5,
+            script=[
+                _resize(70, 20),
+                _resize(90, 30),
+                _resize(100, 40),  # rapid burst — only this final geometry may repaint
+                ("sleep", 0.35),  # let the debounced trailing nudge fire
+            ],
+        )
+    finally:
+        webterm._drop_buffer(key)
+    assert calls == [(40, 100)]
+
+
+def test_have_resume_with_real_delta_does_not_nudge(monkeypatch):
+    # The non-blank have>0 reconnect keeps the #304 no-flicker behavior.
+    from agent_sessions import webterm
+
+    key = "claude:renudge-2"
+    webterm._BUFFERS[key] = bytearray(b"0123456789")
+    webterm._TOTALS[key] = 10  # total≥have so this stays a same-width continuation (#484 guard)
+    webterm.scrollback._LAST_COLS[key] = 80
+    try:
+        calls = _run_349(monkeypatch, key=key, have=5, script=[("sleep", 0.3)])
+    finally:
+        webterm._drop_buffer(key)
+    assert calls == []
+
+
+def test_blank_have_reconnect_still_nudges(monkeypatch):
+    # #349: a have>0 reconnect whose attach delivered NOTHING visible (cold attach
+    # after a broker restart: empty ring, no transcript) must nudge — otherwise an
+    # idle agent leaves the client on a blank screen until the next input byte.
+    from agent_sessions import webterm
+
+    key = "claude:renudge-3"
+    webterm._BUFFERS.pop(key, None)  # empty ring, no _LAST_COLS → cold attach
+    calls = _run_349(monkeypatch, key=key, have=5, script=[("sleep", 0.3)])
+    assert calls == [(24, 80)]
+
+
+def test_up_to_date_same_width_reconnect_does_not_nudge(monkeypatch):
+    # Hermes #359: have == total on a same-width continuation delivers an EMPTY delta —
+    # that is "up to date", not "blank"; nudging it would flicker every quiet reconnect.
+    from agent_sessions import webterm
+
+    key = "claude:renudge-4"
+    webterm._BUFFERS[key] = bytearray(b"0123456789")
+    webterm._TOTALS[key] = 10  # have==total: up-to-date same-width continuation (#484 guard)
+    webterm.scrollback._LAST_COLS[key] = 80
+    try:
+        calls = _run_349(monkeypatch, key=key, have=10, script=[("sleep", 0.3)])
+    finally:
+        webterm._drop_buffer(key)
+    assert calls == []
+
+
+def test_synthetic_attach_payload_ends_with_live_screen_seam(monkeypatch):
+    # Operator report ("still a mess"): a transcript/VT attach payload ends at "now",
+    # and the dtach replay below shows the same screen again — the boundary must be
+    # marked or the duplicate reads as corruption.
+    import asyncio
+
+    from agent_sessions import webterm
+
+    key = "claude:seam-1"
+    webterm._BUFFERS.pop(key, None)
+    monkeypatch.setattr(
+        webterm.scrollback, "_transcript_payload", lambda k, c, r: (b"HISTORY-TAIL", 3)
+    )
+    sent = []
+
+    class WS(_ScriptedWS):
+        async def send_bytes(self, b):
+            sent.append(bytes(b))
+
+    async def fake_exec(*argv, **kwargs):
+        return _FakeProc(kwargs["stdin"])
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(webterm, "_NUDGE_SETTLE_S", 0.01)
+    asyncio.run(webterm.run(WS([("sleep", 0.1)]), ["dtach"], cwd="/tmp", buf_key=key, have=0))
+    payload = b"".join(sent)
+    assert b"HISTORY-TAIL" in payload
+    assert "live screen ↓".encode() in payload
+    assert payload.find(b"HISTORY-TAIL") < payload.find("live screen ↓".encode())
+
+
+def test_alias_backed_attach_uses_logical_key_for_transcript(monkeypatch):
+    # Codex/opencode/antigravity new sessions run under a placeholder socket, then converge to
+    # the real id. Runtime resources stay keyed by the placeholder, but transcript stores use the
+    # real native id. Attaching by the real URL must therefore render history from the logical key.
+    import asyncio
+
+    from agent_sessions import webterm
+
+    phys = "codex:new-141532f2-58f7-4ba3-9d35-dd1f21e60a5b"
+    logical = "codex:019f45cb-50fa-7fb0-a1c2-1164c47f11f8"
+    seen = []
+    sent = []
+
+    def transcript_payload(k, c, r):
+        seen.append(k)
+        return (b"CODEX-HISTORY-TAIL", 3)
+
+    monkeypatch.setattr(webterm.scrollback, "_transcript_payload", transcript_payload)
+
+    class WS(_ScriptedWS):
+        async def send_bytes(self, b):
+            sent.append(bytes(b))
+
+    async def fake_exec(*argv, **kwargs):
+        return _FakeProc(kwargs["stdin"])
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(webterm, "_NUDGE_SETTLE_S", 0.01)
+    asyncio.run(
+        webterm.run(
+            WS([("sleep", 0.1)]),
+            ["dtach"],
+            cwd="/tmp",
+            buf_key=phys,
+            transcript_key=logical,
+            have=0,
+        )
+    )
+    assert seen == [logical]
+    assert b"CODEX-HISTORY-TAIL" in b"".join(sent)
+
+
+def test_terminate_then_kill_reaps_sigterm_ignoring_child():
+    """#532: a child that survives SIGTERM is escalated to SIGKILL within the bounded wait."""
+    import asyncio
+    import signal
+    import sys
+
+    from agent_sessions import webterm
+
+    async def scenario():
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+            "print('up', flush=True); time.sleep(60)",
+            stdout=asyncio.subprocess.PIPE,
+        )
+        assert (await proc.stdout.readline()).strip() == b"up"  # SIGTERM-ignore installed
+        await webterm.terminate_then_kill(proc, timeout=0.3)
+        return proc.returncode
+
+    assert asyncio.run(scenario()) == -signal.SIGKILL
+
+
+def test_webterm_run_teardown_reaps_sigterm_ignoring_client(tmp_path, monkeypatch):
+    """#532: the viewer bridge's teardown must never leak a dtach client that ignores SIGTERM.
+
+    The leaked client of the production incident stopped reading its socket and wedged the
+    dtach master's broadcast select for every other viewer, so the bridge escalates to
+    SIGKILL after the bounded wait. The stand-in installs a SIGTERM-ignore and then writes
+    its pid; the fake ws holds the bridge open until that pid file exists, so the teardown's
+    SIGTERM provably lands on a process that ignores it.
+    """
+    import asyncio
+    import os
+    import sys
+
+    import pytest
+
+    from agent_sessions import webterm
+
+    monkeypatch.setattr(webterm, "_TERMINATE_WAIT_S", 0.3)
+    pidfile = tmp_path / "client.pid"
+    argv = [
+        sys.executable,
+        "-c",
+        "import os, signal, time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        f"open({str(pidfile)!r}, 'w').write(str(os.getpid())); "
+        "time.sleep(60)",
+    ]
+
+    class FakeWS:
+        async def receive(self):
+            while not pidfile.exists():  # keep the bridge open until the ignore is armed
+                await asyncio.sleep(0.02)
+            return {"type": "websocket.disconnect"}
+
+        async def send_bytes(self, b):
+            pass
+
+        async def send_text(self, t):
+            pass
+
+        async def close(self, code=None):
+            pass
+
+    asyncio.run(webterm.run(FakeWS(), argv, cwd=str(tmp_path), buf_key=None))
+    pid = int(pidfile.read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)  # reaped by the bridge — a leak would still answer signal 0
+
+
+# ---- background-agent launch guard + bounded relaunch backstop (#631) ---------
+
+
+def test_ws_resume_refuses_background_agent(fake_jsonl, auth_cfg):
+    # #631: resuming a session whose transcript a LIVE process still owns (a Claude background
+    # agent — no dtach master of ours, so open_action → LAUNCH) must refuse with a terminal
+    # code, not launch `claude --resume` and relaunch-loop when it exits instantly.
+    from agent_sessions import relaunch
+
+    uuid = "11111111-1111-1111-1111-111111111111"
+    phys_key = f"claude:{uuid}"
+    relaunch.reset(phys_key)  # module-level backstop state persists across tests
+    jsonl = fake_jsonl / ".claude" / "projects" / "-home-user-claude-repo-a" / f"{uuid}.jsonl"
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    with jsonl.open("r"):  # a live process (this one) owns the transcript → background-agent signal
+        code = _close_code(c, f"/ws/term/claude:{uuid}", headers)
+    assert code == 4404  # terminal reject → the client stops retrying
+
+
+def test_ws_relaunch_backstop_blocks_after_instant_exit_loop(fake_jsonl, auth_cfg):
+    # #631: once a key has hit the consecutive instant-exit cap, the LAUNCH path closes with a
+    # TERMINAL code (4500) so the client's reconnect loop ends instead of relaunching forever.
+    from agent_sessions import relaunch
+
+    uuid = "11111111-1111-1111-1111-111111111111"
+    phys_key = f"claude:{uuid}"
+    relaunch.reset(phys_key)
+    for _ in range(relaunch._MAX_INSTANT):
+        relaunch.note_exit(phys_key, lived_s=0.1, master_alive=False)
+    assert relaunch.blocked(phys_key)  # precondition: the backstop has tripped
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    try:
+        code = _close_code(c, f"/ws/term/claude:{uuid}", headers)
+        assert code == 4500  # terminal — not a retryable code
+    finally:
+        relaunch.reset(phys_key)
+
+
+def test_ws_busy_still_returns_retryable_4409(fake_jsonl, auth_cfg):
+    # #631 must NOT weaken the close-code taxonomy: BUSY (another writer holds the single-writer
+    # lock) still returns the RETRYABLE 4409 — the backstop only ever affects the LAUNCH path.
+    from agent_sessions import relaunch, sessionlock
+
+    uuid = "11111111-1111-1111-1111-111111111111"
+    phys_key = f"claude:{uuid}"
+    relaunch.reset(phys_key)
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    lk = sessionlock.acquire(phys_key)  # hold the lock elsewhere → open_action returns BUSY
+    assert lk is not None
+    try:
+        code = _close_code(c, f"/ws/term/claude:{uuid}", headers)
+    finally:
+        lk.release()
+    assert code == 4409  # unchanged, still retryable
+
+
+# --- PTY raw-mode repair on attach (#804) --------------------------------------------------
+
+
+def test_attach_tty_repair_never_blocks_the_event_loop():
+    """The repair probe walks /proc and sleeps; inline it would stall every session (#678).
+
+    `webterm.run` is an event-loop coroutine shared by every websocket in the process, so the
+    whole probe — not merely its individual reads — has to be handed to a worker thread. This
+    asserts both halves of that: the loop keeps servicing other tasks while the probe runs, and
+    the probe really did execute somewhere other than the loop's own thread.
+    """
+    import threading
+
+    loop_thread = threading.current_thread()
+    ran_on: dict = {}
+    ticks = {"n": 0}
+
+    def _slow_probe(key):
+        ran_on["thread"] = threading.current_thread()
+        ran_on["key"] = key
+        time.sleep(0.25)
+        return "verdict"
+
+    async def _ticker():
+        while True:
+            ticks["n"] += 1
+            await asyncio.sleep(0.01)
+
+    async def _drive():
+        t = asyncio.create_task(_ticker())
+        try:
+            await webterm._repair_tty("codex:11111111-2222-3333-4444-555555555555")
+        finally:
+            t.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await t
+
+    with mock.patch.object(webterm.tty_health, "ensure_raw", _slow_probe):
+        asyncio.run(_drive())
+
+    assert ran_on["key"] == "codex:11111111-2222-3333-4444-555555555555"
+    assert ran_on["thread"] is not loop_thread, "probe ran on the event loop thread"
+    assert ticks["n"] > 5, f"event loop was starved during the probe (only {ticks['n']} ticks)"
+
+
+def test_attach_tty_repair_is_skipped_without_a_buffer_key():
+    with mock.patch.object(webterm.tty_health, "ensure_raw") as m:
+        asyncio.run(webterm._repair_tty(None))
+    m.assert_not_called()
+
+
+def test_attach_tty_repair_never_fails_an_attach():
+    """A health check must not be able to stop a viewer connecting."""
+
+    def _boom(_key):
+        raise RuntimeError("procfs went sideways")
+
+    with mock.patch.object(webterm.tty_health, "ensure_raw", _boom):
+        asyncio.run(webterm._repair_tty("codex:11111111-2222-3333-4444-555555555555"))
+
+
+def test_the_input_gate_passes_through_once_released():
+    gate = webterm._InputGate(True)
+    assert gate.held is True
+    assert gate.hold(b"a") is True
+    assert gate.release() == [b"a"]
+    assert gate.held is False
+    assert gate.hold(b"b") is False, "after release, input must go straight to the PTY"
+    assert gate.release() == [], "release is idempotent and drains nothing twice"
+
+
+def test_take_hands_back_the_queue_and_keeps_the_gate_held():
+    """#1070: a replay that awaits between chunks must not let new input overtake it."""
+    gate = webterm._InputGate(True)
+    gate.hold(b"a")
+    assert gate.take() == [b"a"]
+    assert gate.held is True
+    assert gate.hold(b"b") is True, "input arriving during the replay queues behind it"
+    assert gate.take() == [b"b"]
+    assert gate.take() == []
+    assert gate.release() == []
+    assert gate.held is False
+
+
+def test_an_ungated_attach_needs_no_queue():
+    """No buf_key ⇒ nothing to repair ⇒ input must never be delayed."""
+    gate = webterm._InputGate(False)
+    assert gate.hold(b"a") is False
+    assert gate.release() == []
+
+
+_ECHO_CHILD = """
+import os, time
+os.write(1, b"READY\\r\\n")
+d = os.read(0, 64)
+os.write(1, b"ECHO[" + d + b"]\\r\\n")
+time.sleep(0.4)
+"""
+
+
+def _timestamping_ws(collected, frames):
+    """Fake WS that sends `frames` then blocks, and timestamps every byte the PTY emits."""
+
+    class FakeWS:
+        def __init__(self):
+            self._pending = list(frames)
+
+        async def receive(self):
+            if self._pending:
+                await asyncio.sleep(0.05)
+                return {"text": self._pending.pop(0)}
+            await asyncio.sleep(10)
+            return {"type": "websocket.disconnect"}
+
+        async def send_bytes(self, b):
+            collected.append((time.monotonic(), b))
+
+        async def send_text(self, t):
+            pass
+
+        async def close(self, code=None):
+            pass
+
+    return FakeWS()
+
+
+def test_attach_holds_owner_input_until_the_pty_repair_finishes(tmp_path):
+    """Ordering regression for #805 r2, driven through the real `webterm.run` attach path.
+
+    The repair ends in TCSAFLUSH — right for the stale backlog a cooked terminal accumulated,
+    blind to when a byte arrived. A keystroke typed inside the confirm window would land in the
+    still-canonical line buffer and be discarded by the very flush that heals the session, so
+    the operator's first keystroke after attaching vanishes. Owner input is therefore gated
+    across the probe and replayed after it.
+
+    Asserted against the child's echo, not against a stand-in for the write path: the byte must
+    not reach the PTY until the probe has returned. Against an ungated build the echo arrives
+    while the probe is still sleeping and this fails.
+    """
+    probe = {}
+
+    def _slow_probe(_key):
+        probe["start"] = time.monotonic()
+        time.sleep(0.4)
+        probe["end"] = time.monotonic()
+
+    collected: list[tuple[float, bytes]] = []
+    with mock.patch.object(webterm.tty_health, "ensure_raw", _slow_probe):
+        asyncio.run(
+            webterm.run(
+                _timestamping_ws(collected, [json.dumps({"t": "i", "d": "X\n"})]),
+                [sys.executable, "-c", _ECHO_CHILD],
+                cwd=str(tmp_path),
+                buf_key="codex:11111111-2222-3333-4444-555555555555",
+            )
+        )
+
+    assert "end" in probe, "the repair probe never ran; this test proves nothing"
+    echoes = [t for t, b in collected if b"ECHO[" in b]
+    assert echoes, f"child never echoed the keystroke; got {[b for _, b in collected]!r}"
+    assert (
+        echoes[0] > probe["end"]
+    ), "owner input reached the PTY before the repair finished — TCSAFLUSH would eat it"
+
+
+def test_ws_resume_rejected_by_exclusion_with_no_roots(fake_jsonl, auth_cfg, monkeypatch):
+    """An exclusion closes the resume back door even with NO roots configured (#867 review r4).
+
+    The gate used to read `roots and not in_scope(...)`, on the reading that empty roots mean the
+    #465 feature is off. But `in_scope` checks EXCLUSIONS FIRST and only then falls through on
+    empty roots — so with no roots (the common case) an explicitly excluded session stayed
+    resumable, which is exactly the back door this gate exists to close. The sibling test above
+    pins that empty roots still leave the ROOT half off.
+    """
+    from agent_sessions import prefs, project_dirs
+
+    monkeypatch.setattr(project_dirs, "effective_roots", lambda: [])
+    monkeypatch.setattr(
+        # NB the scanned cwd decodes dashes to slashes: the fixture dir
+        # `-home-user-claude-repo-a` is /home/user/claude/repo/a, not …/repo-a.
+        prefs,
+        "get_folder_exclusions",
+        lambda path=None: ["/home/user/claude/repo/a"],
+    )
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    assert _close_code(c, f"/ws/term/{_GOOD}", headers) == 4404
+
+
+def test_ws_attach_rejected_by_exclusion_with_a_live_master(fake_jsonl, auth_cfg, monkeypatch):
+    """A LIVE master does not exempt a session from the hard boundary (#867 review round 6).
+
+    The gate used to live only in the resume branch, so `open_action() == ATTACH` went straight to
+    `webterm.run()`. An excluded session with a warm dtach master was therefore attachable while
+    the same session 404s on lookup and is refused on a cold resume — whether a master happens to
+    be running is not an authorization fact. The sibling LAUNCH test cannot catch this: with no
+    live master it never reaches this branch.
+    """
+    from agent_sessions import prefs, project_dirs
+    from agent_sessions.routes import terminal as terminal_route
+
+    monkeypatch.setattr(project_dirs, "effective_roots", lambda: [])
+    monkeypatch.setattr(
+        prefs, "get_folder_exclusions", lambda path=None: ["/home/user/claude/repo/a"]
+    )
+
+    # Force the ATTACH dispatch — a real live master needs a real dtach.
+    async def _attach(_engine, _native):
+        return terminal_route.sessions.ATTACH, None
+
+    monkeypatch.setattr(terminal_route, "_open_action_offloop", _attach)
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    assert _close_code(c, f"/ws/term/{_GOOD}", headers) == 4404
+
+
+def test_ws_attach_allowed_for_a_fresh_session_when_no_boundary_is_configured(
+    fake_jsonl, auth_cfg, monkeypatch
+):
+    """An ATTACH with nothing scanned is usually a FRESH session mid-launch — a reload in the
+    first seconds, before its transcript lands. With NO roots and NO exclusions configured there
+    is nothing to enforce, so it is not refused and the reload case keeps working.
+
+    The sibling below is the other half: once the operator HAS configured a boundary, the same
+    unidentifiable attach fails closed.
+    """
+    from agent_sessions import prefs, project_dirs
+    from agent_sessions.routes import terminal as terminal_route
+
+    monkeypatch.setattr(project_dirs, "effective_roots", lambda: [])
+    monkeypatch.setattr(prefs, "get_folder_exclusions", lambda path=None: [])
+    monkeypatch.setenv("AGENT_SESSIONS_CLAUDE_BIN", "claude")
+
+    async def _attach(_engine, _native):
+        return terminal_route.sessions.ATTACH, None
+
+    monkeypatch.setattr(terminal_route, "_open_action_offloop", _attach)
+    # The bridge is replaced by a recording stub (#1107). The real one ran an actual `dtach -a`
+    # for a socket that does not exist, and on a starved runner the test client's teardown
+    # cancelled it mid-flight (CancelledError) — failing a test whose subject is the SCOPE GATE,
+    # which had already let the attach through. The stub makes that positive: the gate
+    # DISPATCHED to the bridge, which is stronger than "did not close with 4404".
+    dispatched: list[list[str]] = []
+
+    async def _bridge(ws, argv, **_kw):
+        dispatched.append(list(argv))
+        await ws.close(code=4999)
+
+    monkeypatch.setattr(terminal_route.webterm, "run", _bridge)
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    unknown = "claude:77777777-7777-4777-8777-777777777777"  # nothing scanned under this id
+    # Read until the close: the route may send its own frames (role, …) before the bridge runs,
+    # and `_close_code` stops at the first non-close message.
+    code = None
+    try:
+        with c.websocket_connect(f"/ws/term/{unknown}", headers=headers) as ws:
+            for _ in range(20):
+                msg = ws.receive()
+                if isinstance(msg, dict) and msg.get("type") == "websocket.close":
+                    code = msg.get("code")
+                    break
+    except WebSocketDisconnect as e:
+        code = e.code
+    assert code == 4999, code
+    assert len(dispatched) == 1, "the scope gate must hand the attach to the bridge"
+
+
+def test_ws_attach_refuses_an_unknown_row_once_a_boundary_is_configured(
+    fake_jsonl, auth_cfg, monkeypatch
+):
+    """A live master is not proof that the CURRENT config still authorizes its cwd (#867 r7).
+
+    With nothing scanned there is no cwd to check — so where the operator has asked for a
+    boundary (any root or any exclusion), an unidentifiable attach is refused rather than handed
+    the terminal. Fails closed where it matters, open where nothing was configured.
+
+    The gap this closes: launch a session, change roots or exclude its cwd before its transcript
+    is scannable, then reconnect while the master is still live.
+    """
+    from agent_sessions import prefs, project_dirs
+    from agent_sessions.routes import terminal as terminal_route
+
+    monkeypatch.setattr(project_dirs, "effective_roots", lambda: [])
+    monkeypatch.setattr(
+        prefs, "get_folder_exclusions", lambda path=None: ["/home/user/claude/repo/a"]
+    )
+    monkeypatch.setenv("AGENT_SESSIONS_CLAUDE_BIN", "claude")
+
+    async def _attach(_engine, _native):
+        return terminal_route.sessions.ATTACH, None
+
+    monkeypatch.setattr(terminal_route, "_open_action_offloop", _attach)
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    unknown = "claude:77777777-7777-4777-8777-777777777777"
+    assert _close_code(c, f"/ws/term/{unknown}", headers) == 4404
+
+
+def test_ws_attach_resolution_runs_off_the_event_loop(fake_jsonl, auth_cfg, monkeypatch):
+    """The warm-reconnect session resolution must not run on the event loop (#867 review round 8,
+    #991).
+
+    Resolving the session reads the engine's store, and this path runs on EVERY warm reconnect,
+    between the async dispatch and `webterm.run()`. On the loop it stalls every other terminal
+    stream and the health/API coroutines: the same #678 shape the single-row lookup route already
+    avoids. Since #991 the route resolves one session (`engines.resolve_session`) instead of
+    walking every store, so that is the call that must land off the loop.
+
+    The comparison is against the thread the COROUTINE runs on, captured from inside the
+    handler's own async dispatch — not against the main thread. `TestClient` runs its loop in a
+    worker thread, so a `current_thread() is main_thread()` assertion is vacuous here and passed
+    against the blocking version.
+    """
+    import threading
+
+    from agent_sessions import engines, prefs, project_dirs
+    from agent_sessions.routes import terminal as terminal_route
+
+    monkeypatch.setattr(project_dirs, "effective_roots", lambda: [])
+    monkeypatch.setattr(prefs, "get_folder_exclusions", lambda path=None: [])
+    monkeypatch.setenv("AGENT_SESSIONS_CLAUDE_BIN", "claude")
+
+    loop_thread: list[threading.Thread] = []
+    resolve_thread: list[threading.Thread] = []
+    real = engines.resolve_session
+
+    def watched(*args, **kwargs):
+        resolve_thread.append(threading.current_thread())
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(engines, "resolve_session", watched)
+
+    async def _attach(_engine, _native):
+        # Runs ON the event loop, inside the same handler — this is the thread to beat.
+        loop_thread.append(threading.current_thread())
+        return terminal_route.sessions.ATTACH, None
+
+    monkeypatch.setattr(terminal_route, "_open_action_offloop", _attach)
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    _close_code(c, f"/ws/term/{_GOOD}", headers)
+
+    assert loop_thread, "the attach dispatch never ran"
+    assert resolve_thread, "the attach path never resolved the session"
+    assert (
+        resolve_thread[0] is not loop_thread[0]
+    ), "session resolution ran on the event loop's own thread during ATTACH"
+
+
+# ---- #991: resolve one session per connect, never walk every store on the loop -----------------
+
+
+def _stop_at_the_bridge(monkeypatch):
+    """Everything up to the PTY bridge runs for real; the bridge itself refuses (→ 4500), so a
+    test observes the connect path without a real dtach or engine binary."""
+    from agent_sessions import ptybridge
+
+    def refuse(**_kwargs):
+        raise ptybridge.PtyBridgeError("test: stop before spawning")
+
+    monkeypatch.setattr(ptybridge, "launch_argv", refuse)
+    monkeypatch.setattr(ptybridge, "attach_argv", refuse)
+
+
+def _dispatch_as(monkeypatch, action: str, *, beats: list[float] | None = None, before=None):
+    """Force the single-writer dispatch to ``action`` and, optionally, start an event-loop heartbeat
+    from inside the handler (the loop the route actually runs on) plus a ``before`` hook."""
+    from agent_sessions.routes import terminal as terminal_route
+
+    tasks: list[asyncio.Task] = []
+
+    async def _dispatch(_engine, _native):
+        if beats is not None:
+
+            async def heartbeat():
+                while True:
+                    t0 = time.monotonic()
+                    await asyncio.sleep(0.01)
+                    beats.append(time.monotonic() - t0)
+
+            tasks.append(asyncio.get_running_loop().create_task(heartbeat()))
+        if before is not None:
+            await before()
+        return getattr(terminal_route.sessions, action), None
+
+    monkeypatch.setattr(terminal_route, "_open_action_offloop", _dispatch)
+    return tasks
+
+
+def test_ws_attach_and_resume_make_no_full_walk(fake_jsonl, auth_cfg, monkeypatch):
+    """#991: every connect used to run its own uncached `scan_all()`; eight map windows meant eight
+    concurrent walks that finished together 30–60 s later. A claude ATTACH and RESUME now read the
+    one session they need, so a connect performs no full walk at all — and still reaches the bridge
+    with a boundary configured, i.e. the row was genuinely resolved and authorized."""
+    from agent_sessions import engines, prefs, project_dirs
+    from agent_sessions.routes import terminal as terminal_route
+
+    monkeypatch.setattr(project_dirs, "effective_roots", lambda: [])
+    monkeypatch.setattr(prefs, "get_folder_exclusions", lambda path=None: ["/nowhere/excluded"])
+    monkeypatch.setenv("AGENT_SESSIONS_CLAUDE_BIN", "claude")
+    monkeypatch.setattr(terminal_route.transcript_owner, "transcript_is_owned", lambda _n: False)
+    _stop_at_the_bridge(monkeypatch)
+
+    real = engines.scan_all
+    walks = {"n": 0}
+
+    def counting():
+        walks["n"] += 1
+        return real()
+
+    monkeypatch.setattr(engines, "scan_all", counting)
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    for action in ("ATTACH", "LAUNCH"):
+        _dispatch_as(monkeypatch, action)
+        walks["n"] = 0
+        assert _close_code(c, f"/ws/term/{_GOOD}", headers) == 4500, action
+        assert walks["n"] == 0, f"{action} ran {walks['n']} full walk(s)"
+
+
+def test_ws_refuses_a_session_whose_cwd_became_excluded_despite_a_warm_snapshot(
+    fake_jsonl, tmp_home, auth_cfg, monkeypatch
+):
+    """#991 freshness contract: authorization reads the session's CURRENT binding, never the
+    sidebar's TTL snapshot. The snapshot still says the session lives in an allowed cwd; its
+    transcript now records an excluded one — both ATTACH (a live master) and RESUME refuse."""
+    from agent_sessions import engines, prefs, project_dirs
+    from agent_sessions.routes import terminal as terminal_route
+
+    exclusions: list[str] = []
+    monkeypatch.setattr(project_dirs, "effective_roots", lambda: [])
+    monkeypatch.setattr(prefs, "get_folder_exclusions", lambda path=None: list(exclusions))
+    monkeypatch.setenv("AGENT_SESSIONS_CLAUDE_BIN", "claude")
+    monkeypatch.setattr(terminal_route.transcript_owner, "transcript_is_owned", lambda _n: False)
+    _stop_at_the_bridge(monkeypatch)
+    engines.set_scan_cache_ttl(30.0)
+
+    native = _GOOD.split(":", 1)[1]
+    warm = {s.uuid: s.cwd for s in engines.scan_all_cached()}
+    assert warm[native] == "/home/user/claude/repo/a"
+
+    jsonl = tmp_home / ".claude" / "projects" / "-home-user-claude-repo-a" / f"{native}.jsonl"
+    jsonl.write_text('{"type":"user","cwd":"/secret/work","message":{"content":"moved"}}\n')
+    exclusions.append("/secret")
+    stale = {s.uuid: s.cwd for s in engines.scan_all_cached()}
+    assert stale[native] == "/home/user/claude/repo/a", "fixture: the snapshot should still be warm"
+
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    for action in ("ATTACH", "LAUNCH"):
+        _dispatch_as(monkeypatch, action)
+        assert _close_code(c, f"/ws/term/{_GOOD}", headers) == 4404, action
+
+
+def test_ws_new_session_does_not_stall_the_loop_behind_a_cold_walk(
+    fake_jsonl, tmp_home, auth_cfg, monkeypatch
+):
+    """#991 (i): a `new=1` connect validates its cwd against the picker while a cold walk is in
+    flight. Joining that walk and invalidating the snapshot afterwards must both happen off the
+    event loop — before #991 the picker walked every store ON the loop and invalidation waited on
+    the snapshot lock the walk held."""
+    import threading
+
+    from agent_sessions import engines, prefs, project_dirs
+
+    monkeypatch.setattr(project_dirs, "effective_roots", lambda: [])
+    monkeypatch.setattr(prefs, "get_folder_exclusions", lambda path=None: [])
+    engines.set_scan_cache_ttl(30.0)
+    entered = threading.Event()
+
+    def slow_walk():
+        entered.set()
+        time.sleep(0.5)
+        return []
+
+    monkeypatch.setattr(engines, "scan_all", slow_walk)
+    cwd = tmp_home / "claude" / "fresh-proj"
+    cwd.mkdir(parents=True)
+
+    async def start_cold_walk():
+        threading.Thread(target=engines.scan_all_cached, daemon=True).start()
+        await asyncio.to_thread(entered.wait, 5)
+
+    beats: list[float] = []
+    _dispatch_as(monkeypatch, "LAUNCH", beats=beats, before=start_cold_walk)
+    _stop_at_the_bridge(monkeypatch)
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    url = f"/ws/term/claude:12345678-1234-4234-8234-123456789abc?new=1&cwd={cwd}"
+    assert _close_code(c, url, headers) == 4500
+    assert beats, "the heartbeat never ran"
+    assert (
+        max(beats) < 0.25
+    ), f"the event loop stalled for {max(beats):.3f}s on the new-session path"
+    assert len(beats) > 5, "the heartbeat never ran across the connect"
+
+
+def test_ws_new_session_snapshot_runs_off_the_loop_before_launch(
+    fake_jsonl, tmp_home, auth_cfg, monkeypatch, engine_bin
+):
+    """#991 (ii): the mint-its-own-id pre-launch snapshot (`snapshot_session_ids`, a recursive
+    rollout walk for codex) runs off the event loop, still BEFORE the launch argv is built, and a
+    `None` baseline still skips reconciliation exactly as before."""
+    from agent_sessions import engines, main, prefs, project_dirs
+
+    monkeypatch.setattr(project_dirs, "effective_roots", lambda: [])
+    monkeypatch.setattr(prefs, "get_folder_exclusions", lambda path=None: [])
+    monkeypatch.setenv("AGENT_SESSIONS_CODEX_SESSIONS_DIR", str(tmp_home / "cdx"))
+    cwd = tmp_home / "claude" / "codex-proj"
+    cwd.mkdir(parents=True)
+    # #853 P2: the live provider is the manifest-built one; the kind's hooks are bound onto it at
+    # attach time, so the spies go on that instance (patching the kind's class would miss them).
+    engine_bin("codex")
+    prov = engines.get("codex")
+    real_new_argv = prov.new_launch_argv
+
+    for baseline in (set(), None):
+        order: list[str] = []
+        reconciles: list[tuple] = []
+
+        def slow_snapshot(_cwd, baseline=baseline, order=order):
+            order.append("snapshot")
+            time.sleep(0.5)
+            return baseline
+
+        def recording_new_argv(native_id, *, cwd, bypass, order=order):
+            order.append("new_launch_argv")
+            return real_new_argv(native_id, cwd=cwd, bypass=bypass)
+
+        def fake_reconcile(*args, reconciles=reconciles):
+            reconciles.append(args)
+
+            async def _noop():
+                return None
+
+            return _noop()
+
+        monkeypatch.setattr(prov, "snapshot_session_ids", slow_snapshot)
+        monkeypatch.setattr(prov, "new_launch_argv", recording_new_argv)
+        monkeypatch.setattr(main, "_reconcile_new_session", fake_reconcile)
+        beats: list[float] = []
+        _dispatch_as(monkeypatch, "LAUNCH", beats=beats)
+        _stop_at_the_bridge(monkeypatch)
+        c = _client(auth_cfg)
+        headers = _login_headers(c, auth_cfg)
+        assert _close_code(c, f"/ws/term/{_CDX_PLACEHOLDER}?new=1&cwd={cwd}", headers) == 4500
+        assert order == ["snapshot", "new_launch_argv"], (baseline, order)
+        assert beats, "the heartbeat never ran"
+        assert max(beats) < 0.25, f"loop stalled {max(beats):.3f}s during snapshot ({baseline!r})"
+        assert len(beats) > 5, "the heartbeat never ran across the connect"
+        assert len(reconciles) == (0 if baseline is None else 1), (baseline, reconciles)
+
+
+def test_ws_gemini_connects_accepted_before_a_walk_share_that_walk(
+    fake_jsonl, auth_cfg, monkeypatch
+):
+    """#991 review: the freshness clock the resolver uses is the CONNECT's arrival (its accept
+    time), not the moment an executor thread happens to pick the resolution up. Two gemini connects
+    are both accepted before any walk starts; the first walks, and the second — dispatched only once
+    that walk has finished — must reuse it. Stamping arrival inside the worker made it 2 walks."""
+    import threading
+
+    from agent_sessions import engines, prefs, project_dirs, scanner
+    from agent_sessions.routes import terminal as terminal_route
+
+    monkeypatch.setattr(project_dirs, "effective_roots", lambda: [])
+    monkeypatch.setattr(prefs, "get_folder_exclusions", lambda path=None: [])
+    _stop_at_the_bridge(monkeypatch)
+    gem = "0a0a0a0a-0b0b-4c0c-8d0d-0e0e0e0e0e0e"
+
+    walks = {"n": 0}
+    walk_done = threading.Event()
+    second_in_dispatch = threading.Event()
+
+    def walk():
+        walks["n"] += 1
+        time.sleep(0.05)
+        walk_done.set()
+        return [
+            scanner.Session(
+                engine="gemini",
+                uuid=gem,
+                cwd="/home/user/gem",
+                last_mtime=1.0,
+                first_user_message="",
+                archived=False,
+            )
+        ]
+
+    monkeypatch.setattr(engines, "scan_all", walk)
+
+    order_lock = threading.Lock()
+    seen: list[int] = []
+
+    async def _dispatch(_engine, _native):
+        with order_lock:
+            idx = len(seen)
+            seen.append(idx)
+        if idx == 0:
+            # Hold the first connect until the second has been accepted (it is dispatching now),
+            # so BOTH accept times precede the one walk the first connect is about to start.
+            await asyncio.to_thread(second_in_dispatch.wait, 10)
+        else:
+            second_in_dispatch.set()
+            await asyncio.to_thread(walk_done.wait, 10)
+        return terminal_route.sessions.ATTACH, None
+
+    monkeypatch.setattr(terminal_route, "_open_action_offloop", _dispatch)
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    codes: list[int | None] = []
+
+    def connect():
+        codes.append(_close_code(c, f"/ws/term/gemini:{gem}", headers))
+
+    threads = [threading.Thread(target=connect) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(30)
+
+    assert second_in_dispatch.is_set() and walk_done.is_set(), "the connects never interleaved"
+    assert codes == [4500, 4500], codes
+    assert walks["n"] == 1, f"{walks['n']} walks for two connects accepted before the first walk"
+
+
+def test_opencode_launch_refused_4502_during_compaction(fake_jsonl, opencode_db, auth_cfg):
+    from agent_sessions import opencode_admission, scanner
+
+    cwd = next(iter(scanner.pickable_projects()))
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    with opencode_admission.acquire(exclusive=True):
+        assert _close_code(c, f"/ws/term/{_OC_PLACEHOLDER}?new=1&cwd={cwd}", headers) == 4502
+        assert _close_code(c, "/ws/term/opencode:ses_aaaaaaaaaaaaaaaaaaaaaaaa", headers) == 4502
+
+
+def test_early_opencode_launch_rejection_releases_admission(
+    fake_jsonl, opencode_db, auth_cfg, monkeypatch
+):
+    from agent_sessions import opencode_admission, scanner
+
+    monkeypatch.setenv("AGENT_SESSIONS_OPENCODE_BIN", "bare-bin")
+    cwd = next(iter(scanner.pickable_projects()))
+    c = _client(auth_cfg)
+    assert (
+        _close_code(c, f"/ws/term/{_OC_PLACEHOLDER}?new=1&cwd={cwd}", _login_headers(c, auth_cfg))
+        == 4500
+    )
+    with opencode_admission.acquire(exclusive=True):
+        pass
+
+
+def test_webterm_spawn_timeout_drains_before_admission_and_pty_release(tmp_path, monkeypatch):
+    from agent_sessions import opencode_admission
+
+    async def main():
+        entered, finish = asyncio.Event(), asyncio.Event()
+        codes = []
+        guard = await opencode_admission.for_launch("opencode")
+        fd = guard.fd
+
+        async def spawn(*argv, **kwargs):
+            assert fd not in kwargs["pass_fds"]
+            entered.set()
+            await finish.wait()
+            # The PTY must still be open when a delayed creation actually consumes it.
+            import os
+
+            os.fstat(kwargs["stdin"])
+            raise OSError("test-owned creation failed")
+
+        class WS:
+            async def close(self, code):
+                codes.append(code)
+
+        monkeypatch.setattr(webterm.asyncio, "create_subprocess_exec", spawn)
+        monkeypatch.setattr(webterm, "SPAWN_TIMEOUT_S", 0.01)
+        task = asyncio.create_task(
+            webterm.run(WS(), ["/test/opencode"], cwd=str(tmp_path), maintenance_admission=guard)
+        )
+        await entered.wait()
+        await asyncio.sleep(0.03)
+        assert not task.done() and opencode_admission.acquire(exclusive=True) is None
+        finish.set()
+        await task
+        assert codes == [4502]
+        with opencode_admission.acquire(exclusive=True):
+            pass
+
+    asyncio.run(main())
+
+
+# --- #1070: the compose paste is written only after the line-clear was READ ----------------
+
+# A raw-mode TUI that does not read for 300 ms (claude under load, GC, a long render), then logs
+# every read() it makes until it sees the Enter. The composer's three frames reach the server
+# back to back — exactly what an event-loop stall or relay coalescing delivers.
+_STALLED_READER = """
+import os, sys, time, tty
+tty.setraw(0)
+os.write(1, b"READY")
+time.sleep(0.3)
+reads = []
+end = time.time() + 5
+while time.time() < end:
+    d = os.read(0, 65536)
+    reads.append(d)
+    with open(sys.argv[1], "w") as f:
+        f.write(repr(reads))
+    if b"\\r" in b"".join(reads):
+        break
+"""
+
+
+class _FramesThenLinger:
+    """Hands out its frames back to back once the reader is raw (its setraw flushes input)."""
+
+    def __init__(self, frames, linger_s=3.0):
+        self._frames = list(frames)
+        self._linger_s = linger_s
+        self._seen = b""
+        self._ready: asyncio.Event | None = None
+
+    async def receive(self):
+        if self._ready is None:
+            self._ready = asyncio.Event()
+        await asyncio.wait_for(self._ready.wait(), 10)
+        if self._frames:
+            return self._frames.pop(0)
+        await asyncio.sleep(self._linger_s)
+        return {"type": "websocket.disconnect"}
+
+    async def send_bytes(self, b):
+        self._seen += b
+        if b"READY" in self._seen:
+            if self._ready is None:
+                self._ready = asyncio.Event()
+            self._ready.set()
+
+    async def send_text(self, t):
+        pass
+
+    async def close(self, code=None):
+        pass
+
+
+def _compose_frames():
+    paste = "\x1b[200~first line\nsecond line\x1b[201~"
+    return [{"text": json.dumps({"t": "i", "d": d})} for d in ("\x01\x0b", paste, "\r")]
+
+
+def _stalled_reads(tmp_path, frames):
+    import ast
+
+    script = tmp_path / "reader.py"
+    script.write_text(_STALLED_READER)
+    log = tmp_path / "reads.txt"
+    argv = [sys.executable, str(script), str(log)]
+    asyncio.run(webterm.run(_FramesThenLinger(frames), argv, cwd=str(tmp_path), buf_key=None))
+    return ast.literal_eval(log.read_text())
+
+
+def test_the_paste_never_shares_a_read_with_the_line_clear(tmp_path):
+    reads = _stalled_reads(tmp_path, _compose_frames())
+    clear_read = next(r for r in reads if b"\x01\x0b" in r)
+    assert b"\x1b[200~" not in clear_read, (
+        f"the agent read the clear and the paste together — claude holds that paste pending "
+        f"and swallows the Enter: {reads!r}"
+    )
+    assert b"".join(reads) == b"\x01\x0b\x1b[200~first line\nsecond line\x1b[201~\r"
+
+
+def test_plain_input_never_waits_on_the_paste_boundary(tmp_path, monkeypatch):
+    """Only a frame that OPENS a bracketed paste measures the queues; typing costs nothing."""
+    calls = []
+    real = webterm.tty_health.unread_input
+    monkeypatch.setattr(webterm.tty_health, "unread_input", lambda *a: calls.append(a) or real(*a))
+    frames = [{"text": json.dumps({"t": "i", "d": d})} for d in ("a", "b", "\x01\x0b", "\r")]
+    reads = _stalled_reads(tmp_path, frames)
+    assert calls == []
+    assert b"".join(reads) == b"ab\x01\x0b\r"
+
+
+# --- #1070 review: ownership, the dtach hop and the probe pool ----------------------------
+
+# A raw-mode reader for the review regressions: records where it reads from, announces READY,
+# optionally stalls, then logs every read with its time until it sees the Enter or runs out.
+_TIMED_READER = """
+import json, os, sys, time, tty
+out, stall = sys.argv[1], float(sys.argv[2])
+tty.setraw(0)
+with open(out + ".who.tmp", "w") as f:
+    json.dump({"pid": os.getpid(), "ppid": os.getppid(), "tty": os.ttyname(0),
+               "rdev": os.fstat(0).st_rdev}, f)
+os.replace(out + ".who.tmp", out + ".who")
+os.write(1, b"READY")
+time.sleep(stall)
+reads = []
+end = time.time() + 6
+while time.time() < end:
+    d = os.read(0, 65536)
+    reads.append([time.time(), d.decode("latin-1")])
+    with open(out, "w") as f:
+        json.dump(reads, f)
+    if b"\\r" in d:
+        break
+"""
+
+
+class _HookedFrames(_FramesThenLinger):
+    """`_FramesThenLinger` that runs ``on_ready`` once, when READY is first seen."""
+
+    def __init__(self, frames, on_ready=None, linger_s=3.0):
+        super().__init__(frames, linger_s)
+        self._on_ready = on_ready
+
+    async def send_bytes(self, b):
+        await super().send_bytes(b)
+        if self._on_ready is not None and self._ready is not None and self._ready.is_set():
+            hook, self._on_ready = self._on_ready, None
+            hook()
+
+
+def _timed_reader(tmp_path, stall_s=0.0):
+    script = tmp_path / "timed_reader.py"
+    script.write_text(_TIMED_READER)
+    out = tmp_path / "timed_reads.json"
+    return [sys.executable, str(script), str(out), str(stall_s)], out
+
+
+def _timed_reads(out) -> list[tuple[float, bytes]]:
+    if not out.exists():
+        return []
+    return [(t, d.encode("latin-1")) for t, d in json.loads(out.read_text())]
+
+
+def test_a_takeover_during_the_paste_wait_drops_the_paste(tmp_path, monkeypatch):
+    """The displaced viewer's paste must not reach the new owner's terminal (review P1)."""
+    gate = asyncio.Event()
+    real = webterm.tty_health.unread_input
+
+    def measure_then_lose_ownership(*a):
+        gate.set()  # `_demotion_guard` fires while the paste is waiting
+        return real(*a)
+
+    monkeypatch.setattr(webterm.tty_health, "unread_input", measure_then_lose_ownership)
+    argv, out = _timed_reader(tmp_path, stall_s=0.3)
+    asyncio.run(
+        webterm.run(
+            _FramesThenLinger(_compose_frames()),
+            argv,
+            cwd=str(tmp_path),
+            buf_key=None,
+            read_only_gate=gate,
+        )
+    )
+    assert b"".join(d for _, d in _timed_reads(out)) == b"\x01\x0b"
+
+
+def test_a_takeover_during_the_gated_replay_drops_the_queued_input(tmp_path, monkeypatch):
+    """Input queued behind the #805 repair is re-checked at the write, not only on arrival."""
+    gate = asyncio.Event()
+    frames = _FramesThenLinger(_compose_frames())
+
+    async def repair_then_lose_ownership(_key):
+        while frames._frames:  # every frame has been queued behind the repair
+            await asyncio.sleep(0.01)
+        gate.set()
+
+    monkeypatch.setattr(webterm, "_repair_tty", repair_then_lose_ownership)
+    monkeypatch.setattr(webterm.tty_health, "agent_input", lambda key: None)
+    argv, out = _timed_reader(tmp_path)
+    asyncio.run(
+        webterm.run(
+            frames,
+            argv,
+            cwd=str(tmp_path),
+            buf_key="claude:11111111-2222-3333-4444-555555555555",
+            read_only_gate=gate,
+        )
+    )
+    assert _timed_reads(out) == []
+
+
+@pytest.mark.skipif(not shutil.which("dtach"), reason="dtach required")
+def test_the_paste_waits_for_a_stalled_dtach_master(monkeypatch):
+    """The clear can sit in dtach's socket while both measured ptys are empty (review P1).
+
+    Production shape: our pty → `dtach -a` → socket → `dtach -n` master → the agent's pty. The
+    master and the agent are stopped as the frames arrive; the master resumes at 0.3 s and the
+    agent at 0.5 s. Sampling the two ptys alone saw both empty at once and wrote the paste, and
+    the agent then read the clear, the paste and the Enter in one read.
+    """
+    import signal
+    import tempfile
+    import uuid
+    from pathlib import Path
+
+    work = Path(tempfile.mkdtemp(prefix="pb-", dir="/tmp"))  # AF_UNIX paths are short
+    sock = str(work / "s")
+    argv, out = _timed_reader(work)
+    who = Path(str(out) + ".who")
+    subprocess.run(["dtach", "-n", sock, "-z", *argv], check=True, cwd=work)
+    procs = {}
+    try:
+        deadline = time.time() + 10
+        while not who.exists() and time.time() < deadline:
+            time.sleep(0.02)
+        info = json.loads(who.read_text())
+        procs = {"master": info["ppid"], "agent": info["pid"]}
+        monkeypatch.setattr(
+            webterm.tty_health,
+            "agent_input",
+            lambda key: (info["ppid"], info["tty"], info["rdev"]),
+        )
+
+        def stall_the_downstream():
+            os.kill(procs["master"], signal.SIGSTOP)
+            os.kill(procs["agent"], signal.SIGSTOP)
+            loop = asyncio.get_running_loop()
+            loop.call_later(0.3, os.kill, procs["master"], signal.SIGCONT)
+            loop.call_later(0.5, os.kill, procs["agent"], signal.SIGCONT)
+
+        frames = _HookedFrames(_compose_frames(), on_ready=stall_the_downstream)
+        # READY was already printed before we attached; dtach replays nothing, so say it again.
+        frames._seen = b"READY"
+        asyncio.run(
+            webterm.run(
+                frames,
+                ["dtach", "-a", sock, "-z", "-E", "-r", "winch"],
+                cwd=str(work),
+                buf_key=f"claude:{uuid.uuid4()}",
+            )
+        )
+        reads = [d for _, d in _timed_reads(out)]
+        clear_read = next(r for r in reads if b"\x01\x0b" in r)
+        assert b"\x1b[200~" not in clear_read, f"clear and paste in one agent read: {reads!r}"
+        assert b"".join(reads).endswith(b"\x1b[201~\r")
+    finally:
+        for pid in procs.values():
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGCONT)
+                os.kill(pid, signal.SIGTERM)
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def test_a_saturated_probe_pool_still_writes_the_paste_within_the_cap(tmp_path, monkeypatch):
+    """Queueing for a probe worker counts against the 1 s cap (review P2)."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    release = threading.Event()
+    wedged = ThreadPoolExecutor(max_workers=1)
+    wedged.submit(release.wait, 30)  # the only worker never comes back in time
+    monkeypatch.setattr(webterm, "_probe_executor", lambda: wedged)
+    argv, out = _timed_reader(tmp_path)
+    try:
+        asyncio.run(
+            webterm.run(_FramesThenLinger(_compose_frames()), argv, cwd=str(tmp_path), buf_key=None)
+        )
+    finally:
+        release.set()
+        wedged.shutdown(wait=False, cancel_futures=True)
+    reads = _timed_reads(out)
+    assert b"".join(d for _, d in reads) == b"\x01\x0b\x1b[200~first line\nsecond line\x1b[201~\r"
+    clear_at = next(t for t, d in reads if b"\x01\x0b" in d)
+    paste_at = next(t for t, d in reads if b"\x1b[200~" in d)
+    assert paste_at - clear_at < webterm._PASTE_DRAIN_MAX_S + 0.5
+
+
+@pytest.mark.parametrize("takeover", [False, True])
+@pytest.mark.parametrize("action", ["LAUNCH", "ATTACH"])
+def test_disable_during_terminal_setup_fences_spawn_but_keeps_attach(
+    fake_jsonl, auth_cfg, monkeypatch, engine_bin, takeover, action
+):
+    import uuid
+
+    from agent_sessions import engines, owner, ptybridge, sessionlock
+    from agent_sessions.plugins import manager
+    from agent_sessions.routes import terminal as route
+
+    monkeypatch.setattr(owner, "takeover_enabled", lambda: takeover)
+    monkeypatch.setattr(route.transcript_owner, "transcript_is_owned", lambda _n: False)
+    monkeypatch.setattr(ptybridge, "launch_argv", lambda **_kw: ["dtach"])
+    monkeypatch.setattr(ptybridge, "attach_argv", lambda **_kw: ["dtach"])
+    monkeypatch.setattr(engines.registry, "_engines_with_masters", lambda *_a: {"claude"})
+    engine_bin("claude")
+    dispatched = []
+
+    async def opening(engine, native):
+        return getattr(route.sessions, action), (
+            sessionlock.acquire(f"{engine}:{native}") if action == "LAUNCH" else None
+        )
+
+    # This awaited setup happens after the route's first admission check on both paths.
+    real_claim = route.session_stream.SessionRegistry.on_attach
+
+    async def disable_then_attach(self, *args, **kwargs):
+        await asyncio.to_thread(manager.deactivate, str(uuid.uuid4()), "claude")
+        return await real_claim(self, *args, **kwargs)
+
+    async def spawn(*args, **kwargs):
+        dispatched.append(args)
+        raise OSError("test stops at the actual process-creation boundary")
+
+    monkeypatch.setattr(route, "_open_action_offloop", opening)
+    monkeypatch.setattr(route.session_stream.SessionRegistry, "on_attach", disable_then_attach)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    code = None
+    with c.websocket_connect(f"/ws/term/{_GOOD}", headers=headers) as ws:
+        for _ in range(20):
+            msg = ws.receive()
+            if msg["type"] == "websocket.close":
+                code = msg["code"]
+                break
+    assert code == (4404 if action == "LAUNCH" else 4502)
+    assert bool(dispatched) == (action == "ATTACH")

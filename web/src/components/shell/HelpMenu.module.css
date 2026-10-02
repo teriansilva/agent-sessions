@@ -1,0 +1,71 @@
+/* The operator menu's panel and rows. Born as the `?` Help menu (#987), whose items moved into the
+ * operator menu in #1085: the anchored panel the mission `⋯` draws (`mission.module.css`
+ * .overflowMenu) and RowMenu's rows. Flat fill, hairline border, zero radius — `docs/design.md`. */
+
+.wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  /* The top-bar panel is portalled into <body> (`AnchoredMenu` `portal`), where it has to clear the
+   * app shell's own layers — the notification bell's panel uses the same 60. */
+  z-index: 60;
+  min-width: 240px;
+  width: max-content;
+  max-width: min(320px, calc(100vw - 16px));
+  border: 1px solid var(--line-strong);
+  background: var(--bg-2);
+  padding: 4px 0;
+  /* The elevation cue is the border and the ground change, never a shadow gradient. */
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+
+/* In the drawer the `?` is the leftmost action, so the panel opens to its right and stays inside. */
+.start {
+  left: 0;
+  right: auto;
+}
+
+.items {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.items:focus-visible {
+  outline: none;
+}
+
+.item {
+  composes: item from "../sidebar/RowMenu.module.css";
+  /* The coarse-pointer floor, as everywhere else. */
+  min-height: 44px;
+  text-decoration: none;
+}
+
+.icon {
+  composes: itemIcon from "../sidebar/RowMenu.module.css";
+}
+
+.label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.2;
+}
+
+.sub {
+  font-size: 11px;
+  color: var(--text-3, var(--text-muted));
+}
+
+.trail {
+  display: flex;
+  margin-left: auto;
+  padding-left: 12px;
+  color: var(--text-3, var(--text-muted));
+}

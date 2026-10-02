@@ -1,0 +1,146 @@
+/* Confirm dialog for the templates surfaces (#905). Same HUD vocabulary as the sent-messages
+ * modal: near-black ground, square chrome, mono micro-labels, bottom sheet on mobile. */
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.dialog {
+  width: min(460px, 100%);
+  background: var(--bg-1);
+  color: var(--text-1);
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  padding: 15px 18px 16px;
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.5);
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.tag {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-2);
+  border-radius: 0;
+  cursor: pointer;
+}
+.close:hover,
+.close:focus-visible {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
+}
+
+.title {
+  margin: 0 0 6px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-1);
+}
+.body {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+  margin-bottom: 12px;
+}
+.body p {
+  margin: 0 0 6px;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.cancel,
+.confirm {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 0;
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-weight: 600;
+  cursor: pointer;
+}
+.cancel {
+  background: transparent;
+  color: var(--text-1);
+  border: 1px solid var(--line-strong);
+}
+.cancel:hover {
+  background: var(--glass-strong);
+}
+.confirm {
+  background: var(--cta-bg-1);
+  color: var(--cta-text);
+  border: 1px solid transparent;
+}
+.confirm.danger {
+  background: transparent;
+  color: var(--status-down);
+  border-color: color-mix(in srgb, var(--status-down) 55%, transparent);
+}
+.confirm.danger:hover {
+  background: color-mix(in srgb, var(--status-down) 12%, transparent);
+}
+.cancel:disabled,
+.confirm:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Mobile (≤800px): a bottom sheet; both actions grow to a real touch target. */
+@media (max-width: 800px) {
+  .backdrop {
+    padding: 0;
+    align-items: flex-end;
+  }
+  .dialog {
+    width: 100%;
+    border-left: 0;
+    border-right: 0;
+    border-bottom: 0;
+    padding-bottom: calc(16px + env(safe-area-inset-bottom, 0));
+  }
+  .actions {
+    justify-content: stretch;
+  }
+  .cancel,
+  .confirm {
+    flex: 1;
+    min-height: 44px;
+  }
+  .close {
+    width: 44px;
+    height: 44px;
+  }
+}

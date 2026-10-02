@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630">
+  <!-- BattleLab social/og image (#211): near-black HUD ground, the phosphor-amber command-
+       prompt (>_) mark above the wordmark (BATTLE #e8e9ec / LAB #ffb000) + the "Command &
+       Code" tagline, framed by HUD corner brackets. Rasterized to og-image.png. -->
+  <rect width="1200" height="630" fill="#0d0e10"/>
+  <!-- subtle amber-tinted vignette so the centered mark reads cleanly -->
+  <radialGradient id="glow" cx="50%" cy="40%" r="62%">
+    <stop offset="0%" stop-color="#171410"/>
+    <stop offset="100%" stop-color="#0d0e10"/>
+  </radialGradient>
+  <rect width="1200" height="630" fill="url(#glow)"/>
+  <!-- HUD corner brackets -->
+  <g fill="none" stroke="#ffb000" stroke-width="3" opacity="0.55">
+    <path d="M40 80 V40 H80"/>
+    <path d="M1120 40 H1160 V80"/>
+    <path d="M40 550 V590 H80"/>
+    <path d="M1120 590 H1160 V550"/>
+  </g>
+  <!-- command-prompt (>_) mark, centered, ~150px -->
+  <g fill="none" stroke="#ffb000" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"
+     transform="translate(525,150)">
+    <path d="M0 0 L75 75 L0 150"/>
+  </g>
+  <rect x="615" y="200" width="60" height="22" rx="11" fill="#ffb000"/>
+  <!-- wordmark — inline two-tone tspans, centred via the parent's middle anchor -->
+  <text x="600" y="445" text-anchor="middle"
+        font-family="'DejaVu Sans','Helvetica Neue',Arial,sans-serif"
+        font-size="104" font-weight="800" letter-spacing="6">
+    <tspan fill="#e8e9ec">BATTLE</tspan><tspan fill="#ffb000">LAB</tspan>
+  </text>
+  <!-- tagline -->
+  <text x="600" y="520" text-anchor="middle"
+        font-family="'DejaVu Sans Mono','DejaVu Sans',Arial,sans-serif"
+        font-size="34" font-weight="400" letter-spacing="4" fill="#a7abb3">
+    // Command &amp; Code //
+  </text>
+</svg>

@@ -1,0 +1,327 @@
+#!/usr/bin/env python3
+"""Regenerate the engine lists in the docs from the first-party manifests (#853 P8).
+
+Every place the documentation enumerates engines — the engines guide, README, INSTALL, the
+uninstall page — used to be a hand-kept copy of the roster, and each copy drifted on its own
+(`engines.md` lost `AGENT_SESSIONS_AGY_BIN`, `uninstall.md` lost Antigravity, README's `doctor`
+line lost kimi). The roster now lives in `plugins/first_party/*/plugin.toml`, so the docs render
+from it: each list is a block between
+
+    <!-- BEGIN generated:<name> -->
+    <!-- END generated:<name> -->
+
+markers, rewritten in place by this script. `tests/test_engine_docs.py` renders the same blocks
+and fails when a committed copy differs, so adding or removing a manifest without regenerating is
+a red build rather than a stale page.
+
+    python3 scripts/gen-engine-docs            # rewrite the blocks in place
+    python3 scripts/gen-engine-docs --check    # exit 1 and name the stale blocks
+
+Nothing here executes an engine or reads the operator's stores. Launch argv is rendered by the
+launcher's own assembler (`PluginProvider._assemble`) with the entrypoint replaced by the binary's
+name, so the documented command is the command the app builds, not a second description of it.
+"""
+
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "src"))
+
+from agent_sessions.plugins import kinds, load_first_party  # noqa: E402
+
+#: Every file that carries generated blocks, and the blocks it must carry — each exactly once. An
+#: explicit inventory, so a deleted or mangled marker pair fails the check instead of leaving a
+#: file with nothing to compare (Hermes on #1178).
+TARGETS: dict[str, tuple[str, ...]] = {
+    "README.md": ("engine-table",),
+    "docs/site/guide/engines.md": ("engine-table", "engine-env", "engine-models"),
+    "docs/site/guide/plugins.md": ("manifest-vocab",),
+    "docs/site/start/uninstall.md": ("engine-stores",),
+}
+
+_BLOCK_RE = re.compile(
+    r"(<!-- BEGIN generated:(?P<name>[a-z-]+) -->\n)(?P<body>.*?)"
+    r"(<!-- END generated:(?P=name) -->)",
+    re.S,
+)
+
+# Placeholder values for rendering argv. `_assemble` refuses a relative cwd, so the directory is
+# an absolute sentinel swapped for `<dir>` afterwards.
+_DIR = "/__dir__"
+
+_MARKER_RE = re.compile(r"<!-- (BEGIN|END) generated:([^ ]*) -->")
+
+
+def _manifests():
+    result = load_first_party(env={}, home=Path("/nonexistent-home"))
+    # The loader is fail-soft and returns the manifests that DID load; regenerating from that would
+    # quietly bless a truncated roster, so any problem — or no roster at all — stops the script.
+    if result.problems:
+        raise SystemExit(f"gen-engine-docs: first-party manifests did not load: {result.problems}")
+    if not result.providers:
+        raise SystemExit("gen-engine-docs: no first-party manifests found")
+    return [p.manifest for p in result.providers.values()], result.providers
+
+
+def _argv(prov, step, *, new: bool) -> str:
+    prov._entry_path = lambda: prov.manifest.binary.name  # docs render the name, not a path
+    argv = prov._assemble(step, "<id>", cwd=_DIR, bypass=False, new=new)
+    return " ".join("<dir>" if a == _DIR else a for a in argv)
+
+
+def _code(s: str) -> str:
+    return f"`{s}`"
+
+
+def engine_table() -> str:
+    manifests, providers = _manifests()
+    rows = [
+        "| Engine | Binary · override | Sessions read from · override | Resume | New session |"
+        " Permission bypass |",
+        "|---|---|---|---|---|---|",
+    ]
+    for m in manifests:
+        prov = providers[m.id]
+        if m.runtime != "pty":
+            # Nothing is executed: no binary, no argv. The row says how it runs instead (#1209).
+            name = f"**{m.identity.label}** (`{m.id}`)"
+            store = _code(m.store.root) if m.store is not None else "—"
+            how = f"no process — runtime `{m.runtime}`, endpoint `{m.endpoint.kind}`"
+            rows.append(f"| {name} | — | {store} | {how} | new conversation | — |")
+            continue
+        binary = _code(m.binary.name) + (f" · `{m.binary.env_var}`" if m.binary.env_var else "")
+        if m.store is None:
+            store = "—"
+        else:
+            # `store.read_only` is not rendered: no consumer reads it yet, and claude's archive
+            # moves JSONL files under its store — the guide states the write rule in prose.
+            store = _code(m.store.root)
+            overrides = [m.store.env_override] if m.store.env_override else []
+            overrides += [m.store.path_env[k] for k in sorted(m.store.path_env)]
+            if overrides:
+                store += " · " + ", ".join(_code(o) for o in overrides)
+        if m.launch.resume.kind == "fresh":
+            resume = "a fresh process — nothing to resume"
+        else:
+            resume = _code(_argv(prov, m.launch.resume, new=False))
+        if m.launch.new is None:
+            new = "—"
+        elif m.session_id.mint == "pinned":
+            new = _code(_argv(prov, m.launch.new, new=True)) + " — pinned id"
+        else:
+            new = _code(_argv(prov, m.launch.new, new=True)) + ", then adopt the id it mints"
+        if m.launch.bypass:
+            bypass = " ".join(_code(f) for f in m.launch.bypass)
+            if m.launch.bypass_on == "new":
+                bypass += " (new sessions only)"
+        else:
+            bypass = "—"
+        name = f"**{m.identity.label}** (`{m.id}`)"
+        rows.append(f"| {name} | {binary} | {store} | {resume} | {new} | {bypass} |")
+    return "\n".join(rows) + "\n"
+
+
+def engine_env() -> str:
+    manifests, _ = _manifests()
+    rows = ["| Variable | Engine | Overrides |", "|---|---|---|"]
+    for m in manifests:
+        if m.binary is not None and m.binary.env_var:
+            rows.append(f"| `{m.binary.env_var}` | {m.identity.label} | the binary |")
+        if m.store is not None and m.store.env_override:
+            rows.append(
+                f"| `{m.store.env_override}` | {m.identity.label} | the store root "
+                f"(`{m.store.root}`) |"
+            )
+        if m.store is not None:
+            for name in sorted(m.store.path_env):
+                rows.append(
+                    f"| `{m.store.path_env[name]}` | {m.identity.label} | the store's `{name}` "
+                    f"(`{m.store.root}/{m.store.paths[name]}`) |"
+                )
+    return "\n".join(rows) + "\n"
+
+
+def engine_models() -> str:
+    """Per engine: how a launch picks a model and which instruction files it reads (#1189)."""
+    manifests, _ = _manifests()
+    rows = [
+        "| Engine | Model at launch | Models offered | Instruction files |",
+        "|---|---|---|---|",
+    ]
+    for m in manifests:
+        model = m.launch.model if m.launch is not None else None
+        if model is not None and not m.models_configured_elsewhere:
+            how = f"`{model.flag} <id>` on new sessions" + (
+                " and on resume" if model.on_resume else " (a resume keeps its model)"
+            )
+            offered = ", ".join(
+                _code(x.id) + (f" ({', '.join(_code(a) for a in x.aliases)})" if x.aliases else "")
+                for x in m.models
+            )
+        elif m.models_configured_elsewhere:
+            how = "set in the agent's own configuration"
+            offered = "`default` only"
+        else:
+            how = "—"
+            offered = "—"
+        files = ", ".join(_code(f) for f in m.instructions) or "—"
+        rows.append(f"| **{m.identity.label}** (`{m.id}`) | {how} | {offered} | {files} |")
+    return "\n".join(rows) + "\n"
+
+
+def engine_stores() -> str:
+    manifests, _ = _manifests()
+    return "".join(
+        f"- **{m.identity.label}** — `{m.store.root}`\n"
+        for m in manifests
+        # A `terminal` plugin's store is BattleLab's own record, not an agent's data.
+        if m.store is not None and m.identity.kind == "agent"
+    )
+
+
+def _vals(values) -> str:
+    return ", ".join(_code(v) for v in sorted(values))
+
+
+def manifest_vocab() -> str:
+    rows = [
+        ("`contract`", _code(str(kinds.CONTRACT_CURRENT))),
+        ("`identity.kind`", _vals(kinds.IDENTITY_KINDS)),
+        ("`runtime.kind`", _vals(kinds.RUNTIME_KINDS)),
+        ("`endpoint.kind` (runtime `chat` only)", _vals(kinds.ENDPOINT_KINDS)),
+        ("`binary.version_flag`", _vals(kinds.VERSION_FLAGS)),
+        ("`session_id.mint`", _vals(kinds.MINT_KINDS)),
+        ("`store.layout`", _vals(kinds.STORE_LAYOUTS)),
+        ("`store.paths` names", _vals(kinds.STORE_PATH_NAMES)),
+        ("`launch.resume.kind`", _vals(kinds.RESUME_KINDS)),
+        ("`launch.new.kind`", _vals(kinds.NEW_KINDS)),
+        ("resume `flag`", _vals(kinds.RESUME_FLAGS)),
+        ("resume `subcommand`", _vals(kinds.RESUME_SUBCOMMANDS)),
+        ("new `pin-flag` flag", _vals(kinds.NEW_PIN_FLAGS)),
+        ("new `cwd-flag` flag", _vals(kinds.CWD_FLAGS)),
+        ("`launch.base_args`", _vals(kinds.BASE_ARGS)),
+        ("`launch.bypass`", _vals(kinds.BYPASS_FLAGS)),
+        ("`launch.bypass_on`", _vals(kinds.BYPASS_ON)),
+        ("`launch.admission`", _vals(kinds.ADMISSION_KINDS)),
+        ("`launch.model.kind`", _vals(kinds.MODEL_KINDS)),
+        ("`launch.model.flag`", _vals(kinds.MODEL_FLAGS)),
+        ("`instructions.files`", _vals(kinds.INSTRUCTION_FILES)),
+        ("`capabilities`", _vals(kinds.CAPABILITIES)),
+        ("`transcript.kind`", _vals(kinds.TRANSCRIPT_KINDS)),
+        ("`usage.source`", _vals(kinds.USAGE_SOURCES)),
+        ("`usage.kind`", _vals(kinds.USAGE_KINDS)),
+        ("`usage.probe_token`", _vals(kinds.USAGE_PROBE_TOKENS)),
+        ("`usage.access`", _vals(kinds.USAGE_ACCESS_KINDS)),
+        ("`terminal.repaint`", _vals(kinds.REPAINT_KINDS)),
+        ("`terminal.ready`", _vals(kinds.READY_KINDS)),
+        ("`terminal.menu`", _vals(kinds.MENU_KINDS)),
+        ("`terminal.permission`", _vals(kinds.PERMISSION_KINDS)),
+        ("`unattended.start_evidence`", _vals(kinds.START_EVIDENCE_KINDS)),
+        ("`maintenance`", _vals(kinds.MAINTENANCE_KINDS)),
+        ("`display.accent`", _vals(kinds.ACCENT_TOKENS)),
+        (
+            "`install.kind` → `authority`",
+            "; ".join(
+                f"`{k}` → {_vals(kinds.INSTALL_AUTHORITIES[k])}"
+                for k in sorted(kinds.INSTALL_KINDS)
+            ),
+        ),
+        (
+            "`signin.kind` → `subcommand`",
+            "; ".join(
+                f"`{k}` → {_vals(v) if v else 'none'}"
+                for k, v in sorted(kinds.SIGNIN_KINDS.items())
+            ),
+        ),
+        ("`install.platform`", _vals(kinds.INSTALL_PLATFORMS)),
+        ("`probe.kind`", _vals(kinds.PROBE_KINDS)),
+        ("`verify`", _vals(kinds.VERIFY_CHECKS)),
+    ]
+    out = ["| Field | Allowed values |", "|---|---|"]
+    out += [f"| {f} | {v} |" for f, v in rows]
+    return "\n".join(out) + "\n"
+
+
+BLOCKS = {
+    "engine-table": engine_table,
+    "engine-env": engine_env,
+    "engine-stores": engine_stores,
+    "engine-models": engine_models,
+    "manifest-vocab": manifest_vocab,
+}
+
+
+def check_markers(text: str, rel: str, required: tuple[str, ...]) -> None:
+    """Fail closed: every required block present exactly once, as a well-formed pair, and no
+    marker the block pattern would not consume (a typo'd or unpaired one)."""
+    markers = _MARKER_RE.findall(text)
+    pairs = [m.group("name") for m in _BLOCK_RE.finditer(text)]
+    if len(markers) != 2 * len(pairs):
+        raise SystemExit(f"gen-engine-docs: {rel}: malformed or unpaired generated-block marker")
+    for name in required:
+        if pairs.count(name) != 1:
+            raise SystemExit(
+                f"gen-engine-docs: {rel}: block {name!r} must appear exactly once, "
+                f"found {pairs.count(name)}"
+            )
+    extra = sorted(set(pairs) - set(required))
+    if extra:
+        raise SystemExit(f"gen-engine-docs: {rel}: unexpected generated block {extra[0]!r}")
+
+
+def render(text: str, blocks: dict[str, str]) -> str:
+    def sub(m: re.Match) -> str:
+        name = m.group("name")
+        if name not in blocks:
+            raise SystemExit(f"gen-engine-docs: unknown generated block {name!r}")
+        return m.group(1) + blocks[name] + m.group(4)
+
+    return _BLOCK_RE.sub(sub, text)
+
+
+def rendered_blocks() -> dict[str, str]:
+    return {name: fn() for name, fn in BLOCKS.items()}
+
+
+def regenerate(root: Path) -> dict[str, tuple[str, str]]:
+    """rel → (current text, regenerated text) for every target. Raises before anything is written
+    when the roster or any file's markers are wrong."""
+    blocks = rendered_blocks()
+    out = {}
+    for rel, required in TARGETS.items():
+        text = (root / rel).read_text(encoding="utf-8")
+        check_markers(text, rel, required)
+        out[rel] = (text, render(text, blocks))
+    return out
+
+
+def stale(root: Path = ROOT) -> list[str]:
+    """Files whose generated blocks differ from what the manifests render."""
+    return [rel for rel, (old, new) in regenerate(root).items() if old != new]
+
+
+def main(argv: list[str]) -> int:
+    check = "--check" in argv
+    try:
+        results = regenerate(ROOT)
+    except SystemExit as e:
+        print(e, file=sys.stderr)
+        return 1
+    changed = [rel for rel, (old, new) in results.items() if old != new]
+    if check and changed:
+        print("gen-engine-docs: stale generated blocks in " + ", ".join(changed), file=sys.stderr)
+        print("  run: python3 scripts/gen-engine-docs", file=sys.stderr)
+        return 1
+    if not check:
+        for rel in changed:
+            (ROOT / rel).write_text(results[rel][1], encoding="utf-8")
+            print(f"updated {rel}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

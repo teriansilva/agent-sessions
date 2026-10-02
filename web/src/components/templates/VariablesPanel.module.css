@@ -1,0 +1,175 @@
+/* VARIABLES — the templates' variables library (#1090). The gallery's vocabulary
+ * (Templates.module.css: .cta / .ghost / .act / .empty) plus a flat, square list: a name in the
+ * accent mono (it is the `{{token}}` the operator types), the value in secondary mono, the usage
+ * count, and the actions. ≤800px each row stacks into a card with 44px actions. */
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+
+.create {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+  padding: 12px;
+  margin: 0 0 14px;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-1);
+}
+.cell {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 180px;
+}
+.grow {
+  flex: 1 1 260px;
+}
+.lbl {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.rowErr {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--status-down);
+}
+.createActs {
+  display: flex;
+  gap: 8px;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--line);
+}
+.headRow,
+.row {
+  display: grid;
+  /* Every row is its own grid, so no column may be `auto`: the header row would size it
+   * differently from the rows and the labels would drift off their columns. */
+  grid-template-columns: minmax(140px, 0.9fr) minmax(0, 1.6fr) 110px 190px;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+}
+.headRow {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.row {
+  background: var(--bg-1);
+}
+.name {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+.value {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+/* A value may span lines: shown as written, up to three lines, never reflowed into one. */
+.value {
+  white-space: pre;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+.valueArea {
+  resize: vertical;
+  padding-top: 7px;
+  padding-bottom: 7px;
+  line-height: 1.45;
+}
+.kindChip {
+  margin-left: 8px;
+  padding: 1px 5px;
+  border: 1px solid color-mix(in srgb, var(--accent) 60%, var(--line));
+  color: var(--accent);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+/* A stored secret: never its value, only that one is set. */
+.masked {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  letter-spacing: 0.2em;
+  color: var(--text-3);
+}
+.maskHint {
+  letter-spacing: 0.04em;
+  font-size: 0.72rem;
+}
+/* Warning ink, not a status LED: the operator has a step to take (mockup E). */
+.reentry {
+  font-size: 0.78rem;
+  color: var(--warn-text);
+}
+.used {
+  font-size: 0.78rem;
+  color: var(--text-2);
+}
+.acts {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+@media (max-width: 800px) {
+  .headRow {
+    display: none;
+  }
+  .row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    border: 1px solid var(--line);
+  }
+  .value {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .acts {
+    justify-content: stretch;
+  }
+  .acts > * {
+    flex: 1 1 0;
+  }
+  .create {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .cell {
+    min-width: 0;
+  }
+  .createActs > * {
+    flex: 1;
+  }
+  .create input,
+  .create textarea,
+  .row textarea {
+    min-height: 44px;
+  }
+}

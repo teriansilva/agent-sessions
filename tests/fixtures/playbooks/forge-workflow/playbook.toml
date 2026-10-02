@@ -1,0 +1,101 @@
+# A development playbook: plan -> implement -> independent review (with bounded rework) -> merge ->
+# deploy and verify live. Generic and placeholder-only (#1096 §8); the test fixture for #1190.
+format = 1
+verify = ["variables", "connections", "materials", "binaries"]
+
+[identity]
+id = "forge-workflow"
+name = "Forge workflow"
+publisher = "Example"
+version = "1.0.0"
+domain = "development"
+summary = "Plan an issue, implement it on its own branch, review it independently, merge, deploy and verify live."
+
+[[variables]]
+name = "repo_name"
+label = "Repository name"
+required = true
+pattern = '^[a-z0-9\-]{1,64}$'
+
+[[variables]]
+name = "repo"
+label = "Repository (owner/name)"
+help = "The repository every forge probe in this playbook addresses."
+required = true
+
+[[variables]]
+name = "forge_url"
+type = "url"
+label = "Forge address"
+required = true
+example = "https://forge.example.com"
+
+[[variables]]
+name = "forge_token"
+kind = "secret"
+label = "Forge token"
+required = true
+
+[[variables]]
+name = "deploy_url"
+type = "url"
+label = "Health URL of the deployed service"
+required = true
+
+[[variables]]
+name = "healthy_status"
+type = "int"
+label = "Healthy status code"
+default = 200
+
+[[variables]]
+name = "test_cmd"
+label = "Test command"
+default = "make test"
+
+[[connections]]
+name = "forge"
+kind = "forge"
+url = "{{forge_url}}"
+credential = "forge_token"
+verify = "api"
+
+[[materials]]
+path = "CLAUDE.md"
+disposition = "managed"
+template = true
+
+[[materials]]
+path = "AGENTS.md"
+kind = "instruction-alias"
+target = "CLAUDE.md"
+
+[[materials]]
+path = "docs/agent-workflow.md"
+disposition = "managed"
+template = true
+
+[[materials]]
+path = "docs/mission.md"
+disposition = "seed"
+template = true
+
+[[materials]]
+path = ".forgejo/workflows/pr-validate.yml"
+disposition = "managed"
+
+[capabilities]
+orchestrator_input = true
+
+[[rituals]]
+name = "nightly-audit"
+runbook = "audit"
+schedule = "daily"
+
+[requires]
+binaries = ["git"]
+connections = ["forge"]
+
+
+[flows]
+default = "dev"

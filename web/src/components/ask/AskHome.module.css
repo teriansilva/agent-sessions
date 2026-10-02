@@ -1,0 +1,435 @@
+/* ASK's two sections above the field (#1086): RECENT WORK and NEEDS YOU, and the pinned bar they
+ * collapse into once a conversation starts. HUD vocabulary (docs/design.md): square chrome, no
+ * radius, no gradients, mono uppercase callsigns, status colour ONLY for state (a needs-you dot is
+ * `--status-degraded`, whatever the row's kind), `--accent` only for brand / primary. Tokens only.
+ * Every control is ≥ 44px tall (§8). */
+
+.sec {
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  margin-bottom: 14px;
+  text-align: left;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.sq {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  background: var(--accent);
+}
+
+.title {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+
+.meta {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  color: var(--text-3);
+}
+
+.headEnd {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* 1 | 2 | 3 days — radios drawn as a segmented control; the native input keeps the semantics. */
+.seg {
+  display: inline-flex;
+}
+.seg label {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line-strong);
+  margin-left: -1px;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.seg input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+.seg label:has(input:checked) {
+  position: relative;
+  border-color: var(--accent);
+  color: var(--brand, var(--accent));
+}
+.seg label:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.btn {
+  min-height: 44px;
+  padding: 0 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  font-weight: 700;
+}
+.icon {
+  width: 44px;
+  padding: 0;
+  color: var(--text-2);
+}
+/* Dismiss REJECTS a decision: clearly secondary, never styled like Approve (review 72959). */
+.quiet {
+  border-style: dashed;
+  color: var(--text-2);
+}
+
+.select {
+  min-height: 44px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-2);
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+}
+
+/* ---- recent work ---- */
+.timeline {
+  padding: 6px 14px 12px;
+}
+.day {
+  padding: 8px 0 2px;
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.entry {
+  display: grid;
+  grid-template-columns: 52px 1fr auto;
+  gap: 10px;
+  align-items: start;
+  padding: 7px 0;
+  border-bottom: 1px dashed var(--line);
+}
+.entry:last-child {
+  border-bottom: 0;
+}
+.at {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-3);
+  padding-top: 2px;
+}
+.what {
+  font-size: 0.86rem;
+  line-height: 1.45;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.what b {
+  color: var(--text-1);
+  font-weight: 600;
+}
+.chip {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  color: var(--text-3);
+}
+.recap {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--accent-soft);
+  background: var(--glass-strong);
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--text-2);
+  white-space: pre-wrap;
+}
+.note {
+  padding: 10px 14px;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--text-3);
+}
+.err {
+  color: var(--danger-text, var(--status-down));
+}
+
+/* ---- needs you ---- */
+.row {
+  display: grid;
+  grid-template-columns: 12px 1fr auto;
+  gap: 12px;
+  align-items: start;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.row:last-child {
+  border-bottom: 0;
+}
+.led {
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--status-degraded);
+}
+.rowTitle {
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--text-1);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.rowMeta {
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  color: var(--text-3);
+}
+.why {
+  margin-top: 6px;
+  font-size: 0.84rem;
+  line-height: 1.45;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.kind {
+  margin-right: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--warn-text, var(--status-degraded));
+}
+.ctl {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.rowErr {
+  margin-top: 6px;
+  font-size: 0.8rem;
+  color: var(--danger-text, var(--status-down));
+}
+
+/* ---- a section's own control row ---- */
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 0;
+}
+.bar .sp {
+  flex: 1;
+}
+
+/* ---- the details dialog ---- */
+/* One scroll per block, never the whole panel (#1170): the panel is a column bounded by the shared
+   dialog's max-height, the evidence blocks (last words, screen) are the only items that shrink —
+   each scrolling inside itself — and everything else keeps its size, so the footer stays in view.
+   The shared `overflow-y: auto` remains as the fallback for a viewport too short for the fixed
+   parts alone. */
+.details {
+  display: flex;
+  flex-direction: column;
+}
+.details > * {
+  flex: none;
+}
+.details > .quote,
+.details > .screen {
+  flex: 0 1 auto;
+  min-height: 48px;
+}
+.lab {
+  margin: 14px 0 6px;
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.quote {
+  border-left: 2px solid var(--line-strong);
+  padding: 6px 10px;
+  font-size: 0.86rem;
+  line-height: 1.5;
+  color: var(--text-2);
+  background: var(--glass-strong);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: min(320px, 40vh);
+  overflow: auto;
+}
+/* The last words' markdown (#1168): quiet structure, same type size as the quote. */
+.md p,
+.md ul,
+.md ol,
+.md pre {
+  margin: 0 0 6px;
+}
+.md > :last-child {
+  margin-bottom: 0;
+}
+.md ul,
+.md ol {
+  padding-left: 18px;
+}
+.md strong {
+  color: var(--text-1);
+}
+.md code {
+  font-family: var(--font-mono);
+  font-size: 0.8em;
+}
+.md pre {
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-0);
+  white-space: pre-wrap;
+}
+.screen {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  background: var(--term-bg, var(--bg-0));
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  line-height: 1.5;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 220px;
+  overflow: auto;
+}
+.approve {
+  border: 1px solid var(--line-strong);
+  padding: 10px 12px;
+  background: var(--bg-2);
+  font-size: 0.86rem;
+  color: var(--text-1);
+}
+.bytes {
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-3);
+}
+.bytes code {
+  padding: 0 5px;
+  border: 1px solid var(--line);
+  color: var(--text-1);
+}
+.textarea {
+  width: 100%;
+  min-height: 96px;
+  resize: vertical;
+  border: 1px solid var(--accent-soft);
+  background: var(--bg-2);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  padding: 9px 11px;
+}
+.options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.options .btn {
+  justify-content: flex-start;
+  text-transform: none;
+  letter-spacing: 0;
+  font-family: inherit;
+  font-size: 0.86rem;
+  white-space: normal;
+  text-align: left;
+}
+.foot {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 16px;
+}
+.foot .sp {
+  flex: 1;
+}
+
+
+@media (max-width: 800px) {
+  .row {
+    grid-template-columns: 10px 1fr;
+  }
+  .row .ctl {
+    grid-column: 2;
+    justify-content: flex-start;
+  }
+  .entry {
+    grid-template-columns: 44px 1fr;
+  }
+  .entry > :last-child {
+    grid-column: 2;
+  }
+  /* On a phone, Dismiss sits apart from Approve (review 72959). */
+  .foot .quiet {
+    order: 3;
+    width: 100%;
+  }
+}

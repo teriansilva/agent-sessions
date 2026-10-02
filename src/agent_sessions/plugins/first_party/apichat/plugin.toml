@@ -1,0 +1,51 @@
+contract = 1
+
+# The API agent (#853 P9a, #1209): no binary, no terminal. BattleLab sends the conversation to the
+# endpoint the OPERATOR configures (Settings → Agents → API agent) and keeps the transcript itself.
+# This manifest names only the wire format — never a URL, a key or a model.
+
+[identity]
+id = "apichat"
+label = "API agent"
+publisher = "battlelab"
+version = "1"
+
+[runtime]
+kind = "chat"
+
+[endpoint]
+kind = "openai-chat"
+
+[session_id]
+pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+mint = "pinned"
+
+[store]
+root = "~/.local/share/agent-sessions/chat"
+env_override = "AGENT_SESSIONS_CHAT_DIR"
+layout = "battlelab-chat"
+read_only = false  # BattleLab writes this store: it IS the agent
+
+[capabilities]
+resume = true
+new = true
+archive = true
+# No seed_start / orchestrator_input / raw_tty / handoff_target / owns_transcript: the validator
+# refuses every one of them for runtime "chat".
+
+[transcript]
+kind = "battlelab-chat"
+
+[usage]
+source = "tokens"
+kind = "chat-response-tokens"
+
+# The model is part of the operator's endpoint configuration, never the manifest's (#1189).
+[models]
+configured_elsewhere = true
+
+[display]
+order = 80
+name = "API agent"
+badge = "api"
+accent = "blue"

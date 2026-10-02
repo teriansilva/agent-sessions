@@ -1,0 +1,238 @@
+/* Canonical BattleLab design tokens (#211) — the single source of the palette.
+ *
+ * Extracted from index.css (#829) so the docs site's theme can `@import` the SAME file the app
+ * uses instead of carrying a second copy of the values: two palettes drifting apart is exactly
+ * the failure this split exists to prevent. Nothing else moved — index.css still imports this
+ * first and keeps every non-token rule.
+ *
+ * THREE selectors live here, not two: the bare `:root` IS the dark default, and
+ * `:root[data-theme="dark"]` restates it for an explicit choice. They must stay identical —
+ * pinned by theme/tokens.test.ts.
+ *
+ * (Originally: near-black ground, phosphor-amber accent, semantic-colour LEDs; rebranded from
+ * the TermRoyale royal/indigo+gold theme — royal is retired and migrates to dark.)
+ */
+:root {
+  color-scheme: dark;
+  /* Canonical HUD tokens. */
+  --bg-0: #0d0e10;
+  --bg-1: #131418;
+  --bg-2: #1a1c21;
+  /* Terminal surface (#473): equals the xterm canvas background (themes.ts) per theme, so the
+     wrapper slack FitAddon leaves below the last row is invisible in both themes. */
+  --term-bg: #0d0e10;
+  --text-1: #e8e9ec;
+  --text-2: #a7abb3;
+  --text-3: #6f747d;
+  --glass: rgba(255, 255, 255, 0.022);
+  --glass-strong: rgba(255, 255, 255, 0.035);
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.14);
+  --accent: #ffb000; /* phosphor-amber brand — user-customizable (#211 Phase 2: a custom
+                        accent overrides --accent + --on-accent inline on <html>; everything
+                        below derives from them via color-mix, so the override cascades). */
+  --on-accent: #120c00; /* ink ON the (light) amber accent — AA, locked by contrast.test */
+  --accent-soft: color-mix(in srgb, var(--accent) 55%, transparent);
+  --accent-glow: color-mix(in srgb, var(--accent) 22%, transparent);
+  /* Semantic status — INDEPENDENT of the brand accent; never substitute the accent for these. */
+  --status-up: #3fbf6f;
+  --status-degraded: #f59e0b;
+  --status-down: #c02020;
+  --status-unknown: #6f747d;
+  /* Unsent compose draft (#477) — a HUD blue, kept distinct from the green/amber/red status
+     hues and the amber brand accent. Theme-shared like the other status tokens. */
+  --status-draft: #3b9eff;
+
+  /* Diff colours (#784) — derived, never hardcoded, so they follow the theme and the accent
+     customisation like every other surface. Kept as their own names rather than reusing the status
+     tokens directly: an added LINE is not a healthy STATUS, and conflating them would make a future
+     status change silently repaint diffs. */
+  /* Git status LETTERS are text, so they must clear AA — unlike the LEDs, which are dots and are
+     deliberately left alone. Dark can use the status hues directly; light cannot (see below). */
+  --git-add-fg: var(--status-up);
+  --git-mod-fg: var(--status-degraded);
+  --git-del-fg: color-mix(in srgb, var(--status-down) 55%, var(--text-1));
+  /* Failure TEXT (form errors, over-cap counters). `--status-down` is a signal colour sized
+     for LEDs and rules; as small text on a dark panel it measures 2.8:1, well under AA.
+     Lightened toward --text-1 by the same 55% recipe as the git letters above, which keeps it
+     recognisably the down hue at 5.5:1. Borders may still use the raw token — they are not
+     text. Locked by contrast.test.ts. */
+  --danger-text: color-mix(in srgb, var(--status-down) 55%, var(--text-1));
+  /* The other two status hues as TEXT, by the same recipe and for the same reason (#889/#896).
+     `--danger-text` existed because failure text needed it first; a healthy or degraded STATE
+     rendered as a word needs it just as much, and reaching for `--git-add-fg` because it happens
+     to be the right colour would name a git fact for a supervisor one. */
+  --ok-text: color-mix(in srgb, var(--status-up) 60%, var(--text-1));
+  --warn-text: color-mix(in srgb, var(--status-degraded) 60%, var(--text-1));
+  --git-unknown-fg: color-mix(in srgb, var(--status-unknown) 75%, var(--text-1));
+  --diff-add-bg: color-mix(in srgb, var(--status-up) 14%, transparent);
+  --diff-add-fg: var(--status-up);
+  --diff-del-bg: color-mix(in srgb, var(--status-down) 16%, transparent);
+  --diff-del-fg: color-mix(in srgb, var(--status-down) 55%, var(--text-1));
+  /* Syntax colours for the file editor (#950). Their own names, like the diff pair above: a
+     keyword is not a status and not an interaction, so none of these reuses a --status-* hue or
+     --accent — which would make a string read as "healthy" or a keyword as clickable. Plain hex
+     so contrast.test.ts can hold every one at WCAG AA on --surface-3, the editor's ground. */
+  --syn-keyword: #c4a7ff;
+  --syn-string: #d9c7a0;
+  --syn-number: #f2a8c4;
+  --syn-comment: #8b9099;
+  --syn-function: #e8e9ec;
+  --syn-type: #8fd3c7;
+  --syn-property: #b9bec7;
+  --syn-punct: #a7abb3;
+  --font-mono:
+    "JetBrains Mono", "Cascadia Mono", "Fira Code", "SF Mono", ui-monospace,
+    "Roboto Mono", Menlo, Consolas, monospace;
+  /* Legacy app token names remapped onto the HUD palette so existing component CSS just works. */
+  --bg: #0d0e10;
+  --panel: #131418;
+  --text: #e8e9ec;
+  --text-muted: #a7abb3;
+  --border: #25282e;
+  --border-subtle: #191b20;
+  --row-hover: #1c1f25;
+  --surface-2: #1a1c21;
+  --surface-3: #08090b;
+  --brand: #ffb000;
+  --brand-soft: #ffd47a;
+  --badge-bg: #2a2310;
+  --badge-fg: #ffd47a;
+  /* CTA — follows the brand accent (#211 Phase 2): bg from --accent, the darker gradient
+     stop via color-mix, ink from --on-accent. Default amber: --cta-text on --cta-bg-1 ≈ 11:1. */
+  --cta-bg-1: var(--accent);
+  --cta-bg-2: color-mix(in srgb, var(--accent) 85%, #000);
+  --cta-text: var(--on-accent);
+  font:
+    14px/1.4 -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    system-ui,
+    sans-serif;
+  /* Engine accents (#853 P4). A manifest names one of these by TOKEN (`display.accent`), never
+     a hex, so an agent can only ever take a colour the design system has. Distinct from the
+     status hues and the brand accent; slate is the neutral for a shell or an unknown engine.
+     Held to >=3:1 on the chip grounds by contrast.test.ts. */
+  --engine-amber: #d98a5c;
+  --engine-teal: #4fd1c5;
+  --engine-green: #7ee787;
+  --engine-blue: #7aa2ff;
+  --engine-lime: #c5e15a;
+  --engine-magenta: #f472b6;
+  --engine-slate: #8b98a5;
+}
+
+/* Theme presets (#211). The bare :root above is the DARK default (no attribute needed); the
+ * data-theme override below swaps the token set for light. The `:root[data-theme=…]` form
+ * (specificity 0,2,0) deterministically beats the bare :root. Interactive-text contrast is
+ * held to WCAG AA (text/bg and --on-accent on --accent ≥4.5:1), locked by contrast.test.ts.
+ * The accent is light (amber), so text that sits ON it uses dark --on-accent, never white. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-0: #0d0e10;
+  --bg-1: #131418;
+  --bg-2: #1a1c21;
+  --term-bg: #0d0e10;
+  --text-1: #e8e9ec;
+  --text-2: #a7abb3;
+  --text-3: #6f747d;
+  --glass: rgba(255, 255, 255, 0.022);
+  --glass-strong: rgba(255, 255, 255, 0.035);
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.14);
+  --bg: #0d0e10;
+  --panel: #131418;
+  --text: #e8e9ec;
+  --text-muted: #a7abb3;
+  --border: #25282e;
+  --border-subtle: #191b20;
+  --row-hover: #1c1f25;
+  --surface-2: #1a1c21;
+  --surface-3: #08090b;
+  --accent: #ffb000;
+  --on-accent: #120c00;
+  --brand: #ffb000;
+  --brand-soft: #ffd47a;
+  --badge-bg: #2a2310;
+  --badge-fg: #ffd47a;
+  --syn-keyword: #c4a7ff;
+  --syn-string: #d9c7a0;
+  --syn-number: #f2a8c4;
+  --syn-comment: #8b9099;
+  --syn-function: #e8e9ec;
+  --syn-type: #8fd3c7;
+  --syn-property: #b9bec7;
+  --syn-punct: #a7abb3;
+  /* Engine accents (#853 P4). A manifest names one of these by TOKEN (`display.accent`), never
+     a hex, so an agent can only ever take a colour the design system has. Distinct from the
+     status hues and the brand accent; slate is the neutral for a shell or an unknown engine.
+     Held to >=3:1 on the chip grounds by contrast.test.ts. */
+  --engine-amber: #d98a5c;
+  --engine-teal: #4fd1c5;
+  --engine-green: #7ee787;
+  --engine-blue: #7aa2ff;
+  --engine-lime: #c5e15a;
+  --engine-magenta: #f472b6;
+  --engine-slate: #8b98a5;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg-0: #e7e8ea;
+  --bg-1: #f2f3f5;
+  --bg-2: #ffffff;
+  --term-bg: #f2f3f5;
+  --text-1: #14161a;
+  --text-2: #41454d;
+  --text-3: #6f747d;
+  --glass: rgba(10, 12, 16, 0.025);
+  --glass-strong: rgba(10, 12, 16, 0.05);
+  --line: rgba(10, 12, 16, 0.12);
+  --line-strong: rgba(10, 12, 16, 0.2);
+  --bg: #e7e8ea;
+  --panel: #f2f3f5;
+  --text: #14161a;
+  --text-muted: #41454d;
+  --border: #c9ccd2;
+  --border-subtle: #d9dbe0;
+  --row-hover: #e3e5e8;
+  --surface-2: #ffffff;
+  --surface-3: #dfe1e4;
+  --accent: #ffb000;
+  --on-accent: #120c00;
+  --brand: #8a5a00; /* darker amber for the wordmark on light — readable */
+  --brand-soft: #5e3d00;
+  --badge-bg: #efe3c8;
+  --badge-fg: #6b4e00;
+  /* On the light ground the raw status hues are unreadable as small text — `--status-degraded`
+     (#f59e0b) on #f2f3f5 measures ≈2.15:1, well under AA. Darkened toward --text-1 by color-mix
+     rather than replaced with an invented hex, so a future palette change still carries through.
+     The LED tokens are untouched: a 6px dot is not text and has its own (non-)requirement. */
+  --git-add-fg: color-mix(in srgb, var(--status-up) 50%, var(--text-1));
+  --git-mod-fg: color-mix(in srgb, var(--status-degraded) 45%, var(--text-1));
+  --git-del-fg: var(--status-down);
+  --danger-text: var(--status-down); /* 6.0:1 on --surface-2, 5.5:1 on --panel */
+  --ok-text: color-mix(in srgb, var(--status-up) 45%, var(--text-1));
+  --warn-text: color-mix(in srgb, var(--status-degraded) 40%, var(--text-1));
+  --git-unknown-fg: color-mix(in srgb, var(--status-unknown) 80%, var(--text-1));
+  --diff-add-fg: color-mix(in srgb, var(--status-up) 20%, var(--text-1));
+  --diff-del-fg: color-mix(in srgb, var(--status-down) 20%, var(--text-1));
+  --diff-add-bg: color-mix(in srgb, var(--status-up) 8%, transparent);
+  --diff-del-bg: color-mix(in srgb, var(--status-down) 8%, transparent);
+  /* Darker syntax set for the light ground (--surface-3 #dfe1e4); each ≥4.5:1 there. */
+  --syn-keyword: #5b3fb0;
+  --syn-string: #7a4e12;
+  --syn-number: #a3306b;
+  --syn-comment: #555a63;
+  --syn-function: #14161a;
+  --syn-type: #1d6b61;
+  --syn-property: #41454d;
+  --syn-punct: #41454d;
+  /* Engine accents (#853 P4) — darker on the light ground, same names. */
+  --engine-amber: #a8591f;
+  --engine-teal: #0f7c73;
+  --engine-green: #1f7a33;
+  --engine-blue: #2f5fd0;
+  --engine-lime: #5f7a00;
+  --engine-magenta: #b3246f;
+  --engine-slate: #5b6672;
+}

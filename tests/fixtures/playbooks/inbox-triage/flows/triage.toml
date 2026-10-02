@@ -1,0 +1,39 @@
+format = 1
+title = "Triage"
+
+[[steps]]
+id = "read"
+title = "Read the new messages"
+brief = "Read everything new in {{inbox_name}}."
+actor = { kind = "agent", engine = "claude" }
+
+[[steps.checklist]]
+key = "read_all"
+title = "Every new message has been read and summarised"
+probe = "supervisor_judged"
+
+[[steps]]
+id = "sort"
+title = "Sort by urgency"
+actor = { kind = "agent", engine = "codex" }
+after = ["read"]
+
+[[steps.checklist]]
+key = "sorted"
+title = "Each message is marked urgent or not, with a reason"
+probe = "supervisor_judged"
+
+[[steps.distinct_from]]
+step = "read"
+constraint = "engine"
+
+[[steps]]
+id = "confirm"
+title = "Operator confirms"
+actor = { kind = "operator" }
+after = ["sort"]
+
+[[steps.checklist]]
+key = "confirmed"
+title = "The operator agreed with the sorting"
+probe = "supervisor_judged"

@@ -1,0 +1,119 @@
+{
+  "manifest": {
+    "binary": {
+      "aliases": [
+        "gemini.js"
+      ],
+      "env_var": "AGENT_SESSIONS_GEMINI_BIN",
+      "name": "gemini",
+      "search_npm_global": true,
+      "search_paths": [
+        "~/.local/bin"
+      ],
+      "version_flag": "--version"
+    },
+    "capabilities": {
+      "archive": true,
+      "new": true,
+      "orchestrator_input": true,
+      "raw_tty": true,
+      "resume": true
+    },
+    "contract": 1,
+    "display": {
+      "accent": "blue",
+      "badge": "gm",
+      "name": "gemini",
+      "order": 40
+    },
+    "identity": {
+      "id": "gemini",
+      "label": "Gemini CLI",
+      "publisher": "battlelab",
+      "version": "0.62.0"
+    },
+    "install": {
+      "authority": "registry.npmjs.org",
+      "digest": "sha256:2276032b1c33d2b828b1cf197e52f48e74b0a395326763ff01a80d97d0fbc0c3",
+      "entrypoint": "node_modules/@google/gemini-cli/bundle/gemini.js",
+      "kind": "npm-prefix",
+      "package": "@google/gemini-cli",
+      "platform": "linux-x64",
+      "version": "0.62.0"
+    },
+    "instructions": {
+      "files": [
+        "GEMINI.md"
+      ]
+    },
+    "launch": {
+      "bypass": [
+        "--yolo",
+        "--skip-trust"
+      ],
+      "model": {
+        "flag": "--model",
+        "kind": "flag"
+      },
+      "new": {
+        "flag": "--session-id",
+        "kind": "pin-flag"
+      },
+      "resume": {
+        "flag": "--resume",
+        "kind": "flag"
+      }
+    },
+    "models": {
+      "list": [
+        {
+          "context_window": 1048576,
+          "id": "gemini-2.5-pro"
+        },
+        {
+          "context_window": 1048576,
+          "id": "gemini-2.5-flash"
+        }
+      ]
+    },
+    "probe": {
+      "kind": "prompt-pinned"
+    },
+    "session_id": {
+      "mint": "pinned",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "signin": {
+      "kind": "interactive"
+    },
+    "store": {
+      "env_override": "AGENT_SESSIONS_GEMINI_TMP_DIR",
+      "layout": "gemini-tmp",
+      "root": "~/.gemini/tmp"
+    },
+    "transcript": {
+      "kind": "gemini-chat"
+    },
+    "usage": {
+      "access": "gemini-acp-auth",
+      "source": "manual"
+    },
+    "verify": [
+      "binary",
+      "version",
+      "store",
+      "new",
+      "resume",
+      "transcript"
+    ]
+  },
+  "recipe": {
+    "artifacts": [
+      {
+        "destination": "node_modules/@google/gemini-cli",
+        "sha256": "2276032b1c33d2b828b1cf197e52f48e74b0a395326763ff01a80d97d0fbc0c3",
+        "url": "https://registry.npmjs.org/@google/gemini-cli/-/gemini-cli-0.62.0.tgz"
+      }
+    ]
+  }
+}

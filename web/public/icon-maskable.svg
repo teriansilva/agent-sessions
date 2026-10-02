@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- BattleLab maskable icon (#211): full-bleed near-black ground, the command-prompt (>_)
+       mark centered well inside the maskable safe zone (the mark's extent stays within the
+       inner ~62% box around 256,256) so Android's circle/squircle masks never clip it. -->
+  <rect width="512" height="512" fill="#0d0e10"/>
+  <g fill="none" stroke="#ffb000" stroke-width="36" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M176 192 L248 256 L176 320"/>
+  </g>
+  <rect x="272" y="300" width="64" height="36" rx="18" fill="#ffb000"/>
+</svg>
