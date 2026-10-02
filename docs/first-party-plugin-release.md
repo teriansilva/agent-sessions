@@ -78,3 +78,53 @@ the host; this cut was exercised with Node 22.23.2.
   Record the next concrete deadline with the successful cut. No unattended signer is added.
 
 The separate #982 marketing release hold is unchanged.
+
+## v0.19.3 cut record
+
+The first signed application and plugin-feed cut was published on 2026-10-02 after
+PR #1269: Hermes review
+5613 approved head `50357f46d114f990ba3ad4e4450b24e4a86eaa72`, all eight CI checks passed
+(including 7,955 backend tests), and the reviewed pristine install/uninstall smoke passed.
+
+| Evidence | Value |
+| --- | --- |
+| Private release | `v0.19.3` |
+| Reviewed Forgejo commit | `6c1988aa13993c6d3730a8447c35b78fd17bac00` |
+| Public release | [v0.19.3](https://github.com/teriansilva/agent-sessions/releases/tag/v0.19.3) |
+| Deterministic public snapshot | `866d601a68ba47cc14d8287fd98e199fe7592c3f` |
+| Feed sequence | `1` |
+| Feed SHA-256 | `c3d9ab631e12ca859bd68c205c2bb82528ff94e3b011e88d57cff53243a43ffc` |
+| Issued | 2026-10-02 11:47:15 UTC |
+| Expires | 2026-10-09 11:47:15 UTC (14:47:15 Europe/Bucharest) |
+| Signer | Primary `SHA256:2aBGF8oP1PEvJFiD2/GWVLnl8sC3IJ2lhNahZjm/reY` |
+
+Both annotated release tags and the feed signature were verified against the reviewed trust
+root. The complete feed/signature pair was published before the deploy-triggering private tag;
+the application's anonymous feed client verified the actual public bytes. The recovery key
+was not used. Forgejo's `v*` protection requires the operator account for the final push.
+
+**Renewal owner: Marcus, before 2026-10-09 11:47:15 UTC.** Publish a complete primary-signed
+pair with a strictly greater sequence and fresh timestamps, then verify deployed refresh.
+Expiry refuses new installations; it does not disable installed agents. No scheduled or
+unattended signer was introduced.
+
+**Retention boundary observed during this cut.** A separate in-app update to merged main
+ran the previously installed `2787342` installer at 15:08–15:10 EEST. That older installer
+did not understand `retain-releases` and pruned `20261001-083800-4aa08e4`. The two other
+original rollback directories retained their identities, and the existing live session
+survived. The retention marker only protects updates run by an installer containing the
+hold support; it cannot change an older installer's code. The signed deployment used the
+reviewed installer and retained every directory present after that separate update.
+
+Production reported version `0.19.3` at the reviewed commit after deploy run 8887. The signed
+catalog refresh matched the feed digest and all six recipes; the eight-agent roster and API-chat
+configuration matched the pre-cut baseline. Desktop and mobile browsers opened the gallery
+and signed installation review without horizontal overflow or page errors. These checks only
+created review records, not installations or activations. A receive-only attachment to the
+existing Claude session preserved its processes, socket and terminal geometry without sending
+input or resize frames. Vendor verification outcomes remain those recorded in the matrix above.
+
+Release-notes run 8889 stopped with exit 141 when `git log | head -200` closed a long changelog
+pipe. The documented manual fallback published the private notes after the shared tag verifier
+and reviewed-main identity checks passed. The follow-up changes the producer to `git log -200`,
+which emits the identical 200 lines without SIGPIPE; it changes no tag or signature guard.
