@@ -113,7 +113,18 @@ def test_a_secret_is_stored_as_ciphertext_under_a_separate_owner_only_key(tmp_ho
     doc = json.loads(raw)
     assert doc["version"] == template_vars.STORE_VERSION
     [stored] = doc["variables"]
-    assert set(stored) == {"name", "kind", "secret", "created_at", "updated_at"}
+    assert set(stored) == {
+        "name",
+        "kind",
+        "scope",
+        "project_id",
+        "secret",
+        "created_at",
+        "updated_at",
+    }
+    # Store v3 (#1191): a new envelope is bound to its scope-qualified identity, and says so.
+    assert stored["scope"] == "global" and stored["project_id"] is None
+    assert stored["secret"]["aad"] == "scoped"
     key = template_secrets.key_path()
     assert key.stat().st_mode & 0o777 == 0o600
     assert len(key.read_bytes()) == 32

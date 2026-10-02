@@ -5,9 +5,12 @@ older internal identifiers `playbook_id`, `prefs.mission_playbooks`, `prefs.Play
 `/settings/ai-playbooks` keep meaning *checklist* (#1091); they are not renamed (see
 `docs/invariants/playbook-format.md`).
 
-Phase 1 (#1190) is the format only: `schema` (the closed value space), `tree` (the node-policy
-walk), `validate` (manifest, flows, runbooks, templates, materials) and `loader` (bundled source,
-fail-soft per bundle). No UI, no apply, no network, no git.
+Phase 1 (#1190) is the format: `schema` (the closed value space), `tree` (the node-policy walk),
+`validate` (manifest, flows, runbooks, templates, materials) and `loader` (fail-soft per bundle).
+#1191 adds `store` (every source's gallery + versioned authoring of `local` playbooks,
+`docs/invariants/playbook-authoring.md`), `tomlw` (the TOML writer it rewrites documents with) and
+`deployments` (the "which projects run it" interface the lifecycle fills). No apply, no network,
+no git yet.
 """
 
 from __future__ import annotations

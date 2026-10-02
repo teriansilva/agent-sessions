@@ -13,10 +13,13 @@ rotating it must not silently strand every stored secret. A copy of the store wi
 file decrypts nothing; that, and nothing more, is what encryption at rest buys here. The agents
 this app launches run as the same user and can read the key file — the docs say so plainly.
 
-**Undecryptable is a state, not an error.** ``kid`` is the first 8 hex of ``sha256(key)`` and the
-variable name is the AAD. A missing key file, a different key (``kid`` mismatch) or a failed
-authentication all read as *needs re-entry* — deterministically, never a crash and never a silent
-empty string — and a send that needs such a secret is refused before a byte is written.
+**Undecryptable is a state, not an error.** ``kid`` is the first 8 hex of ``sha256(key)``. The
+AAD is the variable's scope-qualified identity (``global:<name>`` / ``project:<id>:<name>``, store
+v3, #1191) as the envelope's ``aad`` marker says — or its bare name for an envelope marked
+``legacy`` (written before scopes; re-encrypted on its next write). A missing key file, a
+different key (``kid`` mismatch) or a failed authentication all read as *needs re-entry* —
+deterministically, never a crash and never a silent empty string — and a send that needs such a
+secret is refused before a byte is written.
 
 **Redaction.** Once a secret is pasted into a session it is in that session's transcript and
 screen, which recap, review, Ask and missions read and send to the AI endpoint. ``redact_text`` is
@@ -177,8 +180,9 @@ def current_kid() -> str:
 
 
 def encrypt(name: str, plaintext: str) -> dict:
-    """The envelope stored for secret ``name``. The name is the AAD, so an envelope copied onto
-    another variable does not decrypt there."""
+    """A bare-name envelope: the name is the AAD, so an envelope copied onto another name does not
+    decrypt there. The variables store no longer writes these (it writes ``encrypt_scoped``, #1191);
+    stores that keep one secret per fixed name (the chat agent's key) still do."""
     key = _key_for_write()
     nonce = os.urandom(NONCE_BYTES)
     ct = AESGCM(key).encrypt(nonce, plaintext.encode("utf-8"), name.encode("utf-8"))
@@ -247,6 +251,109 @@ def decrypt(name: str, env: dict) -> str | None:
         return None
 
 
+# ---- scoped envelopes (the variables store, v3 — #1191) ----------------------------------------
+
+#: The envelope's AAD marker. ``scoped``: the AAD is the scope-qualified identity
+#: (``global:<name>`` / ``project:<id>:<name>``). ``legacy``: the AAD is the bare name — an
+#: envelope written before scopes existed, kept byte for byte until that variable's next write.
+#: The marker is the ONLY thing that decides which AAD a decryption uses; nothing is ever tried
+#: one way and then the other.
+AAD_SCOPED = "scoped"
+AAD_LEGACY = "legacy"
+AAD_MARKERS = frozenset({AAD_SCOPED, AAD_LEGACY})
+SCOPE_GLOBAL = "global"
+SCOPE_PROJECT = "project"
+
+
+def scoped_aad(scope: str, project_id: str | None, name: str) -> str:
+    """The identity a scoped envelope is bound to. Neither a project id nor a variable name can
+    contain ``:`` (the store validates both), so the encoding is unambiguous."""
+    if scope == SCOPE_GLOBAL and project_id is None:
+        return f"global:{name}"
+    if scope == SCOPE_PROJECT and isinstance(project_id, str) and project_id:
+        return f"project:{project_id}:{name}"
+    raise ValueError("not a variable scope")
+
+
+def encrypt_scoped(scope: str, project_id: str | None, name: str, plaintext: str) -> dict:
+    """The envelope the variables store writes: bound to the scope-qualified identity, so one moved
+    to another project, to the global scope or to another name does not decrypt there."""
+    aad = scoped_aad(scope, project_id, name)
+    key = _key_for_write()
+    nonce = os.urandom(NONCE_BYTES)
+    ct = AESGCM(key).encrypt(nonce, plaintext.encode("utf-8"), aad.encode("utf-8"))
+    return {
+        "kid": _kid(key),
+        "nonce": base64.b64encode(nonce).decode("ascii"),
+        "ct": base64.b64encode(ct).decode("ascii"),
+        "aad": AAD_SCOPED,
+    }
+
+
+def valid_store_envelope(env: object) -> bool:
+    """Shape check for a variables-store v3 envelope: the bare shape plus an ``aad`` marker."""
+    if not isinstance(env, dict):
+        return False
+    marker = env.get("aad")
+    # TYPE first: `[] in frozenset` raises TypeError (unhashable) instead of answering "no".
+    if not isinstance(marker, str) or marker not in AAD_MARKERS:
+        return False
+    return valid_envelope({k: v for k, v in env.items() if k != "aad"})
+
+
+def _record_aad(scope: str, project_id: str | None, name: str, env: dict) -> bytes | None:
+    """The AAD the envelope's OWN marker names, or None when the marker does not fit the record.
+    A ``legacy`` envelope is only ever a global one: legacy envelopes predate project scopes, so
+    one found on a project record was moved there and is never decrypted."""
+    marker = env.get("aad")
+    if not isinstance(marker, str):
+        return None
+    try:
+        if marker == AAD_SCOPED:
+            return scoped_aad(scope, project_id, name).encode("utf-8")
+        if marker == AAD_LEGACY and scope == SCOPE_GLOBAL and project_id is None:
+            return name.encode("utf-8")
+    except ValueError:
+        return None
+    return None
+
+
+def _open(key: bytes, env: dict, aad: bytes) -> str | None:
+    if env.get("kid") != _kid(key):
+        return None
+    try:
+        raw = AESGCM(key).decrypt(base64.b64decode(env["nonce"]), base64.b64decode(env["ct"]), aad)
+    except (InvalidTag, ValueError, KeyError):
+        return None
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def decrypt_record(scope: str, project_id: str | None, name: str, env: dict) -> str | None:
+    """A store record's plaintext, or ``None`` = needs re-entry. The AAD follows the envelope's
+    marker and nothing else."""
+    aad = _record_aad(scope, project_id, name, env)
+    if aad is None:
+        return None
+    try:
+        key = _read_key()
+    except SecretKeyUnavailable:
+        return None
+    return None if key is None else _open(key, env, aad)
+
+
+def decrypt_record_checked(scope: str, project_id: str | None, name: str, env: dict) -> str | None:
+    """``decrypt_record`` for REDACTION: a key file that exists but cannot be read RAISES
+    ``SecretKeyUnavailable``, exactly like ``decrypt_checked``."""
+    key = _read_key()  # raises SecretKeyUnavailable on anything but "no such file"
+    aad = _record_aad(scope, project_id, name, env)
+    if key is None or aad is None:
+        return None
+    return _open(key, env, aad)
+
+
 # ---- redaction ---------------------------------------------------------------------------------
 
 
@@ -294,9 +401,7 @@ def _stored_values() -> frozenset[str]:
         with _lock:
             if _stored_cache is not None and _stored_cache[0] == sig:
                 return _stored_cache[1]
-        values = frozenset(
-            v for v in template_vars.secret_values_checked().values() if len(v) >= SECRET_MIN
-        )
+        values = frozenset(v for v in template_vars.secret_values_checked() if len(v) >= SECRET_MIN)
     except Exception as e:  # noqa: BLE001 — any failure to establish the set
         # REFUSE, warm cache or cold (Hermes on #1105, round 2). The known set cannot vouch for a
         # secret stored since it was computed, so "redact what we knew" is still fail-open. The

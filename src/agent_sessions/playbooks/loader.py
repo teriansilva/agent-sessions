@@ -16,7 +16,7 @@ from pathlib import Path
 
 from . import schema
 from .errors import PlaybookFormatError
-from .tree import read_tree
+from .tree import Tree, read_tree
 from .validate import is_note, validate_tree
 
 log = logging.getLogger(__name__)
@@ -28,9 +28,13 @@ BUNDLED_ROOT = Path(__file__).resolve().parent / "bundled"
 
 def load_bundle(path: str | os.PathLike) -> dict:
     """The normalized playbook at `path`, or `PlaybookFormatError`."""
-    tree = read_tree(path)
+    return validate_named(read_tree(path), Path(path).name)
+
+
+def validate_named(tree: Tree, name: str) -> dict:
+    """Validate a snapshot that is (or will be) stored under the directory `name`: the bundle's
+    `identity.id` must equal it."""
     pb = validate_tree(tree)
-    name = Path(path).name
     if pb["identity"]["id"] != name:
         raise PlaybookFormatError(
             f"{schema.MANIFEST_NAME}: identity.id",

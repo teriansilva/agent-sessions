@@ -15,6 +15,7 @@ after it was listed fails the open instead of being followed.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import stat
 from dataclasses import dataclass, field
@@ -42,6 +43,20 @@ class Tree:
             if p.startswith(prefix) and p != rel
         }
         return sorted(out)
+
+    def digest(self) -> str:
+        """The content revision of this snapshot: sha256 over every directory and every file's
+        path, length and bytes, in a framed, sorted encoding (#1191). Two snapshots have the same
+        digest exactly when they hold the same directories and the same files byte for byte, so it
+        is what a stale edit, a stale delete and a deployment's pin compare."""
+        h = hashlib.sha256(b"battlelab-playbook-tree/1\0")
+        for d in sorted(self.dirs):
+            h.update(b"d\0" + d.encode("utf-8") + b"\0")
+        for p in sorted(self.files):
+            data = self.files[p]
+            h.update(b"f\0" + p.encode("utf-8") + b"\0" + str(len(data)).encode("ascii") + b"\0")
+            h.update(data)
+        return h.hexdigest()
 
 
 def _lstat_at(name: str, dir_fd: int) -> os.stat_result:
@@ -154,6 +169,21 @@ def read_tree(root: str | os.PathLike) -> Tree:
     directory: a symlinked bundle root is refused like any other link."""
     try:
         fd = os.open(os.fspath(root), _DIR_FLAGS)
+    except OSError as e:
+        raise PlaybookFormatError("", f"bundle root cannot be opened ({e.strerror})") from None
+    try:
+        w = _Walk()
+        w.walk(fd, "", 0)
+        return w.tree
+    finally:
+        os.close(fd)
+
+
+def read_tree_at(dir_fd: int, name: str) -> Tree:
+    """``read_tree`` of the bundle directory ``name`` RELATIVE to ``dir_fd`` (``O_NOFOLLOW``): the
+    local playbook store reads its own root through the descriptor it holds, never a path string."""
+    try:
+        fd = os.open(name, _DIR_FLAGS, dir_fd=dir_fd)
     except OSError as e:
         raise PlaybookFormatError("", f"bundle root cannot be opened ({e.strerror})") from None
     try:

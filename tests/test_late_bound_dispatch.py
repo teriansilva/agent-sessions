@@ -949,30 +949,49 @@ def test_a_session_RELEASED_by_one_mission_and_ADOPTED_by_another_keeps_its_phys
 async def test_a_STALLED_binder_cannot_hold_the_dispatch_past_its_budget(
     work, prov, spawned, typed, torn_down, monkeypatch
 ):
-    """Finding 4. The budget bounds each call, a late answer never binds, and the folder's
-    admission flock is released on time."""
-    import time as _time
+    """Finding 4. Dispatch and its admission flock finish while the binder is still held.
+
+    Events prove that ordering even when the runner is descheduled past the binding budget;
+    the generous waits below are deadlock watchdogs, not elapsed-time assertions.
+    """
+    loop = asyncio.get_running_loop()
+    started = asyncio.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    # Allow for scheduler and filesystem contention in shared CI without weakening the ordering
+    # assertions below. The production binding budget stays at 0.3 s; this only detects deadlock.
+    watchdog = 60
 
     def stalled(launch):
-        _time.sleep(3.0)  # reads nothing: the thread left running after the test is harmless
-        return base.Binding(base.BIND_BOUND, native=OURS, proof=base.PROOF_NONCE)
+        loop.call_soon_threadsafe(started.set)
+        try:
+            assert release.wait(3 * watchdog), "the test never released the binder"
+            return base.Binding(base.BIND_BOUND, native=OURS, proof=base.PROOF_NONCE)
+        finally:
+            finished.set()
 
     monkeypatch.setattr(prov, "bind_session", stalled)
-    t0 = _time.monotonic()
-    out = await _dispatch(work, start_timeout=0.3)
-    elapsed = _time.monotonic() - t0
-    assert out.ok is False and out.bound_key == "", "a late answer was bound"
-    assert "did not answer within the binding budget" in out.reason
-    # The ceiling must stay UNDER the stall's own 3.0s sleep — the point is that the dispatch
-    # returns BEFORE the late answer could ever arrive — but the wall-clock slack above the
-    # 0.3s budget is scheduler time, not mechanism time: on the CPU-starved shared runner
-    # (#1151) a correctly-timed give-up has measured 2.58s wall-clock. 2.9 keeps the proof
-    # (below the stall) while absorbing starvation.
-    assert elapsed < 2.9, f"the dispatch waited {elapsed:.2f}s on a stalled binder"
-    assert torn_down == [out.key]
-    freed = sessionlock.acquire(headless_dispatch._admission_key("kimi", str(work)))
-    assert freed is not None, "the folder's admission flock outlived the dispatch"
-    freed.release()
+    dispatch = asyncio.create_task(_dispatch(work, start_timeout=0.3))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=watchdog)
+        out = await asyncio.wait_for(asyncio.shield(dispatch), timeout=watchdog)
+        assert not finished.is_set(), "dispatch waited for the stalled binder's answer"
+        assert out.ok is False and out.bound_key == "", "a late answer was bound"
+        assert "did not answer within the binding budget" in out.reason
+        assert torn_down == [out.key]
+        freed = sessionlock.acquire(headless_dispatch._admission_key("kimi", str(work)))
+        assert freed is not None, "the folder's admission flock outlived the dispatch"
+        freed.release()
+    finally:
+        release.set()
+        if not dispatch.done():
+            dispatch.cancel()
+        await asyncio.gather(dispatch, return_exceptions=True)
+        if started.is_set():
+            assert await asyncio.to_thread(
+                finished.wait, watchdog
+            ), "the binder thread did not exit"
+    assert out.bound_key == "" and metadata.load_aliases() == {}, "the late answer was adopted"
 
 
 # ---- #994 review 2 ---------------------------------------------------------------------------

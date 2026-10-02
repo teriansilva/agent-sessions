@@ -286,18 +286,33 @@ def test_revoke_and_regrant_during_the_post_does_not_settle_the_new_id(umami):
 def test_note_active_does_not_block_and_is_single_flight(umami):
     prefs.set_analytics_consent(True)
     release = threading.Event()
-    umami.before_answer = lambda: release.wait(5)
 
     async def go():
-        analytics.note_active()
-        analytics.note_active()  # in flight → no second task
-        await asyncio.sleep(0.2)
-        assert len(umami.requests) == 1  # started, and blocked on the wire
-        release.set()
-        for _ in range(50):
-            if not analytics._in_flight:
-                break
-            await asyncio.sleep(0.02)
+        loop = asyncio.get_running_loop()
+        loop_thread = threading.get_ident()
+        started = asyncio.Event()
+
+        def on_wire():
+            assert threading.get_ident() != loop_thread, "the report blocked the event loop"
+            loop.call_soon_threadsafe(started.set)
+            assert release.wait(10), "the test never released the report"
+
+        umami.before_answer = on_wire
+        try:
+            analytics.note_active()
+            tasks = set(analytics._tasks)
+            assert len(tasks) == 1
+            analytics.note_active()  # queued → no second task
+            assert analytics._tasks == tasks
+            await asyncio.wait_for(started.wait(), timeout=10)
+            analytics.note_active()  # on the wire → still no second task
+            assert analytics._tasks == tasks
+            assert analytics._in_flight
+            assert len(umami.requests) == 1
+        finally:
+            release.set()
+            await asyncio.wait_for(asyncio.gather(*analytics._tasks), timeout=10)
+        assert not analytics._in_flight
 
     asyncio.run(go())
     assert len(umami.requests) == 1

@@ -99,7 +99,6 @@ No shell, ever. No outbound network, ever.
 from __future__ import annotations
 
 import contextlib
-import ctypes
 import errno
 import fcntl
 import hashlib
@@ -114,7 +113,7 @@ import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
-from . import files, filewrite
+from . import files, filewrite, renameat
 from .files import FsError
 from .fsbrowse import contained_path, home_root
 
@@ -499,38 +498,13 @@ def _valid_record(entry_id: str, rec: dict) -> bool:
     return True
 
 
-_RENAME_NOREPLACE = 1
-_renameat2_fn: object = None
-
-
 def _rename_noreplace(src_dir_fd: int, src: str, dst_dir_fd: int, dst: str) -> None:
     """``renameat2(RENAME_NOREPLACE)``: move an entry of any type, never replacing one.
 
     ``FileExistsError`` when the destination is claimed; ``OSError`` (``ENOSYS`` / ``EINVAL``) where
     the kernel or filesystem does not offer it — the caller then keeps the entry where it is.
     """
-    global _renameat2_fn
-    if _renameat2_fn is None:
-        try:
-            fn = ctypes.CDLL(None, use_errno=True).renameat2
-            fn.argtypes = [
-                ctypes.c_int,
-                ctypes.c_char_p,
-                ctypes.c_int,
-                ctypes.c_char_p,
-                ctypes.c_uint,
-            ]
-            fn.restype = ctypes.c_int
-            _renameat2_fn = fn
-        except (OSError, AttributeError):
-            _renameat2_fn = False
-    if _renameat2_fn is False:
-        raise OSError(errno.ENOSYS, "renameat2 is unavailable")
-    call = _renameat2_fn
-    assert callable(call)
-    if call(src_dir_fd, os.fsencode(src), dst_dir_fd, os.fsencode(dst), _RENAME_NOREPLACE) != 0:
-        err = ctypes.get_errno()
-        raise OSError(err, os.strerror(err))
+    renameat.renameat2(src_dir_fd, src, dst_dir_fd, dst, renameat.RENAME_NOREPLACE)
 
 
 # --------------------------------------------------------------------------- small fs helpers

@@ -75,6 +75,7 @@ from .routes import history as history_routes
 from .routes import link as link_routes
 from .routes import maintenance as maintenance_routes
 from .routes import missions as missions_routes
+from .routes import playbooks as playbooks_routes
 from .routes import prompts as prompts_routes
 from .routes import pulse as pulse_routes
 from .routes import scrollback as scrollback_routes
@@ -650,6 +651,8 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     upload_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
     # Instruction templates (#905 P1): its own store off /api/config, images via /api/uploads.
     templates_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
+    # Playbooks (#1191): the gallery across sources + versioned authoring of `local` playbooks.
+    playbooks_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
 
     # File panel (#783/#784): bounded directory listing, file read, git status/diff/branches — and
     # since #807 the upload routes and since #806 the git WRITE routes, all POST and therefore

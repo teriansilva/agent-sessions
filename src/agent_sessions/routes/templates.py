@@ -362,11 +362,19 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
                 409, f"{e} — nothing was deleted, because a template might still use it"
             ) from None
         except vstore.VariableInUse as e:
+            parts = []
+            if e.dependants:
+                n = len(e.dependants)
+                parts.append(f"{n} {'template' if n == 1 else 'templates'}")
+            if e.projects:
+                n = len(e.projects)
+                parts.append(f"{n} {'project' if n == 1 else 'projects'}")
             return _json(
                 {
-                    "detail": f"{e.name} is still used by {len(e.dependants)} "
-                    f"{'template' if len(e.dependants) == 1 else 'templates'}",
+                    "detail": f"{e.name} is still used by {' and '.join(parts)}",
                     "dependants": e.dependants,
+                    # Projects whose binding records a ref to this global variable (#1191).
+                    "projects": e.projects,
                 },
                 409,
             )
