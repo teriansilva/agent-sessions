@@ -1,0 +1,175 @@
+/* Folder picker (#448) — a ~/-rooted browse/select/create dialog. Matches MoveToProjectModal's
+   dark, square-corner HUD language; tokens fall back to the same defaults. */
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.dialog {
+  background: var(--panel, #131418);
+  color: var(--text, #e8e9ec);
+  border: 1px solid var(--border, #25282e);
+  border-radius: 0;
+  padding: 18px 20px;
+  width: min(440px, 100%);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.title {
+  margin: 0 0 12px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  margin-bottom: 10px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+}
+.crumbSeg {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.crumb {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: transparent;
+  border: 0;
+  color: var(--accent, #ffb000);
+  cursor: pointer;
+  padding: 2px 3px;
+  font: inherit;
+}
+.crumb:hover {
+  text-decoration: underline;
+}
+.sep {
+  color: var(--text-muted, #a7abb3);
+}
+
+.list {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--border-subtle, #191b20);
+}
+.row {
+  appearance: none;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: #0f1115;
+  color: inherit;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle, #191b20);
+  font-size: 13px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  text-align: left;
+  cursor: pointer;
+}
+.row:hover {
+  background: #1a1d23;
+}
+.row:focus-visible {
+  outline: 2px solid var(--accent, #ffb000);
+  outline-offset: -2px;
+}
+.name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chev {
+  color: var(--text-muted, #a7abb3);
+  flex: none;
+}
+
+.empty {
+  margin: 10px 2px 12px;
+  font-size: 13px;
+  color: var(--text-muted, #a7abb3);
+}
+.error {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  color: var(--status-down, #ff7a7a);
+}
+
+.mkrow {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.mkInput {
+  flex: 1;
+  min-width: 0;
+  background: #0f1115;
+  color: var(--text, #e8e9ec);
+  border: 1px solid var(--border, #25282e);
+  border-radius: 0;
+  padding: 7px 9px;
+  font-size: 12.5px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.mkBtn,
+.cancel,
+.select {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 13px;
+  border-radius: 0;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid var(--border, #25282e);
+  background: transparent;
+  color: var(--text, #e8e9ec);
+}
+.mkBtn:hover,
+.cancel:hover {
+  background: #1a1d23;
+}
+.mkBtn:disabled,
+.select:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.select {
+  background: var(--accent, #ffb000);
+  color: #0d0e10;
+  border-color: var(--accent, #ffb000);
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

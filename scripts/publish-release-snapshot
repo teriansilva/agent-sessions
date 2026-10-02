@@ -1,0 +1,176 @@
+#!/bin/sh
+# Publish a filtered flat snapshot of <ref> to a mirror remote — deterministically, signed,
+# and idempotently. Extracted from publish-public.yml so it can be tested against a local bare
+# repo instead of only in CI against the real mirror (#832 Phase 1).
+#
+# usage: publish-release-snapshot <ref> <remote-url> [--signers FILE] [--key FILE] [--dry-run]
+#                                 [--only-if-tip FORGE]
+#
+# ONE WRITER FOR THE MIRROR'S `main` (#1250). A release publishes its signed TAG only and never
+# touches `main`; `main` is written solely by publish-public.yml, whose runs share one
+# `concurrency` group and so never overlap. A release cut runs on the operator's machine,
+# outside that group, and a check-then-push from there cannot be made atomic against a
+# workflow run: it read the forge tip, a merge landed and was published, then the cut pushed
+# its older snapshot and the mirror stayed rewound with no later run to repair it.
+#
+# --only-if-tip FORGE (branch publishes): move `main` only while the source commit is still
+# FORGE's `main` tip (a remote name or URL, resolved in the source checkout). `concurrency`
+# serialises the workflow's runs but does not order them, so an older merge's run can start
+# after a newer one has published; with this check it pushes nothing. The race left — the tip
+# moving between this read and the push — is closed by the serialisation: the newer commit's
+# run is queued behind this one and publishes after it.
+#
+# WHY DETERMINISM IS PART OF THE SECURITY STORY, not a tidiness nicety:
+#
+# The old shape rebuilt the snapshot with wall-clock author/committer dates and force-pushed
+# both the branch and the tag. Two dispatches of the SAME release therefore produced different
+# commits — the published release identity mutated on every run. Adding a signature to that
+# makes it worse, not better: a retry publishes a VALIDLY SIGNED but different release under
+# the same version, and trips the moved-tag defence for anyone who already fetched the first.
+#
+# Measured while designing this: a snapshot forged from different content and signed with the
+# GENUINE key still verifies. The signature is not what catches it. What catches it is
+# recomputing the snapshot and comparing — which is only possible because the rebuild is
+# deterministic. Signing and determinism are one mechanism, not two features.
+#
+# The determinism anchor is the SOURCE COMMIT'S committer date: identical on every re-run, and
+# meaningful rather than arbitrary — it is when the release was actually cut.
+set -eu
+
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+note() { printf '%s\n' "$*"; }
+
+REF=""; REMOTE=""; SIGNERS=""; KEY=""; DRY=0; SOURCE=""; TIP_OF=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --signers) SIGNERS="${2:-}"; shift 2 ;;
+    # The content to snapshot. Defaults to $REF, but a release cut passes the COMMIT:
+    # the tag does not exist yet at that point, because it is signed and pushed LAST so
+    # that the deploy-triggering step comes after everything else is verified.
+    --source)  SOURCE="${2:-}"; shift 2 ;;
+    --key)     KEY="${2:-}"; shift 2 ;;
+    --only-if-tip) TIP_OF="${2:-}"; shift 2; [ -n "$TIP_OF" ] || die "--only-if-tip needs a remote" ;;
+    --dry-run) DRY=1; shift ;;
+    -*)        die "unknown option: $1" ;;
+    *)         if [ -z "$REF" ]; then REF="$1"; elif [ -z "$REMOTE" ]; then REMOTE="$1";
+               else die "unexpected argument: $1"; fi; shift ;;
+  esac
+done
+[ -n "$REF" ] && [ -n "$REMOTE" ] || die "usage: publish-release-snapshot <ref> <remote> [--signers F] [--key F] [--dry-run]"
+
+SRC="$(pwd)"
+[ -n "$SIGNERS" ] || SIGNERS="$SRC/scripts/release-signers"
+# Deliberately NO default key path. In normal use there is no readable key file at all —
+# the key is passphrase-protected and unlocked into ssh-agent. Defaulting to a path would
+# make "no key configured" look like "key missing" instead of using the agent.
+[ -n "$KEY" ] || KEY="${AGENT_SESSIONS_RELEASE_KEY:-}"
+
+[ -n "$SOURCE" ] || SOURCE="$REF"
+git rev-parse -q --verify "${SOURCE}^{commit}" >/dev/null 2>&1 || die "source not found: $SOURCE"
+SRC_COMMIT="$(git rev-parse "${SOURCE}^{commit}")"
+SRC_DATE="$(git show -s --format=%cI "$SRC_COMMIT")"
+
+# Is this a release ref? Only those get a signed tag; a branch snapshot has no release identity.
+IS_RELEASE=0
+case "$REF" in v[0-9]*) IS_RELEASE=1 ;; esac
+
+# The trust root for THIS check comes from the checkout we are publishing FROM, which is the
+# source of truth. That is not the provenance problem the installer has: there the root must
+# never come from the candidate being verified, because the candidate is what an attacker
+# controls. Here the candidate is what WE are about to produce, and the root is the reviewed
+# copy in the repository we were checked out from.
+[ "$IS_RELEASE" -eq 0 ] || [ -s "$SIGNERS" ] || die "trust root missing or empty: $SIGNERS"
+
+OUT="$(mktemp -d)"
+trap 'rm -rf "$OUT"' EXIT INT TERM
+git archive --format=tar "$SRC_COMMIT" | tar -x -C "$OUT"
+
+cd "$OUT"
+git init -q -b main
+git config user.name "agent-sessions-publish"
+git config user.email "agent-sessions-publish@users.noreply.github.com"
+git add -A
+GIT_AUTHOR_DATE="$SRC_DATE" GIT_COMMITTER_DATE="$SRC_DATE" \
+  git commit -q -m "publish: snapshot of $REF" \
+  || die "nothing to publish for $REF (empty snapshot?)"
+SNAP="$(git rev-parse HEAD)"
+
+if [ "$IS_RELEASE" -eq 1 ]; then
+  # RESUME. A release already on the mirror must be verifiable AND identical to what we just
+  # recomputed. Anything else refuses — BEFORE any push, so a refusal leaves the mirror exactly
+  # as it was rather than half-updated.
+  existing="$(git ls-remote "$REMOTE" "refs/tags/$REF" 2>/dev/null | awk '{print $1}' || true)"
+  if [ -n "$existing" ]; then
+    git fetch -q --no-tags "$REMOTE" "refs/tags/$REF:refs/tags/published-$REF" 2>/dev/null \
+      || die "$REF exists on the mirror but could not be fetched for verification"
+    git -c gpg.ssh.allowedSignersFile="$SIGNERS" verify-tag "published-$REF" >/dev/null 2>&1 \
+      || die "$REF is already published but is NOT signed by a trusted key — refusing to touch it. Investigate before re-running; this is what a tampered or hand-pushed release looks like."
+    peeled="$(git rev-parse "published-$REF^{commit}")"
+    [ "$peeled" = "$SNAP" ] \
+      || die "$REF is already published at commit $peeled, but this release recomputes to $SNAP. The published release is NOT this one. Refusing to overwrite it — a release identity must never change under a version number that has shipped."
+    note "reuse: $REF already published and verified at $peeled — nothing pushed"
+    printf '%s\n' "$SNAP"
+    exit 0
+  fi
+
+  # Two ways to reach the private half, and the normal one is the agent.
+  #
+  # The release key is passphrase-protected, so in real use it is unlocked once with `ssh-add`
+  # and lives in ssh-agent — there is no readable key FILE to point at. git handles that by
+  # accepting a PUBLIC key as user.signingkey and asking the agent for the matching identity.
+  # `--key` stays supported for tests, which use a throwaway key without an agent.
+  if [ -n "$KEY" ]; then
+    [ -r "$KEY" ] || die "release signing key not readable: $KEY"
+    _signwith="$KEY"
+  else
+    _signwith="$OUT/.signer.pub"
+    awk '!/^#/ && NF { print $2, $3; exit }' "$SIGNERS" > "$_signwith" \
+      || die "could not derive the signer public key from $SIGNERS"
+    [ -s "$_signwith" ] || die "no signer entry in $SIGNERS"
+  fi
+  GIT_AUTHOR_DATE="$SRC_DATE" GIT_COMMITTER_DATE="$SRC_DATE" \
+    git -c gpg.format=ssh -c "user.signingkey=$_signwith" tag -s "$REF" -m "release $REF" \
+    || die "could not sign $REF (is the key unlocked? try: ssh-add <key>)"
+  # Prove what we just made before it leaves the machine. Signing that silently produced an
+  # unverifiable tag would publish an unverifiable release.
+  git -c gpg.ssh.allowedSignersFile="$SIGNERS" verify-tag "$REF" >/dev/null 2>&1 \
+    || die "the tag was signed but does not verify against $SIGNERS — refusing to publish it"
+fi
+
+# Is the mirror's `main` still ours to move? Asked of the forge at the last moment before the
+# push, so it reflects every merge that landed while the snapshot was being built. An
+# unreachable forge fails closed: publishing blind is exactly the rewind this guards against.
+MOVE_MAIN=1
+[ "$IS_RELEASE" -eq 0 ] || MOVE_MAIN=0   # a release never writes main — see the header
+if [ "$MOVE_MAIN" -eq 1 ] && [ -n "$TIP_OF" ]; then
+  tip="$(git -C "$SRC" ls-remote "$TIP_OF" refs/heads/main | awk '{print $1}')" \
+    || die "could not read main from $TIP_OF — refusing to move the mirror's main blind"
+  [ -n "$tip" ] || die "could not read main from $TIP_OF — refusing to move the mirror's main blind"
+  if [ "$tip" != "$SRC_COMMIT" ]; then
+    MOVE_MAIN=0
+    note "superseded: $TIP_OF main is at $tip, not $SRC_COMMIT — leaving the mirror's main alone"
+  fi
+fi
+
+if [ "$DRY" -eq 1 ]; then
+  note "dry-run: would publish $REF at $SNAP"
+  printf '%s\n' "$SNAP"
+  exit 0
+fi
+
+# `main` is a rolling flat snapshot and is force-pushed by design — it carries no history to
+# preserve. Determinism makes even that idempotent: the same commit recomputes to the same
+# snapshot, so a repeat dispatch pushes the identical SHA.
+if [ "$MOVE_MAIN" -eq 1 ]; then
+  git push -q -f "$REMOTE" main || die "could not push the snapshot branch"
+fi
+if [ "$IS_RELEASE" -eq 1 ]; then
+  # NOT force. A release tag that already exists took the verified-reuse path above; reaching
+  # here means it does not exist, so a non-fast-forward here is a race with another publisher
+  # and must fail loudly rather than overwrite.
+  git push -q "$REMOTE" "refs/tags/$REF" || die "could not push $REF (does it already exist? another publisher may have raced us)"
+  note "published $REF at $SNAP (signed, annotated)"
+elif [ "$MOVE_MAIN" -eq 1 ]; then
+  note "published snapshot of $REF at $SNAP"
+fi
+printf '%s\n' "$SNAP"

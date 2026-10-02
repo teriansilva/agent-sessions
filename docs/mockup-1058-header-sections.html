@@ -1,0 +1,729 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<title>BattleLab — header sections + operator avatar</title>
+<link rel="stylesheet" href="../web/src/tokens.css" />
+<style>
+  /* `tokens.css` scopes the light set to `:root[data-theme="light"]`, which a NESTED board cannot
+     reach — the light board sets the attribute on a div. Same values, re-scoped to the attribute
+     alone. Regenerate by copying the `:root[data-theme="light"]` block out of the token file. */
+  [data-theme="light"] {
+    color-scheme: light;
+    --bg-0: #e7e8ea;
+    --bg-1: #f2f3f5;
+    --bg-2: #ffffff;
+    --term-bg: #f2f3f5;
+    --text-1: #14161a;
+    --text-2: #41454d;
+    --text-3: #6f747d;
+    --glass: rgba(10, 12, 16, 0.025);
+    --glass-strong: rgba(10, 12, 16, 0.05);
+    --line: rgba(10, 12, 16, 0.12);
+    --line-strong: rgba(10, 12, 16, 0.2);
+    --bg: #e7e8ea;
+    --panel: #f2f3f5;
+    --text: #14161a;
+    --text-muted: #41454d;
+    --border: #c9ccd2;
+    --border-subtle: #d9dbe0;
+    --row-hover: #e3e5e8;
+    --surface-2: #ffffff;
+    --surface-3: #dfe1e4;
+    --accent: #ffb000;
+    --on-accent: #120c00;
+    --brand: #8a5a00; /* darker amber for the wordmark on light — readable */
+    --brand-soft: #5e3d00;
+    --badge-bg: #efe3c8;
+    --badge-fg: #6b4e00;
+    /* On the light ground the raw status hues are unreadable as small text — `--status-degraded`
+       (#f59e0b) on #f2f3f5 measures ≈2.15:1, well under AA. Darkened toward --text-1 by color-mix
+       rather than replaced with an invented hex, so a future palette change still carries through.
+       The LED tokens are untouched: a 6px dot is not text and has its own (non-)requirement. */
+    --git-add-fg: color-mix(in srgb, var(--status-up) 50%, var(--text-1));
+    --git-mod-fg: color-mix(in srgb, var(--status-degraded) 45%, var(--text-1));
+    --git-del-fg: var(--status-down);
+    --danger-text: var(--status-down); /* 6.0:1 on --surface-2, 5.5:1 on --panel */
+    --ok-text: color-mix(in srgb, var(--status-up) 45%, var(--text-1));
+    --warn-text: color-mix(in srgb, var(--status-degraded) 40%, var(--text-1));
+    --git-unknown-fg: color-mix(in srgb, var(--status-unknown) 80%, var(--text-1));
+    --diff-add-fg: color-mix(in srgb, var(--status-up) 20%, var(--text-1));
+    --diff-del-fg: color-mix(in srgb, var(--status-down) 20%, var(--text-1));
+    --diff-add-bg: color-mix(in srgb, var(--status-up) 8%, transparent);
+    --diff-del-bg: color-mix(in srgb, var(--status-down) 8%, transparent);
+    /* Darker syntax set for the light ground (--surface-3 #dfe1e4); each ≥4.5:1 there. */
+    --syn-keyword: #5b3fb0;
+    --syn-string: #7a4e12;
+    --syn-number: #a3306b;
+    --syn-comment: #555a63;
+    --syn-function: #14161a;
+    --syn-type: #1d6b61;
+    --syn-property: #41454d;
+    --syn-punct: #41454d;
+  }
+
+  /* The render host has no JetBrains Mono / the app's UI stack — substitute the closest
+     installed faces so metrics are honest. Everything else is the shipped token file. */
+  :root {
+    --font-mono: "DejaVu Sans Mono", monospace;
+    --font-ui: Inter, "DejaVu Sans", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #08090b;
+    font: 14px/1.4 var(--font-ui);
+    color: var(--text-1);
+  }
+  .sheet { padding: 28px 32px 40px; }
+  .board { margin-bottom: 34px; }
+  .board > h2 {
+    margin: 0 0 4px;
+    font: 700 15px var(--font-mono);
+    letter-spacing: 1.4px;
+    color: var(--accent);
+    text-transform: uppercase;
+  }
+  .board > p.cap {
+    margin: 0 0 12px;
+    font: 400 11.5px var(--font-ui);
+    color: var(--text-3);
+    max-width: 1180px;
+  }
+  .frame { border: 1px solid var(--border); background: var(--bg-0); }
+  .frame.light { background: var(--bg-0); }
+
+  /* ---------------- top bar ---------------- */
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 52px;
+    padding: 0 14px;
+    background: var(--bg-1);
+    border-bottom: 1px solid var(--line);
+  }
+  .iconbtn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border: 1px solid var(--line-strong);
+    background: transparent;
+    color: var(--text-2);
+    font: 400 15px var(--font-mono);
+  }
+  .brand {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 5px;
+    font: 700 14px var(--font-mono);
+    letter-spacing: 2px;
+    color: var(--brand-soft);
+    white-space: nowrap;
+  }
+  .brand .mk { color: var(--accent); }
+  .brand b { color: var(--accent); font-weight: 700; }
+
+  nav.sections { display: flex; gap: 6px; margin-left: 6px; }
+  nav.sections a {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    min-height: 44px;
+    min-width: 76px;
+    padding: 0 10px;
+    border: 1px solid var(--line-strong);
+    color: var(--text-2);
+    text-decoration: none;
+    font: 400 10.9px var(--font-mono);
+    letter-spacing: 1.1px;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  nav.sections a .gi { font-size: 12px; opacity: 0.85; }
+  nav.sections a[aria-current="page"] {
+    color: var(--on-accent);
+    border-color: var(--accent);
+    background: var(--accent);
+  }
+  nav.sections a[aria-current="page"] .gi { opacity: 1; }
+  nav.sections a.isNew { border-color: var(--accent); color: var(--accent); }
+
+  .telemetry {
+    margin-left: auto;
+    display: flex;
+    gap: 14px;
+    font: 400 10px var(--font-mono);
+    letter-spacing: 1.2px;
+    color: var(--text-3);
+    white-space: nowrap;
+  }
+  .telemetry b { color: var(--text-2); font-weight: 400; }
+
+  .actions { display: flex; align-items: center; gap: 6px; }
+
+  /* ---------------- the avatar ---------------- */
+  .avatarbtn {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    height: 36px;
+    padding: 0 10px 0 0;
+    border: 1px solid var(--line-strong);
+    background: transparent;
+    color: var(--text-2);
+    cursor: pointer;
+  }
+  .avatarbtn.open { border-color: var(--accent); }
+  .avatarsq {
+    width: 34px;
+    height: 34px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: color-mix(in srgb, var(--accent) 20%, transparent);
+    color: var(--accent);
+    font: 700 12px var(--font-mono);
+    letter-spacing: 1px;
+    border-right: 1px solid var(--line-strong);
+  }
+  .avatarname {
+    font: 400 10.9px var(--font-mono);
+    letter-spacing: 1.1px;
+    text-transform: uppercase;
+    color: var(--text-2);
+    white-space: nowrap;
+  }
+
+  .menu {
+    position: absolute;
+    width: 232px;
+    border: 1px solid var(--accent);
+    background: var(--bg-1);
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.55);
+  }
+  .menuhead {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+  }
+  .menuhead .who {
+    font: 700 11.5px var(--font-mono);
+    letter-spacing: 1.2px;
+    color: var(--text-1);
+    text-transform: uppercase;
+  }
+  .menuhead .sub {
+    margin-top: 3px;
+    font: 400 10px var(--font-mono);
+    letter-spacing: 0.8px;
+    color: var(--text-3);
+  }
+  .menu .item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 12px;
+    font: 400 12px var(--font-ui);
+    color: var(--text-1);
+  }
+  .menu .item .ic { width: 16px; text-align: center; color: var(--text-3); font-size: 12px; }
+  .menu .item.hot { background: var(--row-hover); }
+  .menu .sep { height: 1px; background: var(--line); }
+
+  /* ---------------- page bodies ---------------- */
+  .body { display: flex; min-height: 300px; }
+  .side {
+    width: 250px;
+    border-right: 1px solid var(--line);
+    background: var(--glass-strong);
+    padding: 10px;
+  }
+  .side .tag {
+    font: 400 9.6px var(--font-mono);
+    letter-spacing: 1.4px;
+    color: var(--text-3);
+    text-transform: uppercase;
+  }
+  .side .row {
+    margin-top: 9px;
+    padding: 7px 8px;
+    border: 1px solid var(--line);
+    font: 400 11px var(--font-ui);
+    color: var(--text-2);
+    display: flex;
+    gap: 7px;
+    align-items: center;
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .dot.up { background: var(--status-up); }
+  .dot.idle { background: var(--status-unknown); }
+  .dot.att { background: var(--status-degraded); }
+
+  .pane { flex: 1; padding: 26px 30px; position: relative; }
+  .kicker {
+    font: 400 9.6px var(--font-mono);
+    letter-spacing: 1.6px;
+    color: var(--text-3);
+    text-transform: uppercase;
+  }
+  .pane h1 {
+    margin: 9px 0 5px;
+    font: 600 21px var(--font-ui);
+    color: var(--text-1);
+  }
+  .pane p.sub {
+    margin: 0 0 16px;
+    font: 400 12.5px var(--font-ui);
+    color: var(--text-2);
+    max-width: 640px;
+  }
+  .composerbox {
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    max-width: 720px;
+  }
+  .composerbox .input {
+    padding: 12px 13px;
+    font: 400 13px var(--font-ui);
+    color: var(--text-3);
+    min-height: 44px;
+  }
+  .composerbox .foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px 10px;
+    border-top: 1px solid var(--line);
+  }
+  .hint { font: 400 10px var(--font-mono); letter-spacing: 1px; color: var(--text-3); }
+  .send {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 0 14px;
+    height: 32px;
+    background: var(--cta-bg-1);
+    color: var(--cta-text);
+    border: 1px solid var(--accent);
+    font: 600 11.5px var(--font-mono);
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+  }
+  .turn {
+    max-width: 720px;
+    margin-top: 16px;
+    border-left: 2px solid var(--line-strong);
+    padding-left: 12px;
+  }
+  .turn .who {
+    font: 400 9.6px var(--font-mono);
+    letter-spacing: 1.5px;
+    color: var(--text-3);
+    text-transform: uppercase;
+  }
+  .turn .txt { margin: 4px 0 12px; font: 400 12.5px var(--font-ui); color: var(--text-1); }
+  .match {
+    border: 1px solid var(--line);
+    background: var(--glass-strong);
+    padding: 9px 11px;
+    margin-bottom: 7px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .match .m1 { font: 400 12px var(--font-ui); color: var(--text-1); }
+  .match .m2 { margin-top: 2px; font: 400 11px var(--font-ui); color: var(--text-3); }
+  .match .jump {
+    margin-left: auto;
+    flex: none;
+    font: 600 10.5px var(--font-mono);
+    letter-spacing: 1.1px;
+    color: var(--accent);
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .note {
+    max-width: 720px;
+    margin-top: 14px;
+    padding: 9px 11px;
+    border: 1px dashed var(--line-strong);
+    font: 400 11.5px var(--font-ui);
+    color: var(--text-3);
+  }
+
+  /* ---------------- mobile boards ---------------- */
+  .phones { display: flex; gap: 26px; align-items: flex-start; }
+  .phone { width: 412px; flex: none; }
+  .phone .frame { border: 1px solid var(--border); }
+  .phone .topbar { height: 48px; padding: 0 8px; gap: 4px; }
+  .phone .iconbtn { width: 34px; height: 34px; font-size: 14px; }
+  .phone nav.sections { gap: 3px; margin-left: 2px; }
+  .phone nav.sections a {
+    min-width: 0;
+    width: 38px;
+    padding: 0;
+    min-height: 40px;
+    font-size: 0;
+    gap: 0;
+  }
+  .phone nav.sections a .gi { font-size: 14px; }
+  .phone .avatarbtn { padding: 0; height: 34px; }
+  .phone .avatarsq { width: 32px; height: 32px; border-right: 0; }
+  .phone .brand { font-size: 11px; letter-spacing: 0.8px; }
+  .phone .caption {
+    margin-top: 8px;
+    font: 400 11px var(--font-ui);
+    color: var(--text-3);
+  }
+  .drawer {
+    border-top: 1px solid var(--line);
+    background: var(--bg-1);
+    padding: 8px;
+  }
+  .drawer .drow {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 9px 8px;
+    border: 1px solid var(--line);
+    margin-bottom: 5px;
+    font: 400 10.9px var(--font-mono);
+    letter-spacing: 1.1px;
+    text-transform: uppercase;
+    color: var(--text-2);
+  }
+  .drawer .drow.on { border-color: var(--accent); color: var(--accent); }
+  .drawer .actionsrow { display: flex; gap: 5px; margin-top: 8px; }
+  .drawer .actionsrow .iconbtn { flex: 1; }
+
+  .legend {
+    display: flex;
+    gap: 22px;
+    flex-wrap: wrap;
+    margin-top: 6px;
+    font: 400 11px var(--font-ui);
+    color: var(--text-3);
+  }
+  .legend b { color: var(--accent); font-weight: 600; }
+  .badge {
+    display: inline-block;
+    margin-left: 7px;
+    padding: 1px 5px;
+    background: var(--accent);
+    color: var(--on-accent);
+    font: 700 8.5px var(--font-mono);
+    letter-spacing: 1px;
+    vertical-align: 2px;
+  }
+</style>
+</head>
+<body>
+<div class="sheet">
+
+  <!-- ============ BOARD 1 — desktop dark, sections + avatar ============ -->
+  <div class="board">
+    <h2>1 · Desktop — the header sections and the operator corner <span class="badge">DARK</span></h2>
+    <p class="cap">
+      Five work sections in one labelled nav: <b>SESSIONS · MISSIONS · ASK · MAP · TEMPLATES</b>.
+      MAP and TEMPLATES come up out of the unlabelled icon cluster on the right; ASK is new and
+      leaves the mission composer. The right-hand corner keeps <b>notifications</b> and
+      <b>settings</b> beside the new operator tile — help, bell, gear, then the avatar last, hard
+      against the edge.
+    </p>
+    <div class="frame" style="width: 1440px;">
+      <div class="topbar">
+        <span class="iconbtn">☰</span>
+        <span class="brand"><span class="mk">◢</span>BATTLE<b>LAB</b></span>
+        <nav class="sections">
+          <a href="#" aria-current="page"><span class="gi">▣</span>Sessions</a>
+          <a href="#"><span class="gi">◆</span>Missions</a>
+          <a href="#" class="isNew"><span class="gi">★</span>Ask</a>
+          <a href="#"><span class="gi">◎</span>Map</a>
+          <a href="#"><span class="gi">▤</span>Templates</a>
+        </nav>
+        <span class="telemetry"><span>SYS <b>14:07:22</b></span><span>MSN <b>02:11:44</b></span></span>
+        <span class="actions">
+          <span class="iconbtn">?</span>
+          <span class="iconbtn">◔</span>
+          <span class="iconbtn">⚙</span>
+          <span class="avatarbtn"><span class="avatarsq">MB</span><span class="avatarname">nightowl</span></span>
+        </span>
+      </div>
+      <div class="body">
+        <div class="side">
+          <div class="tag">Order · Recent // Created</div>
+          <div class="row"><span class="dot up"></span>agent-sessions · header nav</div>
+          <div class="row"><span class="dot att"></span>infra-docs · sync cascade</div>
+          <div class="row"><span class="dot idle"></span>superstatus · blazor</div>
+        </div>
+        <div class="pane">
+          <div class="kicker">Session // claude // 4c8e…2f1</div>
+          <h1>The routed pane is unchanged</h1>
+          <p class="sub">
+            Only the command row above it changes. The sidebar, the pane, the classification
+            footer and every route below <code>/s/:engine/:id</code> keep their current shape.
+          </p>
+        </div>
+      </div>
+    </div>
+    <div class="legend">
+      <span><b>New</b> — the ASK entry and the operator tile</span>
+      <span><b>Moved</b> — MAP (was an unlabelled icon) and TEMPLATES (was an unlabelled icon)</span>
+      <span><b>Kept</b> — help, bell and gear, in that order, immediately left of the avatar</span>
+    </div>
+  </div>
+
+  <!-- ============ BOARD 2 — the avatar menu ============ -->
+  <div class="board">
+    <h2>2 · The operator tile, opened</h2>
+    <p class="cap">
+      The tile is a square (no radius — the HUD has none) carrying the operator's initials in the
+      brand accent, with the username beside it in the same mono chrome type the sections use. It
+      opens the shared <code>AnchoredMenu</code> — the same component the <code>?</code> menu and
+      the mission <code>⋯</code> use, portalled out of the top bar. On an install with
+      <code>auth_mode: none</code> the tile reads <b>LOCAL</b> and the menu shows no Sign out.
+    </p>
+    <div class="frame" style="width: 1440px; padding-bottom: 190px; position: relative;">
+      <div class="topbar">
+        <span class="iconbtn">☰</span>
+        <span class="brand"><span class="mk">◢</span>BATTLE<b>LAB</b></span>
+        <nav class="sections">
+          <a href="#"><span class="gi">▣</span>Sessions</a>
+          <a href="#"><span class="gi">◆</span>Missions</a>
+          <a href="#"><span class="gi">★</span>Ask</a>
+          <a href="#"><span class="gi">◎</span>Map</a>
+          <a href="#"><span class="gi">▤</span>Templates</a>
+        </nav>
+        <span class="telemetry"><span>SYS <b>14:07:22</b></span><span>MSN <b>02:11:44</b></span></span>
+        <span class="actions">
+          <span class="iconbtn">?</span>
+          <span class="iconbtn">◔</span>
+          <span class="iconbtn">⚙</span>
+          <span class="avatarbtn open"><span class="avatarsq">MB</span><span class="avatarname">nightowl</span></span>
+        </span>
+      </div>
+      <div class="menu" style="right: 14px; top: 56px;">
+        <div class="menuhead">
+          <div class="who">nightowl</div>
+          <div class="sub">Signed in · single operator</div>
+        </div>
+        <div class="item hot"><span class="ic">⚙</span>Settings</div>
+        <div class="item"><span class="ic">▩</span>Security &amp; 2FA</div>
+        <div class="sep"></div>
+        <div class="item"><span class="ic">⏻</span>Sign out</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ BOARD 3 — /ask ============ -->
+  <div class="board">
+    <h2>3 · <code>/ask</code> — Ask gets its own page</h2>
+    <p class="cap">
+      Ask leaves the mission composer's <b>NEW MISSION | ASK</b> segmented control and becomes a
+      route of its own. The mission landing keeps the brief-and-Start form alone; nothing about
+      <code>POST /api/pulse/ask</code>, the match rows or the "Jump in" links changes. Answers
+      stay transient — there is still no mission to keep them in — and the page says so where the
+      composer used to.
+    </p>
+    <div class="frame" style="width: 1440px;">
+      <div class="topbar">
+        <span class="iconbtn">☰</span>
+        <span class="brand"><span class="mk">◢</span>BATTLE<b>LAB</b></span>
+        <nav class="sections">
+          <a href="#"><span class="gi">▣</span>Sessions</a>
+          <a href="#"><span class="gi">◆</span>Missions</a>
+          <a href="#" aria-current="page"><span class="gi">★</span>Ask</a>
+          <a href="#"><span class="gi">◎</span>Map</a>
+          <a href="#"><span class="gi">▤</span>Templates</a>
+        </nav>
+        <span class="telemetry"><span>SYS <b>14:07:22</b></span><span>MSN <b>02:11:44</b></span></span>
+        <span class="actions">
+          <span class="iconbtn">?</span>
+          <span class="iconbtn">◔</span>
+          <span class="iconbtn">⚙</span>
+          <span class="avatarbtn"><span class="avatarsq">MB</span><span class="avatarname">nightowl</span></span>
+        </span>
+      </div>
+      <div class="body">
+        <div class="side">
+          <div class="tag">Order · Recent // Created</div>
+          <div class="row"><span class="dot up"></span>agent-sessions · header nav</div>
+          <div class="row"><span class="dot att"></span>infra-docs · sync cascade</div>
+          <div class="row"><span class="dot idle"></span>superstatus · blazor</div>
+        </div>
+        <div class="pane">
+          <div class="kicker">Ask // your work</div>
+          <h1>Ask about your work</h1>
+          <p class="sub">
+            Find a session by what happened in it, or ask what you did and when. Answers are read
+            from the transcripts this install can already see.
+          </p>
+          <div class="composerbox">
+            <div class="input">Ask about your work — find, history…</div>
+            <div class="foot">
+              <span class="hint">Ctrl + Enter</span>
+              <span class="send">▷ Send</span>
+            </div>
+          </div>
+          <div class="turn">
+            <div class="who">You</div>
+            <div class="txt">where did I last touch the upload retry backoff?</div>
+            <div class="who">Answer</div>
+            <div class="txt">
+              Two sessions touched it. The backoff constant moved on Tuesday in the
+              agent-sessions checkout; a follow-up the next morning added the jitter test.
+            </div>
+            <div class="match">
+              <span>
+                <span class="m1">fix flaky upload retry</span>
+                <span class="m2">matched on uploads.py · "retry backoff" · 2 days ago</span>
+              </span>
+              <span class="jump">Jump in →</span>
+            </div>
+            <div class="match">
+              <span>
+                <span class="m1">add jitter regression test</span>
+                <span class="m2">matched on test_uploads.py · "jitter" · yesterday</span>
+              </span>
+              <span class="jump">Jump in →</span>
+            </div>
+          </div>
+          <div class="note">
+            These answers are not kept — this page has no mission to keep them in, so they
+            disappear when you leave. A mission's own conversation is saved.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ BOARD 4 — mobile ============ -->
+  <div class="board">
+    <h2>4 · Mobile — 412&nbsp;px</h2>
+    <p class="cap">
+      At ≤640&nbsp;px the sections go icon-only (each keeps its accessible name), so all five stay
+      one tap away instead of moving behind the hamburger. Bell and avatar stay in the bar; help
+      and gear keep today's behaviour and ride the drawer — and the avatar menu carries Settings,
+      so the gear is still one tap from the corner. The wordmark holds to 480 px and collapses
+      to the ◢ mark below it. The drawer gains a labelled copy of the five
+      sections above its action row.
+    </p>
+    <div class="phones">
+      <div class="phone">
+        <div class="frame">
+          <div class="topbar">
+            <span class="iconbtn">☰</span>
+            <span class="brand"><span class="mk">◢</span></span>
+            <nav class="sections">
+              <a href="#" aria-current="page"><span class="gi">▣</span></a>
+              <a href="#"><span class="gi">◆</span></a>
+              <a href="#" class="isNew"><span class="gi">★</span></a>
+              <a href="#"><span class="gi">◎</span></a>
+              <a href="#"><span class="gi">▤</span></a>
+            </nav>
+            <span class="actions" style="margin-left:auto">
+              <span class="iconbtn">◔</span>
+              <span class="avatarbtn"><span class="avatarsq">MB</span></span>
+            </span>
+          </div>
+          <div class="body" style="min-height:190px">
+            <div class="pane" style="padding:18px">
+              <div class="kicker">Session // claude</div>
+              <h1 style="font-size:17px">Bar closed</h1>
+              <p class="sub" style="font-size:12px">
+                Five icon sections, the bell and the operator tile fit one row at 412&nbsp;px.
+              </p>
+            </div>
+          </div>
+        </div>
+        <div class="caption">4a · top bar closed</div>
+      </div>
+      <div class="phone">
+        <div class="frame">
+          <div class="topbar">
+            <span class="iconbtn">✕</span>
+            <span class="brand"><span class="mk">◢</span></span>
+            <nav class="sections">
+              <a href="#" aria-current="page"><span class="gi">▣</span></a>
+              <a href="#"><span class="gi">◆</span></a>
+              <a href="#"><span class="gi">★</span></a>
+              <a href="#"><span class="gi">◎</span></a>
+              <a href="#"><span class="gi">▤</span></a>
+            </nav>
+            <span class="actions" style="margin-left:auto">
+              <span class="iconbtn">◔</span>
+              <span class="avatarbtn"><span class="avatarsq">MB</span></span>
+            </span>
+          </div>
+          <div class="drawer">
+            <div class="drow on"><span>▣</span>Sessions</div>
+            <div class="drow"><span>◆</span>Missions</div>
+            <div class="drow"><span>★</span>Ask</div>
+            <div class="drow"><span>◎</span>Map</div>
+            <div class="drow"><span>▤</span>Templates</div>
+            <div class="actionsrow">
+              <span class="iconbtn">?</span>
+              <span class="iconbtn">⚙</span>
+            </div>
+          </div>
+        </div>
+        <div class="caption">4b · drawer open — the sections named</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ BOARD 5 — light ============ -->
+  <div class="board" id="lightboard">
+    <h2>5 · Light theme</h2>
+    <p class="cap">
+      The same row on <code>data-theme="light"</code>. The tile's fill is the accent at 20%, so it
+      reads as brand in both themes without introducing a second colour; the initials keep the
+      accent and the username stays <code>--text-2</code>.
+    </p>
+    <div class="frame light" data-theme="light" style="width: 1440px; background: var(--bg-0);">
+      <div class="topbar">
+        <span class="iconbtn">☰</span>
+        <span class="brand"><span class="mk">◢</span>BATTLE<b>LAB</b></span>
+        <nav class="sections">
+          <a href="#"><span class="gi">▣</span>Sessions</a>
+          <a href="#"><span class="gi">◆</span>Missions</a>
+          <a href="#" aria-current="page"><span class="gi">★</span>Ask</a>
+          <a href="#"><span class="gi">◎</span>Map</a>
+          <a href="#"><span class="gi">▤</span>Templates</a>
+        </nav>
+        <span class="telemetry"><span>SYS <b>14:07:22</b></span><span>MSN <b>02:11:44</b></span></span>
+        <span class="actions">
+          <span class="iconbtn">?</span>
+          <span class="iconbtn">◔</span>
+          <span class="iconbtn">⚙</span>
+          <span class="avatarbtn"><span class="avatarsq">MB</span><span class="avatarname">nightowl</span></span>
+        </span>
+      </div>
+      <div class="body" style="min-height:150px">
+        <div class="side">
+          <div class="tag">Order · Recent // Created</div>
+          <div class="row"><span class="dot up"></span>agent-sessions · header nav</div>
+          <div class="row"><span class="dot idle"></span>superstatus · blazor</div>
+        </div>
+        <div class="pane">
+          <div class="kicker">Ask // your work</div>
+          <h1>Ask about your work</h1>
+          <p class="sub">Same page, light tokens.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p style="font: 400 11px var(--font-ui); color: var(--text-3); max-width: 1180px;">
+    Tokens imported verbatim from <code>web/src/tokens.css</code>. Type is substituted on the
+    render host (DejaVu Sans Mono for <code>--font-mono</code>, Inter for the UI face) — the app
+    ships JetBrains Mono. Icons are stand-in glyphs; the implementation uses the existing
+    <code>lucide-react</code> set (TerminalSquare, Crosshair, Sparkles, Network, BookMarked).
+  </p>
+</div>
+</body>
+</html>

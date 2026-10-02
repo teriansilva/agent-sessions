@@ -1,0 +1,86 @@
+/* The floating window layer over the Overview map (#208).
+ *
+ * `pointer-events: none` on the layer with `auto` back on each window is what lets the canvas
+ * keep panning between windows — the overlay covers the whole map, so without it the map would
+ * become undraggable the moment one window opened. */
+
+.layer {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 5; /* over the canvas, under the toolbar (z 6) */
+  pointer-events: none;
+}
+
+.tethers {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: visible;
+}
+
+.line,
+.lineFocused {
+  fill: none;
+  stroke: var(--accent);
+}
+
+.line {
+  stroke-width: 1.2;
+  stroke-dasharray: 5 4;
+  opacity: 0.55;
+}
+
+.lineFocused {
+  stroke-width: 1.6;
+  opacity: 0.9;
+}
+
+.dot {
+  fill: var(--accent);
+  opacity: 0.8;
+}
+
+.slot {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* Duplicate open: the window already exists, so say where it went. */
+.flash > * {
+  animation: window-flash 0.9s ease-out;
+}
+
+@keyframes window-flash {
+  0%,
+  40% {
+    box-shadow: 0 0 0 2px var(--accent);
+  }
+
+  100% {
+    box-shadow: 0 26px 70px rgb(0 0 0 / 60%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flash > * {
+    animation: none;
+    box-shadow: 0 0 0 2px var(--accent);
+  }
+}
+
+.notice {
+  position: absolute;
+  bottom: 44px;
+  left: 50%;
+  z-index: 20;
+  padding: 6px 10px;
+  font-size: 11.5px;
+  color: var(--text);
+  pointer-events: auto;
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  border: 1px solid var(--accent-soft);
+  transform: translateX(-50%);
+}

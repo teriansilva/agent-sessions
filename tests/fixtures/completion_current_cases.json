@@ -1,0 +1,197 @@
+{
+  "below_threshold": {
+    "kind": "completion",
+    "meta": {
+      "gates": 1,
+      "held": {
+        "judged": [
+          {
+            "confidence": 0.95,
+            "key": "gate",
+            "title": "A finding is written down"
+          }
+        ],
+        "observed": [],
+        "waived": []
+      },
+      "objectives": [
+        {
+          "current": "holds",
+          "gate": true,
+          "key": "gate",
+          "settled_by": "judged met (0.95) \u2014 the supervisor's reading, not observed",
+          "state": "met",
+          "title": "A finding is written down"
+        },
+        {
+          "current": "outstanding",
+          "gate": false,
+          "key": "goal",
+          "settled_by": "met earlier, now judged met at 0.85, below the 0.90 threshold",
+          "state": "met",
+          "title": "The docs mention the fix"
+        }
+      ],
+      "outstanding_goals": 1,
+      "proposal": true,
+      "unmet_gates": 0
+    },
+    "text": "Every gate is met (1 gate). This looks finished \u2014 nothing has been closed. 1 goal is still open; they do not gate completion.\nObserved 0 \u00b7 judged 1 (A finding is written down 0.95) \u00b7 waived 0\n- [gate] A finding is written down: judged met (0.95) \u2014 the supervisor's reading, not observed\n- [goal] The docs mention the fix: met earlier, now judged met at 0.85, below the 0.90 threshold"
+  },
+  "negative": {
+    "kind": "completion",
+    "meta": {
+      "gates": 1,
+      "held": {
+        "judged": [
+          {
+            "confidence": 0.95,
+            "key": "gate",
+            "title": "A finding is written down"
+          }
+        ],
+        "observed": [],
+        "waived": []
+      },
+      "objectives": [
+        {
+          "current": "holds",
+          "gate": true,
+          "key": "gate",
+          "settled_by": "judged met (0.95) \u2014 the supervisor's reading, not observed",
+          "state": "met",
+          "title": "A finding is written down"
+        },
+        {
+          "current": "outstanding",
+          "gate": false,
+          "key": "goal",
+          "settled_by": "met earlier, now judged NOT met (0.99)",
+          "state": "met",
+          "title": "The docs mention the fix"
+        }
+      ],
+      "outstanding_goals": 1,
+      "proposal": true,
+      "unmet_gates": 0
+    },
+    "text": "Every gate is met (1 gate). This looks finished \u2014 nothing has been closed. 1 goal is still open; they do not gate completion.\nObserved 0 \u00b7 judged 1 (A finding is written down 0.95) \u00b7 waived 0\n- [gate] A finding is written down: judged met (0.95) \u2014 the supervisor's reading, not observed\n- [goal] The docs mention the fix: met earlier, now judged NOT met (0.99)"
+  },
+  "stale": {
+    "kind": "completion",
+    "meta": {
+      "gates": 1,
+      "held": {
+        "judged": [
+          {
+            "confidence": 0.95,
+            "key": "gate",
+            "title": "A finding is written down"
+          }
+        ],
+        "observed": [],
+        "waived": []
+      },
+      "objectives": [
+        {
+          "current": "holds",
+          "gate": true,
+          "key": "gate",
+          "settled_by": "judged met (0.95) \u2014 the supervisor's reading, not observed",
+          "state": "met",
+          "title": "A finding is written down"
+        },
+        {
+          "current": "outstanding",
+          "gate": false,
+          "key": "goal",
+          "settled_by": "met earlier, not re-checked since the output changed",
+          "state": "met",
+          "title": "The docs mention the fix"
+        }
+      ],
+      "outstanding_goals": 1,
+      "proposal": true,
+      "unmet_gates": 0
+    },
+    "text": "Every gate is met (1 gate). This looks finished \u2014 nothing has been closed. 1 goal is still open; they do not gate completion.\nObserved 0 \u00b7 judged 1 (A finding is written down 0.95) \u00b7 waived 0\n- [gate] A finding is written down: judged met (0.95) \u2014 the supervisor's reading, not observed\n- [goal] The docs mention the fix: met earlier, not re-checked since the output changed"
+  },
+  "unknown": {
+    "kind": "completion",
+    "meta": {
+      "gates": 1,
+      "held": {
+        "judged": [
+          {
+            "confidence": 0.95,
+            "key": "gate",
+            "title": "A finding is written down"
+          }
+        ],
+        "observed": [],
+        "waived": []
+      },
+      "objectives": [
+        {
+          "current": "holds",
+          "gate": true,
+          "key": "gate",
+          "settled_by": "judged met (0.95) \u2014 the supervisor's reading, not observed",
+          "state": "met",
+          "title": "A finding is written down"
+        },
+        {
+          "current": "outstanding",
+          "gate": false,
+          "key": "goal",
+          "settled_by": "met earlier, could not be judged since: the judge's reply did not match the contract (fields: extra ['bogus'], missing ['confidence', 'evidence', 'met', 'reason'])",
+          "state": "met",
+          "title": "The docs mention the fix"
+        }
+      ],
+      "outstanding_goals": 1,
+      "proposal": true,
+      "unmet_gates": 0
+    },
+    "text": "Every gate is met (1 gate). This looks finished \u2014 nothing has been closed. 1 goal is still open; they do not gate completion.\nObserved 0 \u00b7 judged 1 (A finding is written down 0.95) \u00b7 waived 0\n- [gate] A finding is written down: judged met (0.95) \u2014 the supervisor's reading, not observed\n- [goal] The docs mention the fix: met earlier, could not be judged since: the judge's reply did not match the contract (fields: extra ['bogus'], missing ['confidence', 'evidence', 'met', 'reason'])"
+  },
+  "waived": {
+    "kind": "completion",
+    "meta": {
+      "gates": 1,
+      "held": {
+        "judged": [
+          {
+            "confidence": 0.95,
+            "key": "gate",
+            "title": "A finding is written down"
+          }
+        ],
+        "observed": [],
+        "waived": []
+      },
+      "objectives": [
+        {
+          "current": "holds",
+          "gate": true,
+          "key": "gate",
+          "settled_by": "judged met (0.95) \u2014 the supervisor's reading, not observed",
+          "state": "met",
+          "title": "A finding is written down"
+        },
+        {
+          "current": "waived",
+          "gate": false,
+          "key": "goal",
+          "settled_by": "waived by the operator \u2014 not verified",
+          "state": "waived",
+          "title": "The docs mention the fix"
+        }
+      ],
+      "outstanding_goals": 0,
+      "proposal": true,
+      "unmet_gates": 0
+    },
+    "text": "Every gate is met (1 gate). This looks finished \u2014 nothing has been closed.\nObserved 0 \u00b7 judged 1 (A finding is written down 0.95) \u00b7 waived 0\n- [gate] A finding is written down: judged met (0.95) \u2014 the supervisor's reading, not observed\n- [goal] The docs mention the fix: waived by the operator \u2014 not verified"
+  }
+}

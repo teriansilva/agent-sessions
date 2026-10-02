@@ -1,0 +1,426 @@
+/* MISSION CONTROL DIRECTIONS (#983 P2): the direction field (text, fact chips, preview), the Edit
+ * direction dialog's choices, and a supervisor nudge's decision row.
+ *
+ * Status colour is load-bearing (§3): it appears only on a check-state dot, where it reports that
+ * check, and never on anything the operator wrote. Placeholder tokens use `--brand`, as the sessions
+ * sort toggle does. No radius (only the dot is round), no gradient, tokens only
+ * (src/theme/cssGuard.test.ts). Every control reaches the §8 44px floor at ≤800px and under a coarse
+ * pointer. */
+
+/* --- the direction field ---------------------------------------------------------------------- */
+
+.field {
+  flex: 1 1 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.label,
+.previewLabel,
+.sectionLabel {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.label b {
+  color: var(--text-1);
+  font-weight: 600;
+}
+.textarea {
+  width: 100%;
+  min-height: 88px;
+  resize: vertical;
+  padding: 8px 10px;
+  background: var(--bg-2);
+  color: var(--text-1);
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.textarea:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+/* Frozen while its save is pending (#997): visibly not editable, like the dialog's other controls. */
+.textarea:disabled,
+.chip:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.chipsLabel {
+  margin-right: 2px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.chip {
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  background: transparent;
+  color: var(--text-2);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  font: inherit;
+  cursor: pointer;
+}
+.chip:hover,
+.chip:focus-visible {
+  color: var(--text-1);
+  border-color: var(--line-strong);
+}
+.chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.chipToken {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--brand);
+}
+.chipHint {
+  font-size: 11px;
+  color: var(--text-3);
+}
+.noFacts,
+.hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-2);
+}
+.noFacts {
+  color: var(--text-3);
+}
+.preview {
+  margin: 0;
+  padding: 9px 12px;
+  border-left: 3px solid var(--accent);
+  background: var(--bg-2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* A preview that is waiting for its newest answer keeps the last one, dimmed, instead of flashing. */
+.preview[data-state="pending"] {
+  color: var(--text-3);
+}
+.preview[data-state="empty"] {
+  border-left-color: var(--line-strong);
+  font-family: inherit;
+  color: var(--text-3);
+}
+/* The server refused this direction: the save's own words, as a refusal rather than an incident. */
+.preview[data-state="error"] {
+  border-left-color: var(--status-down);
+  font-family: inherit;
+  color: var(--danger-text);
+}
+
+/* --- the Edit direction dialog's choices ------------------------------------------------------- */
+
+.choices {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.choice {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  background: var(--bg-2);
+  color: var(--text-2);
+  border: 1px solid var(--border);
+  font-size: 13px;
+  cursor: pointer;
+}
+.choice:has(input:checked) {
+  color: var(--text-1);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-2));
+}
+.choice input {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.choice input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.choiceText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.choiceText small {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+.copied {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.link {
+  align-self: flex-start;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text-2);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.link:hover,
+.link:focus-visible {
+  color: var(--text-1);
+}
+.link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.link:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* --- a supervisor nudge's decision row ---------------------------------------------------------- */
+
+.nudge {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.tag {
+  padding: 2px 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-1);
+  background: var(--glass-strong);
+  border: 1px solid var(--line-strong);
+}
+.objective {
+  flex: 1 1 12rem;
+  min-width: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.badge {
+  padding: 2px 7px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-2);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+.sectionLabel {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+/* The AI's part is labelled, dashed and plain text: it explains, it is never typed. */
+.aiFlag {
+  padding: 1px 5px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  color: var(--text-1);
+  border: 1px dashed var(--text-3);
+}
+.why,
+.staleLead {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.staleLead b {
+  font-weight: 600;
+  color: var(--text-1);
+}
+.willType {
+  margin: 0;
+  padding: 9px 12px;
+  background: var(--bg-0);
+  border: 1px solid var(--line-strong);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.willTypeStale {
+  color: var(--text-3);
+}
+.facts {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.fact {
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-2);
+  border: 1px solid var(--border);
+}
+.dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--status-unknown);
+}
+.dotUp {
+  background: var(--status-up);
+}
+.dotDegraded {
+  background: var(--status-degraded);
+}
+.dotDown {
+  background: var(--status-down);
+}
+.prov {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+.btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* --- an AI-drafted direction (#983 P3) ----------------------------------------------------------- */
+
+/* The frame is DASHED all round: the words inside are the model's. Applied to ActionRow's frame, so
+   the tone stripe on the left edge stays the decision's status colour. */
+.draftFrame.draftFrame {
+  /* Doubled for specificity: this has to win over the host row's own solid border, whichever of the
+     two stylesheets loads last. */
+  border-style: dashed;
+  border-left-style: solid;
+}
+.draftBox {
+  padding: 10px 12px;
+  border: 1px dashed var(--line-strong);
+}
+.draftFlag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 7px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-1);
+  border: 1px dashed var(--text-3);
+  white-space: nowrap;
+}
+.draftHint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-3);
+}
+.draftHint b {
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+/* --- the objective row's direction mark, and the thread's nudge rows ---------------------------- */
+
+.objDirection {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+}
+.threadStrong {
+  font-weight: 600;
+  color: var(--text-1);
+}
+/* What was typed, verbatim: the delivered snapshot under a Nudged row's Show text. */
+.threadTyped {
+  margin: 0;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 800px), (pointer: coarse) {
+  .chip {
+    min-height: 44px;
+  }
+}
+@media (max-width: 800px) {
+  .btns > * {
+    flex: 1 1 0;
+  }
+}

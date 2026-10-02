@@ -1,0 +1,297 @@
+/* Session-brief modal (#481). HUD vocabulary (#211): near-black ground, phosphor-amber accent,
+ * mono micro-labels, square chrome (no rounded corners, no gradients). Uses the canonical
+ * tokens (index.css) directly — NOT the legacy undefined `--surface-1` purple fallback the
+ * older modals carry — so theme + custom accent cascade. Mobile reflows to a bottom sheet. */
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.dialog {
+  width: min(460px, 100%);
+  max-height: min(80vh, 660px);
+  overflow-y: auto;
+  background: var(--bg-1);
+  color: var(--text-1);
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  padding: 15px 18px 16px;
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.5);
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 9px;
+}
+.tag {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-2);
+  border-radius: 0;
+  cursor: pointer;
+}
+.close:hover,
+.close:focus-visible {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
+}
+
+.title {
+  margin: 0 0 3px;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+/* Subtitle (#744): the AI summary, promoted from its own labelled section to the line directly
+ * under the title — the sidebar row's shape. */
+.subtitle {
+  margin: 0 0 9px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--text-2);
+}
+.subtitleMuted {
+  composes: subtitle;
+  color: var(--text-3);
+}
+/* Meta run (#744): LED · engine box · project · updated · reviewed. Wraps rather than truncating
+ * — unlike the 26px pane header there is vertical room here, and none of these facts is worth
+ * dropping in the one place the operator opened specifically to read them. */
+.meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding-bottom: 11px;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-3);
+}
+/* The shared .hud-led primitive carries no flex hint, so pin it here for the same reason the
+ * pane header does — a 6px flex child otherwise shrinks away under pressure. */
+.metaLed {
+  flex: none;
+}
+/* Same metrics as the sidebar's .engineTag and the pane header's .headEng. */
+.engTag {
+  flex: none;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: 0;
+  padding: 0 4px;
+  line-height: 15px;
+}
+.projectChip {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.projectDot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: 0;
+  background: var(--proj);
+}
+.sep {
+  opacity: 0.55;
+}
+
+.chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 12px;
+  padding: 7px 10px;
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: var(--badge-fg);
+  background: var(--badge-bg);
+  border: 1px solid var(--accent-soft);
+  border-left: 3px solid var(--accent);
+}
+.chip svg {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.section {
+  margin-bottom: 12px;
+}
+.label {
+  display: block;
+  margin-bottom: 4px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+/* Recap timeline (#744): the model's newline-separated steps as an ordered list with a connector
+ * rail down the left. Replaces the old single `white-space: pre-wrap` paragraph — same data, but
+ * the sequence is now structural (an <ol>) rather than implied by line breaks. */
+.timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 17px;
+  position: relative;
+}
+.timeline::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 5px;
+  bottom: 6px;
+  width: 1px;
+  background: var(--line-strong);
+}
+.timeline li {
+  position: relative;
+  margin: 0 0 9px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.timeline li:last-child {
+  margin-bottom: 0;
+}
+.timeline li::before {
+  content: "";
+  position: absolute;
+  left: -17px;
+  top: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--bg-1);
+  border: 1px solid var(--text-3);
+}
+/* The final step is where the session actually IS — the one node worth the accent. */
+.stepLast::before {
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+}
+/* The `code` half of the safe inline subset (lib/inlineMarkup) — file names, commands, ids. */
+.timeline code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  padding: 0 3px;
+  background: color-mix(in srgb, var(--text-3) 18%, transparent);
+  color: var(--text-1);
+}
+.muted {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-3);
+}
+.error {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--status-down);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.foot {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-3);
+}
+.review {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--on-accent);
+  background: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 85%, black);
+  border-radius: 0;
+  cursor: pointer;
+}
+.review:hover:not(:disabled),
+.review:focus-visible:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 90%, white);
+}
+.review:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.spin {
+  animation: recap-spin 0.9s linear infinite;
+}
+@keyframes recap-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation: none;
+  }
+}
+
+/* Mobile (≤800px): a bottom sheet, actions stacked full-width. */
+@media (max-width: 800px) {
+  .backdrop {
+    padding: 10px;
+    align-items: flex-end;
+  }
+  .dialog {
+    width: 100%;
+    max-height: 86vh;
+  }
+  .actions {
+    flex-direction: column-reverse;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .review {
+    justify-content: center;
+  }
+  .foot {
+    text-align: center;
+  }
+}

@@ -1,0 +1,106 @@
+{
+  "manifest": {
+    "binary": {
+      "aliases": [
+        "agy",
+        "antigravity"
+      ],
+      "env_var": "AGENT_SESSIONS_AGY_BIN",
+      "name": "agy",
+      "search_paths": [
+        "~/.local/bin"
+      ],
+      "version_flag": "--version"
+    },
+    "capabilities": {
+      "archive": true,
+      "new": true,
+      "orchestrator_input": true,
+      "raw_tty": true,
+      "resume": true
+    },
+    "contract": 1,
+    "display": {
+      "accent": "lime",
+      "badge": "ag",
+      "name": "antigravity",
+      "order": 50
+    },
+    "identity": {
+      "id": "antigravity",
+      "label": "Antigravity",
+      "publisher": "battlelab",
+      "version": "1.2.14"
+    },
+    "install": {
+      "authority": "github.com",
+      "digest": "sha256:68cf4d221cb62e0289245439d3d37f599bdc8e0c4e1e3dae03f326463a0c26dc",
+      "entrypoint": "antigravity",
+      "kind": "tarball",
+      "package": "@google-antigravity/antigravity-cli",
+      "platform": "linux-x64",
+      "version": "1.2.14"
+    },
+    "instructions": {
+      "files": [
+        "GEMINI.md"
+      ]
+    },
+    "launch": {
+      "bypass": [
+        "--dangerously-skip-permissions"
+      ],
+      "new": {
+        "kind": "bare"
+      },
+      "resume": {
+        "flag": "--conversation",
+        "kind": "flag"
+      }
+    },
+    "models": {
+      "configured_elsewhere": true
+    },
+    "probe": {
+      "kind": "print-conversation"
+    },
+    "session_id": {
+      "mint": "adopt",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "signin": {
+      "kind": "interactive"
+    },
+    "store": {
+      "env_override": "AGENT_SESSIONS_ANTIGRAVITY_DIR",
+      "layout": "antigravity-cli",
+      "root": "~/.gemini/antigravity-cli"
+    },
+    "transcript": {
+      "kind": "antigravity-brain"
+    },
+    "usage": {
+      "kind": "agy-cli-probe",
+      "probe_token": "/usage",
+      "source": "plan"
+    },
+    "verify": [
+      "binary",
+      "version",
+      "store",
+      "new",
+      "resume",
+      "transcript",
+      "usage"
+    ]
+  },
+  "recipe": {
+    "artifacts": [
+      {
+        "destination": ".",
+        "sha256": "68cf4d221cb62e0289245439d3d37f599bdc8e0c4e1e3dae03f326463a0c26dc",
+        "url": "https://github.com/google-antigravity/antigravity-cli/releases/download/1.2.14/agy_cli_linux_x64.tar.gz"
+      }
+    ]
+  }
+}

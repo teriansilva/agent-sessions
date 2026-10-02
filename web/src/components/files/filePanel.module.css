@@ -1,0 +1,1849 @@
+/* File panel (#783). Tokens only — no hardcoded hex, no border-radius, flat fills.
+ *
+ * STACKING, deliberately (the app's existing bands, surveyed before writing a line of this):
+ *   0-3   app chrome / DataFlowCanvas      5-7   terminal internals: 6 = the coarse-pointer
+ *                                                touch-capture overlay, 7 = FAB/status above it
+ *   20-40 mobile drawer + backdrop         50-51 compose bar, RowMenu portal
+ *   60    notification bell / onboarding   200   every modal in the app
+ *
+ * The DOCKED panel is a normal flex sibling of the terminal — it never overlaps it, so it needs
+ * no z-index at all beyond sitting over the pane's decorative corner brackets.
+ *
+ * The SHEET and the VIEWER are portalled to <body> and land in the modal band. That is not
+ * cosmetic: the terminal's `.touchLayer` is `position:absolute; inset:0; z-index:6;
+ * touch-action:none` and it eats touches. Anything rendered inside the pane subtree below that
+ * layer would be untouchable on a phone. Portal + modal band is what makes touch work at all.
+ * Viewer sits one step above the sheet because it opens FROM the sheet.
+ */
+
+.dock {
+  position: relative;
+  z-index: 1; /* over the pane's .hud-cnr decorations, under everything interactive */
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  flex: none;
+  background: var(--bg-1);
+  border-left: 1px solid var(--line);
+}
+
+/* Resize gutter — a real focusable separator, matching the shipped sidebar one. */
+.gutter {
+  position: relative;
+  z-index: 2;
+  flex: none;
+  width: 6px;
+  cursor: col-resize;
+  background: var(--bg-0);
+  border: 0;
+  padding: 0;
+  touch-action: none; /* pointer-drag only; this element is not a scroll surface */
+}
+.gutter:hover .grip,
+.gutter:focus-visible .grip {
+  background: var(--accent);
+}
+.gutter:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.grip {
+  position: absolute;
+  top: 50%;
+  left: 2px;
+  width: 2px;
+  height: 48px;
+  margin-top: -24px;
+  background: var(--line-strong);
+}
+
+/* ------------------------------------------------------------------ sheet (narrow pane) */
+
+.sheetScrim {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  border: 0;
+  padding: 0;
+  background: color-mix(in srgb, var(--bg-0) 72%, transparent);
+  /* A tap on the scrim closes. Also stops the scroll chaining to the page behind. */
+  overscroll-behavior: contain;
+}
+.sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 201;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-1);
+  /* 100dvh, not vh — mobile browser chrome would otherwise hide the footer. */
+  height: 100dvh;
+}
+.grabber {
+  flex: none;
+  width: 54px;
+  height: 3px;
+  margin: 8px auto 2px;
+  background: var(--line-strong);
+}
+
+/* Contained sheet (#1109): the window-hosted variant renders INLINE inside the host's own
+ * overlay box, so it swaps the viewport pinning for filling its parent — same classes, same
+ * semantics, a smaller kingdom. No body portal, no page scroll lock (the host effect skips
+ * both when `contained` is set). */
+.sheetInHost {
+  position: absolute;
+  inset: 0;
+}
+.sheet.sheetInHost {
+  height: auto; /* the host box is the size; 100dvh is the portalled sheet's business */
+}
+
+/* ------------------------------------------------------------------ shared chrome */
+
+.head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 0 6px 0 10px;
+  border-bottom: 1px solid var(--line);
+}
+.headLabel {
+  flex: none;
+}
+/* A path is case-sensitive, so it must NOT ride the uppercase .hud-tag treatment the rest of the
+   HUD chrome uses — "u/proj" is not "U/PROJ". */
+.headName {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-2);
+}
+.iconBtn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.iconBtn:hover {
+  background: var(--row-hover);
+  color: var(--text-1);
+}
+.iconBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.tabs {
+  flex: none;
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  padding: 0 6px;
+  border-bottom: 1px solid var(--line);
+}
+.tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.tab[aria-selected="true"] {
+  color: var(--text-1);
+}
+.tab[aria-selected="true"]::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 0;
+  height: 2px;
+  background: var(
+    --accent
+  ); /* the panel's ONLY accent surface — see design.md */
+}
+.tab:disabled {
+  color: var(--text-3);
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.tabBadge {
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--text-2);
+  background: var(--bg-2);
+  padding: 1px 5px;
+}
+
+.crumbs {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 30px;
+  padding: 0 6px;
+  border-bottom: 1px solid var(--line);
+}
+.crumbPath {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl; /* keep the TAIL of a long path visible — that's the part you're in */
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-2);
+  background: transparent;
+  border: 0;
+  padding: 0 4px;
+  cursor: pointer;
+}
+.crumbPath:focus-visible {
+  outline: 2px solid var(--accent);
+}
+
+.crumbs2 {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+}
+.crumbItem {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+.crumbSep {
+  flex: none;
+  padding: 0 2px;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+.crumbBtn {
+  min-width: 0;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 3px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.crumbBtn:hover:not(:disabled) {
+  color: var(--text-1);
+  text-decoration: underline;
+}
+.crumbBtn:disabled {
+  color: var(--text-1);
+  cursor: default;
+}
+.crumbBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+@media (pointer: coarse) {
+  .crumbBtn {
+    min-height: 44px;
+    font-size: 12px;
+  }
+}
+
+/* ------------------------------------------------------------------ tree */
+
+.body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  /* Do not chain the scroll to the page/terminal behind — the single most important touch rule
+     for a scrollable overlay. */
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 26px;
+  padding: 0 12px 0 0;
+  border: 0;
+  border-left: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.row:hover {
+  background: var(--row-hover);
+}
+.row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.rowSelected {
+  background: var(--row-hover);
+  border-left-color: var(--accent);
+  color: var(--text-1);
+}
+.rowDir {
+  color: var(--text-1);
+}
+.twisty {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  color: var(--text-3);
+}
+.rowIcon {
+  flex: none;
+  display: inline-flex;
+  color: var(--text-3);
+}
+.rowIconDir {
+  color: var(--accent);
+}
+.rowName {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rowNote {
+  flex: none;
+  margin-left: 6px;
+  font-size: 10px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 45%;
+}
+
+.state {
+  padding: 14px 12px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.stateWarn {
+  border-left: 3px solid var(--status-degraded);
+}
+.stateBad {
+  border-left: 3px solid var(--status-down);
+}
+.stateTag {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin-bottom: 4px;
+}
+.retry {
+  margin-top: 8px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.retry:hover {
+  border-color: var(--accent);
+}
+
+.foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 26px;
+  padding: 0 10px;
+  border-top: 1px solid var(--line);
+}
+
+/* Skeleton rows: a loading state that is honest about being one. */
+.skeleton {
+  height: 10px;
+  margin: 8px 10px;
+  background: var(--bg-2);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .skeleton {
+    animation: filePulse 1.4s ease-in-out infinite;
+  }
+}
+@keyframes filePulse {
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* ------------------------------------------------------------------ viewer overlay */
+
+.viewerScrim {
+  position: fixed;
+  inset: 0;
+  z-index: 210; /* above the sheet (201) — the viewer opens FROM it */
+  border: 0;
+  padding: 0;
+  background: color-mix(in srgb, var(--bg-0) 72%, transparent);
+}
+.viewer {
+  position: fixed;
+  z-index: 211;
+  inset: 5vh 5vw;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
+}
+.viewerHead {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 6px 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.viewerTitles {
+  min-width: 0;
+  flex: 1;
+}
+.viewerName {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.viewerPath {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+.viewerBody {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  background: var(--surface-3);
+}
+.code {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.lineNo {
+  padding: 0 10px 0 12px;
+  text-align: right;
+  color: var(--text-3);
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+  position: sticky;
+  left: 0;
+  background: var(--surface-3);
+}
+.lineTxt {
+  padding-right: 12px;
+  white-space: pre;
+  color: var(--text-1);
+}
+.viewerFoot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 30px;
+  padding: 0 12px;
+  border-top: 1px solid var(--line);
+}
+
+/* ------------------------------------------------------------------ editor (#950)
+ *
+ * CodeMirror draws its own scroller, so the body stops scrolling when the editor is in it. The
+ * editor's LOOK lives in editor/theme.ts (tokens only); this block only sizes it and holds the
+ * touch overrides, which need a media query the CodeMirror theme API does not scope. */
+
+.viewerBodyEditor {
+  overflow: hidden;
+}
+.editorHost {
+  height: 100%;
+  min-height: 0;
+}
+.editorHost :global(.battlelab-code-editor) {
+  height: 100%;
+}
+.modeBarWrap {
+  flex-wrap: wrap;
+}
+/* Information, not a control: on a phone-width bar it gives its room to SAVE, which otherwise
+   wraps onto a second row and takes a line of code off the screen. */
+@media (max-width: 480px) {
+  .viewerStateTag {
+    display: none;
+  }
+}
+/* The unsaved marker is an LED + a word, never colour alone: the dot carries the draft hue
+   (#477 — "you have unsent text"), the word stays a readable text colour in both themes. */
+.unsaved {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.unsaved::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--status-draft);
+}
+.cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 0 12px;
+  border: 1px solid var(--cta-bg-1);
+  border-radius: 0;
+  background: var(--cta-bg-1);
+  color: var(--cta-text);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.cta:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.cta:active:not(:disabled) {
+  background: var(--cta-bg-2);
+  border-color: var(--cta-bg-2);
+}
+.cta:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.cta:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.banner {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  border-left: 3px solid var(--text-3);
+  background: var(--bg-1);
+}
+.bannerWarn {
+  border-left-color: var(--status-degraded);
+  background: color-mix(in srgb, var(--status-degraded) 8%, var(--bg-1));
+}
+.bannerBad {
+  border-left-color: var(--status-down);
+  background: color-mix(in srgb, var(--status-down) 8%, var(--bg-1));
+}
+.bannerTag {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.bannerWarn .bannerTag {
+  color: var(--warn-text);
+}
+.bannerBad .bannerTag {
+  color: var(--danger-text);
+}
+.bannerText {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.bannerRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.bannerHint {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+}
+.segBtn {
+  min-height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-left: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.segBtn:first-child {
+  border-left: 0;
+}
+.segBtnOn {
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 700;
+}
+.segBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.linkBtn {
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--accent);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.linkBtn:hover {
+  color: var(--accent);
+}
+.linkBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (pointer: coarse) {
+  .cta,
+  .segBtn {
+    min-height: 44px;
+    padding: 0 14px;
+    font-size: 11.5px;
+  }
+  .linkBtn {
+    min-height: 44px;
+    font-size: 11px;
+  }
+  /* Three classes deep so it outranks the theme's own `.cm-*` rules (two classes). */
+  .editorHost :global(.cm-editor) {
+    font-size: 13px;
+  }
+  .editorHost :global(.cm-editor .cm-button),
+  .editorHost :global(.cm-editor .cm-textfield) {
+    min-height: 44px;
+  }
+  .editorHost :global(.cm-editor .cm-panel.cm-search label) {
+    min-height: 44px;
+  }
+  .editorHost :global(.cm-editor .cm-panel.cm-search [name="close"]) {
+    width: 44px;
+    height: 44px;
+  }
+}
+
+/* ------------------------------------------------------------------ touch
+ *
+ * Real targets, not expanded hit boxes. A 44px `::after` on a chip in a 26px bar overlaps its
+ * neighbour and reaches over the terminal — a size assertion passes while the tap fires the
+ * wrong thing. Growing the control is the honest fix. */
+@media (pointer: coarse) {
+  .viewer {
+    inset: 0;
+    border: 0;
+  }
+  .row {
+    min-height: 44px;
+    font-size: 13px;
+  }
+  .tab {
+    min-height: 44px;
+    font-size: 12px;
+  }
+  .iconBtn {
+    width: 44px;
+    height: 44px;
+  }
+  .head,
+  .crumbs {
+    min-height: 44px;
+  }
+  .crumbPath {
+    min-height: 44px;
+    font-size: 11.5px;
+  }
+  .retry {
+    min-height: 44px;
+  }
+  .twisty {
+    width: 22px; /* the twisty is its own tap target on touch: expand without opening */
+  }
+}
+
+/* ------------------------------------------------------------------ session row
+ *
+ * `.terminal-pane` is a flex COLUMN whose children get `flex: 1 1 auto`. The session view
+ * therefore renders one row that fills it: terminal, gutter, panel. `min-width: 0` on the
+ * terminal side is what lets it actually shrink instead of overflowing the pane. */
+.sessionRow {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+.sessionTerm {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* ------------------------------------------------------------------ head overflow menu
+ *
+ * Portalled to <body>: `.terminal-pane` is `overflow: hidden`, so an in-tree popover is clipped —
+ * the same reason KeyBar portals its own. z-index 55 puts it over the compose bar (50) and the
+ * RowMenu portal (51), under the notification bell (60) and every modal (200). */
+.headMenu {
+  position: fixed;
+  z-index: 55;
+  min-width: 152px;
+  padding: 4px 0;
+  /* max-height is set inline to the space under the trigger; the list scrolls inside it (#958). */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 38%);
+}
+.headMenuItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-align: left;
+  cursor: pointer;
+}
+.headMenuItem:hover,
+.headMenuItem:focus-visible {
+  background: var(--row-hover);
+  outline: none;
+}
+@media (pointer: coarse) {
+  .headMenuItem {
+    min-height: 44px;
+    font-size: 12.5px;
+  }
+}
+
+/* ------------------------------------------------------------------ git tab (#784) */
+
+.branchStrip {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px 2px;
+}
+.branchIcon {
+  flex: none;
+  display: inline-flex;
+  color: var(--text-2);
+}
+.branchName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-1);
+}
+.branchMeta {
+  flex: none;
+  padding: 0 10px 8px;
+  border-bottom: 1px solid var(--line);
+}
+.groupHead {
+  padding: 10px 10px 4px;
+}
+
+/* Status letters map onto the app's EXISTING status vocabulary rather than a new palette. The
+ * amber `M` sits near the brand accent, so the panel's only accent surface stays the active-tab
+ * underline — and every letter is paired with its own glyph plus a title, never colour alone. */
+.gitLetter {
+  flex: none;
+  width: 14px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+}
+.gitAdd {
+  color: var(--git-add-fg);
+}
+.gitMod {
+  color: var(--git-mod-fg);
+}
+.gitDel {
+  color: var(--git-del-fg);
+}
+.gitUntracked {
+  color: var(--git-unknown-fg);
+}
+.gitConflict {
+  color: var(--git-del-fg);
+}
+@media (pointer: coarse) {
+  .gitLetter {
+    width: 20px;
+    font-size: 13px;
+  }
+}
+
+/* ------------------------------------------------------------------ diff view */
+
+.diffLine {
+  display: contents;
+}
+.diffNo {
+  padding: 0 6px;
+  text-align: right;
+  color: var(--text-3);
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+  position: sticky;
+  left: 0;
+  background: var(--surface-3);
+}
+.diffText {
+  padding-right: 12px;
+  white-space: pre;
+  color: var(--text-1);
+}
+.diffAdd .diffText,
+.diffAdd .diffNo {
+  background: var(--diff-add-bg);
+}
+.diffAdd .diffText {
+  color: var(--diff-add-fg);
+}
+.diffDel .diffText,
+.diffDel .diffNo {
+  background: var(--diff-del-bg);
+}
+.diffDel .diffText {
+  color: var(--diff-del-fg);
+}
+.diffMeta .diffText,
+.diffMeta .diffNo {
+  background: var(--bg-2);
+  color: var(--text-3);
+}
+.diffGrid {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.modeBar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.modeBtn {
+  min-height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.modeBtnOn {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
+  font-weight: 700;
+}
+.modeBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.modeSpacer {
+  flex: 1;
+}
+@media (pointer: coarse) {
+  .modeBtn {
+    min-height: 44px;
+    padding: 0 16px;
+    font-size: 11px;
+  }
+}
+
+/* --------------------------------------------------------------- row actions (#792) */
+
+/* The row is now a CONTAINER; this is the control that used to BE the row. It keeps every
+   visual property the row had (the flex line, the mono type, the hover) so nothing moved on
+   screen — only the DOM changed shape, so a second control can sit beside it legally. */
+.rowMain {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  min-height: 26px;
+  padding: 0 0 0 8px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.send {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  margin-right: 4px;
+  border: 1px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  /* Hidden until the row is hovered or something inside it has focus — a control per row would
+     otherwise be a column of icons competing with the filenames. */
+  opacity: 0;
+}
+
+.row:hover .send,
+.row:focus-within .send,
+.send:focus-visible {
+  opacity: 1;
+}
+
+.send:hover,
+.send:focus-visible {
+  border-color: var(--line-strong);
+  background: var(--glass-strong);
+  color: var(--text-1);
+}
+
+/* Confirmation at the point of action: on mobile the compose box is behind the sheet, so the
+   draft changing is not something the user can see when they tap. */
+.sendFlash,
+.sendFlash:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  opacity: 1;
+}
+
+/* A coarse pointer has NO hover, so opacity-on-hover would make the control unreachable — it
+   would exist and never be revealed. Always visible, and at a real touch size. */
+@media (pointer: coarse) {
+  .send {
+    width: 44px;
+    height: 44px;
+    margin-right: 0;
+    opacity: 1;
+  }
+}
+
+/* ------------------------------------------------------------------ upload (#807)
+ *
+ * Amber is reserved for the ACTIVE drop target and the in-flight bar — not for status, which
+ * keeps its own vocabulary. Flat, no radius, same as the rest of the panel. */
+
+/* The row under the cursor is the drop target, so `src/lib` takes a drop without navigating to
+ * it first. The panel edge gets a softer outline so the whole surface still reads as receptive. */
+.dropRow {
+  outline: 1px dashed var(--accent);
+  outline-offset: -1px;
+  background: var(--accent-glow);
+}
+.dropRoot {
+  outline: 1px dashed var(--line-strong);
+  outline-offset: -2px;
+}
+
+/* Present but out of the layout — NOT `display: none`, which would take the input out of the
+ * accessibility tree and leave the control keyboard-unreachable. */
+.hiddenInput {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* The queue is a strip INSIDE the panel, not a modal: twelve files landing must not hide the
+ * tree they are landing in. */
+.queue {
+  flex: none;
+  max-height: 40%;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--line);
+  background: var(--bg-1);
+}
+.queueHead {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+}
+.queueClose {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  min-height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.queueClose:hover,
+.queueClose:focus-visible {
+  color: var(--accent);
+  outline: none;
+}
+.queueRefusal {
+  padding: 0 10px 8px;
+  color: var(--git-del-fg);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.queueRows {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.queueRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 22px;
+  padding: 0 10px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+.queueName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  /* Truncate at the FRONT: the tail of `src/components/files/UploadQueue.tsx` is the part that
+     identifies the file, and a leading ellipsis keeps it visible at panel width. */
+  direction: rtl;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-1);
+}
+.queueSize {
+  flex: none;
+  color: var(--text-2);
+}
+.queueState {
+  flex: none;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.qOk {
+  color: var(--git-add-fg);
+}
+.qBusy {
+  color: var(--accent);
+}
+.qWarn {
+  color: var(--git-mod-fg);
+}
+.qBad {
+  color: var(--git-del-fg);
+}
+.qMuted {
+  color: var(--text-2);
+}
+
+.confirmCheck {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+@media (pointer: coarse) {
+  .queueRow {
+    min-height: 32px;
+    font-size: 12px;
+  }
+  .queueClose {
+    width: 44px;
+    min-height: 44px;
+  }
+  .confirmCheck {
+    min-height: 44px;
+    font-size: 12.5px;
+  }
+}
+
+/* ------------------------------------------------------------------ shared write-side chrome
+ *
+ * Small controls, a popover raised over the sheet, and a modal confirmation. Introduced by the
+ * panel's write side; #806 (the GIT tab's write controls) defines the same set on its own branch,
+ * so whichever lands second drops its duplicate copy rather than renaming. */
+.ctrlBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: var(--bg-2);
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.ctrlBtn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.ctrlBtn:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+/* A disabled control keeps its TITLE, which carries the reason — greying it out without saying
+ * why is the failure mode this panel exists to avoid. */
+.ctrlBtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.ctrlBad:not(:disabled) {
+  border-color: var(--git-del-fg);
+  color: var(--git-del-fg);
+}
+
+.menuScrim {
+  position: fixed;
+  z-index: 204; /* directly under `.aboveSheet` */
+  inset: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: default;
+}
+/* The panel is a full-screen SHEET at z-index 201 on a phone, and the shared `.headMenu` chrome
+ * sits at 55 — so an un-raised popover renders BEHIND the sheet: invisible, and every tap on it
+ * lands on the sheet. The viewer already established this band (`.viewerScrim` 210, "above the
+ * sheet — the viewer opens FROM it"); a menu takes the slot just under it. */
+.aboveSheet {
+  z-index: 205;
+}
+.menuEmpty {
+  padding: 6px 12px 10px;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.confirmScrim {
+  position: fixed;
+  z-index: 211;
+  inset: 0;
+  padding: 0;
+  border: 0;
+  background: color-mix(in srgb, var(--bg-0) 72%, transparent);
+}
+.confirm {
+  position: fixed;
+  /* Above the viewer (210) as well as the sheet (201): this is an alertdialog, so nothing in
+     this surface may paint over it. Tying with the sheet at 201 left the outcome to DOM order. */
+  z-index: 212;
+  top: 50%;
+  left: 50%;
+  width: min(420px, calc(100vw - 24px));
+  transform: translate(-50%, -50%);
+  padding: 14px 16px 16px;
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 45%);
+}
+.confirmHead {
+  margin-bottom: 8px;
+}
+.confirmBody {
+  margin: 0;
+  color: var(--text-1);
+  font-size: 12.5px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.confirmRow {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+@media (pointer: coarse) {
+  .ctrlBtn {
+    min-height: 44px;
+    padding: 0 12px;
+    font-size: 12px;
+  }
+}
+
+/* ------------------------------------------------------------------ git write side (#806)
+ *
+ * The branch strip becomes the menu trigger and the two network facts gain their controls, so
+ * both are PINNED out of the scrolling body — scrolling away from "which branch am I on" while
+ * staging is the state where a mis-click costs the most. */
+.gitHead {
+  flex: none;
+}
+.branchTrigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-1);
+  text-align: left;
+  cursor: pointer;
+}
+.branchTrigger:hover,
+.branchTrigger:focus-visible {
+  color: var(--accent);
+  outline: none;
+}
+.branchTrigger:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* A row of small controls. Wraps rather than overflowing: at 360px the chip and both buttons do
+ * not fit on one line, and a horizontal scrollbar inside a panel is the worse of the two. */
+.ctrlRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+/* A disabled control keeps its TITLE, which carries the refusal reason — greying it out without
+ * saying why is the failure mode this panel exists to avoid. */
+/* Amber on the primary action only, so the tab keeps one accent surface — but FILLED, not
+ * amber text. Measured: `color: var(--accent)` on the light theme's ground is 1.83:1, nowhere
+ * near the 4.5 AA floor, because the accent is a light hue and the token is theme-shared
+ * (`index.css` says so directly: "Dark can use the status hues directly; light cannot"). The
+ * design system's own answer for a primary surface is the CTA pair, which is ~11:1 on both. */
+.ctrlPrimary:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--cta-bg-1);
+  color: var(--cta-text);
+}
+.ctrlPrimary:hover:not(:disabled),
+.ctrlPrimary:focus-visible:not(:disabled) {
+  background: var(--cta-bg-2);
+  color: var(--cta-text);
+}
+
+.groupBtn {
+  margin-left: 8px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.groupBtn:hover:not(:disabled),
+.groupBtn:focus-visible {
+  border-color: var(--line-strong);
+  color: var(--accent);
+  outline: none;
+}
+.groupBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Row affordances. Panel width leaves no room for labels, so each is a glyph carrying its own
+ * `title` + `aria-label` — and each grows to a real 44px target on a coarse pointer. */
+.rowAct {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  min-height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.rowAct:hover:not(:disabled),
+.rowAct:focus-visible {
+  color: var(--accent);
+  background: var(--row-hover);
+  outline: none;
+}
+.rowAct:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+.rowAct:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.rowActBad:hover:not(:disabled),
+.rowActBad:focus-visible {
+  color: var(--git-del-fg);
+}
+
+/* Commit + push, pinned above the panel foot. */
+.gitFoot {
+  flex: none;
+  padding: 8px 10px;
+  border-top: 1px solid var(--line);
+  background: var(--bg-1);
+}
+.commitBox {
+  display: block;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: var(--bg-2);
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.4;
+  resize: vertical;
+}
+.commitBox:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+.commitBox:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.footNote {
+  margin-top: 6px;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+/* Branch menu extras, on top of the shared `.headMenu` popover chrome. */
+
+/* THREE regions, not one scrolling column (#1005): the list scrolls inside the cap while the
+ * actions stay pinned, so they can never be scrolled out of reach. This is a MODIFIER — the cap
+ * and the flex column must not land on `.headMenu` itself, which the terminal head's own overflow
+ * menu shares and which must stay a single scrolling column (#958). */
+.branchMenu {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+.menuList {
+  flex: 1 1 auto;
+  /* Without `min-height: 0` a flex item refuses to shrink below its content, so the box would
+   * grow past the cap and the scroll would never engage. */
+  min-height: 0;
+  padding: 4px 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.menuFoot {
+  flex: none;
+  padding: 4px 0;
+  border-top: 1px solid var(--line);
+}
+/* Pinned ABOVE the scrolling list: a filter that scrolls away with the rows is a filter you
+ * cannot clear once you have scrolled (#1005). */
+.menuTop {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px 6px;
+  border-bottom: 1px solid var(--line);
+}
+.menuSearch {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: var(--bg-2);
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+.menuSearch:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+.menuCount {
+  align-self: flex-start;
+}
+/* The matched run. `mark` paints a yellow ground by default, which is not this palette. */
+.menuHit {
+  background: transparent;
+  color: var(--accent);
+}
+@media (pointer: coarse) {
+  .menuSearch {
+    min-height: 44px;
+    font-size: 12.5px;
+  }
+}
+.menuHead {
+  padding: 8px 12px 4px;
+  border-top: 1px solid var(--line);
+}
+.menuSep {
+  margin: 4px 0;
+  border-top: 1px solid var(--line);
+}
+.menuItemText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The panel is a full-screen SHEET at 201 on a phone, and the shared `.headMenu` chrome sits at
+ * 55 — so an un-raised branch menu renders BEHIND the sheet: invisible, and every tap on it lands
+ * on the sheet instead. Caught by the mobile e2e, not by any DOM-emulator test. The viewer already
+ * established this band (`.viewerScrim` 210, "above the sheet — the viewer opens FROM it"); the
+ * menu takes the slot just under it. */
+.branchForm {
+  display: block;
+  padding: 10px 12px;
+}
+.branchFormLabel {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.branchInput {
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: var(--bg-2);
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+.branchInput:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+.branchFormRow {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+/* The discard confirmation. Modal band, like the file viewer it sits beside. */
+
+@media (pointer: coarse) {
+  .ctrlBtn {
+    min-height: 44px;
+    padding: 0 12px;
+    font-size: 12px;
+  }
+  .groupBtn {
+    min-height: 44px;
+    padding: 0 10px;
+    font-size: 11.5px;
+  }
+  /* The glyph controls are the ones a mis-tap costs most on, so they take a full 44px square
+     rather than a 44px box around a 22px hit area. */
+  .rowAct {
+    width: 44px;
+    min-height: 44px;
+  }
+  .branchTrigger {
+    min-height: 44px;
+  }
+  .commitBox {
+    font-size: 16px; /* iOS zooms the viewport on focus below 16px */
+  }
+}
+
+/* The discard confirmation reuses `.confirm` (defined alongside the upload collision prompt in
+ * #807) and changes only the one thing that must differ: this dialog is about DESTROYING work,
+ * so its border carries the deletion colour. A modifier rather than a second `.confirm` block —
+ * two definitions of one class would let source order decide whether the destructive signal
+ * survives, and status colour is load-bearing in this panel. */
+.confirmDanger {
+  border-color: var(--git-del-fg);
+}
+
+/* ------------------------------------------------------------------ commit selected (#950) */
+
+/* A path's commit selection. Per path, so a staged+unstaged path shows the same tick in both
+   groups. The native checkbox keeps its semantics and keyboard behaviour; only size and accent
+   change. */
+.rowCheck {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  min-height: 24px;
+  margin-left: 4px;
+}
+/* The real input covers the whole target, invisible: every tap and click lands ON it (so the
+   44px coarse target is the input itself), while the square below is what gets drawn — the native
+   box brings its own radius and chrome, which the design system does not have. */
+.rowCheck input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.rowCheck input:disabled {
+  cursor: not-allowed;
+}
+.checkBox {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-2);
+  color: var(--on-accent);
+  pointer-events: none;
+}
+.checkBox svg {
+  visibility: hidden;
+}
+.rowCheck:hover .checkBox {
+  border-color: var(--text-2);
+}
+.rowCheck input:checked + .checkBox {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+.rowCheck input:checked + .checkBox svg {
+  visibility: visible;
+}
+.rowCheck input:focus-visible + .checkBox {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.rowCheck input:disabled + .checkBox {
+  opacity: 0.45;
+}
+/* In a git row the filename is the thing being chosen, so the directory hint gives up its width
+   first — with the checkbox and three row actions on a phone, the name was left with 7 characters. */
+[data-git-row] .rowName {
+  flex: 1 1 auto;
+}
+[data-git-row] .rowNote {
+  flex: 0 1000 auto;
+  min-width: 0;
+}
+/* STAGED / SELECTED / ALL spans the foot, one choice in three equal parts. */
+.commitModes {
+  display: flex;
+  width: 100%;
+  margin-bottom: 6px;
+}
+.commitModes .segBtn {
+  flex: 1;
+  font-variant-numeric: tabular-nums;
+}
+.commitModes .segBtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+@media (pointer: coarse) {
+  .rowCheck {
+    width: 44px;
+    min-height: 44px;
+    margin-left: 0;
+  }
+  .checkBox {
+    width: 18px;
+    height: 18px;
+  }
+}
+
+/* ------------------------------------------------------------------ row actions on touch (#950) */
+
+/* On a fine pointer a git row's glyphs sit inline, as before; the wrapper takes no box of its own
+   so they stay flex children of the row. On a coarse pointer they collapse into ONE ⋯ menu: with a
+   44px checkbox and up to four 44px glyphs, a 390px row left the filename seven characters. */
+.rowInline {
+  display: contents;
+}
+.rowMenuTrigger {
+  display: none;
+}
+/* A destructive item keeps the deletion colour a destructive glyph has inline. */
+.headMenuItemBad:hover:not(:disabled),
+.headMenuItemBad:focus-visible {
+  color: var(--git-del-fg);
+}
+[data-row-menu] .headMenuItem:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+@media (pointer: coarse) {
+  [data-git-row] .rowInline {
+    display: none;
+  }
+  .rowMenuTrigger {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    min-height: 44px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--text-2);
+    cursor: pointer;
+  }
+  .rowMenuTrigger:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: -1px;
+  }
+  .rowMenuTrigger[aria-expanded="true"] {
+    color: var(--text-1);
+    background: var(--row-hover);
+  }
+}
+
+/* ------------------------------------------------------------------ recent commits (#950) */
+
+.logSection {
+  margin-top: 6px;
+  border-top: 1px solid var(--border);
+}
+.logToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.logToggle:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+.logCaretOpen {
+  transform: rotate(180deg);
+}
+.logHint {
+  padding: 0 12px 6px;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--text-3);
+}
+.logRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  padding: 0 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-2);
+}
+.logSha {
+  flex: none;
+  color: var(--accent);
+}
+.logSubject {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-1);
+}
+/* The age and the not-pushed marker never shrink away: "not pushed" is state, and a row that hid it
+   would read as pushed. The subject is what gives up width. */
+.logWhen {
+  flex: none;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--text-3);
+}
+/* The same state the app already paints an unsent draft with: made here, not yet anywhere else. */
+.logUnpushed {
+  color: var(--status-draft);
+}
+
+@media (pointer: coarse) {
+  .logToggle,
+  .logRow {
+    min-height: 44px;
+  }
+}

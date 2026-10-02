@@ -1,0 +1,216 @@
+/* Floating session window on the Overview map (#208).
+ *
+ * The whole point of the overlay architecture is that NOTHING here scales the terminal: this is
+ * chrome around the unmodified session pane, positioned in overlay-local pixels, outside React
+ * Flow's zoom transform. Square corners + hairline rules per the HUD language. */
+
+.win {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 50%);
+  /* The layer is pointer-events:none so the canvas pans between windows; each window takes
+     its own events back. */
+  pointer-events: auto;
+}
+
+.focused {
+  border-color: var(--accent-soft);
+  box-shadow:
+    0 26px 70px rgb(0 0 0 / 60%),
+    0 0 0 1px var(--accent-glow);
+}
+
+.head {
+  display: flex;
+  flex: 0 0 30px; /* CHROME_H in workspace.ts */
+  gap: 8px;
+  align-items: center;
+  height: 30px;
+  padding: 0 6px 0 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--text-2);
+  background: var(--glass-strong);
+  border-bottom: 1px solid var(--line);
+  /* The header is the ONLY drag initiator; the buttons inside it opt back out below. */
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  /* The facts run's collapse ladder (#1109) is keyed on a container named `panelhead` — the
+     same container-name the pane's own bar declares — so ONE set of rules (Terminal.module.css,
+     shared through HeadFacts' classes) governs both bars. The chrome's extra ladder rules are
+     scoped to `[data-window-head]` so the pane never inherits them. */
+  container: panelhead / inline-size;
+}
+
+/* The project tint (#1109): a subtle mix of `--proj` (set inline on .win when the row carries a
+ * project entity) into the chrome ground, both themes — the same `color-mix` treatment the
+ * pane's project chip uses, kept LOW so the bar's text tokens stay on a near-neutral ground.
+ * 14% is the bottom of the issue's ≈14–18% band, chosen because it is where the WORST case
+ * (a white project colour over the dark ground) still holds --text-2 at ≥4.5:1 — pinned, with
+ * the composite math, by contrast.test.ts. No project entity → no `--proj` → the plain chrome
+ * ground. */
+.win[data-tinted] .head {
+  background: color-mix(in srgb, var(--proj) 14%, var(--glass-strong));
+}
+
+.dragging .head {
+  cursor: grabbing;
+}
+
+.focused .head {
+  color: var(--text-1);
+}
+
+.grip {
+  font-size: 13px;
+  letter-spacing: -1px;
+  color: var(--text-3);
+}
+
+/* The facts run (HeadFacts, #1109): fixed, measured — the fold's `reservePx` reads its width,
+   and it yields through the shared container ladder rather than by flex pressure. */
+.facts {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  max-width: 60%;
+  overflow: hidden;
+}
+
+.title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The slot the pane's action chips portal into (#1109). The chips inside keep their own
+   HeadActions wrapper (a flex row with the pane's 6px gap); the slot is the fold's viewport
+   neighbour — `flex: none` so it sizes to content and never competes with the title. */
+.actionsSlot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+/* Inherited from the pane's own #184/#293 role frame — the window only mirrors it. */
+.lock {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--status-degraded);
+}
+
+.btns {
+  display: flex;
+  gap: 0;
+}
+
+.btns button {
+  width: 24px;
+  height: 24px;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--text-3);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+}
+
+.focused .btns button {
+  color: var(--text-2);
+}
+
+.btns button:hover {
+  color: var(--accent);
+}
+
+.btns button:focus-visible,
+.resize:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--term-bg);
+}
+
+/* The pane fills the window; its own ResizeObserver + debounced refit (#859) does the rest —
+   this component never calls fit() itself, which is what keeps a drag from marching the agent
+   through every intermediate width (#227/#349). */
+.body > :global(*) {
+  height: 100%;
+}
+
+/* ---- the file drawer over the pane (#1109) ------------------------------------------------
+ * The drawer OVERLAYS the terminal, it never squeezes it: the agent's grid is a fact the
+ * operator set by resizing the window (and the font size pref), and a drawer opening must not
+ * march the agent through refits. `panelMode(bodyW)` decides dock vs sheet with the SAME
+ * arithmetic the full-screen pane uses — only the placement differs (right-anchored overlay
+ * here, flex sibling there). The drawer lives in the window's own DOM, never a map node, so
+ * nothing here is touched by React Flow's zoom transform. */
+
+/* Dock: right-anchored, shrink-wrapped around the panel's own gutter + column. */
+.drawerDock {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: stretch;
+  z-index: 8; /* above the terminal's touch overlay (6) and FAB (7), below every modal */
+  background: var(--bg-1);
+  border-left: 1px solid var(--line);
+  box-shadow: -12px 0 28px rgb(0 0 0 / 35%);
+}
+
+/* Sheet: the whole window body, above the terminal — FilePanel renders its scrim + sheet
+ * INLINE here (`contained`), never portalled to <body>: a window-contained sheet covers its
+ * window, not the workspace. */
+.drawerSheet {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+}
+
+.drawerSheet > :global(*) {
+  min-height: 0;
+}
+
+.resize {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  cursor: nwse-resize;
+  background: linear-gradient(
+    135deg,
+    transparent 46%,
+    var(--line-strong) 46%,
+    var(--line-strong) 58%,
+    transparent 58%,
+    transparent 72%,
+    var(--line-strong) 72%,
+    var(--line-strong) 84%,
+    transparent 84%
+  );
+  border: 0;
+  touch-action: none;
+}

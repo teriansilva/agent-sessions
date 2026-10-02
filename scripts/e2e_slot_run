@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# e2e_slot_run — run a command holding one of N host-wide e2e slots (#1151).
+#
+# Why this exists: the self-hosted runner host runs e2e jobs from MANY PRs at once, and each
+# web-ci shard brings a `vite preview` plus two Playwright workers (each a chromium process
+# tree). With a dozen PRs iterating, the host sat at load 100–200 and the timing-sensitive
+# specs red-greened PRs whose own code was fine. Runner `capacity` cannot fix this without
+# collateral: it admits JOBS, so capping it throttles pytest, installer-smoke and every other
+# job too, and changing it needs a runner restart that kills in-flight jobs. This caps only the
+# browser-heavy part, host-wide, across every PR.
+#
+# The protocol: N slot files, $E2E_SLOT_DIR/slot-1 .. slot-N (never unlinked). A caller tries
+# each with `flock -n`; the first free one runs the command while flock(1) holds it. When all N
+# are busy it waits E2E_SLOT_POLL_S and tries again, up to E2E_SLOT_WAIT_S, then fails closed.
+#
+# Two properties carry the design, and neither is a candidate for "simplification":
+#   * Kernel locks, not files-as-locks. A flock is released by the kernel when its holder dies,
+#     however it dies (runner restart, cancelled wave, SIGKILL). There is no pid file and no
+#     stale-slot reclamation — a leaked slot is structurally impossible.
+#   * `flock -o`. The lock is held by flock(1) itself and the descriptor is CLOSED in the
+#     command. Without it every child inherits the lock fd — and a `vite preview` that outlives
+#     a killed shard (the zombie class #1151 already found squatting ports for days) would hold
+#     its slot forever, silently shrinking the cap by one per leak.
+#
+# Usage:  scripts/e2e_slot_run <command> [args…]
+# Exit:   the command's own status; 1 if the command itself exited 75 (reserved below, so a
+#         command can never be mistaken for "slot busy" and re-run); 124 when no slot came free
+#         within E2E_SLOT_WAIT_S.
+#
+# Environment:
+#   E2E_SLOTS         number of slots, host-wide (default 4 — one PR's full shard set)
+#   E2E_SLOT_DIR      slot directory (default /tmp/agent-sessions-e2e-slots)
+#   E2E_SLOT_WAIT_S   longest wait for a slot before failing closed (default 3600)
+#   E2E_SLOT_POLL_S   delay between rounds while every slot is busy (default 10)
+#
+# Every caller must agree on E2E_SLOT_DIR and E2E_SLOTS for the cap to mean anything; the
+# workflows set neither, so they share the defaults.
+
+set -uo pipefail
+
+BUSY=75  # flock -E: "conflict" exit, distinct from any status the command returns (see below)
+
+if [ "${1:-}" = "--held" ]; then
+  # Internal re-entry: flock(1) holds slot $2 and runs this with the lock fd already closed.
+  slot="$2"
+  waited="$3"
+  shift 3
+  echo "e2e_slot_run: holding slot ${slot}/${E2E_SLOTS:-4} after ${waited}s wait (pid $$)"
+  "$@"
+  rc=$?
+  # A command exiting 75 would be read by the caller loop as "slot busy" and silently re-run.
+  if [ "$rc" -eq "$BUSY" ]; then
+    rc=1
+  fi
+  exit "$rc"
+fi
+
+if [ "$#" -eq 0 ]; then
+  echo "usage: e2e_slot_run <command> [args…]" >&2
+  exit 2
+fi
+
+slots="${E2E_SLOTS:-4}"
+dir="${E2E_SLOT_DIR:-/tmp/agent-sessions-e2e-slots}"
+wait_s="${E2E_SLOT_WAIT_S:-3600}"
+poll_s="${E2E_SLOT_POLL_S:-10}"
+
+case "$slots" in
+  '' | *[!0-9]* | 0)
+    echo "e2e_slot_run: E2E_SLOTS must be a positive integer, got '${slots}'" >&2
+    exit 2
+    ;;
+esac
+
+mkdir -p "$dir"
+self="$(readlink -f "$0")"
+start=$SECONDS
+announced=0
+
+while :; do
+  for i in $(seq 1 "$slots"); do
+    flock -o -n -E "$BUSY" "${dir}/slot-${i}" "$self" --held "$i" "$((SECONDS - start))" "$@"
+    rc=$?
+    if [ "$rc" -ne "$BUSY" ]; then
+      exit "$rc"
+    fi
+  done
+  if [ $((SECONDS - start)) -ge "$wait_s" ]; then
+    echo "e2e_slot_run: no e2e slot free after ${wait_s}s (all ${slots} busy) — failing closed" >&2
+    exit 124
+  fi
+  if [ "$announced" -eq 0 ]; then
+    echo "e2e_slot_run: all ${slots} e2e slots busy on this host; waiting (polling every ${poll_s}s)"
+    announced=1
+  fi
+  sleep "$poll_s"
+done

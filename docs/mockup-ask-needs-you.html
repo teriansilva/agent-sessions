@@ -1,0 +1,435 @@
+<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><title>BattleLab — Ask: recent work + needs you</title>
+<link rel="stylesheet" href="../web/src/tokens.css"><style>  [data-theme="light"] {
+    color-scheme: light;
+    --bg-0: #e7e8ea;
+    --bg-1: #f2f3f5;
+    --bg-2: #ffffff;
+    --term-bg: #f2f3f5;
+    --text-1: #14161a;
+    --text-2: #41454d;
+    --text-3: #6f747d;
+    --glass: rgba(10, 12, 16, 0.025);
+    --glass-strong: rgba(10, 12, 16, 0.05);
+    --line: rgba(10, 12, 16, 0.12);
+    --line-strong: rgba(10, 12, 16, 0.2);
+    --bg: #e7e8ea;
+    --panel: #f2f3f5;
+    --text: #14161a;
+    --text-muted: #41454d;
+    --border: #c9ccd2;
+    --border-subtle: #d9dbe0;
+    --row-hover: #e3e5e8;
+    --surface-2: #ffffff;
+    --surface-3: #dfe1e4;
+    --accent: #ffb000;
+    --on-accent: #120c00;
+    --brand: #8a5a00; /* darker amber for the wordmark on light — readable */
+    --brand-soft: #5e3d00;
+    --badge-bg: #efe3c8;
+    --badge-fg: #6b4e00;
+    /* On the light ground the raw status hues are unreadable as small text — `--status-degraded`
+       (#f59e0b) on #f2f3f5 measures ≈2.15:1, well under AA. Darkened toward --text-1 by color-mix
+       rather than replaced with an invented hex, so a future palette change still carries through.
+       The LED tokens are untouched: a 6px dot is not text and has its own (non-)requirement. */
+    --git-add-fg: color-mix(in srgb, var(--status-up) 50%, var(--text-1));
+    --git-mod-fg: color-mix(in srgb, var(--status-degraded) 45%, var(--text-1));
+    --git-del-fg: var(--status-down);
+    --danger-text: var(--status-down); /* 6.0:1 on --surface-2, 5.5:1 on --panel */
+    --ok-text: color-mix(in srgb, var(--status-up) 45%, var(--text-1));
+    --warn-text: color-mix(in srgb, var(--status-degraded) 40%, var(--text-1));
+    --git-unknown-fg: color-mix(in srgb, var(--status-unknown) 80%, var(--text-1));
+    --diff-add-fg: color-mix(in srgb, var(--status-up) 20%, var(--text-1));
+    --diff-del-fg: color-mix(in srgb, var(--status-down) 20%, var(--text-1));
+    --diff-add-bg: color-mix(in srgb, var(--status-up) 8%, transparent);
+    --diff-del-bg: color-mix(in srgb, var(--status-down) 8%, transparent);
+    /* Darker syntax set for the light ground (--surface-3 #dfe1e4); each ≥4.5:1 there. */
+    --syn-keyword: #5b3fb0;
+    --syn-string: #7a4e12;
+    --syn-number: #a3306b;
+    --syn-comment: #555a63;
+    --syn-function: #14161a;
+    --syn-type: #1d6b61;
+    --syn-property: #41454d;
+    --syn-punct: #41454d;
+  }
+
+  /* The render host has no JetBrains Mono / the app's UI stack — substitute the closest
+     installed faces so metrics are honest. Everything else is the shipped token file. */
+  :root {
+    --font-mono: "DejaVu Sans Mono", monospace;
+    --font-ui: Inter, "DejaVu Sans", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #08090b;
+    font: 14px/1.4 var(--font-ui);
+    color: var(--text-1);
+  }
+  .sheet { padding: 28px 32px 40px; }
+  .board { margin-bottom: 34px; }
+  .board > h2 {
+    margin: 0 0 4px;
+    font: 700 15px var(--font-mono);
+    letter-spacing: 1.4px;
+    color: var(--accent);
+    text-transform: uppercase;
+  }
+  .board > p.cap {
+    margin: 0 0 12px;
+    font: 400 11.5px var(--font-ui);
+    color: var(--text-3);
+    max-width: 1180px;
+  }
+  .frame { border: 1px solid var(--border); background: var(--bg-0); }
+  .frame.light { background: var(--bg-0); }
+
+  /* ---------------- top bar ---------------- */
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 52px;
+    padding: 0 14px;
+    background: var(--bg-1);
+    border-bottom: 1px solid var(--line);
+  }
+  .iconbtn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border: 1px solid var(--line-strong);
+    background: transparent;
+    color: var(--text-2);
+    font: 400 15px var(--font-mono);
+  }
+  .brand {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 5px;
+    font: 700 14px var(--font-mono);
+    letter-spacing: 2px;
+    color: var(--brand-soft);
+    white-space: nowrap;
+  }
+  .brand .mk { color: var(--accent); }
+  .brand b { color: var(--accent); font-weight: 700; }
+
+  nav.sections { display: flex; gap: 6px; margin-left: 6px; }
+  nav.sections a {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    min-height: 44px;
+    min-width: 76px;
+    padding: 0 10px;
+    border: 1px solid var(--line-strong);
+    color: var(--text-2);
+    text-decoration: none;
+    font: 400 10.9px var(--font-mono);
+    letter-spacing: 1.1px;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  nav.sections a .gi { font-size: 12px; opacity: 0.85; }
+  nav.sections a[aria-current="page"] {
+    color: var(--on-accent);
+    border-color: var(--accent);
+    background: var(--accent);
+  }
+  nav.sections a[aria-current="page"] .gi { opacity: 1; }
+  nav.sections a.isNew { border-color: var(--accent); color: var(--accent); }
+
+  .telemetry {
+    margin-left: auto;
+    display: flex;
+    gap: 14px;
+    font: 400 10px var(--font-mono);
+    letter-spacing: 1.2px;
+    color: var(--text-3);
+    white-space: nowrap;
+  }
+  .telemetry b { color: var(--text-2); font-weight: 400; }
+
+  .actions { display: flex; align-items: center; gap: 6px; }
+
+
+  .avatarsq { width:34px;height:34px;display:inline-flex;align-items:center;justify-content:center;
+    background:color-mix(in srgb,var(--accent) 20%,transparent);color:var(--accent);font:700 12px var(--font-mono);
+    border:1px solid var(--line-strong); }
+  .bell { position:relative; }
+  .bell .n { position:absolute; top:-6px; right:-6px; min-width:16px; height:16px; padding:0 4px; background:var(--accent);
+    color:var(--on-accent); font:700 9.5px/16px var(--font-mono); text-align:center; }
+
+  /* ---------------- ask page ---------------- */
+  .page { max-width: 880px; margin: 0 auto; padding: 22px 22px 26px; }
+  .kicker { font:400 10.5px var(--font-mono); letter-spacing:1.6px; color:var(--text-3); text-transform:uppercase; }
+  h1 { margin:6px 0 14px; font:700 20px var(--font-ui); color:var(--text-1); }
+  .sec { border:1px solid var(--line); background:var(--bg-1); margin-bottom:14px; }
+  .sechead { display:flex; align-items:center; gap:10px; padding:10px 14px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  .sechead .t { font:700 11px var(--font-mono); letter-spacing:1.5px; text-transform:uppercase; color:var(--text-1); }
+  .sechead .sq { width:6px; height:6px; background:var(--accent); flex:none; }
+  .sechead .meta { font:400 10.5px var(--font-mono); color:var(--text-3); letter-spacing:.6px; }
+  .seg { margin-left:auto; display:flex; }
+  .seg span { min-height:32px; min-width:40px; display:inline-flex; align-items:center; justify-content:center;
+    border:1px solid var(--line-strong); margin-left:-1px; font:400 10.5px var(--font-mono); color:var(--text-2); letter-spacing:1px; }
+  .seg span.on { border-color:var(--accent); color:var(--brand, var(--accent)); position:relative; }
+
+  .timeline { padding: 8px 14px 12px; }
+  .tl { display:grid; grid-template-columns: 52px 1fr; gap:10px; padding:6px 0; border-bottom:1px dashed var(--line); }
+  .tl:last-child { border-bottom:0; }
+  .tl .at { font:400 11px var(--font-mono); color:var(--text-3); padding-top:1px; }
+  .tl .what { font:400 13px/1.45 var(--font-ui); color:var(--text-2); }
+  .tl .what b { color:var(--text-1); font-weight:600; }
+  .chip { font:400 10px var(--font-mono); color:var(--text-3); border:1px solid var(--line); padding:0 5px; margin-left:4px; }
+  .daysep { font:400 10px var(--font-mono); letter-spacing:1.4px; color:var(--text-3); text-transform:uppercase; padding:8px 0 2px; }
+
+  .filters { display:flex; gap:8px; margin-left:auto; }
+  .sel { min-height:36px; display:inline-flex; align-items:center; gap:8px; padding:0 10px; border:1px solid var(--line-strong);
+    font:400 10.8px var(--font-mono); color:var(--text-2); letter-spacing:.8px; text-transform:uppercase; }
+  .sel .v { color:var(--text-1); }
+  .row { display:grid; grid-template-columns: 12px 1fr auto; gap:12px; align-items:start; padding:12px 14px; border-bottom:1px solid var(--line); }
+  .row:last-child { border-bottom:0; }
+  .led { width:8px; height:8px; border-radius:50%; margin-top:5px; background:var(--status-degraded);
+    box-shadow:0 0 6px color-mix(in srgb,var(--status-degraded) 60%,transparent); }
+  .led.down { background:var(--status-down); box-shadow:0 0 6px color-mix(in srgb,var(--status-down) 60%,transparent); }
+  .rtitle { font:600 13.5px var(--font-ui); color:var(--text-1); }
+  .rmeta { margin-top:2px; font:400 10.5px var(--font-mono); color:var(--text-3); letter-spacing:.5px; }
+  .rwhy { margin-top:6px; font:400 12.5px/1.45 var(--font-ui); color:var(--text-2); }
+  .rwhy .kind { font:700 9.5px var(--font-mono); letter-spacing:1.3px; text-transform:uppercase; color:var(--warn-text, var(--status-degraded)); margin-right:6px; }
+  .ctl { display:flex; gap:6px; align-items:center; }
+  .btn { min-height:44px; padding:0 14px; display:inline-flex; align-items:center; gap:8px; border:1px solid var(--line-strong);
+    background:transparent; color:var(--text-1); font:400 10.8px var(--font-mono); letter-spacing:1.1px; text-transform:uppercase; white-space:nowrap; }
+  .btn.pri { background:var(--accent); border-color:var(--accent); color:var(--on-accent); font-weight:700; }
+  .btn.icon { width:44px; padding:0; justify-content:center; font-size:15px; color:var(--text-2); }
+  .more { padding:10px 14px; font:400 11px var(--font-mono); color:var(--text-3); }
+
+  .askbox { border:1px solid var(--line-strong); background:var(--bg-2); display:flex; align-items:center; gap:10px; padding:8px 8px 8px 14px; }
+  .askbox .ph { flex:1; font:400 13.5px var(--font-ui); color:var(--text-3); }
+
+  /* ---------------- modal ---------------- */
+  .scrim { position:relative; background:rgba(0,0,0,.55); padding:26px 0; }
+  .modal { width:720px; margin:0 auto; border:1px solid var(--accent); background:var(--bg-1); box-shadow:0 18px 40px rgba(0,0,0,.6); }
+  .mhead { display:flex; align-items:center; gap:10px; padding:12px 16px; border-bottom:1px solid var(--line); }
+  .mhead .t { font:600 14px var(--font-ui); color:var(--text-1); }
+  .mhead .x { margin-left:auto; }
+  .mbody { padding: 4px 16px 14px; }
+  .lab { margin:14px 0 6px; font:700 10px var(--font-mono); letter-spacing:1.5px; text-transform:uppercase; color:var(--text-3); display:flex; gap:8px; align-items:center; }
+  .lab .src { font-weight:400; letter-spacing:.6px; text-transform:none; color:var(--text-3); }
+  .quote { border-left:2px solid var(--line-strong); padding:6px 10px; font:400 13px/1.5 var(--font-ui); color:var(--text-2); background:var(--glass-strong); }
+  .screen { font:400 11.5px/1.5 var(--font-mono); color:var(--text-2); background:var(--term-bg, var(--bg-0)); border:1px solid var(--line); padding:8px 10px; white-space:pre; overflow:hidden; }
+  .screen .hl { color:var(--text-1); background:color-mix(in srgb,var(--accent) 16%,transparent); }
+  .approve { border:1px solid var(--line-strong); padding:10px 12px; background:var(--bg-2); }
+  .approve .what { font:400 13px var(--font-ui); color:var(--text-1); }
+  .approve .bytes { margin-top:6px; font:400 11px var(--font-mono); color:var(--text-3); }
+  .approve .bytes code { color:var(--text-1); border:1px solid var(--line); padding:0 5px; }
+  textarea { width:100%; min-height:86px; resize:vertical; border:1px solid var(--accent-soft); background:var(--bg-2); color:var(--text-1);
+    font:400 13px/1.5 var(--font-ui); padding:9px 11px; }
+  .hint { margin-top:5px; font:400 11px var(--font-ui); color:var(--text-3); }
+  .mfoot { display:flex; gap:8px; padding:12px 16px; border-top:1px solid var(--line); align-items:center; }
+  .mfoot .sp { flex:1; }
+
+  /* ---------------- settings ---------------- */
+  .set { padding:16px 18px; }
+  .set h3 { margin:0 0 4px; font:700 12px var(--font-mono); letter-spacing:1.5px; text-transform:uppercase; color:var(--text-1); }
+  .set .d { margin:0 0 12px; font:400 12px var(--font-ui); color:var(--text-3); }
+  .opt { display:grid; grid-template-columns: 1fr auto; gap:14px; align-items:center; padding:11px 0; border-top:1px solid var(--line); }
+  .opt .n { font:600 13px var(--font-ui); color:var(--text-1); }
+  .opt .e { margin-top:2px; font:400 11.5px/1.45 var(--font-ui); color:var(--text-3); max-width:520px; }
+  .sw { width:46px; height:26px; border:1px solid var(--accent); position:relative; background:color-mix(in srgb,var(--accent) 22%,transparent); }
+  .sw::after { content:""; position:absolute; top:3px; right:3px; width:18px; height:18px; background:var(--accent); }
+  .sw.off { border-color:var(--line-strong); background:transparent; }
+  .sw.off::after { right:auto; left:3px; background:var(--text-3); }
+  .fixed { font:400 10.5px var(--font-mono); color:var(--text-3); letter-spacing:.8px; text-transform:uppercase; border:1px dashed var(--line-strong); padding:6px 8px; }
+
+  .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items:start; }
+  .phone { width:412px; }
+  .phone .page { padding:14px 12px 16px; }
+  .phone .row { grid-template-columns: 10px 1fr; }
+  .phone .row .ctl { grid-column: 2; }
+  .phone .filters { margin-left:0; width:100%; }
+  .phone .filters .sel { flex:1; justify-content:space-between; }
+  .phone .seg { margin-left:auto; }
+  .phone .tl { grid-template-columns: 44px 1fr; }
+
+  .showmore { margin-left:8px; min-height:32px; padding:0 10px; display:inline-flex; align-items:center; border:1px solid var(--line-strong);
+    font:400 10.5px var(--font-mono); letter-spacing:1px; color:var(--text-2); text-transform:uppercase; }
+  .pinbar { display:flex; align-items:center; gap:8px; padding:8px 14px; border-bottom:1px solid var(--line); background:var(--bg-1); flex-wrap:wrap; }
+  .pin { min-height:40px; display:inline-flex; align-items:center; gap:8px; padding:0 12px; border:1px solid var(--line-strong);
+    font:400 10.8px var(--font-mono); letter-spacing:1.1px; text-transform:uppercase; color:var(--text-1); }
+  .pin .led { margin:0; }
+  .pin.hot { border-color:var(--status-degraded); }
+  .pinbar .sp { flex:1; }
+  .thread { max-width:880px; margin:0 auto; padding:14px 22px 16px; }
+  .turn { border:1px solid var(--line); background:var(--bg-1); margin-bottom:12px; }
+  .turn.you { background:var(--glass-strong); }
+  .who { padding:8px 12px 0; font:700 10px var(--font-mono); letter-spacing:1.5px; text-transform:uppercase; color:var(--text-3); }
+  .say { padding:4px 12px 10px; font:400 13.5px/1.5 var(--font-ui); color:var(--text-1); }
+  .grp { padding:6px 12px 2px; font:700 9.5px var(--font-mono); letter-spacing:1.4px; text-transform:uppercase; color:var(--text-3); border-top:1px solid var(--line); }
+  .match { display:grid; grid-template-columns: 12px 1fr auto; gap:10px; align-items:start; padding:9px 12px; border-top:1px solid var(--line); }
+  .match .nodot { width:8px; }
+  .tagny { font:700 9.5px var(--font-mono); letter-spacing:1.3px; text-transform:uppercase; color:var(--warn-text, var(--status-degraded)); margin-left:6px; }
+  .rmodal { width:760px; }
+  .rmodal .mbody { max-height:none; }
+  .entry { display:grid; grid-template-columns: 52px 1fr auto; gap:10px; padding:9px 0; border-top:1px dashed var(--line); align-items:start; }
+  .entry .at { font:400 11px var(--font-mono); color:var(--text-3); }
+  .entry .what { font:400 13px/1.45 var(--font-ui); color:var(--text-2); }
+  .entry .what b { color:var(--text-1); font-weight:600; }
+  .entry .recap { margin-top:6px; padding:8px 10px; border-left:2px solid var(--accent-soft); background:var(--glass-strong); font:400 12.5px/1.5 var(--font-ui); color:var(--text-2); }
+  .exp { font:400 12px var(--font-mono); color:var(--text-3); }
+  .btn.quiet { border-style: dashed; color: var(--text-2); } /* Dismiss rejects: secondary, never like Approve */
+</style></head><body><div class="sheet">
+<div class="board"><h2>1 · Ask page — desktop, dark</h2><p class="cap">Recent work (chronological, 1–3 day window) above the Ask field; below it only sessions that need you, newest first, filterable by agent and project. Approve appears only when there is something server-verified to approve; a bare question gets details only. All session names, times and texts are illustrative.</p><div class="frame"><div class="topbar">
+  <span class="iconbtn">☰</span><span class="brand"><span class="mk">▮</span>BATTLE<b>LAB</b></span>
+  <nav class="sections"><a><span class="gi">▤</span>Sessions</a><a><span class="gi">◈</span>Missions</a><a aria-current="page"><span class="gi">?</span>Ask</a><a><span class="gi">⌖</span>Map</a><a><span class="gi">❏</span>Templates</a></nav>
+  <div class="actions" style="margin-left:auto"><span class="iconbtn bell">◔<span class="n">3</span></span><span class="avatarsq">MB</span></div>
+</div><div class="page">
+  <div class="kicker">Ask // your work</div><h1>Ask about your work</h1><section class="sec">
+  <div class="sechead"><span class="sq"></span><span class="t">Recent work</span><span class="meta">what you did · oldest first · updated 4 min ago</span>
+    <span class="showmore">Show more</span><div class="seg" role="group" aria-label="Window"><span class="on">1 DAY</span><span>2</span><span>3</span></div></div>
+  <div class="timeline">
+    <div class="daysep">Today · Wed 23 Sep</div>
+    <div class="tl"><span class="at">08:40</span><span class="what"><b>Reviewed the five open PRs</b> independently of Hermes — posted findings, found #1054 would strand 567 decisions. <span class="chip">claude · agent-sessions</span></span></div>
+    <div class="tl"><span class="at">09:55</span><span class="what"><b>Merged #1053, #1054, #1055, #1065</b>; #982 refreshed and held for the 0.20 cut. <span class="chip">claude · agent-sessions</span></span></div>
+    <div class="tl"><span class="at">11:20</span><span class="what"><b>Started opencode compaction</b> — VACUUM finished, WAL checkpoint deferred behind a live session. <span class="chip">opencode · agent-sessions</span></span></div>
+    <div class="tl"><span class="at">13:05</span><span class="what"><b>Rotated the relay deploy key</b> and re-ran the staging deploy; green. <span class="chip">codex · battlelab-relay</span></span></div>
+  </div>
+</section><section class="sec">
+  <div class="sechead"><span class="sq"></span><span class="t">Needs you · 3</span><span class="meta">sessions without a mission · newest first</span>
+    <div class="filters"><span class="sel">Agent <span class="v">All ▾</span></span><span class="sel">Project <span class="v">All ▾</span></span></div></div>
+  <div class="row"><span class="led"></span><div><div class="rtitle">Fix flaky overview-abort spec</div>
+      <div class="rmeta">claude · agent-sessions · 6 min ago</div>
+      <div class="rwhy"><span class="kind">Choice</span>Asks whether to keep the retry or delete the test — option 2 (delete, add a unit test) fits the task.</div></div>
+    <div class="ctl"><span class="btn pri">Approve · option 2</span><span class="btn icon" title="Details">ⓘ</span></div></div>
+  <div class="row"><span class="led"></span><div><div class="rtitle">Relay: rotate deploy key</div>
+      <div class="rmeta">codex · battlelab-relay · 38 min ago</div>
+      <div class="rwhy"><span class="kind">Approval</span>Waiting for permission to run <code>ssh-keygen</code> and overwrite <code>deploy_ed25519</code>.</div></div>
+    <div class="ctl"><span class="btn pri">Approve · allow</span><span class="btn icon" title="Details">ⓘ</span></div></div>
+  <div class="row"><span class="led"></span><div><div class="rtitle">Ghost blog: 0.20 launch post</div>
+      <div class="rmeta">opencode · superstatus-blog · 2 h ago</div>
+      <div class="rwhy"><span class="kind">Question</span>“Should the post go live now or wait for the v0.20 tag?” — needs your call; no suggestion.</div></div>
+    <div class="ctl"><span class="btn icon" title="Details">ⓘ</span></div></div>
+</section><div class="askbox"><span class="ph">Ask about your work — “what did I do on the relay yesterday?”</span><span class="btn pri">Ask</span></div></div></div></div>
+<div class="board"><h2>2 · Details — desktop, dark</h2><p class="cap">Opened from ⓘ. The screen is read server-side without attaching a viewer, so Approve never fails because the modal is open (#1049). Dismiss rejects this decision and hides the row until the session’s screen changes.</p><div class="frame"><div class="scrim"><div class="modal">
+  <div class="mhead"><span class="led" style="margin:0"></span><span class="t">Fix flaky overview-abort spec</span><span class="rmeta" style="margin:0">claude · agent-sessions</span><span class="btn icon x">✕</span></div>
+  <div class="mbody">
+    <div class="lab">Session's last words <span class="src">· transcript, 6 min ago</span></div>
+    <div class="quote">The flake is a real race: the abort lands after page 1 resolves. I can either keep the retry around <code>expect.poll</code> (hides it) or delete this e2e and pin the ordering in a unit test. Which do you want?</div>
+    <div class="lab">On screen now <span class="src">· live, read without attaching</span></div>
+    <div class="screen">? How should I proceed?
+  1. Keep the retry and raise the timeout
+<span class="hl">  2. Delete the e2e and add a unit test for the abort ordering</span>
+  3. Something else (type it)</div>
+    <div class="lab">What approving does</div>
+    <div class="approve"><div class="what">Selects <b>option 2</b> — “Delete the e2e and add a unit test for the abort ordering”.</div>
+      <div class="bytes">Sends <code>2</code> <code>⏎</code> · only if the screen still shows this question</div></div>
+    <div class="hint">A numbered choice sends the choice alone. For a text decision (continue / answer) the orchestrator’s suggested message appears here instead, editable, and Approve sends your edited text.</div>
+  </div>
+  <div class="mfoot"><span class="btn">Open session</span><span class="btn quiet">Dismiss</span><span class="sp"></span><span class="btn pri">Approve · option 2</span></div>
+</div></div></div></div>
+<div class="board"><h2>2b · Details — text decision, desktop dark</h2><p class="cap">When the decision is text (continue / answer), the suggested message is the action: edit it, and Approve sends exactly what you left. Nothing is queued behind another action.</p><div class="frame"><div class="scrim"><div class="modal">
+  <div class="mhead"><span class="led" style="margin:0"></span><span class="t">Docs: settings reference</span><span class="rmeta" style="margin:0">opencode · agent-sessions</span><span class="btn icon x">✕</span></div>
+  <div class="mbody">
+    <div class="lab">Session’s last words <span class="src">· transcript, 14 min ago</span></div>
+    <div class="quote">Drafted the Session review page. I stopped before the Notifications section — do you want the push-retraction caveat documented there or in Troubleshooting?</div>
+    <div class="lab">On screen now <span class="src">· live, read without attaching</span></div>
+    <div class="screen">&gt; _</div>
+    <div class="lab">Orchestrator suggests sending <span class="src">· you can edit — this is what Approve sends</span></div>
+    <textarea>Put it in Notifications, one short paragraph, and link Troubleshooting for the browser-specific part.</textarea>
+    <div class="approve" style="margin-top:8px"><div class="bytes">Sent as a pasted message + <code>⏎</code> · only if the prompt is still idle and nobody is typing in the terminal</div></div>
+  </div>
+  <div class="mfoot"><span class="btn">Open session</span><span class="btn quiet">Dismiss</span><span class="sp"></span><span class="btn pri">Approve · send</span></div>
+</div></div></div></div>
+<div class="board"><h2>5 · States — desktop dark</h2><p class="cap">No endpoint (local recap), reading, read failed (never shown as empty), nothing needs you, nothing in filters.</p><div class="frame"><div class="page" style="max-width:none">
+  <section class="sec"><div class="sechead"><span class="sq"></span><span class="t">Recent work</span><span class="meta">no AI endpoint — listed from your sessions</span><div class="seg"><span class="on">1 DAY</span><span>2</span><span>3</span></div></div>
+    <div class="timeline"><div class="tl"><span class="at">08:40</span><span class="what"><b>Fix flaky overview-abort spec</b> — last active; summary from its review. <span class="chip">claude · agent-sessions</span></span></div>
+    <div class="tl"><span class="at">11:20</span><span class="what"><b>opencode compaction</b> — last active. <span class="chip">opencode · agent-sessions</span></span></div>
+    <div class="hint" style="padding-top:6px">Set an AI endpoint in Settings to get a written summary.</div></div></section>
+  <section class="sec"><div class="sechead"><span class="sq"></span><span class="t">Needs you</span><span class="meta">reading…</span></div><div class="more">Reading sessions…</div></section>
+  <section class="sec"><div class="sechead"><span class="sq"></span><span class="t">Needs you</span></div><div class="more" style="color:var(--danger-text, var(--status-down))">Couldn’t read sessions — nothing is shown rather than a list that may be wrong. <span class="btn" style="min-height:34px;margin-left:8px">Retry</span></div></section>
+  <section class="sec"><div class="sechead"><span class="sq"></span><span class="t">Needs you · 0</span><div class="filters"><span class="sel">Agent <span class="v">All ▾</span></span><span class="sel">Project <span class="v">All ▾</span></span></div></div><div class="more">Nothing needs you.</div></section>
+  <section class="sec"><div class="sechead"><span class="sq"></span><span class="t">Needs you · 0</span><span class="meta">in current filters</span><div class="filters"><span class="sel">Agent <span class="v">codex ▾</span></span><span class="btn" style="min-height:36px">Clear filters</span></div></div><div class="more">Nothing needs you in these filters.</div></section>
+</div></div></div>
+<div class="board"><h2>6 · After you ask — desktop, dark</h2><p class="cap">The conversation takes the page, as Ask does today. Recent work and Needs you collapse into a pinned bar (never gone mid-conversation; tap to expand). Answers keep their match rows and Jump in; a matched session that needs you carries the dot, the Needs you tag and ⓘ → the same details modal.</p><div class="frame"><div class="topbar">
+  <span class="iconbtn">☰</span><span class="brand"><span class="mk">▮</span>BATTLE<b>LAB</b></span>
+  <nav class="sections"><a><span class="gi">▤</span>Sessions</a><a><span class="gi">◈</span>Missions</a><a aria-current="page"><span class="gi">?</span>Ask</a><a><span class="gi">⌖</span>Map</a><a><span class="gi">❏</span>Templates</a></nav>
+  <div class="actions" style="margin-left:auto"><span class="iconbtn bell">◔<span class="n">3</span></span><span class="avatarsq">MB</span></div>
+</div><div class="pinbar"><span class="pin hot"><span class="led"></span>Needs you · 3 ▾</span><span class="pin">Recent work ▾</span><span class="sp"></span><span class="pin">New conversation</span></div><div class="thread">
+  <div class="turn you"><div class="who">You</div><div class="say">what did I do on the relay yesterday, and is anything stuck?</div></div>
+  <div class="turn"><div class="who">Answer</div>
+    <div class="say">Yesterday you rotated the relay’s deploy key and re-ran the staging deploy (green at 13:05). One relay session is stuck: it is waiting for your permission to overwrite <code>deploy_ed25519</code>.</div>
+    <div class="grp">Sessions</div>
+    <div class="match"><span class="led"></span><div><div class="rtitle">Relay: rotate deploy key <span class="tagny">Needs you</span></div><div class="rmeta">codex · battlelab-relay · 38 min ago</div><div class="rwhy">Asked to overwrite the deploy key — waiting on you.</div></div><div class="ctl"><span class="btn icon" title="Details">ⓘ</span><span class="btn">Jump in</span></div></div>
+    <div class="match"><span class="nodot"></span><div><div class="rtitle">Relay staging deploy</div><div class="rmeta">claude · battlelab-relay · yesterday 13:05</div><div class="rwhy">Re-ran the deploy after the key rotation; all checks green.</div></div><div class="ctl"><span class="btn">Jump in</span></div></div>
+  </div>
+  <div class="askbox"><span class="ph">Ask a follow-up…</span><span class="btn pri">Ask</span></div>
+</div></div></div>
+<div class="board"><h2>7 · Recent work → Show more — desktop, dark</h2><p class="cap">The extended view: the whole window grouped by day, the 1 | 2 | 3 selector, Agent and Project filters, and each entry expands (▸) to that session’s recap with Jump in.</p><div class="frame"><div class="scrim"><div class="modal rmodal">
+  <div class="mhead"><span class="sq" style="width:6px;height:6px;background:var(--accent)"></span><span class="t">Recent work</span>
+    <div class="seg" style="margin-left:14px"><span class="on">1 DAY</span><span>2</span><span>3</span></div><span class="btn icon x">✕</span></div>
+  <div class="pinbar" style="background:transparent"><span class="sel">Agent <span class="v">All ▾</span></span><span class="sel">Project <span class="v">All ▾</span></span><span class="sp"></span><span class="rmeta" style="margin:0">14 entries · oldest first · written 4 min ago</span></div>
+  <div class="mbody">
+    <div class="daysep">Today · Wed 23 Sep</div>
+    <div class="entry"><span class="at">08:40</span><div class="what"><b>Reviewed the five open PRs</b> independently of Hermes — posted findings; #1054 would strand 567 decisions. <span class="chip">claude · agent-sessions</span>
+      <div class="recap">Diffed #1053/#1054/#1055/#1065/#982 against main, verified opencode’s log and auth output on this host, found #982’s copy stale after #1059, and posted one comment per PR. Nothing merged — the operator’s hold stands.</div></div><span class="btn">Jump in</span></div>
+    <div class="entry"><span class="at">09:55</span><div class="what"><b>Merged #1053, #1054, #1055, #1065</b>; #982 refreshed and held for the 0.20 cut. <span class="chip">claude · agent-sessions</span></div><span class="exp">▸</span></div>
+    <div class="entry"><span class="at">11:20</span><div class="what"><b>Started opencode compaction</b> — VACUUM finished, WAL checkpoint deferred. <span class="chip">opencode · agent-sessions</span></div><span class="exp">▸</span></div>
+    <div class="entry"><span class="at">13:05</span><div class="what"><b>Rotated the relay deploy key</b> and re-ran staging; green. <span class="chip">codex · battlelab-relay</span></div><span class="exp">▸</span></div>
+    <div class="entry"><span class="at">15:30</span><div class="what"><b>Drafted the 0.20 launch post</b> — stopped on a question about timing. <span class="chip">opencode · superstatus-blog</span></div><span class="exp">▸</span></div>
+    <div class="more" style="padding-left:0">+ 9 more today · scroll</div>
+  </div>
+</div></div></div></div>
+<div class="grid2"><div class="board"><h2>8 · After you ask — phone 412px, light</h2><div data-theme="light" class="phone"><div class="frame"><div class="topbar">
+  <span class="iconbtn">☰</span><span class="brand"><span class="mk">▮</span>BATTLE<b>LAB</b></span>
+
+  <div class="actions" style="margin-left:auto"><span class="iconbtn bell">◔<span class="n">3</span></span><span class="avatarsq">MB</span></div>
+</div><div class="pinbar"><span class="pin hot"><span class="led"></span>Needs you · 3 ▾</span><span class="pin">Recent ▾</span><span class="sp"></span><span class="pin">New</span></div><div class="thread" style="padding:12px">
+  <div class="turn you"><div class="who">You</div><div class="say">is anything stuck on the relay?</div></div>
+  <div class="turn"><div class="who">Answer</div><div class="say">One relay session is waiting for your permission to overwrite the deploy key.</div>
+    <div class="grp">Sessions</div>
+    <div class="match" style="grid-template-columns:10px 1fr"><span class="led"></span><div><div class="rtitle">Relay: rotate deploy key <span class="tagny">Needs you</span></div><div class="rmeta">codex · battlelab-relay · 38 min ago</div><div class="ctl" style="margin-top:8px"><span class="btn icon">ⓘ</span><span class="btn">Jump in</span></div></div></div>
+  </div>
+  <div class="askbox"><span class="ph">Ask a follow-up…</span><span class="btn pri">Ask</span></div>
+</div></div></div></div><div></div></div>
+<div class="grid2">
+<div class="board"><h2>3 · Ask page — phone 412px, light</h2><div data-theme="light" class="phone"><div class="frame"><div class="topbar">
+  <span class="iconbtn">☰</span><span class="brand"><span class="mk">▮</span>BATTLE<b>LAB</b></span>
+  <div class="actions" style="margin-left:auto"><span class="iconbtn bell">◔<span class="n">3</span></span><span class="avatarsq">MB</span></div>
+</div><div class="page">
+  <div class="kicker">Ask // your work</div><h1>Ask about your work</h1><section class="sec">
+  <div class="sechead"><span class="sq"></span><span class="t">Recent work</span><span class="meta">what you did · oldest first · updated 4 min ago</span>
+    <span class="showmore">Show more</span><div class="seg" role="group" aria-label="Window"><span class="on">1 DAY</span><span>2</span><span>3</span></div></div>
+  <div class="timeline">
+    <div class="daysep">Today · Wed 23 Sep</div>
+    <div class="tl"><span class="at">08:40</span><span class="what"><b>Reviewed the five open PRs</b> independently of Hermes — posted findings, found #1054 would strand 567 decisions. <span class="chip">claude · agent-sessions</span></span></div>
+    <div class="tl"><span class="at">09:55</span><span class="what"><b>Merged #1053, #1054, #1055, #1065</b>; #982 refreshed and held for the 0.20 cut. <span class="chip">claude · agent-sessions</span></span></div>
+    <div class="tl"><span class="at">11:20</span><span class="what"><b>Started opencode compaction</b> — VACUUM finished, WAL checkpoint deferred behind a live session. <span class="chip">opencode · agent-sessions</span></span></div>
+    <div class="tl"><span class="at">13:05</span><span class="what"><b>Rotated the relay deploy key</b> and re-ran the staging deploy; green. <span class="chip">codex · battlelab-relay</span></span></div>
+  </div>
+</section><section class="sec">
+  <div class="sechead"><span class="sq"></span><span class="t">Needs you · 3</span><span class="meta">sessions without a mission · newest first</span>
+    <div class="filters"><span class="sel">Agent <span class="v">All ▾</span></span><span class="sel">Project <span class="v">All ▾</span></span></div></div>
+  <div class="row"><span class="led"></span><div><div class="rtitle">Fix flaky overview-abort spec</div>
+      <div class="rmeta">claude · agent-sessions · 6 min ago</div>
+      <div class="rwhy"><span class="kind">Choice</span>Asks whether to keep the retry or delete the test — option 2 (delete, add a unit test) fits the task.</div></div>
+    <div class="ctl"><span class="btn pri">Approve · option 2</span><span class="btn icon" title="Details">ⓘ</span></div></div>
+  <div class="row"><span class="led"></span><div><div class="rtitle">Relay: rotate deploy key</div>
+      <div class="rmeta">codex · battlelab-relay · 38 min ago</div>
+      <div class="rwhy"><span class="kind">Approval</span>Waiting for permission to run <code>ssh-keygen</code> and overwrite <code>deploy_ed25519</code>.</div></div>
+    <div class="ctl"><span class="btn pri">Approve · allow</span><span class="btn icon" title="Details">ⓘ</span></div></div>
+  <div class="row"><span class="led"></span><div><div class="rtitle">Ghost blog: 0.20 launch post</div>
+      <div class="rmeta">opencode · superstatus-blog · 2 h ago</div>
+      <div class="rwhy"><span class="kind">Question</span>“Should the post go live now or wait for the v0.20 tag?” — needs your call; no suggestion.</div></div>
+    <div class="ctl"><span class="btn icon" title="Details">ⓘ</span></div></div>
+</section><div class="askbox"><span class="ph">Ask about your work — “what did I do on the relay yesterday?”</span><span class="btn pri">Ask</span></div></div></div></div></div>
+<div class="board"><h2>4 · Settings → Session review — light</h2><div data-theme="light"><div class="frame"><div class="set">
+  <h3>Session review</h3><p class="d">How sessions are read and when one counts as needing you.</p>
+  <div class="opt"><div><div class="n">Recognise questions and choices</div><div class="e">Read the live screen for numbered options, yes/no prompts and permission requests, and name the kind (Choice, Approval, Question) on the Needs you list.</div></div><span class="sw"></span></div>
+  <div class="opt"><div><div class="n">Decision context</div><div class="e">How much the orchestrator reads before it suggests an answer: Standard (summary + current screen) or Deep (adds the transcript tail and your earlier decisions for this session).</div></div><div class="seg"><span>STANDARD</span><span class="on">DEEP</span></div></div>
+  <div class="opt"><div><div class="n">Notify me when a session needs me</div><div class="e">One notification per question. It disappears by itself when the session no longer needs you — answered here, in the terminal, or it moved on.</div></div><span class="sw"></span></div>
+  <div class="opt"><div><div class="n">Recent work window</div><div class="e">How far back the summary above Ask and the Needs you list look.</div></div><div class="seg"><span class="on">1 DAY</span><span>2</span><span>3</span></div></div>
+</div></div></div></div>
+</div></div></body></html>

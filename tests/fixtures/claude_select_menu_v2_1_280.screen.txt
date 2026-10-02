@@ -1,0 +1,33 @@
+❯ Use the AskUserQuestion tool right now to ask me which colour I prefer, with exactly three options: Red, Green, Blue.
+  Do nothing else. After I answer, reply with only the word I picked.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Colour
+
+Which colour do you prefer?
+
+❯ 1. Red
+     The colour red
+  2. Green
+     The colour green
+  3. Blue
+     The colour blue
+  4. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

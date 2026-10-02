@@ -1,0 +1,100 @@
+<svg width="960" height="660" viewBox="0 0 960 660" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+  <!--
+    #434 — read-only / take-over fallback when AGENT_SESSIONS_TAKEOVER is ON.
+    A non-owner viewer no longer goes blank: it streams the session READ-ONLY
+    (live output continues underneath) behind the #184 .secondaryBanner, with a
+    single amber "Take over" control. Tokens are the real index.css values.
+    Two viewports x two themes. The "passive-on-attach" and "demoted-mid-session"
+    states render identically (same banner over a live, non-interactive terminal).
+  -->
+  <rect width="960" height="660" fill="#08090b"/>
+  <text x="32" y="36" fill="#e8e9ec" font-size="18" font-weight="700">agent-sessions — read-only / take-over fallback (takeover ON) · #434</text>
+  <text x="32" y="58" fill="#a7abb3" font-size="13">Non-owner viewer streams live output read-only; input + resize gated server-side. One "Take over" control.</text>
+
+  <!-- column headers -->
+  <text x="265" y="92" fill="#a7abb3" font-size="13" font-weight="700" text-anchor="middle" letter-spacing="2">DARK</text>
+  <text x="715" y="92" fill="#a7abb3" font-size="13" font-weight="700" text-anchor="middle" letter-spacing="2">LIGHT</text>
+
+  <!-- ===================== DESKTOP · DARK ===================== -->
+  <g>
+    <rect x="32" y="104" width="466" height="220" fill="#0d0e10" stroke="#191b20"/>
+    <!-- secondaryBanner -->
+    <rect x="44" y="116" width="442" height="52" fill="#16181c" fill-opacity="0.95" stroke="#6a4f15"/>
+    <!-- eye glyph -->
+    <g transform="translate(62,142)" stroke="#a7abb3" stroke-width="1.4" fill="none">
+      <path d="M-9 0 Q0 -8 9 0 Q0 8 -9 0 Z"/>
+      <circle cx="0" cy="0" r="2.6" fill="#a7abb3" stroke="none"/>
+    </g>
+    <text x="80" y="138" fill="#e8e9ec" font-size="12">Read-only — "Windows · Chrome" is active</text>
+    <text x="80" y="156" fill="#a7abb3" font-size="11.5">Your input is disabled.</text>
+    <!-- takeover button -->
+    <rect x="392" y="128" width="86" height="28" fill="#ffb000" stroke="#cc8d00"/>
+    <text x="435" y="146" fill="#120c00" font-size="12.5" font-weight="700" text-anchor="middle">Take over</text>
+    <!-- faux live terminal output underneath (greyed = non-interactive) -->
+    <text x="52" y="200" fill="#6f747d" font-size="12">$ npm run build</text>
+    <text x="52" y="220" fill="#6f747d" font-size="12">✓ vite build — 2.3s</text>
+    <text x="52" y="240" fill="#6f747d" font-size="12">● claude is working… (streaming)</text>
+    <text x="52" y="260" fill="#6f747d" font-size="12">  · editing routes/terminal.py</text>
+    <text x="52" y="296" fill="#52575f" font-size="11" font-style="italic">live output keeps painting — just not interactive</text>
+  </g>
+
+  <!-- ===================== DESKTOP · LIGHT ===================== -->
+  <g>
+    <rect x="482" y="104" width="466" height="220" fill="#e7e8ea" stroke="#d9dbe0"/>
+    <rect x="494" y="116" width="442" height="52" fill="#f3f4f6" fill-opacity="0.97" stroke="#e6cc92"/>
+    <g transform="translate(512,142)" stroke="#41454d" stroke-width="1.4" fill="none">
+      <path d="M-9 0 Q0 -8 9 0 Q0 8 -9 0 Z"/>
+      <circle cx="0" cy="0" r="2.6" fill="#41454d" stroke="none"/>
+    </g>
+    <text x="530" y="138" fill="#14161a" font-size="12">Read-only — "Windows · Chrome" is active</text>
+    <text x="530" y="156" fill="#41454d" font-size="11.5">Your input is disabled.</text>
+    <rect x="842" y="128" width="86" height="28" fill="#ffb000" stroke="#cc8d00"/>
+    <text x="885" y="146" fill="#120c00" font-size="12.5" font-weight="700" text-anchor="middle">Take over</text>
+    <text x="502" y="200" fill="#6b7079" font-size="12">$ npm run build</text>
+    <text x="502" y="220" fill="#6b7079" font-size="12">✓ vite build — 2.3s</text>
+    <text x="502" y="240" fill="#6b7079" font-size="12">● claude is working… (streaming)</text>
+    <text x="502" y="260" fill="#6b7079" font-size="12">  · editing routes/terminal.py</text>
+    <text x="502" y="296" fill="#8b9099" font-size="11" font-style="italic">live output keeps painting — just not interactive</text>
+  </g>
+
+  <!-- column header for mobile row -->
+  <text x="265" y="360" fill="#a7abb3" font-size="12" font-weight="700" text-anchor="middle" letter-spacing="2">DARK · MOBILE</text>
+  <text x="715" y="360" fill="#a7abb3" font-size="12" font-weight="700" text-anchor="middle" letter-spacing="2">LIGHT · MOBILE</text>
+
+  <!-- ===================== MOBILE · DARK ===================== -->
+  <g>
+    <rect x="180" y="374" width="190" height="262" rx="14" fill="#0d0e10" stroke="#191b20" stroke-width="2"/>
+    <!-- compact banner: collapses to one line -->
+    <rect x="192" y="388" width="166" height="34" fill="#16181c" fill-opacity="0.95" stroke="#6a4f15"/>
+    <g transform="translate(206,405)" stroke="#a7abb3" stroke-width="1.3" fill="none">
+      <path d="M-7 0 Q0 -6 7 0 Q0 6 -7 0 Z"/>
+      <circle cx="0" cy="0" r="2" fill="#a7abb3" stroke="none"/>
+    </g>
+    <text x="220" y="409" fill="#e8e9ec" font-size="11">Read-only</text>
+    <rect x="296" y="394" width="56" height="22" fill="#ffb000" stroke="#cc8d00"/>
+    <text x="324" y="409" fill="#120c00" font-size="10.5" font-weight="700" text-anchor="middle">Take over</text>
+    <text x="198" y="452" fill="#6f747d" font-size="10">$ npm run build</text>
+    <text x="198" y="470" fill="#6f747d" font-size="10">✓ vite — 2.3s</text>
+    <text x="198" y="488" fill="#6f747d" font-size="10">● claude working…</text>
+    <text x="198" y="506" fill="#6f747d" font-size="10">  routes/terminal.py</text>
+    <text x="198" y="610" fill="#52575f" font-size="9" font-style="italic">tap "Take over" to drive</text>
+  </g>
+
+  <!-- ===================== MOBILE · LIGHT ===================== -->
+  <g>
+    <rect x="630" y="374" width="190" height="262" rx="14" fill="#e7e8ea" stroke="#d9dbe0" stroke-width="2"/>
+    <rect x="642" y="388" width="166" height="34" fill="#f3f4f6" fill-opacity="0.97" stroke="#e6cc92"/>
+    <g transform="translate(656,405)" stroke="#41454d" stroke-width="1.3" fill="none">
+      <path d="M-7 0 Q0 -6 7 0 Q0 6 -7 0 Z"/>
+      <circle cx="0" cy="0" r="2" fill="#41454d" stroke="none"/>
+    </g>
+    <text x="670" y="409" fill="#14161a" font-size="11">Read-only</text>
+    <rect x="746" y="394" width="56" height="22" fill="#ffb000" stroke="#cc8d00"/>
+    <text x="774" y="409" fill="#120c00" font-size="10.5" font-weight="700" text-anchor="middle">Take over</text>
+    <text x="648" y="452" fill="#6b7079" font-size="10">$ npm run build</text>
+    <text x="648" y="470" fill="#6b7079" font-size="10">✓ vite — 2.3s</text>
+    <text x="648" y="488" fill="#6b7079" font-size="10">● claude working…</text>
+    <text x="648" y="506" fill="#6b7079" font-size="10">  routes/terminal.py</text>
+    <text x="648" y="610" fill="#8b9099" font-size="9" font-style="italic">tap "Take over" to drive</text>
+  </g>
+</svg>

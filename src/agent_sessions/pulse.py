@@ -1,0 +1,383 @@
+"""Pulse — AI-curated recent-work overview scan engine + cache (#441 Phases 2 + 4).
+
+Reads the recent sessions (a rolling window, default 3 days), curates them into a ranked,
+grouped overview the user can jump straight back into, and caches the result so the page
+loads instantly. The ``fast`` depth does **no** LLM work — it ranks/flags purely from the
+per-session AI-review summaries already on the sidecar (#356). The ``slow`` depth (#441 Phase 4)
+layers synthesis on top, reusing the AI-review gateway (``review.complete_json``): a **bounded,
+serialized** per-session "state + next step" pass. Model output is treated strictly as DATA —
+length-capped here and rendered as plain text in the UI (never markup). An **unconfigured
+endpoint never errors a scan**: ``slow`` degrades to ``fast`` curation with
+``synthesis_skipped=True``.
+
+There used to be a ``medium`` depth and a ``banner`` field: one extra call producing a "state of
+your work" paragraph. MISSION CONTROL never rendered it, so it was a model call whose output was
+thrown away, and both were removed (#956). The cards (and the ``slow`` line on each) are what the
+Sessions-without-a-mission list shows.
+
+Curation rides the exact same per-session resolution the sidebar uses (``engines.scan_all``
+→ metadata sidecar via the alias layer → ``projects.resolve``), so a Pulse card and its
+sidebar row always agree.
+
+Cache (``pulse-cache.json``, next to ``prefs.json``):
+
+* Written atomically via ``atomicjson.atomic_write_json`` (temp + fsync + ``os.replace`` +
+  parent-dir fsync, ``0600``) — a single-flight scan is the only writer, so no flock is needed.
+* ``cache_version`` guards the artifact shape: a mismatch is a cache **miss** (the stale
+  artifact is ignored, never mis-rendered against newer card code).
+* ``input_fingerprint`` (sha256 over the in-window session set) is what a future background
+  loop (#441 Phase 3) compares to skip a no-op scan; a manual "Scan now" always runs (at
+  ``fast`` it is free anyway).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import os
+import time
+from pathlib import Path
+
+from . import atomicjson, engines, metadata, prefs, projects, prompts, review
+
+# Bump when the artifact shape (cards / banner / top-level fields) changes incompatibly —
+# `load_cache` treats any other version as a miss so an old shape never renders wrong.
+# v2 (#481): the one-line `banner` became a short chronological recap paragraph — bump so a
+# cached v1 one-liner is treated as a miss instead of rendering in the new paragraph slot.
+# #956 dropped `banner` WITHOUT a bump, deliberately: no reader ever used it, and a bump would
+# blank the Sessions-without-a-mission list on upgrade until the next scan. A v2 cache that still
+# carries a stale `banner` key is simply ignored field-wise.
+CACHE_VERSION = 2
+
+# 1–3 days, default 1 (#1086) — the same numbers as `prefs.PULSE_WINDOW_*`, which own the rule.
+WINDOW_DAYS_DEFAULT = 1
+WINDOW_DAYS_MIN = 1
+WINDOW_DAYS_MAX = 3
+
+# `medium` (banner only) was removed in #956; `coerce_depth` maps it — like any unknown — to fast.
+SCAN_DEPTHS: tuple[str, ...] = ("fast", "slow")
+DEFAULT_DEPTH = "fast"
+
+# Within the window, a session touched more recently than this is "recently_active"; older
+# (but still in-window) is "idle". Live sessions are "in_flight" regardless.
+RECENT_ACTIVE_S = 24 * 3600
+
+# Sort priority per state (lower = nearer the top); within a state, newest activity first.
+_STATE_ORDER = {"needs_you": 0, "in_flight": 1, "recently_active": 2, "idle": 3}
+
+# --- synthesis (depth slow, #441 Phase 4) ---------------------------------------------
+# Bounded, serialized endpoint use mirroring autosort: a per-scan cap on the `slow`
+# per-session pass, spacing between consecutive calls, and server-owned length caps so the
+# model output is treated strictly as DATA (rendered as plain text in the UI).
+SLOW_SESSION_CAP = 12
+SYNTH_CALL_SPACING_S = 1.0
+SESSION_LINE_MAX = 160
+
+
+def _one_line(value: object, cap: int) -> str | None:
+    """Narrow model output to a single bounded line, or ``None`` when unusable. The model's
+    output is data: collapse whitespace, cap the length, drop empties."""
+    if not isinstance(value, str):
+        return None
+    line = " ".join(value.split())[:cap]
+    return line or None
+
+
+def _cache_path() -> Path:
+    return Path(
+        os.environ.get(
+            "AGENT_SESSIONS_PULSE_CACHE",
+            str(Path.home() / ".config" / "agent-sessions" / "pulse-cache.json"),
+        )
+    )
+
+
+def coerce_window_days(value: object) -> int:
+    """Narrow any input to a window in ``[MIN, MAX]`` days — `prefs.coerce_pulse_window_days`,
+    the one read rule (#1086), so a scan and the stored pref can never disagree about a window."""
+    return prefs.coerce_pulse_window_days(value)
+
+
+def coerce_depth(value: object) -> str:
+    """Narrow any input to a known scan depth, falling back to the default."""
+    return value if isinstance(value, str) and value in SCAN_DEPTHS else DEFAULT_DEPTH
+
+
+def _classify(m: metadata.SessionMeta, last_mtime: float, live: bool, now: float) -> str:
+    # ``last_mtime`` is the last real-activity time (#525 — newest conversation-record timestamp,
+    # not the raw file mtime), so "recently_active" reflects genuine turns, not an idle re-open.
+    if m.intervention_required:
+        return "needs_you"
+    if live:
+        return "in_flight"
+    if now - last_mtime <= RECENT_ACTIVE_S:
+        return "recently_active"
+    return "idle"
+
+
+class CardsIncomplete(Exception):
+    """A STRICT card read could not establish its whole input (#1086 Phase 4, Hermes 5231): a
+    provider's store, or the metadata sidecar, could not be read completely. Unknown is not
+    "no session needs you" — a caller that would retract something on the answer must not."""
+
+
+def checked_scan() -> list:
+    """One complete engine walk for a strict card read, or :class:`CardsIncomplete`."""
+    rows, problems = engines.scan_all_checked()
+    if problems:
+        raise CardsIncomplete("; ".join(problems))
+    return rows
+
+
+def build_cards(
+    *,
+    window_days: int | None,
+    now: float | None = None,
+    working_keys: set[str] | None = None,
+    strict: bool = False,
+    scanned: list | None = None,
+) -> list[dict]:
+    """Curate the in-window, non-archived sessions into ranked cards. Pure FS + metadata, no
+    network — safe to run under ``asyncio.to_thread``.
+
+    A card is dropped when the session is effectively archived (sidecar override wins over the
+    native state, mirroring the sidebar) or review-excluded, or its last activity is older than
+    the window. ``working_keys`` (logical or physical session keys currently live) marks cards
+    ``live`` → state ``in_flight``.
+
+    ``window_days=None`` disables the recency cutoff (full history). That mode is consumed
+    ONLY by ``pulse_chat.build_catalog`` (#522) — the Pulse scan/loop/cache paths
+    (``run_scan`` / ``fingerprint_for``) always pass a concrete window, so normal Pulse
+    recency/caching behaviour is unchanged.
+
+    ``strict`` (#1086 Phase 4) is for a caller that RETRACTS on the answer — the needs-you
+    notification sync. Its inputs are read so that an incomplete read raises
+    :class:`CardsIncomplete` instead of silently dropping a session or clearing its flags: the
+    metadata under the writers' lock (`metadata.load_checked`, which also sees through the
+    zero-byte window of an in-place rewrite) and a checked engine walk (``scanned``, from
+    :func:`checked_scan`, so two calls in one decision share one walk). Every other caller keeps
+    the fail-soft read.
+    """
+    now = time.time() if now is None else now
+    working = working_keys or set()
+    cutoff = None if window_days is None else now - window_days * 86400
+    if strict:
+        try:
+            meta_index, aliases, _overrides = metadata.load_checked()
+        except metadata.MetadataUnreadable as e:
+            raise CardsIncomplete(f"session metadata: {e}") from e
+        sessions = scanned if scanned is not None else checked_scan()
+    else:
+        meta_index = metadata.load()
+        aliases = metadata.load_aliases()
+        sessions = scanned if scanned is not None else engines.scan_all()
+    project_index = projects.load()
+
+    cards: list[dict] = []
+    for s in sessions:
+        key = engines.session_key(s)
+        phys = engines.physical_key(key, aliases)
+        m = meta_index.get(key) or meta_index.get(phys) or metadata.SessionMeta()
+        archived = m.archived if m.archived is not None else s.archived
+        if archived or m.review_excluded:
+            continue
+        if cutoff is not None and s.last_mtime < cutoff:
+            continue
+        live = key in working or phys in working
+        cards.append(
+            {
+                "id": key,
+                "engine": s.engine,
+                "title": metadata.display_title(m, s.first_user_message),
+                "cwd": s.cwd,
+                "project": projects.resolve(
+                    s.cwd, m.project_id, project_index, alias=m.project_alias
+                ).as_dict(),
+                "last_activity": s.last_mtime,
+                "ai_summary": m.ai_summary,
+                "intervention_required": m.intervention_required,
+                "intervention_reason": m.intervention_reason,
+                "reviewed_at": m.reviewed_at,
+                "live": live,
+                "state": _classify(m, s.last_mtime, live, now),
+                # Per-session synthesis line (depth `slow` only, #441 Phase 4); None at
+                # fast/medium. Always present so the artifact shape is stable across depths;
+                # the UI falls back to `ai_summary` when it is null.
+                "synthesis": None,
+                # Internal: feeds the input fingerprint; stripped from the public artifact.
+                "_review_fingerprint": m.review_fingerprint,
+                # Internal: the `slow` per-session pass prefers this over `ai_summary` (#611).
+                # Stripped from the public artifact alongside the fingerprint.
+                "_ai_recap": m.ai_recap,
+                # Internal: the recap is now a synthesis INPUT, so it must move the scan's input
+                # fingerprint too. Otherwise a recap generated later (summary fingerprint
+                # unchanged — e.g. a failed recap call finally succeeding, or a legacy session
+                # backfilled) leaves `fingerprint_for()` identical and the #441 Phase-3 loop skips
+                # the scan as "unchanged", so the cards keep their pre-recap synthesis forever.
+                "_recap_fingerprint": m.recap_fingerprint,
+            }
+        )
+    cards.sort(key=lambda c: (_STATE_ORDER[c["state"]], -c["last_activity"]))
+    return cards
+
+
+def _fingerprint(cards: list[dict], window_days: int, depth: str) -> str:
+    """sha256 over the in-window session set + scan params. Stable across scans when nothing
+    relevant changed (so #441 Phase 3's loop can skip a no-op scan); changes when a session's
+    activity or its review result changes."""
+    payload = json.dumps(
+        {
+            "window_days": window_days,
+            "depth": depth,
+            "sessions": sorted(
+                [c["id"], c["last_activity"], c["_review_fingerprint"], c["_recap_fingerprint"]]
+                for c in cards
+            ),
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+async def fingerprint_for(*, window_days: int, depth: str, now: float | None = None) -> str:
+    """The input fingerprint for the current in-window session set at ``(window_days, depth)``,
+    without scanning/writing anything. The #441 Phase 3 background loop compares this to the
+    cached ``input_fingerprint`` to skip a no-op sweep (no curation written, no LLM call). The
+    live "in flight" overlay is deliberately NOT part of the fingerprint — it is volatile
+    display state, so a session merely going live/idle never forces a synthesis re-run."""
+    cards = await asyncio.to_thread(build_cards, window_days=window_days, now=now)
+    return _fingerprint(cards, window_days, depth)
+
+
+async def _synthesize_sessions(cards: list[dict], *, now: float) -> None:
+    """Depth ``slow``: a bounded, serialized per-session pass adding a one-line "state + next
+    step" ``synthesis`` to each in-window card (capped at ``SLOW_SESSION_CAP``; overflow keeps
+    its ``ai_summary`` line). Mutates ``cards`` in place. A per-session ``ReviewError`` is
+    skipped (the card keeps its summary); ``NotConfiguredError`` propagates so the caller can
+    degrade the whole scan to ``fast``."""
+    for i, card in enumerate(cards[:SLOW_SESSION_CAP]):
+        if i:
+            await asyncio.sleep(SYNTH_CALL_SPACING_S)
+        user = {
+            "title": card["title"],
+            # The recap (#481) is a ≤1500-char chronological brief on the same sidecar; the
+            # summary is one ≤200-char line distilled from it. Given the choice, hand the model
+            # the fuller input — same call, same cost, strictly more to work with (#611).
+            "summary": card.get("_ai_recap") or card["ai_summary"] or "",
+            "state": card["state"],
+            "age_hours": round((now - card["last_activity"]) / 3600, 1),
+        }
+        try:
+            obj = await review.complete_json(
+                [
+                    {"role": "system", "content": prompts.effective("pulse_session_line")},
+                    {"role": "user", "content": json.dumps(user)},
+                ]
+            )
+        except review.NotConfiguredError:
+            raise  # caller degrades the whole scan to fast curation
+        except review.ReviewError:
+            continue  # transient — this card keeps its ai_summary line
+        card["synthesis"] = _one_line(obj.get("line"), SESSION_LINE_MAX)
+
+
+def _artifact(
+    cards: list[dict],
+    *,
+    window_days: int,
+    depth: str,
+    synthesis_skipped: bool,
+    now: float,
+) -> dict:
+    fingerprint = _fingerprint(cards, window_days, depth)
+    public_cards = [{k: v for k, v in c.items() if not k.startswith("_")} for c in cards]
+    return {
+        "cache_version": CACHE_VERSION,
+        "generated_at": now,
+        "window_days": window_days,
+        "scan_depth": depth,
+        "input_fingerprint": fingerprint,
+        "synthesis_skipped": synthesis_skipped,
+        "cards": public_cards,
+    }
+
+
+def empty_overview(window_days: int = WINDOW_DAYS_DEFAULT, depth: str = DEFAULT_DEPTH) -> dict:
+    """The "never scanned" artifact `GET /api/pulse` returns before the first scan (or on a
+    cache miss). Same shape as a real artifact, with no cards and a null ``generated_at``."""
+    return {
+        "cache_version": CACHE_VERSION,
+        "generated_at": None,
+        "window_days": coerce_window_days(window_days),
+        "scan_depth": coerce_depth(depth),
+        "input_fingerprint": None,
+        "synthesis_skipped": False,
+        "cards": [],
+    }
+
+
+def _write_cache(artifact: dict, path: Path | None = None) -> None:
+    # Via the shared helper (#728): same temp + fsync + replace as before, plus the parent-dir
+    # fsync the hand-rolled version was missing, and 0600 from creation rather than a chmod
+    # after the umask has already had its say.
+    atomicjson.atomic_write_json(path or _cache_path(), artifact)
+
+
+def load_cache(path: Path | None = None) -> dict | None:
+    """The cached artifact, or ``None`` on a missing / unreadable / version-mismatched cache
+    (a mismatch is a deliberate miss so an old shape is never rendered against newer code)."""
+    path = path or _cache_path()
+    if not path.exists():
+        return None
+    try:
+        with path.open() as fh:
+            raw = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, dict) or raw.get("cache_version") != CACHE_VERSION:
+        return None
+    return raw
+
+
+async def run_scan(
+    *,
+    window_days: int = WINDOW_DAYS_DEFAULT,
+    depth: str = DEFAULT_DEPTH,
+    working_keys: set[str] | None = None,
+    now: float | None = None,
+) -> dict:
+    """Run one Pulse scan and write the cache, returning the fresh artifact.
+
+    ``fast`` is curation only — no endpoint call. ``slow`` adds a bounded per-session pass
+    (#441 Phase 4). An unconfigured AI gateway never errors the scan: ``slow`` degrades to
+    ``fast`` curation with ``synthesis_skipped=True`` (this is the single source of truth for
+    the unconfigured contract — the manual route returns 200 degraded, never 409). The caller owns
+    the single-flight guard (so two scans never overlap) and supplies ``working_keys``.
+    """
+    window_days = coerce_window_days(window_days)
+    depth = coerce_depth(depth)
+    now = time.time() if now is None else now
+    cards = await asyncio.to_thread(
+        build_cards, window_days=window_days, now=now, working_keys=working_keys
+    )
+    synthesis_skipped = False
+    if depth == "slow":
+        try:
+            await _synthesize_sessions(cards, now=now)
+        except review.NotConfiguredError:
+            # Unconfigured endpoint → degrade to fast curation, flagged so the UI can say so.
+            # Drop any per-session synthesis (none can have landed: config is checked on the
+            # first call) for a cleanly "fast"-shaped artifact.
+            synthesis_skipped = True
+            for c in cards:
+                c["synthesis"] = None
+    artifact = _artifact(
+        cards,
+        window_days=window_days,
+        depth=depth,
+        synthesis_skipped=synthesis_skipped,
+        now=now,
+    )
+    _write_cache(artifact)
+    return artifact

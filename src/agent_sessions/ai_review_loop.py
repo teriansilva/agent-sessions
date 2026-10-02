@@ -1,0 +1,290 @@
+"""Periodic AI session review loop (#356 Phase 2).
+
+A reaper-pattern background task (see ``reaper.run``/``sweep``) that periodically reviews
+the LIVE sessions in the registry through the Phase-1 engine (``review.run_review``), so
+the sidebar's summaries / ⚠ badges stay current without anyone clicking "Review now".
+
+Gating — every layer must agree before a single endpoint call happens:
+
+* **Env kill-switch**: ``AGENT_SESSIONS_AI_REVIEW_LOOP=0`` disables the loop entirely —
+  the task exits at startup and nothing is ever swept, regardless of prefs. Operator-level
+  override for "the endpoint is misbehaving, stop the scheduler NOW" without touching the
+  user's saved settings.
+* **Prefs**: the ``ai_review.enabled`` flag AND a configured endpoint (base URL + key),
+  re-read on EVERY sweep — toggling the Settings switch takes effect at the next wake
+  with no restart. The interval comes from prefs too (schema-validated, ≥1 min).
+
+Cost posture (the issue's "runaway cost / hammering the endpoint" risk):
+
+* **Change detection first**: a session's review fingerprint (sha256 of the assembled
+  input, exactly what ``review.run_review`` would persist) is computed locally and
+  compared against the stored ``review_fingerprint`` BEFORE any network I/O — unchanged
+  sessions never reach the endpoint.
+* **Serialized calls**: endpoint calls run strictly one at a time with a small sleep
+  between them, and a per-sweep cap bounds the worst case — a sweep can never stampede
+  the endpoint no matter how many sessions changed (the rest are picked up next sweep).
+* **Failure backoff**: consecutive all-failure sweeps double the sleep (capped) so a down
+  endpoint is probed ever more gently; any success resets the cadence.
+
+Staleness semantics ride on Phase 1 unchanged: a failed review raises inside
+``run_review`` and persists NOTHING — ``reviewed_at``/``review_fingerprint`` only move on
+success, so the failed session stays "changed" and is retried next sweep while the UI
+keeps showing the last good result with its stale age.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import time
+
+from . import aitasks, metadata, prefs, review
+
+log = logging.getLogger("agent_sessions.ai_review_loop")
+
+# Hard per-sweep bound on SESSIONS reviewed (attempts, not successes — a failing endpoint
+# must not widen the sweep). Each reviewed session now makes up to TWO endpoint calls (#481):
+# the tail summary, then the whole-session recap — so the worst-case call budget per sweep is
+# 2 × SWEEP_CAP. Overflow sessions are picked up by the next sweep.
+SWEEP_CAP = 4
+
+# Pause between consecutive endpoint calls inside one sweep: serialization alone prevents
+# concurrency, the spacing keeps even a capped sweep from bursting.
+CALL_SPACING_S = 2.0
+
+# Backoff multiplier ceiling for consecutive all-failure sweeps (interval × up-to-8).
+_BACKOFF_MAX_MULT = 8
+
+# Grace between an early wake (a freshly created session) and the sweep it triggers: lets the
+# session's first output land so gather_input has something to hash (an empty session is a no-op
+# skip anyway), and coalesces a burst of new sessions into ONE sweep.
+KICK_GRACE_S = 3.0
+
+# Set by ``run`` once the loop is live; ``request_review_soon`` wakes the sweep through it. None
+# until the loop starts — a kick is then a safe no-op (env kill-switch off, or tests that drive
+# ``sweep`` directly).
+_wake: asyncio.Event | None = None
+
+
+def request_review_soon() -> None:
+    """Wake the review loop to sweep ahead of its interval (#413).
+
+    Called when a new session is created so its summary / ⚠ badge populate promptly instead of
+    waiting up to ``interval_minutes``. Keyless on purpose: it just advances the existing gated
+    sweep, which already skips disabled / unconfigured / unchanged / empty sessions — so a kick
+    can never force an endpoint call the periodic loop wouldn't have made. No-op until the loop
+    is armed and on the kill-switch path."""
+    if _wake is not None:
+        _wake.set()
+
+
+def loop_enabled() -> bool:
+    """Env kill-switch — overrides everything. ``AGENT_SESSIONS_AI_REVIEW_LOOP=0`` keeps
+    the background task from ever sweeping; any other value (default) arms the loop,
+    which is still a no-op per sweep until the prefs ``enabled`` flag + endpoint config
+    say go."""
+    return (os.environ.get("AGENT_SESSIONS_AI_REVIEW_LOOP", "1") or "1") != "0"
+
+
+def _configured(cfg: dict) -> bool:
+    return bool(str(cfg["base_url"]).strip()) and bool(cfg["api_key"])
+
+
+async def sweep(registry) -> tuple[list[str], int]:
+    """One review pass over the live registry. Returns ``(reviewed_keys, failures)``.
+
+    Re-reads prefs (enabled / configured / max_input_chars) so Settings changes apply
+    without a restart. Skips excluded and archived sessions, then skips any session whose
+    locally-computed fingerprint matches the stored one WITHOUT calling the endpoint.
+    Remaining candidates are reviewed strictly one at a time (small sleep between calls,
+    ``SWEEP_CAP`` attempts max). Safe to call directly from tests.
+    """
+    cfg = prefs.get_ai_review()
+    if not cfg["enabled"] or not _configured(cfg):
+        return [], 0
+    # Track the real work in the shared AI-activity registry (#441) — only PAST the gate, so a
+    # disabled/unconfigured sweep stays a silent no-op, not a phantom "review ran" entry.
+    async with aitasks.track("ai-review", "sweep"):
+        return await _sweep(registry, cfg)
+
+
+# Wall-clock of the last review ATTEMPT per key, successful or not. In-memory and best-effort:
+# it only orders a sweep, so losing it on restart costs nothing. It feeds BOTH sort keys (see
+# `_sort_key`): the primary one as `max(reviewed_at, attempt)`, and the tie-break on its own. That
+# is what keeps a session whose attempts persist nothing (a failed review, the #356 staleness
+# contract, or an `{"insufficient": true}` refusal) from monopolising the cap — `reviewed_at` alone
+# never advances for it, so it would stay the stalest and be retried ahead of everyone for ever.
+_LAST_ATTEMPT: dict[str, float] = {}
+
+
+def _sort_key(key: str, meta) -> tuple[float, float]:
+    """When the session was last SERVED — its last persisted review or its last attempt, whichever
+    is later — then the attempt alone as a tie-break.
+
+    The attempt has to count at the PRIMARY level. As a secondary key it only ordered sessions
+    within one `reviewed_at` bucket, so a never-reviewed session (`-inf`) whose attempts persist
+    nothing — a down endpoint, or a model answering `{"insufficient": true}` for an idle shell —
+    stayed ahead of every reviewed session for ever: four of them took all `SWEEP_CAP` attempts
+    on every sweep and a reviewed session with new work was never reached (Hermes on #1131).
+    """
+    reviewed = float("-inf") if meta.reviewed_at is None else float(meta.reviewed_at)
+    attempted = _LAST_ATTEMPT.get(key, float("-inf"))
+    return (max(reviewed, attempted), attempted)
+
+
+def _candidates(registry) -> list[tuple[str, object]]:
+    """The reviewable sessions in the registry, LEAST-RECENTLY-REVIEWED FIRST (#611).
+
+    ``registry.snapshot()`` is insertion-ordered (oldest session first, a brand-new one last)
+    and ``SWEEP_CAP`` bounds *attempts*, not successes. A session that changes every sweep —
+    any agent that is actively working — is therefore a candidate every sweep, and in insertion
+    order the first ``SWEEP_CAP`` busy sessions consume the whole budget forever. Anything
+    behind them is not merely delayed, it is starved: a freshly created session can sit at
+    ``(untitled)`` indefinitely while four older sessions churn.
+
+    Ordering by ``reviewed_at`` turns the cap into a fair rotation — never-reviewed sessions
+    (``None`` → ``-inf``) sort first, then the stalest — so every session is reached within
+    ``ceil(N / SWEEP_CAP)`` sweeps and the configured interval is honoured.
+
+    ``reviewed_at`` alone is not enough, though: a review that FAILS persists nothing, so the
+    session's ``reviewed_at`` never advances and it sorts first again next sweep. Four
+    never-reviewed sessions against a down endpoint would retry each other forever and the fifth
+    would never be attempted. So an attempt counts as service too (``_sort_key``): a session
+    attempted without a persisted result sorts by that attempt, behind anything not tried since —
+    never-tried sessions, and reviewed sessions whose last review is older.
+    """
+    out: list[tuple[str, object]] = []
+    live: set[str] = set()
+    for row in registry.snapshot():
+        key = row.get("id")
+        if not key:
+            continue
+        live.add(key)
+        try:
+            meta = metadata.get(metadata.resolve_key(key))
+        except Exception:
+            log.debug("ai-review: metadata read failed for %s — skipping", key, exc_info=True)
+            continue
+        if meta.review_excluded or meta.archived is True:
+            continue
+        out.append((key, meta))
+    for gone in _LAST_ATTEMPT.keys() - live:  # don't retain state for dead sessions
+        _LAST_ATTEMPT.pop(gone, None)
+    out.sort(key=lambda km: _sort_key(km[0], km[1]))
+    return out
+
+
+async def _sweep(registry, cfg: dict) -> tuple[list[str], int]:
+    """The actual review pass — called by :func:`sweep` only past its enable/configured gate."""
+    max_chars = int(cfg["max_input_chars"])
+    recap_chars = review.recap_input_chars(cfg)
+    # One alias-sidecar read per sweep, threaded through every gather (#611) rather than
+    # re-read per session per gather. Fail-soft: no aliases just means no placeholder→real
+    # resolution, i.e. the pre-#611 behaviour, never a failed sweep.
+    try:
+        aliases = metadata.load_aliases()
+    except Exception:
+        aliases = {}
+    reviewed: list[str] = []
+    failures = 0
+    attempts = 0
+    for key, meta in _candidates(registry):
+        if attempts >= SWEEP_CAP:
+            break
+        # Change detection BEFORE any network I/O: gather_input is exactly what
+        # run_review hashes+persists, so fingerprint equality ⇔ the endpoint would see
+        # the same input it already reviewed. Nothing to review / a gather error just
+        # skips the session (fail-soft, no endpoint call either way).
+        try:
+            _, fingerprint = await asyncio.to_thread(
+                review.gather_input, key, max_chars, aliases, require_transcript=True
+            )
+        except Exception:
+            # Includes ReviewError("nothing to review") — common for fresh/quiet
+            # sessions; never worth an endpoint call, never worth log spam. Also the session
+            # whose engine keeps a transcript but has no turn yet: its screen is a splash, and a
+            # review of it is a brief about missing input that outlives the first real turn.
+            log.debug("ai-review: no reviewable input for %s — skipping", key, exc_info=True)
+            continue
+        # The recap (#481) carries an INDEPENDENT fingerprint over the WHOLE-session transcript,
+        # so the summary fingerprint alone is not enough to decide freshness: a session whose
+        # tail summary is already current can still NEED a (re)view — the recap call failed last
+        # pass (its fingerprint never advanced), or a legacy session has a summary but no recap
+        # yet. Re-review when EITHER input no longer matches what was persisted, so a failed /
+        # absent recap is retried instead of being stranded until the tail changes. A recap-gather
+        # error (nothing to recap) never forces a review on the recap's account. The retry re-runs
+        # run_review wholesale (summary + recap); that's bounded by SWEEP_CAP and only happens
+        # while the recap is genuinely behind.
+        recap_stale = False
+        try:
+            _, recap_fp = await asyncio.to_thread(
+                review.gather_recap_input, key, recap_chars, aliases
+            )
+            recap_stale = recap_fp != meta.recap_fingerprint
+        except Exception:
+            log.debug("ai-review: no recap input for %s", key, exc_info=True)
+        if fingerprint == meta.review_fingerprint and not recap_stale:
+            continue
+        if attempts:
+            await asyncio.sleep(CALL_SPACING_S)
+        attempts += 1
+        # Stamp BEFORE the call: an attempt counts even if it fails (or raises), which is exactly
+        # the case `reviewed_at` cannot record and the case that would otherwise starve the queue.
+        _LAST_ATTEMPT[key] = time.time()
+        try:
+            await review.run_review(key, aliases)
+            reviewed.append(key)
+        except review.NotConfiguredError:
+            # Config cleared mid-sweep — nothing further can succeed this pass.
+            break
+        except review.InsufficientInputError:
+            # The model found no work to describe (prompts.INSUFFICIENT_CLAUSE). Nothing was
+            # written and the endpoint is fine, so it is neither a failure nor a backoff reason;
+            # the attempt stamp above moves the session behind every session served before it.
+            log.debug("ai-review: %s shows no work to describe yet", key)
+        except review.ReviewError as e:
+            # Fail-soft (#356): run_review persisted nothing, the session stays
+            # "changed" and is retried next sweep. Message is operator-safe (no key).
+            failures += 1
+            log.warning("ai-review failed for %s: %s", key, e)
+        except Exception:
+            failures += 1
+            log.exception("ai-review crashed for %s", key)
+    return reviewed, failures
+
+
+async def run(registry) -> None:
+    """Background review loop (started from the app lifespan, reaper pattern). Exits
+    immediately under the env kill-switch; otherwise sleeps ``interval_minutes`` (prefs,
+    re-read every iteration) × the failure-backoff multiplier between sweeps."""
+    global _wake
+    if not loop_enabled():
+        log.info("ai-review loop disabled (AGENT_SESSIONS_AI_REVIEW_LOOP=0)")
+        return
+    _wake = asyncio.Event()
+    log.info("ai-review loop armed (gated on the ai_review prefs per sweep)")
+    consecutive_failures = 0
+    while True:
+        interval_s = max(60, int(prefs.get_ai_review()["interval_minutes"]) * 60)
+        delay = interval_s * min(2**consecutive_failures, _BACKOFF_MAX_MULT)
+        # Sleep until the interval elapses OR a new session kicks us (request_review_soon).
+        # On an early wake, wait a short grace so the session's first output lands and a burst
+        # of new sessions coalesces into one sweep.
+        try:
+            await asyncio.wait_for(_wake.wait(), timeout=delay)
+            await asyncio.sleep(KICK_GRACE_S)
+        except TimeoutError:
+            pass  # normal interval — no kick
+        _wake.clear()
+        try:
+            reviewed, failures = await sweep(registry)
+        except Exception:
+            log.exception("ai-review sweep crashed")
+            continue
+        if failures and not reviewed:
+            consecutive_failures += 1
+        else:
+            consecutive_failures = 0
+        if reviewed:
+            log.info("ai-review sweep: reviewed %d session(s)", len(reviewed))

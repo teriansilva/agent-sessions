@@ -1,0 +1,407 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2000" height="2502" viewBox="0 0 2000 2502">
+<rect x="0" y="0" width="2000" height="2502" rx="0" fill="#0d0e10"/>
+<text x="40.0" y="44.0" fill="#ffb000" font-size="20" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="0.6" opacity="1">#993 — states: confirm, result, empty/error/busy, compaction, schedule consent, missions · light · phone</text>
+<text x="40.0" y="68.0" fill="#6f747d" font-size="12" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Static boards: layout and copy only. Text fit, focus visibility and 44 px hit areas are verified by the Playwright tests, not by these pictures.</text>
+<text x="40.0" y="104.0" fill="#ffb000" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.2" opacity="1">A1 · PRUNE — CONFIRM</text>
+<text x="208.4" y="104.0" fill="#6f747d" font-size="11" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">the confirm replaces the button in place</text>
+<rect x="40.0" y="116.0" width="600.0" height="153.0" rx="0" fill="#131418" stroke="#25282e" stroke-width="1" opacity="1"/>
+<rect x="58.0" y="132.0" width="3.0" height="13.0" rx="0" fill="#ffb000" opacity="1"/>
+<text x="69.0" y="143.5" fill="#a7abb3" font-size="12" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.2" opacity="1">PRUNE</text>
+<text x="58.0" y="171.0" fill="#e8e9ec" font-size="13" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Permanently remove 471 items (180 MB)?</text>
+<text x="58.0" y="189.0" fill="#6f747d" font-size="12" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Stale terminal sockets · Archived sessions’ scrollback. Session history is not</text>
+<text x="58.0" y="206.0" fill="#6f747d" font-size="12" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">touched.</text>
+<rect x="58.0" y="221.0" width="121.0" height="32.0" rx="0" fill="#5a2018" stroke="#8a3324" stroke-width="1" opacity="1"/>
+<text x="118.5" y="241.5" fill="#ffd9d2" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="bold" text-anchor="middle" letter-spacing="0" opacity="1">Confirm prune</text>
+<rect x="187.0" y="221.0" width="72.0" height="32.0" rx="0" fill="#1a1c21" stroke="#25282e" stroke-width="1" opacity="1"/>
+<text x="223.0" y="241.5" fill="#e8e9ec" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="middle" letter-spacing="0" opacity="1">Cancel</text>
+<text x="40.0" y="303.0" fill="#ffb000" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.2" opacity="1">A2 · PRUNE — RESULT</text>
+<text x="200.6" y="303.0" fill="#6f747d" font-size="11" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">a held socket is skipped, never forced</text>
+<rect x="40.0" y="315.0" width="600.0" height="96.0" rx="0" fill="#131418" stroke="#25282e" stroke-width="1" opacity="1"/>
+<rect x="58.0" y="331.0" width="3.0" height="13.0" rx="0" fill="#ffb000" opacity="1"/>
+<text x="69.0" y="342.5" fill="#a7abb3" font-size="12" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.2" opacity="1">PRUNE</text>
+<circle cx="62.0" cy="366.0" r="4" fill="#3fbf6f"/>
+<text x="74.0" y="369.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Removed 469 items (180 MB freed).</text>
+<circle cx="62.0" cy="385.0" r="4" fill="#6f747d"/>
+<text x="74.0" y="388.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Skipped 2 sockets: a live session holds their lock.</text>
+<text x="40.0" y="445.0" fill="#ffb000" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.2" opacity="1">A3 · PRUNE — EMPTY / ERROR / BUSY</text>
+<text x="310.1" y="445.0" fill="#6f747d" font-size="11" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">one runner; a second run is refused</text>
+<rect x="40.0" y="457.0" width="600.0" height="294.0" rx="0" fill="#131418" stroke="#25282e" stroke-width="1" opacity="1"/>
+<rect x="58.0" y="473.0" width="3.0" height="13.0" rx="0" fill="#ffb000" opacity="1"/>
+<text x="69.0" y="484.5" fill="#a7abb3" font-size="12" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.2" opacity="1">PRUNE</text>
+<circle cx="62.0" cy="508.0" r="4" fill="#6f747d"/>
+<text x="74.0" y="511.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Nothing to prune right now.</text>
+<rect x="58.0" y="524.0" width="156.0" height="32.0" rx="0" fill="#1a1c21" stroke="#25282e" stroke-width="1" opacity="0.4"/>
+<text x="136.0" y="544.5" fill="#e8e9ec" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="middle" letter-spacing="0" opacity="0.4">Prune selected (0)</text>
+<line x1="58.0" y1="568.0" x2="622.0" y2="568.0" stroke="#23262c" stroke-width="1"/>
+<circle cx="62.0" cy="589.0" r="4" fill="#c02020"/>
+<text x="74.0" y="592.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Couldn’t measure the caches (dry run failed). Nothing was removed.</text>
+<rect x="58.0" y="605.0" width="65.0" height="32.0" rx="0" fill="#1a1c21" stroke="#25282e" stroke-width="1" opacity="1"/>
+<text x="90.5" y="625.5" fill="#e8e9ec" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="middle" letter-spacing="0" opacity="1">Retry</text>
+<line x1="58.0" y1="649.0" x2="622.0" y2="649.0" stroke="#23262c" stroke-width="1"/>
+<circle cx="62.0" cy="670.0" r="4" fill="#f59e0b"/>
+<text x="74.0" y="673.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">A prune is already running (started by the schedule at 03:00). Its result</text>
+<text x="74.0" y="690.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">appears here when it finishes.</text>
+<rect x="58.0" y="703.0" width="156.0" height="32.0" rx="0" fill="#1a1c21" stroke="#25282e" stroke-width="1" opacity="0.4"/>
+<text x="136.0" y="723.5" fill="#e8e9ec" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="middle" letter-spacing="0" opacity="0.4">Prune selected (2)</text>
+<text x="40.0" y="785.0" fill="#ffb000" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.2" opacity="1">A4 · COMPACTION — READY</text>
+<text x="231.9" y="785.0" fill="#6f747d" font-size="11" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">idle, space to reclaim, disk budget met</text>
+<rect x="40.0" y="797.0" width="600.0" height="256.0" rx="0" fill="#131418" stroke="#25282e" stroke-width="1" opacity="1"/>
+<rect x="58.0" y="813.0" width="3.0" height="13.0" rx="0" fill="#ffb000" opacity="1"/>
+<text x="69.0" y="824.5" fill="#a7abb3" font-size="12" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.2" opacity="1">PRUNE</text>
+<text x="58.0" y="849.0" fill="#6f747d" font-size="10" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.4" opacity="1">OPENCODE DATABASE</text>
+<text x="58.0" y="875.0" fill="#6f747d" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0.6" opacity="1">SIZE</text>
+<text x="94.1" y="875.0" fill="#e8e9ec" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="0" opacity="1">12.4 GiB</text>
+<text x="153.7" y="875.0" fill="#6f747d" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">//</text>
+<text x="173.6" y="875.0" fill="#6f747d" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0.6" opacity="1">RECLAIMABLE</text>
+<text x="260.2" y="875.0" fill="#e8e9ec" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="0" opacity="1">3.1 GiB</text>
+<text x="313.2" y="875.0" fill="#6f747d" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">//</text>
+<text x="333.1" y="875.0" fill="#6f747d" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0.6" opacity="1">HOLDERS</text>
+<text x="390.9" y="875.0" fill="#e8e9ec" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="0" opacity="1">0</text>
+<circle cx="62.0" cy="896.0" r="4" fill="#3fbf6f"/>
+<text x="74.0" y="899.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">No process has the database open.</text>
+<text x="74.0" y="918.0" fill="#6f747d" font-size="12" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">While compacting, BattleLab won’t start opencode sessions. An opencode started</text>
+<text x="74.0" y="935.0" fill="#6f747d" font-size="12" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">outside BattleLab may report “database busy”; the file stays consistent.</text>
+<text x="74.0" y="956.0" fill="#6f747d" font-size="12" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Disk: database and temp directory share one filesystem, so it needs 3 × 12.4 GiB</text>
+<text x="74.0" y="973.0" fill="#6f747d" font-size="12" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">= 37.2 GiB free (246 GiB available). On separate filesystems it would need 2 ×</text>
+<text x="74.0" y="990.0" fill="#6f747d" font-size="12" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">12.4 GiB on the database disk and 12.4 GiB on the temp disk.</text>
+<rect x="58.0" y="1005.0" width="142.0" height="32.0" rx="0" fill="#ffb000" opacity="1"/>
+<text x="129.0" y="1025.5" fill="#120c00" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="bold" text-anchor="middle" letter-spacing="0" opacity="1">Compact database</text>
+<text x="40.0" y="1087.0" fill="#ffb000" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.2" opacity="1">A5 · COMPACTION — RUNNING / DONE / STOPPED / UNKNOWN / LAUNCHING</text>
+<rect x="40.0" y="1099.0" width="600.0" height="517.0" rx="0" fill="#131418" stroke="#25282e" stroke-width="1" opacity="1"/>
+<rect x="58.0" y="1115.0" width="3.0" height="13.0" rx="0" fill="#ffb000" opacity="1"/>
+<text x="69.0" y="1126.5" fill="#a7abb3" font-size="12" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.2" opacity="1">PRUNE</text>
+<circle cx="62.0" cy="1150.0" r="4" fill="#f59e0b"/>
+<text x="74.0" y="1153.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Compacting since 16:20. BattleLab won’t start opencode sessions until this</text>
+<text x="74.0" y="1170.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">finishes.</text>
+<rect x="58.0" y="1183.0" width="107.0" height="32.0" rx="0" fill="#1a1c21" stroke="#25282e" stroke-width="1" opacity="0.4"/>
+<text x="111.5" y="1203.5" fill="#e8e9ec" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="middle" letter-spacing="0" opacity="0.4">Compacting…</text>
+<line x1="58.0" y1="1227.0" x2="622.0" y2="1227.0" stroke="#23262c" stroke-width="1"/>
+<circle cx="62.0" cy="1248.0" r="4" fill="#3fbf6f"/>
+<text x="74.0" y="1251.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Compacted: 3.1 GiB reclaimed.</text>
+<circle cx="62.0" cy="1273.0" r="4" fill="#6f747d"/>
+<text x="74.0" y="1276.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">WAL checkpoint deferred: a reader is still active. The WAL shrinks at</text>
+<text x="74.0" y="1293.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">opencode’s next checkpoint; nothing needs to be done.</text>
+<line x1="58.0" y1="1318.0" x2="622.0" y2="1318.0" stroke="#23262c" stroke-width="1"/>
+<circle cx="62.0" cy="1339.0" r="4" fill="#c02020"/>
+<text x="74.0" y="1342.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Stopped before compacting: the database became busy. VACUUM rolled back,</text>
+<text x="74.0" y="1359.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">nothing was changed.</text>
+<rect x="58.0" y="1372.0" width="142.0" height="32.0" rx="0" fill="#1a1c21" stroke="#25282e" stroke-width="1" opacity="1"/>
+<text x="129.0" y="1392.5" fill="#e8e9ec" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="middle" letter-spacing="0" opacity="1">Compact database</text>
+<line x1="58.0" y1="1416.0" x2="622.0" y2="1416.0" stroke="#23262c" stroke-width="1"/>
+<circle cx="62.0" cy="1437.0" r="4" fill="#6f747d"/>
+<text x="74.0" y="1440.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Can’t tell whether the database is in use (process list unreadable), so it is</text>
+<text x="74.0" y="1457.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">treated as busy.</text>
+<rect x="58.0" y="1470.0" width="142.0" height="32.0" rx="0" fill="#1a1c21" stroke="#25282e" stroke-width="1" opacity="0.4"/>
+<text x="129.0" y="1490.5" fill="#e8e9ec" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="middle" letter-spacing="0" opacity="0.4">Compact database</text>
+<line x1="58.0" y1="1514.0" x2="622.0" y2="1514.0" stroke="#23262c" stroke-width="1"/>
+<circle cx="62.0" cy="1535.0" r="4" fill="#f59e0b"/>
+<text x="74.0" y="1538.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">An opencode session is being launched right now. Try again once it has</text>
+<text x="74.0" y="1555.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">started.</text>
+<rect x="58.0" y="1568.0" width="142.0" height="32.0" rx="0" fill="#1a1c21" stroke="#25282e" stroke-width="1" opacity="0.4"/>
+<text x="129.0" y="1588.5" fill="#e8e9ec" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="middle" letter-spacing="0" opacity="0.4">Compact database</text>
+<text x="40.0" y="1650.0" fill="#ffb000" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.2" opacity="1">A6 · MISSIONS — CONFIRM</text>
+<text x="231.9" y="1650.0" fill="#6f747d" font-size="11" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">names the side effects before anything stops</text>
+<rect x="40.0" y="1662.0" width="600.0" height="153.0" rx="0" fill="#131418" stroke="#25282e" stroke-width="1" opacity="1"/>
+<rect x="58.0" y="1678.0" width="3.0" height="13.0" rx="0" fill="#ffb000" opacity="1"/>
+<text x="69.0" y="1689.5" fill="#a7abb3" font-size="12" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.2" opacity="1">ARCHIVE OLD MISSIONS</text>
+<text x="58.0" y="1717.0" fill="#e8e9ec" font-size="13" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Archive 9 missions older than 30 days?</text>
+<text x="58.0" y="1735.0" fill="#6f747d" font-size="12" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">23 sessions are archived with them and 5 live terminals will be stopped. 1 mission</text>
+<text x="58.0" y="1752.0" fill="#6f747d" font-size="12" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">has an unresolved turn and will be skipped.</text>
+<rect x="58.0" y="1767.0" width="135.0" height="32.0" rx="0" fill="#5a2018" stroke="#8a3324" stroke-width="1" opacity="1"/>
+<text x="125.5" y="1787.5" fill="#ffd9d2" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="bold" text-anchor="middle" letter-spacing="0" opacity="1">Confirm archive</text>
+<rect x="201.0" y="1767.0" width="72.0" height="32.0" rx="0" fill="#1a1c21" stroke="#25282e" stroke-width="1" opacity="1"/>
+<text x="237.0" y="1787.5" fill="#e8e9ec" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="middle" letter-spacing="0" opacity="1">Cancel</text>
+<text x="40.0" y="1849.0" fill="#ffb000" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.2" opacity="1">A7 · MISSIONS — RESULT</text>
+<text x="224.1" y="1849.0" fill="#6f747d" font-size="11" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">skips and failures are named, not folded into success</text>
+<rect x="40.0" y="1861.0" width="600.0" height="237.0" rx="0" fill="#131418" stroke="#25282e" stroke-width="1" opacity="1"/>
+<rect x="58.0" y="1877.0" width="3.0" height="13.0" rx="0" fill="#ffb000" opacity="1"/>
+<text x="69.0" y="1888.5" fill="#a7abb3" font-size="12" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.2" opacity="1">ARCHIVE OLD MISSIONS</text>
+<text x="58.0" y="1915.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Archive finished missions (done, failed or abandoned). Their sessions are</text>
+<text x="58.0" y="1932.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">archived with them: live terminals are stopped, transcripts are kept. A mission</text>
+<text x="58.0" y="1949.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">with an unresolved turn is skipped. Archived missions can be unarchived.</text>
+<text x="58.0" y="1984.0" fill="#a7abb3" font-size="13" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Older than</text>
+<rect x="130.0" y="1964.0" width="64.0" height="30.0" rx="0" fill="#08090b" stroke="#25282e" stroke-width="1" opacity="1"/>
+<text x="139.0" y="1983.5" fill="#e8e9ec" font-size="13" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">30</text>
+<text x="202.0" y="1984.0" fill="#a7abb3" font-size="13" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">days</text>
+<rect x="244.0" y="1963.0" width="149.0" height="32.0" rx="0" fill="#1a1c21" stroke="#25282e" stroke-width="1" opacity="1"/>
+<text x="318.5" y="1983.5" fill="#e8e9ec" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="middle" letter-spacing="0" opacity="1">Archive older (9)</text>
+<text x="405.0" y="1984.0" fill="#6f747d" font-size="12" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">23 sessions · 5 live</text>
+<circle cx="62.0" cy="2017.0" r="4" fill="#3fbf6f"/>
+<text x="74.0" y="2020.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Archived 8 missions and 22 of their sessions; stopped 5 live terminals.</text>
+<circle cx="62.0" cy="2036.0" r="4" fill="#6f747d"/>
+<text x="74.0" y="2039.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Skipped 1: an unresolved turn. Resolve it in Mission control first.</text>
+<circle cx="62.0" cy="2055.0" r="4" fill="#c02020"/>
+<text x="74.0" y="2058.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">1 session could not be archived. Its mission is archived and the timeline</text>
+<text x="74.0" y="2075.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">names it.</text>
+<text x="40.0" y="2132.0" fill="#ffb000" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.2" opacity="1">A8 · MISSIONS — EMPTY / ERROR / BUSY</text>
+<text x="333.6" y="2132.0" fill="#6f747d" font-size="11" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">same three states as Prune</text>
+<rect x="40.0" y="2144.0" width="600.0" height="294.0" rx="0" fill="#131418" stroke="#25282e" stroke-width="1" opacity="1"/>
+<rect x="58.0" y="2160.0" width="3.0" height="13.0" rx="0" fill="#ffb000" opacity="1"/>
+<text x="69.0" y="2171.5" fill="#a7abb3" font-size="12" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.2" opacity="1">ARCHIVE OLD MISSIONS</text>
+<circle cx="62.0" cy="2195.0" r="4" fill="#6f747d"/>
+<text x="74.0" y="2198.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">No finished missions older than 30 days.</text>
+<rect x="58.0" y="2211.0" width="149.0" height="32.0" rx="0" fill="#1a1c21" stroke="#25282e" stroke-width="1" opacity="0.4"/>
+<text x="132.5" y="2231.5" fill="#e8e9ec" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="middle" letter-spacing="0" opacity="0.4">Archive older (0)</text>
+<line x1="58.0" y1="2255.0" x2="622.0" y2="2255.0" stroke="#23262c" stroke-width="1"/>
+<circle cx="62.0" cy="2276.0" r="4" fill="#c02020"/>
+<text x="74.0" y="2279.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Couldn’t count missions (dry run failed). Nothing was archived.</text>
+<rect x="58.0" y="2292.0" width="65.0" height="32.0" rx="0" fill="#1a1c21" stroke="#25282e" stroke-width="1" opacity="1"/>
+<text x="90.5" y="2312.5" fill="#e8e9ec" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="middle" letter-spacing="0" opacity="1">Retry</text>
+<line x1="58.0" y1="2336.0" x2="622.0" y2="2336.0" stroke="#23262c" stroke-width="1"/>
+<circle cx="62.0" cy="2357.0" r="4" fill="#f59e0b"/>
+<text x="74.0" y="2360.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">A maintenance run is in progress (started by the schedule at 03:00). Mission</text>
+<text x="74.0" y="2377.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">archival waits for it to finish.</text>
+<rect x="58.0" y="2390.0" width="149.0" height="32.0" rx="0" fill="#1a1c21" stroke="#25282e" stroke-width="1" opacity="0.4"/>
+<text x="132.5" y="2410.5" fill="#e8e9ec" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="middle" letter-spacing="0" opacity="0.4">Archive older (9)</text>
+<rect x="700.0" y="90.0" width="600.0" height="917.0" rx="0" fill="#e7e8ea" stroke="#c9ccd2" stroke-width="1" opacity="1"/>
+<text x="720.0" y="104.0" fill="#ffb000" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.2" opacity="1">B1 · LIGHT — DESKTOP</text>
+<text x="888.4" y="104.0" fill="#6f747d" font-size="11" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">data-theme=&quot;light&quot;</text>
+<rect x="720.0" y="116.0" width="560.0" height="681.0" rx="0" fill="#f2f3f5" stroke="#c9ccd2" stroke-width="1" opacity="1"/>
+<rect x="738.0" y="132.0" width="3.0" height="13.0" rx="0" fill="#ffb000" opacity="1"/>
+<text x="749.0" y="143.5" fill="#41454d" font-size="12" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.2" opacity="1">PRUNE</text>
+<text x="738.0" y="170.5" fill="#41454d" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Remove BattleLab’s own leftovers. Session history is never deleted, and</text>
+<text x="738.0" y="187.5" fill="#41454d" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">nothing is removed until you confirm. Sizes are a dry run.</text>
+<text x="738.0" y="214.0" fill="#6f747d" font-size="10" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.4" opacity="1">CACHES</text>
+<line x1="738.0" y1="224.0" x2="1262.0" y2="224.0" stroke="#d9dce1" stroke-width="1"/>
+<rect x="738.0" y="237.0" width="14.0" height="14.0" rx="0" fill="#ffb000" stroke="#ffb000" stroke-width="1" opacity="1"/>
+<path d="M741 244.5 L744 247.5 L749 241" stroke="#120c00" stroke-width="2" fill="none"/>
+<text x="762.0" y="249.0" fill="#14161a" font-size="13" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Stale terminal sockets</text>
+<text x="762.0" y="266.0" fill="#6f747d" font-size="11" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">No live session behind them. A socket a new session holds is never touched.</text>
+<text x="1262.0" y="249.0" fill="#41454d" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="end" letter-spacing="0" opacity="1">159 · 38 KB</text>
+<line x1="738.0" y1="278.0" x2="1262.0" y2="278.0" stroke="#d9dce1" stroke-width="1"/>
+<rect x="738.0" y="291.0" width="14.0" height="14.0" rx="0" fill="#dfe1e4" stroke="#c9ccd2" stroke-width="1" opacity="1"/>
+<text x="762.0" y="303.0" fill="#14161a" font-size="13" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Archived sessions’ scrollback</text>
+<text x="762.0" y="320.0" fill="#6f747d" font-size="11" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Same as Scrollback cache → Clear archived sessions’ cache.</text>
+<text x="1262.0" y="303.0" fill="#41454d" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="end" letter-spacing="0" opacity="1">312 files · 180 MB</text>
+<line x1="738.0" y1="332.0" x2="1262.0" y2="332.0" stroke="#d9dce1" stroke-width="1"/>
+<rect x="738.0" y="346.0" width="156.0" height="32.0" rx="0" fill="#ffffff" stroke="#c9ccd2" stroke-width="1" opacity="1"/>
+<text x="816.0" y="366.5" fill="#14161a" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="middle" letter-spacing="0" opacity="1">Prune selected (1)</text>
+<text x="906.0" y="367.0" fill="#6f747d" font-size="12" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">159 items · 38 KB</text>
+<text x="738.0" y="412.0" fill="#6f747d" font-size="10" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.4" opacity="1">OPENCODE DATABASE</text>
+<text x="738.0" y="438.0" fill="#6f747d" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0.6" opacity="1">SIZE</text>
+<text x="774.1" y="438.0" fill="#14161a" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="0" opacity="1">37.1 GiB</text>
+<text x="833.7" y="438.0" fill="#6f747d" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">//</text>
+<text x="853.6" y="438.0" fill="#6f747d" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0.6" opacity="1">RECLAIMABLE</text>
+<text x="940.2" y="438.0" fill="#14161a" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="0" opacity="1">0 B</text>
+<text x="966.7" y="438.0" fill="#6f747d" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">//</text>
+<text x="986.6" y="438.0" fill="#6f747d" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0.6" opacity="1">HOLDERS</text>
+<text x="1044.4" y="438.0" fill="#14161a" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="0" opacity="1">13</text>
+<circle cx="742.0" cy="459.0" r="4" fill="#f59e0b"/>
+<text x="754.0" y="462.5" fill="#41454d" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Can’t compact: 13 opencode processes have the database open.</text>
+<circle cx="742.0" cy="480.0" r="4" fill="#6f747d"/>
+<text x="754.0" y="483.5" fill="#41454d" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Nothing to reclaim yet: space frees only after opencode itself deletes</text>
+<text x="754.0" y="500.5" fill="#41454d" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">data.</text>
+<rect x="738.0" y="515.0" width="142.0" height="32.0" rx="0" fill="#ffffff" stroke="#c9ccd2" stroke-width="1" opacity="0.4"/>
+<text x="809.0" y="535.5" fill="#14161a" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="middle" letter-spacing="0" opacity="0.4">Compact database</text>
+<text x="738.0" y="581.0" fill="#6f747d" font-size="10" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.4" opacity="1">SCHEDULE</text>
+<rect x="738.0" y="593.0" width="42.5" height="24.0" rx="0" fill="#ffb000" stroke="#c9ccd2" stroke-width="1" opacity="1"/>
+<text x="759.2" y="609.0" fill="#120c00" font-size="10" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="middle" letter-spacing="0.8" opacity="1">OFF</text>
+<rect x="780.5" y="593.0" width="35.6" height="24.0" rx="0" fill="#ffffff" stroke="#c9ccd2" stroke-width="1" opacity="1"/>
+<text x="798.3" y="609.0" fill="#41454d" font-size="10" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="middle" letter-spacing="0.8" opacity="1">ON</text>
+<text x="828.1" y="610.0" fill="#14161a" font-size="13" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Run automatically</text>
+<text x="1262.0" y="610.0" fill="#6f747d" font-size="11" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="end" letter-spacing="0" opacity="1">Off by default</text>
+<g opacity="0.5">
+<text x="738.0" y="651.0" fill="#41454d" font-size="13" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Every</text>
+<rect x="784.0" y="631.0" width="56.0" height="30.0" rx="0" fill="#dfe1e4" stroke="#c9ccd2" stroke-width="1" opacity="1"/>
+<text x="793.0" y="650.5" fill="#14161a" font-size="13" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">24</text>
+<text x="848.0" y="651.0" fill="#41454d" font-size="13" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">hours</text>
+<rect x="738.0" y="677.0" width="14.0" height="14.0" rx="0" fill="#ffb000" stroke="#ffb000" stroke-width="1" opacity="1"/>
+<path d="M741 684.5 L744 687.5 L749 681" stroke="#120c00" stroke-width="2" fill="none"/>
+<text x="760.0" y="689.0" fill="#41454d" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Stale sockets</text>
+<rect x="873.0" y="677.0" width="14.0" height="14.0" rx="0" fill="#dfe1e4" stroke="#c9ccd2" stroke-width="1" opacity="1"/>
+<text x="895.0" y="689.0" fill="#41454d" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Archived scrollback</text>
+<rect x="738.0" y="703.0" width="14.0" height="14.0" rx="0" fill="#dfe1e4" stroke="#c9ccd2" stroke-width="1" opacity="1"/>
+<text x="760.0" y="715.0" fill="#41454d" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Compact database, only if idle at run time</text>
+<rect x="738.0" y="735.0" width="14.0" height="14.0" rx="0" fill="#dfe1e4" stroke="#c9ccd2" stroke-width="1" opacity="1"/>
+<text x="760.0" y="747.0" fill="#41454d" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Also archive finished missions older than</text>
+<rect x="1055.0" y="727.0" width="48.0" height="30.0" rx="0" fill="#dfe1e4" stroke="#c9ccd2" stroke-width="1" opacity="1"/>
+<text x="1064.0" y="746.5" fill="#14161a" font-size="13" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">30</text>
+<text x="1111.0" y="747.0" fill="#41454d" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">days</text>
+</g>
+<text x="738.0" y="775.0" fill="#6f747d" font-size="10" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.2" opacity="1">LAST RUN</text>
+<text x="807.0" y="775.0" fill="#41454d" font-size="10" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">// never</text>
+<rect x="720.0" y="819.0" width="560.0" height="168.0" rx="0" fill="#f2f3f5" stroke="#c9ccd2" stroke-width="1" opacity="1"/>
+<rect x="738.0" y="835.0" width="3.0" height="13.0" rx="0" fill="#ffb000" opacity="1"/>
+<text x="749.0" y="846.5" fill="#41454d" font-size="12" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.2" opacity="1">ARCHIVE OLD MISSIONS</text>
+<text x="738.0" y="873.5" fill="#41454d" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Archive finished missions (done, failed or abandoned). Their sessions are</text>
+<text x="738.0" y="890.5" fill="#41454d" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">archived with them: live terminals are stopped, transcripts are kept. A</text>
+<text x="738.0" y="907.5" fill="#41454d" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">mission with an unresolved turn is skipped. Archived missions can be</text>
+<text x="738.0" y="924.5" fill="#41454d" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">unarchived.</text>
+<text x="738.0" y="959.0" fill="#41454d" font-size="13" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Older than</text>
+<rect x="810.0" y="939.0" width="64.0" height="30.0" rx="0" fill="#dfe1e4" stroke="#c9ccd2" stroke-width="1" opacity="1"/>
+<text x="819.0" y="958.5" fill="#14161a" font-size="13" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">30</text>
+<text x="882.0" y="959.0" fill="#41454d" font-size="13" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">days</text>
+<rect x="924.0" y="938.0" width="149.0" height="32.0" rx="0" fill="#ffffff" stroke="#c9ccd2" stroke-width="1" opacity="1"/>
+<text x="998.5" y="958.5" fill="#14161a" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="middle" letter-spacing="0" opacity="1">Archive older (9)</text>
+<text x="1085.0" y="959.0" fill="#6f747d" font-size="12" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">23 sessions · 5 live</text>
+<text x="700.0" y="1041.0" fill="#ffb000" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.2" opacity="1">B2 · SCHEDULE — CONSENT</text>
+<text x="891.9" y="1041.0" fill="#6f747d" font-size="11" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">turning it on lists exactly what will run unattended</text>
+<rect x="700.0" y="1053.0" width="600.0" height="247.0" rx="0" fill="#131418" stroke="#25282e" stroke-width="1" opacity="1"/>
+<rect x="718.0" y="1069.0" width="3.0" height="13.0" rx="0" fill="#ffb000" opacity="1"/>
+<text x="729.0" y="1080.5" fill="#a7abb3" font-size="12" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.2" opacity="1">PRUNE</text>
+<text x="718.0" y="1105.0" fill="#6f747d" font-size="10" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.4" opacity="1">SCHEDULE</text>
+<text x="718.0" y="1130.0" fill="#e8e9ec" font-size="13" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Turn on automatic pruning?</text>
+<text x="718.0" y="1150.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Every 24 hours BattleLab will:</text>
+<text x="718.0" y="1168.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">· remove stale terminal sockets and archived sessions’ scrollback</text>
+<text x="718.0" y="1186.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">· compact the opencode database if it is idle at that moment (opencode launches</text>
+<text x="718.0" y="1203.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">wait while it runs)</text>
+<text x="718.0" y="1221.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">· archive finished missions older than 30 days, stopping their sessions’ live</text>
+<text x="718.0" y="1238.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">terminals</text>
+<rect x="718.0" y="1252.0" width="142.0" height="32.0" rx="0" fill="#ffb000" opacity="1"/>
+<text x="789.0" y="1272.5" fill="#120c00" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="bold" text-anchor="middle" letter-spacing="0" opacity="1">Turn on schedule</text>
+<rect x="868.0" y="1252.0" width="72.0" height="32.0" rx="0" fill="#1a1c21" stroke="#25282e" stroke-width="1" opacity="1"/>
+<text x="904.0" y="1272.5" fill="#e8e9ec" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="middle" letter-spacing="0" opacity="1">Cancel</text>
+<text x="700.0" y="1334.0" fill="#ffb000" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.2" opacity="1">B3 · SCHEDULE — ON</text>
+<text x="852.8" y="1334.0" fill="#6f747d" font-size="11" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">LAST RUN names what it skipped and why</text>
+<rect x="700.0" y="1346.0" width="600.0" height="255.0" rx="0" fill="#131418" stroke="#25282e" stroke-width="1" opacity="1"/>
+<rect x="718.0" y="1362.0" width="3.0" height="13.0" rx="0" fill="#ffb000" opacity="1"/>
+<text x="729.0" y="1373.5" fill="#a7abb3" font-size="12" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.2" opacity="1">PRUNE</text>
+<text x="718.0" y="1398.0" fill="#6f747d" font-size="10" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.4" opacity="1">SCHEDULE</text>
+<rect x="718.0" y="1410.0" width="42.5" height="24.0" rx="0" fill="#1a1c21" stroke="#25282e" stroke-width="1" opacity="1"/>
+<text x="739.2" y="1426.0" fill="#a7abb3" font-size="10" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="middle" letter-spacing="0.8" opacity="1">OFF</text>
+<rect x="760.5" y="1410.0" width="35.6" height="24.0" rx="0" fill="#ffb000" stroke="#25282e" stroke-width="1" opacity="1"/>
+<text x="778.3" y="1426.0" fill="#120c00" font-size="10" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="middle" letter-spacing="0.8" opacity="1">ON</text>
+<text x="808.1" y="1427.0" fill="#e8e9ec" font-size="13" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Run automatically</text>
+<text x="718.0" y="1468.0" fill="#a7abb3" font-size="13" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Every</text>
+<rect x="764.0" y="1448.0" width="56.0" height="30.0" rx="0" fill="#08090b" stroke="#25282e" stroke-width="1" opacity="1"/>
+<text x="773.0" y="1467.5" fill="#e8e9ec" font-size="13" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">24</text>
+<text x="828.0" y="1468.0" fill="#a7abb3" font-size="13" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">hours</text>
+<rect x="718.0" y="1494.0" width="14.0" height="14.0" rx="0" fill="#ffb000" stroke="#ffb000" stroke-width="1" opacity="1"/>
+<path d="M721 1501.5 L724 1504.5 L729 1498" stroke="#120c00" stroke-width="2" fill="none"/>
+<text x="740.0" y="1506.0" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Stale sockets</text>
+<rect x="853.0" y="1494.0" width="14.0" height="14.0" rx="0" fill="#ffb000" stroke="#ffb000" stroke-width="1" opacity="1"/>
+<path d="M856.0 1501.5 L859.0 1504.5 L864.0 1498" stroke="#120c00" stroke-width="2" fill="none"/>
+<text x="875.0" y="1506.0" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Archived scrollback</text>
+<rect x="1030.0" y="1494.0" width="14.0" height="14.0" rx="0" fill="#ffb000" stroke="#ffb000" stroke-width="1" opacity="1"/>
+<path d="M1033.0 1501.5 L1036.0 1504.5 L1041.0 1498" stroke="#120c00" stroke-width="2" fill="none"/>
+<text x="1052.0" y="1506.0" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Compact database, only if idle</text>
+<rect x="718.0" y="1524.0" width="14.0" height="14.0" rx="0" fill="#ffb000" stroke="#ffb000" stroke-width="1" opacity="1"/>
+<path d="M721 1531.5 L724 1534.5 L729 1528" stroke="#120c00" stroke-width="2" fill="none"/>
+<text x="740.0" y="1536.0" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Also archive finished missions older than</text>
+<rect x="1035.0" y="1516.0" width="48.0" height="30.0" rx="0" fill="#08090b" stroke="#25282e" stroke-width="1" opacity="1"/>
+<text x="1044.0" y="1535.5" fill="#e8e9ec" font-size="13" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">30</text>
+<text x="1091.0" y="1536.0" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">days</text>
+<text x="718.0" y="1566.0" fill="#6f747d" font-size="10" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.2" opacity="1">LAST RUN</text>
+<text x="798.0" y="1565.0" fill="#a7abb3" font-size="10" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">// today 03:00 · removed 412 items · 1.6 MB freed · archived 2 missions ·</text>
+<text x="798.0" y="1580.0" fill="#a7abb3" font-size="10" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">compaction skipped: database in use (13 processes) · next run 03:00 tomorrow</text>
+<rect x="1340.0" y="116.0" width="320.0" height="1001.0" rx="0" fill="#0d0e10" stroke="#25282e" stroke-width="1" opacity="1"/>
+<text x="1340.0" y="104.0" fill="#ffb000" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.2" opacity="1">C1 · PHONE — DARK</text>
+<rect x="1340.0" y="116.0" width="320.0" height="48.0" rx="0" fill="#131418" stroke="#25282e" stroke-width="1" opacity="1"/>
+<text x="1356.0" y="146.0" fill="#e8e9ec" font-size="20" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">‹</text>
+<text x="1376.0" y="145.0" fill="#e8e9ec" font-size="12" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.4" opacity="1">MAINTENANCE</text>
+<rect x="1350.0" y="176.0" width="300.0" height="929.0" rx="0" fill="#131418" stroke="#25282e" stroke-width="1" opacity="1"/>
+<rect x="1368.0" y="192.0" width="3.0" height="13.0" rx="0" fill="#ffb000" opacity="1"/>
+<text x="1379.0" y="203.5" fill="#a7abb3" font-size="12" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.2" opacity="1">PRUNE</text>
+<text x="1368.0" y="230.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Remove BattleLab’s own leftovers.</text>
+<text x="1368.0" y="247.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Session history is never deleted, and</text>
+<text x="1368.0" y="264.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">nothing is removed until you confirm.</text>
+<text x="1368.0" y="281.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Sizes are a dry run.</text>
+<text x="1368.0" y="308.0" fill="#6f747d" font-size="10" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.4" opacity="1">CACHES</text>
+<line x1="1368.0" y1="318.0" x2="1632.0" y2="318.0" stroke="#23262c" stroke-width="1"/>
+<rect x="1368.0" y="331.0" width="14.0" height="14.0" rx="0" fill="#ffb000" stroke="#ffb000" stroke-width="1" opacity="1"/>
+<path d="M1371 338.5 L1374 341.5 L1379 335" stroke="#120c00" stroke-width="2" fill="none"/>
+<text x="1392.0" y="343.0" fill="#e8e9ec" font-size="13" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Stale terminal sockets</text>
+<text x="1392.0" y="359.0" fill="#6f747d" font-size="11" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">No live session behind them. A socket</text>
+<text x="1392.0" y="374.0" fill="#6f747d" font-size="11" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">a new session holds is never touched.</text>
+<text x="1392.0" y="391.0" fill="#a7abb3" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">159 · 38 KB</text>
+<line x1="1368.0" y1="402.0" x2="1632.0" y2="402.0" stroke="#23262c" stroke-width="1"/>
+<rect x="1368.0" y="415.0" width="14.0" height="14.0" rx="0" fill="#08090b" stroke="#25282e" stroke-width="1" opacity="1"/>
+<text x="1392.0" y="427.0" fill="#e8e9ec" font-size="13" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Archived sessions’ scrollback</text>
+<text x="1392.0" y="443.0" fill="#6f747d" font-size="11" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Same as Scrollback cache → Clear</text>
+<text x="1392.0" y="458.0" fill="#6f747d" font-size="11" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">archived sessions’ cache.</text>
+<text x="1392.0" y="475.0" fill="#a7abb3" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">312 files · 180 MB</text>
+<line x1="1368.0" y1="486.0" x2="1632.0" y2="486.0" stroke="#23262c" stroke-width="1"/>
+<rect x="1368.0" y="500.0" width="264.0" height="44.0" rx="0" fill="#1a1c21" stroke="#25282e" stroke-width="1" opacity="1"/>
+<text x="1500.0" y="526.5" fill="#e8e9ec" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="middle" letter-spacing="0" opacity="1">Prune selected (1)</text>
+<text x="1368.0" y="562.0" fill="#6f747d" font-size="12" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">159 items · 38 KB</text>
+<text x="1368.0" y="584.0" fill="#6f747d" font-size="10" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.4" opacity="1">OPENCODE DATABASE</text>
+<text x="1368.0" y="610.0" fill="#6f747d" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0.6" opacity="1">SIZE</text>
+<text x="1404.1" y="610.0" fill="#e8e9ec" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="0" opacity="1">37.1 GiB</text>
+<text x="1463.7" y="610.0" fill="#6f747d" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">//</text>
+<text x="1483.6" y="610.0" fill="#6f747d" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0.6" opacity="1">HOLDERS</text>
+<text x="1541.3" y="610.0" fill="#e8e9ec" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="0" opacity="1">13</text>
+<text x="1368.0" y="628.0" fill="#6f747d" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0.6" opacity="1">RECLAIMABLE</text>
+<text x="1454.7" y="628.0" fill="#e8e9ec" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="0" opacity="1">0 B</text>
+<circle cx="1372.0" cy="649.0" r="4" fill="#f59e0b"/>
+<text x="1384.0" y="652.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Can’t compact: 13 opencode</text>
+<text x="1384.0" y="669.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">processes have the database open.</text>
+<circle cx="1372.0" cy="687.0" r="4" fill="#6f747d"/>
+<text x="1384.0" y="690.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Nothing to reclaim yet: space frees</text>
+<text x="1384.0" y="707.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">only after opencode itself deletes</text>
+<text x="1384.0" y="724.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">data.</text>
+<rect x="1368.0" y="739.0" width="264.0" height="44.0" rx="0" fill="#1a1c21" stroke="#25282e" stroke-width="1" opacity="0.4"/>
+<text x="1500.0" y="765.5" fill="#e8e9ec" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="middle" letter-spacing="0" opacity="0.4">Compact database</text>
+<text x="1368.0" y="817.0" fill="#6f747d" font-size="10" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.4" opacity="1">SCHEDULE</text>
+<rect x="1368.0" y="829.0" width="42.5" height="24.0" rx="0" fill="#ffb000" stroke="#25282e" stroke-width="1" opacity="1"/>
+<text x="1389.2" y="845.0" fill="#120c00" font-size="10" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="middle" letter-spacing="0.8" opacity="1">OFF</text>
+<rect x="1410.5" y="829.0" width="35.6" height="24.0" rx="0" fill="#1a1c21" stroke="#25282e" stroke-width="1" opacity="1"/>
+<text x="1428.3" y="845.0" fill="#a7abb3" font-size="10" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="middle" letter-spacing="0.8" opacity="1">ON</text>
+<text x="1458.1" y="846.0" fill="#e8e9ec" font-size="13" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Run automatically</text>
+<g opacity="0.5">
+<text x="1368.0" y="887.0" fill="#a7abb3" font-size="13" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Every</text>
+<rect x="1414.0" y="867.0" width="56.0" height="30.0" rx="0" fill="#08090b" stroke="#25282e" stroke-width="1" opacity="1"/>
+<text x="1423.0" y="886.5" fill="#e8e9ec" font-size="13" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">24</text>
+<text x="1478.0" y="887.0" fill="#a7abb3" font-size="13" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">hours</text>
+<rect x="1368.0" y="913.0" width="14.0" height="14.0" rx="0" fill="#ffb000" stroke="#ffb000" stroke-width="1" opacity="1"/>
+<path d="M1371 920.5 L1374 923.5 L1379 917" stroke="#120c00" stroke-width="2" fill="none"/>
+<text x="1390.0" y="921.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Stale sockets</text>
+<rect x="1368.0" y="941.0" width="14.0" height="14.0" rx="0" fill="#08090b" stroke="#25282e" stroke-width="1" opacity="1"/>
+<text x="1390.0" y="949.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Archived scrollback</text>
+<rect x="1368.0" y="969.0" width="14.0" height="14.0" rx="0" fill="#08090b" stroke="#25282e" stroke-width="1" opacity="1"/>
+<text x="1390.0" y="977.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Compact database, only if idle at</text>
+<text x="1390.0" y="994.5" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">run time</text>
+<rect x="1368.0" y="1013.0" width="14.0" height="14.0" rx="0" fill="#08090b" stroke="#25282e" stroke-width="1" opacity="1"/>
+<text x="1390.0" y="1025.0" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Also archive finished missions</text>
+<text x="1390.0" y="1055.0" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">older than</text>
+<rect x="1458.0" y="1035.0" width="48.0" height="30.0" rx="0" fill="#08090b" stroke="#25282e" stroke-width="1" opacity="1"/>
+<text x="1467.0" y="1054.5" fill="#e8e9ec" font-size="13" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">30</text>
+<text x="1514.0" y="1055.0" fill="#a7abb3" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">days</text>
+</g>
+<text x="1368.0" y="1083.0" fill="#6f747d" font-size="10" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.2" opacity="1">LAST RUN</text>
+<text x="1437.0" y="1083.0" fill="#a7abb3" font-size="10" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">// never</text>
+<path d="M1340 130 L1340 116 L1354 116" stroke="#6f747d" stroke-width="1.5" fill="none"/>
+<path d="M1660 130 L1660 116 L1646 116" stroke="#6f747d" stroke-width="1.5" fill="none"/>
+<path d="M1340 1103 L1340 1117 L1354 1117" stroke="#6f747d" stroke-width="1.5" fill="none"/>
+<path d="M1660 1103 L1660 1117 L1646 1117" stroke="#6f747d" stroke-width="1.5" fill="none"/>
+<rect x="1660.0" y="116.0" width="320.0" height="569.0" rx="0" fill="#e7e8ea" stroke="#c9ccd2" stroke-width="1" opacity="1"/>
+<text x="1660.0" y="104.0" fill="#ffb000" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.2" opacity="1">C2 · PHONE — LIGHT</text>
+<rect x="1660.0" y="116.0" width="320.0" height="48.0" rx="0" fill="#f2f3f5" stroke="#c9ccd2" stroke-width="1" opacity="1"/>
+<text x="1676.0" y="146.0" fill="#14161a" font-size="20" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">‹</text>
+<text x="1696.0" y="145.0" fill="#14161a" font-size="12" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.4" opacity="1">MAINTENANCE</text>
+<rect x="1670.0" y="176.0" width="300.0" height="271.0" rx="0" fill="#f2f3f5" stroke="#c9ccd2" stroke-width="1" opacity="1"/>
+<rect x="1688.0" y="192.0" width="3.0" height="13.0" rx="0" fill="#ffb000" opacity="1"/>
+<text x="1699.0" y="203.5" fill="#41454d" font-size="12" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.2" opacity="1">ARCHIVE OLD MISSIONS</text>
+<text x="1688.0" y="230.5" fill="#41454d" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Archive finished missions (done,</text>
+<text x="1688.0" y="247.5" fill="#41454d" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">failed or abandoned). Their sessions</text>
+<text x="1688.0" y="264.5" fill="#41454d" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">are archived with them: live</text>
+<text x="1688.0" y="281.5" fill="#41454d" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">terminals are stopped, transcripts</text>
+<text x="1688.0" y="298.5" fill="#41454d" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">are kept. A mission with an</text>
+<text x="1688.0" y="315.5" fill="#41454d" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">unresolved turn is skipped. Archived</text>
+<text x="1688.0" y="332.5" fill="#41454d" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">missions can be unarchived.</text>
+<text x="1688.0" y="367.0" fill="#41454d" font-size="13" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Older than</text>
+<rect x="1760.0" y="347.0" width="64.0" height="30.0" rx="0" fill="#dfe1e4" stroke="#c9ccd2" stroke-width="1" opacity="1"/>
+<text x="1769.0" y="366.5" fill="#14161a" font-size="13" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">30</text>
+<text x="1832.0" y="367.0" fill="#41454d" font-size="13" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">days</text>
+<rect x="1688.0" y="387.0" width="264.0" height="44.0" rx="0" fill="#ffffff" stroke="#c9ccd2" stroke-width="1" opacity="1"/>
+<text x="1820.0" y="413.5" fill="#14161a" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="middle" letter-spacing="0" opacity="1">Archive older (9)</text>
+<rect x="1670.0" y="461.0" width="300.0" height="212.0" rx="0" fill="#f2f3f5" stroke="#c9ccd2" stroke-width="1" opacity="1"/>
+<rect x="1688.0" y="477.0" width="3.0" height="13.0" rx="0" fill="#ffb000" opacity="1"/>
+<text x="1699.0" y="488.5" fill="#41454d" font-size="12" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.2" opacity="1">PRUNE</text>
+<text x="1688.0" y="513.0" fill="#6f747d" font-size="10" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="1.4" opacity="1">OPENCODE DATABASE</text>
+<text x="1688.0" y="539.0" fill="#6f747d" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0.6" opacity="1">SIZE</text>
+<text x="1724.1" y="539.0" fill="#14161a" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="0" opacity="1">37.1 GiB</text>
+<text x="1783.7" y="539.0" fill="#6f747d" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">//</text>
+<text x="1803.6" y="539.0" fill="#6f747d" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0.6" opacity="1">HOLDERS</text>
+<text x="1861.3" y="539.0" fill="#14161a" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="0" opacity="1">13</text>
+<text x="1688.0" y="557.0" fill="#6f747d" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="normal" text-anchor="start" letter-spacing="0.6" opacity="1">RECLAIMABLE</text>
+<text x="1774.7" y="557.0" fill="#14161a" font-size="11" font-family="DejaVu Sans Mono, monospace" font-weight="bold" text-anchor="start" letter-spacing="0" opacity="1">0 B</text>
+<circle cx="1692.0" cy="578.0" r="4" fill="#f59e0b"/>
+<text x="1704.0" y="581.5" fill="#41454d" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">Can’t compact: 13 opencode</text>
+<text x="1704.0" y="598.5" fill="#41454d" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="start" letter-spacing="0" opacity="1">processes have the database open.</text>
+<rect x="1688.0" y="613.0" width="264.0" height="44.0" rx="0" fill="#ffffff" stroke="#c9ccd2" stroke-width="1" opacity="0.4"/>
+<text x="1820.0" y="639.5" fill="#14161a" font-size="12.5" font-family="Inter, DejaVu Sans, sans-serif" font-weight="normal" text-anchor="middle" letter-spacing="0" opacity="0.4">Compact database</text>
+<path d="M1660 130 L1660 116 L1674 116" stroke="#6f747d" stroke-width="1.5" fill="none"/>
+<path d="M1980 130 L1980 116 L1966 116" stroke="#6f747d" stroke-width="1.5" fill="none"/>
+<path d="M1660 671 L1660 685 L1674 685" stroke="#6f747d" stroke-width="1.5" fill="none"/>
+<path d="M1980 671 L1980 685 L1966 685" stroke="#6f747d" stroke-width="1.5" fill="none"/>
+</svg>

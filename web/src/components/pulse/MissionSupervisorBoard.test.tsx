@@ -1,0 +1,480 @@
+/** The supervisor's follow-through (#885), now rendered ON the objective rows (#942).
+ *
+ * FOLLOW-THROUGH used to be a panel of its own, printing a second list of the same objectives
+ * under different titles. It folded onto the rows it was always describing, so these tests render
+ * the composition the operator actually meets — `MissionObjectives` fed both reads — rather than
+ * a component nothing mounts. That is what makes them still able to fail for the right reason:
+ * a fold that dropped a badge, a sentence or the episode fence shows up here.
+ *
+ * The two reads are keyed to each other because the SERVER keys them: `mission_supervisor.assess`
+ * iterates the mission's own objective rows, so a supervisor entry and an objective with the same
+ * `key` are the same objective. The harness below builds the objective list from the assessment
+ * for exactly that reason — a fixture where they disagree is a fixture the producer cannot emit.
+ *
+ * Pinned, each mutation-tested against an implementation that would otherwise pass:
+ *
+ *  - an ABSENT assessment says so, and is NOT rendered as an empty/clean board — "we could not
+ *    look" and "there is nothing to follow up" are different claims and the operator acts
+ *    differently on each. This is the assertion that fails if the route's `contextlib.suppress`
+ *    ever starts substituting an empty reading;
+ *  - a mission with NO objectives is *unmeasured*, a third state distinct from both of the above;
+ *  - the refusal SENTENCE comes from the server verbatim — the client never authors its own copy
+ *    of that vocabulary, so a test that only asserted "some explanation is shown" would pass
+ *    against a client-side re-derivation and is not what this asserts;
+ *  - classification order: a stand-down outranks a spent budget (the operator's instruction, not
+ *    a limit we hit), and MET outranks everything;
+ *  - `likely_done` renders as a PROPOSAL — the words say nothing was closed.
+ */
+import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { expect, test, vi } from "vitest";
+
+import type {
+  MissionObjective,
+  MissionSupervisor,
+  SupervisorObjective,
+} from "../../types/api";
+import { MissionObjectives } from "./MissionObjectives";
+import { boardFor } from "./supervisorBoard";
+
+/** The objective row an assessment entry belongs to. Same `key`, because the server produced one
+ *  from the other. Only the fields this surface reads are meaningful; the rest exist so the row
+ *  is a real `MissionObjective` rather than a cast. */
+function rowFor(o: SupervisorObjective): MissionObjective {
+  return {
+    mission_id: "msn_1",
+    key: o.key,
+    ord: 0,
+    title: o.title ?? o.key,
+    probe: "manual",
+    probe_args: null,
+    gate: o.gate,
+    state: o.state,
+    met_at: null,
+    observed: null,
+    source: "test",
+  };
+}
+
+/** The follow-through as it now renders: the objective list, with the assessment folded in.
+ *  `onOps` is deliberately absent — these tests are about the supervisor's half, and the editing
+ *  controls have their own file. */
+function MissionSupervisorBoard({
+  supervisor,
+  onStandDown,
+}: {
+  supervisor: MissionSupervisor | undefined;
+  onStandDown?: (key: string, episode: number) => void;
+}) {
+  return (
+    <MissionObjectives
+      objectives={(supervisor?.objectives ?? []).map(rowFor)}
+      supervisor={supervisor}
+      onStandDown={onStandDown}
+    />
+  );
+}
+
+function obj(over: Partial<SupervisorObjective> = {}): SupervisorObjective {
+  return {
+    key: "k1",
+    title: "Ship the thing",
+    gate: false,
+    state: "open",
+    met: false,
+    episode: 1,
+    stood_down: false,
+    awaiting_answer: false,
+    spent: 0,
+    remaining: 3,
+    may_nudge: true,
+    unreadable: false,
+    indeterminate: false,
+    live: 0,
+    terminal: false,
+    why_not: "",
+    ...over,
+  };
+}
+
+function sup(
+  objectives: SupervisorObjective[],
+  over: Partial<MissionSupervisor> = {},
+): MissionSupervisor {
+  return {
+    objectives,
+    likely_done: false,
+    unmet_gates: 0,
+    checked_at: 1,
+    ...over,
+  };
+}
+
+test("an absent assessment is reported, not rendered as an empty board", () => {
+  render(<MissionSupervisorBoard supervisor={undefined} />);
+  expect(screen.getByTestId("supervisor-unreadable")).toBeTruthy();
+  // The distinguishing assertion: it must NOT claim there is nothing to follow up.
+  expect(screen.queryByTestId("objectives")).toBeNull();
+  expect(screen.queryByTestId("supervisor-unmeasured")).toBeNull();
+  expect(screen.getByTestId("supervisor-unreadable").textContent).toContain(
+    "not a claim that there is nothing to follow up",
+  );
+});
+
+test("no objectives is UNMEASURED — a third state, not the absent one and not done", () => {
+  render(<MissionSupervisorBoard supervisor={sup([])} />);
+  const el = screen.getByTestId("supervisor-unmeasured");
+  expect(el.textContent).toContain("not the same as done");
+  expect(screen.queryByTestId("supervisor-unreadable")).toBeNull();
+});
+
+test("the refusal sentence is the SERVER'S, rendered verbatim", () => {
+  // A sentence no client-side re-derivation could produce: if the component ever authors its own
+  // vocabulary this fails, where "some explanation is shown" would not.
+  const sentence =
+    "a previous nudge may or may not have been delivered; not sending another";
+  render(
+    <MissionSupervisorBoard
+      supervisor={sup([
+        obj({ may_nudge: false, remaining: 2, why_not: sentence }),
+      ])}
+    />,
+  );
+  expect(screen.getByText(sentence)).toBeTruthy();
+});
+
+test("a stand-down outranks a spent budget, and MET outranks everything", () => {
+  // Both flags set at once: only the ordering decides, so a wrong order is caught rather than
+  // being hidden by inputs that agree.
+  expect(
+    boardFor(obj({ stood_down: true, remaining: 0, may_nudge: false })),
+  ).toBe("held");
+  expect(
+    boardFor(
+      obj({ met: true, stood_down: true, remaining: 0, may_nudge: false }),
+    ),
+  ).toBe("met");
+  expect(boardFor(obj({ remaining: 0, may_nudge: false }))).toBe("spent");
+  expect(boardFor(obj({ remaining: 2, may_nudge: false }))).toBe("waiting");
+  expect(boardFor(obj({ remaining: 2, may_nudge: true }))).toBe("ready");
+
+  // AN OPEN QUESTION IS THE OPERATOR'S TURN, and the board said the opposite. The supervisor
+  // stands an objective down while a question is open, so `may_nudge` is false and this fell
+  // through to `waiting` — which on this board means the AGENT is being given room. On the one
+  // page whose job is "what needs me right now", an objective waiting on the operator's own
+  // answer read as one they had nothing to do about.
+  expect(
+    boardFor(obj({ awaiting_answer: true, may_nudge: false, remaining: 2 })),
+  ).toBe("asked");
+  // …and it outranks the ABSENCES, not the operator's own instruction. An unreadable ledger or a
+  // spent budget does not change who owes the next move; a stand-down is the operator saying they
+  // do not want to be asked, so a question inside one is not something to act on.
+  expect(
+    boardFor(
+      obj({
+        awaiting_answer: true,
+        may_nudge: false,
+        unreadable: true,
+        remaining: 0,
+      }),
+    ),
+  ).toBe("asked");
+  expect(
+    boardFor(
+      obj({ awaiting_answer: true, stood_down: true, may_nudge: false }),
+    ),
+  ).toBe("held");
+});
+
+test("each board renders its own badge and marks the row", () => {
+  render(
+    <MissionSupervisorBoard
+      supervisor={sup([
+        obj({
+          key: "a",
+          title: "Held one",
+          stood_down: true,
+          may_nudge: false,
+          why_not:
+            "the operator asked not to be told about this objective again",
+        }),
+        obj({
+          key: "b",
+          title: "Spent one",
+          remaining: 0,
+          spent: 3,
+          may_nudge: false,
+          why_not: "the 3-nudge budget for this episode is spent",
+        }),
+        obj({ key: "c", title: "Ready one" }),
+      ])}
+    />,
+  );
+  const rows = screen.getAllByRole("listitem");
+  expect(rows.map((r) => r.getAttribute("data-board"))).toEqual([
+    "held",
+    "spent",
+    "ready",
+  ]);
+  // The spent row shows the budget it exhausted, not a bare flag.
+  expect(within(rows[1]).getByText("3/3")).toBeTruthy();
+  // A free objective carries no refusal text at all.
+  expect(within(rows[2]).queryByText(/budget|operator asked/)).toBeNull();
+});
+
+test("likely_done is a proposal — it says nothing was closed", () => {
+  render(
+    <MissionSupervisorBoard
+      supervisor={sup([obj({ met: true, gate: true })], { likely_done: true })}
+    />,
+  );
+  const el = screen.getByTestId("supervisor-likely-done");
+  expect(el.textContent).toContain("Nothing has been closed");
+  expect(el.textContent).toContain("the call is yours");
+});
+
+test("unmet gates are counted, and singular/plural is not a lie", () => {
+  const one = render(
+    <MissionSupervisorBoard
+      supervisor={sup([obj({ gate: true })], { unmet_gates: 1 })}
+    />,
+  );
+  expect(screen.getByTestId("supervisor-unmet-gates").textContent).toBe(
+    "1 unmet gate",
+  );
+  one.unmount();
+  render(
+    <MissionSupervisorBoard
+      supervisor={sup([obj({ gate: true })], { unmet_gates: 2 })}
+    />,
+  );
+  expect(screen.getByTestId("supervisor-unmet-gates").textContent).toBe(
+    "2 unmet gates",
+  );
+});
+
+test("a checklist that gates NOTHING says so, rather than rendering as silence (#1063)", () => {
+  // `unmet_gates: 0` is what a mission with no gates reports, for the same reason a finished one
+  // does. The board's two branches both keyed on that number, so a notes-only mission fell
+  // through to `null` — nothing at all — while `likely_done` (counted the same way) congratulated
+  // it above. The gate COUNT is what tells the two apart.
+  render(
+    <MissionSupervisorBoard
+      supervisor={sup([obj({ gate: false }), obj({ key: "k2", gate: false })], {
+        likely_done: false,
+        unmet_gates: 0,
+        gates: 0,
+      })}
+    />,
+  );
+  expect(screen.getByTestId("supervisor-no-gates").textContent).toContain(
+    "cannot confirm itself finished",
+  );
+  // …and it is NOT the finished notice, which is the thing this replaces.
+  expect(screen.queryByTestId("supervisor-likely-done")).toBeNull();
+});
+
+test("a mission whose gates all passed still gets the finished notice, not the no-gates one", () => {
+  render(
+    <MissionSupervisorBoard
+      supervisor={sup([obj({ gate: true, met: true, state: "met" })], {
+        likely_done: true,
+        unmet_gates: 0,
+        gates: 1,
+      })}
+    />,
+  );
+  expect(screen.getByTestId("supervisor-likely-done")).toBeTruthy();
+  expect(screen.queryByTestId("supervisor-no-gates")).toBeNull();
+});
+
+test("a server that does not send the gate count renders exactly as before (#1063)", () => {
+  // `gates` is optional on the wire, so an older response must not start claiming a mission
+  // gates nothing — absent is UNKNOWN, and unknown says nothing.
+  render(
+    <MissionSupervisorBoard
+      supervisor={sup([obj({ gate: false })], {
+        likely_done: false,
+        unmet_gates: 0,
+      })}
+    />,
+  );
+  expect(screen.queryByTestId("supervisor-no-gates")).toBeNull();
+  expect(screen.queryByTestId("supervisor-likely-done")).toBeNull();
+});
+
+test("an UNREADABLE ledger is UNKNOWN, never SPENT (#888 review, finding 11)", () => {
+  // The server reports `remaining: 0` here because no budget can be justified from a file it could
+  // not open — so a classifier reading the NUMBER calls it SPENT while the sentence beside it says
+  // the budget is unknown. The discriminator is carried structurally for exactly this reason.
+  const o = obj({
+    may_nudge: false,
+    remaining: 0,
+    unreadable: true,
+    why_not: "the action ledger could not be read, so the budget is unknown",
+  });
+  expect(boardFor(o)).toBe("unknown");
+
+  render(<MissionSupervisorBoard supervisor={sup([o])} />);
+  const row = screen.getAllByRole("listitem")[0];
+  expect(row.getAttribute("data-board")).toBe("unknown");
+  // The badge and the sentence must not contradict each other on screen.
+  expect(within(row).queryByText("SPENT")).toBeNull();
+  expect(within(row).getByText("UNKNOWN")).toBeTruthy();
+});
+
+test("a genuinely spent budget is still SPENT — the fix must not swallow the real case", () => {
+  expect(
+    boardFor(
+      obj({ may_nudge: false, remaining: 0, spent: 3, unreadable: false }),
+    ),
+  ).toBe("spent");
+});
+
+// ---- the stand-down control (#889) ----------------------------------------------------------
+
+test("STAND DOWN sends the episode the row was RENDERED at, never 'whatever is current'", async () => {
+  const onStandDown = vi.fn();
+  render(
+    <MissionSupervisorBoard
+      supervisor={{
+        objectives: [
+          obj({ key: "checks", episode: 4, stood_down: false, met: false }),
+        ],
+        likely_done: false,
+        unmet_gates: 1,
+        checked_at: 1,
+      }}
+      onStandDown={onStandDown}
+    />,
+  );
+  // In the row's ⋯ menu since #967 P3; the fence below is unchanged.
+  await userEvent.click(screen.getByTestId("objective-menu"));
+  const btn = screen.getByTestId("objective-stand-down");
+  // Carried on the element too, so the browser gate can read it without reaching into React.
+  expect(btn).toHaveAttribute("data-episode", "4");
+  await userEvent.click(btn);
+  // The board the operator tapped was rendered against episode 4. If the objective has moved
+  // since, that tap is about a situation that no longer exists and the server answers 409 — a
+  // client that sent the CURRENT episode would silence a report nobody has seen.
+  expect(onStandDown).toHaveBeenCalledWith("checks", 4);
+});
+
+test("an objective already stood down offers no second stand-down", () => {
+  render(
+    <MissionSupervisorBoard
+      supervisor={{
+        objectives: [obj({ key: "checks", stood_down: true })],
+        likely_done: false,
+        unmet_gates: 1,
+        checked_at: 1,
+      }}
+      onStandDown={vi.fn()}
+    />,
+  );
+  // HELD is the state this control produces; offering it again suggests a second thing to do
+  // that does not exist.
+  expect(screen.queryByTestId("objective-stand-down")).toBeNull();
+});
+
+test("a met objective offers no stand-down — silencing it would have no effect", () => {
+  render(
+    <MissionSupervisorBoard
+      supervisor={{
+        objectives: [obj({ key: "checks", met: true, state: "met" })],
+        likely_done: true,
+        unmet_gates: 0,
+        checked_at: 1,
+      }}
+      onStandDown={vi.fn()}
+    />,
+  );
+  expect(screen.queryByTestId("objective-stand-down")).toBeNull();
+});
+
+test("without `onStandDown` the board is read-only", () => {
+  render(
+    <MissionSupervisorBoard
+      supervisor={{
+        objectives: [obj({ key: "checks" })],
+        likely_done: false,
+        unmet_gates: 1,
+        checked_at: 1,
+      }}
+    />,
+  );
+  expect(screen.queryByTestId("objective-stand-down")).toBeNull();
+  // …and the row still renders its board. Read-only is not "hidden".
+  expect(screen.getByTestId("objectives")).toBeInTheDocument();
+});
+
+test("a mission with NO SESSION says so instead of showing a board it cannot act on", () => {
+  // Releasing the last session leaves a `running` mission the supervisor cannot act on: it
+  // iterates held sessions and there are none. The server refuses every nudge for that reason,
+  // so the rows are not READY — and the board names the cause once rather than leaving the
+  // operator to infer it from five identical refusals (#896 review 7, finding 2).
+  render(
+    <MissionSupervisorBoard
+      supervisor={sup(
+        [
+          obj({
+            key: "checks",
+            may_nudge: false,
+            why_not:
+              "this mission holds no session, so there is nothing to nudge",
+          }),
+        ],
+        { unmet_gates: 1, held_sessions: 0, no_session: true },
+      )}
+    />,
+  );
+  const notice = screen.getByTestId("supervisor-no-session");
+  expect(notice.textContent).toContain("holds no session");
+  // …and no row claims the supervisor is about to act.
+  expect(screen.queryByText("READY")).toBeNull();
+  expect(screen.getByTestId("objectives")).toBeInTheDocument();
+});
+
+test("a mission that HOLDS a session shows no such notice", () => {
+  render(
+    <MissionSupervisorBoard
+      supervisor={sup([obj({ key: "checks", may_nudge: true })], {
+        unmet_gates: 1,
+        held_sessions: 1,
+        no_session: false,
+      })}
+    />,
+  );
+  expect(screen.queryByTestId("supervisor-no-session")).toBeNull();
+  expect(screen.getByText("READY")).toBeInTheDocument();
+});
+
+test("an UNREADABLE roster is not rendered as an empty one", () => {
+  // Two different claims, and the operator acts differently on each: one is "adopt a session",
+  // the other is "the store is unwell" (#896 review 8, finding 2).
+  render(
+    <MissionSupervisorBoard
+      supervisor={sup(
+        [
+          obj({
+            key: "checks",
+            may_nudge: false,
+            why_not:
+              "the mission's sessions could not be read, so nothing may be sent",
+          }),
+        ],
+        {
+          unmet_gates: 1,
+          held_sessions: null,
+          no_session: false,
+          sessions_unreadable: true,
+        },
+      )}
+    />,
+  );
+  const notice = screen.getByTestId("supervisor-sessions-unreadable");
+  expect(notice.textContent).toContain("not a claim");
+  // …and it does NOT say the mission holds none.
+  expect(screen.queryByTestId("supervisor-no-session")).toBeNull();
+  expect(screen.queryByText("READY")).toBeNull();
+});

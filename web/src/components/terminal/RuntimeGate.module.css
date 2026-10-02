@@ -1,0 +1,14 @@
+.panel {
+  margin: 24px;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  color: var(--text-1);
+  max-width: 640px;
+}
+.tag {
+  margin: 0 0 8px;
+  font: 600 11px var(--font-mono);
+  letter-spacing: 0.12em;
+  color: var(--text-3);
+}
