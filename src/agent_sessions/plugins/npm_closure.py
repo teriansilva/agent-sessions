@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import feed
+from . import budget, feed
 
 _NAME = r"(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*"
 _NAME_RE = re.compile(_NAME)
@@ -186,10 +186,12 @@ def validate(root: Path, entry: feed.Entry) -> None:
         return
     packages = {}
     for path in root.rglob("package.json"):
+        budget.check()
         relative = str(path.parent.relative_to(root))
         if _DEST_RE.fullmatch(relative):
             packages[relative] = _read(path)
     for artifact in entry.artifacts:
+        budget.check()
         dest = destination(artifact.destination)
         doc = packages.get(dest)
         if doc is None:
@@ -199,6 +201,7 @@ def validate(root: Path, entry: feed.Entry) -> None:
         if urlsplit(artifact.url).path != expected:
             raise feed.FeedError("npm metadata disagrees with the pinned distribution URL")
     for location, doc in packages.items():
+        budget.check()
         required = doc.get("dependencies", {})
         optional = doc.get("optionalDependencies", {})
         peers = doc.get("peerDependencies", {})
@@ -218,6 +221,7 @@ def validate(root: Path, entry: feed.Entry) -> None:
             for name, spec in peers.items()
         ]
         for name, spec, optional_dependency in dependencies:
+            budget.check()
             if not _NAME_RE.fullmatch(name) or not isinstance(spec, str):
                 raise feed.FeedError("invalid npm dependency")
             expected_name = name

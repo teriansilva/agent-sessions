@@ -6,6 +6,7 @@ import { ApiError, api } from "../../lib/api";
 import { agentPath } from "../../routes/settingsTabs";
 import type { AgentEndpoint, ChatSession, ChatToolCall, ChatTurn } from "../../types/api";
 import styles from "./ChatPane.module.css";
+import { EditProposal } from "./EditProposal";
 
 /** How often a pending turn is re-read. The server owns the request (#1209): the pane only READS,
  *  so a reload, a lost response or a dropped connection recovers by polling, never by resending. */
@@ -107,7 +108,7 @@ function tokens(n: number): string {
 }
 
 /** A chat-runtime session (#853 P9a, #1209): BattleLab talks to the agent's endpoint and keeps the
- *  conversation. No terminal; tools only if the operator turned them on (#1222), and read-only. */
+ *  conversation. No terminal; tools require opt-in. Proposed file edits (#1230) each require a separate decision. */
 export function ChatPane({ engine, id }: { engine: string; id: string }) {
   useEngineRoster();
   const sid = `${engine}:${id}`;
@@ -326,7 +327,9 @@ export function ChatPane({ engine, id }: { engine: string; id: string }) {
             <p className={styles.note}>
               No terminal and no CLI: BattleLab sends your messages to the endpoint configured for
               this agent and keeps the conversation itself.{" "}
-              {endpoint?.tools === "read"
+              {endpoint?.tools === "write"
+                ? "It can read files and propose edits to existing text files in this conversation’s folder. You review and approve each change before it is saved. Hidden and credential-shaped files are refused."
+                : endpoint?.tools === "read"
                 ? "It can list and read files in this conversation’s folder — never write, delete or run anything. Hidden and credential-shaped files are refused."
                 : "It has no tools — it can only reply."}
             </p>
@@ -353,6 +356,10 @@ export function ChatPane({ engine, id }: { engine: string; id: string }) {
               <div className={styles.txt}>{t.text}</div>
             </div>
             <ToolRows calls={t.tools ?? []} />
+            {(t.proposals ?? []).map((p) => <EditProposal key={p.id} sid={sid} proposal={p} reload={load} />)}
+            {t.status === "awaiting_approval" && <p className={styles.notice}>
+              The agent is waiting for your decision. You can leave and return to review this change.
+            </p>}
             {t.status === "done" && t.reply !== null && (
               <div className={`${styles.turn} ${styles.asst}`}>
                 <div className={styles.who}>

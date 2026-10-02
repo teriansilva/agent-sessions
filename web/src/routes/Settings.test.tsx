@@ -31,6 +31,7 @@ vi.mock("../lib/api", async () => {
       setTheme: vi.fn(),
       setAccent: vi.fn(),
       engines: vi.fn(),
+      plugins: vi.fn().mockResolvedValue({ feed: { state: "missing", error: null }, catalog: [], plugins: [], operations: [], roster_generation: 1 }),
       agentUsage: vi.fn(),
       agentUsageRefresh: vi.fn(),
       setAgentBudgets: vi.fn(),

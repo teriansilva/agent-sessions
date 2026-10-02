@@ -36,7 +36,8 @@ IDENTITY_KINDS = frozenset({"agent", "terminal"})
 #: `runtime.kind` (#853 §7). `pty`: a binary under `dtach`, shown through xterm. `chat` (#853 P9a,
 #: #1209): no binary and no terminal — BattleLab sends the conversation to an operator-configured
 #: HTTP endpoint and keeps the transcript itself. A chat plugin executes nothing; its only tools are
-#: the operator-granted, read-only file tools of #1222 (`chat_tools`), never the manifest's to name.
+#: the operator-granted file tools of #1222/#1230 (`chat_tools`, `chat_edits`), never the
+#: manifest's to name. Every proposed edit still needs its own operator decision.
 RUNTIME_KINDS = frozenset({"pty", "chat"})
 #: `endpoint.kind` — the wire format a `chat` plugin speaks. The endpoint's URL, key and model are
 #: the OPERATOR's configuration, never the manifest's: a manifest can name no authority at all.
@@ -51,6 +52,7 @@ PTY_ONLY_BLOCKS = (
     "install",
     "signin",
     "verify",
+    "probe",
     # A chat agent reads no workspace file on its own (#1189): the only files it sees are the
     # operator-granted read tools of #1222, so an instruction-file claim would be false.
     "instructions",
@@ -220,7 +222,23 @@ INSTALL_AUTHORITIES = {
 SIGNIN_KINDS = {
     "none": frozenset(),
     "cli-subcommand": frozenset({"login", "auth"}),
+    "auth-login": frozenset(),  # claude/opencode: exactly auth login
+    "interactive": frozenset(),  # gemini/antigravity: the vendor onboarding terminal
 }
+#: First release cut is measured only on Linux x64. Other targets need reviewed recipes.
+INSTALL_PLATFORMS = frozenset({"linux-x64"})
+#: Fixed print/exec forms, verified against vendor CLIs in #1266. Never arbitrary flags.
+PROBE_KINDS = frozenset(
+    {
+        "terminal",  # existing bounded interactive fixture/local probes
+        "print-pinned",  # claude
+        "exec-readonly",  # codex
+        "run-session",  # opencode
+        "prompt-pinned",  # gemini
+        "prompt-session",  # kimi
+        "print-conversation",  # antigravity
+    }
+)
 #: `verify` — the fixed check list (#853 §3). A manifest selects a subset; it never writes a check.
 VERIFY_CHECKS = frozenset({"binary", "version", "store", "new", "resume", "transcript", "usage"})
 

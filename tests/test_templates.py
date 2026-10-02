@@ -891,12 +891,23 @@ def test_the_fence_parser_validates_like_a_stored_timestamp(auth_cfg, tmp_home, 
 
 
 def test_concurrent_creates_serialize_under_the_lock(tmp_home):
+    from agent_sessions.session_input import AuthorityFenceBusy
+
     errors: list[BaseException] = []
 
     def worker(n: int) -> None:
         try:
             for i in range(4):
-                templates.create_template(_payload(name=f"worker {n} template {i}"))
+                # Contention may legitimately refuse a write before it starts. Exercise
+                # serialization of accepted writes, without assuming six fsync-heavy
+                # workers are all scheduled within the production contention budget.
+                for attempt in range(3):
+                    try:
+                        templates.create_template(_payload(name=f"worker {n} template {i}"))
+                        break
+                    except AuthorityFenceBusy:
+                        if attempt == 2:
+                            raise
         except BaseException as e:  # noqa: BLE001 — surfaced below
             errors.append(e)
 

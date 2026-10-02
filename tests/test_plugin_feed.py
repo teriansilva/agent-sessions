@@ -420,3 +420,53 @@ def test_failed_signature_write_cleans_only_its_unpublished_stage(builder, tmp_p
         builder["publish"](output, b"feed", b"signature")
     assert not output.exists()
     assert not list(tmp_path.glob(".plugin-feed-stage-*"))
+
+
+def test_atomic_state_replacement_keeps_an_already_open_snapshot_readable(signer, monkeypatch):
+    with storage.locked("fixture.json") as path:
+        storage.write(path, {"revision": "before"})
+    original = storage.provenance.open_verified
+
+    def replace_after_open(raw, **kwargs):
+        fd, st = original(raw, **kwargs)
+        if str(raw) == str(path):
+            with storage.locked("fixture.json") as locked:
+                storage.write(locked, {"revision": "after"})
+            assert os.fstat(fd).st_nlink == 0
+        return fd, st
+
+    monkeypatch.setattr(storage.provenance, "open_verified", replace_after_open)
+    assert storage.read(path) == {"revision": "before"}
+    monkeypatch.setattr(storage.provenance, "open_verified", original)
+    assert storage.read(path) == {"revision": "after"}
+    os.link(path, path.with_name("alias.json"))
+    with pytest.raises(storage.StateError):
+        storage.read(path)
+
+
+def test_state_limit_measures_the_formatted_bytes_before_replacement(signer, monkeypatch):
+    doc = {"rows": [{"label": "sample"}] * 20}
+    with storage.locked("fixture.json") as path:
+        storage.write(path, {"previous": True})
+        previous = path.read_bytes()
+        monkeypatch.setattr(storage, "MAX_STATE_BYTES", len(json.dumps(doc).encode()))
+        with pytest.raises(storage.StateError, match="too large"):
+            storage.write(path, doc)
+    assert path.read_bytes() == previous
+    assert storage.read(path) == {"previous": True}
+
+
+@pytest.mark.parametrize("override", [False, True])
+def test_state_at_the_exact_serialized_limit_reads_back(signer, monkeypatch, override):
+    doc = {"z": ["\u00e9", "\n"], "a": {"nested": True}}
+    encoded = json.dumps(doc, indent=2, sort_keys=True).encode("utf-8")
+    monkeypatch.setattr(storage, "MAX_STATE_BYTES", len(encoded) - int(override))
+    options = {"max_bytes": len(encoded)} if override else {}
+    with storage.locked("fixture.json") as path:
+        storage.write(path, doc, **options)
+        with pytest.raises(storage.StateError):
+            storage.write(path, doc, max_bytes=len(encoded) - 1)
+    assert path.read_bytes() == encoded
+    assert storage.read(path, **options) == doc
+    with pytest.raises(storage.StateError):
+        storage.read(path, max_bytes=len(encoded) - 1)

@@ -95,6 +95,10 @@ export function setWsFactory(fn: WsFactory | null): void {
   wsFactoryImpl = fn ?? defaultWsFactory;
 }
 
+/** One transport socket with no reconnect, capture or terminal-session semantics (#1261).
+ *  Ephemeral sign-in still uses the authenticated Home Free transport when configured. */
+export function openAppSocket(url: string): WebSocket { return wsFactoryImpl(url); }
+
 export class TermSocket {
   private ws: WebSocket | null = null;
   /** Absolute count of PTY bytes consumed — sent back as `?have=` to resume. */

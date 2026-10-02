@@ -150,6 +150,7 @@ class PluginProvider:
         env: Mapping[str, str] | None = None,
         home: Path | None = None,
         state_dir: Path | None = None,
+        record: provenance.Record | None = None,
     ):
         if trust not in provenance.TRUST_LEVELS:
             raise ValueError(f"unknown trust level {trust!r}")
@@ -159,6 +160,10 @@ class PluginProvider:
         #: Where this plugin's install / confirmation record lives — app state, outside every
         #: plugin tree. None means no record can exist (nothing managed, nothing confirmed).
         self.state_dir = state_dir
+        # Managed roster generations capture their provenance with their manifest/root. They
+        # must not reread a later activation's record while serving an earlier request snapshot.
+        self._record = record
+        self.endpoint_scope: str | None = None
         self._env = env
         self._home = home
         self._cached: tuple[tuple, provenance.Entrypoint] | None = None
@@ -230,7 +235,11 @@ class PluginProvider:
         """
         if self.manifest.binary is None:
             return None  # a `chat` plugin (#1209) executes nothing
-        record = read_record(self.state_dir, self.engine_id)
+        record = (
+            self._record
+            if self._record is not None
+            else read_record(self.state_dir, self.engine_id)
+        )
         env_var = self.manifest.binary.env_var
         # Everything resolution reads is in the key: the override, the record, and the home the
         # `~/` search paths expand against.
@@ -259,6 +268,7 @@ class PluginProvider:
             record=record,
             env=self.env,
             home=self.home,
+            bound_record=self._record is not None,
         )
         self._cached = (key, ep) if ep is not None else None
         return ep

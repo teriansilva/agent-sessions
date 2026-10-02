@@ -89,6 +89,144 @@ def configure(**extra) -> dict:
     )
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["create", "send"])
+async def test_disable_after_early_admission_cannot_persist_new_work(
+    endpoint, tmp_path, monkeypatch, operation
+):
+    from agent_sessions.plugins import manager
+
+    configure()
+    sid = await chat_runtime.new_session(ENGINE, str(tmp_path)) if operation == "send" else None
+    admit = chat_runtime._admit_provider
+
+    def revoke(prov):
+        admit(prov)
+        manager.deactivate(str(uuid.uuid4()), ENGINE)
+
+    monkeypatch.setattr(chat_runtime, "_admit_provider", revoke)
+    with pytest.raises(chat_runtime.ChatError) as error:
+        if operation == "create":
+            await chat_runtime.new_session(ENGINE, str(tmp_path))
+        else:
+            await chat_runtime.send(ENGINE, sid, str(uuid.uuid4()), "hello")
+    assert error.value.status == 409
+    logs = list((tmp_path / "chat-store").glob("*.jsonl"))
+    assert len(logs) == (1 if sid else 0)
+    if sid:
+        assert chat_store.read(tmp_path / "chat-store", sid).turns == []
+    assert not endpoint.requests
+
+
+@pytest.mark.anyio
+async def test_disable_during_payload_build_stops_actual_outbound_request(
+    endpoint, tmp_path, monkeypatch
+):
+    from agent_sessions.plugins import manager
+
+    configure()
+    sid = await chat_runtime.new_session(ENGINE, str(tmp_path))
+    redact = template_secrets.redact_messages
+
+    def revoke(messages):
+        result = redact(messages)
+        manager.deactivate(str(uuid.uuid4()), ENGINE)
+        return result
+
+    monkeypatch.setattr(template_secrets, "redact_messages", revoke)
+    await chat_runtime.send(ENGINE, sid, str(uuid.uuid4()), "hello")
+    await chat_runtime.running_task(ENGINE, sid)
+    assert not endpoint.requests
+    assert chat_store.read(tmp_path / "chat-store", sid).turns[-1].status == "failed"
+
+
+@pytest.mark.anyio
+async def test_disable_during_response_stops_transport_fallback(endpoint, tmp_path):
+    from agent_sessions.plugins import manager
+
+    configure()
+    sid = await chat_runtime.new_session(ENGINE, str(tmp_path))
+
+    def rejected(_request):
+        # The entire request body is already sent, so disable must not wait for the reply.
+        manager.deactivate(str(uuid.uuid4()), ENGINE)
+        return httpx.Response(400, json={"error": "thinking is unsupported"})
+
+    endpoint.replies = [rejected, ok("must not retry after revocation")]
+    await chat_runtime.send(ENGINE, sid, str(uuid.uuid4()), "hello")
+    await chat_runtime.running_task(ENGINE, sid)
+    assert len(endpoint.requests) == 1
+    assert chat_store.read(tmp_path / "chat-store", sid).turns[-1].status == "failed"
+
+
+@pytest.mark.anyio
+async def test_response_wait_does_not_hold_agent_revocation(endpoint, tmp_path):
+    from agent_sessions.plugins import manager
+
+    configure()
+    sid = await chat_runtime.new_session(ENGINE, str(tmp_path))
+    endpoint.gate = asyncio.Event()
+    await chat_runtime.send(ENGINE, sid, str(uuid.uuid4()), "hello")
+    task = chat_runtime.running_task(ENGINE, sid)
+    try:
+        async with asyncio.timeout(30):
+            while not endpoint.requests:
+                await asyncio.sleep(0.01)
+        await asyncio.to_thread(manager.deactivate, str(uuid.uuid4()), ENGINE)
+        assert not task.done()
+    finally:
+        endpoint.gate.set()
+        await task
+    # The request already sent before disable may finish; no new work is admitted by it.
+    assert len(endpoint.requests) == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_request_body_handoff_keeps_admission_until_sent_or_cancelled(
+    endpoint, tmp_path, monkeypatch, cancel
+):
+    from agent_sessions.plugins import admission, storage
+
+    entered, finish, sent = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    class PausedTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            async for chunk in request.stream:
+                assert json.loads(chunk)["model"] == "test-model"
+                entered.set()
+                await finish.wait()
+            sent.set()
+            return ok("done")
+
+    configure()
+    monkeypatch.setattr(review, "_TRANSPORT", PausedTransport())
+    sid = await chat_runtime.new_session(ENGINE, str(tmp_path))
+    await chat_runtime.send(ENGINE, sid, str(uuid.uuid4()), "hello")
+    task = chat_runtime.running_task(ENGINE, sid)
+    try:
+        await asyncio.wait_for(entered.wait(), 30)
+        # A second worker cannot publish withdrawal halfway through the outgoing body.
+        with pytest.raises(storage.StateError, match="busy"):
+            with storage.locked(admission.LOCK, wait=0):
+                pass
+        if cancel:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            finish.set()
+            await task
+        with storage.locked(admission.LOCK, wait=0):
+            pass
+        assert sent.is_set() is not cancel
+    finally:
+        finish.set()
+        if not task.done():
+            task.cancel()
+            await task
+
+
 async def settle(sid: str) -> None:
     task = chat_runtime.running_task(ENGINE, sid)
     if task is not None:
@@ -604,3 +742,46 @@ async def test_a_long_reply_is_kept_whole_and_a_cut_is_recorded(tmp_path, endpoi
     await settle(sid)
     turn = (await chat_runtime.get_session(ENGINE, sid))["turns"][1]
     assert len(turn["reply"]) == 1_000 and turn["truncated"] is True  # cut, and SAID so
+
+
+@pytest.mark.anyio
+async def test_old_request_snapshot_cannot_send_after_agent_removal(
+    tmp_path, endpoint, monkeypatch
+):
+    configure()
+    sid = await new_chat(tmp_path)
+    with engines.registry.snapshot_scope():
+        monkeypatch.setattr(
+            engines.registry,
+            "_BY_ID",
+            {k: v for k, v in engines.registry._BY_ID.items() if k != ENGINE},
+        )
+        with pytest.raises(chat_runtime.ChatError, match="removed"):
+            await chat_runtime.send(ENGINE, sid, tid(), "hello")
+    assert endpoint.requests == []
+    assert chat_store.read(tmp_path / "chat-store", sid).turns == []
+
+
+@pytest.mark.anyio
+async def test_queued_chat_turn_rechecks_live_roster_before_model_call(
+    tmp_path, endpoint, monkeypatch
+):
+    configure()
+    sid = await new_chat(tmp_path)
+    t = tid()
+    root = tmp_path / "chat-store"
+    chat_store.append(
+        root,
+        sid,
+        {"type": "user", "turn_id": t, "text": "hello", "ts": 1},
+        chat_runtime._status(t, "pending"),
+    )
+    with engines.registry.snapshot_scope():
+        monkeypatch.setattr(
+            engines.registry,
+            "_BY_ID",
+            {k: v for k, v in engines.registry._BY_ID.items() if k != ENGINE},
+        )
+        records = await chat_runtime._run_once(ENGINE, root, sid, t)
+    assert records[-1]["status"] == "failed" and "removed" in records[-1]["reason"]
+    assert endpoint.requests == []

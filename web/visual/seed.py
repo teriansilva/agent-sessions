@@ -27,7 +27,7 @@ import json
 import sqlite3
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 # Deterministic ids so reruns + screenshots are stable.
@@ -185,7 +185,7 @@ def seed_kimi(home: Path) -> None:
     # "just now" and sort the Kimi session to the bottom.
     now = time.time()
     iso = lambda offset: (  # noqa: E731 — local formatting shorthand
-        datetime.fromtimestamp(now - offset, tz=timezone.utc)
+        datetime.fromtimestamp(now - offset, tz=UTC)
         .isoformat(timespec="milliseconds")
         .replace("+00:00", "Z")
     )
@@ -362,7 +362,8 @@ def seed_pulse(home: Path) -> None:
                 "last_activity": now - 240,
                 "verb": "escalate",
                 "confidence": 0.62,
-                "rationale": "Below the act threshold — the push target is ambiguous, so this is yours to call.",
+                "rationale": "Below the act threshold — the push target is ambiguous, "
+                "so this is yours to call.",
                 "evidence": "recap",
             },
             sort_keys=True,
@@ -403,6 +404,72 @@ def seed(home: Path) -> None:
     seed_opencode(home)
     seed_pulse(home)
     seed_projects(home)
+    seed_chat_edit(home)
+
+
+def seed_chat_edit(home: Path) -> None:
+    """A reviewable proposal, with no usable endpoint key and therefore no outbound model call.
+
+    This is explicit fixture data, kept under the same refused-real-HOME boundary as all seeds.
+    The ordinary API reads it so the visual capture exercises the real pane and decision state.
+    """
+    sid = "019e2ba1-1590-7003-8e4a-51ab62cec905"
+    tid = "019e2ba1-1590-7003-8e4a-51ab62cec906"
+    pid = "019e2ba1-1590-7003-8e4a-51ab62cec907"
+    folder = home / "seed" / "seed-alpha"
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / "connection-help.md"
+    base = "# Connection help\n\nCheck settings.\n"
+    content = "# Connection help\n\nCheck the server address and try again.\n"
+    target.write_text(base)
+    cfg = {
+        "base_url": "https://example.invalid/v1",
+        "model": "visual-fixture",
+        "key_envelope": None,
+        "tools": "write",
+        "context_window": 32768,
+        "max_output_tokens": 4096,
+        "request_timeout": None,
+    }
+    prefs = home / ".config" / "agent-sessions" / "prefs.json"
+    existing = json.loads(prefs.read_text()) if prefs.exists() else {}
+    existing["chat_agents"] = {"apichat": cfg}
+    prefs.write_text(json.dumps(existing))
+    root = home / ".local" / "share" / "agent-sessions" / "chat"
+    directory = root / "proposals" / sid
+    directory.mkdir(parents=True, mode=0o700, exist_ok=True)
+    for private in (root, directory.parent, directory):
+        private.chmod(0o700)
+    rows = [
+        {"type": "session", "id": sid, "cwd": str(folder), "created_at": 1},
+        {"type": "user", "turn_id": tid, "text": "Make the connection help clearer.", "ts": 1},
+        {"type": "status", "turn_id": tid, "status": "awaiting_approval", "ts": 1},
+    ]
+    transcript = root / f"{sid}.jsonl"
+    transcript.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    transcript.chmod(0o600)
+    proposal = {
+        "id": pid,
+        "turn_id": tid,
+        "engine_id": "apichat",
+        "cwd": str(folder),
+        "root": str(folder),
+        "path": target.name,
+        "target": str(target),
+        "base_sha256": hashlib.sha256(base.encode()).hexdigest(),
+        "new_sha256": hashlib.sha256(content.encode()).hexdigest(),
+        "size": len(content),
+        "base": base,
+        "content": content,
+        "status": "awaiting_approval",
+        "created_at": 1,
+        "call_id": "visual-proposal",
+        "binding": hashlib.sha256(json.dumps(cfg, sort_keys=True).encode()).hexdigest(),
+        "checkpoint": {"messages": [], "remaining": 1000, "usage": {}, "dropped": 0, "round": 1},
+    }
+    path = directory / f"{pid}.json"
+    path.write_text(json.dumps(proposal))
+    path.chmod(0o600)
 
 
 if __name__ == "__main__":
@@ -411,6 +478,6 @@ if __name__ == "__main__":
     target = Path(sys.argv[1])
     seed(target)
     print(
-        f"seeded {target}: claude(2) + codex(1) + gemini(1) + antigravity(1) + kimi(1) + opencode(1) "
-        "+ pulse-cache + 1 project entity"
+        f"seeded {target}: claude(2) + codex(1) + gemini(1) + antigravity(1) "
+        "+ kimi(1) + opencode(1) + pulse-cache + 1 project entity + chat edit approval"
     )

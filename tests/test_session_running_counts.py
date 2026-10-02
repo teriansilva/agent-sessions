@@ -72,9 +72,12 @@ def test_running_is_stamped_and_totalled_over_the_filtered_set_not_the_page(
 
 def test_working_is_the_subset_that_printed_in_the_window(auth_cfg, fake_jsonl, monkeypatch):
     _running(monkeypatch, A, B)
-    now = time.time()
-    last = {f"claude:{A}": now - 1, f"claude:{B}": now - 600}
-    monkeypatch.setattr(webterm, "get_last_output_at", lambda k: last.get(k))
+    ages = {f"claude:{A}": 1, f"claude:{B}": 600}
+    # Keep the fake agent active across login and both requests even on a busy runner.
+    # This checks the working/live distinction, not how long fixture setup takes.
+    monkeypatch.setattr(
+        webterm, "get_last_output_at", lambda k: time.time() - ages[k] if k in ages else None
+    )
     c = _client(auth_cfg)
     # B is running but quiet (thinking, or waiting on the operator): live, not working.
     assert c.get("/api/sessions?running=live").json()["total"] == 2

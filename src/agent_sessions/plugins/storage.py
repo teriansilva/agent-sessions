@@ -2,6 +2,8 @@
 
 Directory traversal is descriptor-relative and refuses symlinks and foreign write access.
 Stable sidecar locks serialize mutations; atomicjson supplies fsync + atomic replacement.
+Read/write bounds use the same formatted representation; the manager reserves a bounded
+extension for revocation and bounded outcomes while ordinary writes retain the default limit.
 """
 
 from __future__ import annotations
@@ -92,18 +94,21 @@ def locked(name: str, *, wait: float = 2) -> Iterator[Path]:
             os.close(fd)
 
 
-def read(path: Path) -> dict | None:
+def read(path: Path, *, max_bytes: int | None = None) -> dict | None:
+    limit = MAX_STATE_BYTES if max_bytes is None else max_bytes
     try:
         fd, _ = provenance.open_verified(str(path), canonicalize=False)
     except FileNotFoundError:
         return None
     try:
         st = os.fstat(fd)
-        if st.st_uid != os.geteuid() or st.st_nlink != 1 or st.st_mode & 0o077:
+        # Atomic replacement can unlink this already verified open snapshot. Zero links is
+        # safe for a read-only descriptor; multiple links still violate private-state ownership.
+        if st.st_uid != os.geteuid() or st.st_nlink > 1 or st.st_mode & 0o077:
             raise StateError("plugin state is not private")
         with os.fdopen(fd, "rb", closefd=False) as stream:
-            data = stream.read(MAX_STATE_BYTES + 1)
-        if len(data) > MAX_STATE_BYTES:
+            data = stream.read(limit + 1)
+        if len(data) > limit:
             raise StateError("plugin state is too large")
         doc = json.loads(data)
         if not isinstance(doc, dict):
@@ -115,8 +120,10 @@ def read(path: Path) -> dict | None:
         os.close(fd)
 
 
-def write(path: Path, doc: dict) -> None:
+def write(path: Path, doc: dict, *, max_bytes: int | None = None) -> None:
     # Called only while locked() owns the already verified parent and stable sidecar.
-    if len(json.dumps(doc).encode()) > MAX_STATE_BYTES:
+    # Match atomic_write_json exactly, including indentation, ordering and UTF-8 encoding.
+    limit = MAX_STATE_BYTES if max_bytes is None else max_bytes
+    if len(json.dumps(doc, indent=2, sort_keys=True).encode("utf-8")) > limit:
         raise StateError("plugin state is too large")
     atomic_write_json(path, doc)

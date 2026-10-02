@@ -839,10 +839,28 @@ def _isolate_plugin_dirs(tmp_path, monkeypatch) -> None:
     # before this fixture ran), so point each of them here too — otherwise a record the host
     # happens to hold would decide a test's outcome (independent review of PR #1115).
     from agent_sessions import engines
+    from agent_sessions.engines import registry
 
+    prior = registry.capture()
+    seen = registry._COMMIT_SEEN
     for p in engines.all_providers():
         if hasattr(p, "state_dir"):
             monkeypatch.setattr(p, "state_dir", tmp_path / "_plugin-state")
+    yield
+    # Manager changes publish automatically. Keep a test's committed candidates/retirements
+    # from becoming another test's starting roster after its temporary state directory changes.
+    if registry._COMMIT_SEEN != seen:
+        with registry._ROSTER_LOCK:
+            registry._PROVIDERS, registry._BY_ID = list(prior.providers), dict(prior.by_id)
+            registry._RETIRING, registry._REMOVED = dict(prior.retiring), set(prior.removed)
+            registry._BARE_ID_ENGINE = prior.bare_id_engine
+            registry._GENERATION = prior.generation
+            registry._COMMIT_SEEN = seen
+            registry.LOAD_PROBLEMS.clear()
+            registry.LOAD_PROBLEMS.update(prior.problems)
+            registry.RETIREMENT_PROBLEMS[:] = prior.retirement_problems
+            for name, view in prior.views.items():
+                registry._VIEW_RESTORERS[name](view)
 
 
 def _own_process_tree() -> set[int]:

@@ -8,14 +8,17 @@ native shape before any dispatch. See the package ``__init__`` docstring for the
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import logging
 import secrets
 import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+from types import MappingProxyType
 
 from ..chat_store import ChatStoreKind
 from ..scanner import Session
@@ -29,6 +32,170 @@ from .opencode import OpenCodeProvider
 from .shell import ShellProvider
 
 log = logging.getLogger("agent_sessions.engines")
+
+_ROSTER_LOCK = threading.RLock()
+_REQUEST_ROSTER = contextvars.ContextVar("engine_roster_generation", default=None)
+_GENERATION = 0
+_RELOAD_SIGNAL = None
+_COMMIT_SEEN = None
+_VIEW_FACTORIES: dict[str, Callable] = {}
+_VIEW_RESTORERS: dict[str, Callable] = {}
+
+
+@dataclass(frozen=True)
+class Roster:
+    generation: int
+    providers: tuple
+    by_id: object
+    retiring: object
+    removed: frozenset
+    bare_id_engine: str | None
+    problems: object
+    retirement_problems: tuple
+    views: object
+
+
+def capture() -> Roster:
+    """One complete roster, including consumer views, copied under the publication lock.
+
+    No request holds this lock while doing I/O. The captured objects bind provider manifest,
+    generation root and provenance together; reload cannot mutate them underneath a reader.
+    Keeping the existing globals as the write seam preserves isolated provider fixtures.
+    """
+    with _ROSTER_LOCK:
+        return Roster(
+            _GENERATION,
+            tuple(_PROVIDERS),
+            MappingProxyType(dict(_BY_ID)),
+            MappingProxyType(dict(_RETIRING)),
+            frozenset(_REMOVED),
+            _BARE_ID_ENGINE,
+            MappingProxyType(dict(LOAD_PROBLEMS)),
+            tuple(RETIREMENT_PROBLEMS),
+            MappingProxyType({name: factory() for name, factory in _VIEW_FACTORIES.items()}),
+        )
+
+
+def sync_requested() -> None:
+    """Observe an explicit reload on another worker before starting new work/read scope."""
+    from ..plugins import manager, storage
+
+    global _RELOAD_SIGNAL
+    with _ROSTER_LOCK:
+        path = storage.root() / "reload.json"
+        signal = storage.read(path)
+        if signal is None:
+            return
+        if set(signal) != {"id"}:
+            raise manager.ManagerError("the roster reload request is unreadable")
+        marker = (str(path), manager._operation_id(signal["id"]))
+        if marker != _RELOAD_SIGNAL:
+            # A failed build preserves the old captured readers and remains pending. A new
+            # launch cannot use that old generation: its admission retries this same boundary.
+            reload()
+            _RELOAD_SIGNAL = marker
+
+
+def request_reload() -> None:
+    """Publish a durable reload request; every worker observes it at its next boundary."""
+    import uuid
+
+    from ..plugins import storage
+
+    with storage.locked("worker", wait=0), storage.locked("launch"):
+        with storage.locked("reload.json") as path:
+            storage.write(path, {"id": str(uuid.uuid4())})
+        sync_requested()
+
+
+def current() -> Roster:
+    return _REQUEST_ROSTER.get() or capture()
+
+
+@contextlib.contextmanager
+def snapshot_scope(*, fresh: bool = False, require_current: bool = False):
+    """Pin reads at a boundary; new-work admission requires a successful reload check."""
+    from ..plugins import provenance
+
+    reload_problem = None
+    if fresh or _REQUEST_ROSTER.get() is None:
+        try:
+            sync_requested()
+        except (OSError, ValueError, provenance.ProvenanceError):
+            if require_current:
+                raise
+            # A damaged reload hint must not take login/health or existing attachments down.
+            # Keep the last complete read view; live_provider never permits this fallback.
+            reload_problem = "roster reload is unavailable; new work is refused"
+        sync_committed()
+    view = capture() if fresh else current()
+    if reload_problem:
+        view = replace(view, problems=MappingProxyType({**view.problems, "reload": reload_problem}))
+    token = _REQUEST_ROSTER.set(view)
+    try:
+        yield _REQUEST_ROSTER.get()
+    finally:
+        _REQUEST_ROSTER.reset(token)
+
+
+def sync_committed() -> None:
+    """Reconcile the revision committed with enable/disable before admitting any new work."""
+    from ..plugins import manager, provenance, storage
+
+    global _COMMIT_SEEN
+    with _ROSTER_LOCK:
+        root = str(storage.root().absolute())
+        unavailable = (root, "unavailable")
+        try:
+            doc = manager.snapshot()
+        except (OSError, ValueError, provenance.ProvenanceError):
+            # The existing overlay publishes no live providers and a diagnostic problem on
+            # corrupt/unreadable manager state. Publish that closed roster once, instead of
+            # making every HTTP route (even login and health) raise before its handler runs.
+            if _COMMIT_SEEN != unavailable:
+                reload()
+                _COMMIT_SEEN = unavailable
+            return
+        revision = doc.get("roster_revision")
+        if revision is None:
+            if _COMMIT_SEEN == unavailable:
+                reload()  # restoration of legacy/empty state must recover too
+                _COMMIT_SEEN = (root, None)
+            return  # legacy/no manager changes; preserve the explicit fixture reload seam
+        stamp = (root, revision)
+        if stamp != _COMMIT_SEEN:
+            reload()
+            _COMMIT_SEEN = stamp  # a failed build is retried, never admitted on the old roster
+
+
+def register_view(name: str, factory: Callable, restore: Callable) -> None:
+    with _ROSTER_LOCK:
+        _VIEW_FACTORIES[name] = factory
+        _VIEW_RESTORERS[name] = restore
+
+
+def live_provider(engine_id: str):
+    """New-work admission deliberately bypasses a request's older snapshot."""
+    from .. import engines
+
+    with snapshot_scope(fresh=True, require_current=True):
+        return engines.get(engine_id)
+
+
+def admits(prov) -> bool:
+    if prov is None:
+        return False
+    live = live_provider(prov.engine_id)
+    if live is None:
+        return False
+
+    # An unchanged in-tree reload may rebuild the wrapper. A managed generation's root/record
+    # must still be identical: matching the manifest alone would admit the replaced binary.
+    def binding(p):
+        return (getattr(p, "manifest", None), getattr(p, "root", None), getattr(p, "_record", None))
+
+    return live is prov or binding(live) == binding(prov)
+
 
 #: `store.layout` → the in-tree store kind that implements it (#853 P2). A kind is behaviour only —
 #: scanning, lookup, reconcile, the unattended hooks. Identity, argv, capabilities and the binary
@@ -51,16 +218,18 @@ LOAD_PROBLEMS: dict[str, str] = {}
 
 
 def _build_roster(first_party_dir: Path | None = None) -> list[base.EngineProvider]:
-    """The live roster: every IN-TREE manifest, in `display.order` (#853 P2).
+    """Load in-tree defaults plus complete committed manager generations (#853 P5).
 
-    Local manifests never reach this list — `load_first_party()` does not read them — until install
-    and operator confirmation exist (P5/P6). An in-tree manifest that fails to load is a build
-    defect, not an operator error, so it is logged loudly and its engine is left out rather than
-    taking the whole roster down (the fail-soft rule every store reader already follows).
+    Dropped local manifests never reach this list. A malformed identity is reported and disabled
+    rather than taking down the other providers; an unreadable manager document refuses new work.
     """
     from ..plugins import load_first_party
 
     loaded = load_first_party(first_party_dir=first_party_dir)
+    if first_party_dir is None:
+        from ..plugins import manager
+
+        loaded = manager.overlay(loaded)
     LOAD_PROBLEMS.clear()
     LOAD_PROBLEMS.update(loaded.problems)
     for key, why in loaded.problems.items():
@@ -78,7 +247,11 @@ def _build_roster(first_party_dir: Path | None = None) -> list[base.EngineProvid
                 "engine manifest %s names store layout %r with no kind", prov.engine_id, layout
             )
             continue
-        roster.append(prov.attach_kind(kind()))
+        try:
+            roster.append(prov.attach_kind(kind()))
+        except ValueError:
+            LOAD_PROBLEMS[prov.engine_id] = "the agent manifest does not match its store kind"
+            log.error("engine %s does not match its store kind", prov.engine_id)
     return roster
 
 
@@ -104,23 +277,39 @@ def on_reload(fn: Callable[[], None]) -> Callable[[], None]:
 
 
 def reload(first_party_dir: Path | None = None) -> None:
-    """Rebuild the roster from the manifests — the RELOAD BOUNDARY of #853 (P3: app start; P6
-    adds an explicit action). Never mid-request: callers are app start and tests.
+    """Publish a complete roster generation; existing requests keep their captured view.
 
-    ``first_party_dir`` is the loader's existing test seam; the live app never passes it, so no
-    runtime path can load a manifest from anywhere but the in-tree `plugins/first_party/`.
+    ``first_party_dir`` is the isolated fixture seam. Live publication starts with packaged
+    manifests and overlays only complete committed operator-owned manager records.
     """
-    global _PROVIDERS, _BY_ID, _BARE_ID_ENGINE
-    roster = _build_roster(first_party_dir)
-    _PROVIDERS = roster
-    _BY_ID = {p.engine_id: p for p in roster}
-    _BARE_ID_ENGINE = next(
-        (p.engine_id for p in roster if p.manifest.session_id.legacy_bare_id), None
-    )
-    apply_retirement()
-    invalidate_scan_cache()
-    for fn in list(_RELOAD_LISTENERS):
-        fn()
+    global _PROVIDERS, _BY_ID, _BARE_ID_ENGINE, _GENERATION, _RETIRING, _REMOVED
+    with _ROSTER_LOCK:
+        old = capture()
+        token = _REQUEST_ROSTER.set(None)  # consumer builders must see the candidate generation
+        try:
+            roster = _build_roster(first_party_dir)
+            _PROVIDERS = roster
+            _BY_ID = {p.engine_id: p for p in roster}
+            _BARE_ID_ENGINE = next(
+                (p.engine_id for p in roster if p.manifest.session_id.legacy_bare_id), None
+            )
+            for fn in list(_RELOAD_LISTENERS):
+                fn()
+            _apply_retirement()
+            _GENERATION += 1
+            invalidate_scan_cache()
+        except BaseException:
+            _PROVIDERS, _BY_ID = list(old.providers), dict(old.by_id)
+            _RETIRING, _REMOVED = dict(old.retiring), set(old.removed)
+            _BARE_ID_ENGINE = old.bare_id_engine
+            LOAD_PROBLEMS.clear()
+            LOAD_PROBLEMS.update(old.problems)
+            RETIREMENT_PROBLEMS[:] = old.retirement_problems
+            for name, view in old.views.items():
+                _VIEW_RESTORERS[name](view)
+            raise
+        finally:
+            _REQUEST_ROSTER.reset(token)
 
 
 # --- retirement (#853 P3) -------------------------------------------------------------------------
@@ -202,6 +391,11 @@ def _retiring_provider(m) -> base.EngineProvider:
 
 
 def apply_retirement() -> None:
+    with _ROSTER_LOCK:
+        _apply_retirement()
+
+
+def _apply_retirement() -> None:
     """Reconcile the loaded roster with the recorded one (the reload boundary)."""
     global _RETIRING, _REMOVED, _BARE_ID_ENGINE
     from ..plugins import roster_state
@@ -236,7 +430,7 @@ def apply_retirement() -> None:
         del state.manifests[eid]
         removed.add(eid)
     for p in _PROVIDERS:
-        rec = roster_state.manifest_bytes(p.manifest)
+        rec = getattr(p, "manifest_copy", None) or roster_state.manifest_bytes(p.manifest)
         if rec is not None:
             state.manifests[p.engine_id] = rec
     state.removed = removed
@@ -270,21 +464,29 @@ def get_any(engine_id: str) -> base.EngineProvider | None:
     """An ACTIVE or RETIRING provider. For paths about an EXISTING session — parsing, resolving,
     tearing down, pruning its socket — which must keep working while the engine retires. Every
     new-work path (launch, handoff target, dispatch, listings) uses `get`, which is active only."""
-    return _BY_ID.get(engine_id) or _RETIRING.get(engine_id)
+    roster = current()
+    return roster.by_id.get(engine_id) or roster.retiring.get(engine_id)
 
 
 def is_retiring(ref) -> bool:
-    return bool(getattr(ref, "retiring", False)) if not isinstance(ref, str) else ref in _RETIRING
+    return (
+        bool(getattr(ref, "retiring", False))
+        if not isinstance(ref, str)
+        else ref in current().retiring
+    )
 
 
 def retiring_providers() -> list[base.EngineProvider]:
-    return list(_RETIRING.values())
+    return list(current().retiring.values())
 
 
 def removed_reason(engine_id: str) -> str | None:
     """ "agent removed" for a retiring or tombstoned engine, else None. What every new-work path
     says instead of "unknown engine" when the engine used to exist."""
-    if engine_id in _RETIRING or (engine_id in _REMOVED and engine_id not in _BY_ID):
+    roster = current()
+    if engine_id in roster.retiring or (
+        engine_id in roster.removed and engine_id not in roster.by_id
+    ):
         return REMOVED_REASON
     return None
 
@@ -319,16 +521,16 @@ def can_start(prov: base.EngineProvider | None) -> bool:
 
 
 def all_providers() -> list[base.EngineProvider]:
-    return list(_PROVIDERS)
+    return list(current().providers)
 
 
 def present_providers() -> list[base.EngineProvider]:
     """Providers usable on this host (binary and/or data store present)."""
-    return [p for p in _PROVIDERS if p.is_present()]
+    return [p for p in current().providers if p.is_present()]
 
 
 def get(engine_id: str) -> base.EngineProvider | None:
-    return _BY_ID.get(engine_id)
+    return current().by_id.get(engine_id)
 
 
 # --- the manifest, asked (#853 P3) ---------------------------------------------------------------
@@ -350,12 +552,12 @@ def manifest_of(ref):
 
 def engine_ids() -> list[str]:
     """The roster, in display order. The ONE list of engines; nothing else keeps its own."""
-    return [p.engine_id for p in _PROVIDERS]
+    return [p.engine_id for p in current().providers]
 
 
 def ids_where(pred: Callable) -> list[str]:
     """Engine ids (roster order) whose manifest satisfies ``pred``."""
-    return [p.engine_id for p in _PROVIDERS if pred(p.manifest)]
+    return [p.engine_id for p in current().providers if pred(p.manifest)]
 
 
 def is_agent(ref) -> bool:
@@ -428,7 +630,8 @@ def store_for_layout(layout: str, name: str | None = None, home: Path | None = N
 
     # Retiring engines too (Hermes on PR #1132): their store kinds still answer `lookup` for a
     # live session's ATTACH authorization. An active engine of the same layout comes first.
-    for p in [*_PROVIDERS, *_RETIRING.values()]:
+    roster = current()
+    for p in [*roster.providers, *roster.retiring.values()]:
         m = p.manifest
         if m.store is not None and m.store.layout == layout:
             got = store_location(m, home=home or Path.home(), env=os.environ, name=name)
@@ -481,7 +684,7 @@ def expects_raw_tty(prov: base.EngineProvider | None) -> bool:
 def orchestrator_input_engines() -> set[str]:
     """Engine ids the orchestrator may write to — the default-deny set above, resolved once so
     callers can filter a card list without touching providers per row."""
-    return {p.engine_id for p in _PROVIDERS if supports_orchestrator_input(p)}
+    return {p.engine_id for p in current().providers if supports_orchestrator_input(p)}
 
 
 def scan_all() -> list[Session]:
@@ -524,7 +727,7 @@ def scan_all_checked() -> tuple[list[Session], list[str]]:
     """
     rows: list[Session] = []
     problems: list[str] = []
-    for p in _PROVIDERS:
+    for p in current().providers:
         checked = getattr(p, "scan_checked", None)
         if checked is None and not p.is_present():
             continue
@@ -893,7 +1096,7 @@ def parse_key(raw: str, *, allow_new_placeholder: bool = False) -> tuple[base.En
         if prov is None:
             raise base.EngineError(f"unknown engine: {engine_id!r}")
     else:
-        prov = get_any(_BARE_ID_ENGINE or "")
+        prov = get_any(current().bare_id_engine or "")
         if prov is None:
             raise base.EngineError("an engine-qualified id is required")
         native = raw

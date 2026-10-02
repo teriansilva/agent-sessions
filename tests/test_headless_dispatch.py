@@ -705,12 +705,15 @@ async def test_CANCELLATION_after_the_spawn_tears_down_before_it_unlocks(
     # The launched process stays alive until the teardown stops it, as the real `dtach` does. A
     # flat sleep kept the worker thread busy for 30 s after the assertions had already passed.
     killed = threading.Event()
+    waiting = asyncio.Event()
+    loop = asyncio.get_running_loop()
 
     class SlowProc:
         returncode = 0
 
         def wait(self):
             order.append("waiting")
+            loop.call_soon_threadsafe(waiting.set)
             killed.wait(30)  # cancelled here
             return 0
 
@@ -739,10 +742,14 @@ async def test_CANCELLATION_after_the_spawn_tears_down_before_it_unlocks(
     task = asyncio.create_task(
         headless_dispatch.dispatch(registry=reg, engine="claude", cwd=str(env), brief="go")
     )
-    await asyncio.sleep(0.2)
-    task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await task
+    try:
+        # Cancel at the actual post-spawn boundary, even on a loaded CI host.
+        await asyncio.wait_for(waiting.wait(), timeout=30)
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        killed.set()
 
     assert "abandon" in order, "a cancelled launch was left running"
     assert order.index("abandon") < order.index(
@@ -1451,3 +1458,44 @@ async def test_a_FAILED_spawn_records_no_model(env, reg, monkeypatch):
     assert not out.ok and not out.launched
     assert p.model is not None  # the launch argv WAS built with the model…
     assert recorded == []  # …but nothing was recorded for a master that never existed
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("phase", ["before-probe", "after-probe"])
+async def test_disable_during_preparation_fences_every_headless_spawn(env, reg, monkeypatch, phase):
+    import uuid
+
+    from agent_sessions.plugins import manager
+
+    # Use the real roster, so disable actually changes admission rather than a mocked predicate.
+    prov = engines.registry.live_provider("claude")
+    assert prov is not None
+    probes, spawns = [], []
+
+    def check(binary, *, cwd=None, env=None, probe=None, gate=None):
+        if phase == "before-probe":
+            manager.deactivate(str(uuid.uuid4()), "claude")
+        with gate() as refusal:
+            if refusal:
+                raise headless_dispatch.engine_auth.Refused(refusal)
+            probes.append(binary)
+        if phase == "after-probe":
+            manager.deactivate(str(uuid.uuid4()), "claude")
+        return headless_dispatch.engine_auth.AUTHENTICATED, "test probe completed"
+
+    def spawn(*a, **k):
+        spawns.append(a)
+        raise OSError("test stops before creating a real process")
+
+    # Patch the dispatched instance: an earlier instance patch may have restored a bound
+    # method here, which shadows a later class patch and accidentally enters real provenance.
+    monkeypatch.setattr(prov, "is_present", lambda: True)
+    monkeypatch.setattr(prov, "new_launch_argv", lambda *a, **k: ["/bin/true"])
+    monkeypatch.setattr(headless_dispatch.engine_auth, "check", check)
+    monkeypatch.setattr(headless_dispatch, "_popen", spawn)
+    out = await headless_dispatch.dispatch(
+        registry=reg, engine="claude", cwd=str(env), brief="go", start_timeout=0.3
+    )
+    assert not out.ok and out.reason == "agent removed"
+    assert not spawns
+    assert bool(probes) == (phase == "after-probe")

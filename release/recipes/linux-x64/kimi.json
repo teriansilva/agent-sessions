@@ -1,0 +1,263 @@
+{
+  "manifest": {
+    "binary": {
+      "aliases": [
+        "main.mjs"
+      ],
+      "env_var": "AGENT_SESSIONS_KIMI_BIN",
+      "name": "kimi",
+      "search_paths": [
+        "~/.kimi-code/bin",
+        "~/.local/bin"
+      ],
+      "version_flag": "--version"
+    },
+    "capabilities": {
+      "archive": true,
+      "handoff_target": true,
+      "new": true,
+      "orchestrator_input": true,
+      "raw_tty": true,
+      "resume": true,
+      "seed_start": true
+    },
+    "contract": 1,
+    "display": {
+      "accent": "magenta",
+      "badge": "ki",
+      "id_prefix": "session_",
+      "name": "kimi",
+      "order": 60
+    },
+    "identity": {
+      "id": "kimi",
+      "label": "Kimi Code",
+      "publisher": "battlelab",
+      "version": "2.1.1"
+    },
+    "install": {
+      "authority": "registry.npmjs.org",
+      "digest": "sha256:6690a29d7b5e14812754dd100136b7f4ee2577add8895f00fe27025b4412049f",
+      "entrypoint": "node_modules/@moonshot-ai/kimi-code/dist/main.mjs",
+      "kind": "npm-prefix",
+      "package": "@moonshot-ai/kimi-code",
+      "platform": "linux-x64",
+      "version": "2.1.1"
+    },
+    "instructions": {
+      "files": [
+        "AGENTS.md"
+      ]
+    },
+    "launch": {
+      "bypass": [
+        "-y"
+      ],
+      "new": {
+        "kind": "bare"
+      },
+      "resume": {
+        "flag": "-S",
+        "kind": "flag"
+      }
+    },
+    "models": {
+      "configured_elsewhere": true
+    },
+    "probe": {
+      "kind": "prompt-session"
+    },
+    "session_id": {
+      "mint": "adopt",
+      "pattern": "^session_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "signin": {
+      "kind": "cli-subcommand",
+      "subcommand": "login"
+    },
+    "store": {
+      "env_override": "AGENT_SESSIONS_KIMI_DIR",
+      "layout": "kimi-code",
+      "root": "~/.kimi-code"
+    },
+    "terminal": {
+      "repaint": "wipe"
+    },
+    "transcript": {
+      "kind": "kimi-wire"
+    },
+    "usage": {
+      "access": "kimi-wire-auth-error",
+      "kind": "kimi-web-usage-probe",
+      "source": "plan"
+    },
+    "verify": [
+      "binary",
+      "version",
+      "store",
+      "new",
+      "resume",
+      "transcript",
+      "usage"
+    ]
+  },
+  "recipe": {
+    "artifacts": [
+      {
+        "destination": "node_modules/@moonshot-ai/kimi-code",
+        "sha256": "6690a29d7b5e14812754dd100136b7f4ee2577add8895f00fe27025b4412049f",
+        "url": "https://registry.npmjs.org/@moonshot-ai/kimi-code/-/kimi-code-2.1.1.tgz"
+      },
+      {
+        "destination": "node_modules/ansi-regex",
+        "sha256": "0e0eadcdaada805db5d85b53ad5cdca0760b996ee199ec9658e7b34aa6c8e0d9",
+        "url": "https://registry.npmjs.org/ansi-regex/-/ansi-regex-5.0.1.tgz"
+      },
+      {
+        "destination": "node_modules/ansi-styles",
+        "sha256": "2c539a46d85ab6033183997434d2d9a5ca2ceefc12b4db9022f564784cd7987f",
+        "url": "https://registry.npmjs.org/ansi-styles/-/ansi-styles-4.3.0.tgz"
+      },
+      {
+        "destination": "node_modules/camelcase",
+        "sha256": "c609324ab889515f2f7354ddcc319b6080c9b76f2ac1441c03da031c85458696",
+        "url": "https://registry.npmjs.org/camelcase/-/camelcase-5.3.1.tgz"
+      },
+      {
+        "destination": "node_modules/cliui",
+        "sha256": "538bfc9753338f8eb816c46e7e541b3bbada18446cf8b5149cfaaafff01acbd8",
+        "url": "https://registry.npmjs.org/cliui/-/cliui-6.0.0.tgz"
+      },
+      {
+        "destination": "node_modules/color-convert",
+        "sha256": "920fa43538c019a085dbbf04cb6f72cc337624e5f5217519f0e7b2ef784e7ce1",
+        "url": "https://registry.npmjs.org/color-convert/-/color-convert-2.0.1.tgz"
+      },
+      {
+        "destination": "node_modules/color-name",
+        "sha256": "507b7c4461e8eb941355af9a59e9a7e02cd0e7c6176b48d1809766344f3f1708",
+        "url": "https://registry.npmjs.org/color-name/-/color-name-1.1.4.tgz"
+      },
+      {
+        "destination": "node_modules/decamelize",
+        "sha256": "b4adeff510e38c3a02703bcba72ffbe3c65b591f13c78c6a459b5e801a3e2864",
+        "url": "https://registry.npmjs.org/decamelize/-/decamelize-1.2.0.tgz"
+      },
+      {
+        "destination": "node_modules/dijkstrajs",
+        "sha256": "07149886ab98299c227b8de61912770b24b8a17b250996a4b5727c9f8bff4c00",
+        "url": "https://registry.npmjs.org/dijkstrajs/-/dijkstrajs-1.0.3.tgz"
+      },
+      {
+        "destination": "node_modules/emoji-regex",
+        "sha256": "b5ccd9fbfb08098eefbeb6b6b4b40db6db3acf9243e327e039925aa8661cb107",
+        "url": "https://registry.npmjs.org/emoji-regex/-/emoji-regex-8.0.0.tgz"
+      },
+      {
+        "destination": "node_modules/find-up",
+        "sha256": "33a9b0535306d2e05e0a27088b68344b52ac767d576ef60b7ab173aa0d5a26eb",
+        "url": "https://registry.npmjs.org/find-up/-/find-up-4.1.0.tgz"
+      },
+      {
+        "destination": "node_modules/get-caller-file",
+        "sha256": "7b13e1c81949ff4c1baae4ac4e34990492d5e8a86dab7e3b90027b1f5126935f",
+        "url": "https://registry.npmjs.org/get-caller-file/-/get-caller-file-2.0.5.tgz"
+      },
+      {
+        "destination": "node_modules/is-fullwidth-code-point",
+        "sha256": "6f415dae5dc6070f1b42daee6165eab941a97101982305facc8bafdaf300bc4a",
+        "url": "https://registry.npmjs.org/is-fullwidth-code-point/-/is-fullwidth-code-point-3.0.0.tgz"
+      },
+      {
+        "destination": "node_modules/locate-path",
+        "sha256": "ae3d1b9360a435840a81a8c7da29f59630dd793c3f39a08f15f73fd3894053b7",
+        "url": "https://registry.npmjs.org/locate-path/-/locate-path-5.0.0.tgz"
+      },
+      {
+        "destination": "node_modules/p-limit",
+        "sha256": "384b452409cfeb5c6fa82dc68ebfa498b24717b74fb8d3fe6eb2bb89908db295",
+        "url": "https://registry.npmjs.org/p-limit/-/p-limit-2.3.0.tgz"
+      },
+      {
+        "destination": "node_modules/p-locate",
+        "sha256": "d95a6ae462e3d967deb0c250bda1c3bbebfe86a58832d27b204c7b74a76fa5f0",
+        "url": "https://registry.npmjs.org/p-locate/-/p-locate-4.1.0.tgz"
+      },
+      {
+        "destination": "node_modules/p-try",
+        "sha256": "a390b2b89899df950afc0304eaba7cd1f5e3746b2e370758a9b50f177e713790",
+        "url": "https://registry.npmjs.org/p-try/-/p-try-2.2.0.tgz"
+      },
+      {
+        "destination": "node_modules/path-exists",
+        "sha256": "dbb535c9302ce9b3f777ece3ff055cc8d88890a1e1deddc045340aef76fb775c",
+        "url": "https://registry.npmjs.org/path-exists/-/path-exists-4.0.0.tgz"
+      },
+      {
+        "destination": "node_modules/pngjs",
+        "sha256": "4d960bbbe078022d7a36822e2874f884c7410ead111f3603d69d70fc7af36f20",
+        "url": "https://registry.npmjs.org/pngjs/-/pngjs-5.0.0.tgz"
+      },
+      {
+        "destination": "node_modules/qrcode",
+        "sha256": "0c7274f0c299f39c2fddf54a2e0039b785977b0173c02d0b3f65fad68923e2b0",
+        "url": "https://registry.npmjs.org/qrcode/-/qrcode-1.5.4.tgz"
+      },
+      {
+        "destination": "node_modules/require-directory",
+        "sha256": "703bee0844360383fe4a8792d4a5a562647426a053e7597a1d272ac554f386c8",
+        "url": "https://registry.npmjs.org/require-directory/-/require-directory-2.1.1.tgz"
+      },
+      {
+        "destination": "node_modules/require-main-filename",
+        "sha256": "c5bb566318fb6091c7c2ac7c0aba6eeb7b332ffcfafad2268a2dc12a4d428e00",
+        "url": "https://registry.npmjs.org/require-main-filename/-/require-main-filename-2.0.0.tgz"
+      },
+      {
+        "destination": "node_modules/set-blocking",
+        "sha256": "d934aee7db9e09da09e87724743315ffe888130aa6e04fbbdecac985f6ae693d",
+        "url": "https://registry.npmjs.org/set-blocking/-/set-blocking-2.0.0.tgz"
+      },
+      {
+        "destination": "node_modules/string-width",
+        "sha256": "adbb4fb1b26e8069af99adff0079369c93f17cf887b91086691d671ddbd52934",
+        "url": "https://registry.npmjs.org/string-width/-/string-width-4.2.3.tgz"
+      },
+      {
+        "destination": "node_modules/strip-ansi",
+        "sha256": "9bdb75d0bff49f156dd8c3bcb0e06b3fa96c3d88ddd4c342a4345866a40c08ca",
+        "url": "https://registry.npmjs.org/strip-ansi/-/strip-ansi-6.0.1.tgz"
+      },
+      {
+        "destination": "node_modules/which-module",
+        "sha256": "ff8eef22f989286c4a33d6c53acf11027a4c2634eb042c63d7bf3700b3424973",
+        "url": "https://registry.npmjs.org/which-module/-/which-module-2.0.1.tgz"
+      },
+      {
+        "destination": "node_modules/wrap-ansi",
+        "sha256": "d46fc412f04d873700a557bc9686d42c0d6c7979e1825cefebf4279ca9d678f8",
+        "url": "https://registry.npmjs.org/wrap-ansi/-/wrap-ansi-6.2.0.tgz"
+      },
+      {
+        "destination": "node_modules/ws",
+        "sha256": "ca9b3798b2e11ce8fac6713f50ef0501aa12b09b330623c1dc409dff94e7abc8",
+        "url": "https://registry.npmjs.org/ws/-/ws-8.22.0.tgz"
+      },
+      {
+        "destination": "node_modules/y18n",
+        "sha256": "bc4970449801429ba77228a26f03e05ba7e9a5e98111edb44d6a0fc7b6660ecf",
+        "url": "https://registry.npmjs.org/y18n/-/y18n-4.0.3.tgz"
+      },
+      {
+        "destination": "node_modules/yargs",
+        "sha256": "41abfec6a74cfb4fa330af2a33b867dfa06a9b2b439bb01244c4f47c585de535",
+        "url": "https://registry.npmjs.org/yargs/-/yargs-15.4.1.tgz"
+      },
+      {
+        "destination": "node_modules/yargs-parser",
+        "sha256": "0c9135ee2330fd9cdc19fed11b8d9a7b292f5dd8ddf40c13b051340693ebbe58",
+        "url": "https://registry.npmjs.org/yargs-parser/-/yargs-parser-18.1.3.tgz"
+      }
+    ]
+  }
+}

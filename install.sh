@@ -1,6 +1,7 @@
 #!/bin/sh
 # agent-sessions installer — rootless, user-level. Idempotent: re-running upgrades in
 # place using an atomic release directory + a `current` symlink (one-step rollback).
+# An operator's <install root>/retain-releases marker suspends automatic release pruning.
 #
 #   curl -fsSL <url>/install.sh | sh
 #
@@ -1518,6 +1519,12 @@ homefree_maybe_setup() {  # self-host default; stream only when explicitly chose
 }
 
 prune_releases() {
+  # A local operator cleanup hold survives updates; never discard its rollback copies.
+  # A dangling hold link also refuses pruning rather than treating unavailable evidence as go.
+  if [ -e "$PREFIX/retain-releases" ] || [ -L "$PREFIX/retain-releases" ]; then
+    log "release retention held — kept all rollback copies ($PREFIX/retain-releases)"
+    return 0
+  fi
   # Keep the newest $KEEP_RELEASES (plus whatever `current` points at) for rollback.
   [ -d "$RELEASES" ] || return 0
   cur="$(readlink "$CURRENT" 2>/dev/null || true)"

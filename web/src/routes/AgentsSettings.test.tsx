@@ -26,6 +26,7 @@ vi.mock("../lib/api", async () => {
     ...actual,
     api: {
       engines: vi.fn(),
+      plugins: vi.fn().mockResolvedValue({ feed: { state: "missing", error: null }, catalog: [], plugins: [], operations: [], roster_generation: 1 }),
       engineDetail: vi.fn(),
       agentUsage: vi.fn(),
       agentUsageRefresh: vi.fn(),

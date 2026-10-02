@@ -112,6 +112,22 @@ export const VISUAL_PATHS: VisualPath[] = [
   },
   {
     group: "authed",
+    path: "/settings/agents/apichat",
+    name: "settings-agent-tools",
+    description: "API agent endpoint — read and propose edits opt-in with per-file consent",
+    requireAuth: "admin",
+    waitFor: { selector: 'input[value="write"]', timeoutMs: 8000 },
+  },
+  {
+    group: "authed",
+    path: "/s/apichat/019e2ba1-1590-7003-8e4a-51ab62cec905",
+    name: "chat-edit-approval",
+    description: "API agent — pending file change, complete diff and separate approval controls",
+    requireAuth: "admin",
+    waitFor: { selector: '[data-testid="chat-proposal"]', timeoutMs: 12000 },
+  },
+  {
+    group: "authed",
     path: "/overview",
     name: "overview",
     description:

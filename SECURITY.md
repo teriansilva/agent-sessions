@@ -50,12 +50,19 @@ These are pinned by tests and/or CI — regressions fail the build:
   apply, and a ratchet test pins every outbound HTTP site. A stored API key is AES-GCM encrypted
   at rest, never returned in a response, and bound to the origin it was saved for — pointing the
   URL at another host requires a new key. The API agent's replies are rendered as text and never
-  executed or typed into a terminal. Its only tools are **read-only and off by default**: with
+  executed or typed into a terminal. Its tools are **off by default**: with
   *Read files* on, it can list and read files in its conversation's folder, and what it opens is
   sent to that endpoint. Access is proved on the file descriptor against that folder; hidden and
   credential-shaped paths, links and excluded folders are refused; the setting and the folder
   rules are re-read before every call and every request, and already-read results the current
-  rules refuse are withdrawn before they are sent. It can never write, delete or run anything.
+  rules refuse are withdrawn before they are sent. *Read files and propose edits* additionally
+  permits a whole-file proposal for an existing text file (64 KiB maximum); a separate authed,
+  CSRF-guarded operator decision approves that exact diff. A complete read binds the proposal to
+  a sha256 version. Approval rechecks live policy, endpoint binding and descriptor confinement,
+  then uses the same kernel-lease and displacement save as the Files panel. Private pending
+  proposal content is cleared after a recorded decision; audit metadata remains. An interrupted
+  save is never automatically replayed. No command execution, file creation/deletion, or bulk
+  approval is available.
 - **Supply-chain pin for the vendored Python.** The installer verifies the vendored Python
   download against pinned SHA-256 sums and fails closed when no sha256 tool exists.
 - **Public-mirror scrubbing.** The publish pipeline runs an export-ignore filter, scrub pass and

@@ -2439,9 +2439,10 @@ _TIMED_READER = """
 import json, os, sys, time, tty
 out, stall = sys.argv[1], float(sys.argv[2])
 tty.setraw(0)
-with open(out + ".who", "w") as f:
+with open(out + ".who.tmp", "w") as f:
     json.dump({"pid": os.getpid(), "ppid": os.getppid(), "tty": os.ttyname(0),
                "rdev": os.fstat(0).st_rdev}, f)
+os.replace(out + ".who.tmp", out + ".who")
 os.write(1, b"READY")
 time.sleep(stall)
 reads = []
@@ -2615,3 +2616,54 @@ def test_a_saturated_probe_pool_still_writes_the_paste_within_the_cap(tmp_path, 
     clear_at = next(t for t, d in reads if b"\x01\x0b" in d)
     paste_at = next(t for t, d in reads if b"\x1b[200~" in d)
     assert paste_at - clear_at < webterm._PASTE_DRAIN_MAX_S + 0.5
+
+
+@pytest.mark.parametrize("takeover", [False, True])
+@pytest.mark.parametrize("action", ["LAUNCH", "ATTACH"])
+def test_disable_during_terminal_setup_fences_spawn_but_keeps_attach(
+    fake_jsonl, auth_cfg, monkeypatch, engine_bin, takeover, action
+):
+    import uuid
+
+    from agent_sessions import engines, owner, ptybridge, sessionlock
+    from agent_sessions.plugins import manager
+    from agent_sessions.routes import terminal as route
+
+    monkeypatch.setattr(owner, "takeover_enabled", lambda: takeover)
+    monkeypatch.setattr(route.transcript_owner, "transcript_is_owned", lambda _n: False)
+    monkeypatch.setattr(ptybridge, "launch_argv", lambda **_kw: ["dtach"])
+    monkeypatch.setattr(ptybridge, "attach_argv", lambda **_kw: ["dtach"])
+    monkeypatch.setattr(engines.registry, "_engines_with_masters", lambda *_a: {"claude"})
+    engine_bin("claude")
+    dispatched = []
+
+    async def opening(engine, native):
+        return getattr(route.sessions, action), (
+            sessionlock.acquire(f"{engine}:{native}") if action == "LAUNCH" else None
+        )
+
+    # This awaited setup happens after the route's first admission check on both paths.
+    real_claim = route.session_stream.SessionRegistry.on_attach
+
+    async def disable_then_attach(self, *args, **kwargs):
+        await asyncio.to_thread(manager.deactivate, str(uuid.uuid4()), "claude")
+        return await real_claim(self, *args, **kwargs)
+
+    async def spawn(*args, **kwargs):
+        dispatched.append(args)
+        raise OSError("test stops at the actual process-creation boundary")
+
+    monkeypatch.setattr(route, "_open_action_offloop", opening)
+    monkeypatch.setattr(route.session_stream.SessionRegistry, "on_attach", disable_then_attach)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    c = _client(auth_cfg)
+    headers = _login_headers(c, auth_cfg)
+    code = None
+    with c.websocket_connect(f"/ws/term/{_GOOD}", headers=headers) as ws:
+        for _ in range(20):
+            msg = ws.receive()
+            if msg["type"] == "websocket.close":
+                code = msg["code"]
+                break
+    assert code == (4404 if action == "LAUNCH" else 4502)
+    assert bool(dispatched) == (action == "ATTACH")

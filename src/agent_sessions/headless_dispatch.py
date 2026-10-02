@@ -548,7 +548,7 @@ async def dispatch(
     the moment the master is accepting; without a registry there is no way to do that, and a
     launch that cannot be briefed should not happen at all.
     """
-    prov = engines.get(engine)
+    prov = engines.registry.live_provider(engine)
     if prov is None:
         # A removed engine says so (#853 P3) — and is never swapped for another one: the plan named
         # this engine, and running the brief somewhere else is a decision nobody made.
@@ -714,6 +714,8 @@ async def dispatch(
         # guaranteed, and nothing is spawned.
         launch_env: dict[str, str] = {}
         try:
+            if not engines.registry.admits(prov):
+                raise DispatchError("agent changed or was removed; retry with the current roster")
             unattended_launch = getattr(prov, "unattended_launch", None)
             model_kw = {"model": model_sel} if model_sel.flag else {}
             if unattended_launch is not None:
@@ -811,6 +813,8 @@ async def dispatch(
         #     is taken briefly for the decision and released — it is a global policy gate and must
         #     not be held across a 45s subprocess — and the spawn below re-authorizes under it
         #     again, so a policy withdrawn during the probe still cannot launch.
+        from .plugins import admission as plugin_admission
+
         @contextlib.contextmanager
         def _probe_gate():
             """The policy transaction ONE probe spawn happens inside — held across the decision
@@ -828,8 +832,9 @@ async def dispatch(
             `Popen` alone, so the probe is created under the same authority that approved it and
             the 45 s wait happens with the fence free.
             """
-            with session_input.launch_fence(timeout=SPAWN_TIMEOUT_S) as epoch:
-                yield authorize(epoch) if authorize is not None else ""
+            with plugin_admission.acquire(prov) as guard:
+                with session_input.launch_fence(timeout=SPAWN_TIMEOUT_S) as epoch:
+                    yield guard.reason or (authorize(epoch) if authorize is not None else "")
 
         if late_id:
             # THE PROVIDER'S OWN PREFLIGHT (#989), under exactly the same ownership: this worker,
@@ -937,7 +942,6 @@ async def dispatch(
                 launched_at=time.time(),
             )
 
-        may_have_inherited = True
         try:
             # THE LAUNCH FENCE, AND IT RUNS OFF THE EVENT LOOP (#904 review 7, finding 2).
             #
@@ -963,42 +967,47 @@ async def dispatch(
             # Still a literal argv list, never a command string, so the shell-free guarantee and
             # its `pr-validate` grep are untouched.
             def _fenced_spawn():
+                nonlocal may_have_inherited
                 # BOUNDED, so the caller's worker is bounded (#904 review 8, finding 2). A thread
                 # cannot be cancelled, so whatever this does, the caller is going to have to wait
                 # for it — which is only safe if "it" has a deadline.
-                with session_input.launch_fence(timeout=SPAWN_TIMEOUT_S) as policy_epoch:
-                    if authorize is not None:
-                        why = authorize(policy_epoch)
-                        if why:
-                            return None, why
-                    # …AND ABANDONED IS A REFUSAL. The caller sets this when it has given up, and
-                    # the check is inside the fence, immediately before the spawn: the common
-                    # shape of a late worker is one still queued for the fence when the deadline
-                    # passes, and it must not start an agent for a dispatch already reported as
-                    # having launched nothing. Losing this race is survivable — the caller waits
-                    # for this thread before tearing down — but not starting is much better than
-                    # starting and killing.
-                    if abandoned.is_set():
-                        return None, "the launch was abandoned before anything was spawned"
-                    return (
-                        _popen(  # noqa: S603 — literal argv, no shell
-                            argv,
-                            stdin=subprocess.DEVNULL,
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                            cwd=spawn_cwd,
-                            env=env,
-                            start_new_session=True,
-                            close_fds=True,
-                            # The lock fd goes to the dtach master, so the flock lives exactly as
-                            # long as the agent and survives an app restart. The DIRECTORY fd
-                            # rides along because `cwd=/proc/self/fd/N` is resolved by the child,
-                            # which needs to have inherited it — `close_fds=True` would otherwise
-                            # take it.
-                            pass_fds=((lock.fd,) if dirfd is None else (lock.fd, dirfd)),
-                        ),
-                        "",
-                    )
+                with plugin_admission.acquire(prov) as guard:
+                    if guard.reason:
+                        return None, guard.reason
+                    with session_input.launch_fence(timeout=SPAWN_TIMEOUT_S) as policy_epoch:
+                        if authorize is not None:
+                            why = authorize(policy_epoch)
+                            if why:
+                                return None, why
+                        # Abandonment is a refusal. The caller sets this when it has given up;
+                        # the check is inside the fence, immediately before the spawn: the common
+                        # shape of a late worker is one still queued for the fence when the deadline
+                        # passes, and it must not start an agent for a dispatch already reported as
+                        # having launched nothing. Losing this race is survivable — the caller waits
+                        # for this thread before tearing down — but not starting is much better than
+                        # starting and killing.
+                        if abandoned.is_set():
+                            return None, "the launch was abandoned before anything was spawned"
+                        may_have_inherited = True
+                        return (
+                            _popen(  # noqa: S603 — literal argv, no shell
+                                argv,
+                                stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                                cwd=spawn_cwd,
+                                env=env,
+                                start_new_session=True,
+                                close_fds=True,
+                                # The dtach master inherits the lock fd, so the flock lives as
+                                # long as the agent and survives an app restart. The DIRECTORY fd
+                                # rides along: `cwd=/proc/self/fd/N` is resolved by the child,
+                                # which must inherit it — `close_fds=True` would otherwise
+                                # take it.
+                                pass_fds=((lock.fd,) if dirfd is None else (lock.fd, dirfd)),
+                            ),
+                            "",
+                        )
 
             # THE WORKER STAYS OURS UNTIL IT HAS DEFINITIVELY FINISHED (#904 review 8, finding
             # 2). `wait_for(to_thread(...))` reads like a bounded spawn and is not one: cancelling

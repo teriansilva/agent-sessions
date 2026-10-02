@@ -558,6 +558,7 @@ async def run(
     stop_event: asyncio.Event | None = None,
     seed_key: str | None = None,
     maintenance_admission: opencode_admission.Admission | None = None,
+    launch_provider=None,
 ) -> None:
     """Attach ``ws`` to the PTY of ``argv`` (a built dtach create-or-attach command).
 
@@ -597,6 +598,8 @@ async def run(
     second viewer can never paste it twice. The seed goes to the PTY as input,
     never argv.
     """
+    from .plugins import admission
+
     master, slave = os.openpty()
     _set_winsize(slave, rows, cols)
     # A real color terminal: without TERM, Ink-based agents (claude) disable color.
@@ -621,13 +624,24 @@ async def run(
             pass_fds=(lock.fd,) if lock is not None else (),
         )
 
+    async def admitted_create():
+        if launch_provider is not None:
+            return await admission.spawn(create, launch_provider, timeout=SPAWN_TIMEOUT_S)
+        return await create()
+
     try:
         if maintenance_admission is None:
-            proc = await asyncio.wait_for(create(), timeout=SPAWN_TIMEOUT_S)
+            proc = await asyncio.wait_for(admitted_create(), timeout=SPAWN_TIMEOUT_S)
         else:
             proc = await opencode_admission.spawn(
-                create, maintenance_admission, timeout=SPAWN_TIMEOUT_S
+                admitted_create, maintenance_admission, timeout=SPAWN_TIMEOUT_S
             )
+    except admission.Refused as e:
+        os.close(master)
+        os.close(slave)
+        with contextlib.suppress(Exception):
+            await ws.close(code=4404 if str(e) == "agent removed" else 4502, reason=str(e))
+        return
     except (TimeoutError, OSError):
         # Transient start failure (EAGAIN at the cgroup task ceiling, spawn stall under
         # memory pressure). 4502 = retryable: the client backs off and reconnects, instead

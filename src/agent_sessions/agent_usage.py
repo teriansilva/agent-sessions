@@ -39,6 +39,7 @@ report, and the two file-backed readers take only the fields named above.
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import json
 import logging
 import os
@@ -54,6 +55,7 @@ from pathlib import Path
 from . import procgroup
 from .atomicjson import atomic_write_json, json_write_lock, read_json_doc
 from .engines import registry as _registry
+from .plugins import admission
 
 log = logging.getLogger("agent_sessions.agent_usage")
 
@@ -164,6 +166,22 @@ class Report:
 # --- probes ------------------------------------------------------------------------------------
 
 
+_PROBE_PROVIDER = contextvars.ContextVar("usage_probe_provider", default=None)
+
+
+@contextlib.contextmanager
+def _probe_scope(engine: str):
+    """A sweep keeps its read snapshot, but it cannot grant new work after revocation."""
+    prov = _registry.current().by_id.get(engine)
+    if not _registry.admits(prov):
+        raise admission.Refused("agent removed")
+    token = _PROBE_PROVIDER.set(prov)
+    try:
+        yield
+    finally:
+        _PROBE_PROVIDER.reset(token)
+
+
 def _run(
     argv: list[str],
     *,
@@ -197,19 +215,22 @@ def _run(
     inside ``done`` and still have the group reaped on the way out.
     """
     try:
-        proc = subprocess.Popen(  # noqa: S603 — literal argv, no shell, bounded
-            argv,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.PIPE if send is not None else subprocess.DEVNULL,
-            cwd=cwd,
-            # Its own process group, so the timeout and the byte cap bound the whole PROBE and
-            # not merely the process we happen to hold a handle to. A CLI that forks a helper
-            # (a node runtime, an auth broker) otherwise leaves it running after we walk away,
-            # still holding CPU, sockets and file descriptors — the bound would be advertised
-            # and not enforced.
-            start_new_session=True,
-        )
+        with contextlib.ExitStack() as stack:
+            prov = _PROBE_PROVIDER.get()
+            if prov is not None:
+                guard = stack.enter_context(admission.acquire(prov))
+                if guard.reason:
+                    return 126, guard.reason
+            proc = subprocess.Popen(  # noqa: S603 — literal argv, no shell, bounded
+                argv,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.PIPE if send is not None else subprocess.DEVNULL,
+                cwd=cwd,
+                # Its own process group, so the timeout and the byte cap bound the whole PROBE
+                # rather than only its leader. Admission ends at process handoff, not exit.
+                start_new_session=True,
+            )
     except OSError as exc:
         return 127, str(exc)
 
@@ -1362,6 +1383,7 @@ ACCESS_CHECKS: dict[str, object] = _build_access_checks()
 MANUAL_ONLY: tuple[str, ...] = _manual_only()
 
 
+@_registry.snapshot_scope()
 def refresh(
     *, path: Path | None = None, engines: list[str] | None = None, budgets: dict | None = None
 ) -> dict:
@@ -1374,14 +1396,17 @@ def refresh(
     from . import prefs
 
     store = path or store_path()
-    wanted = engines if engines is not None else list(REPORTERS)
+    view = _registry.current().views.get("usage", _roster_view())
+    reporters, access_checks = view["reporters"], view["access"]
+    wanted = engines if engines is not None else list(reporters)
     fresh: dict[str, dict] = {}
     for engine in wanted:
-        reporter = REPORTERS.get(engine)
+        reporter = reporters.get(engine)
         if reporter is None:
             continue
         try:
-            report = reporter()  # type: ignore[operator]
+            with _probe_scope(engine):
+                report = reporter()  # type: ignore[operator]
         except Exception as exc:  # noqa: BLE001 — one engine's failure is not the sweep's
             log.exception("usage probe failed for %s", engine)
             report = Report(engine=engine, source=SOURCE_PLAN, at=time.time(), error=str(exc))
@@ -1389,14 +1414,15 @@ def refresh(
 
     # Account access (#1167), separately from the figures — an access-only engine (no quota
     # reporter) is asked too, and whatever quota collection did has no bearing on it.
-    wanted_access = engines if engines is not None else list(ACCESS_CHECKS)
+    wanted_access = engines if engines is not None else list(access_checks)
     seen_access: dict[str, Access] = {}
     for engine in wanted_access:
-        check = ACCESS_CHECKS.get(engine)
+        check = access_checks.get(engine)
         if check is None:
             continue
         try:
-            seen_access[engine] = check()  # type: ignore[operator]
+            with _probe_scope(engine):
+                seen_access[engine] = check()  # type: ignore[operator]
         except Exception as exc:  # noqa: BLE001 — a failed check is unknown, never denied
             log.exception("access check failed for %s", engine)
             seen_access[engine] = Access(None, error=str(exc)[:200])
@@ -1563,13 +1589,39 @@ def _on_roster_reload() -> None:
     """Keep this module's roster VIEWS current across a reload (#853 P3). `REPORTERS` is updated
     in place, so a reference taken before the reload still sees the new roster."""
     global MANUAL_ONLY, ENGINES
+    reporters, access = _build_reporters(), _build_access_checks()
+    manual, panel = _manual_only(), _panel_engines()
     REPORTERS.clear()
-    REPORTERS.update(_build_reporters())
-    MANUAL_ONLY = _manual_only()
-    ENGINES = _panel_engines()
+    REPORTERS.update(reporters)
+    ACCESS_CHECKS.clear()
+    ACCESS_CHECKS.update(access)
+    MANUAL_ONLY, ENGINES = manual, panel
+
+
+def _roster_view():
+    from types import MappingProxyType
+
+    return MappingProxyType(
+        {
+            "reporters": MappingProxyType(dict(REPORTERS)),
+            "access": MappingProxyType(dict(ACCESS_CHECKS)),
+            "manual": MANUAL_ONLY,
+            "engines": ENGINES,
+        }
+    )
+
+
+def _restore_roster_view(view) -> None:
+    global MANUAL_ONLY, ENGINES
+    REPORTERS.clear()
+    REPORTERS.update(view["reporters"])
+    ACCESS_CHECKS.clear()
+    ACCESS_CHECKS.update(view["access"])
+    MANUAL_ONLY, ENGINES = view["manual"], view["engines"]
 
 
 _registry.on_reload(_on_roster_reload)
+_registry.register_view("usage", _roster_view, _restore_roster_view)
 
 
 def billable(tokens: dict | None) -> int:
@@ -1675,7 +1727,7 @@ def build_rows(
     stored = reports if isinstance(reports, dict) else {}
     seen = access if isinstance(access, dict) else {}
     rows = []
-    for engine in ENGINES:
+    for engine in _registry.current().views.get("usage", _roster_view())["engines"]:
         cfg = dict(cfg_all.get(engine) or {})
         cfg.setdefault("limit_tokens", _int(cfg.get("limit_tokens")))
         cfg.setdefault("manual_used", _int(cfg.get("manual_used")))

@@ -343,6 +343,7 @@ def resolve(
     record: Record | None,
     env: Mapping[str, str],
     home: Path,
+    bound_record: bool = False,
 ) -> Entrypoint | None:
     """Decide the entrypoint, or None when nothing is installed where the manifest looks.
 
@@ -367,7 +368,11 @@ def resolve(
     note = ""
     managed = False
     override = env.get(m.binary.env_var) if m.binary.env_var else None
-    if override:
+    if bound_record and record.install_entrypoint:
+        cand, via, managed = str(Path(root_real) / record.install_entrypoint), "install", True
+    elif bound_record and record.confirmed_path:
+        cand, via = record.confirmed_path, "confirmed"
+    elif override:
         if not os.path.isabs(override):
             raise ProvenanceError(f"{m.binary.env_var} must be an absolute path")
         cand, via = override, "env"

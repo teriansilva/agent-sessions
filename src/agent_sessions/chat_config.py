@@ -2,7 +2,11 @@
 
 A `chat` agent's manifest names only a wire format (`endpoint.kind`); WHERE it talks — the base
 URL, the API key and the model — is the operator's configuration, stored here as
-``prefs.chat_agents.<engine_id>``. Nothing a manifest says can point BattleLab at a server.
+``prefs.chat_agents.<engine_id>`` for legacy agents, or a generation-scoped identity for a
+managed installation. Activation selects that scope with its provider; staging never redirects
+an active agent. Ordinary engine-ID edits refuse managed scopes; the manager alone edits
+never-activated candidates under its worker fence. Nothing a manifest says can point BattleLab
+at a server.
 
 **The key is encrypted at rest** with the template-secrets AES-GCM mechanism under its own name
 (``chat-agent:<id>``, the AAD — an envelope copied onto another agent does not decrypt there). It is
@@ -18,6 +22,8 @@ the lock-current block, like `set_ai_review`.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 from . import prefs, prompts, template_secrets
@@ -29,8 +35,9 @@ PROMPT_ID = "chat_agent"
 TOOLS_PROMPT_ID = "chat_agent_tools"
 #: What the agent may do beyond talking (#1222). `none` is the default and the P9a behaviour;
 #: `read` lets it list and read files in the conversation's folder. A permission, not a flag:
-#: turning it on sends file contents to the configured endpoint.
-TOOLS = ("none", "read")
+#: turning it on sends file contents to the configured endpoint. `write` also allows proposals;
+#: the separate operator decision is required for every save.
+TOOLS = ("none", "read", "write")
 #: A non-empty stand-in for "a key is stored" — the origin policy only asks whether one exists.
 _KEY_PRESENT = "<stored>"
 
@@ -59,6 +66,17 @@ _FIELDS = frozenset(
 
 class ChatConfigError(ValueError):
     """A patch that does not validate, or that the origin policy refuses (→ 422)."""
+
+
+def _scope(engine_id: str) -> str:
+    # Explicit generation scopes are already validated by the manager. Do not acquire the
+    # roster lock for them: verification/activation can hold the manager document lock.
+    if ":" in engine_id:
+        return engine_id
+    from .engines import registry
+
+    provider = registry.get(engine_id)
+    return getattr(provider, "endpoint_scope", None) or engine_id
 
 
 def _secret_name(engine_id: str) -> str:
@@ -101,7 +119,12 @@ def _all(path: Path | None = None) -> dict:
 
 def stored(engine_id: str, path: Path | None = None) -> dict:
     """The coerced stored block for one agent (server-side: the envelope, never plaintext)."""
-    return _coerce(_all(path).get(engine_id))
+    return _coerce(_all(path).get(_scope(engine_id)))
+
+
+def binding(block: dict) -> str:
+    """Fingerprint stored configuration (including its encrypted envelope, never plaintext)."""
+    return hashlib.sha256(json.dumps(block, sort_keys=True).encode()).hexdigest()
 
 
 def _policy_view(block: dict) -> dict:
@@ -132,24 +155,58 @@ def public(engine_id: str, path: Path | None = None) -> dict:
 
 def prompt_id(block: dict) -> str:
     """The registered system prompt for this configuration (#1222)."""
+    if block.get("tools") == "write":
+        return "chat_agent_edits"
     return TOOLS_PROMPT_ID if block.get("tools") == "read" else PROMPT_ID
+
+
+def _permission_enabled(engine_id: str, allowed: tuple[str, ...], path: Path | None) -> bool:
+    from .engines import registry
+
+    captured = registry.get(engine_id)
+    if getattr(captured, "endpoint_scope", None):
+        # An old turn keeps its endpoint, but cannot keep a tool grant withdrawn by activation.
+        live = registry.live_provider(engine_id)
+        if live is None or stored(live.endpoint_scope or engine_id, path)["tools"] not in allowed:
+            return False
+    return stored(engine_id, path)["tools"] in allowed
 
 
 def tools_enabled(engine_id: str, path: Path | None = None) -> bool:
     """Read tools on, answered from the LIVE prefs (#1222). The turn loop asks this before every
     round and every call — never from the snapshot the turn started with, so turning tools off
     mid-turn stops the next call rather than the next turn."""
-    return stored(engine_id, path)["tools"] == "read"
+    return _permission_enabled(engine_id, ("read", "write"), path)
+
+
+def edits_enabled(engine_id: str) -> bool:
+    """Proposals permitted now; every actual save additionally needs an operator decision."""
+    return _permission_enabled(engine_id, ("write",), None)
+
+
+def tool_specs(block: dict) -> list[dict]:
+    """The declarations selected by this permission, shared by budgeting and the wire body."""
+    from . import chat_tools
+
+    if block.get("tools") == "write":
+        from . import chat_edits
+
+        return [*chat_tools.SPECS, chat_edits.SPEC]
+    return list(chat_tools.SPECS) if block.get("tools") == "read" else []
 
 
 def budget_tokens(block: dict, *, system_prompt: str) -> int:
     """The history budget in ESTIMATED tokens: the context window minus the output reserve, the
-    effective system prompt and a margin. Re-evaluated at every send (the prompt can change)."""
+    effective system prompt, every offered tool declaration and a margin. The configuration
+    check and each send use this same calculation (the prompt/permission can change)."""
     prompt_tokens = -(-len(system_prompt) // CHARS_PER_TOKEN)
+    declarations = tool_specs(block)
+    tools_tokens = -(-len(json.dumps(declarations)) // CHARS_PER_TOKEN) if declarations else 0
     return (
         int(block["context_window"])
         - int(block["max_output_tokens"])
         - prompt_tokens
+        - tools_tokens
         - BUDGET_MARGIN_TOKENS
     )
 
@@ -204,7 +261,14 @@ def set_config(engine_id: str, patch: dict, path: Path | None = None) -> dict:
 
     The origin policy runs against the LOCK-CURRENT block through `_policy_view`; a violation
     aborts before anything is written. The budget is validated against the effective system prompt
-    so a config that leaves no room for a conversation is refused with the reason."""
+    so a config that leaves no room for a conversation is refused with the reason. A managed
+    engine ID is read-only here; only the manager supplies an explicit mutable candidate scope."""
+    scope = _scope(engine_id)
+    if scope != engine_id:
+        raise ChatConfigError(
+            "this installation is managed; prepare a new candidate to change its endpoint"
+        )
+    engine_id = scope
     clean = validate_patch(patch)
 
     def merge(raw: object) -> dict:
@@ -234,7 +298,7 @@ def set_config(engine_id: str, patch: dict, path: Path | None = None) -> dict:
         if budget_tokens(new, system_prompt=system_prompt) < BUDGET_MIN_TOKENS:
             raise ChatConfigError(
                 "context_window leaves no room for a conversation after the output reserve and "
-                "the system prompt — raise it or lower max_output_tokens"
+                "the system prompt and tools — raise it or lower max_output_tokens"
             )
         agents[engine_id] = new
         return agents
@@ -248,6 +312,7 @@ def snapshot(engine_id: str, path: Path | None = None) -> dict | None:
     test. None when not configured or the key cannot be decrypted (it needs re-entry). The only
     function that returns the plaintext key; its caller hands it to `review._post_chat` and
     nothing else."""
+    engine_id = _scope(engine_id)
     b = stored(engine_id, path)
     if not (b["base_url"].strip() and b["model"].strip() and b["key_envelope"]):
         return None
@@ -257,6 +322,7 @@ def snapshot(engine_id: str, path: Path | None = None) -> dict | None:
     return {
         "base_url": b["base_url"],
         "api_key": key,
+        "binding": binding(b),
         "model": b["model"],
         "context_window": b["context_window"],
         "max_output_tokens": b["max_output_tokens"],
@@ -271,6 +337,7 @@ def draft_for_test(
     """The draft connection an endpoint TEST may use, from ONE snapshot of the stored block:
     ``(cfg, None)`` or ``(None, reason)``. The request's own key wins; otherwise the stored key,
     but only for the origin it was saved for (#956) — a refusal makes no outbound call."""
+    engine_id = _scope(engine_id)
     b = stored(engine_id, path)
     if prefs.is_new_api_key(api_key):
         key = str(api_key).strip()

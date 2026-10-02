@@ -238,6 +238,15 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
 
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI):
+        from .plugins import manager as plugin_manager
+
+        try:
+            await asyncio.to_thread(plugin_manager.recover)
+        except Exception:
+            # A live worker keeps its ownership; corrupt records are preserved and surfaced by
+            # the manager/roster APIs. Neither case is authority to replay installation work.
+            log.warning("plugin operation recovery unavailable; no operation was replayed")
+
         # Cut over both policy scopes before any controller starts. A failed persist disables
         # automation reads for this process while the terminal and read-only surfaces remain up.
         try:
@@ -391,6 +400,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             # Interrupt compaction, then drain its actual SQLite worker before its task/runner
             # or launch-admission lock can be released.
             await _app.state.opencode_compaction.shutdown()
+            await _app.state.plugin_jobs.shutdown()
             for task in (
                 reaper_task,
                 review_task,
@@ -419,6 +429,14 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.session_registry = registry
+
+    @app.middleware("http")
+    async def capture_engine_roster(request: Request, call_next):
+        # Context propagates into the route's worker threads. A WebSocket is deliberately not
+        # pinned for its lifetime: ATTACH retains its provider, while new work rechecks admission.
+        with engines.registry.snapshot_scope(fresh=True):
+            return await call_next(request)
+
     if _STATIC.is_dir():
         app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
     if (_WEB_DIST / "assets").is_dir():
@@ -609,6 +627,12 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     # Automations (#1201): same auth surface as missions; Run now dispatches with this registry.
     automations_routes.register(
         app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry
+    )
+
+    from .routes import plugins as plugin_routes
+
+    plugin_routes.register(
+        app, logged_in=_logged_in, csrf_guard=_csrf_guard, cfg=cfg, must_change=_must_change
     )
 
     # Web-terminal websocket (``/ws/term/{sid}``). ``_must_change`` gates new sessions;

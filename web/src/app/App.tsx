@@ -124,6 +124,8 @@ const NewProject = lazyWithReload(
   "new-project",
 );
 
+const AgentSetup = lazyWithReload(() => import("../routes/AgentSetup"), "agent-setup");
+
 const COLLAPSE_KEY = "tr-sidebar-collapsed";
 // Retired key for the old sidebar List ⇄ Map toggle (#139). The sidebar is now list-only and
 // `/overview` is the canonical map (#424 Phase 1); we clear any stale value once on mount.
@@ -721,6 +723,7 @@ function Layout() {
                   />
                   <Route path="/settings/:tab" element={<Settings />} />
                   {/* #1128: an agent's own page, and the agent Defaults, under the roster. */}
+                  <Route path="/settings/agents/setup/new" element={<AgentSetup />} />
                   <Route path="/settings/agents/:agent" element={<Settings />} />
                   <Route path="/overview" element={<Overview />} />
                   <Route path={MISSION_PATH} element={<MissionControl />} />

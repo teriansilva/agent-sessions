@@ -237,6 +237,8 @@ def manifest_vocab() -> str:
                 for k, v in sorted(kinds.SIGNIN_KINDS.items())
             ),
         ),
+        ("`install.platform`", _vals(kinds.INSTALL_PLATFORMS)),
+        ("`probe.kind`", _vals(kinds.PROBE_KINDS)),
         ("`verify`", _vals(kinds.VERIFY_CHECKS)),
     ]
     out = ["| Field | Allowed values |", "|---|---|"]

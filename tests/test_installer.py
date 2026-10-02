@@ -50,6 +50,36 @@ def test_install_sh_structural_invariants():
     assert "AGENT_SESSIONS_NO_SERVICE" in s  # degrades without systemd
 
 
+@pytest.mark.parametrize("hold", [None, "file", "dangling_symlink"])
+def test_release_retention_honours_operator_hold(tmp_path, hold):
+    prefix = tmp_path / "install"
+    releases = prefix / "releases"
+    releases.mkdir(parents=True)
+    for index in range(6):
+        release = releases / f"release-{index}"
+        release.mkdir()
+        (release / "rollback-data").write_text(f"retained-{index}")
+        os.utime(release, (1000 + index, 1000 + index))
+    (prefix / "current").symlink_to(releases / "release-0")
+    if hold == "file":
+        (prefix / "retain-releases").write_text("Operator cleanup hold\n")
+    elif hold == "dangling_symlink":
+        (prefix / "retain-releases").symlink_to(prefix / "unavailable-hold-record")
+    harness = tmp_path / "retention.sh"
+    harness.write_text(INSTALL_SH.read_text().replace('\nmain "$@"\n', "\nprune_releases\n"))
+    env = {k: v for k, v in os.environ.items() if not k.startswith("AGENT_SESSIONS_")}
+    env.update(AGENT_SESSIONS_HOME=str(prefix), AGENT_SESSIONS_NO_SERVICE="1")
+    result = subprocess.run(
+        ["sh", str(harness)], env=env, capture_output=True, text=True, timeout=10
+    )
+    assert result.returncode == 0, result.stderr
+    expected = set(range(6)) if hold else {0, 3, 4, 5}
+    assert {p.name for p in releases.iterdir()} == {f"release-{i}" for i in expected}
+    for index in expected:
+        assert (releases / f"release-{index}" / "rollback-data").read_text() == f"retained-{index}"
+    assert (prefix / "current").resolve() == releases / "release-0"
+
+
 def test_install_sh_interactive_bind_selection():
     # #487: an interactive install offers a bind-address choice instead of silently leaving the
     # operator on an unreachable 127.0.0.1.

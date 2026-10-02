@@ -308,6 +308,7 @@ class Install:
     version: str
     digest: str
     entrypoint: str
+    platform: str | None = None
 
 
 @dataclass(frozen=True)
@@ -350,6 +351,7 @@ class Manifest:
     #: `instructions.files` (#1189): workspace-root instruction files the engine reads, bare names
     #: from `kinds.INSTRUCTION_FILES`. Empty = declares none.
     instructions: tuple[str, ...] = ()
+    probe_kind: str = "terminal"
 
     @property
     def id(self) -> str:
@@ -489,10 +491,17 @@ def anchored_path(value: Any, where: str) -> str:
     return value
 
 
-def relative_path(value: Any, where: str) -> str:
+def relative_path(value: Any, where: str, *, npm_entrypoint: bool = False) -> str:
     if not isinstance(value, str) or not value or value.startswith("/") or len(value) > 256:
         raise ManifestError(where, "must be a relative path inside the declared root")
-    for s in value.split("/"):
+    parts = value.split("/")
+    for i, s in enumerate(parts):
+        # Only the scope in an npm installation path admits @. Store paths and tarball
+        # entrypoints retain their existing grammar; nested/traversing scopes still refuse.
+        if npm_entrypoint and i == 1 and parts[0] == "node_modules" and s.startswith("@"):
+            if not re.fullmatch(r"@[a-z0-9][a-z0-9._-]{0,63}", s):
+                raise ManifestError(where, "invalid npm scope")
+            continue
         if s in ("", ".", "..") or not _PATH_SEG_RE.fullmatch(s):
             raise ManifestError(
                 where, f"segment {s!r} is not allowed (no globs, no '..', no empty segments)"
@@ -755,7 +764,10 @@ def parse(doc: Any, *, source: str = "", digest: str | None = None) -> Manifest:
             package=r.str("package", pattern=_PACKAGE_RE, max_len=200),
             version=r.str("version", pattern=_SEMVERISH_RE),
             digest=r.str("digest", pattern=_DIGEST_RE, max_len=71),
-            entrypoint=relative_path(r.raw("entrypoint"), "install.entrypoint"),
+            entrypoint=relative_path(
+                r.raw("entrypoint"), "install.entrypoint", npm_entrypoint=ikind == "npm-prefix"
+            ),
+            platform=r.str("platform", None, one_of=kinds.INSTALL_PLATFORMS),
         )
         r.done()
         assert binary is not None  # `install` is a PTY_ONLY_BLOCK, refused above for chat
@@ -773,6 +785,12 @@ def parse(doc: Any, *, source: str = "", digest: str | None = None) -> Manifest:
             signin_sub = r.str("subcommand", one_of=allowed)
         elif r.has("subcommand"):
             raise ManifestError("signin.subcommand", f"is forbidden for kind {signin_kind!r}")
+        r.done()
+
+    probe_kind = "terminal"
+    r = top.table("probe", required=False)
+    if r is not None:
+        probe_kind = r.str("kind", one_of=kinds.PROBE_KINDS)
         r.done()
 
     verify = top.strs("verify", one_of=kinds.VERIFY_CHECKS, max_items=len(kinds.VERIFY_CHECKS))
@@ -804,6 +822,7 @@ def parse(doc: Any, *, source: str = "", digest: str | None = None) -> Manifest:
         digest=digest,
         endpoint=endpoint,
         instructions=instructions,
+        probe_kind=probe_kind,
     )
     _cross_check(m)
     return m

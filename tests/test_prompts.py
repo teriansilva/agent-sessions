@@ -56,7 +56,7 @@ def _patch(c, cfg, csrf, pid, body):
 def test_registry_covers_every_system_prompt():
     # #956 removed pulse_banner; #1088 added mission_judge; #1086 added pulse_recap;
     # #1090 added template_suggest + template_write; #1209 added chat_agent; #1222 chat_agent_tools
-    assert len(prompts.REGISTRY) == 20
+    assert len(prompts.REGISTRY) == 21
     assert len(prompts.IDS) == len(set(prompts.IDS))
     # PINNED BY NAME, not by count — adding a guarded prompt should have to say so here.
     # `mission_objectives` earns it without emitting a verb: an objective list is what the
@@ -102,6 +102,7 @@ EXPECTED_DEFAULT_SHA = {
     "template_suggest": "5242b5733770c518",
     "template_write": "e10cb48cfb9a0319",
     "chat_agent": "21d3108b920e805c",  # #1209: the API agent (no tools)
+    "chat_agent_edits": "6166ce4f34051115",  # #1230: file proposals
     "chat_agent_tools": "1fcc0475343bb699",  # #1222: the API agent with read tools
     "pulse_session_line": "2c5ed998d9df3d00",
     "pulse_recap": "9be97db184a142c7",  # #1086

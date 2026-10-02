@@ -169,9 +169,12 @@ def test_counts_equal_their_drill_downs_and_an_excluded_live_session_counts_nowh
 ):
     prefs.set_folder_exclusions(["/tmp/other"])  # C runs, but the list does not show it
     _running(monkeypatch, A, B, C, OUTSIDE)
-    now = time.time()
-    last = {f"claude:{A}": now - 1, f"claude:{B}": now - 600}  # B: live, not working
-    monkeypatch.setattr(webterm, "get_last_output_at", lambda k: last.get(k))
+    # Model steady output while comparing multiple requests. A fixed timestamp ages past the
+    # ten-second working window on a loaded CI host, changing the fixture halfway through.
+    ages = {f"claude:{A}": 1, f"claude:{B}": 600}  # B: live, not working
+    monkeypatch.setattr(
+        webterm, "get_last_output_at", lambda k: time.time() - ages[k] if k in ages else None
+    )
     c = _client(auth_cfg)
     live = _dash(c)["live"]
     assert live["total"] == 2 and live["working"] == 1

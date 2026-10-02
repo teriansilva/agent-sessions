@@ -56,6 +56,15 @@ test("the stored key is never shown; the field says one is stored", async () => 
   expect(screen.getByText(/Tools:/)).toHaveTextContent(/cannot run commands or edit files/);
 });
 
+test("an activated endpoint has a public read-only view", async () => {
+  render(<ConfigRefreshCtx.Provider value={refresh}><AgentEndpointCard engine="apichat" readOnly /></ConfigRefreshCtx.Provider>);
+  expect(await screen.findByText("https://llm.example.lan/v1 · qwen3-coder")).toBeVisible();
+  expect(screen.getByText(/endpoint is fixed after activation/)).toBeVisible();
+  expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+  expect(api.setAgentEndpoint).not.toHaveBeenCalled();
+});
+
 test("TEST checks the draft and saves nothing — and sends no key unless one was typed", async () => {
   vi.mocked(api.testAgentEndpoint).mockResolvedValue({ models: ["a", "b"], listing: "ok" });
   renderCard();
@@ -127,7 +136,7 @@ test("Tools is chosen by keyboard and saved as its own field; the disclosure say
   vi.mocked(api.setAgentEndpoint).mockResolvedValue({ ...STORED, tools: "read" });
   renderCard();
   const none = await screen.findByRole("radio", { name: /None/ });
-  const read = screen.getByRole("radio", { name: /Read files/ });
+  const read = screen.getByRole("radio", { name: /Read files in/ });
   expect(none).toBeChecked();
   expect(read.closest("label")).toHaveTextContent(/sent to this endpoint/);
   expect(read.closest("label")).toHaveTextContent(/may quote them/);

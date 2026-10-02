@@ -31,6 +31,7 @@ transcript keeps, and it never carries them.
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
 import os
 from dataclasses import dataclass, field
@@ -315,6 +316,20 @@ def _read(root: str, cand: str, rel: str, args: dict) -> ToolResult:
         "more": total is None or end < total,
         "text": "\n".join(out),
     }
+    # Whole-file replacement needs a complete read, never a digest attached to truncated text.
+    # Strict UTF-8, byte cap and exact reconstruction also catch a single oversized line.
+    try:
+        complete_text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        complete_text = None
+    if (
+        not window_cut
+        and start == 1
+        and not body["more"]
+        and len(data) <= READ_MAX_BYTES
+        and body["text"] == complete_text
+    ):
+        body["base_sha256"] = hashlib.sha256(data).hexdigest()
     return ToolResult(
         content=json.dumps(body),
         target=verified,

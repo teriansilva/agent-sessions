@@ -57,6 +57,17 @@ the handler is still ours and refuses otherwise.
    that claimed the name meanwhile is kept, not overwritten (target dir).
 6. *Finish* — unlink the temporary and mark the record complete (target dir, record, entry).
 
+A root-bound chat save pins its candidate from the creation descriptor, then checks its inode
+and proposed hash under a separate write lease through installation and settlement. Installation
+links that descriptor, so replacing a temporary path cannot substitute unapproved bytes. The
+post-link inode, hash, lease, boundary and policy checks must all pass before settlement. Its
+durable recovery-store hard link survives a parent rename and worker death. Recovery restores only
+that app-created candidate's bytes under a write lease and
+content comparison when its original parent cannot be found; it never overwrites the displaced
+original. Refusal preserves a raced writer's bytes. A crash before settlement triggers rollback,
+never inferred approval; bytes ambiguous after a recovery crash are retained for inspection.
+The checks define settlement, not a filesystem lock against subsequent directory renames.
+
 A record left incomplete by a crash is resolved by :func:`resolve_pending` the next time the store
 is opened. Every resolution action checks what exists before acting, so a resolution that is itself
 interrupted converges on the next run, and **no resolution removes a name displaced bytes have** —
@@ -454,6 +465,23 @@ def _valid_record(entry_id: str, rec: dict) -> bool:
         return False
     if rec.get("tmp") != _tmp_name(name, entry_id) or rec.get("retained") != _retained_name(name):
         return False
+    if "guarded" in rec and rec["guarded"] is not True:
+        return False
+    for field in ("parent_inode", "candidate_inode"):
+        if field in rec and (
+            not isinstance(rec[field], list)
+            or len(rec[field]) != 2
+            or any(type(v) is not int or v < 0 for v in rec[field])
+        ):
+            return False
+    if "rollback_started" in rec and rec["rollback_started"] is not True:
+        return False
+    if "candidate_inode" in rec and not rec.get("guarded"):
+        return False
+    if "rollback_started" in rec and "candidate_inode" not in rec:
+        return False
+    if rec.get("guarded") and "parent_inode" not in rec:
+        return False
     for key in ("expect", "new_version"):
         v = rec.get(key)
         if not isinstance(v, str) or not _EXPECT.match(v):
@@ -543,6 +571,50 @@ def _lease_intact(fd: int) -> bool:
         return fcntl.fcntl(fd, F_GETLEASE) == fcntl.F_WRLCK
     except OSError:
         return False
+
+
+def _check_candidate(fd: int, dir_fd: int, name: str, rec: dict) -> None:
+    try:
+        st = os.fstat(fd)
+        named = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+        digest, _, truncated = _sha256_fd(fd, MAX_EDIT_BYTES)
+    except OSError:
+        raise FsError("the staged edit cannot be verified; nothing was saved", status=409) from None
+    if (
+        not stat.S_ISREG(st.st_mode)
+        or [st.st_dev, st.st_ino] != rec["candidate_inode"]
+        or (named.st_dev, named.st_ino) != (st.st_dev, st.st_ino)
+        or not _lease_intact(fd)
+        or truncated
+        or digest != rec["new_version"]
+    ):
+        raise FsError("the staged edit changed; the approved bytes were not saved", status=409)
+
+
+@contextlib.contextmanager
+def _candidate_lease(dir_fd: int, tmp: str, rec: dict):
+    if not rec.get("guarded"):
+        yield None
+        return
+    try:
+        fd = os.open(tmp, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=dir_fd)
+    except OSError:
+        raise FsError("the staged edit cannot be opened; nothing was saved", status=409) from None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or [st.st_dev, st.st_ino] != rec["candidate_inode"]:
+            raise FsError("the staged edit was replaced; nothing was saved", status=409)
+        try:
+            _take_lease(fd)
+        except OSError:
+            raise FsError(
+                "the staged edit is open elsewhere; nothing was saved", status=409
+            ) from None
+        _check_candidate(fd, dir_fd, tmp, rec)
+        yield fd
+    finally:
+        _release_lease(fd)
+        os.close(fd)
 
 
 def lease_holder(dev: int, ino: int) -> dict | None:
@@ -851,8 +923,19 @@ def _second_name_note(entry_fd: int, retained: str, dir_fd: int, name: str, path
     )
 
 
-def save(path: str, content: object, expect: object) -> dict:
-    """Replace ``path`` with ``content`` iff it still holds version ``expect`` (see module doc)."""
+def save(
+    path: str,
+    content: object,
+    expect: object,
+    *,
+    root: str | None = None,
+    admit: Callable[[str], None] | None = None,
+) -> dict:
+    """Replace the loaded version. Optional root/policy narrow the same save for chat proposals.
+
+    The policy sees descriptor-proven paths, before any mutation and again before displacement
+    and installation. A policy failure after displacement uses the ordinary recovery path.
+    """
     caps = edit_capabilities()
     if not caps.ok:
         raise FsError(caps.reason, status=501)
@@ -863,13 +946,30 @@ def save(path: str, content: object, expect: object) -> dict:
     if not isinstance(path, str) or not path.strip():
         raise FsError("path is required", status=422)
     files._refuse_if_symlink(path)
-    resolved = contained_path(path)
+    resolved = contained_path(path, root)
     parent, name = os.path.split(resolved)
     with _store_locked() as store_fd:
         resolve_pending(store_fd)
-        dir_fd, _dst, verified_parent = files._open_verified(parent, directory=True)
+        dir_fd, _dst, verified_parent = files._open_verified(parent, directory=True, root=root)
         try:
-            result = _save_locked(store_fd, dir_fd, verified_parent, name, content, expect)
+
+            def guard() -> None:
+                current_parent = files._fd_still_contained(dir_fd, root)
+                if current_parent != verified_parent:
+                    raise FsError("the parent directory moved during the save", status=409)
+                if admit is not None:
+                    admit(os.path.join(current_parent, name))
+
+            result = _save_locked(
+                store_fd,
+                dir_fd,
+                verified_parent,
+                name,
+                content,
+                expect,
+                root=root,
+                guard=guard,
+            )
         finally:
             os.close(dir_fd)
     with contextlib.suppress(Exception):
@@ -882,13 +982,31 @@ def save(path: str, content: object, expect: object) -> dict:
 
 
 def _save_locked(
-    store_fd: int, dir_fd: int, parent: str, name: str, content: str, expect: str
+    store_fd: int,
+    dir_fd: int,
+    parent: str,
+    name: str,
+    content: str,
+    expect: str,
+    *,
+    root: str | None = None,
+    guard: Callable[[], None] | None = None,
 ) -> dict:
     fd, st, verified = _open_target(dir_fd, name)
     try:
+        files._fd_still_contained(fd, root)
+        if guard is not None:
+            guard()
         reason = _placement_refusal(verified, st)
         if reason:
             raise SaveRefused(f"this file {reason}", reason="not_editable")
+        if root is not None and not st.st_mode & stat.S_IWUSR:
+            # Ordinary editor replacement can replace a read-only inode. A guarded candidate
+            # additionally needs owner write access for relocation rollback after process death.
+            raise SaveRefused(
+                "this file's owner permissions do not permit crash recovery of a chat edit",
+                reason="not_editable",
+            )
         try:
             _take_lease(fd)
         except OSError as e:
@@ -903,7 +1021,18 @@ def _save_locked(
         started = time.monotonic()
         try:
             return _replace(
-                store_fd, dir_fd, fd, st, verified, parent, name, content, expect, started
+                store_fd,
+                dir_fd,
+                fd,
+                st,
+                verified,
+                parent,
+                name,
+                content,
+                expect,
+                started,
+                guard=guard,
+                guarded=root is not None,
             )
         finally:
             _release_lease(fd)
@@ -922,6 +1051,9 @@ def _replace(
     content: str,
     expect: str,
     started: float,
+    *,
+    guard: Callable[[], None] | None = None,
+    guarded: bool = False,
 ) -> dict:
     current, data, truncated = _sha256_fd(fd, MAX_EDIT_BYTES)
     if truncated:
@@ -962,6 +1094,9 @@ def _replace(
             "created": time.time(),
             "state": "intent",
         }
+        if guarded:
+            parent_st = os.fstat(dir_fd)
+            rec.update(guarded=True, parent_inode=[parent_st.st_dev, parent_st.st_ino])
         _write_record(entry_fd, rec)
         _fsync(store_fd, "store")
         _step("intent")
@@ -985,12 +1120,46 @@ def _replace(
             with contextlib.suppress(OSError):
                 _settle(entry_fd, rec, "noop")  # nothing was displaced
             raise
-        os.close(tfd)
-        _fsync(dir_fd, "target")
+        try:
+            _fsync(dir_fd, "target")
+            if guarded:
+                # A pathname cannot locate a renamed parent after process death. Pin our own
+                # tentative inode in the durable store BEFORE displacement, with hash-bound byte
+                # snapshots for rollback. The original displaced inode is never overwritten.
+                for leaf, payload in (("guarded-before", data), ("guarded-after", new)):
+                    copy_fd = os.open(
+                        leaf,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                        0o600,
+                        dir_fd=entry_fd,
+                    )
+                    try:
+                        _write_all(copy_fd, payload)
+                        _fsync(copy_fd, "guarded-copy")
+                    finally:
+                        os.close(copy_fd)
+                os.link(
+                    f"/proc/self/fd/{tfd}",
+                    "guarded-candidate",
+                    dst_dir_fd=entry_fd,
+                    follow_symlinks=True,
+                )
+                candidate = os.fstat(tfd)
+                rec["candidate_inode"] = [candidate.st_dev, candidate.st_ino]
+                _write_record(entry_fd, rec)
+        finally:
+            os.close(tfd)
         _step("stage")
 
         # 3. Displace.
         _budget(started)
+        if guard is not None:
+            try:
+                guard()
+            except BaseException:
+                _discard_tmp(dir_fd, tmp)
+                _settle(entry_fd, rec, "noop")
+                raise
         try:
             os.rename(name, retained, src_dir_fd=dir_fd, dst_dir_fd=entry_fd)
         except FileNotFoundError:
@@ -1004,7 +1173,8 @@ def _replace(
         _fsync(dir_fd, "target")
         _step("displace")
 
-        # 4. Check — and from here until install succeeds, any failure puts the file back.
+        # 4. Check — and from here until install settles, any failure puts the file back.
+        linked = False
         try:
             dst = os.stat(retained, dir_fd=entry_fd, follow_symlinks=False)
             same_inode = (dst.st_dev, dst.st_ino) == (st.st_dev, st.st_ino)
@@ -1046,6 +1216,8 @@ def _replace(
 
             # 5. Install.
             _budget(started)
+            if guard is not None:
+                guard()
             if not _lease_intact(fd):
                 both = _put_back(entry_fd, retained, dir_fd, name)
                 _discard_tmp(dir_fd, tmp)
@@ -1058,22 +1230,48 @@ def _replace(
                     ),
                     reason="opened_during_save",
                 )
-            try:
-                os.link(tmp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
-            except FileExistsError:
-                _discard_tmp(dir_fd, tmp)
-                _settle(entry_fd, rec, "kept_both")
-                raise SaveRefused(
-                    "another process created the file during the save — its version was kept, "
-                    "and the one you loaded is retained",
-                    reason="changed",
-                    both=[os.path.join(parent, name), os.path.join(store, entry_id, retained)],
-                ) from None
-            _fsync(dir_fd, "target")
-            _step("install")
+            with _candidate_lease(dir_fd, tmp, rec) as candidate_fd:
+                try:
+                    if candidate_fd is None:
+                        os.link(tmp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+                    else:
+                        os.link(
+                            f"/proc/self/fd/{candidate_fd}",
+                            name,
+                            dst_dir_fd=dir_fd,
+                            follow_symlinks=True,
+                        )
+                    linked = True
+                except FileExistsError:
+                    _discard_tmp(dir_fd, tmp)
+                    _settle(entry_fd, rec, "kept_both")
+                    raise SaveRefused(
+                        "another process created the file during the save — its version was kept, "
+                        "and the one you loaded is retained",
+                        reason="changed",
+                        both=[os.path.join(parent, name), os.path.join(store, entry_id, retained)],
+                    ) from None
+                _fsync(dir_fd, "target")
+                _step("install")
+                # linkat cannot lock the directory's placement. Installation remains tentative
+                # until the descriptor/policy checks pass AFTER the link. A boundary change
+                # withdraws the tentative name without deleting either the original or a raced
+                # replacement. The intent record also makes a crash before settlement a rollback,
+                # never inferred approval from finding the proposed bytes on disk.
+                if guarded and guard is not None:
+                    guard()
+                if candidate_fd is not None:
+                    _check_candidate(candidate_fd, dir_fd, name, rec)
+                    _settle(entry_fd, rec, "complete")
         except SaveRefused:
+            if guarded and linked and rec["state"] == "intent":
+                _withdraw_unsettled(entry_fd, rec, dir_fd)
             raise
         except BaseException:
+            if guarded and linked and rec["state"] == "intent":
+                # Includes fsync/settlement errors, not just a refused policy check. If rollback
+                # itself fails, keep its journal and temporary identity intact for recovery.
+                _withdraw_unsettled(entry_fd, rec, dir_fd)
             # Anything unexpected between displacement and install: give the name back first.
             with contextlib.suppress(OSError):
                 if not _name_exists(dir_fd, name):
@@ -1087,6 +1285,8 @@ def _replace(
             os.unlink(tmp, dir_fd=dir_fd)
             _fsync(dir_fd, "target")
             _settle(entry_fd, rec, "complete")
+            if guarded:
+                _discard_tmp(entry_fd, "guarded-candidate")
         _step("finish")
     finally:
         os.close(entry_fd)
@@ -1116,6 +1316,34 @@ def _settle(entry_fd: int, rec: dict, state: str) -> None:
     rec["state"] = state
     rec["settled"] = time.time()
     _write_record(entry_fd, rec)
+
+
+def _withdraw_unsettled(entry_fd: int, rec: dict, dir_fd: int) -> None:
+    """Recover a guarded install without a check-then-unlink of somebody else's name.
+
+    Move the tentative destination into a new retained name, then identify what actually moved.
+    If another writer won that race, restore its entry instead. All displaced regular files
+    keep a recovery-store name; no path or bytes from the record select the quarantine name.
+    """
+    name, tmp, retained = rec["name"], rec["tmp"], rec["retained"]
+    identity_fd, identity = (
+        (entry_fd, "guarded-candidate") if "candidate_inode" in rec else (dir_fd, tmp)
+    )
+    unsettled = "unsettled-" + name[-200:]
+    if _same_file(identity_fd, identity, dir_fd, name) and not _name_exists(entry_fd, unsettled):
+        _rename_noreplace(dir_fd, name, entry_fd, unsettled)
+        _fsync(entry_fd, "entry")
+        _fsync(dir_fd, "target")
+        _step("withdraw:displaced")
+    if _name_exists(entry_fd, unsettled):
+        chosen = retained if _same_file(identity_fd, identity, entry_fd, unsettled) else unsettled
+        _put_back(entry_fd, chosen, dir_fd, name)
+    elif not _name_exists(dir_fd, name):
+        _put_back(entry_fd, retained, dir_fd, name)
+    _settle(
+        entry_fd, rec, "reverted" if _same_file(entry_fd, retained, dir_fd, name) else "kept_both"
+    )
+    _discard_tmp(dir_fd, tmp)
 
 
 # --------------------------------------------------------------------------- recovery
@@ -1154,6 +1382,8 @@ def resolve_pending(store_fd: int) -> None:
                     continue
                 if rec["state"] == "intent":
                     _resolve_one(entry_fd, rec)
+                elif rec.get("guarded") and rec["state"] == "complete":
+                    _discard_tmp(entry_fd, "guarded-candidate")
             except Exception:  # noqa: S112 - isolation is the point; the record stays as it was
                 continue
         finally:
@@ -1172,9 +1402,26 @@ def _resolve_one(entry_fd: int, rec: dict) -> None:
     try:
         dir_fd, _st, _v = files._open_verified(parent, directory=True)
     except FsError:
+        if rec.get("guarded") and "candidate_inode" in rec:
+            _restore_relocated_candidate(entry_fd, rec)
+            return
         _settle(entry_fd, rec, "orphaned")  # the directory is gone; the retained copy stays
         return
     try:
+        if rec.get("guarded"):
+            parent_st = os.fstat(dir_fd)
+            if [parent_st.st_dev, parent_st.st_ino] != rec["parent_inode"]:
+                if "candidate_inode" in rec:
+                    _restore_relocated_candidate(entry_fd, rec)
+                else:
+                    _settle(entry_fd, rec, "orphaned")
+                return
+            if _name_exists(entry_fd, retained):
+                _withdraw_unsettled(entry_fd, rec, dir_fd)
+            else:
+                _discard_tmp(dir_fd, tmp)
+                _settle(entry_fd, rec, "noop")
+            return
         have_tmp = _name_exists(dir_fd, tmp)
         have_name = _name_exists(dir_fd, name)
         have_retained = _name_exists(entry_fd, retained)
@@ -1203,6 +1450,79 @@ def _resolve_one(entry_fd: int, rec: dict) -> None:
             _settle(entry_fd, rec, "kept_both")
     finally:
         os.close(dir_fd)
+
+
+def _restore_relocated_candidate(entry_fd: int, rec: dict) -> None:
+    """Retract proposed bytes through our durable inode pin when its parent cannot be found.
+
+    This restores only the app-created candidate, under a kernel write lease and a content CAS.
+    The displaced original and a different writer's inode are never overwritten. An open file
+    leaves the intent pending; modified bytes are retained as kept_both. Snapshots and the pin
+    remain named, so a crash during this recovery can itself be retried without a path search.
+    """
+    snapshots = []
+    for leaf, digest in (("guarded-before", rec["expect"]), ("guarded-after", rec["new_version"])):
+        source = os.open(
+            leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=entry_fd
+        )
+        try:
+            st = os.fstat(source)
+            if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid():
+                raise OSError("invalid rollback snapshot")
+            actual, data, truncated = _sha256_fd(source, MAX_EDIT_BYTES)
+            if truncated or actual != digest:
+                raise OSError("rollback snapshot changed")
+            snapshots.append(data)
+        finally:
+            os.close(source)
+    before, after = snapshots
+    candidate = os.open(
+        "guarded-candidate",
+        os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+        dir_fd=entry_fd,
+    )
+    try:
+        st = os.fstat(candidate)
+        if (
+            not stat.S_ISREG(st.st_mode)
+            or st.st_uid != os.getuid()
+            or [st.st_dev, st.st_ino] != rec["candidate_inode"]
+        ):
+            raise OSError("rollback candidate changed")
+        _take_lease(candidate)
+        try:
+            started = time.monotonic()
+            _, current, truncated = _sha256_fd(candidate, MAX_EDIT_BYTES)
+            # A lease cannot prove ownership across a process death. Even a byte-exact prefix
+            # of our restoration may be another writer's edit between recovery attempts.
+            if truncated or current not in (before, after):
+                _settle(entry_fd, rec, "kept_both")
+                return
+            if current != before:
+                rec["rollback_started"] = True
+                _write_record(entry_fd, rec)
+                offset = 0
+                while offset < len(before):
+                    _budget(started)
+                    if not _lease_intact(candidate):
+                        raise OSError("rollback lease was broken")
+                    written = os.pwrite(candidate, before[offset : offset + 65536], offset)
+                    if written <= 0:
+                        raise OSError("rollback write made no progress")
+                    offset += written
+                    _step("relocated:chunk")
+                _fsync(candidate, "candidate")
+                _step("relocated:written")
+                if not _lease_intact(candidate):
+                    raise OSError("rollback lease was broken")
+                os.ftruncate(candidate, len(before))
+                _fsync(candidate, "candidate")
+                _step("relocated:truncated")
+            _settle(entry_fd, rec, "reverted")
+        finally:
+            _release_lease(candidate)
+    finally:
+        os.close(candidate)
 
 
 def _same_file(a_fd: int, a: str, b_fd: int, b: str) -> bool:

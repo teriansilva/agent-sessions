@@ -304,7 +304,8 @@ def register(
         # nothing that lists engines can ever offer one. First-party-only today, so a problem
         # here is a build defect in an in-tree manifest.
         problems = [
-            {"source": k, "error": v} for k, v in sorted(engines.registry.LOAD_PROBLEMS.items())
+            {"source": k, "error": v}
+            for k, v in sorted(engines.registry.current().problems.items())
         ]
         return JSONResponse({"engines": rows, "problems": problems})
 

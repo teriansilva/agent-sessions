@@ -2314,7 +2314,7 @@ export interface ChatTurn {
   turn_id: string;
   text: string;
   ts: number;
-  status: "pending" | "done" | "failed";
+  status: "pending" | "awaiting_approval" | "done" | "failed";
   reason: string | null;
   reply: string | null;
   reply_ts: number | null;
@@ -2325,6 +2325,23 @@ export interface ChatTurn {
   dropped: number;
   /** The latest attempt's tool calls, in order (#1222). Absent/empty when tools are off. */
   tools?: ChatToolCall[];
+  proposals?: ChatProposal[];
+}
+
+export interface ChatProposal {
+  id: string;
+  turn_id: string;
+  path: string;
+  status: "awaiting_approval" | "deciding" | "approved" | "rejected" | "refused" | "interrupted";
+  base_sha256: string;
+  new_sha256: string;
+  size: number;
+  created_at: number;
+  decided_at?: number;
+  decided_by?: string;
+  reason?: string | null;
+  can_approve?: boolean;
+  diff?: string;
 }
 
 /** One tool call's SUMMARY (#1222). The file contents are never stored or returned. */
@@ -2345,7 +2362,7 @@ export interface ChatToolCall {
   reason?: string | null;
 }
 
-export type AgentTools = "none" | "read";
+export type AgentTools = "none" | "read" | "write";
 
 export interface ChatSession {
   session_id: string;

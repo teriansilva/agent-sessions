@@ -2,8 +2,10 @@
  *
  *  Everything here is read from the manifests — `/api/engines` (the roster store) and
  *  `/api/engines/{id}` (one agent's detail). Nothing names an agent in code. The only things the
- *  operator edits are the budgets (moved here unchanged from "Agents & usage", #839) and the two
- *  agent defaults. */
+ *  operator also manages reviewed plugin installations through the separate installer catalog.
+ *  Live engine identity still comes exclusively from engineRoster.ts. */
+import { CatalogCard, GalleryToolbar, PluginActions, PluginInstallationDetail } from "../components/plugins/PluginGallery";
+import { galleryMatch, usePluginCatalog, type GalleryFilter } from "../components/plugins/usePluginCatalog";
 import { AgentEndpointCard } from "../components/settings/AgentEndpointCard";
 import {
   type CSSProperties,
@@ -555,8 +557,8 @@ const CARD_CAPS: readonly [keyof EngineInfo["capabilities"], string][] = [
 
 // ---- /settings/agents — the roster -------------------------------------------------------------------
 
-/** One card per roster engine. Read-only apart from the budgets; nothing here starts anything. */
-function RosterCard({ e, b }: { e: EngineInfo; b: Budgets }) {
+/** One card per live roster engine, with usage and explicit installation actions. */
+function RosterCard({ e, b, catalog }: { e: EngineInfo; b: Budgets; catalog: ReturnType<typeof usePluginCatalog> }) {
   const location = useLocation();
   const retiring = !isActive(e);
   const st = engineState(e);
@@ -624,7 +626,7 @@ function RosterCard({ e, b }: { e: EngineInfo; b: Budgets }) {
           </p>
         )
       )}
-      <div className={a.acts}>
+      <PluginActions id={e.id} label={e.label} data={catalog.data} onChange={catalog.load}>
         <Link
           to={agentPath(e.id)}
           state={location.state}
@@ -633,7 +635,7 @@ function RosterCard({ e, b }: { e: EngineInfo; b: Budgets }) {
         >
           Details
         </Link>
-      </div>
+      </PluginActions>
     </li>
   );
 }
@@ -673,6 +675,9 @@ function ProblemCard({ p }: { p: EngineProblem }) {
 
 export function AgentsRoster() {
   const roster = useEngineRoster();
+  const catalog = usePluginCatalog();
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<GalleryFilter>("All");
   const location = useLocation();
   const b = useAgentBudgets();
   const [retrying, setRetrying] = useState(false);
@@ -692,6 +697,16 @@ export function AgentsRoster() {
   const { engines, problems } = roster;
   const active = engines.filter(isActive).length;
   const retiring = engines.length - active;
+
+  const matches = (id: string, label: string, engine?: EngineInfo) => galleryMatch(id, label, engine, catalog.data, query, filter);
+  const visible = engines.filter(e => matches(e.id, e.label, e));
+  const extraIds = new Set([...(catalog.data?.catalog.map(c => c.manifest.identity.id) ?? []), ...(catalog.data?.plugins.map(p => p.id) ?? [])]);
+  const extras = [...extraIds].filter(id => !engines.some(e => e.id === id)).map(id => {
+    const row = catalog.data?.plugins.find(p => p.id === id);
+    const gen = row?.generations?.find(g => g.id === (row.candidate ?? row.active));
+    const manifest = gen?.review.entry.manifest ?? catalog.data?.catalog.find(c => c.manifest.identity.id === id)?.manifest;
+    return { id, row, manifest };
+  }).filter(item => matches(item.id, item.manifest?.identity.label ?? item.id));
 
   return (
     <section
@@ -720,6 +735,7 @@ export function AgentsRoster() {
         </Link>
       </div>
 
+      <GalleryToolbar catalog={catalog} query={query} setQuery={setQuery} filter={filter} setFilter={setFilter} />
       <BudgetBar b={b} />
 
       {roster.status === "failed" && (
@@ -752,16 +768,18 @@ export function AgentsRoster() {
         </div>
       )}
 
-      {(engines.length > 0 || problems.length > 0) && (
+      {(visible.length > 0 || extras.length > 0 || problems.length > 0) && (
         <ul className={a.grid} aria-label="Agents">
-          {engines.map((e) => (
-            <RosterCard key={e.id} e={e} b={b} />
+          {visible.map((e) => (
+            <RosterCard key={e.id} e={e} b={b} catalog={catalog} />
           ))}
+          {catalog.data && extras.map(item => item.manifest ? <CatalogCard key={item.id} manifest={item.manifest} row={item.row} data={catalog.data!} onChange={catalog.load} /> : <li className={a.card} key={item.id}><h3>{item.id}</h3><p role="alert">{item.row?.error ?? "Installation details unavailable."}</p></li>)}
           {problems.map((p) => (
             <ProblemCard key={p.source} p={p} />
           ))}
         </ul>
       )}
+      {visible.length === 0 && extras.length === 0 && (query || filter !== "All") && <p role="status" className={a.empty}>No agents match these filters.</p>}
     </section>
   );
 }
@@ -804,6 +822,7 @@ type DetailState =
 
 export function AgentDetail({ id }: { id: string }) {
   useEngineRoster();
+  const catalog = usePluginCatalog();
   const location = useLocation();
   const b = useAgentBudgets();
   const [state, setState] = useState<DetailState | null>(null);
@@ -829,6 +848,11 @@ export function AgentDetail({ id }: { id: string }) {
 
   const cur = state?.for === id ? state : null;
   const roster = settingsPath("agents");
+  const saved = catalog.data?.plugins.find(p => p.id === id);
+  const savedManifest = saved?.generations?.find(g => g.id === (saved.candidate ?? saved.active))?.review.entry.manifest
+    ?? catalog.data?.catalog.find(c => c.manifest.identity.id === id)?.manifest;
+  const refreshDetails = async () => { await catalog.load(); setNonce(n => n + 1); };
+  const installation = <PluginInstallationDetail key={id} id={id} label={savedManifest?.identity.label ?? engineLabel(id)} catalog={catalog} onChange={refreshDetails} />;
 
   if (!cur) {
     return (
@@ -845,11 +869,12 @@ export function AgentDetail({ id }: { id: string }) {
         className={`${styles.section} ${a.wide}`}
         aria-labelledby="agent-missing-h"
       >
-        <h2 id="agent-missing-h">No such agent</h2>
+        <h2 id="agent-missing-h">{savedManifest?.identity.label ?? "No such agent"}</h2>
         <p className={styles.hint}>
-          No agent called <code>{id}</code> is loaded on this host. It may have
-          been removed, or the link is wrong.
+          {saved ? <>This agent is not in the live roster. Its saved installation is available below.</>
+            : <>No agent called <code>{id}</code> is loaded on this host. It may have been removed, or the link is wrong.</>}
         </p>
+        {(saved || savedManifest) && installation}
         <Link to={roster} state={location.state} className={button.ghost}>
           ← All agents
         </Link>
@@ -873,6 +898,7 @@ export function AgentDetail({ id }: { id: string }) {
             Retry
           </button>
         </div>
+        {installation}
       </section>
     );
   }
@@ -906,6 +932,8 @@ export function AgentDetail({ id }: { id: string }) {
         </div>
       </section>
 
+      {installation}
+
       <div className={a.cols}>
         <section className={styles.section} aria-labelledby="agent-identity-h">
           <h2 id="agent-identity-h">Identity</h2>
@@ -932,7 +960,7 @@ export function AgentDetail({ id }: { id: string }) {
           // An API agent (#1209): where its conversations go. Before the binary section, which
           // for this runtime only says there is none.
           <section className={styles.section} aria-label="Endpoint">
-            <AgentEndpointCard engine={d.id} />
+            <AgentEndpointCard engine={d.id} readOnly={!!saved?.active} />
           </section>
         )}
 

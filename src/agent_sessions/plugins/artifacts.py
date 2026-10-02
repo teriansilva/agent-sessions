@@ -19,14 +19,14 @@ from urllib.parse import urljoin
 
 import httpx
 
-from . import feed, storage
+from . import budget, feed, storage
 
 MAX_DOWNLOAD = 256 * 1024 * 1024
 MAX_EXPANDED = 512 * 1024 * 1024
-MAX_FILE = 128 * 1024 * 1024
+MAX_FILE = 320 * 1024 * 1024  # pinned native Codex is 287,086,056 bytes (#1266)
 MAX_MEMBERS = 50000
 MAX_METADATA = 16384
-DOWNLOAD_SECONDS = 120
+DOWNLOAD_SECONDS = 600  # shares the unchanged total install deadline; no extra budget
 # Test seam only; no route, manifest or environment variable supplies a transport.
 _TRANSPORT = None
 
@@ -43,10 +43,11 @@ def fetch(artifact: feed.Artifact, kind: str) -> bytes:
 
 async def _fetch(artifact: feed.Artifact, kind: str) -> bytes:
     url = feed.artifact_url(artifact.url, kind)
-    deadline = time.monotonic() + DOWNLOAD_SECONDS
+    seconds = budget.remaining(DOWNLOAD_SECONDS)
+    deadline = time.monotonic() + seconds
     try:
         async with (
-            asyncio.timeout(DOWNLOAD_SECONDS),
+            asyncio.timeout(seconds),
             httpx.AsyncClient(
                 follow_redirects=False, timeout=10, trust_env=False, transport=_TRANSPORT
             ) as client,
@@ -115,6 +116,7 @@ def _pax(data: bytes) -> None:
 def _preflight(data: bytes) -> None:
     offset, members = 0, 0
     while offset + 512 <= len(data):
+        budget.check()
         header = data[offset : offset + 512]
         if header == bytes(512):
             if any(data[offset:]):
@@ -148,14 +150,33 @@ def _preflight(data: bytes) -> None:
         raise ArtifactError("archive is truncated")
 
 
-def extract(data: bytes, artifact: feed.Artifact, kind: str, destination: Path) -> None:
+def extract(
+    data: bytes,
+    artifact: feed.Artifact,
+    kind: str,
+    destination: Path,
+    *,
+    max_expanded: int = MAX_EXPANDED,
+) -> int:
     # Recheck at the boundary even when a caller passed bytes from a cache or a test fixture.
     if len(data) > MAX_DOWNLOAD or hashlib.sha256(data).hexdigest() != artifact.sha256:
         raise ArtifactError("artifact digest does not match the reviewed recipe")
+    if max_expanded <= 0:
+        raise ArtifactError("archive exceeded its expanded size limit")
+    limit = min(MAX_EXPANDED, max_expanded)
     try:
         with gzip.GzipFile(fileobj=io.BytesIO(data)) as compressed:
-            raw = compressed.read(MAX_EXPANDED + 1)
-        if len(raw) > MAX_EXPANDED:
+            chunks, length = [], 0
+            while length <= limit:
+                budget.check()
+                chunk = compressed.read(min(65536, limit + 1 - length))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                length += len(chunk)
+            raw = b"".join(chunks)
+            budget.check()
+        if len(raw) > limit:
             raise ArtifactError("archive exceeded its expanded size limit")
         _preflight(raw)
         archive = tarfile.open(fileobj=io.BytesIO(raw), mode="r:")
@@ -164,6 +185,7 @@ def extract(data: bytes, artifact: feed.Artifact, kind: str, destination: Path) 
     seen = set()
     with archive, storage.directory(destination):
         for member in archive:
+            budget.check()
             name = member.name
             while name.startswith("./"):
                 name = name[2:]
@@ -201,6 +223,7 @@ def extract(data: bytes, artifact: feed.Artifact, kind: str, destination: Path) 
                     with source, os.fdopen(fd, "wb", closefd=False) as target:
                         copied = 0
                         while chunk := source.read(65536):
+                            budget.check()
                             copied += len(chunk)
                             if copied > member.size:
                                 raise ArtifactError("archive file exceeds its declared size")
@@ -212,3 +235,5 @@ def extract(data: bytes, artifact: feed.Artifact, kind: str, destination: Path) 
                     os.fsync(parent)
                 finally:
                     os.close(fd)
+    budget.check()
+    return len(raw)

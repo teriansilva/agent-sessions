@@ -292,6 +292,7 @@ async def _serve_takeover(
     accept_at: float | None = None,
     seed_key: str | None = None,
     maintenance_admission: opencode_admission.Admission | None = None,
+    launch_provider=None,
 ) -> None:
     """Single-active-viewer attach (#293) with the read-only fallback (#434). Claims the
     runtime-dir owner file. A non-owner is NOT inert: it streams the session **read-only**
@@ -344,6 +345,7 @@ async def _serve_takeover(
             cols=init_cols,
             rows=init_rows,
             lock=lock,
+            launch_provider=launch_provider,
             have=have,
             read_only_gate=read_only_gate,
             seed_key=seed_key,
@@ -450,7 +452,9 @@ def register(
         # A RETIRING engine (#853 P3 — its manifest is gone) is ATTACH-ONLY: a live master stays
         # reachable, but a dead one is never relaunched and no new session starts. Refused with the
         # terminal code, so the client stops retrying instead of hammering a launch that cannot be.
-        if engines.is_retiring(prov) and action != sessions.ATTACH:
+        if action != sessions.ATTACH and (
+            engines.is_retiring(prov) or not engines.registry.admits(prov)
+        ):
             if lock is not None:
                 lock.release()
             return await reject(4404)
@@ -842,6 +846,7 @@ def register(
                     init_cols=init_cols,
                     init_rows=init_rows,
                     lock=lock,
+                    launch_provider=prov if action == sessions.LAUNCH else None,
                     have=have,
                     fp=fp,
                     tab_id=tab_id,
@@ -903,6 +908,7 @@ def register(
                     cols=init_cols,
                     rows=init_rows,
                     lock=lock,
+                    launch_provider=prov if action == sessions.LAUNCH else None,
                     have=have,
                     read_only_gate=read_only_gate,
                     seed_key=seed_key,

@@ -144,7 +144,8 @@ What to know:
 
 - **By default it has no tools.** It can only talk. Replies are shown as text, never executed and
   never typed into a terminal, so it is never a handoff target and never driven by a mission. You
-  can let it **read** files (below); it can never write, delete or run anything.
+  can let it **read** files or **propose edits** (below). Each save needs your approval; it cannot
+  create or delete files or run commands.
 - **Your text leaves the host.** Every message, with the earlier turns that fit, goes to the
   endpoint you configured. Template secrets are redacted on the way out, the same as AI review.
 - **The key stays with its endpoint.** It is encrypted at rest, never shown again, and bound to
@@ -182,6 +183,29 @@ in:
   at most 2000 lines or 64 KiB, a listing at most 500 entries; everything counts against the
   context window. After the last round the endpoint must answer. An endpoint or model without
   tool support fails the message with that reason — turn Tools off for it.
+
+### Tools: proposed file edits
+
+**Read files and propose edits** adds changes to existing text files. The agent must read the
+complete file first (at most 64 KiB), then propose its replacement. The chat pane shows the path
+and diff with **Reject** and **Approve & save**. Only that proposal is approved; there is no bulk
+approval. Pending proposals survive reloads and app restarts, and the agent waits for your decision.
+
+Approval checks the file's original version and your current folder/tool settings again. A changed
+file, excluded folder, moved link, disabled tool, or changed endpoint refuses the save. Ask the
+agent to read the file again and propose a fresh change. The save uses the Files panel's existing
+editor: a kernel lease and a retained recovery copy protect concurrent work, and the file's line
+endings, BOM, mode and access ACL are preserved. A file open elsewhere may refuse a save.
+
+Pending base/proposed text and a continuation checkpoint are held in private proposal files so
+you can review after restart. Earlier tool-read bodies are withheld from that checkpoint; the
+agent can read them again. A recorded decision clears pending content from the proposal sidecar,
+which retains only the audit (path, hashes, size, outcome, operator and time). The separate private
+file-recovery store retains the displaced file and before/after snapshots, including after a
+successful save; it does not prune them automatically. If the app stops during a save, it does
+not replay the approved write: inspect the file before retrying. An interrupted recovery that
+cannot distinguish its partial restoration from another writer's edit preserves those bytes for
+inspection. Model replies may quote file text and remain in the ordinary transcript.
 
 ## Which engines are present
 

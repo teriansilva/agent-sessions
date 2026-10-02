@@ -1,5 +1,6 @@
 // Typed client for the FastAPI `/api/*` surface. Same-origin; cookie session auth.
 // Mutations (later) attach the CSRF token + are origin-checked server-side.
+import type { PluginCatalog, PluginReview, PluginOperation, PluginAction } from "../types/plugins";
 import {
   AUTOMATION_ORIGINS_API,
   AUTOMATIONS_API,
@@ -561,7 +562,38 @@ const chatPath = (sid: string) => `/api/chat/${encodeURIComponent(sid)}`;
 /** One automation's URL (#1201). */
 const autoPath = (id: string) => `${AUTOMATIONS_API}/${encodeURIComponent(id)}`;
 
+async function pluginCatalog(path: string, refresh = false): Promise<PluginCatalog> {
+  const value = await (refresh ? pluginPost<PluginCatalog>(path, {}) : getJsonWithDetail<PluginCatalog>(path));
+  if (!value?.feed || !Array.isArray(value.catalog) || !Array.isArray(value.plugins) || !Array.isArray(value.operations)) {
+    throw new Error("The installer catalog is unavailable. Existing agents remain listed below.");
+  }
+  return value;
+}
+
+function pluginPost<T>(path: string, body: unknown): Promise<T> {
+  return mutateJson<T>("POST", path, body);
+}
+
 export const api = {
+  plugins: () => pluginCatalog("/api/plugins"),
+  pluginRefresh: () => pluginCatalog("/api/plugins/feed/refresh", true),
+  pluginReview: (body: { plugin_id?: string; local?: unknown; adopted_path?: string }) =>
+    pluginPost<PluginReview>("/api/plugins/review", body),
+  pluginInstall: (body: { request_id: string; review_id: string; digest: string; confirm_local: boolean; confirm_adopted: boolean }) =>
+    pluginPost<PluginOperation>("/api/plugins/install", body),
+  pluginOperation: (id: string) => getJsonWithDetail<PluginOperation>(`/api/plugins/operations/${enc(id)}`),
+  pluginCancel: (id: string) => pluginPost<PluginOperation>(`/api/plugins/operations/${enc(id)}/cancel`, {}),
+  pluginRecover: () => pluginPost<PluginCatalog>("/api/plugins/recover", {}),
+  pluginSignin: (body: PluginAction) => pluginPost<PluginOperation>("/api/plugins/signin", body),
+  pluginVerify: (body: PluginAction) => pluginPost<PluginOperation>("/api/plugins/verify", { ...body, confirm_effects: true }),
+  pluginActivate: (body: PluginAction) => pluginPost<PluginOperation>("/api/plugins/activate", body),
+  pluginDisable: (body: { request_id: string; plugin_id: string; expected_active: string | null; expected_revision: string | null }) => pluginPost<PluginOperation>("/api/plugins/disable", body),
+  pluginRemove: (body: { request_id: string; plugin_id: string; expected_active: string | null; expected_revision: string | null }) => pluginPost<PluginOperation>("/api/plugins/remove", body),
+  pluginReload: () => pluginPost<{ generation: number }>("/api/plugins/reload", {}),
+  pluginEndpoint: (id: string, generation: string) => getJsonWithDetail<AgentEndpoint>(`/api/plugins/${enc(id)}/generations/${enc(generation)}/endpoint`),
+  pluginEndpointSet: (id: string, generation: string, patch: AgentEndpointPatch) => mutateJson<AgentEndpoint>("PATCH", `/api/plugins/${enc(id)}/generations/${enc(generation)}/endpoint`, patch),
+  pluginEndpointTest: (id: string, generation: string, draft: { base_url: string; api_key?: string }) => pluginPost<{ models: string[]; listing: "ok" | "unsupported" }>(`/api/plugins/${enc(id)}/generations/${enc(generation)}/endpoint/test`, draft),
+
   // ---- API agents (#1209) ------------------------------------------------------------------------
   /** Start a chat-runtime conversation; resolves to its session key (`engine:uuid`). */
   chatNew: (engine: string, cwd: string) =>
@@ -581,6 +613,8 @@ export const api = {
     ),
   agentEndpoint: (engine: string) =>
     getJsonWithDetail<AgentEndpoint>(`/api/agents/${encodeURIComponent(engine)}/endpoint`),
+  chatDecide: (sid: string, turnId: string, proposalId: string, decision: "approve" | "reject") =>
+    mutateJson("POST", `${chatPath(sid)}/turns/${encodeURIComponent(turnId)}/proposals/${encodeURIComponent(proposalId)}/decide`, { decision }),
   setAgentEndpoint: (engine: string, patch: AgentEndpointPatch) =>
     mutateJson<AgentEndpoint>(
       "PATCH",

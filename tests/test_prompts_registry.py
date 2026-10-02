@@ -28,6 +28,7 @@ FIXTURES = Path(__file__).parent / "fixtures" / "prompt_guard"
 # Every system-message call site in the app, and the prompt each one must send. Pinned so a
 # copy-pasted id (the failure the structural check alone cannot see) fails here.
 EXPECTED_SITES = {
+    ("probes.py", "chat_agent"),  # #1259 candidate endpoint verification; same sole transport
     ("autosort.py", "auto_sort"),
     ("template_suggest.py", "template_suggest"),
     ("template_suggest.py", "template_write"),
@@ -47,6 +48,7 @@ EXPECTED_SITES = {
     ("mission_questions.py", "mission_question"),
     ("mission_judge.py", "mission_judge"),
     ("chat_runtime.py", "chat_agent"),  # #1209: the API agent's system prompt
+    ("chat_runtime.py", "chat_agent_edits"),  # #1230: approved file edits
     ("chat_runtime.py", "chat_agent_tools"),  # #1222: the same, with read tools on
 }
 
@@ -92,6 +94,7 @@ HTTP_MODULES = frozenset(
         "analytics",
         "agent_usage",
         "artifacts",
+        "feed_client",
     }
 )
 
@@ -105,6 +108,7 @@ HTTP_MODULES = frozenset(
 # extensible at all.
 HTTP_VERBS = frozenset({"get", "post", "put", "patch", "delete", "request", "stream", "send"})
 POST_SITES = {
+    ("feed_client", "_get"): 1,  # #1259 fixed public release feed, anonymous bounded GET
     # Plugin artifacts (#1259): one streamed GET, no credentials/prompts, recipe-bound HTTPS
     # authorities checked before every redirect; digest checked before any extraction.
     ("artifacts", "_fetch"): 1,

@@ -9,9 +9,9 @@ loader that reads manifests from two places:
 Loading is **fail-soft per plugin**: one invalid manifest becomes a `problems` entry naming the
 field, and every other plugin loads.
 
-**The live roster reads `load_first_party()` only** (#853 P2). Local manifests stay unwired until
-install (P5) and operator confirmation (P6) exist: without them, the only way a local plugin could
-run would be an unconfirmed file drop.
+The live roster starts from `load_first_party()` and overlays complete committed generations
+from the operator-owned manager record (#853 P5). Local files dropped into the plugin directory
+are never loaded into the live roster; a candidate needs review, confirmation and verification.
 """
 
 from __future__ import annotations

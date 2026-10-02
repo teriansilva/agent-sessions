@@ -11,19 +11,82 @@ full [below](#allowed-values).
 
 ## What adding an agent means today
 
-The manifest format is complete, but only **in-tree** manifests run. They live in
-`src/agent_sessions/plugins/first_party/<id>/plugin.toml`, are reviewed like any other code, and
-ship with the app, so adding one is a pull request that touches nothing but that directory. This is
-true only when every kind the new agent needs already exists. An agent whose store, transcript,
-launch shape or usage source nothing in BattleLab can handle yet needs a new kind first, and that
-kind is reviewed code.
+In-tree manifests live in `src/agent_sessions/plugins/first_party/<id>/plugin.toml` and ship
+with the app. Additional agents enter through a reviewed installation, verification and explicit
+activation. Dropping a file into a directory grants no execution. An agent whose store,
+transcript or launch shape has no built-in kind still needs a reviewed code change first.
 
-The app does **not** read manifests from your own plugins directory yet. The loader and validator
-for them exist (they are held to stricter rules than in-tree ones), but nothing adds them to the
-roster. Running a plugin BattleLab did not
-ship needs two things that do not exist yet: an install step that verifies what it downloads, and
-your explicit confirmation of the exact binary. A plugin that runs on nothing more than a file
-dropped into a directory would be an unreviewed program launched with permission bypass.
+The installer accepts entries from an authenticated signed catalog, or a local manifest and
+pinned recipe that you confirm for each install/update. A local source stays **untrusted** after
+its functional checks pass. Local entries cannot claim a first-party identity. Existing binaries
+can be adopted only with separate confirmation of their absolute path and SHA-256.
+
+An installation stages a disabled candidate and keeps the current generation working. Sign-in,
+verification, enable and roster reload are separate actions. Failed or interrupted work never
+counts as successful verification, and old installed copies, vendor credentials, transcripts,
+saved budgets and defaults are retained when an agent is disabled or removed.
+
+### Add or update an agent
+
+Open **Settings → Agents** to search the installed roster and signed catalog. The filters show
+agents that are ready, need setup, have an update, or are disabled. Existing usage meters and
+saved defaults stay on the same page. **Refresh catalog** checks the signed release feed; a
+failed refresh shows its error and keeps the installed roster visible.
+
+Choose **Add agent** or a card's **Set up agent** / **Review update** action. Select a signed
+entry, or paste a local manifest-and-recipe JSON object. The review shows its publisher, source,
+host access, pinned artifact URLs and digests. Local entries require a fresh confirmation;
+adopting an existing executable requires a separate path-and-digest confirmation.
+
+**Install** creates a disabled candidate. The following steps offer a temporary sign-in terminal
+(or API endpoint configuration), explain verification's effects, show each check, then offer
+**Enable agent** only after every required check passes. A local publisher remains untrusted
+after verification. Enabling refreshes the roster; it does not change your saved default.
+
+The setup URL identifies the exact operation or installed generation. Refreshing the page or
+choosing **View operation** reads that saved state. If an install response is lost, use
+**Check operation status**; returning to the wizard never starts a second install or sign-in.
+Leaving an install/verification page lets its server job continue. Closing a sign-in terminal
+interrupts it, and reconnecting requires an explicit new attempt.
+
+**Disable** and **Remove** ask for confirmation, refuse new work and retain vendor data and
+installed copies. A removed default remains saved and is shown as unavailable. Running sessions
+remain attachable until they exit; neither action stops those sessions.
+
+### Installer operations
+
+The authenticated `/api/plugins` routes provide catalog refresh, review, install, sign-in,
+verification, activation, disable/remove and roster reload. Every mutation requires the existing
+CSRF token and matching origin. Operation IDs are caller-minted UUIDs: repeating the same ID and
+payload reads its durable outcome, while changing the payload is refused. Reloading or returning
+to setup reads status; it never resubmits a job automatically.
+
+The fixed public release catalog is verified against the signer bundled with this installed
+BattleLab release. Expired, replayed or altered feeds are refused, preserving the previous
+accepted evidence. Recipes pin every artifact and dependency. Extraction is inert: no package
+lifecycle scripts or network-resolving package installer runs.
+
+Sign-in uses a separate temporary terminal with no BattleLab session registration, scrollback
+capture, AI review or retained terminal bytes. The vendor may save its own credentials. Closing
+the socket interrupts the attempt; start a new attempt explicitly. A systemd user manager is
+required for these bounded terminal operations. There is no uncontained fallback.
+
+Verification requires explicit confirmation of its effects. CLI checks run a fixed test
+conversation in a private workspace, may create vendor history, contact the vendor and consume
+quota, and never request permission bypass. A vendor trust/permission prompt can cause a check
+to time out; it is not treated as success or answered with an automatic grant. API-agent checks
+send a fixed message to the saved endpoint; an endpoint change invalidates that evidence.
+All required checks must pass for the exact candidate before it can be enabled.
+
+Sign-in and verification share one private workspace for each candidate. If a CLI asks whether
+to trust that folder, answer it in the explicit sign-in terminal before verification. A retry
+creates a fresh test conversation there and resumes that same identity; an older reply cannot
+pass a new check. The workspace and vendor-owned probe history are retained.
+
+A disconnected install/verify request leaves its one server job running. After an app restart,
+interrupted operations are recorded, never replayed. A `cleanup_pending` result must be recovered
+before another operation starts. Removal disables new work; existing sessions remain attachable
+until they exit. No removal action deletes vendor data or retained generations.
 
 ## A complete example
 
@@ -40,8 +103,8 @@ be a restriction, and a reader that skipped it would grant what the author meant
 |---|---|---|
 | `contract` | yes | The manifest format version (an integer). A higher contract than this build reads is refused as "needs a newer BattleLab", and rolling the app back disables such a plugin instead of misreading it. |
 | `[identity]` | yes | `id` (lowercase, 2–24 characters: the `<engine>` in every session id), `label`, `publisher`, `version`, and `kind`: `agent`, or `terminal` for a plugin with no agent behind it. |
-| `[runtime]` | no | `kind`. Absent means `pty`: a binary under `dtach`, shown in the terminal. `chat` means no process at all: BattleLab sends the conversation to an HTTP model endpoint **you** configure and keeps the transcript itself. A `chat` manifest may not declare `binary`, `launch`, `terminal`, `unattended`, `install`, `signin`, `verify` or `instructions`, nor any capability that presumes a terminal (`seed_start`, `orchestrator_input`, `raw_tty`, `handoff_target`, `owns_transcript`). |
-| `[endpoint]` | for `chat` only | `kind`: the wire format (`openai-chat`). **Nothing else**: the URL, API key and model are your configuration, never the manifest's, so a manifest cannot point BattleLab at a server. A `chat` agent executes nothing: by default it can only talk, and the most its operator can grant is reading files in the conversation's folder ([Tools](./engines#tools-reading-files-in-the-conversation-s-folder)). |
+| `[runtime]` | no | `kind`. Absent means `pty`: a binary under `dtach`, shown in the terminal. `chat` means no process at all: BattleLab sends the conversation to an HTTP model endpoint **you** configure and keeps the transcript itself. A `chat` manifest may not declare `binary`, `launch`, `terminal`, `unattended`, `install`, `signin`, `probe`, `verify` or `instructions`, nor any capability that presumes a terminal (`seed_start`, `orchestrator_input`, `raw_tty`, `handoff_target`, `owns_transcript`). |
+| `[endpoint]` | for `chat` only | `kind`: the wire format (`openai-chat`). **Nothing else**: the URL, API key and model are your configuration, never the manifest's, so a manifest cannot point BattleLab at a server. By default a `chat` agent can only talk. The operator can opt into folder-scoped reads and per-file edit proposals; each proposed replacement needs a separate authenticated approval before saving ([Tools](./engines#tools-reading-files-in-the-conversation-s-folder)). |
 | `[binary]` | for `pty` | `name` (the plugin id or one of `aliases`), `env_var` (its `AGENT_SESSIONS_*_BIN` override), `search_paths` (absolute or `~/` directories, no globs, no `..`), `version_flag`, and `search_npm_global` for CLIs installed with `npm i -g`. |
 | `[session_id]` | yes | `pattern`, the native-id shape (grammar below); `mint` (`pinned` or `adopt`, see [Engines](./engines#two-ways-a-new-session-gets-its-id)); `legacy_bare_id` (claimed by at most one in-tree manifest). |
 | `[store]` | no | Where the engine keeps its sessions: `root`, `env_override`, `layout` (the built-in reader), and named auxiliary `paths` (`db`, `log`, …) relative to the root, each with an optional override in `path_env`. |
@@ -55,9 +118,10 @@ be a restriction, and a reader that skipped it would grant what the author meant
 | `[models]` | no | `list` of `{ id, context_window, aliases }`, and `configured_elsewhere` (the engine's model is set in its own configuration, so pickers offer `default` only). Every id and alias names exactly one model, and none may be `default`. A `chat` plugin's list must be empty: its model is your endpoint configuration. |
 | `[instructions]` | no | `files`: the workspace-root instruction files the engine reads (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`) — bare names from a fixed set, never a path. Forbidden for `chat`. |
 | `[display]` | yes | `name`, `badge` (2–3 lowercase letters), `accent` (a colour **token**, never a hex), `id_prefix` (stripped when an id is shown), and `order` in the roster. |
-| `[install]` | no | `kind`, `authority`, `package`, `version`, `digest` (`sha256:…`) and `entrypoint`. Validated today and executed by nothing: there is no install step yet. |
-| `[signin]` | no | `kind` and the login `subcommand`, chosen from a fixed set. Validated today and executed by nothing. |
-| `verify` | no | The subset of the fixed check list a verification run would perform. Validated today and executed by nothing. |
+| `[install]` | no | `kind`, `authority`, `package`, `version`, `digest` (`sha256:…`), `entrypoint`, and optional `platform`. A declared platform must match this host. The installer consumes only a pinned reviewed recipe matching these coordinates. Scoped npm entrypoints admit `@scope` only immediately below `node_modules`. |
+| `[signin]` | no | `kind`: `cli-subcommand` takes a closed login `subcommand`; `auth-login` runs fixed `auth login`; `interactive` starts the CLI; `none` offers no sign-in. Executed only by the explicit temporary sign-in operation. |
+| `[probe]` | no | `kind`, selecting a built-in fixed conversation mode. Absent means `terminal`. No argv, prompt or permission flags may be supplied. Forbidden for `chat`. |
+| `verify` | no | The fixed required checks performed by an explicit verification operation before enable. |
 
 The validator also checks the blocks against each other. For example: `capabilities.new` needs
 `launch.new`; a `pin-flag` new session needs `mint = "pinned"`; `owns_transcript` needs a
@@ -84,10 +148,10 @@ Launch argv is built from a closed vocabulary, but that only helps if `argv[0]` 
 The app records every binary in one of two states:
 
 - **managed**: installed by BattleLab into the plugin's own directory, bound to the digest it was
-  verified against. (No install step exists yet, so nothing is managed today.)
+  verified against.
 - **adopted**: a CLI you installed yourself, found through the `*_BIN` override or
   `binary.search_paths`. An in-tree manifest's adopted binary runs on the manifest's own authority.
-  A plugin you supplied yourself would run only after you confirmed that exact file by path and
+  A plugin you supplied yourself runs only after you confirm that exact file by path and
   sha256.
 
 In both states, BattleLab never looks the binary up on `PATH` at launch, and the file and every
@@ -148,7 +212,9 @@ Every value a manifest may choose, generated from the kinds this build ships:
 | `maintenance` | `sqlite-vacuum` |
 | `display.accent` | `amber`, `blue`, `green`, `lime`, `magenta`, `slate`, `teal` |
 | `install.kind` → `authority` | `npm-prefix` → `registry.npmjs.org`; `tarball` → `github.com` |
-| `signin.kind` → `subcommand` | `cli-subcommand` → `auth`, `login`; `none` → none |
+| `signin.kind` → `subcommand` | `auth-login` → none; `cli-subcommand` → `auth`, `login`; `interactive` → none; `none` → none |
+| `install.platform` | `linux-x64` |
+| `probe.kind` | `exec-readonly`, `print-conversation`, `print-pinned`, `prompt-pinned`, `prompt-session`, `run-session`, `terminal` |
 | `verify` | `binary`, `new`, `resume`, `store`, `transcript`, `usage`, `version` |
 <!-- END generated:manifest-vocab -->
 

@@ -154,7 +154,8 @@ for (const tools of ["none", "read"] as const) {
   });
 }
 
-test("Tools: chosen by keyboard, 44 px targets, Save reachable and sends only tools", async ({
+for (const mode of ["read", "write"] as const) {
+test(`Tools ${mode}: chosen by keyboard, 44 px targets, Save reachable and sends only tools`, async ({
   page,
 }) => {
   await setup(page, "light", { tools: "none" });
@@ -217,27 +218,31 @@ test("Tools: chosen by keyboard, 44 px targets, Save reachable and sends only to
     };
     if (r.request().method() === "PATCH") {
       saved.push(r.request().postDataJSON());
-      return r.fulfill({ json: { ...base, tools: "read" } });
+      return r.fulfill({ json: { ...base, tools: mode } });
     }
     return r.fulfill({ json: base });
   });
   await page.goto("/settings/agents/apichat");
   const card = page.getByRole("form", { name: "Endpoint" });
   const none = card.getByRole("radio", { name: /None/ });
-  const read = card.getByRole("radio", { name: /Read files/ });
+  const read = card.getByRole("radio", { name: /Read files in/ });
   await expect(none).toBeChecked();
-  for (const opt of [none, read]) {
+  const write = card.getByRole("radio", { name: /Read files and propose edits/ });
+  for (const opt of [none, read, write]) {
     const box = await opt.locator("xpath=ancestor::label[1]").boundingBox();
     expect(box!.height).toBeGreaterThanOrEqual(44);
   }
   await none.focus();
   await page.keyboard.press("ArrowDown");
-  await expect(read).toBeChecked();
+  if (mode === "write") await page.keyboard.press("ArrowDown");
+  await expect(mode === "write" ? write : read).toBeChecked();
   const save = card.getByRole("button", { name: "Save" });
   await save.scrollIntoViewIfNeeded();
   await expect(save).toBeInViewport();
   await save.click();
   await expect(page.getByTestId("endpoint-status")).toContainText("available now");
-  expect(saved).toEqual([{ tools: "read" }]);
+  expect(saved).toEqual([{ tools: mode }]);
   await noOverflow(page);
 });
+
+}

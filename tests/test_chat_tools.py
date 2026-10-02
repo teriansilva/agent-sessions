@@ -330,7 +330,7 @@ def test_tools_setting_is_validated_public_and_defaults_off():
     chat_config.set_config(ENGINE, {"base_url": URL, "api_key": KEY, "model": "m"})
     assert chat_config.public(ENGINE)["tools"] == "none"
     with pytest.raises(chat_config.ChatConfigError):
-        chat_config.validate_patch({"tools": "write"})
+        chat_config.validate_patch({"tools": "execute"})
     configure("read")
     assert chat_config.public(ENGINE)["tools"] == "read"
 

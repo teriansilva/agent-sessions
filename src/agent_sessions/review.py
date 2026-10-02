@@ -894,7 +894,39 @@ def _reject_if_truncated(payload: object, *, subject: str) -> None:
         raise ReviewError(f"{subject} returned a truncated completion (finish_reason=length)")
 
 
-async def _post_chat(cfg: dict, body: dict, *, retry_without_json_mode: bool = False):
+class _AdmittedBody(httpx.AsyncByteStream):
+    def __init__(self, payload: bytes, release: Callable[[], None]):
+        self.payload, self.release = payload, release
+
+    async def __aiter__(self):
+        yield self.payload
+        # The transport has consumed the entire body. Revocation can now commit while the
+        # already-started request waits for its response. Errors/cancellation release outside.
+        self.release()
+
+
+@contextlib.asynccontextmanager
+async def _request_payload(body: dict, cfg: dict, admission):
+    if admission is None:
+        yield {"json": body, "headers": _headers(cfg)}
+        return
+    # Encode before taking admission. A stream makes the handoff boundary explicit for both
+    # HTTP transports and the mock transport, which consumes the body before its handler.
+    payload = json.dumps(body, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
+    async with admission() as release:
+        yield {
+            "content": _AdmittedBody(payload, release),
+            "headers": {
+                **_headers(cfg),
+                "Content-Type": "application/json",
+                "Content-Length": str(len(payload)),
+            },
+        }
+
+
+async def _post_chat(
+    cfg: dict, body: dict, *, retry_without_json_mode: bool = False, admission=None
+):
     """THE chat-completions transport. Every request to the endpoint goes through here.
 
     Centralized so the registry check has exactly one place to stand (#824): a second POST
@@ -926,7 +958,8 @@ async def _post_chat(cfg: dict, body: dict, *, retry_without_json_mode: bool = F
     sent_no_thinking = key not in _thinking_refused
     attempt = _with_thinking_opt_out(body) if sent_no_thinking else dict(body)
     async with _client(request_timeout(cfg)) as client:
-        r = await client.post(url, json=attempt, headers=_headers(cfg))
+        async with _request_payload(attempt, cfg, admission) as payload:
+            r = await client.post(url, **payload)
         if r.status_code not in _JSON_MODE_REFUSED:
             return r
         # A refusal names no field, so the degrade is ORDERED and each step isolates exactly
@@ -935,7 +968,8 @@ async def _post_chat(cfg: dict, body: dict, *, retry_without_json_mode: bool = F
         if sent_no_thinking:
             attempt = dict(body)
             _assert_registered_system_prompts(attempt.get("messages") or [])
-            r = await client.post(url, json=attempt, headers=_headers(cfg))
+            async with _request_payload(attempt, cfg, admission) as payload:
+                r = await client.post(url, **payload)
             if r.status_code not in _JSON_MODE_REFUSED:
                 _thinking_refused.add(key)
                 return r
@@ -950,7 +984,8 @@ async def _post_chat(cfg: dict, body: dict, *, retry_without_json_mode: bool = F
         if retry_without_json_mode:
             attempt = {k: v for k, v in attempt.items() if k != "response_format"}
             _assert_registered_system_prompts(attempt.get("messages") or [])
-            r = await client.post(url, json=attempt, headers=_headers(cfg))
+            async with _request_payload(attempt, cfg, admission) as payload:
+                r = await client.post(url, **payload)
         return r
 
 
@@ -959,12 +994,12 @@ class TransportTimeout(ReviewError):
     timeout is AMBIGUOUS: the request may have been processed (and billed) anyway (#1209)."""
 
 
-async def post_chat_response(cfg: dict, body: dict):
+async def post_chat_response(cfg: dict, body: dict, *, admission=None):
     """`_post_chat` for a caller that inspects the response itself (the chat runtime, #1209),
     with transport failures translated to `ReviewError` — so that caller needs no HTTP client of
     its own. Adds no request: this is `_post_chat`, once."""
     try:
-        return await _post_chat(cfg, body)
+        return await _post_chat(cfg, body, admission=admission)
     except httpx.TimeoutException:
         raise TransportTimeout(
             f"the endpoint did not answer within {request_timeout(cfg):.0f}s"

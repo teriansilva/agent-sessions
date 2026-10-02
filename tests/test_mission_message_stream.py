@@ -161,7 +161,9 @@ class Session:
         return out
 
 
-async def _all_turns_done(timeout: float = 5.0) -> None:
+async def _all_turns_done(timeout: float = 15.0) -> None:
+    # Completion gets the same shared-runner allowance as stream exit and turn startup below.
+    # This is a ceiling: return as soon as persistence settles, never add a fixed delay.
     for _ in range(int(timeout / 0.01)):
         if not mroutes._TURN_TASKS:
             return

@@ -11,11 +11,14 @@ per record, like every other store reader):
 
     {"type": "session", "id", "cwd", "created_at"}                       first line, written once
     {"type": "user", "turn_id", "text", "ts"}                            the operator's message
-    {"type": "status", "turn_id", "status": pending|done|failed, "reason"?, "ts"}
+    {"type": "status", "turn_id", "status": pending|awaiting_approval|done|failed, "reason"?, "ts"}
     {"type": "assistant", "turn_id", "text", "ts", "usage"?, "truncated"?, "dropped"?}
     {"type": "budget", "factor", "ts"}                                   after a context rejection
     {"type": "tool", "turn_id", "call_id", "name", "path", "outcome": running|ok|refused,
      "start_line"?, "end_line"?, "total_lines"?, "entries"?, "reason"?, "ts"}   #1222, a SUMMARY
+
+Proposal audit records carry only ids, hashes and decisions; their pending content lives in
+private sidecars (chat_edits), cleared on decision. Resume statuses preserve the tool summaries.
 
 A ``tool`` record never carries file contents — only what the pane shows. A turn's tool list
 belongs to its LATEST attempt: a ``pending`` status (send or Retry) starts it afresh. A call still
@@ -45,7 +48,7 @@ TEXT_MAX = 200_000
 #: One stored reply's cap (chars): above any configurable output (1M tokens × 4 chars). Applied —
 #: and recorded as `truncated` — where the reply is ACCEPTED (`chat_runtime`), never silently here.
 REPLY_MAX = 4_000_000
-STATUSES = ("pending", "done", "failed")
+STATUSES = ("pending", "awaiting_approval", "done", "failed")
 TOOL_OUTCOMES = ("running", "ok", "refused")
 _TOOL_TEXT_MAX = 500
 _TOOL_INT_FIELDS = ("start_line", "end_line", "total_lines", "entries")
@@ -232,7 +235,7 @@ def read(root: Path, session_id: str) -> ChatLog | None:
                 turn.status = rec["status"]
                 reason = rec.get("reason")
                 turn.reason = reason[:500] if isinstance(reason, str) else None
-                if turn.status == "pending":
+                if turn.status == "pending" and rec.get("resume") is not True:
                     turn.reply, turn.usage, turn.truncated, turn.dropped = None, None, False, 0
                     turn.tools = {}
             elif t == "tool":

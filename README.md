@@ -145,6 +145,11 @@ agent-sessions 0.3.1 installed.
 
 Re-running the installer is **idempotent**: it builds a new release dir, flips `current`, keeps the prior releases (3 by default) for rollback, and **leaves existing credentials untouched**. It also runs `agent-sessions doctor` each time to (re)discover the installed agent CLIs — every engine in the [per-engine table](#per-engine-support) — and record their paths in `env`.
 
+To hold all installed rollback copies during an upgrade, create `retain-releases` inside the
+install root (`~/.local/share/agent-sessions` by default). The installer skips release pruning
+while that marker exists. It stays in effect across updates; remove it only when cleanup is
+approved and the usual three-release retention should resume.
+
 Install-time knobs (env vars): `AGENT_SESSIONS_CHANNEL` (`stable` tags — default — or `main`), `AGENT_SESSIONS_HOST`/`_PORT`/`_ORIGIN`, `AGENT_SESSIONS_HOME`, `AGENT_SESSIONS_REF` (pin an exact tag/branch/sha), `AGENT_SESSIONS_NO_SERVICE=1` (install without touching systemd).
 
 ### Updating

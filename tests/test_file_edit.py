@@ -25,6 +25,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -598,11 +599,14 @@ step, path, content, expect, action = sys.argv[1:6]
 
 def hook(name):
     if name == step:
+        if action == "guarded-move":
+            os.rename(os.path.dirname(path), os.path.dirname(path) + "-relocated")
         os.kill(os.getpid(), signal.SIGKILL)
 
 fileedit._HOOK = hook
-if action == "save":
-    fileedit.save(path, content, expect)
+if action in ("save", "guarded", "guarded-move"):
+    boundary = os.path.dirname(path) if action.startswith("guarded") else None
+    fileedit.save(path, content, expect, root=boundary)
 else:
     with fileedit._store_locked() as fd:
         fileedit.resolve_pending(fd)
@@ -1316,3 +1320,234 @@ def test_a_malformed_record_is_set_aside_and_never_fails_an_unrelated_save(root,
     fileedit.startup_resolve()
     assert not os.path.exists(entry)
     assert os.path.isdir(os.path.join(store(root), f".invalid-{_FORGED_ID}"))
+
+
+@pytest.mark.parametrize("step", ["intent", "stage", "displace", "check", "install"])
+def test_guarded_save_killed_before_settlement_never_infers_approval(root, step):
+    p = root / "guarded.txt"
+    p.write_bytes(b"original\n")
+    result = _child(root, step, p, action="guarded", expect=sha(b"original\n"))
+    assert result.returncode == -signal.SIGKILL, result.stderr
+    _resolve()
+    _resolve()
+    assert p.read_bytes() == b"original\n"
+    assert all(rec["state"] != "complete" for rec in records(root))
+
+
+def test_guarded_withdrawal_preserves_a_writer_that_wins_the_rename_race(root, monkeypatch):
+    p = root / "guarded.txt"
+    p.write_bytes(b"original\n")
+    rename = fileedit._rename_noreplace
+    raced = False
+
+    def race(src_fd, src, dst_fd, dst):
+        nonlocal raced
+        if dst.startswith("unsettled-") and not raced:
+            raced = True
+            replacement = root / "writer.tmp"
+            replacement.write_bytes(b"concurrent writer\n")
+            replacement.replace(p)
+        return rename(src_fd, src, dst_fd, dst)
+
+    installed = False
+
+    def hook(step):
+        nonlocal installed
+        if step == "install":
+            installed = True
+
+    def admit(_):
+        if installed:
+            raise FsError("policy revoked", status=409)
+
+    fileedit._HOOK = hook
+    monkeypatch.setattr(fileedit, "_rename_noreplace", race)
+    with pytest.raises(FsError, match="policy revoked"):
+        fileedit.save(str(p), "new\n", sha(b"original\n"), root=str(root), admit=admit)
+    assert raced
+    assert p.read_bytes() == b"concurrent writer\n"
+    rec = records(root)[0]
+    assert (Path(store(root)) / rec["id"] / rec["retained"]).read_bytes() == b"original\n"
+    assert rec["state"] == "kept_both"
+
+
+def _killed_relocated_save(root, before=b"original\n", after="proposed\n"):
+    parent = root / "conversation"
+    parent.mkdir()
+    path = parent / "README.md"
+    path.write_bytes(before)
+    result = _child(root, "install", path, action="guarded-move", content=after, expect=sha(before))
+    assert result.returncode == -signal.SIGKILL, result.stderr
+    moved = root / "conversation-relocated" / path.name
+    assert moved.read_bytes() == after.encode()
+    return path, moved
+
+
+@pytest.mark.parametrize("replacement_parent", [False, True])
+def test_guarded_crash_after_parent_move_restores_via_durable_inode(root, replacement_parent):
+    path, moved = _killed_relocated_save(root)
+    if replacement_parent:
+        path.parent.mkdir()
+        path.write_bytes(b"different parent writer\n")
+    _resolve()
+    _resolve()
+    assert moved.read_bytes() == b"original\n"
+    assert records(root)[0]["state"] == "reverted"
+    if replacement_parent:
+        assert path.read_bytes() == b"different parent writer\n"
+
+
+@pytest.mark.parametrize("step", ["relocated:chunk", "relocated:written", "relocated:truncated"])
+@pytest.mark.parametrize("sizes", [(70000, 90000), (90000, 70000)])
+def test_relocated_rollback_retains_ambiguous_bytes_after_its_own_crash(root, step, sizes):
+    before = b"a" * sizes[0] + b"\n"
+    path, moved = _killed_relocated_save(root, before, "b" * sizes[1] + "\n")
+    result = _child(root, step, path, action="resolve")
+    assert result.returncode == -signal.SIGKILL, result.stderr
+    interrupted = moved.read_bytes()
+    _resolve()
+    _resolve()
+    assert moved.read_bytes() == interrupted
+    assert records(root)[0]["state"] == ("reverted" if interrupted == before else "kept_both")
+
+
+def test_writer_between_recovery_attempts_cannot_be_mistaken_for_partial_rollback(root):
+    path, moved = _killed_relocated_save(root, b"AAAA", "BBBB")
+    result = _child(root, "relocated:written", path, action="resolve")
+    assert result.returncode == -signal.SIGKILL, result.stderr
+    assert records(root)[0]["rollback_started"] is True
+    # Same pinned inode, but a different writer AFTER the recovery worker died. This happens
+    # to have the byte shape of a partial rollback; it is not evidence of exclusive ownership.
+    moved.write_bytes(b"AABB")
+    _resolve()
+    _resolve()
+    assert moved.read_bytes() == b"AABB"
+    assert records(root)[0]["state"] == "kept_both"
+
+
+@pytest.mark.parametrize("replace_inode", [False, True])
+def test_relocated_recovery_preserves_a_raced_writer(root, replace_inode):
+    _, moved = _killed_relocated_save(root)
+    if replace_inode:
+        other = root / "writer"
+        other.write_bytes(b"writer bytes\n")
+        other.replace(moved)
+    else:
+        moved.write_bytes(b"writer bytes\n")
+    _resolve()
+    _resolve()
+    assert moved.read_bytes() == b"writer bytes\n"
+    rec = records(root)[0]
+    assert (Path(store(root)) / rec["id"] / rec["retained"]).read_bytes() == b"original\n"
+
+
+def test_relocated_recovery_waits_for_an_open_candidate_then_retries(root):
+    _, moved = _killed_relocated_save(root)
+    with moved.open("rb"):
+        _resolve()
+        assert records(root)[0]["state"] == "intent"
+    _resolve()
+    assert moved.read_bytes() == b"original\n"
+    assert records(root)[0]["state"] == "reverted"
+
+
+def test_completed_guarded_save_drops_only_its_candidate_pin(root):
+    path = root / "README.md"
+    path.write_bytes(b"original\n")
+    fileedit.save(str(path), "proposed\n", sha(b"original\n"), root=str(root))
+    assert path.stat().st_nlink == 1
+    assert path.read_bytes() == b"proposed\n"
+    _resolve()
+    assert path.stat().st_nlink == 1
+
+
+def test_guarded_recovery_uses_its_pin_when_the_parent_temporary_was_removed(root):
+    path = root / "README.md"
+    path.write_bytes(b"original\n")
+    result = _child(root, "install", path, action="guarded", expect=sha(b"original\n"))
+    assert result.returncode == -signal.SIGKILL
+    rec = records(root)[0]
+    (root / rec["tmp"]).unlink()
+    _resolve()
+    assert path.read_bytes() == b"original\n"
+
+
+def test_guarded_edit_refuses_mode_that_cannot_recover_its_candidate(root):
+    path = root / "README.md"
+    path.write_bytes(b"original\n")
+    path.chmod(0o400)
+    with pytest.raises(fileedit.SaveRefused, match="owner permissions"):
+        fileedit.save(str(path), "proposed\n", sha(b"original\n"), root=str(root))
+    assert path.read_bytes() == b"original\n"
+    assert path.stat().st_mode & 0o777 == 0o400
+
+
+@pytest.mark.parametrize("step", ["stage", "check"])
+@pytest.mark.parametrize("damage", ["replacement", "same-inode"])
+def test_guarded_candidate_tampering_refuses_approved_save(root, step, damage):
+    path = root / "approved.txt"
+    path.write_bytes(b"original\n")
+
+    def hook(boundary):
+        if boundary != step:
+            return
+        candidate = root / leftovers(root)[0]
+        if damage == "replacement":
+            other = root / "writer.tmp"
+            other.write_bytes(b"unapproved\n")
+            other.replace(candidate)
+        else:
+            candidate.write_bytes(b"unapproved\n")
+
+    fileedit._HOOK = hook
+    with pytest.raises(FsError):
+        fileedit.save(
+            str(path), "approved\n", sha(b"original\n"), root=str(root), admit=lambda _: None
+        )
+    fileedit._HOOK = None
+    assert path.read_bytes() == b"original\n"
+    _resolve()
+    assert path.read_bytes() == b"original\n"
+    assert all(r["state"] != "complete" for r in records(root))
+
+
+def test_guarded_install_links_approved_descriptor_if_temporary_is_replaced_at_link(
+    root, monkeypatch
+):
+    path = root / "approved.txt"
+    path.write_bytes(b"original\n")
+    real_link = os.link
+    raced = False
+
+    def link(src, dst, **kwargs):
+        nonlocal raced
+        if dst == path.name:
+            raced = True
+            candidate = root / leftovers(root)[0]
+            other = root / "writer.tmp"
+            other.write_bytes(b"unapproved\n")
+            other.replace(candidate)
+        return real_link(src, dst, **kwargs)
+
+    monkeypatch.setattr(fileedit.os, "link", link)
+    monkeypatch.setattr(fileedit.os, "supports_dir_fd", os.supports_dir_fd | {link})
+    result = fileedit.save(str(path), "approved\n", sha(b"original\n"), root=str(root))
+    assert raced and result["version"] == sha(b"approved\n")
+    assert path.read_bytes() == b"approved\n"
+
+
+def test_guarded_install_refuses_candidate_lease_break_before_settlement(root):
+    path = root / "approved.txt"
+    path.write_bytes(b"original\n")
+
+    def hook(step):
+        if step == "install":
+            with pytest.raises(BlockingIOError):
+                os.open(path, os.O_WRONLY | os.O_NONBLOCK)
+
+    fileedit._HOOK = hook
+    with pytest.raises(FsError, match="staged edit changed"):
+        fileedit.save(str(path), "approved\n", sha(b"original\n"), root=str(root))
+    fileedit._HOOK = None
+    assert path.read_bytes() == b"original\n"
+    assert records(root)[0]["state"] == "reverted"

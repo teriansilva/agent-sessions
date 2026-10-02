@@ -638,7 +638,7 @@ def test_launch_site_inventory_requires_review_when_another_route_can_spawn():
             n.name for node in ast.walk(tree) if isinstance(node, ast.Import) for n in node.names
         ]
         mods += [node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
-        assert "subprocess" not in mods or path.name == "runner.py", path.name
+        assert "subprocess" not in mods or path.name in ("runner.py", "process.py"), path.name
         for call in ast.walk(tree):
             if (
                 isinstance(call, ast.Call)
@@ -648,6 +648,18 @@ def test_launch_site_inventory_requires_review_when_another_route_can_spawn():
             ):
                 runner_consumers[path.name, call.func.attr] += 1
     assert runner_consumers == {("feed.py", "run"): 1}
+    # The separate temporary PTY owns one spawn and fixed systemctl teardown; admission is
+    # tested at the actual spawn in test_plugin_process, including cancellation while acquiring.
+    tree = ast.parse((Path(plugins.__file__).parent / "process.py").read_text())
+    assert (
+        sum(
+            isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "create_subprocess_exec"
+            for n in ast.walk(tree)
+        )
+        == 1
+    )
 
 
 @pytest.mark.anyio

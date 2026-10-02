@@ -90,7 +90,7 @@ def _pid_alive(pid: int) -> bool:
 
 
 def _sleep_child() -> tuple[list[str], str]:
-    """A ~60s stand-in for the agent process, with a cmdline UNIQUE to this pytest process.
+    """A stand-in that outlives every test deadline, unique to this pytest process.
 
     These tests used to spawn a plain `/bin/sleep 60` and tear it down with a host-wide
     `pkill -9 -f "sleep 60"`. The runner is shared: two PRs' `pr-validate` jobs run
@@ -102,13 +102,14 @@ def _sleep_child() -> tuple[list[str], str]:
     `sleep` takes a fractional duration, so the pid makes the argv unique without changing
     what is being tested (a long-lived child that outlives its spawner).
 
-    The base is 61, not 60, and that matters: `pkill -f` takes an unanchored REGEX, so the legacy
-    `pkill -9 -f "sleep 60"` still matches a cmdline of `/bin/sleep 60.12345`. Any branch that has
-    not yet picked up this commit would keep reaping our children. `sleep 61.12345` does not match
-    it, so this test file is immune to concurrent runs of its own older self — which is what made
-    the fix land in the first place (task 6341 killed task 6344's child one second after start).
+    The old 61-second child could expire during the 120-second survival wait on a loaded runner.
+    Its lifetime now covers startup and all survival/reattach waits. Teardown still reaps it
+    immediately. The base is not prefixed by 60, so legacy `pkill -f "sleep 60"` cannot match it.
+    Use the full PID at a fixed width: truncated PIDs could collide across concurrent suites,
+    and a variable-width fractional marker could match another process's longer marker.
     """
-    marker = f"61.{os.getpid() % 100000:05d}"
+    lifetime = int(_STARTUP_TIMEOUT_S + 3 * _SURVIVAL_TIMEOUT_S + 1)
+    marker = f"{lifetime}.{os.getpid():010d}"
     return ["/bin/sleep", marker], marker
 
 

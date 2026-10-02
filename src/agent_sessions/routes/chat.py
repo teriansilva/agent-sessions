@@ -9,6 +9,8 @@
   a repeat returns the settled result or 409 while in flight; a reused id with different text is
   409. 413 when the message cannot fit the endpoint's context window.
 * ``POST /api/chat/{sid}/turns/{turn_id}/retry`` — re-send the SAME failed turn (no copy).
+* ``POST /api/chat/{sid}/turns/{turn_id}/proposals/{proposal_id}/decide {decision}`` —
+  approve or reject the exact stored proposal. Repeated decisions return its durable outcome.
 * ``GET/PATCH /api/agents/{engine}/endpoint`` — the agent's endpoint (public view; the key is only
   ever written). 422 on a patch the origin policy refuses (#956) or that leaves no budget.
 * ``POST /api/agents/{engine}/endpoint/test {base_url, api_key?}`` — check a DRAFT; saves nothing.
@@ -114,6 +116,32 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
             raise _refused(e) from None
         return JSONResponse(out, status_code=202)
 
+    @app.post("/api/chat/{sid}/turns/{turn_id}/proposals/{proposal_id}/decide")
+    async def chat_decide(
+        sid: str,
+        turn_id: str,
+        proposal_id: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        engine_id, native = _chat_key(sid)
+        body = await _json(request)
+        if set(body) != {"decision"}:
+            raise HTTPException(status_code=422, detail="expected only decision")
+        try:
+            out = await chat_runtime.decide(
+                engine_id,
+                native,
+                turn_id,
+                proposal_id,
+                body["decision"],
+                _user,
+            )
+        except chat_runtime.ChatError as e:
+            raise _refused(e) from None
+        return JSONResponse(out)
+
     @app.get("/api/agents/{engine_id}/endpoint")
     async def agent_endpoint(engine_id: str, _user: str = Depends(logged_in)) -> JSONResponse:
         return JSONResponse(chat_config.public(_chat_engine(engine_id)))
@@ -141,24 +169,28 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
     ) -> JSONResponse:
         _chat_engine(engine_id)
         body = await _json(request)
-        unknown = sorted(set(body) - {"base_url", "api_key"})
-        if unknown:
-            raise HTTPException(status_code=422, detail=f"unknown fields: {unknown}")
-        base_url = body.get("base_url")
-        if not isinstance(base_url, str) or not prefs.is_valid_ai_base_url(base_url):
-            raise HTTPException(status_code=422, detail="base_url must be an http(s) URL")
-        api_key = body.get("api_key")
-        if "api_key" in body and not isinstance(api_key, str):
-            raise HTTPException(status_code=422, detail="api_key must be a string")
-        if isinstance(api_key, str) and len(api_key) > prefs.AI_REVIEW_KEY_MAX:
-            raise HTTPException(status_code=422, detail="api_key is too long")
-        draft, why = chat_config.draft_for_test(engine_id, base_url, api_key)
-        if why is not None:
-            raise HTTPException(status_code=422, detail=why)
-        try:
-            models = await review.list_models(force=True, cfg=draft)
-        except review.ModelsUnsupportedError:
-            return JSONResponse({"models": [], "listing": "unsupported"})
-        except review.ReviewError as e:
-            raise HTTPException(status_code=502, detail=str(e)) from None
-        return JSONResponse({"models": models, "listing": "ok"})
+        return await test_endpoint_draft(engine_id, body)
+
+
+async def test_endpoint_draft(engine_id: str, body: dict) -> JSONResponse:
+    unknown = sorted(set(body) - {"base_url", "api_key"})
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"unknown fields: {unknown}")
+    base_url = body.get("base_url")
+    if not isinstance(base_url, str) or not prefs.is_valid_ai_base_url(base_url):
+        raise HTTPException(status_code=422, detail="base_url must be an http(s) URL")
+    api_key = body.get("api_key")
+    if "api_key" in body and not isinstance(api_key, str):
+        raise HTTPException(status_code=422, detail="api_key must be a string")
+    if isinstance(api_key, str) and len(api_key) > prefs.AI_REVIEW_KEY_MAX:
+        raise HTTPException(status_code=422, detail="api_key is too long")
+    draft, why = chat_config.draft_for_test(engine_id, base_url, api_key)
+    if why is not None:
+        raise HTTPException(status_code=422, detail=why)
+    try:
+        models = await review.list_models(force=True, cfg=draft)
+    except review.ModelsUnsupportedError:
+        return JSONResponse({"models": [], "listing": "unsupported"})
+    except review.ReviewError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from None
+    return JSONResponse({"models": models, "listing": "ok"})
