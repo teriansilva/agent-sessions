@@ -58,7 +58,13 @@
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.55);
   padding: 4px 0;
 }
-/* HUD corner brackets — matches the app's panel voice. */
+/* HUD corner brackets — matches the app's panel voice.
+ *
+ * They sit INSIDE the box (`inset: 0`), not 1px outside it. A decorative pseudo-
+ * element that pokes past the bottom-right corner still counts toward the menu's
+ * *scrollable overflow* area, so a menu whose items fit grew a vertical AND a
+ * horizontal scrollbar by 1px — a dead control on a menu with nothing to scroll.
+ * Inset by 0 keeps the bracket on the corner without inventing that overflow. */
 .menu::before,
 .menu::after {
   content: "";
@@ -70,13 +76,13 @@
   pointer-events: none;
 }
 .menu::before {
-  top: -1px;
-  left: -1px;
+  top: 0;
+  left: 0;
   border-width: 2px 0 0 2px;
 }
 .menu::after {
-  bottom: -1px;
-  right: -1px;
+  bottom: 0;
+  right: 0;
   border-width: 0 2px 2px 0;
 }
 
