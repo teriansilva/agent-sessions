@@ -48,7 +48,9 @@ def _typed(var: dict, value: str) -> object:
     )
 
 
-def resolve(bundle: dict, project_id: str | None, raw: object) -> Resolved:
+def resolve(
+    bundle: dict, project_id: str | None, raw: object, *, _records: list[dict] | None = None
+) -> Resolved:
     """Project → global → default, over one strict store snapshot plus unsaved overrides.
 
     Secrets have no implicit global fallback. A supplied global reference is an explicit choice;
@@ -68,7 +70,7 @@ def resolve(bundle: dict, project_id: str | None, raw: object) -> Resolved:
         if variables[name]["kind"] != b["kind"]:
             raise StoreError(f"{name}: the binding kind differs from the declaration")
         wanted[name] = b
-    records = template_vars._read_strictly()
+    records = template_vars._read_strictly() if _records is None else _records
     # A preview without an entity must never accidentally consume an existing project binding.
     relevant = [r for r in records if r["project_id"] in (None, project_id)]
     dependencies = [r for r in relevant if r["name"] in variables]

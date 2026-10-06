@@ -33,7 +33,7 @@ def _bundled(monkeypatch):
     """The P1 fixtures play the `bundled` source; the local root is conftest's per-test tmp dir."""
     assert fileedit.install_lease_signal_handler()
     monkeypatch.setattr(loader, "BUNDLED_ROOT", FIXTURES)
-    previous = deployments.set_registry(deployments._NoDeployments())
+    previous = deployments.set_registry(deployments._StoredDeployments())
     yield
     deployments.set_registry(previous)
 

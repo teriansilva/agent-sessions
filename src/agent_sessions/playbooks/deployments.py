@@ -1,10 +1,10 @@
 """Which projects run a playbook — the interface the authoring store asks before a delete (#1191).
 
 Deleting a `local` playbook that projects still run is refused, listing those projects (#1192's
-agreed rule). The answer comes from the deployments' apply records, which the single-project
-lifecycle (#1191 PR 2) writes. Until that lands nothing is ever deployed, so the installed registry
-answers "no projects" — and the store already asks it at the right moment, so PR 2 only has to
-install a real one (`set_registry`) and nothing about the delete changes.
+agreed rule). The answer comes from the lifecycle's durable binding/apply records. Even a pending
+binding holds the source until removed, so authoring cannot invalidate an accepted operation.
+The installed registry reads those records lazily without acquiring the root lock a second time;
+`set_registry` remains the test seam.
 
 **The contract a registry must keep (PR 2).** `projects_running` is called INSIDE the authoring
 store's exclusive root lock (`store.root_lock`), so a delete and the question are one step. A
@@ -33,14 +33,16 @@ class Registry(Protocol):
         ...
 
 
-class _NoDeployments:
-    """The registry before the lifecycle lands: nothing can have been deployed yet."""
+class _StoredDeployments:
+    """Lazy import keeps this seam independent of authoring-store initialization."""
 
     def projects_running(self, playbook_id: str) -> list[dict]:
-        return []
+        from .deployment_state import Registry
+
+        return Registry().projects_running(playbook_id)
 
 
-_registry: Registry = _NoDeployments()
+_registry: Registry = _StoredDeployments()
 
 
 def set_registry(registry: Registry) -> Registry:

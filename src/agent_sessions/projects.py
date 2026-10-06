@@ -393,10 +393,44 @@ def update(
         if archived is not None:
             if not isinstance(archived, bool):
                 raise ProjectError("archived must be a boolean", status=422)
+        if archived is True or folders is not None:
+            deployed = _deployed_destination(pid)
+            if deployed is not None:
+                if archived is True and not raw.get("archived"):
+                    raise ProjectError(
+                        "remove the project's playbook deployment before archiving", status=409
+                    )
+                if folders is not None and deployed not in folder_list:
+                    raise ProjectError(
+                        "the project's playbook deployment uses that folder; remove it first",
+                        status=409,
+                    )
+        if archived is not None:
             raw["archived"] = archived
         data["projects"][pid] = raw
         _rewrite_in_place(fh, data)
         return _from_raw(pid, raw)
+
+
+def _deployed_destination(pid: str) -> str | None:
+    """The folder a playbook deployment holds in this project, under the caller's index flock.
+
+    Deleting or archiving the project, or releasing that folder, would strand the deployment's
+    record and its source playbook (#1191). An unreadable record refuses too (fail closed).
+    """
+    from .playbooks import deployment_state
+    from .playbooks import store as playbook_store
+
+    try:
+        record = deployment_state.active(pid)
+    except (playbook_store.StoreError, OSError):
+        raise ProjectError(
+            "the project's playbook deployment record cannot be read; nothing was changed",
+            status=409,
+        ) from None
+    if record is None:
+        return None
+    return str((record.get("destination") or {}).get("path") or "")
 
 
 def delete(pid: str, path: Path | None = None) -> None:
@@ -407,6 +441,8 @@ def delete(pid: str, path: Path | None = None) -> None:
         data = _read_locked(fh)
         if pid not in data["projects"]:
             raise ProjectError("unknown project", status=404)
+        if _deployed_destination(pid) is not None:
+            raise ProjectError("remove the project's playbook deployment first", status=409)
         del data["projects"][pid]
         _rewrite_in_place(fh, data)
 

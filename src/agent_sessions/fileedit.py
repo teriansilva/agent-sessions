@@ -910,13 +910,45 @@ def save(
     The policy sees descriptor-proven paths, before any mutation and again before displacement
     and installation. A policy failure after displacement uses the ordinary recovery path.
     """
+    if not isinstance(content, str):
+        raise FsError("content must be text", status=422)
+    return _save(path, content, expect, root=root, admit=admit)
+
+
+def save_bytes(
+    path: str,
+    content: bytes,
+    expect: str,
+    *,
+    root: str,
+    admit: Callable[[str], None],
+) -> dict:
+    """Internal reviewed-material replacement through the same guarded save and recovery.
+
+    The caller owns deployment review, project ownership and admission. Both the destination
+    boundary and a live admission callback are mandatory. Bytes are exact: no text decoding,
+    newline normalization or BOM handling. The public file-editor route still calls `save`.
+    """
+    if not isinstance(content, bytes) or len(content) > MAX_EDIT_BYTES:
+        raise FsError("material bytes must fit the file size limit", status=422)
+    if not isinstance(root, str) or not os.path.isabs(root) or not callable(admit):
+        raise FsError("a material replacement requires its root and live admission", status=422)
+    return _save(path, content, expect, root=root, admit=admit)
+
+
+def _save(
+    path: str,
+    content: str | bytes,
+    expect: object,
+    *,
+    root: str | None,
+    admit: Callable[[str], None] | None,
+) -> dict:
     caps = edit_capabilities()
     if not caps.ok:
         raise FsError(caps.reason, status=501)
     if not isinstance(expect, str) or not _EXPECT.match(expect):
         raise FsError("expect must be the version the file was loaded at", status=422)
-    if not isinstance(content, str):
-        raise FsError("content must be text", status=422)
     if not isinstance(path, str) or not path.strip():
         raise FsError("path is required", status=422)
     files._refuse_if_symlink(path)
@@ -960,7 +992,7 @@ def _save_locked(
     dir_fd: int,
     parent: str,
     name: str,
-    content: str,
+    content: str | bytes,
     expect: str,
     *,
     root: str | None = None,
@@ -1022,7 +1054,7 @@ def _replace(
     verified: str,
     parent: str,
     name: str,
-    content: str,
+    content: str | bytes,
     expect: str,
     started: float,
     *,
@@ -1039,10 +1071,15 @@ def _replace(
             reason="changed",
             version=current,
         )
-    shape, eol, bom = _text_shape(data)
-    if shape:
-        raise SaveRefused(f"the file {shape} and was not saved", reason="not_editable")
-    new = _encode(content, eol, bom)
+    if isinstance(content, bytes):
+        if not guarded or guard is None or len(content) > MAX_EDIT_BYTES:
+            raise SaveRefused("material replacement requires guarded bounded bytes")
+        new = content
+    else:
+        shape, eol, bom = _text_shape(data)
+        if shape:
+            raise SaveRefused(f"the file {shape} and was not saved", reason="not_editable")
+        new = _encode(content, eol, bom)
     new_version = hashlib.sha256(new).hexdigest()
     if new_version == current:
         return {"path": verified, "version": current, "size": len(new), "retained": None}

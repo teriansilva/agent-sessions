@@ -1,19 +1,21 @@
-"""Read a deployment destination through held descriptors (#1191).
+"""Inspect deployment destinations and exclusively create a reviewed target (#1191).
 
-The destination identity and complete pre-state belong in the review digest. This module never
-creates a folder or writes a file. Applying a reviewed plan must re-read these facts under the
-project lock, and still fence each individual mutation against external editors.
+The destination identity and complete pre-state belong in the review digest. Reads create no
+paths. `create_target` is a separate effect for a reviewed absent destination; its caller must
+hold the project/operation fence and durably record intent and the returned identity. Applying a
+reviewed plan must re-read these facts and fence each mutation against external editors.
 """
 
 from __future__ import annotations
 
 import contextlib
 import os
+import secrets
 import stat
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
-from .. import fileedit, files, filewrite, prefs, project_dirs
+from .. import fileedit, files, filewrite, prefs, project_dirs, renameat
 from ..fsbrowse import FsError
 from . import schema
 from .tree import check_segment
@@ -101,6 +103,77 @@ def open_folder(folder: Folder) -> Iterator[int]:
         _verify(fd, folder.path, folder)
         yield fd
         _verify(fd, folder.path, folder)
+
+
+def create_target(parent: Folder, name: str, *, record: Callable[[Folder], None]) -> Folder:
+    """Create beneath the exact reviewed parent, then durably record the PINNED identity.
+
+    The folder is made under a random staging name and pinned by descriptor before publication;
+    `RENAME_NOREPLACE` publishes it, so an existing entry (even an empty directory) is always a
+    conflict. The final name must resolve to the pinned inode before and after the caller's
+    checkpoint: a directory substituted at the name is refused, never recorded. A failed check
+    leaves the published folder in place for the operation's recovery report; it is never deleted
+    by a pathname another process could have replaced. Retrying cannot adopt it: only an identity
+    durably recorded by the caller permits reconciliation.
+    """
+    parts = filewrite.validate_relpath(name)
+    if len(parts) != 1:
+        raise FsError("a new destination needs one folder name", status=422)
+    check_segment(name, name)
+    if not callable(record):
+        raise FsError("target creation needs a durable identity checkpoint", status=422)
+    path = os.path.join(parent.path, name)
+    _scope(path)
+    _guard(parent, parts)
+    with open_folder(parent) as fd:
+        _verify(fd, parent.path, parent)
+        _scope(path)
+        _guard(parent, parts)
+        staging = ".battlelab-new-" + secrets.token_hex(16)
+        os.mkdir(staging, 0o700, dir_fd=fd)
+        with _open(staging, _DIR_FLAGS, dir_fd=fd) as child:
+            pinned = os.fstat(child)
+            if (
+                pinned.st_uid != os.geteuid()
+                or stat.S_IMODE(pinned.st_mode) & 0o077
+                or pinned.st_nlink != 2
+            ):
+                raise FsError("the new destination changed before it was published", status=409)
+
+            def named_is_pinned(entry: str) -> bool:
+                try:
+                    st = os.stat(entry, dir_fd=fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    return False
+                return (st.st_dev, st.st_ino) == (pinned.st_dev, pinned.st_ino)
+
+            try:
+                renameat.renameat2(fd, staging, fd, name, renameat.RENAME_NOREPLACE)
+            except FileExistsError:
+                # Only our own, still-empty staging inode is withdrawn; anything else stays.
+                if named_is_pinned(staging):
+                    with contextlib.suppress(OSError):
+                        os.rmdir(staging, dir_fd=fd)
+                raise FsError(
+                    "the new destination already exists; review it again", status=409
+                ) from None
+            os.fsync(fd)
+            if not named_is_pinned(name):
+                raise FsError(
+                    "the created destination was replaced before it was recorded", status=409
+                )
+            folder = Folder(path, pinned.st_dev, pinned.st_ino)
+            _verify(fd, parent.path, parent)
+            _verify(child, path, parent)
+            _guard(parent, parts)
+            os.fsync(child)
+            record(folder)
+            if not named_is_pinned(name):
+                raise FsError(
+                    "the created destination was replaced while it was recorded", status=409
+                )
+            _verify(child, path, parent)
+            return folder
 
 
 def _guard(root: Folder, parts: list[str]) -> None:

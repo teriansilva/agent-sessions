@@ -204,3 +204,123 @@ def test_an_alias_replaced_during_read_is_refused(project, monkeypatch):
     monkeypatch.setattr(destination.os, "readlink", replace_after_read)
     with pytest.raises(FsError, match="link changed during review"):
         destination.snapshot(destination.review_folder(str(project)), ["RULES.md"])
+
+
+def test_create_target_uses_the_reviewed_parent_and_records_the_new_identity(project):
+    parent = destination.review_folder(str(project))
+    recorded = []
+    target = destination.create_target(parent, "new-project", record=recorded.append)
+    assert recorded == [target]
+    assert target == destination.review_folder(str(project / "new-project"))
+    assert (project / "new-project").stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.parametrize("kind", ["empty", "file", "symlink"])
+def test_create_target_never_adopts_an_existing_entry(project, kind):
+    path = project / "occupied"
+    if kind == "empty":
+        path.mkdir()
+    elif kind == "file":
+        path.write_text("operator bytes")
+    else:
+        path.symlink_to("elsewhere")
+    recorded = []
+    with pytest.raises(FsError, match="already exists"):
+        destination.create_target(
+            destination.review_folder(str(project)), "occupied", record=recorded.append
+        )
+    assert recorded == []
+    assert path.is_symlink() if kind == "symlink" else path.exists()
+
+
+def test_create_target_refuses_a_parent_replaced_after_review(project):
+    parent = destination.review_folder(str(project))
+    project.rename(project.with_name("old-parent"))
+    project.mkdir()
+    with pytest.raises(FsError, match="replaced"):
+        destination.create_target(parent, "new-project", record=lambda _: None)
+    assert not (project / "new-project").exists()
+    assert not (project.with_name("old-parent") / "new-project").exists()
+
+
+@pytest.mark.parametrize("name", [".git", "../escape", "nested/child", "HEAD"])
+def test_create_target_refuses_git_metadata_and_multicomponent_names(project, name):
+    with pytest.raises((FsError, PlaybookFormatError)):
+        destination.create_target(
+            destination.review_folder(str(project)), name, record=lambda _: None
+        )
+    assert list(project.iterdir()) == []
+
+
+def test_create_target_rechecks_exclusions_before_the_first_write(project):
+    parent = destination.review_folder(str(project))
+    prefs.set_folder_exclusions([str(project / "new-project")])
+    with pytest.raises(FsError, match="outside"):
+        destination.create_target(parent, "new-project", record=lambda _: None)
+    assert list(project.iterdir()) == []
+
+
+def test_failed_identity_checkpoint_retains_the_directory_and_operator_work(project):
+    parent = destination.review_folder(str(project))
+
+    def checkpoint(folder):
+        (project / "new-project" / "operator.txt").write_text("keep")
+        raise OSError("checkpoint flush failed")
+
+    with pytest.raises(OSError, match="checkpoint flush failed"):
+        destination.create_target(parent, "new-project", record=checkpoint)
+    assert (project / "new-project" / "operator.txt").read_text() == "keep"
+    with pytest.raises(FsError, match="already exists"):
+        destination.create_target(parent, "new-project", record=lambda _: None)
+
+
+def test_creation_syncs_the_parent_and_child_before_recording_identity(project, monkeypatch):
+    synced = []
+    real = os.fsync
+
+    def sync(fd):
+        synced.append(os.readlink(f"/proc/self/fd/{fd}"))
+        real(fd)
+
+    monkeypatch.setattr(destination.os, "fsync", sync)
+    destination.create_target(
+        destination.review_folder(str(project)),
+        "new-project",
+        record=lambda _: synced.append("recorded"),
+    )
+    assert synced == [str(project), str(project / "new-project"), "recorded"]
+
+
+def test_create_target_refuses_a_directory_substituted_at_the_published_name(project, monkeypatch):
+    from agent_sessions import renameat
+
+    real = renameat.renameat2
+
+    def publish_then_swap(src_fd, src, dst_fd, dst, flags):
+        real(src_fd, src, dst_fd, dst, flags)
+        os.rename(project / "new-project", project / "aside")
+        (project / "new-project").mkdir(mode=0o700)
+
+    monkeypatch.setattr(renameat, "renameat2", publish_then_swap)
+    recorded = []
+    with pytest.raises(FsError, match="replaced before it was recorded"):
+        destination.create_target(
+            destination.review_folder(str(project)), "new-project", record=recorded.append
+        )
+    assert recorded == []
+
+
+def test_create_target_refuses_a_substitution_during_its_checkpoint(project):
+    def swap(_folder):
+        os.rename(project / "new-project", project / "aside")
+        (project / "new-project").mkdir(mode=0o700)
+
+    with pytest.raises(FsError, match="replaced while it was recorded"):
+        destination.create_target(
+            destination.review_folder(str(project)), "new-project", record=swap
+        )
+
+
+def test_create_target_leaves_no_staging_entry(project):
+    destination.create_target(destination.review_folder(str(project)), "new-project", record=print)
+    assert sorted(p.name for p in project.iterdir()) == ["new-project"]

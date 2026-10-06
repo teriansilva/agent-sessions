@@ -23,7 +23,7 @@ from agent_sessions import (
     template_vars,
 )
 from agent_sessions.main import create_app
-from agent_sessions.playbooks import binding, loader, review, schema, store, tree
+from agent_sessions.playbooks import binding, deployment_state, loader, review, schema, store, tree
 from agent_sessions.playbooks.errors import PlaybookFormatError
 
 KEY = "review-tests-only-signing-key-32-characters"
@@ -106,6 +106,58 @@ def build(body):
 
 def receipt(plan, targets=None):
     return review.confirm(plan, plan.public["digest"], targets or [], key=KEY)["receipt"]
+
+
+def test_mutation_review_shows_the_actual_region_and_its_conflicts(setup):
+    folder, body = setup
+    (folder / "RULES.md").write_text("Operator preface\n")
+    plan = build(body)
+    change = next(c for c in plan.public["changes"] if c["path"] == "RULES.md")
+    assert change["action"] == "replace"
+    assert change["after"]["text"].startswith("Operator preface\n<!-- BattleLab")
+    assert "Operator preface" in change["diff"]
+    assert plan.public["conflicts"] == []
+    (folder / "RULES.md").write_bytes(b"\xff\x00")
+    plan = build(body)
+    assert plan.public["conflicts"][0]["path"] == "RULES.md"
+    assert plan.public["conflicts"][0]["before"]["base64"] == "/wA="
+
+
+def test_review_includes_removed_owned_paths_and_invalidates_changed_ownership(setup):
+    folder, body = setup
+    project = projects.create("Deployment", folders=[str(folder)], default_folder=str(folder))
+    body = {**body, "project_id": project.id}
+    initial = build(body)
+    (folder / "old.md").write_text("Owned old material\n")
+    from agent_sessions.playbooks import materials
+
+    record = {
+        "version": 1,
+        "project_id": project.id,
+        "playbook_id": "review-demo",
+        "state": "applied",
+        "id": initial.public["deployment_id"],
+        "destination": initial.public["destination"],
+        "generation": 1,
+        "files": {
+            "old.md": {
+                "kind": "file",
+                "disposition": "managed",
+                "digest": materials.digest(b"Owned old material\n"),
+            }
+        },
+    }
+    with deployment_state.locked(project.id, create=True) as locked:
+        locked.write(record)
+    plan = build(body)
+    old = next(c for c in plan.public["changes"] if c["path"] == "old.md")
+    assert old["action"] == "remove" and old["after"]["kind"] == "absent"
+    confirmed = receipt(plan)
+    (folder / "old.md").write_text("Operator kept this\n")
+    changed = build(body)
+    assert any(c["path"] == "old.md" for c in changed.public["conflicts"])
+    with pytest.raises(store.Conflict):
+        review.accept(changed, confirmed, key=KEY)
 
 
 def test_format_one_stays_strict_and_version_two_does_not_upgrade_subdocuments():

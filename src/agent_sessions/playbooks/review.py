@@ -18,12 +18,22 @@ from itsdangerous import BadData, URLSafeTimedSerializer
 
 from .. import engines, missions, model_choice, prefs, project_dirs, projects, template_vars
 from ..fsbrowse import FsError
-from . import binding, destination, flow_document, materials, schema, store
+from . import (
+    binding,
+    deployment_state,
+    destination,
+    flow_document,
+    materials,
+    mutation_plan,
+    schema,
+    store,
+)
 from .errors import PlaybookFormatError
 
 REVIEW_TTL = 3600
 _SALT = "agent-sessions:playbook-review:v2"
 _FIELDS = {"revision", "destination", "project_id", "bindings", "assignments"}
+_UNREAD = object()
 
 
 def _json(value: object) -> bytes:
@@ -39,6 +49,10 @@ def _digest(value: object, key: str) -> str:
 class Plan:
     public: dict
     fingerprint: dict = field(repr=False)
+    rendered: list = field(default_factory=list, repr=False)
+    nodes: dict = field(default_factory=dict, repr=False)
+    bundle: dict = field(default_factory=dict, repr=False)
+    resolved: binding.Resolved | None = field(default=None, repr=False)
 
 
 def _assignments(bundle: dict, raw: object) -> tuple[list[dict], dict]:
@@ -119,8 +133,20 @@ def _file_row(material: materials.Material, node: destination.Node) -> dict:
     return row
 
 
-def build(playbook_id: str, raw: object, *, key: str) -> Plan:
-    """Recompute everything the operator reviews; no client-supplied derived fact is trusted."""
+def build(
+    playbook_id: str,
+    raw: object,
+    *,
+    key: str,
+    _record: object = _UNREAD,
+    _variables: list[dict] | None = None,
+    _prestate: dict[str, destination.Node] | None = None,
+) -> Plan:
+    """Recompute everything the operator reviews; no client-supplied derived fact is trusted.
+
+    Only accepted-operation recovery supplies `_prestate`, then verifies the original keyed
+    digest. Its writer still checks every live inode. Public routes always read live pre-state.
+    """
     store.playbook_id(playbook_id)
     if not isinstance(raw, dict) or set(raw) - _FIELDS:
         raise store.StoreError(
@@ -131,7 +157,32 @@ def build(playbook_id: str, raw: object, *, key: str) -> Plan:
     try:
         if pid is not None:
             template_vars.project_id(pid)
+            if _record is _UNREAD:
+                with deployment_state.locked(pid) as locked:
+                    return build(
+                        playbook_id,
+                        raw,
+                        key=key,
+                        _record=locked.read() if locked else None,
+                        _variables=_variables,
+                        _prestate=_prestate,
+                    )
+        record = None if _record is _UNREAD else _record
+        if record is not None and (
+            not isinstance(record, dict)
+            or record.get("project_id") != pid
+            or record.get("state") not in {"bound", "applied", "removed"}
+        ):
+            raise store.Conflict("the deployment needs recovery before a new review")
+        if record is not None and record["state"] == "removed" and deployment_state.holds(record):
+            # A removal is final only once it settled and dropped its journals.
+            raise store.Conflict("the removed deployment has an unsettled operation; recover it")
+        active = record if record and record["state"] != "removed" else None
+        if active and active["playbook_id"] != playbook_id:
+            raise store.Conflict("remove the project's existing playbook before replacing it")
         folder = destination.review_folder(raw.get("destination"))
+        if active and active.get("destination") != asdict(folder):
+            raise store.Conflict("the deployment destination changed")
         project = None
         if pid is not None:
             project = projects.load().get(pid)
@@ -146,14 +197,25 @@ def build(playbook_id: str, raw: object, *, key: str) -> Plan:
             if entry.revision != revision:
                 raise store.Conflict("the playbook changed; review it again")
             bundle, tree = entry.pb, entry.tree
-            resolved = binding.resolve(bundle, pid, raw.get("bindings", []))
+            resolved = binding.resolve(bundle, pid, raw.get("bindings", []), _records=_variables)
             rendered = materials.render(bundle, tree, resolved.text)
             assignments, roster = _assignments(bundle, raw.get("assignments", {}))
             targets = binding.targets(bundle, resolved)
             rendered = flow_document.include(
                 rendered, flow_document.render(bundle, resolved.text, assignments, targets)
             )
-            nodes = destination.snapshot(folder, [m.path for m in rendered])
+            owned = mutation_plan.ownership((active or {}).get("files", {}))
+            deployment_id = (active or {}).get("id") or "d-" + _digest(
+                {"playbook": playbook_id, "destination": asdict(folder), "project": pid}, key
+            )[:40]
+            # Validates a stored identity before it can become a marker or filesystem name.
+            materials._markers(deployment_id)
+            nodes = (
+                destination.snapshot(folder, sorted({m.path for m in rendered} | set(owned)))
+                if _prestate is None
+                else _prestate
+            )
+            changes, conflicts = mutation_plan.build(rendered, nodes, owned, deployment_id)
             public = {
                 "playbook": {
                     "id": playbook_id,
@@ -163,9 +225,12 @@ def build(playbook_id: str, raw: object, *, key: str) -> Plan:
                     "revision": revision,
                 },
                 "project_id": pid,
+                "deployment_id": deployment_id,
                 "destination": asdict(folder),
                 "variables": resolved.public,
                 "materials": [_file_row(m, nodes[m.path]) for m in rendered],
+                "changes": [mutation_plan.public(c) for c in changes],
+                "conflicts": conflicts,
                 "targets": targets,
                 "assignments": assignments,
                 "capability_requests": sorted(k for k, v in bundle["capabilities"].items() if v),
@@ -176,6 +241,23 @@ def build(playbook_id: str, raw: object, *, key: str) -> Plan:
             fingerprint = {
                 "review": public,
                 "inputs": resolved.fingerprint,
+                # Pending-operation bookkeeping must not invalidate its own planned settlement.
+                # These are the deployed facts from which the mutation plan is derived.
+                "deployment": (
+                    {
+                        k: active.get(k)
+                        for k in (
+                            "id",
+                            "playbook_id",
+                            "project_id",
+                            "destination",
+                            "files",
+                            "generation",
+                        )
+                    }
+                    if active
+                    else None
+                ),
                 "project": project.as_dict() if project is not None else None,
                 "prestate": {
                     path: {
@@ -193,7 +275,9 @@ def build(playbook_id: str, raw: object, *, key: str) -> Plan:
                 },
             }
             digest = _digest(fingerprint, key)
-            return Plan({**public, "digest": digest}, fingerprint)
+            return Plan(
+                {**public, "digest": digest}, fingerprint, rendered, nodes, bundle, resolved
+            )
     except FsError as e:
         raise store.StoreError(str(e), status=e.status) from None
     except (template_vars.BindingUnusable, template_vars.BindingMissing) as e:
