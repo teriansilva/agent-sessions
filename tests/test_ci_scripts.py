@@ -230,7 +230,8 @@ def _fake_reader(monkeypatch, sequence):
 def _alive(pid: int) -> bool:
     try:
         stat = Path(f"/proc/{pid}/stat").read_text()
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
+        # ESRCH: the process was reaped between opening its stat file and reading it.
         return False
     return stat.rsplit(")", 1)[1].split()[0] != "Z"
 
