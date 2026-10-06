@@ -41,6 +41,9 @@ def ownership(raw: object) -> dict[str, dict]:
             if kind in {"file", "region"} and disposition == "managed":
                 expected.add("digest")
                 store.revision(record.get("digest"))
+                if kind == "region" and "separator" in record:
+                    store.revision(record["separator"])
+                    expected.add("separator")
             elif kind == "symlink" and disposition == "managed":
                 expected.add("target")
                 target = record.get("target")
@@ -114,7 +117,16 @@ def _region(path: str, deployment: str, current: bytes, record: dict, body: byte
     if finish < interior or materials.digest(current[interior:finish]) != record["digest"]:
         raise materials.MaterialError("the managed region has operator edits")
     replacement, digest = (b"", None) if body is None else _block(path, deployment, body)
-    return current[:start] + replacement + current[finish + len(end) :], digest
+    head, tail = current[:start], current[finish + len(end) :]
+    if body is None:
+        # Take back exactly what insertion added: the newline after the block, and the one
+        # before it when the operator's original text had no final newline.
+        if tail.startswith(b"\n"):
+            tail = tail[1:]
+        original = record.get("separator")
+        if original and head.endswith(b"\n") and materials.digest(head[:-1]) == original:
+            head = head[:-1]
+    return head + replacement + tail, digest
 
 
 def _owned(current: destination.Node, record: dict) -> None:
@@ -207,15 +219,25 @@ def _next(material, current, record, deployment):
         raise materials.MaterialError("a managed region cannot be added to a binary file")
     if record and record["kind"] == "region":
         changed, digest = _region(path, deployment, current.data, record, data)
+        separated = record.get("separator", False)
     else:
         current.data.decode("utf-8")
         begin, end = _markers(path, deployment)
         if begin in current.data or end in current.data:
             raise materials.MaterialError("the destination already contains managed region markers")
         block, digest = _block(path, deployment, data)
-        separator = b"\n" if current.data and not current.data.endswith(b"\n") else b""
-        changed = current.data + separator + block + b"\n"
-    return _file(changed), {"kind": "region", "disposition": disposition, "digest": digest}
+        separated = (
+            materials.digest(current.data)
+            if current.data and not current.data.endswith(b"\n")
+            else False
+        )
+        changed = current.data + (b"\n" if separated else b"") + block + b"\n"
+    owned = {"kind": "region", "disposition": disposition, "digest": digest}
+    if separated:
+        # Insertion added a newline BEFORE the block. Record the original text it followed, so
+        # removal takes that newline back only while that text is still exactly what preceded it.
+        owned["separator"] = separated
+    return _file(changed), owned
 
 
 def _same(a: destination.Node, b: destination.Node) -> bool:

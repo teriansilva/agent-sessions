@@ -574,6 +574,56 @@ def apply(pid: str, op: str, receipt: str, *, key: str) -> dict:
             return copy.deepcopy(result)
 
 
+def proven(record: dict, *, key: str) -> tuple[dict, dict]:
+    """What an UNSETTLED apply provably made: ownership by journaled proof, and its directories.
+
+    Only effects marked `done` count: a whole file or alias while its live leaf is still the
+    journaled inode (whatever its bytes now, so an edit is a conflict, never a release), a region
+    while the path is still a regular file (its markers and interior decide, as everywhere).
+    Anything else the interrupted apply touched is not proven ours and is left alone. The accepted
+    plan must still reproduce; if not, nothing is claimed.
+    """
+    journal = _journal(record)
+    if journal is None or journal["state"] == "complete":
+        return {}, {}
+    plan = replay_plan.resume(
+        record["playbook_id"], record["inputs"], _basis(record, journal), journal["plan"], key=key
+    )
+    changes, _ = mutation_plan.build(
+        plan.rendered,
+        plan.nodes,
+        mutation_plan.ownership(record.get("files", {})),
+        plan.public["deployment_id"],
+    )
+    folder = destination.Folder(**record["destination"])
+    written = [
+        c
+        for c in changes
+        if c.action in ("create", "replace") and journal["effects"][c.path]["phase"] == "done"
+    ]
+    live = destination.snapshot(folder, sorted(c.path for c in written)) if written else {}
+    files = {}
+    for change in written:
+        if change.ownership is None:
+            continue
+        node = live[change.path]
+        inode = journal["effects"][change.path]["inode"]
+        owned = dict(change.ownership)
+        if owned["kind"] in ("file", "symlink") and owned["disposition"] == "managed":
+            # Proven by inode, not bytes: an in-place edit of OUR inode stays ours and the
+            # planner reports it as a conflict; a different inode is foreign and is left alone.
+            if inode is None or list(node.identity[:2]) != inode:
+                continue
+            owned["inode"] = inode
+        elif owned["kind"] == "region" and node.kind != "file":
+            continue
+        # A region is keyed by its markers and interior, as everywhere: the planner strips it,
+        # or reports a conflict for a damaged one. It is never silently released.
+        files[change.path] = owned
+    directories = {k: v for k, v in journal["directories"].items() if v is not None}
+    return files, directories
+
+
 def status(pid: str) -> dict:
     """The deployment's state and, for an unsettled apply, each path's last known effect."""
     pid = lifecycle.template_vars.project_id(pid)

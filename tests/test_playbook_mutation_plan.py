@@ -58,7 +58,7 @@ def test_region_uses_file_comment_syntax_and_preserves_unrelated_operator_edits(
     assert updated.after.data.startswith(b"Added prefix\nOriginal\n")
     [removed], conflicts = build([], {path: updated.after}, {path: updated.ownership})
     assert not conflicts
-    assert removed.after.data == b"Added prefix\nOriginal\n\nAdded suffix\n"
+    assert removed.after.data == b"Added prefix\nOriginal\nAdded suffix\n"  # exact inverse
 
 
 @pytest.mark.parametrize("mutation", ["inside", "missing", "duplicate", "reordered"])
@@ -224,3 +224,39 @@ def test_a_recorded_inode_makes_a_same_byte_substitute_ownership_loss():
     theirs = destination.Node("file", (1, 99, 0, 0), data=b"Instructions\n")
     changes, conflicts = build([material()], {"RULES.md": theirs}, {"RULES.md": owned})
     assert changes == [] and "operator edits" in conflicts[0]["reason"]
+
+
+def test_removing_a_region_restores_the_operator_text_exactly():
+    original = destination.Node("file", data=b"Operator notes.\n")
+    [created], _ = build([material()], {"RULES.md": original})
+    [removed], conflicts = build([], {"RULES.md": created.after}, {"RULES.md": created.ownership})
+    assert not conflicts and removed.after.data == b"Operator notes.\n"
+
+
+@pytest.mark.parametrize("original", [b"Operator notes.", b"Operator notes.\n", b""])
+def test_region_insert_update_remove_restores_the_operator_text_byte_for_byte(original):
+    current = destination.Node("file", data=original)
+    [created], conflicts = build([material()], {"RULES.md": current})
+    assert not conflicts
+    [updated], conflicts = build(
+        [material(b"Next\n")], {"RULES.md": created.after}, {"RULES.md": created.ownership}
+    )
+    assert not conflicts and updated.ownership.get("separator") == created.ownership.get(
+        "separator"
+    )
+    [removed], conflicts = build([], {"RULES.md": updated.after}, {"RULES.md": updated.ownership})
+    assert not conflicts and removed.after.data == original
+
+
+def test_an_operator_line_added_before_a_separated_region_keeps_its_newline():
+    [created], _ = build(
+        [material()], {"RULES.md": destination.Node("file", data=b"Operator notes.")}
+    )
+    assert created.ownership["separator"]
+    begin = created.after.data.index(b"<!--")
+    edited = created.after.data[:begin] + b"Additional operator line\n" + created.after.data[begin:]
+    [removed], conflicts = build(
+        [], {"RULES.md": destination.Node("file", data=edited)}, {"RULES.md": created.ownership}
+    )
+    assert not conflicts
+    assert removed.after.data == b"Operator notes.\nAdditional operator line\n"
