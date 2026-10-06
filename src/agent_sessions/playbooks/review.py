@@ -12,6 +12,7 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 from dataclasses import asdict, dataclass, field
 
 from itsdangerous import BadData, URLSafeTimedSerializer
@@ -30,10 +31,11 @@ from . import (
     store,
 )
 from .errors import PlaybookFormatError
+from .tree import check_segment
 
 REVIEW_TTL = 3600
 _SALT = "agent-sessions:playbook-review:v2"
-_FIELDS = {"revision", "destination", "project_id", "bindings", "assignments"}
+_FIELDS = {"revision", "destination", "project_id", "bindings", "assignments", "create"}
 _UNREAD = object()
 
 
@@ -181,15 +183,45 @@ def build(
         active = record if record and record["state"] != "removed" else None
         if active and active["playbook_id"] != playbook_id:
             raise store.Conflict("remove the project's existing playbook before replacing it")
-        folder = destination.review_folder(raw.get("destination"))
-        if active and active.get("destination") != asdict(folder):
+        create = raw.get("create", False)
+        if create not in (True, False):
+            raise store.StoreError("create must be true or false")
+        if create:
+            # #1187 new-folder mode: an ABSENT target beneath a held, reviewed parent. Only a
+            # pre-project review may do this; CREATE makes it exclusively, BIND adopts only it.
+            if pid is not None or record is not None:
+                raise store.Conflict("a new folder is reviewed before its project exists")
+            target = raw.get("destination")
+            if not isinstance(target, str) or not os.path.isabs(target) or target.endswith("/"):
+                raise store.StoreError("a new folder needs an absolute path")
+            name = os.path.basename(target)
+            check_segment(name, "destination")
+            parent = destination.review_folder(os.path.dirname(target))
+            target = os.path.join(parent.path, name)
+            if os.path.lexists(target):
+                raise store.Conflict(
+                    "the new folder already exists; choose it as an existing folder or pick "
+                    "another name"
+                )
+            folder = None
+            dest_public = {
+                "path": target,
+                "device": None,
+                "inode": None,
+                "create": True,
+                "parent": asdict(parent),
+            }
+        else:
+            folder = destination.review_folder(raw.get("destination"))
+            dest_public = asdict(folder)
+        if active and active.get("destination") != dest_public:
             raise store.Conflict("the deployment destination changed")
         project = None
         if pid is not None:
             project = projects.load().get(pid)
             if project is None or project.archived:
                 raise store.StoreError("the project is missing or archived", status=409)
-            if folder.path not in project.folders:
+            if dest_public["path"] not in project.folders:
                 raise store.StoreError("the project must own the reviewed destination", status=409)
         with store.root_lock(exclusive=False) as root_fd:
             entry = store._find(store._all_entries(root_fd, strict=True), playbook_id)
@@ -210,7 +242,7 @@ def build(
             rendered = instructions.include(rendered, bundle, engines_present)
             owned = mutation_plan.ownership((active or {}).get("files", {}))
             deployment_id = (active or {}).get("id") or "d-" + _digest(
-                {"playbook": playbook_id, "destination": asdict(folder), "project": pid}, key
+                {"playbook": playbook_id, "destination": dest_public, "project": pid}, key
             )[:40]
             # Validates a stored identity before it can become a marker or filesystem name.
             materials._markers(deployment_id)
@@ -224,7 +256,17 @@ def build(
                     f"owns), over the {schema.MAX_MATERIALS}-material limit; remove a material "
                     "from the playbook, or remove the deployment and apply it again"
                 )
-            nodes = destination.snapshot(folder, touched) if _prestate is None else _prestate
+            if _prestate is not None:
+                nodes = _prestate
+            elif folder is None:
+                # Nothing exists beneath an absent target: every touched path and parent is absent.
+                nodes = {
+                    "/".join(path.split("/")[: i + 1]): destination.Node("absent")
+                    for path in touched
+                    for i in range(path.count("/") + 1)
+                }
+            else:
+                nodes = destination.snapshot(folder, touched)
             changes, conflicts = mutation_plan.build(rendered, nodes, owned, deployment_id)
             public = {
                 "playbook": {
@@ -236,7 +278,7 @@ def build(
                 },
                 "project_id": pid,
                 "deployment_id": deployment_id,
-                "destination": asdict(folder),
+                "destination": dest_public,
                 "variables": resolved.public,
                 "materials": [_file_row(m, nodes[m.path]) for m in rendered],
                 "changes": [mutation_plan.public(c) for c in changes],

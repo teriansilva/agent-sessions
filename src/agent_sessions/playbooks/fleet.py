@@ -161,7 +161,11 @@ def _locked(playbook_id: str) -> Iterator[int]:
 
 def _read(fd: int, op: str) -> dict | None:
     try:
-        source = os.open(f"{op}.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+        source = os.open(
+            f"{op}.json",
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+            dir_fd=fd,
+        )
     except FileNotFoundError:
         return None
     try:

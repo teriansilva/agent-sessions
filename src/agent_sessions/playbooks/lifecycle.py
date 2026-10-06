@@ -16,7 +16,7 @@ import time
 from itsdangerous import BadData, URLSafeTimedSerializer
 
 from .. import projects, template_vars
-from . import apply, review, store
+from . import apply, review, store, targets
 from . import deployment_state as state
 
 _OPERATION = re.compile(r"[a-z0-9][a-z0-9-]{7,63}")
@@ -284,14 +284,23 @@ def bind(pid: str, playbook_id: str, inputs: dict, receipt: str, op: str, *, key
                 if template_vars._read_strictly() != records:
                     raise store.Conflict("the variables store changed")
                 if journal is None:
-                    original = review.build(
-                        playbook_id, inputs, key=key, _record=record, _variables=records
-                    )
+                    if inputs.get("create") is True:
+                        # #1187 new-folder mode: adopt only the folder this review's CREATE made,
+                        # still empty of every touched path, with identical effects.
+                        original, effective = targets.adopt(
+                            playbook_id, inputs, receipt, key=key, record=record, records=records
+                        )
+                    else:
+                        effective = inputs
+                        original = review.build(
+                            playbook_id, inputs, key=key, _record=record, _variables=records
+                        )
                     if original.public["destination"]["path"] not in project.folders:
                         raise store.Conflict("the project must own the reviewed destination")
                     if original.public["conflicts"]:
                         raise store.Conflict("resolve material conflicts before binding")
-                    review.accept(original, receipt, key=key)
+                    if effective is inputs:
+                        review.accept(original, receipt, key=key)
                     # A pre-project review cannot authorize replacing bindings which it never
                     # saw on an already-existing project.
                     if inputs.get("project_id") is None and _mine(records, pid):
@@ -320,7 +329,7 @@ def bind(pid: str, playbook_id: str, inputs: dict, receipt: str, op: str, *, key
                     )
                     pending["state"] = "bound"
                     pending["inputs"] = {
-                        **inputs,
+                        **effective,
                         "project_id": pid,
                         "bindings": [],
                         "destination": original.public["destination"]["path"],

@@ -12,6 +12,7 @@
 * ``DELETE /api/playbooks/{pid}/default``      — clear the default (only if it is ``pid``)
 * ``POST   /api/playbooks/{pid}/review``       — resolve unsaved deployment inputs; no effects
 * ``POST   /api/playbooks/{pid}/review/confirm`` — confirm named targets on the exact review
+* ``POST   /api/playbooks/{pid}/review/create-target`` — ``{inputs, receipt}``: new-folder CREATE
 * ``GET    /api/playbooks/{pid}/projects``     — fleet: every project running it, update available
 * ``POST   /api/playbooks/{pid}/fleet/review`` — the combined update review (batchable or why not)
 * ``POST   /api/playbooks/{pid}/fleet/update`` — ``{digest, operation_id}``: apply the batch
@@ -43,7 +44,7 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from .. import template_vars
-from ..playbooks import apply, fleet, lifecycle, remove, review, store, verify
+from ..playbooks import apply, fleet, lifecycle, remove, review, store, targets, verify
 
 NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 PREFIX = "/api/playbooks"
@@ -391,3 +392,16 @@ def register(app: FastAPI, *, logged_in, csrf_guard, signing_key: str) -> None:
     async def verify_deployment(project: str, _user: str = Depends(logged_in)) -> JSONResponse:
         out = await _run(verify.verify, project)
         return out if isinstance(out, JSONResponse) else _json(out)
+
+    def _create_target(pid: str, body: dict) -> dict:
+        _only(body, {"inputs", "receipt"}, {"inputs", "receipt"}, "a new-folder create")
+        return targets.create(pid, body["inputs"], _receipt(body), key=signing_key)
+
+    @app.post(PREFIX + "/{pid}/review/create-target")
+    async def create_reviewed_target(
+        pid: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        return await _write(_create_target, pid, request)
