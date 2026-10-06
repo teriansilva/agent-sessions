@@ -557,6 +557,7 @@ def apply(pid: str, op: str, receipt: str, *, key: str) -> dict:
                 if identity is not None:
                     created.setdefault(rel, identity)
             record["files"] = _ownership(changes, journal["effects"], record.get("files", {}))
+            record["rituals"] = rituals(plan.public, record["id"])
             record["generation"] = record.get("generation", 0) + 1
             record["state"] = "applied"
             journal["state"] = "complete"
@@ -573,6 +574,27 @@ def apply(pid: str, op: str, receipt: str, *, key: str) -> dict:
             }
             write()
             return copy.deepcopy(result)
+
+
+def rituals(public: dict, deployment: str) -> list[dict]:
+    """Each deployed ritual under its stable identity (deployment, ritual, playbook version).
+
+    Scheduling belongs to Automations (#1201 Phase 4). Until it lands a ritual is recorded as
+    declared and never scheduled, and nothing is created for it, so remove has nothing to delete.
+    The identity is what a later proposal will be keyed by, so a retry or replay never duplicates.
+    """
+    version = public["playbook"]["version"]
+    return [
+        {
+            "name": r["name"],
+            "runbook": r["runbook"],
+            "schedule": r["schedule"],
+            "identity": {"deployment": deployment, "ritual": r["name"], "version": version},
+            "state": "declared",
+            "scheduled": False,
+        }
+        for r in public["rituals"]
+    ]
 
 
 def proven(record: dict, *, key: str) -> tuple[dict, dict]:
@@ -674,6 +696,7 @@ def status(pid: str) -> dict:
     elif record["state"] not in {"bound", "applied", "removed"}:
         out["state"] = "interrupted"  # never expose an internal state
     if out["state"] == "applied":
+        out["rituals"] = record.get("rituals", [])
         # An engine installed after apply reads none of this playbook's instructions yet (§11).
         out["instructions_missing"] = instructions.missing(record, instructions.present())
     return out

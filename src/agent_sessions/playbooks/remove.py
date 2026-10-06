@@ -295,11 +295,14 @@ def remove(pid: str, op: str, digest: str, *, key: str) -> dict:
                 "operation_id": op,
                 "state": "removed",
                 "kept_directories": kept,
+                # Only ever declared (#1201 Phase 4 not landed): nothing was created to delete.
+                "rituals_retired": [r["identity"] for r in record.get("rituals", [])],
             }
             record.update(
                 state="removed",
                 files={},
                 directories={},
+                rituals=[],
                 owned_bindings={},
                 prior_bindings={},
             )
