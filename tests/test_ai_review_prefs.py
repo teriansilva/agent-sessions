@@ -214,34 +214,58 @@ def test_concurrent_partial_saves_never_revert_a_stored_key(tmp_home, monkeypatc
     previous one while the UI showed "✓ Endpoint validated".
     """
     import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import contextmanager
 
     monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_home / "prefs.json"))
     prefs.set_ai_review({"base_url": "https://ai.example.io/v1", "api_key": "sk-OLD"})
 
-    # Force the interleaving: both writers read the document, then the KEY writer commits
-    # first and the MODEL writer commits last, so a stale merge would restore "sk-OLD".
-    barrier = threading.Barrier(2)
+    # Pause the key reader until the model writer reaches the real lock. If the model
+    # reads outside that lock, it now holds a stale snapshot. Keep its write after the
+    # key save so that regression deterministically restores "sk-OLD". A barrier between
+    # the readers would instead wait for its timeout on the correct, serialized path.
+    key_read, model_lock_attempt, key_done = (threading.Event() for _ in range(3))
+    writer = threading.local()
     real_read = prefs.read_json_doc
+    real_lock = prefs.json_write_lock
 
     def read_then_wait(path):
         doc = real_read(path)
-        try:
-            barrier.wait(timeout=5)
-        except threading.BrokenBarrierError:  # pragma: no cover — lock already serialized us
-            pass
-        threading.Event().wait(0.02 if threading.current_thread().name == "key" else 0.2)
+        if getattr(writer, "name", None) == "key":
+            key_read.set()
+            assert model_lock_attempt.wait(30), "model writer never reached the lock"
         return doc
 
+    @contextmanager
+    def ordered_lock(path):
+        if getattr(writer, "name", None) == "model":
+            model_lock_attempt.set()
+            assert key_done.wait(30), "key writer did not finish"
+        with real_lock(path):
+            yield
+
+    def save(name, patch):
+        writer.name = name
+        try:
+            prefs.set_ai_review(patch)
+        finally:
+            if name == "key":
+                key_done.set()
+
     monkeypatch.setattr(prefs, "read_json_doc", read_then_wait)
-    writers = [
-        threading.Thread(target=prefs.set_ai_review, args=({"api_key": "sk-NEW"},), name="key"),
-        threading.Thread(target=prefs.set_ai_review, args=({"model": "m9"},), name="model"),
-    ]
-    for t in writers:
-        t.start()
-    for t in writers:
-        t.join(timeout=15)
-        assert not t.is_alive(), "a prefs writer deadlocked"
+    monkeypatch.setattr(prefs, "json_write_lock", ordered_lock)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        key = pool.submit(save, "key", {"api_key": "sk-NEW"})
+        try:
+            assert key_read.wait(30), "key writer never read the document"
+            model = pool.submit(save, "model", {"model": "m9"})
+            key.result(timeout=30)
+            model.result(timeout=30)
+        finally:
+            # Drain both writers before monkeypatch restores the real functions, even if
+            # an assertion failed. Future.result also propagates exceptions from saves.
+            model_lock_attempt.set()
+            key_done.set()
 
     stored = prefs.get_ai_review()
     assert stored["api_key"] == "sk-NEW", "the acknowledged key save was silently reverted"

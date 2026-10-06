@@ -652,7 +652,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     # Instruction templates (#905 P1): its own store off /api/config, images via /api/uploads.
     templates_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
     # Playbooks (#1191): the gallery across sources + versioned authoring of `local` playbooks.
-    playbooks_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
+    playbooks_routes.register(
+        app, logged_in=_logged_in, csrf_guard=_csrf_guard, signing_key=cfg.secret_key
+    )
 
     # File panel (#783/#784): bounded directory listing, file read, git status/diff/branches — and
     # since #807 the upload routes and since #806 the git WRITE routes, all POST and therefore

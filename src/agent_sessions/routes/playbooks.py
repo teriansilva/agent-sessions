@@ -10,6 +10,8 @@
 * ``POST   /api/playbooks/{pid}/duplicate``    — ``{revision?, id?, name?}`` → a new local one, 201
 * ``PUT    /api/playbooks/{pid}/default``      — ``{revision, expect_default}`` → set the default
 * ``DELETE /api/playbooks/{pid}/default``      — clear the default (only if it is ``pid``)
+* ``POST   /api/playbooks/{pid}/review``       — resolve unsaved deployment inputs; no effects
+* ``POST   /api/playbooks/{pid}/review/confirm`` — confirm named targets on the exact review
 
 Reads need a session; every write needs the session AND ``csrf_guard`` (which carries the
 Origin/Referer check). Every response is ``no-store``. Each handler reads its own input — the path
@@ -26,7 +28,7 @@ import json
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from ..playbooks import store
+from ..playbooks import review, store
 
 NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 PREFIX = "/api/playbooks"
@@ -92,7 +94,7 @@ def _set_default(pid: str, body: dict) -> dict:
     return store.set_default(pid, store.revision(body["revision"]), body["expect_default"])
 
 
-def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
+def register(app: FastAPI, *, logged_in, csrf_guard, signing_key: str) -> None:
     @app.middleware("http")
     async def _playbooks_are_never_cached(request: Request, call_next):
         path = request.url.path
@@ -200,4 +202,39 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         pid: str, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
     ) -> JSONResponse:
         out = await _run(store.clear_default, pid)
+        return out if isinstance(out, JSONResponse) else _json(out)
+
+    def _review(pid: str, body: dict, confirm: bool) -> dict:
+        if not confirm:
+            return review.build(pid, body, key=signing_key).public
+        _only(
+            body, {"inputs", "digest", "targets"}, {"inputs", "digest", "targets"}, "confirmation"
+        )
+        plan = review.build(pid, body["inputs"], key=signing_key)
+        return review.confirm(plan, body["digest"], body["targets"], key=signing_key)
+
+    @app.post(PREFIX + "/{pid}/review")
+    async def review_playbook(
+        pid: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        body = await _read_body(request)
+        if isinstance(body, JSONResponse):
+            return body
+        out = await _run(_review, pid, body, False)
+        return out if isinstance(out, JSONResponse) else _json(out)
+
+    @app.post(PREFIX + "/{pid}/review/confirm")
+    async def confirm_playbook_review(
+        pid: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        body = await _read_body(request)
+        if isinstance(body, JSONResponse):
+            return body
+        out = await _run(_review, pid, body, True)
         return out if isinstance(out, JSONResponse) else _json(out)

@@ -6,7 +6,7 @@ later format may be a restriction, and a reader that skips it grants what the au
 withhold (the plugin manifest's rule, and its strict reader, `manifest._Reader`).
 
 **Format policy.** `format` is an integer. Higher than this build's `schema.FORMAT` is refused as
-"needs a newer BattleLab"; lower or missing is invalid until a migration exists for it.
+"needs a newer BattleLab". Supported versions retain their own rules; no automatic upgrade.
 
 **Symbolic checks at load, concrete checks at binding** (#1190 round 1). Here a probe argument is a
 reference to a declared variable or to an ancestor step's declared output, and it is checked for
@@ -102,7 +102,7 @@ def _format(doc: dict, where: str) -> dict:
         raise _fail(f"{where}: format", f"must be the integer {schema.FORMAT}")
     if v > schema.FORMAT:
         raise _fail(f"{where}: format", f"format {v} needs a newer BattleLab")
-    while v < schema.FORMAT:
+    while v not in schema.SUPPORTED_FORMATS:
         migrate = schema.MIGRATIONS.get(v)
         if migrate is None:
             raise _fail(f"{where}: format", f"format {v} is not supported")
@@ -159,7 +159,11 @@ def _identity(r: _Reader) -> dict:
     return out
 
 
-def _variable_default(v: dict, raw: Any, where: str) -> Any:
+def _variable_default(
+    v: dict, raw: Any, where: str, *, max_len: int = schema.DEFAULT_MAX, multiline: bool = False
+) -> Any:
+    """Validate a typed value. Bundle defaults keep their original bounds; a binding may use
+    the existing variable library's larger text bound and multiline text policy."""
     vtype = v["type"]
     if vtype == "int":
         if isinstance(raw, bool) or not isinstance(raw, int) or abs(raw) > schema.INT_ABS_MAX:
@@ -169,9 +173,10 @@ def _variable_default(v: dict, raw: Any, where: str) -> Any:
         if not isinstance(raw, bool):
             raise _fail(where, "must be true or false")
         return raw
-    if not isinstance(raw, str) or len(raw) > schema.DEFAULT_MAX:
-        raise _fail(where, f"must be a string of at most {schema.DEFAULT_MAX} characters")
-    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in raw):
+    if not isinstance(raw, str) or len(raw) > max_len:
+        raise _fail(where, f"must be a string of at most {max_len} characters")
+    allowed = "\n\t" if multiline else ""
+    if any((ord(c) < 0x20 or ord(c) == 0x7F) and c not in allowed for c in raw):
         raise _fail(where, "must not contain control characters")
     if vtype == "enum" and raw not in v["choices"]:
         raise _fail(where, "must be one of the declared choices")
@@ -517,14 +522,14 @@ def _template(tree: Tree, tid: str, rel: str, variables: dict) -> dict:
     file carries name, description, tags and body. The adapter derives the field records from
     the body's references — name, label, default, `source`, `kind` — and hands the result to
     `templates.validate` unchanged, so the template store's validator is the one that decides.
-    Bundled template IMAGES are refused in format 1: `templates.validate` accepts only host-local
+    Bundled template IMAGES are refused: `templates.validate` accepts only host-local
     upload paths, and a portable image reference is a later decision.
     """
     doc = _toml(tree, rel, max_bytes=schema.MAX_TOML_BYTES)
     with _in(rel):
         tr = _Reader(doc, "")
         if tr.has("images"):
-            raise _fail("images", "bundled template images are not supported in format 1")
+            raise _fail("images", "bundled template images are not supported")
         body = tr.raw("body")
         name = tr.raw("name")
         description = tr.raw("description", "")
@@ -951,13 +956,14 @@ def validate_tree(tree: Tree) -> dict:
         fid: _flow(tree, fid, rel, variables, targets)
         for fid, rel in _dir_files(tree, schema.FLOWS_DIR, ".toml", schema.MAX_FLOWS)
     }
-    _check_target_variables(variables, targets)
+    if doc["format"] == 1:
+        _check_target_variables(variables, targets)
     if default_flow is not None and default_flow not in flows:
         raise _fail(
             f"{schema.MANIFEST_NAME}: flows.default", f"{default_flow!r} is not a flow in flows/"
         )
     return {
-        "format": schema.FORMAT,
+        "format": doc["format"],
         "identity": identity,
         "variables": list(variables.values()),
         "connections": list(connections.values()),

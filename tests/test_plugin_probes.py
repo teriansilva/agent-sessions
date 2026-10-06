@@ -144,7 +144,17 @@ async def test_real_new_resume_transcript_and_version_are_required(
     # A concurrent second app cannot reconcile or replay a live verification.
     with pytest.raises(storage.StateError, match="busy"):
         manager.recover()
-    duplicate = await service.verify(rid, "fixture", gen, confirm_effects=True)
+    # The live worker writes manager.json while it runs. A duplicate that cannot take that lock
+    # within its 2 s budget is refused as busy (fail closed); on a loaded runner it retries
+    # until it reads the same operation back — never a second one.
+    deadline = time.monotonic() + 20
+    while True:
+        try:
+            duplicate = await service.verify(rid, "fixture", gen, confirm_effects=True)
+            break
+        except storage.StateError as exc:
+            assert "busy" in str(exc) and time.monotonic() < deadline, exc
+            await asyncio.sleep(0.05)
     assert duplicate["id"] == item["id"]
     result = await settled(service, item)
     assert result["state"] == "verified", manager.generation("fixture", gen)["verification"]

@@ -703,7 +703,7 @@ def test_no_playbook_route_exposes_a_parameter_as_request_input(auth_cfg):
         ]
         assert exposed == [], (path, exposed)
         assert {p.name for p in flat.path_params} <= {"pid", "name"}, path
-    assert len(seen) == 8, seen  # the authoring routes; recovery has no purge endpoint
+    assert len(seen) == 10, seen  # authoring + review/confirm; recovery has no purge endpoint
 
 
 def test_the_routes_need_a_session_csrf_and_the_origin_and_are_never_cached(auth_cfg, tmp_home):

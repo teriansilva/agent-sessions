@@ -16,11 +16,10 @@ from .. import missions, prefs, template_send, templates
 from ..plugins import kinds as plugin_kinds
 from ..plugins import manifest as plugin_manifest
 
-#: The bundle contract version. A higher one is refused ("needs a newer BattleLab"), a lower or
-#: missing one is invalid. `MIGRATIONS[n]` rewrites a format-n document into format n+1 before
-#: validation, exactly like the plugin manifest's contract chain; empty while format 1 is the only
-#: format.
-FORMAT = 1
+#: Format 2 permits proposed target defaults/choices, armed only by deployment review. Format 1
+#: retains its original validation; reading/saving never silently upgrades a document.
+FORMAT = 2
+SUPPORTED_FORMATS = frozenset({1, 2})
 MIGRATIONS: dict = {}
 
 # --- identities ----------------------------------------------------------------------------------
@@ -184,7 +183,8 @@ SLOT_TYPES: dict[str, str] = {
 assert {s for slots in OUTPUT_SLOTS.values() for s in slots} == set(SLOT_TYPES)
 #: Which probe ARGUMENT accepts which slot type. Default-deny: an argument not named here takes no
 #: step reference at all. `repo` and `url` are deliberately absent — they carry the AUTHORITY
-#: (which repository, which host), and that only ever comes from an operator-filled variable
+#: (which repository, which host), and that only ever comes from an operator-reviewed variable
+#: (a format-2 default only once individually confirmed)
 #: (#1096 §5, "the bridge"); an observation may only narrow a target within it. No current
 #: argument takes a `pr_number`, so a `pr_number` reference is refused wherever it appears until a
 #: probe argument exists that means one.

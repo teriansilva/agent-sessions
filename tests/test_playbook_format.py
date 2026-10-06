@@ -197,7 +197,7 @@ def test_unknown_fields_are_rejected_at_every_level(dev, rel, old, new, needle):
 
 @pytest.mark.parametrize(
     ("value", "needle"),
-    [("2", "needs a newer BattleLab"), ("0", "not supported"), ("true", "must be the integer")],
+    [("3", "needs a newer BattleLab"), ("0", "not supported"), ("true", "must be the integer")],
 )
 def test_manifest_format_policy(dev, value, needle):
     _edit(_manifest(dev), "format = 1\n", f"format = {value}\n")

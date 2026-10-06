@@ -751,7 +751,7 @@ def test_foreign_process_lease_is_not_reclaimed_before_expiry(tmp_path, monkeypa
     assert token  # the fencing token still exists; it just no longer wins
 
 
-def test_holding_renews_a_claim_past_its_expiry(tmp_path):
+def test_holding_renews_a_claim_past_its_expiry(tmp_path, monkeypatch):
     """A healthy-but-slow worker must not lose its claim to duration.
 
     Without the heartbeat the expiry was a bet that `cleanup_runtime` + `prov.archive` finish
@@ -767,10 +767,22 @@ def test_holding_renews_a_claim_past_its_expiry(tmp_path):
     missions.begin_archive(m["id"], abandon=True, path=db)
     _, token = missions.claim_session_teardown(m["id"], key, path=db)
     started = missions.reservation_of(key, path=db)["at"]
+    renewed = threading.Event()
+    real_renew = missions.renew_session
+
+    def observe_renewal(*args, **kwargs):
+        verdict = real_renew(*args, **kwargs)
+        if verdict == missions.RENEWED:
+            renewed.set()
+        return verdict
+
+    monkeypatch.setattr(missions, "renew_session", observe_renewal)
 
     async def _run():
         async with missions.holding(key, token, interval=0.02, path=db):
-            await asyncio.sleep(0.3)
+            # Observe the real worker's completed SQLite write, not a scheduling deadline.
+            # Blocking this loop also preserves the independent-thread heartbeat contract.
+            assert renewed.wait(30), "the heartbeat did not complete a renewal"
             return missions.reservation_of(key, path=db)["at"]
 
     beat_to = asyncio.run(_run())
@@ -778,8 +790,9 @@ def test_holding_renews_a_claim_past_its_expiry(tmp_path):
 
     # …and that renewal is what keeps a rival out: probe as ANOTHER MISSION, which skips the
     # ownership branch, so the only thing that can refuse it is the reservation's own freshness.
+    after_original_expiry = missions.RESERVATION_MAX_AGE_S + (started + beat_to) / 2
     with pytest.raises(missions.SessionBusy):
-        missions.reserve_session(key, "mission:msn_" + "0" * 32, now=started + 0.25, path=db)
+        missions.reserve_session(key, "mission:msn_" + "0" * 32, now=after_original_expiry, path=db)
 
     missions.settle_session_archive(m["id"], key, "done", token=token, path=db)
     assert missions.archive_sessions_for(m["id"], path=db)[0]["archive_state"] == "done"
