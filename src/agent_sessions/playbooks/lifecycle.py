@@ -16,8 +16,8 @@ import time
 from itsdangerous import BadData, URLSafeTimedSerializer
 
 from .. import projects, template_vars
+from . import apply, review, store
 from . import deployment_state as state
-from . import review, store
 
 _OPERATION = re.compile(r"[a-z0-9][a-z0-9-]{7,63}")
 _HISTORY_MAX = 10000
@@ -272,6 +272,8 @@ def bind(pid: str, playbook_id: str, inputs: dict, receipt: str, op: str, *, key
                     return copy.deepcopy(journal["result"])
             elif record and record["state"] == "binding_intent":
                 raise store.Conflict("retry the pending binding operation before starting another")
+            elif apply.pending(record):
+                raise store.Conflict("retry the pending apply operation before binding")
             else:
                 journal = None
 

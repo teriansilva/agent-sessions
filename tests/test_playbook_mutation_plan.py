@@ -213,3 +213,14 @@ def test_removing_an_already_deleted_owned_file_is_a_no_op():
         [], {"RULES.md": destination.Node("absent")}, {"RULES.md": created.ownership}
     )
     assert not conflicts and change.action == "keep"
+
+
+def test_a_recorded_inode_makes_a_same_byte_substitute_ownership_loss():
+    [created], _ = build([material()], {"RULES.md": destination.Node("absent")})
+    owned = {**created.ownership, "inode": [1, 42]}
+    ours = destination.Node("file", (1, 42, 0, 0), data=b"Instructions\n")
+    [kept], conflicts = build([material()], {"RULES.md": ours}, {"RULES.md": owned})
+    assert not conflicts and kept.action == "keep"
+    theirs = destination.Node("file", (1, 99, 0, 0), data=b"Instructions\n")
+    changes, conflicts = build([material()], {"RULES.md": theirs}, {"RULES.md": owned})
+    assert changes == [] and "operator edits" in conflicts[0]["reason"]

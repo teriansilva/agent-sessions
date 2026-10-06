@@ -912,7 +912,9 @@ def save(
     """
     if not isinstance(content, str):
         raise FsError("content must be text", status=422)
-    return _save(path, content, expect, root=root, admit=admit)
+    result = _save(path, content, expect, root=root, admit=admit)
+    result.pop("inode", None)  # internal proof for save_bytes; never part of the editor's API
+    return result
 
 
 def save_bytes(
@@ -922,6 +924,7 @@ def save_bytes(
     *,
     root: str,
     admit: Callable[[str], None],
+    identity: tuple[list[int], list[int]] | None = None,
 ) -> dict:
     """Internal reviewed-material replacement through the same guarded save and recovery.
 
@@ -933,7 +936,9 @@ def save_bytes(
         raise FsError("material bytes must fit the file size limit", status=422)
     if not isinstance(root, str) or not os.path.isabs(root) or not callable(admit):
         raise FsError("a material replacement requires its root and live admission", status=422)
-    return _save(path, content, expect, root=root, admit=admit)
+    # `identity` = (reviewed target [dev, ino], reviewed parent [dev, ino]): bytes alone never
+    # authorize a write; the opened, leased target must be the reviewed inode itself.
+    return _save(path, content, expect, root=root, admit=admit, identity=identity)
 
 
 def _save(
@@ -943,6 +948,7 @@ def _save(
     *,
     root: str | None,
     admit: Callable[[str], None] | None,
+    identity: tuple[list[int], list[int]] | None = None,
 ) -> dict:
     caps = edit_capabilities()
     if not caps.ok:
@@ -975,6 +981,7 @@ def _save(
                 expect,
                 root=root,
                 guard=guard,
+                identity=identity,
             )
         finally:
             os.close(dir_fd)
@@ -997,9 +1004,20 @@ def _save_locked(
     *,
     root: str | None = None,
     guard: Callable[[], None] | None = None,
+    identity: tuple[list[int], list[int]] | None = None,
 ) -> dict:
     fd, st, verified = _open_target(dir_fd, name)
     try:
+        if identity is not None:
+            held_parent = os.fstat(dir_fd)
+            if [st.st_dev, st.st_ino] != list(identity[0]) or [
+                held_parent.st_dev,
+                held_parent.st_ino,
+            ] != list(identity[1]):
+                raise SaveRefused(
+                    "the file was replaced since it was reviewed and was not saved",
+                    reason="changed",
+                )
         files._fd_still_contained(fd, root)
         if guard is not None:
             guard()
@@ -1301,12 +1319,16 @@ def _replace(
         _step("finish")
     finally:
         os.close(entry_fd)
-    return {
+    result = {
         "path": verified,
         "version": new_version,
         "size": len(new),
         "retained": {"path": os.path.join(store, entry_id, retained), "version": expect},
     }
+    if "candidate_inode" in rec:
+        # Proof of WHICH inode this save installed, for the reviewed-material caller only.
+        result["inode"] = list(rec["candidate_inode"])
+    return result
 
 
 def _name_exists(dir_fd: int, name: str) -> bool:

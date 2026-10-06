@@ -54,6 +54,17 @@ def ownership(raw: object) -> dict[str, dict]:
                 check_segment(target, path)
             elif kind not in {"reference", "seed"} or disposition != kind:
                 raise ValueError
+            if kind in {"file", "symlink"} and disposition == "managed" and "inode" in record:
+                # The exact inode the apply installed; regions are keyed by content instead,
+                # since operators legitimately rewrite the file around them.
+                inode = record["inode"]
+                if (
+                    not isinstance(inode, list)
+                    or len(inode) != 2
+                    or not all(type(i) is int for i in inode)
+                ):
+                    raise ValueError
+                expected.add("inode")
             if set(record) != expected:
                 raise ValueError
         except (ValueError, TypeError, store.StoreError):
@@ -114,6 +125,8 @@ def _owned(current: destination.Node, record: dict) -> None:
         good = current.kind == "symlink" and current.target == record["target"]
     else:
         good = False
+    if good and "inode" in record and list(current.identity[:2]) != record["inode"]:
+        good = False  # same bytes, different inode: someone else's file now holds the name
     if not good:
         raise materials.MaterialError("the managed material has operator edits")
 
