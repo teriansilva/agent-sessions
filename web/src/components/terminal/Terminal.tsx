@@ -46,7 +46,10 @@ import {
 import { useConfig } from "../../app/config";
 import { useSessionRow } from "../../app/useSessionRow";
 import { useIsMobile } from "../../lib/useIsMobile";
-import { isNewSessionPlaceholder, useSessionsStore } from "../../app/sessionsStore";
+import {
+  isNewSessionPlaceholder,
+  useSessionsStore,
+} from "../../app/sessionsStore";
 import { AdoptToMissionModal } from "../sessions/AdoptToMissionModal";
 import {
   TermSocket,
@@ -76,6 +79,7 @@ import styles from "./Terminal.module.css";
 import { missionLink } from "../../lib/missionLink";
 import { shareLink } from "../../lib/shareLink";
 import { openTerminalLink } from "../../lib/terminalLink";
+import { stripHoverMouseReports } from "../../lib/hoverMouse";
 import { isAgent, useEngineRoster } from "../../app/engineRoster";
 
 // #554: how long the auto copy-on-select "Copied" toast stays up (matches the CSS fade).
@@ -213,7 +217,8 @@ export function Terminal({
     // Straight pass-through: the panel's token is Compose's business, and Terminal only owns the
     // ref that reaches it.
     insertToken: (token: string) => composeRef.current?.insertToken(token),
-    openTemplates: (templateId?: string) => composeRef.current?.openTemplates(templateId),
+    openTemplates: (templateId?: string) =>
+      composeRef.current?.openTemplates(templateId),
   }));
   const termRef = useRef<Xterm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -311,8 +316,8 @@ export function Terminal({
   // the tail — `atBottom` stays true and the FAB would never show, and `scrollToBottom()` is a
   // no-op. Track how far we've forwarded the agent up (in wheel notches) so the FAB appears once the
   // user scrolls the agent up, and so the jump-to-tail forwards the same distance back down.
-  // (codex/gemini run inline with NO mouse tracking → they keep real scrollback and use the #187
-  // path above, unchanged.) `jumpToTailRef` is filled by the effect from attachTouchScroll.
+  // (gemini runs inline with NO mouse tracking → it keeps real scrollback and uses the #187 path
+  // above, unchanged; codex did too until 0.160 armed ?1003h — #1285.) `jumpToTailRef` is filled by the effect from attachTouchScroll.
   const [appScrolledUp, setAppScrolledUp] = useState(false);
   const appScrollNotchesRef = useRef(0);
   // #584: a FRESH attach to an app-consuming (mouse-tracking) session opens wherever claude last
@@ -1317,7 +1322,11 @@ export function Terminal({
     // A keystroke typed into the terminal inside a compose delivery's paste→Enter window is
     // held by Compose and written right after that Enter (Hermes on #908, round 5); otherwise
     // it goes to the pty as it always has.
-    term.onData((d) => {
+    term.onData((raw) => {
+      // Hover-only mouse reports never leave the browser (#1285): dtach splits input into
+      // 8-byte packets, and a split report reaches codex as an Esc keypress.
+      const d = stripHoverMouseReports(raw);
+      if (!d) return;
       if (!composeRef.current?.deferInput(d)) sock.send({ t: "i", d });
     });
     term.onResize(sendResize);
@@ -1854,7 +1863,10 @@ export function Terminal({
     // membership (`mission` absent = the store could not be read), never on an archived session and
     // never on an unreconciled `new-<uuid>` placeholder, which the server's canonical_key refuses.
     // It acts on `actionKey` — the id the URL settled on — never the frozen transport identity.
-    ...(row && row.mission !== undefined && !row.archived && !isNewSessionPlaceholder(actionKey)
+    ...(row &&
+    row.mission !== undefined &&
+    !row.archived &&
+    !isNewSessionPlaceholder(actionKey)
       ? [
           row.mission
             ? {
@@ -1878,8 +1890,10 @@ export function Terminal({
                 title: "Adopt to mission: add this session to an open mission",
                 icon: <Crosshair size={13} aria-hidden="true" />,
                 run: (trigger?: HTMLElement | null) => {
-                  const opener = trigger ?? (document.activeElement as HTMLElement | null);
-                  adoptHeadRef.current = opener?.closest<HTMLElement>("[data-fit-width]") ?? null;
+                  const opener =
+                    trigger ?? (document.activeElement as HTMLElement | null);
+                  adoptHeadRef.current =
+                    opener?.closest<HTMLElement>("[data-fit-width]") ?? null;
                   setAdoptTrigger(opener);
                   setAdoptOpen(true);
                 },
@@ -1963,7 +1977,10 @@ export function Terminal({
                 const tick = Date.now();
                 setLinkToast({ tick, ok: outcome === "copied" });
                 window.setTimeout(
-                  () => setLinkToast((t) => (t.tick === tick ? { tick: 0, ok: true } : t)),
+                  () =>
+                    setLinkToast((t) =>
+                      t.tick === tick ? { tick: 0, ok: true } : t,
+                    ),
                   outcome === "copied" ? COPIED_TOAST_MS : COPY_FAILED_TOAST_MS,
                 );
               });

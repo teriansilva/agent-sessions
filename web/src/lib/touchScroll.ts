@@ -127,7 +127,8 @@ export function attachTouchScroll(
   // reports / alternate-scroll) whenever mouse tracking is on, regardless of buffer. We mirror
   // that exactly: when the app wants the wheel, synthesize one on xterm's screen element and let
   // xterm do its own translation (honoring the app's mouse mode) — no re-encoding of protocols.
-  // Otherwise (e.g. codex in the normal buffer with no mouse tracking) scroll xterm's scrollback.
+  // Otherwise (e.g. gemini, or codex before 0.160, in the normal buffer with no mouse tracking)
+  // scroll xterm's scrollback.
   // Gating on mouseTrackingMode (not just the alt buffer) is the fix: opencode runs in the NORMAL
   // buffer with mouse tracking, so an alt-buffer-only check never engaged for it.
   const wheelTarget = () =>

@@ -16,7 +16,7 @@
 //         receives it exactly as before.
 //   • double/triple press (detail > 1) → force-select immediately: word/line selection must not
 //     wait for a drag that will never come.
-//   • no mouse tracking (codex, antigravity) → NATIVE. xterm already selects on a plain drag, and
+//   • no mouse tracking (antigravity; codex before 0.160 — #1285) → NATIVE. xterm already selects on a plain drag, and
 //     a twin there becomes an empty Shift-incremental *extend* from a nonexistent anchor — the
 //     regression #582 fixed. The buffer type is irrelevant to all of this.
 
