@@ -20,6 +20,7 @@
 Single-project deployment lifecycle (#1191), under ``/api/projects/{project}/playbook``:
 
 * ``GET    …/playbook``              — deployment status (``interrupted`` lists each path's state)
+* ``GET    …/playbook/verify``       — run the bundle's declared checks (read-only, never probes)
 * ``POST   …/playbook/bind``         — ``{playbook_id, inputs, receipt, operation_id}``
 * ``POST   …/playbook/apply``        — ``{receipt, operation_id}``; a same-id retry recovers
 * ``POST   …/playbook/remove/plan``  — the removal dry run and the digest that authorizes it
@@ -42,7 +43,7 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from .. import template_vars
-from ..playbooks import apply, fleet, lifecycle, remove, review, store
+from ..playbooks import apply, fleet, lifecycle, remove, review, store, verify
 
 NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 PREFIX = "/api/playbooks"
@@ -384,4 +385,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard, signing_key: str) -> None:
         pid: str, operation: str, _user: str = Depends(logged_in)
     ) -> JSONResponse:
         out = await _run(fleet.operation, pid, operation)
+        return out if isinstance(out, JSONResponse) else _json(out)
+
+    @app.get(DEPLOY + "/verify")
+    async def verify_deployment(project: str, _user: str = Depends(logged_in)) -> JSONResponse:
+        out = await _run(verify.verify, project)
         return out if isinstance(out, JSONResponse) else _json(out)

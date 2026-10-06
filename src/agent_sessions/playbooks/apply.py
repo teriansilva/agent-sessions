@@ -559,6 +559,7 @@ def apply(pid: str, op: str, receipt: str, *, key: str) -> dict:
             record["files"] = _ownership(changes, journal["effects"], record.get("files", {}))
             record["rituals"] = rituals(plan.public, record["id"])
             record["review_facts"] = review_facts(plan.public)
+            record["verify_facts"] = verify_facts(plan.bundle)
             record["generation"] = record.get("generation", 0) + 1
             record["state"] = "applied"
             journal["state"] = "complete"
@@ -575,6 +576,19 @@ def apply(pid: str, op: str, receipt: str, *, key: str) -> dict:
             }
             write()
             return copy.deepcopy(result)
+
+
+def verify_facts(bundle: dict) -> dict:
+    """What `verify` checks, as APPLIED: the declared checks, each variable's kind and text default,
+    and the required binaries. Secret-free: a secret variable has no default by the format's own
+    rule. Verify must not read the editable source, which may have changed since apply."""
+    return {
+        "checks": list(bundle["verify"]),
+        "variables": {
+            v["name"]: {"kind": v["kind"], "default": v.get("default")} for v in bundle["variables"]
+        },
+        "binaries": list(bundle["requires"]["binaries"]),
+    }
 
 
 def review_facts(public: dict) -> dict:
