@@ -559,6 +559,7 @@ async def run(
     seed_key: str | None = None,
     maintenance_admission: opencode_admission.Admission | None = None,
     launch_provider=None,
+    attach_provider=None,
 ) -> None:
     """Attach ``ws`` to the PTY of ``argv`` (a built dtach create-or-attach command).
 
@@ -574,6 +575,8 @@ async def run(
 
     ``maintenance_admission`` is a separate non-inherited OpenCode launch guard (#1040).
     Process creation is shielded and drained on timeout/cancellation before that guard releases.
+    ``attach_provider`` checks permanent native-history ownership for an attach-only client;
+    unlike ``launch_provider`` it does not require an active engine or resolve its binary.
 
     ``buf_key`` is the physical runtime key (dtach/lock/scrollback ring). ``transcript_key``
     is the logical session key for saved transcript replay; alias-backed Codex sessions need
@@ -625,8 +628,20 @@ async def run(
         )
 
     async def admitted_create():
-        if launch_provider is not None:
-            return await admission.spawn(create, launch_provider, timeout=SPAWN_TIMEOUT_S)
+        console_provider = launch_provider or attach_provider
+        if console_provider is not None:
+            # The transcript key is the logical native history. A reconciled runtime may
+            # still have a placeholder socket key, which cannot answer native ownership.
+            engine, sep, native = (transcript_key or buf_key or "").partition(":")
+            if not sep or engine != console_provider.engine_id:
+                raise admission.Refused("agent launch has no matching session identity")
+            return await admission.spawn(
+                create,
+                console_provider,
+                timeout=SPAWN_TIMEOUT_S,
+                native_id=native,
+                attach=launch_provider is None,
+            )
         return await create()
 
     try:

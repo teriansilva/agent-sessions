@@ -75,12 +75,19 @@ def publish_binding(physical_key: str, logical_key: str) -> bool:
     dispatch has no source session, so there is no handoff backlink to publish beside it.
     """
     from . import metadata
+    from .plugins import admission
 
     if not physical_key or not logical_key or physical_key == logical_key:
         return False
     if metadata.load_aliases().get(physical_key) == logical_key:
         return False
-    metadata.set_alias(physical_key, logical_key)
+    prov, _ = engines.parse_key(logical_key)
+    physical_prov, _ = engines.parse_key(physical_key, allow_new_placeholder=True)
+    if physical_prov.engine_id != prov.engine_id:
+        raise admission.Refused("a console alias cannot cross client identities")
+    # This projection runs after the mission authority transaction released its locks.
+    # Recheck native ownership under launch admission before publishing the alias.
+    admission.publish_alias(prov, physical_key, logical_key)
     # The real session is only now discoverable under its own id, so the list's snapshot goes.
     engines.invalidate_scan_cache()
     return True

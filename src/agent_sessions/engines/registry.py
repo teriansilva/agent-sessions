@@ -916,10 +916,11 @@ def scan_all_cached() -> list[Session]:
     Served through the walk coordinator (#991): a warm generation is reused, a burst of misses joins
     the one walk in flight, and the walk never overlaps a ``scan_all_since`` walk."""
     from .. import engines as _pkg
+    from ..native_discovery import filter_cached
 
     ttl = _SCAN_CACHE_TTL_S
     if ttl <= 0:
-        return _pkg.scan_all()
+        return filter_cached(_pkg.scan_all())
     coord = _coordinator()
 
     def warm(gen: _Generation) -> bool:
@@ -932,7 +933,7 @@ def scan_all_cached() -> list[Session]:
     def current(gen: _Generation) -> bool:
         return gen.seq >= coord.valid_from_seq
 
-    return _obtain(coord, completed_ok=warm, running_ok=current)
+    return filter_cached(_obtain(coord, completed_ok=warm, running_ok=current))
 
 
 # ONE walk per paging sequence (#1007 Phase 3). The map pages the whole set in up to 20 requests,
@@ -984,6 +985,7 @@ def scan_all_pinned(token: str) -> tuple[list[Session], str]:
     Only the disk walk is reused. The caller must re-apply every scope check to these rows on every
     request; see the block comment above for why this can never become an authorization cache."""
     from .. import engines as _pkg
+    from ..native_discovery import filter_cached
 
     home = str(Path.home())
     with _pins_lock:
@@ -991,8 +993,10 @@ def scan_all_pinned(token: str) -> tuple[list[Session], str]:
         for stale in [k for k, p in _pins.items() if now - p.minted >= _SNAPSHOT_TTL_S]:
             del _pins[stale]
         pin = _pins.get(token)
-        if pin is not None and pin.home == home:
-            return pin.sessions, token
+        sessions = pin.sessions if pin is not None and pin.home == home else None
+
+    if sessions is not None:
+        return filter_cached(sessions), token
 
     # Not a live pin: the ordinary cached read (never under the pin lock — it may walk).
     sessions = _pkg.scan_all_cached()
@@ -1001,7 +1005,7 @@ def scan_all_pinned(token: str) -> tuple[list[Session], str]:
         _pins[fresh] = _Pin(home=home, sessions=sessions, minted=time.monotonic())
         while len(_pins) > _SNAPSHOT_MAX:
             _pins.popitem(last=False)
-    return sessions, fresh
+    return filter_cached(sessions), fresh
 
 
 def scan_all_since(arrival: float) -> list[Session]:
@@ -1013,12 +1017,14 @@ def scan_all_since(arrival: float) -> list[Session]:
     connect itself — never a snapshot from before it, never a walk from before the last
     invalidation. Callers that arrived before a walk started share it; callers that arrived while
     an older walk ran share the one walk after it."""
+    from ..native_discovery import filter_cached
+
     coord = _coordinator()
 
     def fresh(gen: _Generation) -> bool:
         return gen.started >= arrival and gen.seq >= coord.valid_from_seq
 
-    return _obtain(coord, completed_ok=fresh, running_ok=fresh)
+    return filter_cached(_obtain(coord, completed_ok=fresh, running_ok=fresh))
 
 
 def resolve_session(engine_id: str, native: str, *, arrival: float | None = None) -> Session | None:

@@ -228,7 +228,9 @@ def test_reconcile_new_session_invalidates_scan_cache(monkeypatch, tmp_home):
     monkeypatch.setattr(main.ai_review_loop, "request_review_soon", lambda: None)
 
     asyncio.run(
-        main._reconcile_new_session(FakeWS(), FakeProv(), "new-abcd", "/home/u/proj", set())
+        main._reconcile_new_session(
+            FakeWS(), FakeProv(), "new-00000000-0000-4000-8000-000000000001", "/home/u/proj", set()
+        )
     )
 
     # Reconcile persisted the alias → it must have invalidated the cache, so the next list re-walks.

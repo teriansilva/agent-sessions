@@ -202,12 +202,14 @@ class PluginProvider:
             "$"
         ) != self.id_pattern.pattern.removesuffix(r"\Z"):
             raise ValueError(f"store kind {type(kind).__name__} disagrees on the id pattern")
+        from .. import native_discovery
+
         self.kind = kind
         kind.owner = self
         for hook in KIND_HOOKS:
             fn = getattr(kind, hook, None)
             if callable(fn):
-                setattr(self, hook, fn)
+                setattr(self, hook, native_discovery.guard_hook(self, hook, fn))
         return self
 
     # --- environment ---------------------------------------------------------------------------
@@ -310,12 +312,14 @@ class PluginProvider:
             return False
 
     def scan(self) -> list:
+        from .. import native_discovery
+
         if self.kind is not None:
-            return self.kind.scan()
+            return native_discovery.filter_rows(self, self.kind.scan())
         reader = _LAYOUT_READERS.get(self.manifest.store.layout) if self.manifest.store else None
         if reader is None:
             return []
-        return reader(self)
+        return native_discovery.filter_rows(self, reader(self))
 
     def scan_problem(self) -> str | None:
         if self.kind is not None or self.manifest.store is None:

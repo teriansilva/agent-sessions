@@ -32,7 +32,7 @@ from . import (
     automation_loop,
     autosort_loop,
     engines,
-    metadata,
+    metadata,  # noqa: F401 — compatibility: tests patch main.metadata.set_alias
     mission_archive,
     mission_dispatch_recover,
     mission_objectives,
@@ -166,7 +166,9 @@ async def _reconcile_new_session(ws, prov, placeholder: str, cwd: str, snapshot)
         # launch a SECOND writer for the same opencode session. On persist failure (full disk,
         # permissions, …) we stay quietly on the placeholder — the session keeps running there.
         try:
-            await asyncio.to_thread(metadata.set_alias, placeholder_key, real_key)
+            from .plugins import admission
+
+            await asyncio.to_thread(admission.publish_alias, prov, placeholder_key, real_key)
         except Exception:
             return None  # alias not durable → never converge; keep serving under the placeholder
         # The real (mint-its-own-id) session is now durable + discoverable → bust the sidebar's

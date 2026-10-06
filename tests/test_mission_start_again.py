@@ -427,6 +427,13 @@ class _Prov:
     supports_seed_start = True
     new_session_reconciles = False
 
+    def store_root(self):
+        # Native-history ownership (#1277) identifies a console source by its store; a fake
+        # without one cannot be proved unowned and its launch would (rightly) fail closed.
+        from agent_sessions.engines import registry as _registry
+
+        return _registry._BY_ID[self.engine_id].store_root()
+
     def is_present(self):
         return True
 

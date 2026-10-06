@@ -6,6 +6,8 @@ server-owned SessionStream handoff, and per-tab claim/demote. Moved verbatim fro
 OpenCode LAUNCH/NEW takes shared maintenance admission (#1040) before building the spawn;
 compaction refuses it with retryable 4502. ATTACH does not create an engine. The non-inherited
 admission is forwarded through both serving paths and released after actual process creation.
+Warm ATTACH also checks permanent native-history ownership, under the same admission lock as
+native binding. An absent discovery row is not permission to attach to an API-owned history.
 
 Two attach models live here, selected by ``owner.takeover_enabled()`` (#293,
 default OFF):
@@ -44,6 +46,7 @@ from .. import (
     handoff,
     missions,
     model_choice,
+    native_ownership,
     opencode_admission,
     owner,
     perfstats,
@@ -60,6 +63,7 @@ from .. import (
     webterm,
 )
 from ..auth import AuthConfig, origin_matches, session_uid
+from ..plugins import admission
 
 log = logging.getLogger("agent_sessions.terminal")
 
@@ -293,6 +297,7 @@ async def _serve_takeover(
     seed_key: str | None = None,
     maintenance_admission: opencode_admission.Admission | None = None,
     launch_provider=None,
+    attach_provider=None,
 ) -> None:
     """Single-active-viewer attach (#293) with the read-only fallback (#434). Claims the
     runtime-dir owner file. A non-owner is NOT inert: it streams the session **read-only**
@@ -346,6 +351,7 @@ async def _serve_takeover(
             rows=init_rows,
             lock=lock,
             launch_provider=launch_provider,
+            attach_provider=attach_provider,
             have=have,
             read_only_gate=read_only_gate,
             seed_key=seed_key,
@@ -487,6 +493,13 @@ def register(
                 except opencode_admission.Unavailable:
                     return await reject(4502)
             if action == sessions.ATTACH:
+                try:
+                    attach_guard = await admission.acquire_attach_async(prov, native)
+                except admission.Refused as exc:
+                    return await reject(4502, str(exc))
+                attach_guard.release()
+                # Repeat at dtach-client creation below. Native binding cannot claim an
+                # existing console master while this viewer prepares its scoped lookup.
                 # A live dtach session already exists → attach regardless of new/resume.
                 # dtach -A attaches (ignoring the cmd), so a fresh session survives a
                 # browser reload before it has written its on-disk history. cwd is only
@@ -616,7 +629,10 @@ def register(
                     # Off the event loop (#991): for codex this is a recursive rollout walk that
                     # reads every matching file's head. Still taken BEFORE the launch argv is built,
                     # and a `None` (failed baseline read) still disables reconciliation below.
-                    new_snapshot = await asyncio.to_thread(prov.snapshot_session_ids, new_cwd)
+                    try:
+                        new_snapshot = await asyncio.to_thread(prov.snapshot_session_ids, new_cwd)
+                    except native_ownership.OwnershipError as exc:
+                        return await reject(4502, str(exc))
                 try:
                     # OFF the loop: provenance walks every directory up to the binary (#853 P2),
                     # and on a host with networked user lookups that must not stall every stream.
@@ -847,6 +863,7 @@ def register(
                     init_rows=init_rows,
                     lock=lock,
                     launch_provider=prov if action == sessions.LAUNCH else None,
+                    attach_provider=prov if action == sessions.ATTACH else None,
                     have=have,
                     fp=fp,
                     tab_id=tab_id,
@@ -909,6 +926,7 @@ def register(
                     rows=init_rows,
                     lock=lock,
                     launch_provider=prov if action == sessions.LAUNCH else None,
+                    attach_provider=prov if action == sessions.ATTACH else None,
                     have=have,
                     read_only_gate=read_only_gate,
                     seed_key=seed_key,

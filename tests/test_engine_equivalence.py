@@ -181,13 +181,15 @@ def test_bare_ids_still_mean_claude():
 
 @pytest.mark.parametrize("engine", SEVEN)
 def test_every_kind_hook_is_reached_through_the_provider(engine):
+    import inspect
+
     from agent_sessions.plugins.provider import KIND_HOOKS
 
     p = engines.get(engine)
     for hook in KIND_HOOKS:
         k = getattr(p.kind, hook, None)
         if callable(k):
-            assert getattr(p, hook) == k, hook
+            assert inspect.unwrap(getattr(p, hook)) == k, hook
         else:
             assert getattr(p, hook, None) is None, hook
     assert p.kind.owner is p

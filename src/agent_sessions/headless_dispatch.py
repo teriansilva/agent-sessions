@@ -971,7 +971,7 @@ async def dispatch(
                 # BOUNDED, so the caller's worker is bounded (#904 review 8, finding 2). A thread
                 # cannot be cancelled, so whatever this does, the caller is going to have to wait
                 # for it — which is only safe if "it" has a deadline.
-                with plugin_admission.acquire(prov) as guard:
+                with plugin_admission.acquire(prov, native_id=native) as guard:
                     if guard.reason:
                         return None, guard.reason
                     with session_input.launch_fence(timeout=SPAWN_TIMEOUT_S) as policy_epoch:

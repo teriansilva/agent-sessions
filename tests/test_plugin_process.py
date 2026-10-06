@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_sessions.plugins import process
+from agent_sessions.plugins import admission, process
 
 
 @pytest.fixture
@@ -19,7 +19,7 @@ def anyio_backend():
 
 
 @pytest.fixture
-def vendor(tmp_path):
+def vendor(tmp_path, monkeypatch):
     binary = tmp_path / "fixture"
     binary.write_text(f"#!{sys.executable}\nimport sys\nprint('fixture 1.0', flush=True)\n")
     binary.chmod(0o700)
@@ -35,6 +35,10 @@ def vendor(tmp_path):
         ),
         entrypoint_path=lambda: str(binary),
     )
+    # These tests exercise the real transient-service lifecycle with a synthetic executable.
+    # Durable candidate validation has separate admission tests; keep the real launch lock.
+    monkeypatch.setattr(admission, "_candidate_provider", lambda *args: None)
+    monkeypatch.setattr("agent_sessions.native_ownership.check_console", lambda *args: None)
     return prov, binary
 
 
@@ -118,7 +122,9 @@ async def test_real_service_provides_a_controlling_tty_and_never_persists_signin
     assert (
         str(binary).encode() not in journal
     ), "systemd must log a fixed description, not vendor argv"
-    assert [p.name for p in tmp_path.iterdir()] == ["fixture"]
+    # Process admission creates only its private lock, never sign-in capture or history.
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["_plugin-state", "fixture"]
+    assert [p.name for p in (tmp_path / "_plugin-state").iterdir()] == ["launch.lock"]
 
 
 @pytest.mark.anyio
@@ -224,3 +230,35 @@ async def test_cancel_while_waiting_for_maintenance_drains_then_releases_without
     with pytest.raises(asyncio.CancelledError):
         await task
     assert released == [True]
+
+
+@pytest.mark.anyio
+async def test_a_refused_candidate_admission_never_spawns(vendor, tmp_path, monkeypatch):
+    """Hermes on #1277: the spawn site must honour a refused guard itself."""
+    from agent_sessions.plugins import admission
+
+    prov, _ = vendor
+    released = []
+
+    class Refused(admission.Guard):
+        def __init__(self):
+            super().__init__()
+            self.reason = "this native history belongs to an API session"
+
+        def release(self):
+            released.append(True)
+
+    async def refusing(*args, **kwargs):
+        return Refused()
+
+    monkeypatch.setattr(admission, "acquire_candidate_async", refusing)
+    monkeypatch.setattr(process, "_stop", lambda *_: True)
+    monkeypatch.setattr(
+        process.asyncio,
+        "create_subprocess_exec",
+        lambda *a, **kw: pytest.fail("spawned after admission refusal"),
+    )
+    with pytest.raises(admission.Refused, match="API session"):
+        async with process.spawn(prov, "version", cwd=tmp_path):
+            pytest.fail("admitted a refused candidate")
+    assert released

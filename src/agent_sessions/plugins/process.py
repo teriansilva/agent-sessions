@@ -310,6 +310,7 @@ async def spawn(
     os.set_blocking(master, False)
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
     guard = None
+    launch_guard = None
     proc = None
     try:
         # Candidate providers are not live yet. Ask THEIR manifest and take the same stable
@@ -332,6 +333,19 @@ async def spawn(
             seconds,
             probe_kind=prov.manifest.probe_kind if purpose in ("new", "resume") else None,
         )
+        from . import admission
+
+        # jobs/signin own the worker fence for the operation's entire lifetime. Order its
+        # actual spawn with native creation and roster changes, then release after handoff.
+        launch_guard = await admission.acquire_candidate_async(
+            prov, purpose, operation_id, native_id
+        )
+        if launch_guard.reason:
+            # The helper raises on refusal today; the spawn site must not depend on that.
+            reason = launch_guard.reason
+            launch_guard.release()
+            launch_guard = None
+            raise admission.Refused(reason)
         creating = asyncio.create_task(
             asyncio.create_subprocess_exec(
                 *argv,
@@ -353,11 +367,16 @@ async def spawn(
         except BaseException:
             proc = await drain(creating)
             raise
+        finally:
+            launch_guard.release()
+            launch_guard = None
         os.close(slave)
         slave = -1
         async with asyncio.timeout(seconds):
             yield Pty(proc, master)
     finally:
+        if launch_guard is not None:
+            launch_guard.release()
         stopped = True if proc is None else await drain(asyncio.to_thread(_stop, unit))
         if proc is not None:
             if proc.returncode is None:

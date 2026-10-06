@@ -51,6 +51,9 @@ class FakeProv:
     def is_present(self):
         return True
 
+    def store_root(self):
+        return engines.registry.store_for_engine(self.engine_id)
+
     def scan(self):
         return self.rows
 
@@ -157,6 +160,29 @@ async def test_an_UNKNOWN_auth_answer_never_spawns(env, prov, reg, monkeypatch):
     assert "could not confirm" in msg
     assert "not logged in" not in msg.lower(), "an unknown was reported as a confirmed logout"
     assert not spawned
+
+
+@pytest.mark.anyio
+async def test_api_ownership_blocks_the_actual_headless_spawn(env, prov, reg, monkeypatch):
+    from test_native_discovery import reserve
+
+    def on_key(key):
+        reserve(prov, key.partition(":")[2])
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("headless dispatch spawned an API-owned native history")
+
+    monkeypatch.setattr(headless_dispatch, "_popen", forbidden)
+    out = await headless_dispatch.dispatch(
+        registry=reg,
+        engine=prov.engine_id,
+        cwd=str(env),
+        brief="synthetic fixture",
+        on_key=on_key,
+        start_timeout=0.3,
+    )
+    assert not out.launched
+    assert "API session" in out.reason
 
 
 @pytest.fixture(autouse=True)
