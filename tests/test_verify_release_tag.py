@@ -262,7 +262,16 @@ def test_deploy_prod_verifies_the_tag_before_install_sh_ever_runs():
     gate = next(
         (i for i, s in enumerate(steps) if "verify-release-tag" in (s.get("run") or "")), None
     )
-    install = next((i for i, s in enumerate(steps) if "install.sh" in (s.get("run") or "")), None)
+    # The step that mutates production: the local install.sh (pre-#247), or the ci-deploy forced
+    # command that runs the same install on the install host (since the runners moved off it).
+    install = next(
+        (
+            i
+            for i, s in enumerate(steps)
+            if any(m in (s.get("run") or "") for m in ("install.sh", "ci-deploy@"))
+        ),
+        None,
+    )
     assert gate is not None, "deploy-prod.yml does not verify the release tag at all"
     assert install is not None, "deploy-prod.yml no longer installs — re-check this test"
     assert gate < install, "the signature gate runs AFTER install.sh; production is already updated"
