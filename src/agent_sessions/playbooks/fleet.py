@@ -81,6 +81,9 @@ def _reasons(baseline: dict | None, public: dict) -> list[str]:
         reasons.append("an agent assignment changed")
     if {v["name"] for v in public["variables"]} - set(baseline["variables"]):
         reasons.append("the update adds a variable")
+    # A baseline recorded before secret reference files existed had none.
+    if {f["name"] for f in public["secret_files"]} - set(baseline.get("secret_files", [])):
+        reasons.append("the update writes a new secret file")
     return reasons
 
 

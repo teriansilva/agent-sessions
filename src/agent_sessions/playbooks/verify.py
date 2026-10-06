@@ -7,7 +7,8 @@ changed since apply. Nothing else runs:
 * `variables`: every variable the deployment recorded still resolves for the project. A secret is
   checked with `secret_state` only (ok, or needs re-entry); its value is never read here.
 * `materials`: every owned path still passes the planner's own ownership rules (`_owned`, with
-  digest and inode, or `_region`); drift is listed by path.
+  digest and inode, or `_region`), and every secret reference file is still the inode apply
+  wrote (its content is never read); drift is listed by path.
 * `binaries`: the bundle's required binaries on `PATH` (`loader.requires_status`; nothing runs).
 * `instructions`: present engines whose instruction files are not verified on disk.
 * `connections`: listed with their resolved targets and **never probed**. A connection probe is an
@@ -21,7 +22,16 @@ from __future__ import annotations
 
 from .. import template_vars
 from ..fsbrowse import FsError
-from . import apply, destination, instructions, loader, materials, mutation_plan, store
+from . import (
+    apply,
+    destination,
+    instructions,
+    loader,
+    materials,
+    mutation_plan,
+    secret_files,
+    store,
+)
 from . import deployment_state as state
 
 
@@ -52,7 +62,27 @@ def _variables(pid: str, declared: dict, names: list[str]) -> dict:
     return {"ok": not problems, "problems": problems}
 
 
+def _secret_drift(record: dict) -> list[str]:
+    drift = []
+    for name, inode in sorted(record.get("secret_files", {}).items()):
+        try:
+            if secret_files.present(record["secret_root"], record["project_id"], name, inode):
+                continue
+        except (OSError, KeyError, store.StoreError):
+            pass
+        drift.append(secret_files.path(record["project_id"], name, record.get("secret_root")))
+    return drift
+
+
 def _materials(record: dict) -> dict:
+    out = _project_materials(record)
+    secrets = _secret_drift(record)
+    if secrets:
+        out = {**out, "ok": False, "drift": out["drift"] + secrets}
+    return out
+
+
+def _project_materials(record: dict) -> dict:
     files = record.get("files", {})
     checked = sorted(
         p for p, o in files.items() if o.get("disposition") == "managed" and o.get("kind")

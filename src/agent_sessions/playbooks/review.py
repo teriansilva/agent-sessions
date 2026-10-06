@@ -1,4 +1,4 @@
-"""Read-only deployment review and exact-plan target confirmations (#1191, format 2).
+"""Read-only deployment review and exact-plan target confirmations (#1191, formats 2 and 3).
 
 Reviews never save bindings, write materials, contact endpoints or launch agents. A confirmation
 receipt is a short-lived, signed statement about a server-recomputed plan, not a bearer command.
@@ -28,6 +28,7 @@ from . import (
     materials,
     mutation_plan,
     schema,
+    secret_files,
     store,
 )
 from .errors import PlaybookFormatError
@@ -181,6 +182,7 @@ def build(
             # A removal is final only once it settled and dropped its journals.
             raise store.Conflict("the removed deployment has an unsettled operation; recover it")
         active = record if record and record["state"] != "removed" else None
+        secret_files.check_root(active)
         if active and active["playbook_id"] != playbook_id:
             raise store.Conflict("remove the project's existing playbook before replacing it")
         create = raw.get("create", False)
@@ -231,7 +233,28 @@ def build(
                 raise store.Conflict("the playbook changed; review it again")
             bundle, tree = entry.pb, entry.tree
             resolved = binding.resolve(bundle, pid, raw.get("bindings", []), _records=_variables)
-            rendered = materials.render(bundle, tree, resolved.text)
+            secret_names = materials.secret_names(bundle, tree)
+            if secret_names and pid is None:
+                # The file lives under the project's id, which a pre-project review lacks; a later
+                # adoption could never match this review's rendered paths. Refused, reversibly.
+                raise store.Conflict(
+                    "this playbook writes secret reference files, which belong to a project: "
+                    "create the project first, then review the playbook for it"
+                )
+            states = {row["name"]: row["state"] for row in resolved.public}
+            for name in secret_names:
+                if states.get(name) != "ok":
+                    raise store.StoreError(
+                        f"{name}: a secret file needs a bound secret", status=409
+                    )
+            if secret_names:
+                secret_files.check_outside(
+                    [dest_public["path"]]
+                    + [f for p in projects.load().values() for f in p.folders],
+                    pid,
+                )
+            secret_paths = {name: secret_files.path(pid, name) for name in secret_names}
+            rendered = materials.render(bundle, tree, resolved.text, secret_paths)
             assignments, roster = _assignments(bundle, raw.get("assignments", {}))
             targets = binding.targets(bundle, resolved)
             rendered = flow_document.include(
@@ -289,6 +312,8 @@ def build(
                 "rituals": [
                     {**r, "state": "declared", "scheduled": False} for r in bundle["rituals"]
                 ],
+                # Paths only: apply writes each bound value there at 0600, remove deletes it.
+                "secret_files": [{"name": n, "path": p} for n, p in secret_paths.items()],
             }
             fingerprint = {
                 "review": public,

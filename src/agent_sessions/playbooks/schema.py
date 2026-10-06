@@ -16,10 +16,12 @@ from .. import missions, prefs, template_send, templates
 from ..plugins import kinds as plugin_kinds
 from ..plugins import manifest as plugin_manifest
 
-#: Format 2 permits proposed target defaults/choices, armed only by deployment review. Format 1
-#: retains its original validation; reading/saving never silently upgrades a document.
-FORMAT = 2
-SUPPORTED_FORMATS = frozenset({1, 2})
+#: Format 2 permits proposed target defaults/choices, armed only by deployment review. Format 3
+#: adds the `{{secret_path:<name>}}` reference token (template materials only). Formats 1 and 2
+#: retain their own validation; reading/saving never silently upgrades a document.
+FORMAT = 3
+SUPPORTED_FORMATS = frozenset({1, 2, 3})
+SECRET_PATH_FORMAT = 3
 MIGRATIONS: dict = {}
 
 # --- identities ----------------------------------------------------------------------------------
@@ -230,3 +232,6 @@ VAR_TYPES_FOR_ARG: dict[str, frozenset[str]] = {
 #: with rendering.
 VAR_TOKEN_RE = template_send.FIELD_TOKEN_RE
 STEP_TOKEN_RE = re.compile(r"\{\{steps\.([a-z][a-z0-9_-]{0,31})\.([a-z][a-z0-9_]{0,31})\}\}")
+#: The PATH of a declared secret variable's 0600 reference file (#1096 §3), never its value. Only a
+#: template material may carry it; apply writes the file outside the project (`secret_files`).
+SECRET_PATH_RE = re.compile(r"\{\{secret_path:([a-z][a-z0-9_]{0,31})\}\}")

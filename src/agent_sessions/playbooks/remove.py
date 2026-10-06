@@ -30,6 +30,7 @@ from . import (
     mutation_plan,
     replay_plan,
     review,
+    secret_files,
     store,
 )
 from . import deployment_state as state
@@ -47,6 +48,8 @@ _JOURNAL = {
     "effects",
     "attempt",
 }
+#: Absent from journals written before secret reference files (#1191).
+_SECRETS = {"secret_files"}
 _OPERATIONS = ("binding_operation", "apply_operation", "removal_operation")
 
 
@@ -76,6 +79,34 @@ def _owned(record: dict, key: str) -> tuple[dict, dict]:
     return files, directories
 
 
+def _secrets(record: dict) -> dict[str, dict]:
+    """Per reference file: the names to reap and the inodes proven ours there (`proven_secrets`)."""
+    try:
+        return apply.proven_secrets(record)
+    except (ValueError, TypeError, store.StoreError):
+        raise store.Conflict("the deployment's secret files record is damaged") from None
+
+
+def _validate_secrets(owned: object) -> None:
+    if not isinstance(owned, dict):
+        raise ValueError
+    for name, row in owned.items():
+        secret_files._name(name)
+        if not isinstance(row, dict) or set(row) != {"inodes", "names", "root", "directory"}:
+            raise ValueError
+        if row["directory"] is not None:
+            secret_files.validate_owned({name: row["directory"]})
+        secret_files.validate_root(row["root"])
+        if not isinstance(row["inodes"], list) or not isinstance(row["names"], list):
+            raise ValueError
+        for inode in row["inodes"]:
+            secret_files.validate_owned({name: inode})
+        for staging in row["names"][1:]:
+            secret_files.staging_name(staging)
+        if row["names"][:1] != [name]:
+            raise ValueError
+
+
 def _snapshot(record: dict, files: dict) -> dict[str, destination.Node]:
     folder = destination.Folder(**record["destination"])
     return destination.snapshot(folder, sorted(files)) if files else {}
@@ -84,6 +115,7 @@ def _snapshot(record: dict, files: dict) -> dict[str, destination.Node]:
 def _digest(record: dict, files: dict, directories: dict, nodes: dict, key: str) -> str:
     return review._digest(
         {
+            "secret_files": _secrets(record),
             "project": record["project_id"],
             "deployment": record["id"],
             "destination": record["destination"],
@@ -153,6 +185,11 @@ def plan(pid: str, *, key: str) -> dict:
                 "refusal": binding_refusal,
             },
             "directories": sorted(directories),
+            # Deleted while each is still the file this deployment wrote; otherwise kept.
+            "secret_files": [
+                {"name": name, "path": secret_files.path(pid, name, row["root"])}
+                for name, row in sorted(_secrets(record).items())
+            ],
             "digest": _digest(record, files, directories, nodes, key),
         }
 
@@ -162,8 +199,9 @@ def _journal(record: dict) -> dict | None:
     if journal is None:
         return None
     try:
-        if not isinstance(journal, dict) or set(journal) != _JOURNAL:
+        if not isinstance(journal, dict) or set(journal) - _SECRETS != _JOURNAL:
             raise ValueError
+        _validate_secrets(journal.get("secret_files", {}))
         lifecycle.operation_id(journal["id"])
         store.revision(journal["request_digest"])
         store.revision(journal["digest"])
@@ -230,6 +268,7 @@ def remove(pid: str, op: str, digest: str, *, key: str) -> dict:
                 if not hmac.compare_digest(_digest(record, files, directories, nodes, key), digest):
                     raise store.Conflict("the removal plan changed; review it again")
                 binding_inverse.prepare(record, template_vars._read_strictly())
+                owned_secrets = _secrets(record)
                 journal = {
                     "id": op,
                     "request_digest": request_digest,
@@ -249,6 +288,7 @@ def remove(pid: str, op: str, digest: str, *, key: str) -> dict:
                         for c in changes
                     },
                     "attempt": 0,
+                    "secret_files": owned_secrets,
                 }
                 record["removal_operation"] = journal
                 locked.write(record)  # durable intent BEFORE any destination or store effect
@@ -267,6 +307,14 @@ def remove(pid: str, op: str, digest: str, *, key: str) -> dict:
                 for change in changes:
                     apply._effect(folder, change, nodes, journal, write, locked.verify)
                 apply._settle(folder, changes, journal["effects"], {})
+                # Idempotent, so a same-id retry simply runs them again: a file already deleted
+                # reads `absent`, and one that is no longer the recorded inode is kept.
+                secrets_outcome = {
+                    name: secret_files.reap(
+                        row["root"], pid, row["names"], row["inodes"], row["directory"]
+                    )[name]
+                    for name, row in sorted(journal.get("secret_files", {}).items())
+                }
             except FsError as e:
                 raise store.StoreError(str(e), status=e.status) from None
             except OSError:
@@ -295,17 +343,25 @@ def remove(pid: str, op: str, digest: str, *, key: str) -> dict:
                 "operation_id": op,
                 "state": "removed",
                 "kept_directories": kept,
+                "kept_secret_files": [
+                    secret_files.path(pid, n, journal["secret_files"][n]["root"])
+                    for n, o in secrets_outcome.items()
+                    if o == "kept"
+                ],
                 # Only ever declared (#1201 Phase 4 not landed): nothing was created to delete.
                 "rituals_retired": [r["identity"] for r in record.get("rituals", [])],
             }
             record.update(
                 state="removed",
                 files={},
+                secret_files={},
                 directories={},
                 rituals=[],
                 owned_bindings={},
                 prior_bindings={},
             )
+            record.pop("secret_root", None)
+            record.pop("secret_dir", None)
             for name in _OPERATIONS:
                 record.pop(name, None)  # a settled removal holds nothing (deployment_state)
             record.setdefault("removal_history", {})[op] = {

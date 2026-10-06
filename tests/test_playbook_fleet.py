@@ -125,6 +125,7 @@ BASE = {
     "capability_requests": ["shared_memory"],
     "assignments": [{"step": "s", "assignment": {"engine": "e", "model": "m"}}],
     "variables": [{"name": "endpoint"}],
+    "secret_files": [],
 }
 
 
@@ -146,6 +147,10 @@ BASE = {
         (lambda p: p["capability_requests"].append("unattended_start"), "new capability"),
         (lambda p: p["assignments"][0]["assignment"].update(model="m2"), "assignment changed"),
         (lambda p: p["variables"].append({"name": "region"}), "adds a variable"),
+        (
+            lambda p: p["secret_files"].append({"name": "token", "path": "/x/token"}),
+            "new secret file",
+        ),
     ],
 )
 def test_each_disqualifying_condition_on_its_own(change, reason):

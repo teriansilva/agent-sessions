@@ -112,7 +112,12 @@ def _format(doc: dict, where: str) -> dict:
 
 
 def _text_tokens(
-    text: str, where: str, variables: dict[str, dict], *, strict_unknown: bool = True
+    text: str,
+    where: str,
+    variables: dict[str, dict],
+    *,
+    strict_unknown: bool = True,
+    secret_paths: bool = False,
 ) -> list[str]:
     """The declared, non-secret variables `text` interpolates, in order.
 
@@ -120,9 +125,21 @@ def _text_tokens(
     bundle renders — materials, runbooks, briefs, templates). `{{steps.…}}` is refused too: an
     observed output may only narrow a probe target, never become prose. With `strict_unknown`
     an undeclared `{{name}}` is an error; without it (a verbatim material) it is literal text.
+    `{{secret_path:<name>}}` is refused unless `secret_paths` (a format-3 template material), and
+    there it must name a declared secret variable.
     """
     if schema.STEP_TOKEN_RE.search(text):
         raise _fail(where, "a step output may only be referenced from a probe argument")
+    for m in schema.SECRET_PATH_RE.finditer(text):
+        if not secret_paths:
+            raise _fail(
+                where,
+                "a secret file path may only be referenced from a template material "
+                f"(format {schema.SECRET_PATH_FORMAT} or later)",
+            )
+        var = variables.get(m.group(1))
+        if var is None or var["kind"] != "secret":
+            raise _fail(where, f"{m.group(0)} must name a declared secret variable")
     names: list[str] = []
     for m in schema.VAR_TOKEN_RE.finditer(text):
         name = m.group(1)
@@ -351,7 +368,9 @@ def _materials(r: _Reader) -> dict[str, dict]:
     return out
 
 
-def _cross_check_materials(tree: Tree, materials: dict[str, dict], variables: dict) -> None:
+def _cross_check_materials(
+    tree: Tree, materials: dict[str, dict], variables: dict, fmt: int
+) -> None:
     prefix = f"{schema.MATERIALS_DIR}/"
     on_disk = {p[len(prefix) :] for p in tree.files if p.startswith(prefix)}
     dirs = {p[len(prefix) :] for p in tree.dirs if p.startswith(prefix)}
@@ -382,7 +401,13 @@ def _cross_check_materials(tree: Tree, materials: dict[str, dict], variables: di
         # A rendered material may name only declared, non-secret variables. A verbatim one is never
         # rendered, but a secret's token in it is refused all the same: nothing about a verbatim
         # file should ever look like a place a secret goes.
-        _text_tokens(text, f"{prefix}{path}", variables, strict_unknown=m["template"])
+        _text_tokens(
+            text,
+            f"{prefix}{path}",
+            variables,
+            strict_unknown=m["template"],
+            secret_paths=m["template"] and fmt >= schema.SECRET_PATH_FORMAT,
+        )
 
 
 def _capabilities(r: _Reader) -> dict[str, bool]:
@@ -925,7 +950,7 @@ def validate_tree(tree: Tree) -> dict:
             _text_tokens(v["label"], f"variables[{i}].label", variables)
             _text_tokens(v["help"], f"variables[{i}].help", variables)
 
-    _cross_check_materials(tree, materials, variables)
+    _cross_check_materials(tree, materials, variables, doc["format"])
 
     readme = ""
     if schema.README_NAME in tree.files:

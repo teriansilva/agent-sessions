@@ -33,6 +33,7 @@ from . import (
     mutation_plan,
     replay_plan,
     review,
+    secret_files,
     store,
 )
 
@@ -41,6 +42,7 @@ from . import (
 ENTRIES = ".playbooks"
 _HISTORY_MAX = 10000
 _RESULT = {"project_id", "deployment_id", "operation_id", "state", "digest"}
+_SECRET_KEYS = {"secrets", "secret_root", "secret_dir"}
 
 
 def _same(a: destination.Node, b: destination.Node) -> bool:
@@ -114,7 +116,8 @@ def _journal(record: dict) -> dict | None:
     if journal is None:
         return None
     try:
-        if not isinstance(journal, dict) or set(journal) != {
+        # The secret reference file keys (#1191) are absent from journals written before them.
+        if not isinstance(journal, dict) or set(journal) - _SECRET_KEYS != {
             "id",
             "request_digest",
             "state",
@@ -125,6 +128,10 @@ def _journal(record: dict) -> dict | None:
             "attempt",
         }:
             raise ValueError
+        secret_files.validate_effects(journal.get("secrets", {}))
+        if journal.get("secrets"):
+            secret_files.validate_root(journal.get("secret_root"))
+        secret_files._identity(journal.get("secret_dir"))
         lifecycle.operation_id(journal["id"])
         store.revision(journal["request_digest"])
         if journal["state"] not in {"intent", "complete"}:
@@ -482,6 +489,7 @@ def apply(pid: str, op: str, receipt: str, *, key: str) -> dict:
                 if not hmac.compare_digest(journal["request_digest"], request_digest):
                     raise store.Conflict("the apply operation id already names another request")
             else:
+                secret_files.check_root(record)
                 live = review.build(
                     record["playbook_id"], record["inputs"], key=key, _record=record
                 )
@@ -513,6 +521,8 @@ def apply(pid: str, op: str, receipt: str, *, key: str) -> dict:
                     },
                     "directories": {},
                     "attempt": 0,
+                    "secrets": _secret_effects(live.public, record),
+                    "secret_root": secret_files.root(),
                 }
                 record["apply_operation"] = journal
                 locked.write(record)  # durable intent BEFORE any destination effect
@@ -546,6 +556,14 @@ def apply(pid: str, op: str, receipt: str, *, key: str) -> dict:
                 for change in changes:
                     _effect(folder, change, plan.nodes, journal, write, locked.verify)
                 _settle(folder, changes, journal["effects"], record.get("files", {}))
+                written = _sync_secrets(
+                    pid,
+                    plan.public,
+                    record,
+                    journal,
+                    write,
+                    [folder.path] + [f for p in index.values() for f in p.folders],
+                )
             except FsError as e:
                 raise store.StoreError(str(e), status=e.status) from None
             except OSError:
@@ -557,6 +575,13 @@ def apply(pid: str, op: str, receipt: str, *, key: str) -> dict:
                 if identity is not None:
                     created.setdefault(rel, identity)
             record["files"] = _ownership(changes, journal["effects"], record.get("files", {}))
+            record["secret_files"] = written
+            if written:
+                record["secret_root"] = journal["secret_root"]
+                record["secret_dir"] = journal["secret_dir"]
+            else:
+                record.pop("secret_root", None)
+                record.pop("secret_dir", None)
             record["rituals"] = rituals(plan.public, record["id"])
             record["review_facts"] = review_facts(plan.public)
             record["verify_facts"] = verify_facts(plan.bundle)
@@ -576,6 +601,121 @@ def apply(pid: str, op: str, receipt: str, *, key: str) -> dict:
             }
             write()
             return copy.deepcopy(result)
+
+
+def _secret_effects(public: dict, record: dict) -> dict:
+    """One journaled effect per reference file: write each one the plan names, delete each one
+    the record owns that it no longer names."""
+    wanted = {row["name"] for row in public["secret_files"]}
+    owned = secret_files.validate_owned(record.get("secret_files", {}))
+    return {
+        name: {
+            "action": "write" if name in wanted else "delete",
+            "phase": "pending",
+            "staging": None,
+            "inode": None,
+        }
+        for name in sorted(wanted | set(owned))
+    }
+
+
+def _sync_secrets(
+    pid: str, public: dict, record: dict, journal: dict, write, folders: list[str]
+) -> dict:
+    """Write the bound value to each reference file the plan names, and delete the ones it
+    dropped, under the same project lock and journal, after the materials settled. Returns the
+    written names' inodes, each re-read by path (`secret_files.settle`)."""
+    effects = journal.get("secrets", {})
+    if {n for n, e in effects.items() if e["action"] == "write"} != {
+        row["name"] for row in public["secret_files"]
+    }:
+        raise store.Conflict("the accepted apply plan no longer reproduces")
+    if not effects:
+        return {}
+    top = journal["secret_root"]
+    owned = secret_files.validate_owned(record.get("secret_files", {}))
+    if owned and record.get("secret_root") != top:
+        raise store.Conflict("the deployment's secret files moved roots; remove and deploy again")
+    secret_files.check_outside(folders, pid)
+    # The project directory is journaled before any write: removal must find THIS directory.
+    if journal.get("secret_dir") is None:
+        if owned and record.get("secret_dir") is not None:
+            # Its files' directory, re-proven: a replacement directory is refused, never adopted.
+            secret_files.reap(top, pid, [], [], record["secret_dir"])
+            journal["secret_dir"] = record["secret_dir"]
+        else:
+            journal["secret_dir"] = secret_files.directory(top, pid)
+        write()
+    expected = journal["secret_dir"]
+    # The revision each secret had in the ACCEPTED review: a value rotated since is not written.
+    accepted = {row["name"]: row.get("revision") for row in public["variables"]}
+    resolver = None
+    for name, effect in sorted(effects.items()):
+        if effect["phase"] == "done":
+            continue
+        if effect["action"] == "delete":
+            # `kept`: the name no longer holds the recorded file, so it is not ours to delete.
+            secret_files.reap(top, pid, [name], [owned[name]], expected)
+            effect["phase"] = "done"
+            write()
+            continue
+        if resolver is None:
+            try:
+                resolver = lifecycle.template_vars.resolver(pid)  # one strict snapshot
+            except lifecycle.template_vars.ResolutionUnavailable:
+                raise store.StoreError(
+                    "the variables store could not be read in full", status=503
+                ) from None
+        try:
+            revision = resolver.secret_state(name)["revision"]
+            value = resolver.secret(name)
+        except (
+            lifecycle.template_vars.BindingMissing,
+            lifecycle.template_vars.BindingUnusable,
+        ) as e:
+            raise store.StoreError(str(e), status=409) from None
+        if revision is None or revision != accepted.get(name):
+            raise store.Conflict(f"{name}: the secret changed since the review; review it again")
+        secret_files.write(top, pid, name, value, effect, owned.get(name), write, expected, folders)
+    written = {n: e["inode"] for n, e in sorted(effects.items()) if e["action"] == "write"}
+    secret_files.settle(top, pid, written, folders)
+    return written
+
+
+def proven_secrets(record: dict) -> dict[str, dict]:
+    """Every reference-file name an apply may have left, with the inodes proven ours there.
+
+    Per name: the inode the record owns, plus (while an apply is unsettled) the inode its journal
+    created, with the staging name that inode was given. Removal reaps the final and staging
+    names against exactly those inodes, so a publication interrupted at any point is found.
+    """
+    owned = secret_files.validate_owned(record.get("secret_files", {}))
+    out = {
+        name: {
+            "inodes": [list(inode)],
+            "names": [name],
+            "root": record.get("secret_root"),
+            "directory": record.get("secret_dir"),
+        }
+        for name, inode in owned.items()
+    }
+    journal = _journal(record)
+    if journal is None or journal["state"] == "complete":
+        return out
+    for name, effect in journal.get("secrets", {}).items():
+        row = out.setdefault(
+            name,
+            {
+                "inodes": [],
+                "names": [name],
+                "root": journal.get("secret_root"),
+                "directory": journal.get("secret_dir"),
+            },
+        )
+        if effect["inode"] is not None:
+            row["inodes"].append(list(effect["inode"]))
+            row["names"].append(effect["staging"])
+    return out
 
 
 def verify_facts(bundle: dict) -> dict:
@@ -607,6 +747,7 @@ def review_facts(public: dict) -> dict:
         "assignments": public["assignments"],
         "capability_requests": sorted(public["capability_requests"]),
         "variables": sorted(v["name"] for v in public["variables"]),
+        "secret_files": sorted(row["name"] for row in public["secret_files"]),
     }
 
 

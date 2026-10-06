@@ -59,6 +59,7 @@ STORE_ENV_PATHS: dict[str, str] = {
     "AGENT_SESSIONS_TEMPLATE_VARS": ".config/agent-sessions/template-variables.json",
     "AGENT_SESSIONS_TEMPLATE_SECRETS_KEY": ".config/agent-sessions/template-secrets.key",
     "AGENT_SESSIONS_PLAYBOOKS_DIR": ".config/agent-sessions/playbooks",  # #1191 local playbooks
+    "AGENT_SESSIONS_PLAYBOOK_SECRETS": ".config/agent-sessions/playbook-secrets",  # #1191
     "AGENT_SESSIONS_PULSE_CACHE": ".config/agent-sessions/pulse-cache.json",
     "AGENT_SESSIONS_WORK_RECAP": ".config/agent-sessions/work-recap.json",  # #1086
     "AGENT_SESSIONS_NEEDS_YOU_DISMISSED": ".config/agent-sessions/needs-you-dismissed.json",
@@ -338,6 +339,11 @@ def _isolate_prefs(tmp_path, monkeypatch) -> None:
     # …and the local playbook store (#1191), which BattleLab writes whole bundle trees into.
     monkeypatch.setenv(
         "AGENT_SESSIONS_PLAYBOOKS_DIR", str(tmp_path / ".config" / "agent-sessions" / "playbooks")
+    )
+    # …and the plaintext secret reference files a deployment writes (#1191 format 3).
+    monkeypatch.setenv(
+        "AGENT_SESSIONS_PLAYBOOK_SECRETS",
+        str(tmp_path / ".config" / "agent-sessions" / "playbook-secrets"),
     )
     monkeypatch.setenv(
         "AGENT_SESSIONS_TEMPLATE_SUGGESTIONS",

@@ -11,7 +11,7 @@ import hashlib
 import re
 from dataclasses import dataclass
 
-from ..template_send import FIELD_TOKEN_RE, substitute
+from ..template_send import FIELD_TOKEN_RE
 from . import schema
 from .tree import Tree
 
@@ -32,14 +32,33 @@ def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def render(bundle: dict, tree: Tree, values: dict[str, str]) -> list[Material]:
+#: Both token kinds in ONE pass, so a substituted value is never parsed again as a token.
+_TOKENS = re.compile(f"{FIELD_TOKEN_RE.pattern}|{schema.SECRET_PATH_RE.pattern}")
+
+
+def secret_names(bundle: dict, tree: Tree) -> list[str]:
+    """The secret variables whose reference FILE the template materials name, sorted."""
+    names = set()
+    for material in bundle["materials"]:
+        if material["kind"] == schema.MATERIAL_ALIAS or not material["template"]:
+            continue
+        text = tree.files[f"{schema.MATERIALS_DIR}/{material['path']}"].decode("utf-8")
+        names.update(m.group(1) for m in schema.SECRET_PATH_RE.finditer(text))
+    return sorted(names)
+
+
+def render(
+    bundle: dict, tree: Tree, values: dict[str, str], secret_paths: dict[str, str] | None = None
+) -> list[Material]:
     """Render literal tokens once; preserve verbatim and binary materials byte for byte.
 
-    The caller supplies only resolved text. Defensive checks also refuse a secret/unknown token
-    or an unresolved/non-text value rather than carrying it into a workspace document. Values
+    The caller supplies only resolved text, and for `{{secret_path:<name>}}` the reference file's
+    PATH (never a secret value). Defensive checks also refuse a secret/unknown token or an
+    unresolved/non-text value rather than carrying it into a workspace document. Values
     themselves are never parsed a second time as templates. Expansion retains the bundle bounds.
     """
     fields = {field["name"]: field for field in bundle["variables"]}
+    paths = secret_paths or {}
     out: list[Material] = []
     total = 0
     for material in bundle["materials"]:
@@ -51,13 +70,23 @@ def render(bundle: dict, tree: Tree, values: dict[str, str]) -> list[Material]:
         data = tree.files[f"{schema.MATERIALS_DIR}/{path}"]
         if material["template"]:
             text = data.decode("utf-8")
-            for match in FIELD_TOKEN_RE.finditer(text):
+
+            def one(match: re.Match, path: str = path) -> str:
                 name = match.group(1)
+                if name is None:
+                    secret = match.group(2)
+                    if secret not in fields or fields[secret]["kind"] != "secret":
+                        raise MaterialError(f"{path}: {secret} is not a declared secret variable")
+                    if not isinstance(paths.get(secret), str):
+                        raise MaterialError(f"{path}: {secret} has no secret reference file")
+                    return paths[secret]
                 if name not in fields or fields[name]["kind"] != "text":
                     raise MaterialError(f"{path}: {name} is not a declared text variable")
                 if not isinstance(values.get(name), str):
                     raise MaterialError(f"{path}: {name} needs a resolved text value")
-            data = substitute(text, list(fields.values()), values).encode("utf-8")
+                return values[name]
+
+            data = _TOKENS.sub(one, text).encode("utf-8")
         total += len(data)
         if len(data) > schema.MAX_FILE_BYTES or total > schema.MAX_TOTAL_BYTES:
             raise MaterialError(f"{path}: rendered materials exceed the bundle size limit")
