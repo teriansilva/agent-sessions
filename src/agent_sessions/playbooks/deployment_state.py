@@ -221,6 +221,22 @@ def active(project_id: str) -> dict | None:
     return record if record is not None and holds(record) else None
 
 
+def project_ids() -> list[str]:
+    """Every project with a deployment record, under the shared authoring lock (read-only)."""
+    with store.root_lock(exclusive=False) as root:
+        if root is None:
+            return []
+        directory = _directory(root, DIRECTORY, False)
+        if directory is None:
+            return []
+        try:
+            names = sorted(os.listdir(directory))
+            _verify(root, DIRECTORY, directory)
+        finally:
+            os.close(directory)
+    return [template_vars.project_id(name) for name in names]
+
+
 class Registry:
     """Called only inside the authoring store's exclusive root lock; never reacquire it."""
 

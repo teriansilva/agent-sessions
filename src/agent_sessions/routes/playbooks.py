@@ -12,6 +12,8 @@
 * ``DELETE /api/playbooks/{pid}/default``      — clear the default (only if it is ``pid``)
 * ``POST   /api/playbooks/{pid}/review``       — resolve unsaved deployment inputs; no effects
 * ``POST   /api/playbooks/{pid}/review/confirm`` — confirm named targets on the exact review
+* ``GET    /api/playbooks/{pid}/projects``     — fleet: every project running it, update available
+* ``POST   /api/playbooks/{pid}/fleet/review`` — the combined update review (batchable or why not)
 
 Single-project deployment lifecycle (#1191), under ``/api/projects/{project}/playbook``:
 
@@ -38,7 +40,7 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from .. import template_vars
-from ..playbooks import apply, lifecycle, remove, review, store
+from ..playbooks import apply, fleet, lifecycle, remove, review, store
 
 NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 PREFIX = "/api/playbooks"
@@ -343,3 +345,21 @@ def register(app: FastAPI, *, logged_in, csrf_guard, signing_key: str) -> None:
         _csrf: None = Depends(csrf_guard),
     ) -> JSONResponse:
         return await _write(_remove, project, request)
+
+    def _fleet_review(pid: str, body: dict) -> dict:
+        _only(body, set(), set(), "a fleet review")
+        return fleet.plan(pid, key=signing_key)
+
+    @app.get(PREFIX + "/{pid}/projects")
+    async def playbook_projects(pid: str, _user: str = Depends(logged_in)) -> JSONResponse:
+        out = await _run(fleet.projects, pid)
+        return out if isinstance(out, JSONResponse) else _json(out)
+
+    @app.post(PREFIX + "/{pid}/fleet/review")
+    async def review_fleet_update(
+        pid: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        return await _write(_fleet_review, pid, request)

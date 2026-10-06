@@ -558,6 +558,7 @@ def apply(pid: str, op: str, receipt: str, *, key: str) -> dict:
                     created.setdefault(rel, identity)
             record["files"] = _ownership(changes, journal["effects"], record.get("files", {}))
             record["rituals"] = rituals(plan.public, record["id"])
+            record["review_facts"] = review_facts(plan.public)
             record["generation"] = record.get("generation", 0) + 1
             record["state"] = "applied"
             journal["state"] = "complete"
@@ -574,6 +575,25 @@ def apply(pid: str, op: str, receipt: str, *, key: str) -> dict:
             }
             write()
             return copy.deepcopy(result)
+
+
+def review_facts(public: dict) -> dict:
+    """The baseline a fleet update is compared against (#1191): the deployed revision's resolved
+    probe targets, assignments, capability requests and variable names. The store keeps only a
+    playbook's current revision, so the deployed facts are recorded here. No secret value enters:
+    a secret is never a probe argument, and only variable NAMES are kept."""
+    return {
+        "targets": sorted(
+            (
+                {k: v for k, v in t.items() if k != "requires_confirmation"}
+                for t in public["targets"]
+            ),
+            key=lambda t: t["id"],
+        ),
+        "assignments": public["assignments"],
+        "capability_requests": sorted(public["capability_requests"]),
+        "variables": sorted(v["name"] for v in public["variables"]),
+    }
 
 
 def rituals(public: dict, deployment: str) -> list[dict]:
