@@ -865,7 +865,7 @@ body.hud-static-grid {
 }
 
 @media (max-width: 1100px) {
-  /* The bar carries five sections and four corner controls now. Below a full desktop the first
+  /* The bar carries four sections (two with a chevron) and three corner controls since #1294. Below a full desktop the first
      things to go are the decorations: the section ICONS (the label is the name) and the operator
      tile's username (the panel repeats it in full the moment it opens). */
   .section-nav a {
@@ -966,7 +966,7 @@ body.hud-static-grid {
 }
 
 /* The wordmark is the last thing the row can afford at phone widths: the ◢ mark alone keeps the
-   brand present while the five sections, the bell and the operator tile take the space. */
+   brand present while the sections, Ask, the bell and the operator tile take the space. */
 @media (max-width: 480px) {
   .hud-brand .wm {
     display: none;
