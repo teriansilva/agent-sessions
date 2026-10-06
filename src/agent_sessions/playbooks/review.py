@@ -23,6 +23,7 @@ from . import (
     deployment_state,
     destination,
     flow_document,
+    instructions,
     materials,
     mutation_plan,
     schema,
@@ -204,17 +205,26 @@ def build(
             rendered = flow_document.include(
                 rendered, flow_document.render(bundle, resolved.text, assignments, targets)
             )
+            # Every present engine reads the playbook's instructions (§11), derived per roster.
+            engines_present = instructions.present()
+            rendered = instructions.include(rendered, bundle, engines_present)
             owned = mutation_plan.ownership((active or {}).get("files", {}))
             deployment_id = (active or {}).get("id") or "d-" + _digest(
                 {"playbook": playbook_id, "destination": asdict(folder), "project": pid}, key
             )[:40]
             # Validates a stored identity before it can become a marker or filesystem name.
             materials._markers(deployment_id)
-            nodes = (
-                destination.snapshot(folder, sorted({m.path for m in rendered} | set(owned)))
-                if _prestate is None
-                else _prestate
-            )
+            touched = sorted({m.path for m in rendered} | set(owned))
+            if len(touched) > schema.MAX_MATERIALS:
+                # One hard limit over the full union, never worked around: an update that would
+                # touch more paths than one checked snapshot admits is refused, reversibly.
+                raise materials.MaterialError(
+                    f"this deployment would touch {len(touched)} paths (the playbook's materials, "
+                    "its instruction aliases for the present engines and the paths it already "
+                    f"owns), over the {schema.MAX_MATERIALS}-material limit; remove a material "
+                    "from the playbook, or remove the deployment and apply it again"
+                )
+            nodes = destination.snapshot(folder, touched) if _prestate is None else _prestate
             changes, conflicts = mutation_plan.build(rendered, nodes, owned, deployment_id)
             public = {
                 "playbook": {
@@ -269,6 +279,7 @@ def build(
                     for path, n in nodes.items()
                 },
                 "roster": roster,
+                "instructions": engines_present,
                 "policy": {
                     "roots": project_dirs.effective_roots(),
                     "exclusions": prefs.get_folder_exclusions(),

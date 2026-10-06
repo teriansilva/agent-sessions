@@ -26,6 +26,7 @@ from ..fsbrowse import FsError
 from . import deployment_state as state
 from . import (
     destination,
+    instructions,
     lifecycle,
     material_write,
     materials,
@@ -672,4 +673,7 @@ def status(pid: str) -> dict:
         )
     elif record["state"] not in {"bound", "applied", "removed"}:
         out["state"] = "interrupted"  # never expose an internal state
+    if out["state"] == "applied":
+        # An engine installed after apply reads none of this playbook's instructions yet (§11).
+        out["instructions_missing"] = instructions.missing(record, instructions.present())
     return out

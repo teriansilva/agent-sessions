@@ -439,6 +439,18 @@ def _isolate_edit_recovery(tmp_path, monkeypatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _pin_playbook_instruction_roster(monkeypatch) -> None:
+    """Playbook review derives an instruction alias per PRESENT engine (#1191 §11).
+
+    Presence follows the host's real agent binaries, so a review's materials (and its digest)
+    would depend on which agents the machine running the test has installed (the CI runner is not
+    this laptop). Pin an empty roster; tests that exercise the derivation set a fixture roster."""
+    from agent_sessions.playbooks import instructions
+
+    monkeypatch.setattr(instructions, "present", lambda: {})
+
+
+@pytest.fixture(autouse=True)
 def _isolate_agent_usage(tmp_path, monkeypatch) -> None:
     """Point the per-agent usage store (#839) at a per-test tmp file.
 
