@@ -624,8 +624,22 @@ def proven(record: dict, *, key: str) -> tuple[dict, dict]:
     return files, directories
 
 
+def _effects(journal: dict, done: str, not_done: str) -> list[dict]:
+    return [
+        {
+            "path": path,
+            "action": effect["action"],
+            "state": {"done": done, "pending": not_done}.get(effect["phase"], "unknown"),
+        }
+        for path, effect in sorted(journal["effects"].items())
+        if effect["action"] != "keep"
+    ]
+
+
 def status(pid: str) -> dict:
-    """The deployment's state and, for an unsettled apply, each path's last known effect."""
+    """The deployment's state. Any unsettled operation, whether bind, apply or remove, is
+    `interrupted` with its `operation`, the `operation_id` a retry must reuse, and per-path
+    effects where it has them. Internal record states are never exposed."""
     pid = lifecycle.template_vars.project_id(pid)
     with state.locked(pid) as locked:
         record = locked.read() if locked is not None else None
@@ -638,19 +652,24 @@ def status(pid: str) -> dict:
         "state": record["state"],
         "generation": record.get("generation", 0),
     }
-    journal = _journal(record)
-    if journal is not None and journal["state"] != "complete":
-        out["state"] = "interrupted"
-        out["operation_id"] = journal["id"]
-        out["files"] = [
-            {
-                "path": path,
-                "action": effect["action"],
-                "state": {"done": "written", "pending": "not written"}.get(
-                    effect["phase"], "unknown"
-                ),
-            }
-            for path, effect in sorted(journal["effects"].items())
-            if effect["action"] != "keep"
-        ]
+    removal = record.get("removal_operation")
+    applying = _journal(record)
+    binding = record.get("binding_operation")
+    if isinstance(removal, dict):
+        # Present only while unsettled: a settled removal drops every journal.
+        out.update(state="interrupted", operation="remove", operation_id=removal.get("id"))
+        out["files"] = _effects(removal, "removed", "not removed")
+    elif applying is not None and applying["state"] != "complete":
+        out.update(state="interrupted", operation="apply", operation_id=applying["id"])
+        out["files"] = _effects(applying, "written", "not written")
+    elif record["state"] == "binding_intent" or (
+        isinstance(binding, dict) and binding.get("state") != "complete"
+    ):
+        out.update(
+            state="interrupted",
+            operation="bind",
+            operation_id=binding.get("id") if isinstance(binding, dict) else None,
+        )
+    elif record["state"] not in {"bound", "applied", "removed"}:
+        out["state"] = "interrupted"  # never expose an internal state
     return out

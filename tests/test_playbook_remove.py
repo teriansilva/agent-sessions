@@ -164,8 +164,7 @@ def test_a_directory_holding_operator_files_is_kept_and_reported(setup):
 def test_a_replaced_created_directory_is_never_deleted(setup):
     folder, _ = setup
     entity = applied(setup)
-    # Moved aside (not deleted) so the replacement cannot reuse the inode number: inode identity
-    # cannot tell a reused number apart, which for an EMPTY directory loses no data (see doc).
+    # Removal never deletes directories, so even a replaced one is simply left and reported.
     os.rename(folder / "docs", folder / "docs-aside")
     (folder / "docs").mkdir()  # an operator's directory at the same name
     result = remove.remove(

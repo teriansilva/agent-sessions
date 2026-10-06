@@ -688,7 +688,11 @@ def test_no_playbook_route_exposes_a_parameter_as_request_input(auth_cfg):
     seen = []
     for route in app.routes:
         path = getattr(route, "path", "")
-        if not (path == routes.PREFIX or path.startswith(routes.PREFIX + "/")):
+        if not (
+            path == routes.PREFIX
+            or path.startswith(routes.PREFIX + "/")
+            or path.startswith(routes.DEPLOY)
+        ):
             continue
         seen.append((sorted(route.methods), path))
         flat = get_flat_dependant(route.dependant)
@@ -702,8 +706,9 @@ def test_no_playbook_route_exposes_a_parameter_as_request_input(auth_cfg):
             )
         ]
         assert exposed == [], (path, exposed)
-        assert {p.name for p in flat.path_params} <= {"pid", "name"}, path
-    assert len(seen) == 10, seen  # authoring + review/confirm; recovery has no purge endpoint
+        assert {p.name for p in flat.path_params} <= {"pid", "name", "project"}, path
+    # authoring + review/confirm + the deployment lifecycle; recovery has no purge endpoint
+    assert len(seen) == 15, seen
 
 
 def test_the_routes_need_a_session_csrf_and_the_origin_and_are_never_cached(auth_cfg, tmp_home):

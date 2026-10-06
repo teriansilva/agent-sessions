@@ -13,6 +13,14 @@
 * ``POST   /api/playbooks/{pid}/review``       — resolve unsaved deployment inputs; no effects
 * ``POST   /api/playbooks/{pid}/review/confirm`` — confirm named targets on the exact review
 
+Single-project deployment lifecycle (#1191), under ``/api/projects/{project}/playbook``:
+
+* ``GET    …/playbook``              — deployment status (``interrupted`` lists each path's state)
+* ``POST   …/playbook/bind``         — ``{playbook_id, inputs, receipt, operation_id}``
+* ``POST   …/playbook/apply``        — ``{receipt, operation_id}``; a same-id retry recovers
+* ``POST   …/playbook/remove/plan``  — the removal dry run and the digest that authorizes it
+* ``POST   …/playbook/remove``       — ``{digest, operation_id}``; a same-id retry recovers
+
 Reads need a session; every write needs the session AND ``csrf_guard`` (which carries the
 Origin/Referer check). Every response is ``no-store``. Each handler reads its own input — the path
 id, and a body or ``revision`` query value it validates itself — so FastAPI binds nothing else from
@@ -24,14 +32,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from ..playbooks import review, store
+from .. import template_vars
+from ..playbooks import apply, lifecycle, remove, review, store
 
 NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 PREFIX = "/api/playbooks"
+DEPLOY = "/api/projects/{project}/playbook"
+_DEPLOY_PATH = re.compile(r"/api/projects/[^/]+/playbook(?:/.*)?")
 #: A bundle is at most 8 MiB of files; base64 and JSON escaping inflate that, so the body cap is
 #: twice it. Anything past this is refused while it streams in, never buffered first.
 BODY_MAX = 2 * 8 * 1024 * 1024
@@ -94,11 +106,30 @@ def _set_default(pid: str, body: dict) -> dict:
     return store.set_default(pid, store.revision(body["revision"]), body["expect_default"])
 
 
+def _receipt(body: dict) -> str:
+    """Bounded by the largest receipt `review.confirm` can sign, so a valid one is never refused."""
+    value = body.get("receipt")
+    if (
+        not isinstance(value, str)
+        or not value.isascii()
+        or not 0 < len(value) <= review.RECEIPT_MAX
+    ):
+        raise store.StoreError("receipt must be the token the server issued")
+    return value
+
+
+def _digest(body: dict) -> str:
+    value = body.get("digest")
+    if not isinstance(value, str):
+        raise store.StoreError("digest must be the one the removal plan returned")
+    return store.revision(value)
+
+
 def register(app: FastAPI, *, logged_in, csrf_guard, signing_key: str) -> None:
     @app.middleware("http")
     async def _playbooks_are_never_cached(request: Request, call_next):
         path = request.url.path
-        if not (path == PREFIX or path.startswith(PREFIX + "/")):
+        if not (path == PREFIX or path.startswith(PREFIX + "/") or _DEPLOY_PATH.fullmatch(path)):
             return await call_next(request)
         try:
             response = await call_next(request)
@@ -114,6 +145,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard, signing_key: str) -> None:
             return await asyncio.to_thread(fn, *args)
         except store.StoreError as e:
             return _err(e)
+        except template_vars.VariableError as e:
+            return _json({"detail": str(e)}, 422)
 
     async def _read_body(request: Request):
         try:
@@ -238,3 +271,75 @@ def register(app: FastAPI, *, logged_in, csrf_guard, signing_key: str) -> None:
             return body
         out = await _run(_review, pid, body, True)
         return out if isinstance(out, JSONResponse) else _json(out)
+
+    def _bind(project: str, body: dict) -> dict:
+        fields = {"playbook_id", "inputs", "receipt", "operation_id"}
+        _only(body, fields, fields, "a bind")
+        return lifecycle.bind(
+            project,
+            body["playbook_id"],
+            body["inputs"],
+            _receipt(body),
+            body["operation_id"],
+            key=signing_key,
+        )
+
+    def _apply(project: str, body: dict) -> dict:
+        _only(body, {"receipt", "operation_id"}, {"receipt", "operation_id"}, "an apply")
+        return apply.apply(project, body["operation_id"], _receipt(body), key=signing_key)
+
+    def _remove_plan(project: str, body: dict) -> dict:
+        _only(body, set(), set(), "a removal plan")
+        return remove.plan(project, key=signing_key)
+
+    def _remove(project: str, body: dict) -> dict:
+        _only(body, {"digest", "operation_id"}, {"digest", "operation_id"}, "a removal")
+        return remove.remove(project, body["operation_id"], _digest(body), key=signing_key)
+
+    async def _write(fn, project: str, request: Request) -> JSONResponse:
+        body = await _read_body(request)
+        if isinstance(body, JSONResponse):
+            return body
+        out = await _run(fn, project, body)
+        return out if isinstance(out, JSONResponse) else _json(out)
+
+    @app.get(DEPLOY)
+    async def deployment_status(project: str, _user: str = Depends(logged_in)) -> JSONResponse:
+        out = await _run(apply.status, project)
+        return out if isinstance(out, JSONResponse) else _json(out)
+
+    @app.post(DEPLOY + "/bind")
+    async def bind_deployment(
+        project: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        return await _write(_bind, project, request)
+
+    @app.post(DEPLOY + "/apply")
+    async def apply_deployment(
+        project: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        return await _write(_apply, project, request)
+
+    @app.post(DEPLOY + "/remove/plan")
+    async def plan_deployment_removal(
+        project: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        return await _write(_remove_plan, project, request)
+
+    @app.post(DEPLOY + "/remove")
+    async def remove_deployment(
+        project: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        return await _write(_remove, project, request)

@@ -299,6 +299,18 @@ def build(
         ) from None
 
 
+#: The largest receipt `confirm` can sign: every flow checklist target plus every connection, each
+#: id at its schema maximum, as compact JSON, base64'd by the signer, plus the digest and signature.
+_TARGET_ID_MAX = max(
+    len("flow:") + 48 + 1 + 32 + 1 + schema.ITEM_KEY_MAX,
+    len("connection:") + schema.NAME_MAX,
+)
+_TARGETS_MAX = (
+    schema.MAX_FLOWS * schema.MAX_STEPS * schema.MAX_ITEMS_PER_STEP + schema.MAX_CONNECTIONS
+)
+RECEIPT_MAX = (_TARGETS_MAX * (_TARGET_ID_MAX + 3) + 256) * 4 // 3 + 256
+
+
 def confirm(plan: Plan, expected: object, targets: object, *, key: str) -> dict:
     """Confirm exact named targets from this recomputed review. Never fetch or execute one."""
     digest = store.revision(expected)
@@ -315,6 +327,7 @@ def confirm(plan: Plan, expected: object, targets: object, *, key: str) -> dict:
         raise store.StoreError("confirmations must name each reviewed target at most once")
     chosen = sorted(targets)
     receipt = URLSafeTimedSerializer(key, salt=_SALT).dumps({"digest": digest, "targets": chosen})
+    assert len(receipt) <= RECEIPT_MAX, "RECEIPT_MAX must bound every receipt confirm can sign"
     return {
         "digest": digest,
         "confirmed_targets": chosen,
