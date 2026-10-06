@@ -22,7 +22,10 @@ const CI_RUN = process.env.GITHUB_RUN_ID ?? process.env.GITHUB_RUN_NUMBER;
 const PORT = Number(
   process.env.E2E_PORT ?? (CI_RUN ? 41000 + ((Number(CI_RUN) % 4000) + 1) : 41873),
 );
-const PREVIEW_URL = `http://localhost:${PORT}`;
+// 127.0.0.1, not localhost: hosts that resolve localhost to ::1 first (example-host) bind the
+// preview server IPv6-only, and the homefree specs' `MAP battlelab.superstatus.io 127.0.0.1`
+// resolver rule then gets ERR_CONNECTION_REFUSED.
+const PREVIEW_URL = `http://127.0.0.1:${PORT}`;
 
 export default defineConfig({
   testDir: "./e2e",
@@ -63,7 +66,7 @@ export default defineConfig({
   webServer: process.env.E2E_BASE_URL
     ? undefined
     : {
-        command: `npm run preview -- --port ${PORT} --strictPort`,
+        command: `npm run preview -- --host 127.0.0.1 --port ${PORT} --strictPort`,
         url: PREVIEW_URL,
         reuseExistingServer: !process.env.CI,
         timeout: 60_000,

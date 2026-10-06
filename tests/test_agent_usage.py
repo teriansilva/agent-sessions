@@ -1576,6 +1576,12 @@ def test_a_codex_probe_that_cannot_answer_falls_back_to_the_rollout(tmp_path, mo
     assert "network is unreachable" in rep.error
 
 
+#: Before the codex fixtures' reset (1791046988 = 2026-10-03T17:03Z). Pinned, not read from the
+#: clock: readers drop windows that have already reset, so a real-clock `now` made both
+#: failed-live-read tests below start failing on every PR once that moment passed.
+_CODEX_FIXTURE_NOW = 1791046988 - 3600
+
+
 def _codex_refresh(tmp_path, monkeypatch, rollout_ts: str, probe_ok: bool):
     """Drive the REAL `probe_codex` → `refresh` path; only the CLI and the store are stubbed."""
     from agent_sessions.engines import base
@@ -1599,13 +1605,15 @@ def _codex_refresh(tmp_path, monkeypatch, rollout_ts: str, probe_ok: bool):
     )
     monkeypatch.setattr(base.Path, "home", lambda: tmp_path)
     monkeypatch.setitem(
-        au.REPORTERS, "codex", lambda: au.probe_codex(binary="/opt/codex", engine="codex")
+        au.REPORTERS,
+        "codex",
+        lambda: au.probe_codex(binary="/opt/codex", engine="codex", now=_CODEX_FIXTURE_NOW),
     )
     return au.refresh(path=tmp_path / "usage.json", engines=["codex"], budgets=BUDGETS)
 
 
 def _codex_row(tmp_path):
-    rows = au.build_rows(au.load(tmp_path / "usage.json")["reports"], BUDGETS, time.time())
+    rows = au.build_rows(au.load(tmp_path / "usage.json")["reports"], BUDGETS, _CODEX_FIXTURE_NOW)
     return next(r for r in rows if r["engine"] == "codex")
 
 
