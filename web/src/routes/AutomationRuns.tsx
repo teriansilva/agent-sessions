@@ -1,4 +1,4 @@
-/** Missions → Automations → one automation's run history (#1201 board 3).
+/** Library → Automations → one automation's run history (#1201 board 3).
  *
  *  Every run is here, including the ones that did not run: skipped, refused and interrupted slots
  *  are runs too, each with the server's reason, so "why didn't it run at 03:00?" always has an

@@ -436,7 +436,7 @@ test("every interactive control on a phone is ≥44px, focusable, and inside the
       await expect(page.getByTestId("new-mission-project")).toBeVisible();
     },
     // ASK was a mode of this composer and is a route of its own since #1058, so it is no longer
-    // one of the CONSOLE's surfaces. Its own 44px audit lives in `ask-page.spec.ts`.
+    // one of the CONSOLE's surfaces. Its own 44px audit lives in `ask-sidebar.spec.ts`.
     async () => {
       // The rail, in the shell's drawer. Measured only while it is reachable — see the sweep.
       await openMissionRail(page);

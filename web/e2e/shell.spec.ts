@@ -110,9 +110,9 @@ test("opens the fullscreen session map from the Sessions sub-menu at every width
 test("the Sessions label still goes straight to the sessions view; Escape closes its menu back onto the chevron (#1069)", async ({
   page,
 }) => {
-  await page.goto("/ask");
+  await page.goto("/dashboard");
   const bar = page.locator(".hud-topbar");
-  // Ask leads the row.
+  // Dashboard leads the row.
   await expect(bar.locator(".section-nav > *").first()).toContainText("Dashboard");
   const chevron = bar.getByRole("button", { name: "Sessions menu" });
   await chevron.click();

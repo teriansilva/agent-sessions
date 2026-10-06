@@ -24,8 +24,8 @@ export const LEGACY_MISSION_PATH = "/pulse";
  *  that opens a conversation on `ASK_PATH` (#1171). */
 export const DASHBOARD_PATH = "/dashboard";
 
-/** Ask's conversation page (#878, #1058). #1123 folded it into the dashboard; #1171 gives the
- *  conversation its page back, under Dashboard in the nav — asking on the dashboard lands here. */
+/** Ask's old conversation page (#878, #1171). Since #1294 Ask is the right-hand sidebar the corner
+ *  icon opens; this path survives only as a link that lands on the dashboard with the sidebar open. */
 export const ASK_PATH = "/ask";
 
 /** The session map (#208 / #424). Labelled MAP in the nav; the path is unchanged. */
@@ -34,11 +34,15 @@ export const MAP_PATH = "/overview";
 /** The instruction-template gallery (#905). */
 export const TEMPLATES_PATH = "/templates";
 
-/** The mission checklists (playbooks) editor, under Missions in the nav. It used to be a Settings
+/** Library → Playbooks (#1294): the home of #1096's playbooks. Its page is still in the works
+ *  (#1192); until then the route says so and points at what exists. */
+export const PLAYBOOKS_PATH = "/library/playbooks";
+
+/** The mission checklists editor, under Library in the nav (#1294; it was under Missions). It used to be a Settings
  *  tab (Settings → AI → Checklists); `/settings/ai-playbooks` still redirects here. */
 export const CHECKLISTS_PATH = `${MISSION_PATH}/checklists`;
 
-/** Missions → Automations (#1201): missions and sessions that run on a schedule, once, or on Run
+/** Library → Automations (#1201, moved from Missions by #1294 — the URL stayed): missions and sessions that run on a schedule, once, or on Run
  *  now. The list lives here; one automation's run history is `automationPath(id)`, its editor
  *  `automationEditPath(id)`, a new one `AUTOMATION_NEW_PATH`. The server links a failure
  *  notification to `automationPath(id)` too (`notifications.AUTOMATION_PATH`). */

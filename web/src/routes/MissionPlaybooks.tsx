@@ -93,7 +93,7 @@ function tally(p: MissionPlaybook) {
   return t;
 }
 
-/** `asPage` when it is the whole page (Missions → Checklists): its heading is then the page's `h1`. */
+/** `asPage` when it is the whole page (Library → Checklists): its heading is then the page's `h1`. */
 export function MissionPlaybooks({
   asPage = false,
   onUnsavedChange,

@@ -17,6 +17,12 @@ import {
   useNavigate,
 } from "react-router-dom";
 import { NotificationBell } from "../components/pulse/NotificationBell";
+import { AskSidebar, AskToggle } from "../components/ask/AskSidebar";
+import {
+  AskPanelContext,
+  useAskPanel,
+  type AskPanel,
+} from "../components/ask/askPanel";
 import { SessionList } from "../components/sidebar/SessionList";
 import { MissionRailSlotProvider } from "../components/pulse/railSlot";
 import { useModalDrawer } from "../components/pulse/useModalDrawer";
@@ -69,6 +75,7 @@ import {
   LEGACY_MISSION_PATH,
   MISSION_PATH,
   NEW_PROJECT_PATH,
+  PLAYBOOKS_PATH,
   TEMPLATES_PATH,
 } from "../lib/routes";
 import { SETTINGS_PATH } from "../routes/settingsTabs";
@@ -117,7 +124,7 @@ const Dashboard = lazyWithReload(
   () => import("../routes/Dashboard"),
   "dashboard",
 );
-const Ask = lazyWithReload(() => import("../routes/Ask"), "ask");
+const Playbooks = lazyWithReload(() => import("../routes/Playbooks"), "playbooks");
 // The New project wizard (#1187). Lazy like the others.
 const NewProject = lazyWithReload(
   () => import("../routes/NewProject"),
@@ -158,6 +165,23 @@ function Layout() {
   // now has exactly one owner (`useIsMobile`) shared with the map's window workspace (#208).
   const isMobile = useIsMobile();
   const location = useLocation();
+  /** THE ASK SIDEBAR (#1294): open on every route from the icon beside the bell. Owned here, above
+   *  `<Routes>`, so the conversation inside it outlives navigation (`AskSidebar`). */
+  const [askOpen, setAskOpen] = useState(false);
+  const askTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const openAsk = useCallback(() => setAskOpen(true), []);
+  const closeAsk = useCallback(() => setAskOpen(false), []);
+  const toggleAsk = useCallback(() => setAskOpen((o) => !o), []);
+  const askPanel = useMemo<AskPanel>(
+    () => ({
+      open: askOpen,
+      openAsk,
+      close: closeAsk,
+      toggle: toggleAsk,
+      triggerRef: askTriggerRef,
+    }),
+    [askOpen, openAsk, closeAsk, toggleAsk],
+  );
   const [sectionMemory] = useState(() => new Map<string, unknown>());
   const routePath = location.pathname + location.search;
   const isSessionPath =
@@ -311,7 +335,7 @@ function Layout() {
     settingsRoute ||
     location.pathname === NEW_PROJECT_PATH ||
     location.pathname === DASHBOARD_PATH ||
-    location.pathname === ASK_PATH ||
+    location.pathname === PLAYBOOKS_PATH ||
     location.pathname === TEMPLATES_PATH ||
     location.pathname.startsWith(`${TEMPLATES_PATH}/`);
   /** Which of the five work sections the current route belongs to, `null` on Settings (#1058).
@@ -453,6 +477,7 @@ function Layout() {
 
   return (
     <SectionStateContext.Provider value={sectionMemory}>
+      <AskPanelContext.Provider value={askPanel}>
       <WhatsNewCtx.Provider value={whatsNew.open}>
       <ButtonGlitch />
       <div
@@ -506,7 +531,9 @@ function Layout() {
           {/* The SYS clock and the MISSION uptime readout are gone (#1085): decoration the operator
               asked to drop, and the width goes back to the nav. */}
           <span className="hud-topbar-actions">
-            {/* The `?` and ⚙ that sat here moved into the operator menu (#1085). */}
+            {/* The `?` and ⚙ that sat here moved into the operator menu (#1085). Ask sits beside
+                the bell (#1294): it opens the right-hand sidebar on every route. */}
+            <AskToggle />
             <NotificationBell />
             {/* LAST, hard against the edge, and it KEEPS ITS PLACE on a phone (#1058): the bell
                 and the tile both carry `data-topbar-keep`, so the corner still answers "which
@@ -734,8 +761,9 @@ function Layout() {
                   <Route path={`${AUTOMATIONS_PATH}/:id`} element={<AutomationRuns />} />
                   <Route path={`${AUTOMATIONS_PATH}/:id/edit`} element={<AutomationEditor />} />
                   <Route path={DASHBOARD_PATH} element={<Dashboard />} />
-                  {/* #1171: a conversation has its own page under Dashboard. */}
-                  <Route path={ASK_PATH} element={<Ask />} />
+                  {/* Ask's old page (#1171): now the dashboard with the sidebar open (#1294). */}
+                  <Route path={ASK_PATH} element={<AskRedirect />} />
+                  <Route path={PLAYBOOKS_PATH} element={<Playbooks />} />
                   <Route path={NEW_PROJECT_PATH} element={<NewProject />} />
                   <Route path="/templates" element={<Templates />} />
                   <Route path="/templates/new" element={<TemplateEditor />} />
@@ -800,6 +828,8 @@ function Layout() {
           }}
         />
       )}
+      {/* Portalled to <body>; mounted on its first open and kept (#1294). */}
+      <AskSidebar />
       {whatsNew.release && (
         <WhatsNewDialog
           key={whatsNew.release.version}
@@ -812,6 +842,7 @@ function Layout() {
         />
       )}
       </WhatsNewCtx.Provider>
+      </AskPanelContext.Provider>
     </SectionStateContext.Provider>
   );
 }
@@ -822,6 +853,15 @@ function Layout() {
 function LegacyMissionRedirect() {
   const { search, hash } = useLocation();
   return <Navigate to={{ pathname: MISSION_PATH, search, hash }} replace />;
+}
+
+/** `/ask` was Ask's page until #1294. A link to it lands on the dashboard with the sidebar open. */
+function AskRedirect() {
+  const { openAsk } = useAskPanel();
+  useEffect(() => {
+    openAsk();
+  }, [openAsk]);
+  return <Navigate to={DASHBOARD_PATH} replace />;
 }
 
 export default function App() {

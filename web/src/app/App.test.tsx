@@ -157,7 +157,7 @@ test("desktop: the single command-bar toggle collapses then re-expands the sideb
   expect(app).not.toHaveClass("collapsed");
 });
 
-test("the command topbar names every work section, Ask first, the map under Sessions (#1058, #1069)", async () => {
+test("the command topbar names every work section, Library last, the map under Sessions (#1058, #1069, #1294)", async () => {
   // The map and the template gallery used to be unlabelled `.gear` icons in the action cluster,
   // beside Help and Settings, which are not destinations. Every destination is in the nav now —
   // and the ORDER is asserted, because "it contains four links" would pass on a nav that
@@ -179,7 +179,7 @@ test("the command topbar names every work section, Ask first, the map under Sess
     ["Dashboard", "/dashboard"],
     ["Sessions", "/"],
     ["Missions", "/mission"],
-    ["Templates", "/templates"],
+    ["Library", "/templates"],
   ]);
   // The map is one click away behind the Sessions chevron.
   await userEvent.click(
@@ -200,6 +200,27 @@ test("the command topbar names every work section, Ask first, the map under Sess
   expect(actions.querySelector('a[href="/overview"]')).toBeNull();
   expect(actions.querySelector('a[href="/templates"]')).toBeNull();
   expect(within(actions).getByTestId("operator-menu")).toBeInTheDocument();
+});
+
+test("Ask is the icon directly beside the bell, and it opens the right-hand sidebar (#1294)", async () => {
+  const { container } = render(<App />);
+  const topbar = container.querySelector(".hud-topbar") as HTMLElement;
+  const ask = await within(topbar).findByTestId("ask-toggle");
+  const bell = within(topbar).getByRole("button", { name: /^Notifications/ });
+  // Neighbours: the Ask icon's wrapper is the bell wrapper's previous sibling.
+  expect(ask.parentElement?.nextElementSibling).toBe(bell.parentElement);
+  expect(ask).toHaveAttribute("aria-expanded", "false");
+  // Not mounted until first asked for: no stream, no NEEDS YOU poll on a closed panel.
+  expect(screen.queryByTestId("ask-sidebar")).toBeNull();
+  await userEvent.click(ask);
+  const panel = await screen.findByTestId("ask-sidebar");
+  expect(panel).toHaveAttribute("data-open", "true");
+  expect(ask).toHaveAttribute("aria-expanded", "true");
+  expect(within(panel).getByRole("heading", { name: "Ask" })).toBeInTheDocument();
+  // Closing hides it but keeps it MOUNTED — that is what keeps a conversation (module note).
+  await userEvent.click(within(panel).getByRole("button", { name: "Close Ask" }));
+  expect(screen.getByTestId("ask-sidebar")).toHaveAttribute("data-open", "false");
+  expect(ask).toHaveAttribute("aria-expanded", "false");
 });
 
 test("the section labels stay in the DOM, so an icon-only bar is still named (#1058)", async () => {

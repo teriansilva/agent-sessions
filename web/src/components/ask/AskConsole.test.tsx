@@ -1,4 +1,4 @@
-/** ASK (#878, its own page since #1058) — the box's behaviour, plus the lifecycle rules that only
+/** ASK (#878; a page since #1058, the right-hand sidebar since #1294) — the box's behaviour, plus the lifecycle rules that only
  *  exist because the answers are transient.
  *
  *  Five of these descend from `Composer.test.tsx`, which descended from `Pulse.test.tsx`'s Ask cases
@@ -249,11 +249,13 @@ test("the page says these answers are not kept (#878)", async () => {
   mount(<AskConsole configured />);
   await userEvent.type(screen.getByTestId("composer-input"), "x");
   await userEvent.click(screen.getByTestId("composer-send"));
-  // The operator is told, rather than discovering it by reloading and finding nothing. The
-  // wording says PAGE now, not view — #1058 moved the surface, and the copy moved with it.
+  // The operator is told, rather than discovering it by reloading and finding nothing. Since #1294
+  // the conversation survives navigation (the sidebar keeps it), so the copy names what DOES end
+  // it: a reload, or New conversation.
   const note = await screen.findByTestId("ask-transient");
   expect(note).toHaveTextContent(/not kept|disappear/i);
-  expect(note).toHaveTextContent(/page/i);
+  expect(note).toHaveTextContent(/reload/i);
+  expect(note).toHaveTextContent(/new conversation/i);
 });
 
 test("a reply that lands AFTER leaving is DISCARDED, and returning finds nothing", async () => {
@@ -425,30 +427,18 @@ test("a failure after Stage 1 keeps its answer and says what went wrong beside i
   expect(screen.queryByTestId("ask-working")).toBeNull();
 });
 
-test("the dashboard's question is asked ONCE, even under StrictMode", async () => {
-  answerWith({ answer: "From the dashboard.", matches: [], stage: "catalog", configured: true });
-  render(
-    <StrictMode>
-      <MemoryRouter>
-        <AskConsole configured initialQuestion="asked on the dashboard" />
-      </MemoryRouter>
-    </StrictMode>,
-  );
-  expect(await screen.findByText("From the dashboard.")).toBeInTheDocument();
-  expect(api.pulseAskStream).toHaveBeenCalledTimes(1);
-  expect(screen.getAllByTestId("ask-turn")).toHaveLength(1);
-});
-
-test("the head is a way back to the dashboard and New conversation — nothing else", async () => {
+test("the head is New conversation and the sidebar's Close — nothing else (#1294)", async () => {
   answerWith({ answer: "ok", matches: [], stage: "catalog", configured: true });
-  mount(<AskConsole configured />);
+  const onClose = vi.fn();
+  mount(<AskConsole configured onClose={onClose} />);
   const head = screen.getByTestId("ask-head");
-  expect(
-    within(head).getByRole("link", { name: "Back to dashboard" }),
-  ).toHaveAttribute("href", "/dashboard");
   const fresh = within(head).getByRole("button", { name: "New conversation" });
-  expect(within(head).getAllByRole("button")).toEqual([fresh]);
-  expect(within(head).getAllByRole("link")).toHaveLength(1);
+  const close = within(head).getByRole("button", { name: "Close Ask" });
+  expect(within(head).getAllByRole("button")).toEqual([fresh, close]);
+  // No way "back": Ask is not a page any more.
+  expect(within(head).queryAllByRole("link")).toHaveLength(0);
+  await userEvent.click(close);
+  expect(onClose).toHaveBeenCalledTimes(1);
   // Nothing to start over from yet.
   expect(fresh).toBeDisabled();
 
@@ -516,27 +506,6 @@ test("leaving the page aborts the ask in flight", async () => {
   expect(signal?.aborted).toBe(false);
   await userEvent.click(screen.getByRole("button", { name: "leave" }));
   await waitFor(() => expect(signal?.aborted).toBe(true));
-});
-
-test("StrictMode's fake unmount does not abort the dashboard's handed-off question", async () => {
-  let signal: AbortSignal | undefined;
-  vi.mocked(api.pulseAskStream).mockImplementation(
-    (_q, _h, _on, s) =>
-      new Promise<void>(() => {
-        signal = s;
-      }),
-  );
-  render(
-    <StrictMode>
-      <MemoryRouter>
-        <AskConsole configured initialQuestion="from the dashboard" />
-      </MemoryRouter>
-    </StrictMode>,
-  );
-  await waitFor(() => expect(signal).toBeDefined());
-  await new Promise((r) => setTimeout(r, 20));
-  expect(signal?.aborted).toBe(false);
-  expect(screen.getByTestId("ask-working")).toBeInTheDocument();
 });
 
 test("an aborted ask that settles LATE does not unlock the box under the next question", async () => {

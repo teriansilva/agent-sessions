@@ -9,7 +9,7 @@ the [prompt catalog](/reference/), and nothing in BattleLab acts on a template's
 
 ## The library
 
-The **Templates** icon in the top bar opens `/templates`: a gallery of every template you have
+**Library** in the top bar (or **Library → Templates**) opens `/templates`: a gallery of every template you have
 saved.
 
 - **Sorted by last use** — the template you most recently *sent* comes first, then the most

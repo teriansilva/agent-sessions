@@ -1,11 +1,13 @@
 # Ask
 
-**Ask** is the home for the sessions that are not in a mission. It starts on the
-[Dashboard](/guide/dashboard) (`/dashboard`), which shows two things beside its tiles: **Recent
-work**, a short chronological account of what you did, and **Needs you**, only the sessions that are
-waiting on you. Docked at the bottom is the field itself, which answers questions about your work
-from the transcripts and missions this install can already see. **Enter** sends; **Shift+Enter**
-starts a new line.
+**Ask** answers questions about your work from the transcripts and missions this install can already
+see. It is a **sidebar**: the speech-bubble icon beside the notification bell opens it from any page,
+and it slides in from the right. The [Dashboard](/guide/dashboard)'s **Ask** button opens the same
+sidebar. **Enter** sends; **Shift+Enter** starts a new line.
+
+The sessions that are not in a mission are covered on the Dashboard by two lists: **Recent work**, a
+short chronological account of what you did, and **Needs you**, only the sessions that are waiting
+on you. Both are described below.
 
 **Needs you** lists only sessions waiting on you. Sessions that are just working or finished
 appear in Recent work and the Dashboard's tiles, never in Needs you. That is the point of the list:
@@ -69,11 +71,14 @@ out of date and offers no decision until it has read the current one.
 **Dismiss** rejects the pending decision and hides the session while its screen stays the same.
 The moment the screen changes, it can need you again. A dismissal is kept for **7 days**.
 
-## Once you've asked
+## The sidebar
 
-Asking opens the conversation on its own page, **Ask** (`/ask`, also in the Dashboard's chevron
-menu), with your question already running. Its only controls are the **back arrow** (to the
-Dashboard) and **New conversation**.
+Its only controls are **New conversation** and **✕** (close). On a wide screen it sits beside the
+page, so you can keep working while it answers. **Escape** closes it, and so does the icon that
+opened it. On a phone or a window 800px wide or less it covers the page; tap outside it or ✕ to
+close it. Opening a session or a mission from an answer closes it there and leaves it open on a
+wide screen. An old `/ask` link
+opens the Dashboard with the sidebar open.
 
 - While it works, the answer shows what it is doing: *Searching 140 sessions…*, then *Checking
   against 3 transcripts…*, with the seconds so far.
@@ -82,8 +87,9 @@ Dashboard) and **New conversation**.
 - An answer that names a session needing you carries the same *Needs you* marker and ⓘ as the
   list, whatever the list's filter.
 
-Answers are **transient**: leaving the page, or New conversation, discards the conversation and
-stops a question that is still running.
+Answers are **transient** and stay in memory only. Closing the sidebar or moving to another page
+keeps the conversation. **Reloading** the app or **New conversation** discards it and stops a
+question that is still running.
 
 ## Notifications
 
@@ -112,5 +118,5 @@ Settings → **Session review**:
 The Recent work window is set from the page itself (**1 day | 2 | 3**).
 
 ::: info Verified against
-`src/agent_sessions/needs_you.py § ROWS_MAX, KINDS, build`; `src/agent_sessions/work_recap.py § SESSIONS_MAX, INPUT_MAX, ENTRY_TEXT_MAX, ENTRIES_MAX`; `src/agent_sessions/routes/pulse.py § EDIT_TEXT_MAX, build_needs_you`; `src/agent_sessions/needs_you_dismissals.py § KEEP_S`; `src/agent_sessions/prefs.py § PULSE_WINDOW_*, _SESSION_REVIEW_DEFAULTS`; `src/agent_sessions/needs_you_notify.py`; `web/src/components/ask/`, `web/src/routes/Ask.tsx`, `web/src/routes/Dashboard.tsx`; `src/agent_sessions/pulse_chat.py § ask_events`.
+`src/agent_sessions/needs_you.py § ROWS_MAX, KINDS, build`; `src/agent_sessions/work_recap.py § SESSIONS_MAX, INPUT_MAX, ENTRY_TEXT_MAX, ENTRIES_MAX`; `src/agent_sessions/routes/pulse.py § EDIT_TEXT_MAX, build_needs_you`; `src/agent_sessions/needs_you_dismissals.py § KEEP_S`; `src/agent_sessions/prefs.py § PULSE_WINDOW_*, _SESSION_REVIEW_DEFAULTS`; `src/agent_sessions/needs_you_notify.py`; `web/src/components/ask/` (`AskSidebar.tsx`), `web/src/routes/Dashboard.tsx`; `src/agent_sessions/pulse_chat.py § ask_events`.
 :::

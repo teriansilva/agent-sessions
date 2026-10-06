@@ -7,6 +7,7 @@
  * composer takes templates, insert-only, and refuses to start a brief the server would truncate.
  */
 import { expect, test, type Page } from "@playwright/test";
+import { openAsk } from "./askSidebar";
 import { MISSION_PATH, missionLink } from "../src/lib/missionLink";
 import {
   MISSION,
@@ -275,22 +276,18 @@ test("the landing is the brief form, and ASK has left for its own section (#1058
   page,
 }) => {
   // It used to be "ASK stays reachable from the landing" — one press of a segmented control. Ask is
-  // `/ask` now, which is the whole point: a question about SESSIONS no longer lives behind the
+  // the Ask sidebar now (#1294), which is the whole point: a question about SESSIONS no longer lives behind the
   // MISSIONS section. What has to stay true is that neither surface lost anything — the landing is
-  // the brief with no mode to pick, and Ask is one labelled entry away in the same top bar.
+  // the brief with no mode to pick, and Ask is one tap away in the same top bar.
   await setup(page);
   await page.goto(MISSION_PATH);
   await expect(page.getByTestId("new-mission-form")).toBeVisible();
   await expect(page.getByTestId("composer-mode-new")).toHaveCount(0);
   await expect(page.getByTestId("composer-mode-ask")).toHaveCount(0);
 
-  const ask = page
-    .locator(".hud-topbar")
-    .getByRole("navigation", { name: "Main sections" })
-    .getByRole("link", { name: "Dashboard", exact: true });
-  await expect(ask).toHaveAttribute("href", "/dashboard");
-  await ask.click();
-  await expect(page.getByTestId("composer-input")).toBeVisible();
+  // Since #1294 Ask is the corner icon beside the bell, on this page as on every other.
+  const panel = await openAsk(page);
+  await expect(panel.getByTestId("composer-input")).toBeVisible();
 });
 
 test("a template inserts into the brief without creating anything; Start sends exactly that text", async ({

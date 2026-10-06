@@ -131,7 +131,11 @@ export function NeedsYouDetailsDialog({
   const titleId = "needs-you-details-title";
 
   return createPortal(
-    <div className={dlg.backdrop} onMouseDown={dismiss}>
+    // `data-modal-inside` (#1294, Hermes on #1296): this dialog can be opened from the Ask
+    // drawer, which is a modal on a phone, and it is portalled to <body> — so without the marker a
+    // press on this backdrop read as "outside the drawer" and one tap closed both. A press here
+    // belongs to THIS dialog; `useModalDrawer` skips surfaces that declare themselves inside.
+    <div className={dlg.backdrop} onMouseDown={dismiss} data-modal-inside="">
       <div
         ref={panel}
         role="dialog"

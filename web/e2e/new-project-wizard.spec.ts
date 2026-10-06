@@ -365,6 +365,7 @@ test.describe("New project wizard (#1187)", () => {
   }) => {
     await mockApp(page);
     await page.goto(DASHBOARD_PATH);
+    await page.getByTestId("dashboard-new").click();
     await page.getByTestId("dashboard-new-project").click();
     await expect(heading(page, "Name the project")).toBeVisible();
     await fillToReview(page, "From the dashboard");

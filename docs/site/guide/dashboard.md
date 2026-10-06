@@ -1,10 +1,11 @@
 # Dashboard
 
 The **Dashboard** (`/dashboard`, first in the top bar's section nav) is BattleLab's home: what your
-agents are doing right now, what is running, what needs you, and the Ask field, on one page. Its
-chevron menu holds the Dashboard and **Ask** (`/ask`), the page your conversations happen on.
+agents are doing right now, what is running and what needs you, on one page. Two buttons sit beside
+its title: **Ask**, which opens the [Ask](/guide/ask) sidebar, and **New**, a menu with **New
+session**, **New mission** and **New project**.
 
-It adds no new actions. Every number is a count of something you can open, and every tile reads on
+Apart from those two buttons, it adds no new actions. Every number is a count of something you can open, and every tile reads on
 its own schedule, so one slow or failing read never blanks the rest.
 
 ## The strip across the top
@@ -48,14 +49,22 @@ tiles; how each behaves is on the [Ask](/guide/ask) page.
 
 ## Asking
 
-The Ask field is docked at the bottom of the Dashboard. **Enter** sends; **Shift+Enter** starts a new
-line. Sending opens [Ask](/guide/ask#once-youve-asked) (`/ask`, also in the Dashboard's chevron
-menu) with your question already running, so the conversation gets the whole page.
+Ask is not part of the Dashboard. It is a sidebar you can open from any page: the **Ask** button here
+opens it, and so does the speech-bubble icon beside the notification bell. See [Ask](/guide/ask).
+
+## Starting work
+
+**New** opens a menu:
+
+| Item | Opens |
+|---|---|
+| **New session** | The new-session page (`/`). |
+| **New mission** | The new-mission form in [Missions](/guide/missions) (`/mission`). |
+| **New project** | The New project wizard (`/projects/new`), which returns to the Dashboard when it finishes. |
 
 ## On a phone
 
-The Dashboard is one column: the strip first, then Needs you and the other tiles, with the Ask field
-docked at the bottom.
+The Dashboard is one column: the strip first, then Needs you and the other tiles.
 
 ## What it does not do
 

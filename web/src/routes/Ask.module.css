@@ -38,15 +38,14 @@
   color: var(--text-2);
 }
 
-/* No endpoint configured: the composer is disabled and this says what to do about it. */
-.needsEndpoint {
-  margin: 0 0 16px;
-  padding: 10px 12px;
-  border: 1px dashed var(--line-strong);
-  font-size: 0.85rem;
-  line-height: 1.5;
-  color: var(--text-2);
+/* Library → Playbooks' placeholder (#1294): the dashboard's measure, from the top. */
+.placeholder {
+  width: 100%;
+  max-width: 760px;
+  margin-inline: auto;
+  padding: 24px 16px;
+  overflow-y: auto;
 }
-.needsEndpoint a {
+.placeholder a {
   color: var(--accent);
 }

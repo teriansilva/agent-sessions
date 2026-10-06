@@ -1,4 +1,4 @@
-/** Missions → Automations (#1201): what will run, what did run, and why something isn't running.
+/** Library → Automations (#1201; under Missions until #1294): what will run, what did run, and why something isn't running.
  *
  *  The list is the server's public shape as-is: each row's state word and LED, its trigger, its
  *  action, the next run (or why there is none), the last outcome, and the 14-day strip — each
@@ -242,7 +242,7 @@ export default function Automations() {
           <HudFrame />
           <div className={styles.head}>
             <div className={styles.headText}>
-              <span className={styles.kicker}>Missions // Automations</span>
+              <span className={styles.kicker}>Library // Automations</span>
               <h1 id="automations-title" className={styles.title}>
                 Automations
               </h1>

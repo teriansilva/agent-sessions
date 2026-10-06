@@ -20,19 +20,24 @@ describe("activeSection", () => {
     // The pre-#948 path still redirects, and the nav must not flash the wrong section for the
     // render before it lands.
     ["/pulse", "mission"],
-    ["/ask", "ask"],
+    ["/dashboard", "ask"],
     // The map is a view OF sessions since #1069: its parent section is Sessions.
     ["/overview", "sessions"],
-    ["/templates", "templates"],
-    ["/templates/new", "templates"],
-    ["/templates/tpl_1", "templates"],
-    ["/mission/automations", "mission"],
-    ["/mission/automations/abc123", "mission"],
+    // Library (#1294) owns templates, automations, checklists and playbooks — automations and
+    // checklists keep their `/mission/...` URLs but are NOT the Missions section any more.
+    ["/templates", "library"],
+    ["/templates/new", "library"],
+    ["/templates/tpl_1", "library"],
+    ["/mission/automations", "library"],
+    ["/mission/automations/abc123", "library"],
+    ["/mission/checklists", "library"],
+    ["/library/playbooks", "library"],
   ])("%s → %s", (path, expected) => {
     expect(activeSection(path)).toBe(expected);
   });
 
-  test.each([["/settings"], ["/settings/security"], ["/nonsense"]])(
+  // `/ask` is only a redirect since #1294: Ask is the sidebar, not a destination.
+  test.each([["/settings"], ["/settings/security"], ["/nonsense"], ["/ask"]])(
     "%s highlights NOTHING",
     (path) => {
       // Settings is a route but not a work section. Highlighting a section the operator is not in
@@ -45,10 +50,14 @@ describe("activeSection", () => {
     ["/", "sessions"],
     ["/s/claude/abc-123", "sessions"],
     ["/overview", "map"],
-    // #1171: the dashboard and Ask's conversation page are Dashboard's sub-entries.
-    ["/dashboard", "dashboard"],
-    ["/ask", "ask"],
-    ["/askew", null],
+    // #1294: Dashboard has no sub-menu; Ask is the sidebar.
+    ["/dashboard", null],
+    ["/ask", null],
+    ["/templates", "templates"],
+    ["/templates/tpl_1", "templates"],
+    ["/mission/checklists", "checklists"],
+    ["/library/playbooks", "playbooks"],
+    ["/mission", null],
     ["/overviewer", null],
     // #1201: Automations owns its subtree (one automation's runs and editor live under it).
     ["/mission/automations", "automations"],
@@ -63,7 +72,7 @@ describe("activeSection", () => {
     // `/askew` and `/missionary` are not routes today, and a `startsWith` implementation would
     // claim them — which is how the highlight ends up on the wrong entry after someone adds a
     // route that shares a prefix.
-    expect(activeSection("/askew")).toBeNull();
+    expect(activeSection("/dashboardx")).toBeNull();
     expect(activeSection("/missionary")).toBeNull();
     expect(activeSection("/overviewer")).toBeNull();
     // …while `/templates/<id>` genuinely IS the Templates section, so the boundary is the slash.
@@ -72,19 +81,18 @@ describe("activeSection", () => {
 });
 
 describe("SectionNav", () => {
-  test("the bar names every section, Ask first; the map is only in the Sessions menu (#1069)", () => {
+  test("the bar names every section, Dashboard first and Library last; the map is only in the Sessions menu (#1069, #1294)", () => {
     render(
       <MemoryRouter>
         <SectionNav
           active="ask"
-          activeSub="dashboard"
           sessionsPath="/"
           onNavigate={() => {}}
         />
       </MemoryRouter>,
     );
     const top = SECTIONS.map((s) => s.label);
-    expect(top).toEqual(["Dashboard", "Sessions", "Missions", "Templates"]);
+    expect(top).toEqual(["Dashboard", "Sessions", "Missions", "Library"]);
     const nav = screen.getByTestId("section-nav");
     expect(
       within(nav)
@@ -103,30 +111,36 @@ describe("SectionNav", () => {
     );
   });
 
-  test("on Ask's page, Dashboard is current-in-set and the menu names Ask as the page (#1171)", async () => {
+  test("Library holds Templates, Automations, Checklists and Playbooks; Missions and Dashboard have no menu (#1294)", async () => {
     render(
       <MemoryRouter>
         <SectionNav
-          active="ask"
-          activeSub="ask"
+          active="library"
+          activeSub="checklists"
           sessionsPath="/"
           onNavigate={() => {}}
         />
       </MemoryRouter>,
     );
     const bar = screen.getByTestId("section-nav");
-    expect(
-      within(bar).getByRole("link", { name: "Dashboard" }),
-    ).toHaveAttribute("aria-current", "true");
+    expect(within(bar).queryByRole("button", { name: "Dashboard menu" })).toBeNull();
+    expect(within(bar).queryByRole("button", { name: "Missions menu" })).toBeNull();
+    const library = within(bar).getByRole("link", { name: "Library" });
+    expect(library).toHaveAttribute("href", "/templates");
+    // On a child that is not the section's own destination, the parent is current-in-set.
+    expect(library).toHaveAttribute("aria-current", "true");
     await userEvent.click(
-      within(bar).getByRole("button", { name: "Dashboard menu" }),
+      within(bar).getByRole("button", { name: "Library menu" }),
     );
-    const menu = await screen.findByRole("menu", { name: "Dashboard menu" });
+    const menu = await screen.findByRole("menu", { name: "Library menu" });
     const items = within(menu).getAllByRole("menuitem");
-    expect(items.map((i) => i.textContent)).toEqual(["Dashboard", "Ask"]);
-    expect(items[0]).toHaveAttribute("href", "/dashboard");
-    expect(items[1]).toHaveAttribute("href", "/ask");
-    expect(items[1]).toHaveAttribute("aria-current", "page");
+    expect(items.map((i) => [i.textContent, i.getAttribute("href")])).toEqual([
+      ["Templates", "/templates"],
+      ["Automations", "/mission/automations"],
+      ["Checklists", "/mission/checklists"],
+      ["Playbooks", "/library/playbooks"],
+    ]);
+    expect(items[2]).toHaveAttribute("aria-current", "page");
   });
 
   test("Sessions points at the last session route, not always at the landing", () => {

@@ -1,9 +1,16 @@
 import { useState } from "react";
-import { Plus } from "lucide-react";
-import { Link, useNavigate } from "react-router-dom";
+import {
+  ChevronDown,
+  Crosshair,
+  FolderPlus,
+  MessageSquare,
+  Plus,
+  TerminalSquare,
+} from "lucide-react";
+import { Link } from "react-router-dom";
 
-import { AskComposer } from "../components/ask/AskComposer";
 import a from "../components/ask/AskConsole.module.css";
+import { useAskPanel } from "../components/ask/askPanel";
 import { NeedsYou } from "../components/ask/NeedsYou";
 import { NeedsYouDetailsDialog } from "../components/ask/NeedsYouDetailsDialog";
 import { RecentWork } from "../components/ask/RecentWork";
@@ -28,28 +35,25 @@ import { RefreshBar } from "../components/dashboard/RefreshBar";
 import { usePolled } from "../components/dashboard/usePolled";
 import { useConfig, useConfigRefresh } from "../app/config";
 import m from "../components/pulse/mission.module.css";
+import { AnchoredMenu } from "../components/ui/AnchoredMenu";
 import { api } from "../lib/api";
 import type { WizardEntryState } from "../lib/newProject";
-import { ASK_PATH, NEW_PROJECT_PATH } from "../lib/routes";
+import { MISSION_PATH, NEW_PROJECT_PATH, SESSIONS_PATH } from "../lib/routes";
 import { coerceRecentWindowDays } from "../lib/recentWindow";
-import { settingsPath } from "./settingsTabs";
 import styles from "./Ask.module.css";
 
 /** The BattleLab dashboard (#1123): RECENT WORK and NEEDS YOU (#1086), active agents, missions,
- *  quota — and the Ask field, docked on the bottom edge.
+ *  quota.
  *
- *  **Asking here OPENS a conversation on Ask's own page (#1171).** The question is handed to
- *  `ASK_PATH` in router state and asked there once. Before #1171 the conversation took over this
- *  page with every tile pinned above it as a bar; the operator found it crowded the thread, so the
- *  conversation moved under Dashboard in the nav, the way the map sits under Sessions, and its
- *  only chrome is a way back here.
- *
- *  `configured` is the AI endpoint's own flag. Ask itself has no local fallback; NEEDS YOU and a
- *  locally-listed RECENT WORK work without one. */
+ *  **Ask is not on this page (#1294).** It is the right-hand sidebar the corner icon opens on every
+ *  route; the head row's Ask button opens the same sidebar, and that is all the dashboard holds of
+ *  it. The docked Ask field (#1171) is gone, and so is the "needs an AI endpoint" notice, which the
+ *  sidebar says itself. Beside Ask, **New** is the one way to start work from here: a session, a
+ *  mission or a project (#1187's wizard, which comes back here when it is done). */
 export default function Dashboard() {
   const cfg = useConfig();
   const refreshConfig = useConfigRefresh();
-  const configured = cfg?.pulse?.configured ?? false;
+  const { openAsk } = useAskPanel();
 
   // ONE window for both sections: the stored preference, changed from either picker.
   const stored = coerceRecentWindowDays(cfg?.pulse?.window_days);
@@ -77,7 +81,6 @@ export default function Dashboard() {
     refreshing: needsRefreshing,
   } = useNeedsYou(windowDays, engine, project);
   const [details, setDetails] = useState<string | null>(null);
-  const navigate = useNavigate();
 
   // The dashboard's own reads (#1123): each tile loads, fails and retries on its own.
   const [sessions, retrySessions, sessionsRefreshing] = usePolled(
@@ -152,37 +155,77 @@ export default function Dashboard() {
         <div className={m.pane} data-testid="dashboard-pane">
           <div className={a.dashboard}>
             <div className={styles.kicker}>Dashboard // what is going on</div>
-            {/* The way to start a project (#1187, operator): the New project wizard, which comes
-                back here when it is done. */}
             <div className={d.headRow}>
               <h1 className={styles.h1}>BattleLab dashboard</h1>
-              <Link
-                to={NEW_PROJECT_PATH}
-                state={{ from: "dashboard" } satisfies WizardEntryState}
-                className={d.newProject}
-                data-testid="dashboard-new-project"
-              >
-                <Plus size={14} aria-hidden="true" /> New project
-              </Link>
+              <div className={d.headActions}>
+                <button
+                  type="button"
+                  className={d.headBtn}
+                  onClick={openAsk}
+                  data-testid="dashboard-ask"
+                >
+                  <MessageSquare size={14} aria-hidden="true" /> Ask
+                </button>
+                {/* New (#1294): a session, a mission or a project. The project entry keeps the
+                    wizard's way back here (#1187). */}
+                <AnchoredMenu
+                  label="New"
+                  trigger={
+                    <>
+                      <Plus size={14} aria-hidden="true" />
+                      <span aria-hidden="true">New</span>
+                      <ChevronDown size={14} aria-hidden="true" />
+                    </>
+                  }
+                  triggerClassName={d.headBtn}
+                  triggerTestId="dashboard-new"
+                  menuTestId="dashboard-new-menu"
+                  focus="first-item"
+                  portal
+                  classes={{
+                    wrap: d.menuWrap,
+                    panel: d.menuPanel,
+                    items: d.menuItems,
+                  }}
+                >
+                  {(close) => (
+                    <>
+                      <Link
+                        role="menuitem"
+                        className={d.menuItem}
+                        to={SESSIONS_PATH}
+                        onClick={close}
+                        data-testid="dashboard-new-session"
+                      >
+                        <TerminalSquare size={15} aria-hidden="true" /> New session
+                      </Link>
+                      <Link
+                        role="menuitem"
+                        className={d.menuItem}
+                        to={MISSION_PATH}
+                        onClick={close}
+                        data-testid="dashboard-new-mission"
+                      >
+                        <Crosshair size={15} aria-hidden="true" /> New mission
+                      </Link>
+                      <Link
+                        role="menuitem"
+                        className={d.menuItem}
+                        to={NEW_PROJECT_PATH}
+                        state={{ from: "dashboard" } satisfies WizardEntryState}
+                        onClick={close}
+                        data-testid="dashboard-new-project"
+                      >
+                        <FolderPlus size={15} aria-hidden="true" /> New project
+                      </Link>
+                    </>
+                  )}
+                </AnchoredMenu>
+              </div>
             </div>
             <p className={styles.sub}>
-              What is running, what needs you and what you did — and below, ask
-              about anything: answers are read from the transcripts and missions
-              this install can already see.
+              What is running, what needs you and what you did.
             </p>
-            {!configured ? (
-              <div
-                className={styles.needsEndpoint}
-                data-testid="ask-needs-endpoint"
-              >
-                Ask needs an AI endpoint — it has no local fallback. Set one up
-                in{" "}
-                <Link to={settingsPath("ai-endpoint")}>
-                  Settings → Endpoint &amp; model
-                </Link>
-                , then come back.
-              </div>
-            ) : null}
             <KpiStrip
               sessions={sessions}
               missions={missionsRes}
@@ -205,15 +248,6 @@ export default function Dashboard() {
                 {quotaTile}
               </div>
             </div>
-          </div>
-        </div>
-        {/* Asking opens the conversation on its own page (#1171). */}
-        <div className={m.composerDock}>
-          <div className={a.measure}>
-            <AskComposer
-              configured={configured}
-              onAsk={(q) => navigate(ASK_PATH, { state: { ask: q } })}
-            />
           </div>
         </div>
       </div>

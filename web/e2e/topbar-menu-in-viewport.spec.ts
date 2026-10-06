@@ -8,7 +8,7 @@ import { expect, test } from "@playwright/test";
 
 import { commonMocks } from "./mission-directions";
 
-const MENUS = ["ask", "sessions", "mission"] as const;
+const MENUS = ["sessions", "library"] as const;
 
 test.beforeEach(async ({ page }) => {
   await commonMocks(page);

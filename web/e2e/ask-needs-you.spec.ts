@@ -1,6 +1,6 @@
 /** ASK as the home for sessions without a mission (#1086 Phase 3): RECENT WORK, NEEDS YOU and the
- *  details dialog on the dashboard, and the needs-you marker on the answers of Ask's own page
- *  (#1171).
+ *  details dialog on the dashboard, and the needs-you marker on Ask's answers (its own page in
+ *  #1171, the right-hand sidebar since #1294).
  *
  *  Real browser, API mocked. What is pinned is what the operator relies on: Approve names what it
  *  does and approves exactly that decision; the EDITED text is what is sent; opening details opens
@@ -11,6 +11,7 @@
 import { expect, test, type Page, type Request } from "@playwright/test";
 
 import { ASK_STREAM, fulfillAsk } from "./askStream";
+import { openAsk } from "./askSidebar";
 
 const A = "claude:aaaaaaaa-0000-4000-8000-00000000000a";
 const B = "claude:aaaaaaaa-0000-4000-8000-00000000000b";
@@ -341,20 +342,82 @@ test("after asking, answer rows mark who needs you and open the same details (#1
   );
   await page.goto("/dashboard");
   await expect(needs(page).getByTestId("needs-you-row")).toHaveCount(3);
-  await page.getByTestId("composer-input").fill("is anything stuck?");
-  await page.getByTestId("composer-send").click();
-  // The conversation is Ask's own page: the list stays on the dashboard, the marker comes along.
-  await expect(page).toHaveURL(/\/ask$/);
-  await expect(needs(page)).toHaveCount(0);
+  // Ask is the sidebar (#1294): the list stays on the dashboard beside it, the marker comes along.
+  const panel = await openAsk(page);
+  await panel.getByTestId("composer-input").fill("is anything stuck?");
+  await panel.getByTestId("composer-send").click();
+  await expect(page).toHaveURL(/\/dashboard$/);
 
-  const match = page.getByTestId("ask-match").first();
+  const match = panel.getByTestId("ask-match").first();
   await expect(match.getByTestId("ask-match-needs-you")).toHaveText("Needs you");
   await match.getByRole("button", { name: /details for session a/i }).click();
   await expect(page.getByTestId("needs-you-dialog")).toBeVisible();
   await page.keyboard.press("Escape");
 
-  await page.getByRole("link", { name: "Back to dashboard" }).click();
+  await expect(page.getByTestId("needs-you-dialog")).toHaveCount(0);
+  // One Escape closed the dialog, not the sidebar under it.
+  await expect(panel).toHaveAttribute("data-open", "true");
+  await panel.getByRole("button", { name: "Close Ask" }).click();
   await expect(needs(page).getByTestId("needs-you-row")).toHaveCount(3);
+});
+
+test("dismissing the details dialog by its backdrop closes ONLY the dialog, not the Ask drawer under it (#1294)", async ({ page }) => {
+  // Hermes on #1296: on a phone the Ask sidebar is a modal drawer, and the details dialog it opens
+  // is portalled to <body> — so a press on the dialog's backdrop read as "outside the drawer" and
+  // one tap closed both. One dismissal closes the top surface only.
+  await mockShell(page);
+  await mockNeedsYou(page);
+  await page.route(ASK_STREAM, (r) =>
+    fulfillAsk(r, {
+      answer: "One relay session is stuck.",
+      matches: [{ id: A, title: "session a", why: "asked which option" }],
+      stage: "catalog",
+      configured: true,
+    }),
+  );
+  await page.goto("/dashboard");
+  const panel = await openAsk(page);
+  await panel.getByTestId("composer-input").fill("is anything stuck?");
+  await panel.getByTestId("composer-send").click();
+  await panel.getByRole("button", { name: /details for session a/i }).click();
+  const dialog = page.getByTestId("needs-you-dialog");
+  await expect(dialog).toBeVisible();
+
+  // A press on the backdrop, clear of the dialog box.
+  const vp = page.viewportSize()!;
+  await page.mouse.click(4, vp.height - 4);
+  await expect(dialog).toHaveCount(0);
+  await expect(panel).toHaveAttribute("data-open", "true");
+  await expect(panel.getByTestId("ask-match").first()).toBeVisible();
+});
+
+test("Open session from Ask's details dialog lands on the session — on a phone the drawer gets out of the way (#1294)", async ({ page }) => {
+  // Hermes on #1296: the drawer closed for links INSIDE the aside, but the details dialog is its
+  // own portal, so its Open session navigated while the modal drawer stayed over the session.
+  await mockShell(page);
+  await mockNeedsYou(page);
+  await page.route(ASK_STREAM, (r) =>
+    fulfillAsk(r, {
+      answer: "One relay session is stuck.",
+      matches: [{ id: A, title: "session a", why: "asked which option" }],
+      stage: "catalog",
+      configured: true,
+    }),
+  );
+  await page.goto("/dashboard");
+  const panel = await openAsk(page);
+  await panel.getByTestId("composer-input").fill("is anything stuck?");
+  await panel.getByTestId("composer-send").click();
+  await panel.getByRole("button", { name: /details for session a/i }).click();
+  const dialog = page.getByTestId("needs-you-dialog");
+  await dialog.getByRole("link", { name: "Open session" }).click();
+  await expect(page).toHaveURL(/\/s\/claude\/aaaaaaaa-0000-4000-8000-00000000000a$/);
+  await expect(dialog).toHaveCount(0);
+  const phone = page.viewportSize()!.width <= 800;
+  await expect(panel).toHaveAttribute("data-open", phone ? "false" : "true");
+  // Closing is not discarding: the conversation is still there when Ask is reopened.
+  const again = await openAsk(page);
+  await expect(again.getByTestId("ask-turn")).toHaveCount(1);
 });
 
 // ---- review 5184 regressions --------------------------------------------------------------------
@@ -402,7 +465,7 @@ test("a dialog cannot be dismissed, or its text edited, while its decision is in
   await expect(dialog).toHaveCount(0); // it closes itself when its own decision settles
 });
 
-test("a long NEEDS YOU list scrolls inside the dashboard and never pushes the composer off-screen", async ({ page }) => {
+test("a long NEEDS YOU list scrolls inside the dashboard, never the document", async ({ page }) => {
   await mockShell(page);
   const many = Array.from({ length: 30 }, (_, i) =>
     row(`claude:aaaaaaaa-0000-4000-8000-${String(i).padStart(12, "0")}`, { title: `row ${i}` }),
@@ -410,9 +473,12 @@ test("a long NEEDS YOU list scrolls inside the dashboard and never pushes the co
   await mockNeedsYou(page, { list: () => payload(many) });
   await page.goto("/dashboard");
   await expect(needs(page).getByTestId("needs-you-row").first()).toBeVisible();
+  // The docked Ask field is gone (#1294); what it pinned still holds — the page scrolls in its own
+  // pane, and the document (and with it the top bar) never moves.
   const vh = page.viewportSize()!.height;
-  const send = (await page.getByTestId("composer-send").boundingBox())!;
-  expect(send.y + send.height).toBeLessThanOrEqual(vh);
+  expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBeLessThanOrEqual(vh);
+  const pane = page.getByTestId("dashboard-pane");
+  expect(await pane.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
 });
 
 test("a failed poll after an EMPTY read is shown as a failure, never as 'Nothing needs you'", async ({ page }) => {
@@ -444,9 +510,10 @@ test("a list filter never hides the needs-you marker on an answer", async ({ pag
   await page.goto("/dashboard");
   await needs(page).getByLabel("Agent").selectOption("codex");
   await expect(needs(page).getByTestId("needs-you-row")).toHaveCount(1);
-  await page.getByTestId("composer-input").fill("anything stuck?");
-  await page.getByTestId("composer-send").click();
-  const match = page.getByTestId("ask-match").first();
+  const panel = await openAsk(page);
+  await panel.getByTestId("composer-input").fill("anything stuck?");
+  await panel.getByTestId("composer-send").click();
+  const match = panel.getByTestId("ask-match").first();
   await expect(match.getByTestId("ask-match-needs-you")).toBeVisible();
   await expect(match.getByRole("button", { name: /details for session a/i })).toBeVisible();
 });

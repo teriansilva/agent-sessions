@@ -344,3 +344,13 @@
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+
+/* THE COMPACT BAR (#1294; App.css's ≤440px block). Ask's icon joined the bell in the corner, and
+ * the row ran short on phones: Library's chevron slid under the Ask icon (mission-sections.spec's
+ * width sweep). Both corner icons (Ask reuses `.btn`) give up 2px of WIDTH each, down to the
+ * bell's 32px floor (notification-bell-placement.spec) — never height. */
+@media (max-width: 440px) {
+  .btn {
+    width: 32px;
+  }
+}

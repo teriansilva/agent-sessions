@@ -157,7 +157,7 @@ test.describe("section switches keep the session list (#1233)", () => {
 
   for (const [name, section, path] of [
     ["Dashboard", "ask", /\/dashboard/],
-    ["Templates", "templates", /\/templates/],
+    ["Library", "library", /\/templates/],
   ] as const) {
     test(`${name} renders with no session sidebar, and the list survives the visit`, async ({
       page,
@@ -185,9 +185,11 @@ test.describe("section switches keep the session list (#1233)", () => {
     });
   }
 
-  test("Ask's page under Dashboard has no session sidebar either", async ({ page }) => {
+  test("an old /ask link lands on the dashboard — no session sidebar — with Ask open (#1294)", async ({ page }) => {
     await mockApp(page);
     await page.goto("/ask");
+    await expect(page).toHaveURL(/\/dashboard$/);
+    await expect(page.getByTestId("ask-sidebar")).toHaveAttribute("data-open", "true");
     await expect(page.locator("aside.sidebar")).toBeHidden();
     await expect(page.locator("header .navToggle")).toHaveCount(0);
   });

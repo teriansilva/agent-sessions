@@ -473,7 +473,7 @@ test("a count is a way to what it counts: the agents number opens the running ti
   await expect(page.getByTestId("dash-running")).toBeInViewport();
 });
 
-test("asking opens the conversation on Ask's page; the back arrow returns to the tiles (#1171)", async ({
+test("Ask opens the sidebar beside the tiles; the dashboard has no Ask field of its own (#1294)", async ({
   page,
 }) => {
   await mockAll(page);
@@ -485,17 +485,44 @@ test("asking opens the conversation on Ask's page; the back arrow returns to the
     }),
   );
   await page.goto("/dashboard");
-  await page.getByTestId("composer-input").fill("what ran today?");
-  await page.getByTestId("composer-send").click();
-  await expect(page).toHaveURL(/\/ask$/);
-  await expect(page.getByTestId("ask-turn")).toHaveCount(1);
-  // The conversation carries none of the tiles (the operator's call, #1171)…
-  await expect(page.getByTestId("dash-running")).toHaveCount(0);
-  await expect(page.getByTestId("dash-kpis")).toHaveCount(0);
-  // …and one tap brings them back.
-  await page.getByRole("link", { name: "Back to dashboard" }).click();
-  await expect(page).toHaveURL(/\/dashboard$/);
   await expect(page.getByTestId("kpi-agents")).toContainText("7");
+  await expect(page.getByTestId("dashboard-page").getByTestId("composer-input")).toHaveCount(0);
+  await page.getByTestId("dashboard-ask").click();
+  const panel = page.getByTestId("ask-sidebar");
+  await expect(panel).toHaveAttribute("data-open", "true");
+  await panel.getByTestId("composer-input").fill("what ran today?");
+  await panel.getByTestId("composer-send").click();
+  await expect(panel.getByTestId("ask-turn")).toHaveCount(1);
+  // The page under it did not move: still the dashboard, tiles and all.
+  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page.getByTestId("dash-kpis")).toHaveCount(1);
+});
+
+test("New is a menu — session, mission, project — that opens on screen and goes where it says (#1294)", async ({
+  page,
+}) => {
+  await mockAll(page);
+  await page.goto("/dashboard");
+  const vw = page.viewportSize()!.width;
+  for (const [item, url] of [
+    ["New session", /\/$/],
+    ["New mission", /\/mission$/],
+    ["New project", /\/projects\/new$/],
+  ] as const) {
+    await page.goto("/dashboard");
+    await page.getByTestId("dashboard-new").click();
+    const menu = page.getByTestId("dashboard-new-menu");
+    await expect(menu.getByRole("menuitem")).toHaveCount(3);
+    // Portalled and kept on screen: every item is inside the viewport and clickable.
+    const box = (await menu.boundingBox())!;
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(vw);
+    for (const it of await menu.getByRole("menuitem").all()) {
+      expect((await it.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    }
+    await menu.getByRole("menuitem", { name: item }).click();
+    await expect(page).toHaveURL(url);
+  }
 });
 
 test("on a phone, a recent session keeps agent · project under its title", async ({

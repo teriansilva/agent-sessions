@@ -116,7 +116,8 @@ test("section buttons share the brand row and keep their own declared typography
   await page.goto("/mission");
   await selectMission(page, "Mission layout");
   await expect(page.getByTestId("console-title")).toHaveText("Mission layout");
-  for (const width of [320, 360, 375, 412, 640, 641, 800, 801, 1100, 1440]) {
+  // 390 and 430 (#1294): the band where Ask's corner icon first ran the row short.
+  for (const width of [320, 360, 375, 390, 412, 430, 640, 641, 800, 801, 1100, 1440]) {
     await page.setViewportSize({ width, height: 740 });
     const header = page.locator(".hud-topbar");
     const brand = page.locator(".hud-brand");
@@ -137,14 +138,14 @@ test("section buttons share the brand row and keep their own declared typography
       const size = parseFloat(getComputedStyle(document.documentElement).fontSize) * 0.68;
       return { family, size, spacing: size * 0.1 };
     });
-    // EVERY SECTION (#1058), in the #1069 order: Ask leads, and the map lives in the Sessions
-    // menu rather than the row. Asserting a subset would let the rest regress.
+    // EVERY SECTION (#1058), in the #1294 order: Dashboard leads, Library closes, and the map
+    // lives in the Sessions menu rather than the row. Asserting a subset would let the rest regress.
     const chevron = nav.getByRole("button", { name: "Sessions menu" });
     const cb = (await chevron.boundingBox())!;
     expect(cb.height, `chevron height at ${width}`).toBe(44);
     expect(Math.abs(cb.y + cb.height / 2 - (bb.y + bb.height / 2)), `chevron row at ${width}`).toBeLessThan(2);
     await chevron.click({ trial: true });
-    for (const name of ["Dashboard", "Sessions", "Missions", "Templates"]) {
+    for (const name of ["Dashboard", "Sessions", "Missions", "Library"]) {
       const link = nav.getByRole("link", { name, exact: true });
       const b = (await link.boundingBox())!;
       expect(
@@ -183,20 +184,22 @@ test("section buttons share the brand row and keep their own declared typography
       await link.click({ trial: true });
     }
     await page.locator(".hud-topbar > .navToggle").click({ trial: true });
-    // EVERY kept control, not the first one (#1058 added the operator tile beside the bell). Both
-    // must stay reachable at every width — that is the whole point of `data-topbar-keep`.
+    // EVERY kept control, not the first one (#1058 added the operator tile beside the bell, #1294
+    // Ask beside it). All must stay reachable at every width — the point of `data-topbar-keep`.
     const kept = page.locator(".hud-topbar [data-topbar-keep] button");
-    expect(await kept.count(), `kept controls at ${width}`).toBe(2);
-    for (let i = 0; i < 2; i++) {
+    expect(await kept.count(), `kept controls at ${width}`).toBe(3);
+    for (let i = 0; i < 3; i++) {
       const b = (await kept.nth(i).boundingBox())!;
       expect(b.height, `kept ${i} height at ${width}`).toBeGreaterThanOrEqual(30);
       expect(b.x + b.width, `kept ${i} right edge at ${width}`).toBeLessThanOrEqual(width);
       await kept.nth(i).click({ trial: true });
     }
     // The operator tile is LAST in the corner — the user asked for the bell and the gear beside
-    // it, and "beside" is an order, not a set.
-    const bell = (await kept.nth(0).boundingBox())!;
-    const tile = (await kept.nth(1).boundingBox())!;
+    // it, and "beside" is an order, not a set. Ask sits before the bell (#1294).
+    const ask = (await kept.nth(0).boundingBox())!;
+    const bell = (await kept.nth(1).boundingBox())!;
+    const tile = (await kept.nth(2).boundingBox())!;
+    expect(bell.x, `bell after Ask at ${width}`).toBeGreaterThan(ask.x);
     expect(tile.x, `tile after bell at ${width}`).toBeGreaterThan(bell.x);
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth),

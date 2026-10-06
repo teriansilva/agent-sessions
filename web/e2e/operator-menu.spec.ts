@@ -65,18 +65,18 @@ test("the corner names the operator beside the bell, and no gear or ? of its own
   await expect(tile).toHaveAccessibleName("Operator nightowl");
 
   const actions = page.locator(".hud-topbar .hud-topbar-actions");
-  const bell = actions.locator("[data-topbar-keep] button").first();
+  const bell = actions.getByRole("button", { name: /^Notifications/ });
   await expect(bell).toBeVisible();
   // Order, left to right: the bell, then the tile, with the tile last against the edge.
   const bb = (await bell.boundingBox())!;
   const tb = (await tile.boundingBox())!;
   expect(tb.x).toBeGreaterThan(bb.x);
 
-  // Settings and Help are IN the tile's menu since #1085 — the corner is the bell and the tile,
-  // at every width, with no ⚙ link or ? button of their own.
+  // Settings and Help are IN the tile's menu since #1085 — the corner is Ask (#1294), the bell and
+  // the tile, at every width, with no ⚙ link or ? button of their own.
   await expect(actions.getByRole("link", { name: "Settings" })).toHaveCount(0);
   await expect(actions.getByRole("button", { name: "Help" })).toHaveCount(0);
-  await expect(actions.locator(":scope > *")).toHaveCount(2);
+  await expect(actions.locator(":scope > *")).toHaveCount(3);
 });
 
 test("the panel opens ABOVE the terminal pane and its items are actually clickable (#752/#987)", async ({

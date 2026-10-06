@@ -7,8 +7,8 @@ It is the `/mission` route (`/pulse` redirects there), and it used to be a dashb
 work" banner, and a separate Ask box. That told you what mattered and then handed you off to a
 terminal to act. The console replaces all three with a shape you already know — a rail of missions
 on the left, one thread in the middle, and the mission's own detail beside it. Ask was not folded
-into the console: you ask from the [Dashboard](/guide/dashboard) (`/dashboard`), first in the top bar's section
-nav, and the conversation has its own page under it (`/ask`).
+into the console: it is the [Ask](/guide/ask) sidebar, opened from the icon beside the notification
+bell on any page.
 
 ## A mission is the unit of work
 
@@ -92,8 +92,8 @@ A mission carries a checklist, and the point is that it is written **before** th
 argued about after. "The agent said it's done" is a report about one turn; an objective list is a
 set of facts.
 
-Objectives come from a **checklist** — an operator-authored template list, edited in **Missions →
-Checklists** (the chevron beside Missions in the top bar) and chosen per mission on the new-mission form. The shipped `Ship a change`
+Objectives come from a **checklist** — an operator-authored template list, edited in **Library →
+Checklists** (the chevron beside Library in the top bar) and chosen per mission on the new-mission form. The shipped `Ship a change`
 checklist gates on: a branch exists, a PR is open, checks are green, it has been reviewed, it is
 merged. The shipped `Investigate` checklist gates on *a finding is written down*, which the
 supervisor judges (below); *you have confirmed it* stays yours to settle and does not gate.
@@ -254,7 +254,7 @@ mission, such as `PR #{pr} checks are {checks} on {branch}. Open the failing che
   the time it is approved or sent automatically, including an edit to the global nudge, it is not
   sent. A re-probe that finds the same facts changes nothing, so a proposal waits for you as long
   as its facts hold and are fresh. A nudge without a direction never goes stale on a re-probe.
-- **Where you write one.** In **Missions → Checklists**, each objective has a **Direction**
+- **Where you write one.** In **Library → Checklists**, each objective has a **Direction**
   field. Tap a fact chip to insert a placeholder that objective's check can fill. The preview shows
   the text filled with example facts, and an unknown placeholder is refused there in the same words a
   save uses. For a single mission, use an objective's ⋯ → **Edit direction**. You can keep the copy,
@@ -366,7 +366,7 @@ relocated — out of mission control entirely, into its own section:
 |---|---|
 | A session card in the grid | A mission row in the rail |
 | The banner | The mission's own recap stream |
-| The Ask box | The [Dashboard](/guide/dashboard)'s Ask field, and its conversation page [Ask](/guide/ask) (`/ask`) |
+| The Ask box | The [Ask](/guide/ask) sidebar, opened beside the notification bell on any page |
 | A session no mission owns | Adopted from the session itself — its row menu or its pane header |
 
 Deliberately unchanged: the **terminal**, the **sidebar**, and the **per-session recap** — which is

@@ -1,5 +1,6 @@
-/** ASK — `find` / `history` against `/api/pulse/ask/stream` (#878, streamed since #1171), on its
- * own page since #1058 and again since #1171, under Dashboard.
+/** ASK — `find` / `history` against `/api/pulse/ask/stream` (#878, streamed since #1171). Since
+ * #1294 it lives in the right-hand sidebar (`AskSidebar`) that the corner icon opens on every route;
+ * before that it was a page under Dashboard (#1058, #1171).
  *
  * It used to be the second mode of the mission composer, behind a `NEW MISSION | ASK` segmented
  * control on the mission landing. That put a question about *sessions* behind a section about
@@ -12,14 +13,11 @@
  * the honest answer is to say so on screen rather than to invent a home for it. Creating a mission
  * is how an operator makes a conversation durable.
  *
- * **A completion whose page is gone is DISCARDED, not filed** — the #878 contract, and on a route
- * it is STRUCTURAL rather than enforced. In the composer it needed a two-part fence: a key on the
- * mission (so a switch unmounted the box) plus a `visit()` token compared at resolution time,
- * because switching missions, or flipping Active → Archived, did not necessarily unmount anything.
- * Here leaving the page unmounts it, and the turns are this component's own state, so they go with
- * it. That is the guarantee; say it plainly rather than dressing a ref up as the thing that holds
- * it. Nothing retains these turns above the router — deliberately (#1058), because that would make
- * them durable, which is a promise the server does not keep.
+ * **The turns are this component's own state, and the sidebar keeps the component mounted** (#1294):
+ * a conversation outlives closing the panel and navigating, because the operator asked for Ask to
+ * sit beside the work. It is still memory only — a reload or New conversation ends it, and the
+ * notice under the thread says so. It is never written anywhere, so it is not durable, which is a
+ * promise the server does not keep.
  *
  * `live` is therefore HYGIENE, not the fence: it keeps a late callback from setting state on a
  * dead component. Since #1171 the request is also ABORTED on unmount and on New conversation —
@@ -43,10 +41,8 @@
  * words). Before the first question the thread is empty, so a short greeting sits centred in it;
  * it gives way to the conversation, the way a chat does.
  *
- * **Its only chrome is a way back and a way to start over (#1171).** The dashboard's tiles used to
- * ride above the thread as a pinned bar (#1086); the operator found it crowded the conversation.
- * The head carries the back arrow to the dashboard (Settings' back link) and New conversation —
- * nothing else. NEEDS YOU still reaches the thread: an answer row for a session on that list
+ * **Its only chrome is a way to start over and a way to close (#1171, #1294).** The head carries
+ * New conversation and the sidebar's ✕ — nothing else. NEEDS YOU still reaches the thread: an answer row for a session on that list
  * carries the marker and ⓘ.
  *
  * **The wait is shown, and the answer arrives as it forms (#1171).** The server streams the ask's
@@ -60,20 +56,20 @@
  * composer already made for the session pane's Send (`terminal/Compose.module.css`). One box, drawn
  * one way, wherever it appears.
  */
-import { ArrowLeft, Info } from "lucide-react";
+import { Info, X } from "lucide-react";
 import {
   useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
   useState,
+  type RefObject,
 } from "react";
 
 import { Link } from "react-router-dom";
 
 import { api } from "../../lib/api";
 import { missionLink } from "../../lib/missionLink";
-import { DASHBOARD_PATH } from "../../lib/routes";
 import { settingsPath } from "../../routes/settingsTabs";
 import type {
   PulseAskEvent,
@@ -143,7 +139,8 @@ export function AskConsole({
   configured,
   needsYou,
   onDetails,
-  initialQuestion,
+  onClose,
+  closeRef,
 }: {
   /** False when no AI endpoint is configured. `/api/pulse/ask` answers 409 in that case and has
    *  no local fallback, so the control is disabled and says why — `find` / `history` genuinely
@@ -153,8 +150,10 @@ export function AskConsole({
    *  and ⓘ, which opens the same details the list does (#1086). */
   needsYou?: Set<string>;
   onDetails?: (sessionId: string) => void;
-  /** A question asked on the dashboard (#1171): asked once, as this page opens. */
-  initialQuestion?: string;
+  /** The sidebar's ✕ (#1294). */
+  onClose?: () => void;
+  /** The ✕ itself: the mobile drawer moves focus to it on open, as the bell's drawer does. */
+  closeRef?: RefObject<HTMLButtonElement | null>;
 }) {
   const [turns, setTurns] = useState<AskTurn[]>([]);
   const [busy, setBusy] = useState(false);
@@ -170,9 +169,9 @@ export function AskConsole({
     };
   }, []);
 
-  /** The ask in flight, so New conversation and leaving can end it. The abort on leaving waits a
-   *  microtask and re-checks `live`: StrictMode's cleanup-and-rerun sets `live` back to true
-   *  before then, so its fake unmount does not kill the dashboard's handed-off question. */
+  /** The ask in flight, so New conversation and unmounting can end it. The abort on unmount waits
+   *  a microtask and re-checks `live`: StrictMode's cleanup-and-rerun sets `live` back to true
+   *  before then, so its fake unmount does not kill a question already asked. */
   const inflight = useRef<AbortController | null>(null);
   useEffect(
     () => () =>
@@ -246,15 +245,6 @@ export function AskConsole({
     [busy, configured, turns],
   );
 
-  // The dashboard's question (#1171), asked ONCE. StrictMode re-runs this effect on the same
-  // fiber, and the ref survives that, so the question is never asked twice.
-  const handedOff = useRef(false);
-  useEffect(() => {
-    if (handedOff.current || !initialQuestion) return;
-    handedOff.current = true;
-    void ask(initialQuestion);
-  }, [initialQuestion, ask]);
-
   /** The newest turn is where the operator is looking: keep the thread scrolled to it, as a chat
    *  does, whenever a turn is added or answered. */
   const paneRef = useRef<HTMLDivElement | null>(null);
@@ -266,15 +256,7 @@ export function AskConsole({
   return (
     <div className={`${styles.threadCol} ${a.col}`} data-testid="ask-col">
       <header className={`${a.measure} ${a.head}`} data-testid="ask-head">
-        <Link
-          to={DASHBOARD_PATH}
-          className={a.back}
-          aria-label="Back to dashboard"
-          data-testid="ask-back"
-        >
-          <ArrowLeft size={18} aria-hidden="true" />
-        </Link>
-        <h1 className={a.title}>Ask</h1>
+        <h2 className={a.title}>Ask</h2>
         <span className={a.sp} />
         <button
           type="button"
@@ -293,6 +275,18 @@ export function AskConsole({
           <span className={a.long}>New conversation</span>
           <span className={a.short}>New</span>
         </button>
+        {onClose ? (
+          <button
+            ref={closeRef}
+            type="button"
+            className={a.back}
+            aria-label="Close Ask"
+            onClick={onClose}
+            data-testid="ask-close"
+          >
+            <X size={18} aria-hidden="true" />
+          </button>
+        ) : null}
       </header>
       <div className={styles.pane} ref={paneRef} data-testid="ask-pane">
         {turns.length === 0 ? (
@@ -429,9 +423,9 @@ export function AskConsole({
               </div>
             ))}
             <div className={styles.objReason} data-testid="ask-transient">
-              These answers are not kept — this page has no mission to keep them
-              in, so they disappear when you leave. A mission's own conversation
-              is saved.
+              These answers are not kept — Ask has no mission to keep them in, so
+              they disappear when you reload or start a new conversation. A
+              mission's own conversation is saved.
             </div>
           </div>
         )}

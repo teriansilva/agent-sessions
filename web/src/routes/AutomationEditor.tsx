@@ -1,4 +1,4 @@
-/** Missions → Automations → New / Edit (#1201 board 2): a numbered form — name, trigger, action,
+/** Library → Automations → New / Edit (#1201 board 2): a numbered form — name, trigger, action,
  *  limits — beside what the automation will do with nobody watching.
  *
  *  **The consent is the server's.** A save of an enabled automation that widens what it may do is a

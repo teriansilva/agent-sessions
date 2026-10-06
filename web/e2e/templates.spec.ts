@@ -143,7 +143,8 @@ async function openGalleryFromTheShell(page: Page) {
   // same five links, and on a phone with the drawer open both are in the accessibility tree.
   await page
     .getByRole("navigation", { name: "Main sections" })
-    .getByRole("link", { name: "Templates", exact: true })
+    // The Library section's label goes to Templates, its first entry (#1294).
+    .getByRole("link", { name: "Library", exact: true })
     .click();
   await expect(page).toHaveURL(/\/templates$/);
 }

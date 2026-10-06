@@ -1,4 +1,4 @@
-/** Missions → Checklists: the mission playbooks editor as a page of its own.
+/** Library → Checklists (under Missions until #1294): the mission playbooks editor as a page of its own.
  *
  *  It moved out of Settings → AI because what "done" means for a mission is mission work, not a
  *  setting — it sits in the nav beside the console that uses it, and `/settings/ai-playbooks`

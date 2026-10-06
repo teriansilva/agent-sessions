@@ -265,7 +265,7 @@ test("the start screen is ONE composer box: the brief on top, one footer row ins
   const fb2 = await box(form);
   expect(cb.y).toBeGreaterThanOrEqual(fb2.y + fb2.height - 0.5);
 
-  // ASK IS THE SAME BOX — on its own page now (#1058). The #967 contract is that the two surfaces
+  // ASK IS THE SAME BOX — in the right-hand sidebar now (#1294; `/ask` opens it). The #967 contract is that the two surfaces
   // draw ONE composer, so it is asserted there rather than dropped: the shortcut hint and Send ride
   // inside the ask box exactly as the project picker and Start ride inside this one.
   await page.goto("/ask");
@@ -661,7 +661,7 @@ test("the mission Send IS the session Send — paper plane, label and all (#967)
   await page.getByTestId("composer-input").fill("status?");
   expect.soft(await sendLook(page.getByTestId("composer-send")), "mission thread Send").toEqual(ref);
 
-  // …and ASK's Send, on its own page since #1058. Same class, same icon, same label — the #967
+  // …and ASK's Send, in the sidebar since #1294 (`/ask` opens it). Same class, same icon, same label — the #967
   // one-Send rule survives the move, which is the point of checking it here at all.
   await page.goto("/ask");
   await page.getByTestId("composer-input").fill("which session was that?");

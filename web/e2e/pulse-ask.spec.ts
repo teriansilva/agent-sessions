@@ -101,8 +101,8 @@ test("Ask answers with a matched card and Jump in routes to the session (#522)",
   });
 
   await mockMissions(page);
-  // ASK IS ITS OWN PAGE since #1058 — it was a mode of the mission composer, reached by entering
-  // Missions and pressing a segmented control. The flow below is unchanged; only the door is.
+  // ASK is the right-hand sidebar since #1294 (a page from #1058; before that a mode of the mission
+  // composer). `/ask` still opens it. The flow below is unchanged; only the door is.
   await page.goto("/ask");
   const input = page.getByRole("textbox", {
     name: /ask about your past work/i,
@@ -157,8 +157,8 @@ test("a long question + a matched card fit at 320px — no horizontal scroll (#5
   );
 
   await mockMissions(page);
-  // ASK IS ITS OWN PAGE since #1058 — it was a mode of the mission composer, reached by entering
-  // Missions and pressing a segmented control. The flow below is unchanged; only the door is.
+  // ASK is the right-hand sidebar since #1294 (a page from #1058; before that a mode of the mission
+  // composer). `/ask` still opens it. The flow below is unchanged; only the door is.
   await page.goto("/ask");
   const input = page.getByRole("textbox", {
     name: /ask about your past work/i,

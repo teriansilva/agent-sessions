@@ -980,7 +980,8 @@ body.hud-static-grid {
 @media (max-width: 380px) {
   .hud-topbar {
     padding-inline: 6px;
-    gap: 4px;
+    /* 3px, not 4 (#1294): with Ask in the corner the 320px row is 1.2px short at 4. */
+    gap: 3px;
   }
   .hud-brand {
     font-size: 11px;
@@ -997,7 +998,15 @@ body.hud-static-grid {
      #1171 gave Dashboard a chevron too (its Ask sub-page): two 20px chevrons ran 0.2px under the
      bell at 320, so the chevrons are 18px here — 4px back, still a full-height target.
      Missions → Checklists made it THREE chevrons, 14px over at 320; the icons give 4px each
-     (28px, a 16px glyph with room either side) rather than any entry leaving the row. */
+     (28px, a 16px glyph with room either side) rather than any entry leaving the row.
+     The compact sizes themselves live in the ≤440px block below (#1294). */
+}
+
+/* THE COMPACT ROW, up to 440px (#1294). Ask's icon joined the bell in the corner, which grew it
+   by ~36px; at 390–430px (most phones) the 40px tiles then ran Library's chevron under the Ask
+   icon by up to 38px. Measured: these sizes leave room at 320, 375 and 440, and the full sizes
+   leave ~13px at 441. Width is given back, never the 44px height. */
+@media (max-width: 440px) {
   .section-nav {
     gap: 2px;
   }
@@ -1009,6 +1018,6 @@ body.hud-static-grid {
     width: 18px;
   }
   .hud-topbar-actions {
-    gap: 3px;
+    gap: 2px;
   }
 }

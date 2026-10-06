@@ -70,6 +70,8 @@ export const SPA_PATHS: string[] = [
   // the same navigate-fallback question (Hermes on #1058). The list is concrete paths by design,
   // so the dynamic route needs its own example rather than being covered by `/templates/new`.
   "/templates/tpl_abc123",
+  // #1294: Library → Playbooks.
+  "/library/playbooks",
   "/settings",
   "/settings/ai-endpoint",
   // The pre-#956 AI tab. A client-side redirect now, so it needs the SPA shell too.

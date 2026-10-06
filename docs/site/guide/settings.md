@@ -95,8 +95,8 @@ Three panels, everything that tunes [Mission control](/guide/missions):
 
 ### Checklists (moved to Missions)
 
-The checklists a new mission starts with are no longer a Settings page: they live under **Missions →
-Checklists** (the chevron beside Missions in the top bar), next to the console that uses them — see
+The checklists a new mission starts with are no longer a Settings page: they live under **Library →
+Checklists** (the chevron beside Library in the top bar), beside templates, automations and playbooks — see
 the [missions guide](/guide/missions). The old address, `/settings/ai-playbooks`, still works and
 redirects there.
 

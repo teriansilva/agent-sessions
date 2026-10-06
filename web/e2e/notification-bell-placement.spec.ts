@@ -71,17 +71,18 @@ test("the bell is in the topbar and never in the drawer's nav row", async ({
 }, testInfo) => {
   await page.goto("/");
 
-  // TWO kept controls since #1058: the bell and the operator tile. Both stay in the bar at every
-  // width — the corner has to keep answering "is anything waiting?" and "which account is this?"
-  // when the rest of the cluster rides the drawer.
+  // THREE kept controls: the bell and the operator tile (#1058), and Ask beside the bell (#1294).
+  // All stay in the bar at every width — the corner has to keep answering "is anything waiting?"
+  // and "which account is this?", and keep Ask one tap away, when the rest rides the drawer.
   const kept = page.locator("[data-topbar-keep]");
-  await expect(kept).toHaveCount(2);
+  await expect(kept).toHaveCount(3);
+  await expect(page.locator('[data-topbar-keep]:has([data-testid="ask-toggle"])')).toBeVisible();
   const bell = page.locator('[data-topbar-keep]:has(button[aria-label*="Notifications"])');
   await expect(bell).toHaveCount(1);
   await expect(bell).toBeVisible();
 
   // They sit inside the topbar, not the sidebar — at every width.
-  await expect(page.locator(".hud-topbar [data-topbar-keep]")).toHaveCount(2);
+  await expect(page.locator(".hud-topbar [data-topbar-keep]")).toHaveCount(3);
   await expect(page.locator("aside.sidebar [data-topbar-keep]")).toHaveCount(0);
 
   if (testInfo.project.name === "mobile") {
