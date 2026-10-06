@@ -14,6 +14,8 @@
 * ``POST   /api/playbooks/{pid}/review/confirm`` — confirm named targets on the exact review
 * ``GET    /api/playbooks/{pid}/projects``     — fleet: every project running it, update available
 * ``POST   /api/playbooks/{pid}/fleet/review`` — the combined update review (batchable or why not)
+* ``POST   /api/playbooks/{pid}/fleet/update`` — ``{digest, operation_id}``: apply the batch
+* ``GET    /api/playbooks/{pid}/fleet/{operation}`` — a fleet operation's per-project outcomes
 
 Single-project deployment lifecycle (#1191), under ``/api/projects/{project}/playbook``:
 
@@ -363,3 +365,23 @@ def register(app: FastAPI, *, logged_in, csrf_guard, signing_key: str) -> None:
         _csrf: None = Depends(csrf_guard),
     ) -> JSONResponse:
         return await _write(_fleet_review, pid, request)
+
+    def _fleet_update(pid: str, body: dict) -> dict:
+        _only(body, {"digest", "operation_id"}, {"digest", "operation_id"}, "a fleet update")
+        return fleet.update(pid, body["operation_id"], _digest(body), key=signing_key)
+
+    @app.post(PREFIX + "/{pid}/fleet/update")
+    async def update_fleet(
+        pid: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        return await _write(_fleet_update, pid, request)
+
+    @app.get(PREFIX + "/{pid}/fleet/{operation}")
+    async def fleet_operation(
+        pid: str, operation: str, _user: str = Depends(logged_in)
+    ) -> JSONResponse:
+        out = await _run(fleet.operation, pid, operation)
+        return out if isinstance(out, JSONResponse) else _json(out)
