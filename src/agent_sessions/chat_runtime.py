@@ -12,6 +12,14 @@ the client recovers the result by reading the session. A process-shared fence sp
 and decision, including continuation. Only a reader that acquires that fence can declare an
 orphaned ``pending`` turn ``failed: interrupted``; another worker's task stays authoritative.
 
+**Structured callers share this loop (#1275).** Caller-id creation binds its exact request;
+idempotent turn/decision repeats are resolved before optional revision checks, inside the existing
+turn fence. A guarded turn retains its original opaque authority binding across retries and
+decisions. Its server-owned guard is acquired at every outgoing body handoff, local tool effect
+and file decision, outside provider admission; ordinary chat routes cannot resume guarded work
+without that guard.
+The guard and provider locks release after request-body consumption, never after model inference.
+
 **One transport.** The model call is ``await review.post_chat_response(cfg, body)`` — i.e.
 ``review._post_chat``, with this agent's own
 configuration snapshot — the same function every other model call uses, so the registered-prompt
@@ -36,11 +44,13 @@ import contextlib
 import copy
 import json
 import os
+import threading
 import time
 from pathlib import Path
 
 from . import chat_config, chat_edits, chat_store, chat_tools, prompts, review
 from .plugins import admission
+from .structured_types import ExecutionGuard, normalize_context
 
 #: Budget factor after the endpoint rejects a conversation as too long (see `_context_rejected`).
 BUDGET_CUT = 0.75
@@ -165,10 +175,14 @@ async def _admitted_write(prov, fn, *args, **kwargs):
         raise ChatError(409, str(exc)) from None
 
 
-def _status(turn_id: str, status: str, reason: str | None = None) -> dict:
+def _status(
+    turn_id: str, status: str, reason: str | None = None, *, code: str | None = None
+) -> dict:
     rec = {"type": "status", "turn_id": turn_id, "status": status, "ts": time.time()}
     if reason:
         rec["reason"] = reason
+    if code:
+        rec["code"] = code
     return rec
 
 
@@ -177,6 +191,9 @@ def _view(log: chat_store.ChatLog) -> dict:
         "session_id": log.session_id,
         "cwd": log.cwd,
         "created_at": log.created_at,
+        "revision": log.revision,
+        "model": log.model,
+        "request": log.request,
         "turns": [t.as_dict() for t in log.turns],
         "in_flight": next(
             (t.turn_id for t in log.turns if t.status in ("pending", "awaiting_approval")), None
@@ -184,8 +201,8 @@ def _view(log: chat_store.ChatLog) -> dict:
     }
 
 
-async def _read(root: Path, session_id: str) -> chat_store.ChatLog:
-    log = await asyncio.to_thread(chat_store.read, root, session_id)
+async def _read(root: Path, session_id: str, *, durable: bool = False) -> chat_store.ChatLog:
+    log = await asyncio.to_thread(chat_store.read, root, session_id, durable=durable)
     if log is None:
         raise ChatError(404, "no such conversation")
     return log
@@ -218,7 +235,15 @@ def _reconcile_owned(root: Path, session_id: str) -> chat_store.ChatLog:
     for turn in log.turns:
         if turn.status == "awaiting_approval":
             proposals = chat_edits.views(root, log.session_id, turn.turn_id)
-            if not any(p["status"] == "awaiting_approval" for p in proposals):
+            claimed = {
+                record.get("proposal_id")
+                for record in log.decisions.values()
+                if record.get("turn_id") == turn.turn_id
+            }
+            if not any(p["status"] == "awaiting_approval" for p in proposals) or any(
+                p["id"] in claimed and p["status"] in ("awaiting_approval", "deciding")
+                for p in proposals
+            ):
                 stale.append(turn)
     if not stale:
         return log
@@ -233,7 +258,7 @@ def _reconcile_owned(root: Path, session_id: str) -> chat_store.ChatLog:
             if proposals
             else "interrupted — BattleLab restarted while waiting for the reply"
         )
-        recs.append(_status(turn.turn_id, "failed", reason))
+        recs.append(_status(turn.turn_id, "failed", reason, code="interrupted"))
     chat_store.append(root, log.session_id, *recs)
     return chat_store.read(root, log.session_id)
 
@@ -241,19 +266,136 @@ def _reconcile_owned(root: Path, session_id: str) -> chat_store.ChatLog:
 # --- public operations ---------------------------------------------------------------------------
 
 
-async def new_session(engine_id: str, cwd: str) -> str:
+def _binding(guard: ExecutionGuard | None) -> str | None:
+    if guard is not None and not isinstance(guard, ExecutionGuard):
+        raise ChatError(422, "execution admission must be a server-owned guard")
+    return guard.binding if guard is not None else None
+
+
+def _expected_revision(log: chat_store.ChatLog, expected: int | None) -> None:
+    if expected is not None:
+        if type(expected) is not int or expected < 0:
+            raise ChatError(422, "expected_revision must be a non-negative integer")
+        if log.revision != expected:
+            raise ChatError(409, "the conversation changed; read it again")
+
+
+def _check_binding(turn: chat_store.ChatTurn, guard: ExecutionGuard | None) -> None:
+    if not turn.binding_valid or turn.execution_binding != _binding(guard):
+        raise ChatError(409, "this turn requires its original execution authority")
+
+
+def _check_model(log: chat_store.ChatLog, cfg: dict) -> None:
+    if log.request is not None and log.model != cfg["model"]:
+        raise ChatError(409, "the configured model changed since this conversation was created")
+
+
+def _can_send(prov, log: chat_store.ChatLog, turn_id: str) -> None:
+    first = not log.turns or log.turns[0].turn_id == turn_id
+    if not (prov.manifest.can("resume") or first and prov.manifest.can("new")):
+        raise ChatError(409, "this agent does not support another conversation turn")
+
+
+def _create_admitted(prov, root, sid, **kwargs):
+    if not prov.manifest.can("new"):
+        raise ChatError(409, "this agent does not support creating conversations")
+    chat_store.create(root, sid, **kwargs)
+
+
+@contextlib.asynccontextmanager
+async def _caller_admission(guard: ExecutionGuard | None):
+    if guard is None:
+        yield lambda: None
+    else:
+        async with guard.acquire() as release:
+            yield release
+
+
+@contextlib.asynccontextmanager
+async def _request_admission(prov, guard: ExecutionGuard | None):
+    """Original caller authority and provider admission span the actual body handoff.
+
+    The caller's lock is always outermost, as it is around a decision's file mutation. Both
+    release callbacks are idempotent; response waiting holds neither authorization fence.
+    """
+    async with _caller_admission(guard) as release_caller:
+        async with admission.request(prov) as release_provider:
+
+            def release():
+                release_provider()
+                release_caller()
+
+            yield release
+
+
+async def new_session(
+    engine_id: str,
+    cwd: str,
+    *,
+    session_id: str | None = None,
+    model: str | None = None,
+    execution_admission: ExecutionGuard | None = None,
+) -> str:
     prov = _chat_provider(engine_id)
-    if not chat_config.is_configured(engine_id):
-        raise ChatError(409, "this agent has no endpoint yet — configure it in Settings → Agents")
     if not isinstance(cwd, str) or not os.path.isabs(cwd) or "\x00" in cwd:
         raise ChatError(422, "cwd must be an absolute path")
-    if not await asyncio.to_thread(os.path.isdir, cwd):
-        raise ChatError(422, "cwd is not a directory")
+    if session_id is not None and not chat_store.valid_turn_id(session_id):
+        raise ChatError(422, "session_id must be a UUID")
+    if model is not None and (not isinstance(model, str) or not model or len(model) > 200):
+        raise ChatError(422, "model must name the configured model or default")
+    binding = _binding(execution_admission)
     import uuid
 
-    sid = str(uuid.uuid4())
-    _admit_provider(prov)
-    await _admitted_write(prov, chat_store.create, _root(prov), sid, cwd=cwd)
+    sid = session_id if session_id is not None else str(uuid.uuid4())
+    root = _root(prov)
+    structured = session_id is not None or model is not None or execution_admission is not None
+    request = {"cwd": cwd, "model": model, "execution_binding": binding} if structured else None
+    async with _lock(_key(engine_id, sid)):
+        # Only a caller-chosen id can be created concurrently elsewhere; a fresh random id needs no
+        # cross-worker fence (and must not leave a proposals directory behind when refused).
+        try:
+            fence = await _fence(root, sid) if structured else None
+        except chat_edits.FsError as e:
+            raise ChatError(e.status, str(e)) from None
+        try:
+            prior = await asyncio.to_thread(chat_store.read, root, sid)
+            if prior is not None:
+                if request is None or prior.request != request:
+                    raise ChatError(409, "session id already used for a different creation request")
+                # A lost acknowledgement may have followed a failed directory fsync.
+                await _write_io(chat_store.sync_directory, root)
+                return sid
+            if fence is None and structured:
+                raise ChatError(409, "another worker is creating this conversation; retry")
+            if not await asyncio.to_thread(os.path.isdir, cwd):
+                raise ChatError(422, "cwd is not a directory")
+            cfg = chat_config.snapshot(engine_id)
+            if cfg is None:
+                raise ChatError(
+                    409, "this agent has no endpoint yet — configure it in Settings → Agents"
+                )
+            if model not in (None, "default", cfg["model"]):
+                raise ChatError(409, "this agent uses the configured endpoint model")
+            _admit_provider(prov)
+            async with _caller_admission(execution_admission):
+                try:
+                    await _admitted_write(
+                        prov,
+                        _create_admitted,
+                        prov,
+                        root,
+                        sid,
+                        cwd=cwd,
+                        request=request,
+                        model=cfg["model"] if structured else None,
+                    )
+                except FileExistsError:
+                    raise ChatError(
+                        409, "conversation exists but its creation cannot be verified"
+                    ) from None
+        finally:
+            if fence is not None:
+                fence.release()
     return sid
 
 
@@ -262,28 +404,67 @@ async def get_session(engine_id: str, session_id: str) -> dict:
     key, root = _key(engine_id, session_id), _root(prov)
     async with _lock(key):
         log = await _reconcile(key, root, await _read(root, session_id))
-    view = _view(log)
-    for turn in view["turns"]:
-        turn["proposals"] = await asyncio.to_thread(
-            chat_edits.views, root, session_id, turn["turn_id"]
-        )
+        view = _view(log)
+        for turn in view["turns"]:
+            turn["proposals"] = await asyncio.to_thread(
+                chat_edits.views, root, session_id, turn["turn_id"]
+            )
     return view
 
 
-async def send(engine_id: str, session_id: str, turn_id: object, text: object) -> dict:
+async def send(
+    engine_id: str,
+    session_id: str,
+    turn_id: object,
+    text: object,
+    *,
+    expected_revision: int | None = None,
+    execution_admission: ExecutionGuard | None = None,
+    context: dict | None = None,
+    idempotent: bool = False,
+) -> dict:
     if not chat_store.valid_turn_id(turn_id):
         raise ChatError(422, "turn_id must be a UUID")
     if not isinstance(text, str) or not text.strip():
         raise ChatError(422, "text must be a non-empty string")
     if len(text) > chat_store.TEXT_MAX:
         raise ChatError(413, "message is too long")
-    return await _begin(engine_id, session_id, turn_id, text)
+    try:
+        context = normalize_context(context)
+    except ValueError as exc:
+        raise ChatError(422, str(exc)) from None
+    _binding(execution_admission)
+    return await _begin(
+        engine_id,
+        session_id,
+        turn_id,
+        text,
+        expected_revision=expected_revision,
+        execution_admission=execution_admission,
+        context=context,
+        idempotent=idempotent,
+    )
 
 
-async def retry(engine_id: str, session_id: str, turn_id: object) -> dict:
+async def retry(
+    engine_id: str,
+    session_id: str,
+    turn_id: object,
+    *,
+    expected_revision: int | None = None,
+    execution_admission: ExecutionGuard | None = None,
+) -> dict:
     if not chat_store.valid_turn_id(turn_id):
         raise ChatError(422, "turn_id must be a UUID")
-    return await _begin(engine_id, session_id, turn_id, None)
+    _binding(execution_admission)
+    return await _begin(
+        engine_id,
+        session_id,
+        turn_id,
+        None,
+        expected_revision=expected_revision,
+        execution_admission=execution_admission,
+    )
 
 
 async def decide(
@@ -293,31 +474,100 @@ async def decide(
     proposal_id: str,
     decision: object,
     user: str,
+    *,
+    decision_id: str | None = None,
+    expected_revision: int | None = None,
+    execution_admission: ExecutionGuard | None = None,
 ) -> dict:
     """The operator's decision, serialized with reads/sends/retries for this conversation."""
     if decision not in ("approve", "reject"):
         raise ChatError(422, "decision must be approve or reject")
+    if decision_id is not None and not chat_store.valid_turn_id(decision_id):
+        raise ChatError(422, "decision_id must be a UUID")
+    _binding(execution_admission)
     prov = _chat_provider(engine_id)
     key, root = _key(engine_id, session_id), _root(prov)
     async with _lock(key):
         fence = await _fence(root, session_id)
         if fence is None:
+            log = await _read(root, session_id, durable=True)
+            turn = log.turn(turn_id)
+            if turn is None:
+                raise ChatError(404, "no such turn")
+            _check_binding(turn, execution_admission)
+            prior = _decision_repeat(
+                log, decision_id, turn_id, proposal_id, decision, user, execution_admission
+            )
             proposals = await asyncio.to_thread(chat_edits.views, root, session_id, turn_id)
             proposal = next((p for p in proposals if p["id"] == proposal_id), None)
             if proposal and proposal["status"] not in ("awaiting_approval", "deciding"):
-                return {"proposal": proposal}
+                if decision_id is not None and prior is None:
+                    raise ChatError(409, "this proposal was already decided by another operation")
+                # Another worker may have published a terminal sidecar but not synced its
+                # directory yet. Its later durable transcript audit proves settlement completed.
+                audit = log.proposal_audits.get(proposal_id)
+                if audit is not None and audit.get("status") == proposal["status"]:
+                    return {"proposal": proposal}
             raise ChatError(409, "the agent or another decision is still working")
         try:
             return await _decide_owned(
-                engine_id, session_id, turn_id, proposal_id, decision, user, key, root, fence, prov
+                engine_id,
+                session_id,
+                turn_id,
+                proposal_id,
+                decision,
+                user,
+                key,
+                root,
+                fence,
+                prov,
+                decision_id=decision_id,
+                expected_revision=expected_revision,
+                execution_admission=execution_admission,
             )
         finally:
             if not fence.handed_off:
                 fence.release()
 
 
+def _decision_request(decision_id, turn_id, proposal_id, decision, user, guard) -> dict:
+    return {
+        "type": "decision",
+        "decision_id": decision_id,
+        "turn_id": turn_id,
+        "proposal_id": proposal_id,
+        "decision": decision,
+        "user": user,
+        "execution_binding": _binding(guard),
+    }
+
+
+def _decision_repeat(log, decision_id, turn_id, proposal_id, decision, user, guard) -> dict | None:
+    if decision_id is None:
+        return None
+    prior = log.decisions.get(decision_id)
+    if prior is not None:
+        request = _decision_request(decision_id, turn_id, proposal_id, decision, user, guard)
+        if any(prior.get(k) != v for k, v in request.items()):
+            raise ChatError(409, "decision id already used for a different request")
+    return prior
+
+
 async def _decide_owned(
-    engine_id, session_id, turn_id, proposal_id, decision, user, key, root, fence, prov
+    engine_id,
+    session_id,
+    turn_id,
+    proposal_id,
+    decision,
+    user,
+    key,
+    root,
+    fence,
+    prov,
+    *,
+    decision_id=None,
+    expected_revision=None,
+    execution_admission=None,
 ):
     from .fsbrowse import FsError
 
@@ -325,6 +575,10 @@ async def _decide_owned(
     turn = log.turn(turn_id)
     if turn is None:
         raise ChatError(404, "no such turn")
+    _check_binding(turn, execution_admission)
+    prior = _decision_repeat(
+        log, decision_id, turn_id, proposal_id, decision, user, execution_admission
+    )
     # Terminal repeats are admitted by the proposal's own durable decision state. A pending
     # proposal belonging to an orphaned/failed turn is never actionable.
     views = await asyncio.to_thread(chat_edits.views, root, session_id, turn_id)
@@ -332,7 +586,19 @@ async def _decide_owned(
     if proposal is None:
         raise ChatError(404, "no such proposal")
     if proposal["status"] not in ("awaiting_approval", "deciding"):
+        if decision_id is not None and prior is None:
+            raise ChatError(409, "this proposal was already decided by another operation")
         return {"proposal": proposal}
+    if prior is not None and proposal["status"] == "awaiting_approval":
+        raise ChatError(409, "the earlier decision was interrupted; it is not replayed")
+    if prior is None and any(
+        record.get("proposal_id") == proposal_id for record in log.decisions.values()
+    ):
+        raise ChatError(
+            409, "this proposal already has a decision; read its outcome before continuing"
+        )
+    _expected_revision(log, expected_revision)
+    _can_send(prov, log, turn_id)
     running = _TASKS.get(key)
     if running is not None and not running.done():
         raise ChatError(409, "the agent is still working")
@@ -341,24 +607,42 @@ async def _decide_owned(
     if decision == "approve" and proposal["status"] == "awaiting_approval":
         _admit_provider(prov)
     try:
-        rec, checkpoint = await _write_io(
-            chat_edits.decide,
-            root,
-            session_id,
-            turn_id,
-            proposal_id,
-            engine_id,
-            decision,
-            user,
-            provider=prov,
-        )
+        async with _caller_admission(execution_admission):
+            if decision_id is not None and prior is None:
+                request = _decision_request(
+                    decision_id, turn_id, proposal_id, decision, user, execution_admission
+                )
+                await _write_io(chat_store.append, root, session_id, request)
+            rec, checkpoint = await _write_io(
+                chat_edits.decide,
+                root,
+                session_id,
+                turn_id,
+                proposal_id,
+                engine_id,
+                decision,
+                user,
+                provider=prov,
+            )
     except FsError as e:
         raise ChatError(e.status, str(e)) from None
     audit = {"type": "proposal", "turn_id": turn_id, **chat_edits.summary(rec)}
     if checkpoint is not None:
         status = {**_status(turn_id, "pending"), "resume": True}
         await _write_io(chat_store.append, root, session_id, audit, status)
-        _start(key, _run(engine_id, root, session_id, turn_id, checkpoint), fence)
+        _start(
+            key,
+            _run(
+                engine_id,
+                root,
+                session_id,
+                turn_id,
+                checkpoint,
+                execution_admission=execution_admission,
+                provider=prov,
+            ),
+            fence,
+        )
     elif turn.status == "awaiting_approval" and rec["status"] != "awaiting_approval":
         await _write_io(
             chat_store.append,
@@ -370,44 +654,94 @@ async def _decide_owned(
                 "failed",
                 "the decision was recorded but the reply was "
                 "interrupted; inspect the file before retrying",
+                code="interrupted",
             ),
         )
     return {"proposal": chat_edits.summary(rec)}
 
 
-async def _begin(engine_id: str, session_id: str, turn_id: str, text: str | None) -> dict:
+async def _begin(
+    engine_id: str,
+    session_id: str,
+    turn_id: str,
+    text: str | None,
+    *,
+    expected_revision: int | None = None,
+    execution_admission: ExecutionGuard | None = None,
+    context: dict | None = None,
+    idempotent: bool = False,
+) -> dict:
     """THE transition into ``pending`` — send (``text``) and retry (``text is None``) alike."""
     prov = _chat_provider(engine_id)
     key, root = _key(engine_id, session_id), _root(prov)
     async with _lock(key):
         fence = await _fence(root, session_id)
         if fence is None:
-            log = await _read(root, session_id)
+            log = await _read(root, session_id, durable=True)
             existing = log.turn(turn_id)
-            if (
-                text is not None
-                and existing is not None
-                and existing.text == text
-                and existing.status != "pending"
-            ):
-                return {"turn": existing.as_dict()}
+            if existing is not None:
+                _check_binding(existing, execution_admission)
+                if text is not None:
+                    _same_turn(existing, text, context)
+                    if existing.status == "pending" and not idempotent:
+                        raise ChatError(409, "in_flight")
+                    return {"turn": existing.as_dict()}
             raise ChatError(409, "in_flight — another worker owns this conversation")
         try:
-            return await _begin_owned(engine_id, session_id, turn_id, text, key, root, fence, prov)
+            return await _begin_owned(
+                engine_id,
+                session_id,
+                turn_id,
+                text,
+                key,
+                root,
+                fence,
+                prov,
+                expected_revision=expected_revision,
+                execution_admission=execution_admission,
+                context=context,
+                idempotent=idempotent,
+            )
         finally:
             if not fence.handed_off:
                 fence.release()
 
 
-async def _begin_owned(engine_id, session_id, turn_id, text, key, root, fence, prov):
+def _same_turn(turn, text, context):
+    if turn.text != text or turn.context != (context or {}):
+        raise ChatError(409, "turn id already used for a different message or context")
+
+
+async def _begin_owned(
+    engine_id,
+    session_id,
+    turn_id,
+    text,
+    key,
+    root,
+    fence,
+    prov,
+    *,
+    expected_revision=None,
+    execution_admission=None,
+    context=None,
+    idempotent=False,
+):
     log = await _reconcile(key, root, await _read(root, session_id), fenced=True)
     existing = log.turn(turn_id)
+    if existing is not None:
+        _check_binding(existing, execution_admission)
+    elif (log.request or {}).get("execution_binding") != _binding(execution_admission):
+        # Every turn carries exactly the conversation's own binding (Hermes on #1275). A guarded
+        # conversation cannot be continued without its authority, and guarded work cannot enter
+        # an ordinary conversation, whose later unguarded turns would resend it as history.
+        raise ChatError(409, "this conversation requires its original execution authority")
     if text is not None and existing is not None:
-        if existing.text != text:
-            raise ChatError(409, "turn id already used for a different message")
-        if existing.status == "pending":
+        _same_turn(existing, text, context)
+        if existing.status == "pending" and not idempotent:
             raise ChatError(409, "in_flight")
         return {"turn": existing.as_dict()}  # a repeat of a settled send: its result, once
+    _expected_revision(log, expected_revision)
     if text is None:
         if existing is None:
             raise ChatError(404, "no such turn")
@@ -421,16 +755,40 @@ async def _begin_owned(engine_id, session_id, turn_id, text, key, root, fence, p
     cfg = chat_config.snapshot(engine_id)
     if cfg is None:
         raise ChatError(409, "this agent has no endpoint — configure it in Settings → Agents")
+    _check_model(log, cfg)
+    _can_send(prov, log, turn_id)
     body_text = text if text is not None else existing.text  # type: ignore[union-attr]
     budget = _budget(cfg, log)
     if _tokens(body_text) > budget:
         raise ChatError(413, "too long for this endpoint's context window")
     recs = [_status(turn_id, "pending")]
     if text is not None:
-        recs.insert(0, {"type": "user", "turn_id": turn_id, "text": text, "ts": time.time()})
+        recs.insert(
+            0,
+            {
+                "type": "user",
+                "turn_id": turn_id,
+                "text": text,
+                "ts": time.time(),
+                "execution_binding": _binding(execution_admission),
+                "context": context or {},
+            },
+        )
     _admit_provider(prov)
-    await _admitted_write(prov, chat_store.append, root, session_id, *recs)
-    _start(key, _run(engine_id, root, session_id, turn_id), fence)
+    async with _caller_admission(execution_admission):
+        await _admitted_write(prov, chat_store.append, root, session_id, *recs)
+    _start(
+        key,
+        _run(
+            engine_id,
+            root,
+            session_id,
+            turn_id,
+            execution_admission=execution_admission,
+            provider=prov,
+        ),
+        fence,
+    )
     return {"turn": {"turn_id": turn_id, "status": "pending"}}
 
 
@@ -485,7 +843,14 @@ def _context_rejected(r) -> bool:
 
 
 async def _run(
-    engine_id: str, root: Path, session_id: str, turn_id: str, resume: dict | None = None
+    engine_id: str,
+    root: Path,
+    session_id: str,
+    turn_id: str,
+    resume: dict | None = None,
+    *,
+    execution_admission: ExecutionGuard | None = None,
+    provider=None,
 ) -> None:
     """Make the request, then SETTLE it — write its outcome and give up the task slot — inside the
     session lock. `_start` holds the process-shared fence until this task completes, including
@@ -496,7 +861,17 @@ async def _run(
     turn whose reply had already been stored as interrupted (Hermes on #1216)."""
     key = _key(engine_id, session_id)
     try:
-        records = await _run_once(engine_id, root, session_id, turn_id, resume)
+        records = await _run_once(
+            engine_id,
+            root,
+            session_id,
+            turn_id,
+            resume,
+            execution_admission=execution_admission,
+            provider=provider,
+        )
+    except (admission.Refused, ChatError) as exc:
+        records = [_status(turn_id, "failed", str(exc))]
     except Exception as e:  # noqa: BLE001 — a turn must always settle, whatever went wrong
         records = [_status(turn_id, "failed", f"internal error ({type(e).__name__})")]
     async with _lock(key):
@@ -509,15 +884,23 @@ async def _run(
 
 
 async def _run_once(
-    engine_id: str, root: Path, session_id: str, turn_id: str, resume: dict | None = None
+    engine_id: str,
+    root: Path,
+    session_id: str,
+    turn_id: str,
+    resume: dict | None = None,
+    *,
+    execution_admission: ExecutionGuard | None = None,
+    provider=None,
 ) -> list[dict]:
     """The request itself. Returns the records that settle the turn; writes nothing."""
 
-    def fail(reason: str, *extra: dict) -> list[dict]:
-        return [*extra, _status(turn_id, "failed", reason)]
+    def fail(reason: str, *extra: dict, code: str | None = None) -> list[dict]:
+        return [*extra, _status(turn_id, "failed", reason, code=code)]
 
     try:
-        prov = _chat_provider(engine_id)
+        prov = provider if provider is not None else _chat_provider(engine_id)
+        _admit_provider(prov)
     except ChatError as exc:
         return fail(str(exc))
     log = await asyncio.to_thread(chat_store.read, root, session_id)
@@ -526,6 +909,12 @@ async def _run_once(
         return []
     if cfg is None:
         return fail("this agent has no endpoint — configure it in Settings → Agents")
+    try:
+        _check_binding(log.turn(turn_id), execution_admission)
+        _check_model(log, cfg)
+        _can_send(prov, log, turn_id)
+    except ChatError as exc:
+        return fail(str(exc))
     budget = _budget(cfg, log)
     if _tokens(log.turn(turn_id).text) > budget:  # type: ignore[union-attr]
         return fail("too long for this endpoint's context window")
@@ -582,14 +971,15 @@ async def _run_once(
                 body["tool_choice"] = "none"
         try:
             r = await review.post_chat_response(
-                cfg, body, admission=lambda prov=prov: admission.request(prov)
+                cfg, body, admission=lambda prov=prov: _request_admission(prov, execution_admission)
             )
         except admission.Refused as exc:
             return fail(str(exc))
         except review.TransportTimeout as e:
             return fail(
                 f"{e} — it may already have processed (and billed) this request; Retry sends it "
-                "again"
+                "again",
+                code="uncertain",
             )
         except review.ReviewError as e:
             return fail(str(e))
@@ -644,25 +1034,29 @@ async def _run_once(
                     from .fsbrowse import FsError
 
                     args = json.loads(call["function"]["arguments"])
-                    rec = await _write_io(
-                        chat_edits.stage,
-                        root,
-                        session_id,
-                        turn_id,
-                        engine_id,
-                        log.cwd,
-                        args,
-                        call_id=call["id"],
-                        reads=reads,
-                        endpoint_binding=endpoint_binding,
-                        checkpoint={
-                            "messages": checkpoint_msgs,
-                            "remaining": remaining - cost,
-                            "usage": usage,
-                            "dropped": dropped,
-                            "round": round_no + 1,
-                        },
-                    )
+                    async with _caller_admission(execution_admission):
+                        rec = await _admitted_write(
+                            prov,
+                            chat_edits.stage,
+                            root,
+                            session_id,
+                            turn_id,
+                            engine_id,
+                            log.cwd,
+                            args,
+                            call_id=call["id"],
+                            reads=reads,
+                            endpoint_binding=endpoint_binding,
+                            checkpoint={
+                                "messages": checkpoint_msgs,
+                                "remaining": remaining - cost,
+                                "usage": usage,
+                                "dropped": dropped,
+                                "round": round_no + 1,
+                            },
+                        )
+                except (admission.Refused, ChatError) as exc:
+                    return fail(str(exc))
                 except (FsError, ValueError) as e:
                     reason = str(e) if isinstance(e, FsError) else "arguments are not valid JSON"
                     convo.extend(
@@ -705,6 +1099,8 @@ async def _run_once(
                 remaining,
                 targets,
                 reads,
+                provider=prov,
+                execution_admission=execution_admission,
             )
             if spent is None:
                 return fail("the endpoint returned an unexpected response shape")
@@ -818,6 +1214,9 @@ async def _tool_round(
     remaining: int,
     targets: dict[int, str | None],
     reads: dict[str, str] | None = None,
+    *,
+    provider=None,
+    execution_admission: ExecutionGuard | None = None,
 ) -> int | None:
     """Run one round of tool calls and extend ``convo`` with the call and its results. Returns
     the tokens the round added (an ESTIMATE, like every budget here), or None on a bad shape."""
@@ -857,7 +1256,13 @@ async def _tool_round(
                 cid,
                 {"name": name, "path": _shown_path(args), "outcome": "running"},
             )
-            result = await _run_tool(cwd, name, args)
+            result = await _run_tool(
+                cwd,
+                name,
+                args,
+                provider=provider or _chat_provider(engine_id),
+                execution_admission=execution_admission,
+            )
         cost = _tokens(result.content)
         if spent + cost > remaining:
             result = chat_tools.ToolResult(
@@ -894,23 +1299,86 @@ async def _tool_record(root: Path, session_id: str, turn_id: str, cid: str, summ
     await _write_io(chat_store.append, root, session_id, rec)
 
 
-async def _run_tool(cwd: str, name: str, args: str) -> chat_tools.ToolResult:
+async def _run_tool(
+    cwd: str,
+    name: str,
+    args: str,
+    *,
+    provider,
+    execution_admission: ExecutionGuard | None = None,
+) -> chat_tools.ToolResult:
     """One call on the FILE PANEL's bounded pool — one admission budget for every file read."""
     from . import files
     from .routes.files import run_bounded
 
-    try:
-        return await run_bounded(cwd, chat_tools.run, cwd, name, args)
-    except files.FilesBusy:
+    def refused(reason: str) -> chat_tools.ToolResult:
         return chat_tools.ToolResult(
-            json.dumps({"error": "refused: the file reader is busy — try again"}),
-            {
-                "name": name,
-                "path": _shown_path(args),
-                "outcome": "refused",
-                "reason": "the file reader was busy",
-            },
+            json.dumps({"error": f"refused: {reason} — try again"}),
+            {"name": name, "path": _shown_path(args), "outcome": "refused", "reason": reason},
         )
+
+    loop = asyncio.get_running_loop()
+    started: asyncio.Future = loop.create_future()
+    go = threading.Event()
+    verdict: list[str] = []  # "go" or a refusal reason, decided on the loop
+
+    def admitted_run(*call):
+        # Caller authority and provider admission are taken only once this read is actually
+        # running, never while it waits in the bounded queue (Hermes on #1275): a queued read
+        # holds no authorization fence, and an authority revoked meanwhile refuses it.
+        loop.call_soon_threadsafe(lambda: started.done() or started.set_result(None))
+        if not go.wait(60) or verdict[:1] != ["go"]:
+            raise _ToolRefused(verdict[0] if verdict else "the request was abandoned")
+        with admission.acquire(provider) as guard:
+            if guard.reason:
+                raise _ToolRefused(guard.reason)
+            return chat_tools.run(*call)
+
+    def decide(outcome: str) -> None:
+        if not verdict:
+            verdict.append(outcome)
+        go.set()
+
+    async def settle(task):
+        # The bounded reader may already be in its worker: whoever is cancelled keeps what it
+        # holds (caller authority, turn ownership) until that actual operation has stopped.
+        while not task.done():
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await asyncio.shield(task)
+        with contextlib.suppress(Exception):
+            task.result()
+
+    try:
+        task = asyncio.create_task(run_bounded(cwd, admitted_run, cwd, name, args))
+        try:
+            await asyncio.wait({task, started}, return_when=asyncio.FIRST_COMPLETED)
+            if task.done():
+                return task.result()
+            try:
+                async with _caller_admission(execution_admission):
+                    decide("go")
+                    try:
+                        return await asyncio.shield(task)
+                    except asyncio.CancelledError:
+                        await settle(task)
+                        raise
+            except admission.Refused as exc:
+                decide(str(exc))
+                return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            decide("the request was cancelled")
+            await settle(task)
+            raise
+        finally:
+            decide("the request ended")
+    except files.FilesBusy:
+        return refused("the file reader was busy")
+    except _ToolRefused as exc:
+        return refused(str(exc))
+
+
+class _ToolRefused(Exception):
+    pass
 
 
 def running_task(engine_id: str, session_id: str) -> asyncio.Task | None:

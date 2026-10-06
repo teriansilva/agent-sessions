@@ -321,16 +321,24 @@ class Endpoint:
 
 
 @dataclass(frozen=True)
+class Api:
+    """A reviewed native protocol using a separate console provider's admitted installation."""
+
+    kind: str
+    source: str
+
+
+@dataclass(frozen=True)
 class Manifest:
     contract: int
     identity: Identity
     #: `runtime.kind` (#853 §7). Every consumer that needs a terminal asks this first.
     runtime: str
-    #: None exactly for a non-`pty` runtime — nothing is executed, so there is no binary to name.
+    #: Only a `pty` manifest names its own executable; native API clients bind a source provider.
     binary: Binary | None
     session_id: SessionId
     store: Store | None
-    #: None exactly for a non-`pty` runtime — nothing is launched.
+    #: Only a `pty` manifest declares launch argv. Native API adapters own their protocol argv.
     launch: Launch | None
     capabilities: Mapping[str, bool]
     transcript_kind: str
@@ -356,6 +364,8 @@ class Manifest:
     #: from `kinds.INSTRUCTION_FILES`. Empty = declares none.
     instructions: tuple[str, ...] = ()
     probe_kind: str = "terminal"
+    #: `[api]` (#1275): a protocol kind/source, never commands, credentials or permission flags.
+    api: Api | None = None
 
     @property
     def id(self) -> str:
@@ -569,8 +579,8 @@ def parse(doc: Any, *, source: str = "", digest: str | None = None) -> Manifest:
 
     # `runtime` (#853 §7) is read FIRST: it decides which blocks are required and which are
     # forbidden. Absent means `pty`, which is every engine that predates #1209, so contract 1 needs
-    # no migration. The set holds only what this build can run; anything else is refused rather
-    # than half-run.
+    # no migration. The set holds only understood contracts; execution also requires a registered
+    # runtime adapter. In particular the native `api` declaration does not yet grant execution.
     r = top.table("runtime", required=False)
     runtime = "pty"
     if r is not None:
@@ -579,13 +589,16 @@ def parse(doc: Any, *, source: str = "", digest: str | None = None) -> Manifest:
             raise ManifestError(
                 "runtime.kind",
                 f"{raw_rt!r} needs a newer BattleLab "
-                f"(this build runs {sorted(kinds.RUNTIME_KINDS)})",
+                f"(this build understands {sorted(kinds.RUNTIME_KINDS)})",
             )
         runtime = raw_rt
         r.done()
 
     binary: Binary | None = None
     endpoint: Endpoint | None = None
+    api: Api | None = None
+    if runtime != "api" and top.has("api"):
+        raise ManifestError("api", "is only allowed for runtime 'api'")
     if runtime == "chat":
         # Nothing is executed, launched or typed into: a block that describes a process is a
         # contradiction, refused with its name rather than ignored.
@@ -598,6 +611,20 @@ def parse(doc: Any, *, source: str = "", digest: str | None = None) -> Manifest:
             ai_settings=r.bool("ai_settings", False),
         )
         r.done()
+    elif runtime == "api":
+        # The source supplies its installation and instruction/model metadata. There is no
+        # second install recipe or caller-selected argv, endpoint, permission policy or probe.
+        for block in (*kinds.PTY_ONLY_BLOCKS, "endpoint", "models", "maintenance"):
+            if top.has(block):
+                raise ManifestError(block, "is forbidden for runtime 'api' (the source owns it)")
+        r = top.table("api")
+        api = Api(
+            kind=r.str("kind", one_of=kinds.API_KINDS),
+            source=r.str("source", pattern=_ID_RE, max_len=24),
+        )
+        r.done()
+        if api.source == identity.id:
+            raise ManifestError("api.source", "must not reference itself")
     else:
         if top.has("endpoint"):
             raise ManifestError("endpoint", f"is only allowed for runtime 'chat', not {runtime!r}")
@@ -830,6 +857,7 @@ def parse(doc: Any, *, source: str = "", digest: str | None = None) -> Manifest:
         endpoint=endpoint,
         instructions=instructions,
         probe_kind=probe_kind,
+        api=api,
     )
     _cross_check(m)
     return m
@@ -902,19 +930,24 @@ def _cross_check(m: Manifest) -> None:
                     "a terminal plugin has no agent behind it; text typed into it runs as a "
                     "command",
                 )
-    if m.runtime == "chat":
+    if m.runtime in {"chat", "api"}:
         for c in sorted(kinds.PTY_ONLY_CAPABILITIES):
             if caps.get(c):
                 raise ManifestError(
                     f"capabilities.{c}",
-                    "presumes a terminal or a process; a 'chat' plugin has neither",
+                    f"presumes a terminal or a native transcript; runtime {m.runtime!r} "
+                    "uses BattleLab's structured conversation store",
                 )
         if m.store is None:
-            raise ManifestError("store", "is required for runtime 'chat'")
+            raise ManifestError("store", f"is required for runtime {m.runtime!r}")
         if m.store.layout != "battlelab-chat":
-            raise ManifestError("store.layout", "must be 'battlelab-chat' for runtime 'chat'")
+            raise ManifestError(
+                "store.layout", f"must be 'battlelab-chat' for runtime {m.runtime!r}"
+            )
         if m.transcript_kind != "battlelab-chat":
-            raise ManifestError("transcript.kind", "must be 'battlelab-chat' for runtime 'chat'")
+            raise ManifestError(
+                "transcript.kind", f"must be 'battlelab-chat' for runtime {m.runtime!r}"
+            )
         if m.store.read_only:
             raise ManifestError("store.read_only", "must be false: BattleLab writes this store")
         if m.models:
@@ -923,6 +956,20 @@ def _cross_check(m: Manifest) -> None:
             raise ManifestError(
                 "models.list", "must be empty for runtime 'chat' (the endpoint config picks it)"
             )
+        if m.runtime == "api":
+            if m.identity.kind != "agent":
+                raise ManifestError("identity.kind", "runtime 'api' requires an agent")
+            if m.session_id.mint != "pinned" or m.session_id.legacy_bare_id:
+                raise ManifestError("session_id", "runtime 'api' requires pinned qualified UUIDs")
+            if (
+                m.session_id.pattern.pattern
+                != compile_id_pattern(kinds.API_SESSION_PATTERN).pattern
+            ):
+                raise ManifestError("session_id.pattern", "runtime 'api' requires the UUID shape")
+            if m.usage.kind not in {None, "chat-response-tokens"}:
+                raise ManifestError(
+                    "usage.kind", "native API usage must come from structured records"
+                )
     else:
         if m.store is not None and m.store.layout == "battlelab-chat":
             raise ManifestError("store.layout", "'battlelab-chat' is only for runtime 'chat'")

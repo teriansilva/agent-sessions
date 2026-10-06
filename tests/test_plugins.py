@@ -1445,10 +1445,10 @@ def test_runtime_pty_can_be_stated_explicitly():
     assert parse(d).runtime == "pty"
 
 
-@pytest.mark.parametrize("kind", ["api", "http", "", "PTY", "Chat", 1, None])
+@pytest.mark.parametrize("kind", ["future-api", "http", "", "PTY", "Chat", 1, None])
 def test_a_runtime_this_build_cannot_run_is_refused_not_half_run(kind):
     """A runtime outside the closed set is refused with a reason — never loaded as if it were a
-    terminal engine. (`chat` joined the set in #1209; the rest of the vocabulary stays closed.)"""
+    terminal engine. (`chat` joined in #1209, native `api` declarations in #1275.)"""
     d = doc()
     d["runtime"] = {"kind": kind}
     with pytest.raises(ManifestError, match="runtime.kind"):
@@ -1469,7 +1469,7 @@ def test_a_manifest_with_an_unrunnable_runtime_fails_soft_with_its_reason(tmp_pa
     d = doc()
     d["identity"]["id"] = "zeta"
     d["binary"].update(name="zeta", env_var="AGENT_SESSIONS_ZETA_BIN")
-    d["runtime"] = {"kind": "api"}
+    d["runtime"] = {"kind": "future-api"}
     (local / "zeta" / "plugin.json").write_text(json.dumps(d))
     got = load_all(local_dir=local, state_dir=tmp_path / "state")
     assert "zeta" not in got.providers and "needs a newer BattleLab" in str(got.problems)

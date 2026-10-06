@@ -108,6 +108,7 @@ be a restriction, and a reader that skipped it would grant what the author meant
 | `[identity]` | yes | `id` (lowercase, 2–24 characters: the `<engine>` in every session id), `label`, `publisher`, `version`, and `kind`: `agent`, or `terminal` for a plugin with no agent behind it. |
 | `[runtime]` | no | `kind`. Absent means `pty`: a binary under `dtach`, shown in the terminal. `chat` means no process at all: BattleLab sends the conversation to an HTTP model endpoint **you** configure and keeps the transcript itself. A `chat` manifest may not declare `binary`, `launch`, `terminal`, `unattended`, `install`, `signin`, `probe`, `verify` or `instructions`, nor any capability that presumes a terminal (`seed_start`, `orchestrator_input`, `raw_tty`, `handoff_target`, `owns_transcript`). |
 | `[endpoint]` | for `chat` only | `kind`: the wire format (`openai-chat`). **Nothing else**: the URL, API key and model are your configuration, never the manifest's, so a manifest cannot point BattleLab at a server. By default a `chat` agent can only talk. The operator can opt into folder-scoped reads and per-file edit proposals; each proposed replacement needs a separate authenticated approval before saving ([Tools](./engines#tools-reading-files-in-the-conversation-s-folder)). |
+| `[api]` | for `api` only | `kind` selects a reviewed native protocol; `source` names a compatible active console provider. The API entry owns a pinned UUID and BattleLab conversation store, with no binary, launch flags, endpoint, model list or setup instructions of its own. This release validates the declaration but does not implement or offer native API clients yet; feed installation refuses them. Source resolution does not inherit console bypass flags or grant execution. |
 | `[binary]` | for `pty` | `name` (the plugin id or one of `aliases`), `env_var` (its `AGENT_SESSIONS_*_BIN` override), `search_paths` (absolute or `~/` directories, no globs, no `..`), `version_flag`, and `search_npm_global` for CLIs installed with `npm i -g`. |
 | `[session_id]` | yes | `pattern`, the native-id shape (grammar below); `mint` (`pinned` or `adopt`, see [Engines](./engines#two-ways-a-new-session-gets-its-id)); `legacy_bare_id` (claimed by at most one in-tree manifest). |
 | `[store]` | no | Where the engine keeps its sessions: `root`, `env_override`, `layout` (the built-in reader), and named auxiliary `paths` (`db`, `log`, …) relative to the root, each with an optional override in `path_env`. |
@@ -182,8 +183,9 @@ Every value a manifest may choose, generated from the kinds this build ships:
 |---|---|
 | `contract` | `1` |
 | `identity.kind` | `agent`, `terminal` |
-| `runtime.kind` | `chat`, `pty` |
+| `runtime.kind` | `api`, `chat`, `pty` |
 | `endpoint.kind` (runtime `chat` only) | `openai-chat` |
+| `api.kind` (runtime `api` only) | `claude-stream-json`, `codex-app-server` |
 | `binary.version_flag` | `--version`, `-V`, `-v`, `version` |
 | `session_id.mint` | `adopt`, `pinned` |
 | `store.layout` | `antigravity-cli`, `battlelab-chat`, `claude-projects`, `codex-rollouts`, `gemini-tmp`, `kimi-code`, `opencode-sqlite`, `shell-records` |

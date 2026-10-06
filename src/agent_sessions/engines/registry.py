@@ -252,7 +252,22 @@ def _build_roster(first_party_dir: Path | None = None) -> list[base.EngineProvid
         except ValueError:
             LOAD_PROBLEMS[prov.engine_id] = "the agent manifest does not match its store kind"
             log.error("engine %s does not match its store kind", prov.engine_id)
-    return roster
+    # Sources are resolved only after every store kind is attached. A native API client may
+    # reference only an active PTY agent, so chains/cycles cannot survive this single pass.
+    from ..plugins import api_source
+
+    by_id = {p.engine_id: p for p in roster}
+    valid = []
+    for prov in roster:
+        if prov.manifest.runtime == "api":
+            try:
+                api_source.validate_provider(prov, by_id)
+            except api_source.SourceError as exc:
+                LOAD_PROBLEMS[prov.engine_id] = str(exc)
+                log.error("engine %s has an invalid API source: %s", prov.engine_id, exc)
+                continue
+        valid.append(prov)
+    return valid
 
 
 # Order is scan/display order (`display.order` in each manifest); a provider only surfaces when
@@ -517,6 +532,10 @@ def can_start(prov: base.EngineProvider | None) -> bool:
         from .. import chat_config
 
         return chat_config.is_configured(prov.engine_id)
+    if m is not None and m.runtime != "pty":
+        # A parsed native API manifest is not a working adapter (#1275). Only implemented
+        # structured clients may later opt into their own readiness/launch path.
+        return False
     return launchable_bin(prov) is not None
 
 

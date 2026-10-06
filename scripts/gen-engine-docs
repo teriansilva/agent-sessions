@@ -193,6 +193,7 @@ def manifest_vocab() -> str:
         ("`identity.kind`", _vals(kinds.IDENTITY_KINDS)),
         ("`runtime.kind`", _vals(kinds.RUNTIME_KINDS)),
         ("`endpoint.kind` (runtime `chat` only)", _vals(kinds.ENDPOINT_KINDS)),
+        ("`api.kind` (runtime `api` only)", _vals(kinds.API_KINDS)),
         ("`binary.version_flag`", _vals(kinds.VERSION_FLAGS)),
         ("`session_id.mint`", _vals(kinds.MINT_KINDS)),
         ("`store.layout`", _vals(kinds.STORE_LAYOUTS)),

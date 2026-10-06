@@ -159,6 +159,10 @@ def entry(value: object, *, signed: bool) -> Entry:
     value = _fields(value, {"manifest", "recipe"})
     raw = canonical(value["manifest"])
     manifest = load_bytes(raw, name="plugin.json", source="signed-feed" if signed else "local")
+    if manifest.runtime == "api":
+        # #1275 reserves the source/protocol contract, but no native adapter is implemented yet.
+        # Refuse before the manager can treat this source-only entry as an executable install.
+        raise FeedError("native API adapters are not available in this build")
     if manifest.id in kinds.ROUTE_RESERVED_IDS:
         raise FeedError("this plugin id is reserved for a Settings route")
     if not signed and manifest.id in kinds.RESERVED_IDS:

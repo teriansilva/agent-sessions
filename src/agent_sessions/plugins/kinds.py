@@ -38,7 +38,18 @@ IDENTITY_KINDS = frozenset({"agent", "terminal"})
 #: HTTP endpoint and keeps the transcript itself. A chat plugin executes nothing; its only tools are
 #: the operator-granted file tools of #1222/#1230 (`chat_tools`, `chat_edits`), never the
 #: manifest's to name. Every proposed edit still needs its own operator decision.
-RUNTIME_KINDS = frozenset({"pty", "chat"})
+#: `api` (#1275) declares a native structured protocol and an admitted console source. The
+#: vocabulary is preparatory: a declared kind does NOT imply that a runtime adapter is available.
+RUNTIME_KINDS = frozenset({"pty", "chat", "api"})
+#: Native protocols and the source store/transcript shapes they understand. Identity is not the
+#: protocol: another source id with the same reviewed shape is validated by the same rule.
+API_SOURCE_KINDS = {
+    "codex-app-server": ("codex-rollouts", "codex-rollout"),
+    "claude-stream-json": ("claude-projects", "claude-jsonl"),
+}
+API_KINDS = frozenset(API_SOURCE_KINDS)
+#: The BattleLab conversation store owns UUIDs independently of a native agent's session id.
+API_SESSION_PATTERN = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 #: `endpoint.kind` — the wire format a `chat` plugin speaks. The endpoint's URL, key and model are
 #: the OPERATOR's configuration, never the manifest's: a manifest can name no authority at all.
 ENDPOINT_KINDS = frozenset({"openai-chat"})
