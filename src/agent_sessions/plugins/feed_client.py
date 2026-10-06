@@ -1,60 +1,68 @@
-"""Fetch only the public first-party release feed, anonymously and with total bounds (#1259).
+"""Anonymous, bounded reads of the relay's immutable signed catalog (#1283).
 
-Release metadata selects a closed tag, never a URL, authority or trust key. All three responses
-are bounded inside one deadline. The signed feed verifier, not HTTPS metadata, grants authority.
+The descriptor selects only a sequence and digest at a fixed origin, never a URL or key.
+Installed trust roots and the existing durable feed acceptance remain authoritative.
 """
 
 from __future__ import annotations
 
 import asyncio
 import re
-from urllib.parse import urlsplit
 
 import httpx
 
 from . import feed, process
 
-REPOSITORY = "teriansilva/agent-sessions"
-LATEST = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
+BASE = "https://relay.battlelab.superstatus.io/catalogs/agents/v1"
+CURRENT = BASE + "/current.json"
+MAX_DESCRIPTOR = 1024
 DEADLINE = 30
 _TRANSPORT = None  # deterministic test seam, never a runtime configuration
 
 
-def _url(url: str, *, initial: str, asset: bool) -> str:
-    if url == initial:
-        return url
-    value = urlsplit(url)
-    if (
-        not asset
-        or value.scheme != "https"
-        or value.hostname != "release-assets.githubusercontent.com"
-        or value.port not in (None, 443)
-        or value.username is not None
-        or value.password is not None
-        or value.fragment
-        or "\\" in url
-    ):
-        raise feed.FeedError("catalog redirect is not allowed")
-    return url
+def descriptor(data: bytes) -> dict:
+    try:
+        value = feed.decode(data)
+        if (
+            len(data) > MAX_DESCRIPTOR
+            or set(value) != {"sequence", "digest"}
+            or type(value["sequence"]) is not int
+            or not 0 < value["sequence"] <= 9999999999999999
+            or not isinstance(value["digest"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", value["digest"])
+        ):
+            raise ValueError
+        return value
+    except ValueError:
+        raise feed.FeedError("the catalog descriptor is invalid") from None
 
 
-async def _get(client, url: str, limit: int, *, asset: bool = False) -> bytes:
-    initial = url
-    for _ in range(4):
-        _url(url, initial=initial, asset=asset)
-        async with client.stream("GET", url) as response:
-            if response.status_code in (301, 302, 303, 307, 308):
-                url = str(response.url.join(response.headers.get("location", "")))
-                continue
-            if response.status_code != 200:
-                raise feed.FeedError("the first-party catalog is unavailable")
-            body = bytearray()
-            async for chunk in response.aiter_bytes():
-                body.extend(chunk)
-                if len(body) > limit:
-                    raise feed.FeedError("catalog response exceeded its limit")
-            return bytes(body)
-    raise feed.FeedError("too many catalog redirects")
+async def _get(client, url: str, limit: int) -> bytes:
+    # No response may redirect, including to another path on the same origin.
+    async with client.stream("GET", url) as response:
+        if 300 <= response.status_code < 400:
+            raise feed.FeedError("catalog redirects are not allowed")
+        if response.status_code != 200:
+            raise feed.FeedError("the first-party catalog is unavailable")
+        body = bytearray()
+        async for chunk in response.aiter_bytes():
+            body.extend(chunk)
+            if len(body) > limit:
+                raise feed.FeedError("catalog response exceeded its limit")
+        return bytes(body)
+
+
+def _accept(data: bytes, signature: bytes, selected: dict) -> feed.Feed:
+    # Verify before trusting signed metadata, then bind both immutable resources to the
+    # descriptor. Acceptance re-verifies under its own existing durable high-water protocol.
+    feed.verify(data, signature)
+    parsed = feed.parse(data)
+    if selected != {"sequence": parsed.sequence, "digest": parsed.digest}:
+        raise feed.FeedError("signed catalog does not match its descriptor")
+    try:
+        return feed.accept(data, signature)
+    except ValueError as exc:
+        raise feed.FeedError(str(exc)) from None
 
 
 async def refresh() -> feed.Feed:
@@ -63,23 +71,22 @@ async def refresh() -> feed.Feed:
             async with httpx.AsyncClient(
                 timeout=10, follow_redirects=False, trust_env=False, transport=_TRANSPORT
             ) as client:
-                import json
-
-                metadata = json.loads(await _get(client, LATEST, 256 * 1024))
-                tag = metadata.get("tag_name") if isinstance(metadata, dict) else None
-                if not isinstance(tag, str) or not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
-                    raise feed.FeedError("the catalog release has an invalid version")
-                base = f"https://github.com/{REPOSITORY}/releases/download/{tag}/plugin-feed.json"
-                data = await _get(client, base, feed.MAX_BYTES, asset=True)
-                signature = await _get(client, base + ".sig", 16 * 1024, asset=True)
-        # Acceptance owns its lock and finite SSH verifier; no background writes outlive it.
-        accepting = asyncio.create_task(asyncio.to_thread(feed.accept, data, signature))
+                selected = descriptor(await _get(client, CURRENT, MAX_DESCRIPTOR))
+                base = (
+                    f"{BASE}/releases/{selected['sequence']}-{selected['digest']}/plugin-feed.json"
+                )
+                # Discard unsolicited cookies between requests: all three reads are anonymous.
+                client.cookies.clear()
+                data = await _get(client, base, feed.MAX_BYTES)
+                client.cookies.clear()
+                signature = await _get(client, base + ".sig", 16 * 1024)
+        accepting = asyncio.create_task(asyncio.to_thread(_accept, data, signature, selected))
         try:
             return await asyncio.shield(accepting)
         except asyncio.CancelledError:
             await process.drain(accepting)
             raise
-    except (httpx.HTTPError, TimeoutError, ValueError):
+    except (httpx.HTTPError, TimeoutError):
         raise feed.FeedError(
-            "catalog refresh failed; the last accepted catalog was retained"
+            "catalog transport failed or timed out; the last accepted catalog was retained"
         ) from None

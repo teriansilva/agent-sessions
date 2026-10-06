@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""Read-only rollout gate: exact GitHub/relay bytes, clean and legacy-cached isolated clients.
+
+Run with this checkout's venv. Never reads/writes the operator's plugin state, starts vendor
+processes, imports private signing keys or enables agents. Local install/verify/enable must
+also pass its existing isolated regression suite before cutover; record live acceptance in #1283.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from urllib.parse import urlsplit
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+
+async def legacy():
+    import httpx
+
+    from agent_sessions.plugins import feed
+
+    async def get(client, initial, limit, asset=False):
+        url = initial
+        for _ in range(4):
+            p = urlsplit(url)
+            if url != initial and (
+                not asset
+                or p.scheme != "https"
+                or p.hostname != "release-assets.githubusercontent.com"
+                or p.port not in (None, 443)
+                or p.username
+                or p.password
+                or p.fragment
+                or "\\" in url
+            ):
+                raise ValueError("Legacy redirect refused")
+            async with client.stream("GET", url) as response:
+                if response.status_code in (301, 302, 303, 307, 308):
+                    url = str(response.url.join(response.headers.get("Location", "")))
+                    continue
+                response.raise_for_status()
+                data = bytearray()
+                async for chunk in response.aiter_bytes():
+                    data.extend(chunk)
+                    if len(data) > limit:
+                        raise ValueError("Legacy response too large")
+                client.cookies.clear()
+                return bytes(data)
+        raise ValueError("Legacy redirect limit")
+
+    import json
+
+    async with asyncio.timeout(30):
+        async with httpx.AsyncClient(trust_env=False, follow_redirects=False, timeout=10) as client:
+            latest = "https://api.github.com/repos/teriansilva/agent-sessions/releases/latest"
+            metadata = json.loads(await get(client, latest, 262144))
+            tag = metadata.get("tag_name")
+            if not isinstance(tag, str) or not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
+                raise ValueError("Legacy release selector refused")
+            base = f"https://github.com/teriansilva/agent-sessions/releases/download/{tag}/plugin-feed.json"
+            data = await get(client, base, feed.MAX_BYTES, True)
+            signature = await get(client, base + ".sig", 16384, True)
+            if json.loads(await get(client, latest, 262144)).get("tag_name") != tag:
+                raise ValueError("Legacy latest release moved")
+    feed.verify(data, signature)
+    feed.parse(data)
+    return data, signature
+
+
+def main():
+    # Clear inherited production configuration before importing any application module.
+    for name in list(os.environ):
+        if name.startswith("AGENT_SESSIONS_"):
+            del os.environ[name]
+    with tempfile.TemporaryDirectory(prefix="battlelab-catalog-rollout-") as directory:
+        os.environ["AGENT_SESSIONS_HOME"] = directory
+        if len(sys.argv) == 3 and sys.argv[1] in ("clean", "cached"):
+            from agent_sessions.plugins import feed, feed_client, storage
+
+            pair = Path(sys.argv[2])
+            data = (pair / "plugin-feed.json").read_bytes()
+            signature = (pair / "plugin-feed.json.sig").read_bytes()
+            if sys.argv[1] == "cached":
+                feed.accept(data, signature)
+            accepted = asyncio.run(feed_client.refresh())
+            expected = feed.parse(data)
+            if accepted.digest != expected.digest or accepted.sequence != expected.sequence:
+                raise ValueError("Relay/GitHub identity differs")
+            # Compare exact canonical bytes and signature in the persisted envelope.
+            state = storage.read(storage.root() / "feed.json")
+            if state["data"] != data.decode() or state["signature"] != signature.decode():
+                raise ValueError("Relay/GitHub bytes differ")
+            print(
+                f"{sys.argv[1]} client accepted sequence {accepted.sequence}, "
+                f"digest {accepted.digest}"
+            )
+            return
+        data, signature = asyncio.run(legacy())
+        pair = Path(directory)
+        (pair / "plugin-feed.json").write_bytes(data)
+        (pair / "plugin-feed.json.sig").write_bytes(signature)
+        for mode in ("clean", "cached"):
+            subprocess.run(  # noqa: S603 — re-run this script with fixed modes in isolated state
+                [sys.executable, str(Path(__file__).resolve()), mode, str(pair)], check=True
+            )
+        print("PASS: GitHub and relay signed bytes match for both isolated client states.")
+
+
+if __name__ == "__main__":
+    main()

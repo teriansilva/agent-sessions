@@ -61,8 +61,11 @@ CSRF token and matching origin. Operation IDs are caller-minted UUIDs: repeating
 payload reads its durable outcome, while changing the payload is refused. Reloading or returning
 to setup reads status; it never resubmits a job automatically.
 
-The fixed public release catalog is verified against the signer bundled with this installed
-BattleLab release. Expired, replayed or altered feeds are refused, preserving the previous
+The catalog is hosted on the BattleLab relay at
+`https://relay.battlelab.superstatus.io/catalogs/agents/v1/current.json`. Its descriptor selects
+an immutable signed feed. BattleLab verifies it against the signer bundled with this installed
+release; the server cannot supply a replacement trust key. Older clients continue to use the
+GitHub release mirror. Expired, replayed or altered feeds are refused, preserving the previous
 accepted evidence. Recipes pin every artifact and dependency. Extraction is inert: no package
 lifecycle scripts or network-resolving package installer runs.
 
