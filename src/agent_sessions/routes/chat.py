@@ -176,6 +176,13 @@ async def test_endpoint_draft(engine_id: str, body: dict) -> JSONResponse:
     unknown = sorted(set(body) - {"base_url", "api_key"})
     if unknown:
         raise HTTPException(status_code=422, detail=f"unknown fields: {unknown}")
+    if not body:
+        # No draft: test the SAVED source (#1305) — for the API agent on Settings → AI, the
+        # endpoint a send would use, never an unsaved form draft.
+        draft, why = chat_config.saved_test_draft(engine_id)
+        if why is not None:
+            raise HTTPException(status_code=422, detail=why)
+        return await _list_models(draft)
     base_url = body.get("base_url")
     if not isinstance(base_url, str) or not prefs.is_valid_ai_base_url(base_url):
         raise HTTPException(status_code=422, detail="base_url must be an http(s) URL")
@@ -187,6 +194,10 @@ async def test_endpoint_draft(engine_id: str, body: dict) -> JSONResponse:
     draft, why = chat_config.draft_for_test(engine_id, base_url, api_key)
     if why is not None:
         raise HTTPException(status_code=422, detail=why)
+    return await _list_models(draft)
+
+
+async def _list_models(draft: dict) -> JSONResponse:
     try:
         models = await review.list_models(force=True, cfg=draft)
     except review.ModelsUnsupportedError:

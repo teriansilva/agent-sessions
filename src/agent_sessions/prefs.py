@@ -967,7 +967,12 @@ def _coerce_ai_review(raw: object) -> dict:
     would each write a full block built from the same stale base, and the later write would
     silently revert the earlier one."""
     out = dict(_AI_REVIEW_DEFAULTS)
+    # Server-owned, never in `_AI_REVIEW_DEFAULTS` (so no patch may set it) and never public:
+    # see `set_ai_review`.
+    out["endpoint_revision"] = ""
     if isinstance(raw, dict):
+        if isinstance(raw.get("endpoint_revision"), str):
+            out["endpoint_revision"] = raw["endpoint_revision"]
         for k in ("base_url", "api_key", "model", "prompt"):
             if isinstance(raw.get(k), str):
                 out[k] = raw[k]
@@ -1007,7 +1012,7 @@ def public_ai_review(path: Path | None = None) -> dict:
     full = get_ai_review(path)
     # Neither the key nor the prompt: the prompt is edited (and read) through the registry
     # catalog, `GET/PATCH /api/prompts` (#824), and a second copy here was read by nothing (#956).
-    pub = {k: v for k, v in full.items() if k not in ("api_key", "prompt")}
+    pub = {k: v for k, v in full.items() if k not in ("api_key", "prompt", "endpoint_revision")}
     pub["api_key_set"] = bool(full["api_key"])
     pub["configured"] = bool(str(full["base_url"]).strip() and full["api_key"])
     return pub
@@ -1086,7 +1091,13 @@ def set_ai_review(patch: dict, path: Path | None = None) -> dict:
         why = key_origin_violation(cur, patch)
         if why is not None:
             raise KeyOriginError(why)
-        return _merge_ai_review(cur, patch)
+        new = _merge_ai_review(cur, patch)
+        if any(new[k] != cur[k] for k in ("base_url", "api_key", "model")):
+            # A fresh, never-reused token on every endpoint change (#1305): anything bound to the
+            # resolved endpoint (the API agent's paused edit approvals) cannot be revived by
+            # changing the key A → B → A, which a digest of the key alone would allow.
+            new["endpoint_revision"] = uuid.uuid4().hex
+        return new
 
     return _mutate("ai_review", merge, path)
 

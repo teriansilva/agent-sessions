@@ -18,12 +18,19 @@ plaintext ``api_key``; the stored block holds an envelope instead, so the check 
 explicit adapter (:func:`_policy_view`) — never by passing the envelope block to the policy, which
 would find no key and wave every URL change through. It runs inside `prefs._mutate`'s lock against
 the lock-current block, like `set_ai_review`.
+
+**The API agent may instead use the operator's Settings → AI endpoint (#1305).** With
+``source = "ai-settings"`` its block holds NO URL and NO key; :func:`resolve` reads
+`prefs.get_ai_review()` once per call, so presence, the public view, the endpoint test, every send
+and the edit-approval binding all answer from the same resolution. Nothing is copied: the key only
+reaches the origin `set_ai_review` bound it to, and rotating it there rotates it here.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 
 from . import prefs, prompts, template_secrets
@@ -38,6 +45,9 @@ TOOLS_PROMPT_ID = "chat_agent_tools"
 #: turning it on sends file contents to the configured endpoint. `write` also allows proposals;
 #: the separate operator decision is required for every save.
 TOOLS = ("none", "read", "write")
+#: Where an agent's endpoint comes from (#1305). `own` is the per-agent endpoint above (#1209);
+#: `ai-settings` references Settings → AI and stores no URL or key.
+SOURCES = ("own", "ai-settings")
 #: A non-empty stand-in for "a key is stored" — the origin policy only asks whether one exists.
 _KEY_PRESENT = "<stored>"
 
@@ -60,6 +70,7 @@ _FIELDS = frozenset(
         "max_output_tokens",
         "request_timeout",
         "tools",
+        "source",
     }
 )
 
@@ -109,7 +120,70 @@ def _coerce(raw: object) -> dict:
             v = raw.get(k)
             if isinstance(v, int) and not isinstance(v, bool) and lo <= v <= hi:
                 out[k] = v
+        if raw.get("source") == "ai-settings":
+            # Only present when set, so an `own` block (every block before #1305, and every
+            # managed generation) coerces byte-identically: its binding and the plugin manager's
+            # endpoint fingerprint do not move. A reference never carries a copy, even a stale one
+            # in a hand-edited file.
+            out.update(source="ai-settings", base_url="", key_envelope=None)
     return out
+
+
+def may_reference_ai_settings(engine_id: str) -> bool:
+    """Whether this agent may use Settings → AI (#1305): its manifest declares
+    ``[endpoint] ai_settings``, it is first-party, and it is not a managed generation scope (those
+    keep their own endpoint). Asked of the manifest — no engine is named here (#853 P3)."""
+    if ":" in engine_id:
+        return False
+    from .engines import registry
+    from .plugins import provenance
+
+    prov = registry.get(engine_id)
+    manifest = getattr(prov, "manifest", None)
+    endpoint = getattr(manifest, "endpoint", None)
+    return bool(
+        endpoint is not None
+        and endpoint.ai_settings
+        and getattr(prov, "trust", None) == provenance.FIRST_PARTY
+        and not getattr(prov, "endpoint_scope", None)
+    )
+
+
+def _source(block: dict) -> str:
+    return block.get("source", "own")
+
+
+def _shared(engine_id: str, block: dict, path: Path | None) -> tuple[dict | None, str | None]:
+    """ONE read of Settings → AI for an `ai-settings` block: ``({base_url, api_key, model,
+    binding}, None)`` or ``(None, reason)``. Configured means URL, key AND model — the agent's
+    all-three rule, stricter than Settings → AI's own `configured` (URL + key) — AND a computable
+    approval binding, so presence can never promise a turn that `snapshot` would refuse."""
+    ai = prefs.get_ai_review(path)
+    base, key = str(ai.get("base_url") or "").strip(), str(ai.get("api_key") or "")
+    if not base or not key:
+        return None, "uses your AI settings, which have no endpoint — configure Settings → AI"
+    model = block["model"].strip() or str(ai.get("model") or "").strip()
+    if not model:
+        return None, "set a model in Settings → AI, or a model override here"
+    try:
+        digest = template_secrets.keyed_digest(_secret_name(engine_id), key)
+    except template_secrets.SecretKeyUnavailable:
+        return None, "the template-secrets key file is unusable — repair it to use this agent"
+    # The binding a paused edit approval is checked against: the stored reference block plus the
+    # RESOLVED endpoint — URL, origin, model, Settings → AI's never-reused endpoint revision and a
+    # keyed digest of the key (never the key). Any endpoint change, including a key rotated
+    # A → B → A, therefore invalidates a pending approval.
+    bound = binding(
+        {
+            "block": block,
+            "base_url": base,
+            "origin": prefs.endpoint_origin(base),
+            "model": model,
+            "revision": ai.get("endpoint_revision") or "",
+            "key": digest,
+        }
+    )
+    return {"base_url": base, "api_key": key, "model": model, "binding": bound}, None
 
 
 def _all(path: Path | None = None) -> dict:
@@ -132,25 +206,50 @@ def _policy_view(block: dict) -> dict:
     return {"base_url": block["base_url"], "api_key": _KEY_PRESENT if block["key_envelope"] else ""}
 
 
+def _reason(engine_id: str, block: dict, path: Path | None) -> str | None:
+    """Why this block cannot start a conversation, or None. The one rule presence, the card,
+    the test and every send share."""
+    if _source(block) == "ai-settings":
+        return _shared(engine_id, block, path)[1]
+    if not (block["base_url"].strip() and block["model"].strip() and block["key_envelope"]):
+        return "configure this agent's endpoint"
+    return None
+
+
 def is_configured(engine_id: str, path: Path | None = None) -> bool:
-    """URL, model and a key all present — the one answer "can this agent start" asks (#1209)."""
-    b = stored(engine_id, path)
-    return bool(b["base_url"].strip() and b["model"].strip() and b["key_envelope"])
+    """URL, model and a key all present — the one answer "can this agent start" asks (#1209).
+    In `ai-settings` mode they are the RESOLVED ones (#1305)."""
+    return _reason(_scope(engine_id), stored(engine_id, path), path) is None
 
 
 def public(engine_id: str, path: Path | None = None) -> dict:
     """The view any route may return: never the key, never the envelope."""
     b = stored(engine_id, path)
-    return {
+    reason = _reason(_scope(engine_id), b, path)
+    out = {
         "base_url": b["base_url"],
         "model": b["model"],
         "api_key_set": bool(b["key_envelope"]),
         "context_window": b["context_window"],
         "max_output_tokens": b["max_output_tokens"],
         "request_timeout": b["request_timeout"],
-        "configured": is_configured(engine_id, path),
+        "configured": reason is None,
         "tools": b["tools"],
     }
+    if may_reference_ai_settings(_scope(engine_id)):
+        # Only the API agent offers the choice (#1305); the resolved endpoint is shown as an
+        # origin + model, never a key. `ai_settings_ready` lets the card disable the option.
+        shared, _why = _shared(_scope(engine_id), b, path)
+        ai = prefs.get_ai_review(path)
+        out["source"] = _source(b)
+        out["reason"] = reason
+        out["ai_settings_ready"] = bool(str(ai.get("base_url") or "").strip() and ai.get("api_key"))
+        out["resolved"] = (
+            {"origin": prefs.endpoint_origin(shared["base_url"]), "model": shared["model"]}
+            if shared is not None and _source(b) == "ai-settings"
+            else None
+        )
+    return out
 
 
 def prompt_id(block: dict) -> str:
@@ -249,6 +348,10 @@ def validate_patch(patch: object) -> dict:
             if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
                 raise ChatConfigError(f"{k} must be an integer in [{lo}, {hi}]")
             out[k] = v
+    if "source" in patch:
+        if patch["source"] not in SOURCES:
+            raise ChatConfigError(f"source must be one of {list(SOURCES)}")
+        out["source"] = patch["source"]
     if "tools" in patch:
         if patch["tools"] not in TOOLS:
             raise ChatConfigError(f"tools must be one of {list(TOOLS)}")
@@ -274,10 +377,24 @@ def set_config(engine_id: str, patch: dict, path: Path | None = None) -> dict:
     def merge(raw: object) -> dict:
         agents = dict(raw) if isinstance(raw, dict) else {}
         cur = _coerce(agents.get(engine_id))
-        why = prefs.key_origin_violation(_policy_view(cur), clean)
-        if why is not None:
-            raise prefs.KeyOriginError(why)
+        source = clean.get("source", _source(cur))
+        new_key = "api_key" in clean and prefs.is_new_api_key(clean["api_key"])
+        if source == "ai-settings":
+            if not may_reference_ai_settings(engine_id):
+                raise ChatConfigError("only the API agent can use your AI settings")
+            if clean.get("base_url") or new_key:
+                raise ChatConfigError(
+                    "an agent that uses your AI settings stores no URL or key of its own"
+                )
+        elif _source(cur) == "ai-settings" and not (clean.get("base_url") and new_key):
+            # Switching back restores nothing: the URL and key were deleted on the way in.
+            raise ChatConfigError("enter a base URL and an API key to use an own endpoint")
+        else:
+            why = prefs.key_origin_violation(_policy_view(cur), clean)
+            if why is not None:
+                raise prefs.KeyOriginError(why)
         new = dict(cur)
+        new.pop("source", None)
         for k in (
             "base_url",
             "model",
@@ -294,6 +411,14 @@ def set_config(engine_id: str, patch: dict, path: Path | None = None) -> dict:
                 new["key_envelope"] = None  # explicit clear
             elif prefs.is_new_api_key(v):
                 new["key_envelope"] = template_secrets.encrypt(_secret_name(engine_id), v.strip())
+        if source == "ai-settings":
+            # Atomic with the switch, under this lock: the own URL and key envelope are DELETED,
+            # whatever the patch carried, so a block never holds both a reference and a copy.
+            new.update(source="ai-settings", base_url="", key_envelope=None)
+            if _source(cur) != "ai-settings" and "model" not in clean:
+                # The own model is not carried over as a silent override: "use my AI settings"
+                # means its model too, unless this same patch names an override.
+                new["model"] = ""
         system_prompt = prompts.effective(prompt_id(new))
         if budget_tokens(new, system_prompt=system_prompt) < BUDGET_MIN_TOKENS:
             raise ChatConfigError(
@@ -314,21 +439,60 @@ def snapshot(engine_id: str, path: Path | None = None) -> dict | None:
     nothing else."""
     engine_id = _scope(engine_id)
     b = stored(engine_id, path)
-    if not (b["base_url"].strip() and b["model"].strip() and b["key_envelope"]):
-        return None
-    key = template_secrets.decrypt(_secret_name(engine_id), b["key_envelope"])
-    if not key:
-        return None
+    if _source(b) == "ai-settings":
+        shared, _why = _shared(engine_id, b, path)
+        if shared is None:
+            return None
+        base_url, key, model = shared["base_url"], shared["api_key"], shared["model"]
+        bound = shared["binding"]
+    else:
+        if not (b["base_url"].strip() and b["model"].strip() and b["key_envelope"]):
+            return None
+        key = template_secrets.decrypt(_secret_name(engine_id), b["key_envelope"])
+        if not key:
+            return None
+        base_url, model, bound = b["base_url"], b["model"], binding(b)
     return {
-        "base_url": b["base_url"],
+        "base_url": base_url,
         "api_key": key,
-        "binding": binding(b),
-        "model": b["model"],
+        "binding": bound,
+        "model": model,
         "context_window": b["context_window"],
         "max_output_tokens": b["max_output_tokens"],
         "request_timeout": b["request_timeout"],
         "tools": b["tools"],
     }
+
+
+def resolved_binding(engine_id: str, path: Path | None = None) -> str:
+    """The binding a paused turn or edit approval is checked against NOW (#1260, #1305). For an
+    `own` block it is exactly `binding(stored)`; for `ai-settings` it covers the resolved endpoint.
+    An unresolvable endpoint yields a value no recorded binding can equal (fail closed)."""
+    engine_id = _scope(engine_id)
+    b = stored(engine_id, path)
+    if _source(b) != "ai-settings":
+        return binding(b)
+    shared, _why = _shared(engine_id, b, path)
+    if shared is not None:
+        return shared["binding"]
+    return "unresolved:" + os.urandom(16).hex()
+
+
+def saved_test_draft(engine_id: str, path: Path | None = None) -> tuple[dict | None, str | None]:
+    """The connection a Test with NO draft fields uses (#1305): the SAVED source's resolution, so
+    after "Use my AI settings" is saved the test exercises exactly what a send would."""
+    engine_id = _scope(engine_id)
+    b = stored(engine_id, path)
+    if _source(b) != "ai-settings":
+        return None, "base_url must be an http(s) URL"
+    shared, why = _shared(engine_id, b, path)
+    if shared is None:
+        return None, why
+    return {
+        "base_url": shared["base_url"],
+        "api_key": shared["api_key"],
+        "request_timeout": None,
+    }, None
 
 
 def draft_for_test(

@@ -37,6 +37,7 @@ from __future__ import annotations
 import base64
 import errno
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -168,6 +169,15 @@ def _key_for_write() -> bytes:
 
 def _kid(key: bytes) -> str:
     return hashlib.sha256(key).hexdigest()[:8]
+
+
+def keyed_digest(label: str, value: str) -> str:
+    """A stable fingerprint of a secret that is never the secret (#1305): HMAC-SHA256 of
+    ``value`` under this store's key, domain-separated by ``label``. Unlike a bare hash it cannot
+    be brute-forced offline without the key file. Creates the key if there is none; raises
+    `SecretKeyUnavailable` when the key file is unusable — callers fail closed."""
+    key = _key_for_write()
+    return hmac.new(key, label.encode() + b"\x00" + value.encode(), hashlib.sha256).hexdigest()
 
 
 def current_kid() -> str:

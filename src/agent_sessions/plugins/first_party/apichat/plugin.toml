@@ -15,6 +15,10 @@ kind = "chat"
 
 [endpoint]
 kind = "openai-chat"
+# The operator may point this agent at Settings → AI instead of a second endpoint (#1305): a
+# reference, never a copy. It is honoured only for this first-party, unmanaged agent; the same
+# line in any other manifest (a managed copy included) grants nothing.
+ai_settings = true
 
 [session_id]
 pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"

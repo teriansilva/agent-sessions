@@ -85,9 +85,9 @@ def turn_fence(root: Path, sid: str) -> TurnFence | None:
 
 
 def binding(engine_id: str) -> str:
-    """Bind a paused turn to its stored endpoint configuration, without storing a key."""
-    value = chat_config.stored(engine_id)
-    return chat_config.binding(value)
+    """Bind a paused turn to its endpoint configuration, without storing a key. For the API agent
+    on Settings → AI this is the RESOLVED endpoint, so a rotation there invalidates it (#1305)."""
+    return chat_config.resolved_binding(engine_id)
 
 
 def _initial_boundary(root: Path) -> dict | None:

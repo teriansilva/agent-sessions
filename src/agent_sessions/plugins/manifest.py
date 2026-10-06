@@ -314,6 +314,10 @@ class Install:
 @dataclass(frozen=True)
 class Endpoint:
     kind: str
+    #: May reference the operator's Settings → AI endpoint instead of its own (#1305). Honoured
+    #: only for a first-party, unmanaged provider (`chat_config.may_reference_ai_settings`); in
+    #: any other manifest — a managed copy included — it is inert.
+    ai_settings: bool = False
 
 
 @dataclass(frozen=True)
@@ -589,7 +593,10 @@ def parse(doc: Any, *, source: str = "", digest: str | None = None) -> Manifest:
             if top.has(block):
                 raise ManifestError(block, "is forbidden for runtime 'chat' (nothing is executed)")
         r = top.table("endpoint")
-        endpoint = Endpoint(kind=r.str("kind", one_of=kinds.ENDPOINT_KINDS))
+        endpoint = Endpoint(
+            kind=r.str("kind", one_of=kinds.ENDPOINT_KINDS),
+            ai_settings=r.bool("ai_settings", False),
+        )
         r.done()
     else:
         if top.has("endpoint"):
