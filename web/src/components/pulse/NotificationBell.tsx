@@ -1,4 +1,4 @@
-import { Bell, X } from "lucide-react";
+import { ArrowRight, Bell, BellOff, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
@@ -262,59 +262,76 @@ export function NotificationBell() {
   // live and which class they wear, never in what they say.
   const contents = (
     <>
+      {/* Two tiers (#1316): the title + count + close on top, the list's actions on a row of their
+          own beneath. One crowded line used to hold all five, at 8.7px, and wrapped on a phone. */}
       <div className={styles.head}>
-        <span>Notifications{unread > 0 ? ` · ${unread} unread` : ""}</span>
-        {unread > 0 && (
-          <button
-            type="button"
-            className={styles.markAll}
-            onClick={() => void markAll()}
-          >
-            Mark all read
-          </button>
-        )}
-        {items.length > 0 &&
-          (arming ? (
-            <>
-              <span className={styles.confirm}>Clear all?</span>
-              <button
-                type="button"
-                className={styles.confirmYes}
-                onClick={() => void clearAll()}
-              >
-                Yes
-              </button>
-              <button
-                type="button"
-                className={styles.markAll}
-                onClick={() => setArming(false)}
-              >
-                Cancel
-              </button>
-            </>
-          ) : (
+        <div className={styles.headTop}>
+          <span className={styles.heading}>Notifications</span>
+          {unread > 0 && (
+            <span className={styles.count}>
+              <span className={styles.countDot} aria-hidden="true" />
+              {unread} unread
+            </span>
+          )}
+          {drawer && (
             <button
+              ref={closeRef}
               type="button"
-              className={styles.clearAll}
-              onClick={() => setArming(true)}
+              className={styles.closeBtn}
+              onClick={() => setOpen(false)}
+              aria-label="Close notifications"
             >
-              Clear all
+              <X size={20} aria-hidden="true" />
             </button>
-          ))}
-        {drawer && (
-          <button
-            ref={closeRef}
-            type="button"
-            className={styles.closeBtn}
-            onClick={() => setOpen(false)}
-            aria-label="Close notifications"
-          >
-            <X size={16} aria-hidden="true" />
-          </button>
+          )}
+        </div>
+        {(unread > 0 || items.length > 0) && (
+          <div className={styles.toolbar}>
+            {unread > 0 && !arming && (
+              <button
+                type="button"
+                className={styles.tool}
+                onClick={() => void markAll()}
+              >
+                Mark all read
+              </button>
+            )}
+            {items.length > 0 &&
+              (arming ? (
+                <>
+                  <span className={styles.confirm}>Clear all?</span>
+                  <button
+                    type="button"
+                    className={styles.confirmYes}
+                    onClick={() => void clearAll()}
+                  >
+                    Yes
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.tool}
+                    onClick={() => setArming(false)}
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className={styles.tool}
+                  onClick={() => setArming(true)}
+                >
+                  Clear all
+                </button>
+              ))}
+          </div>
         )}
       </div>
       {items.length === 0 ? (
-        <p className={styles.empty}>Nothing needs you right now.</p>
+        <p className={styles.empty}>
+          <BellOff size={22} aria-hidden="true" className={styles.emptyIcon} />
+          Nothing needs you right now.
+        </p>
       ) : (
         <ul className={styles.list}>
           {items.map((n) => (
@@ -328,7 +345,7 @@ export function NotificationBell() {
                 onClick={() => void dismissOne(n.id)}
                 aria-label={`Dismiss: ${n.title}`}
               >
-                <X size={13} aria-hidden="true" />
+                <X size={16} aria-hidden="true" />
               </button>
               <div className={styles.title}>{n.title}</div>
               {n.reason && <div className={styles.reason}>{n.reason}</div>}
@@ -344,6 +361,7 @@ export function NotificationBell() {
                   onClick={() => setOpen(false)}
                 >
                   Open
+                  <ArrowRight size={15} aria-hidden="true" />
                 </Link>
               </div>
             </li>
@@ -382,7 +400,7 @@ export function NotificationBell() {
             {settled.map((n) => (
               <li
                 key={n.id}
-                className={styles.row}
+                className={`${styles.row} ${styles.settledRow}`}
                 data-testid="bell-settled-row"
               >
                 <div className={styles.title}>{n.title}</div>

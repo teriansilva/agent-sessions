@@ -47,96 +47,118 @@
 /* `fixed`, not `absolute`: the panel is portalled to <body> at both widths (#752), so it has no
  * offset parent to anchor to — its coordinates come from the bell's measured rect. That is what
  * lifts it out of the topbar's `backdrop-filter` stacking context, which the terminal pane was
- * painting over. */
+ * painting over.
+ *
+ * TYPE + SPACING (#1316). The panel used to set its chrome at 8.4–8.7px and its body at 10.4–11.5px,
+ * with ~9px of padding — readable only by squinting. It now follows the design scale: the base
+ * 14px body (§4) for the reason, a 15px title, the `.hud-h` heading spec (mono 11px/600 .16em)
+ * for chrome, mono 11.5px for the meta line, and 16px gutters. */
 .panel {
   position: fixed;
   top: 56px;
   right: 8px;
-  width: min(340px, calc(100vw - 24px));
-  max-height: 70vh;
+  width: min(420px, calc(100vw - 24px));
+  max-height: min(78vh, 720px);
   overflow-y: auto;
+  overscroll-behavior: contain;
   background: var(--bg-1);
   border: 1px solid var(--accent);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
   z-index: 60;
 }
+
+/* Two tiers: heading + count (+ close on a phone), then the list's actions on their own row. */
 .head {
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-1);
+}
+/* The anchored dropdown scrolls as one box; keep its heading and actions in view on a long list. */
+.panel .head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.headTop {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--line);
+  gap: 12px;
+  min-height: 52px;
+  padding: 4px 16px;
+}
+.heading {
   font-family: var(--font-mono);
-  font-size: 0.62rem;
-  letter-spacing: 0.1em;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--accent);
-}
-.markAll {
-  margin-left: auto;
-  background: transparent;
-  border: 0;
-  color: var(--text-3);
-  font: inherit;
-  text-transform: none;
-  letter-spacing: 0;
-  cursor: pointer;
-  min-height: 30px;
-}
-.markAll:hover {
   color: var(--text-1);
+}
+/* The count pairs the unread colour (the badge's `--status-degraded`) with words — never colour
+ * alone (§8). The dot is the status signal; the text stays a neutral, readable token. */
+.count {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.countDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--status-degraded);
+}
+.toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 16px 12px;
 }
 
-/* `Clear all` is an AFFORDANCE, not system state, so it takes no status colour (#752 review):
- * red would read as an incident and amber collides with the unread badge's meaning. */
-.clearAll,
+/* `Clear all` / `Mark all read` are AFFORDANCES, not system state, so they take no status colour
+ * (#752 review): red would read as an incident and amber collides with the unread badge's
+ * meaning. One ghost definition (#967) — composed, not restated. */
+.tool,
 .confirmYes {
-  background: transparent;
-  border: 0;
-  color: var(--text-3);
-  font: inherit;
-  text-transform: none;
-  letter-spacing: 0;
-  cursor: pointer;
-  min-height: 30px;
-  padding: 0 2px;
+  composes: ghost from "../ui/actionButton.module.css";
 }
-.clearAll:hover {
-  color: var(--text-1);
+/* Doubled selector: the composed ghost sets the 44px touch floor at the same specificity, and the
+ * bundle's sheet order decides between equals. A pointer-sized 36px on desktop; 44px at ≤800px. */
+.toolbar .tool,
+.toolbar .confirmYes {
+  min-height: 36px;
+  padding: 4px 12px;
+  font-size: 13px;
 }
 /* Only the armed confirmation is destructive, and only then does it earn the colour. */
 .confirmYes {
-  color: var(--status-down);
+  color: var(--danger-text);
+  border-color: var(--status-down);
   font-weight: 700;
 }
 .confirm {
-  color: var(--text-2);
-  text-transform: none;
-  letter-spacing: 0;
-  margin-left: auto;
-}
-
-/* Quiet by design — it must never compete with `Open`, which is what resolves the alert. */
-.rowX {
-  float: right;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  margin: -4px -4px 0 4px;
-  background: transparent;
-  border: 1px solid var(--line);
-  color: var(--text-3);
-  cursor: pointer;
-}
-.rowX:hover {
+  font-size: 13px;
+  font-weight: 600;
   color: var(--text-1);
+  margin-right: 4px;
 }
 
 .empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
   margin: 0;
-  padding: 14px 10px;
-  font-size: 0.78rem;
+  padding: 36px 16px;
+  font-size: 14px;
+  color: var(--text-2);
+  text-align: center;
+}
+.emptyIcon {
   color: var(--text-3);
 }
 .list {
@@ -144,10 +166,16 @@
   margin: 0;
   padding: 0;
 }
+
+/* A row is a grid: title | dismiss on the first line, reason and meta spanning both below. The
+ * old float let the ✕ sit flush against the drawer edge and push the title around. */
 .row {
-  padding: 9px 10px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 12px;
+  padding: 14px 16px 14px 13px;
   border-bottom: 1px solid var(--line);
-  border-left: 2px solid transparent;
+  border-left: 3px solid transparent;
 }
 .row:last-child {
   border-bottom: 0;
@@ -157,48 +185,114 @@
   border-left-color: var(--status-degraded);
 }
 .title {
-  font-size: 0.82rem;
+  grid-column: 1;
+  grid-row: 1;
+  align-self: center;
+  font-size: 15px;
   font-weight: 600;
+  line-height: 1.35;
   color: var(--text-1);
   overflow-wrap: anywhere;
 }
 .reason {
-  margin-top: 3px;
-  font-size: 0.74rem;
-  line-height: 1.4;
+  grid-column: 1 / -1;
+  margin-top: 6px;
+  font-size: 14px;
+  line-height: 1.5;
   color: var(--text-2);
   overflow-wrap: anywhere;
 }
+
+/* Quiet by design — it must never compete with `Open`, which is what resolves the alert. */
+.rowX {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: start;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin: -4px -4px 0 0;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-3);
+  cursor: pointer;
+}
+.rowX:hover,
+.rowX:focus-visible {
+  color: var(--text-1);
+  border-color: var(--line-strong);
+}
+
 .foot {
+  grid-column: 1 / -1;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   flex-wrap: wrap;
-  margin-top: 6px;
+  margin-top: 12px;
   font-family: var(--font-mono);
-  font-size: 0.6rem;
+  font-size: 11.5px;
   color: var(--text-3);
 }
 .proj {
-  color: var(--accent);
-  border: 1px solid var(--line);
-  padding: 1px 5px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  color: var(--brand);
+  border: 1px solid var(--line-strong);
+  padding: 2px 7px;
 }
 .eng {
-  border: 1px solid var(--line);
-  padding: 1px 4px;
+  border: 1px solid var(--line-strong);
+  padding: 2px 6px;
+  color: var(--text-2);
+  text-transform: uppercase;
 }
+.age {
+  font-variant-numeric: tabular-nums;
+}
+/* `Open` resolves the alert, so it is the row's one real button: an accent-edged ghost that fills
+ * with the accent on hover — readable ink in both themes (`--text-1` at rest, `--on-accent` on the
+ * fill, never amber text on the light ground). */
 .open {
   margin-left: auto;
-  color: var(--accent);
-  text-decoration: none;
   display: inline-flex;
   align-items: center;
-  min-height: 30px;
-  padding: 0 2px;
+  gap: 6px;
+  min-height: 36px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-1);
+  border: 1px solid var(--accent-soft);
+  text-decoration: none;
 }
-.open:hover {
-  text-decoration: underline;
+.open svg {
+  color: var(--accent);
+}
+.open:hover,
+.open:focus-visible {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.open:hover svg,
+.open:focus-visible svg {
+  color: var(--on-accent);
+}
+
+.tool:focus-visible,
+.confirmYes:focus-visible,
+.rowX:focus-visible,
+.open:focus-visible,
+.closeBtn:focus-visible,
+.settledClear:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 @media (max-width: 800px) {
@@ -206,18 +300,16 @@
     width: 44px;
     height: 44px;
   }
-  .markAll,
-  .clearAll,
-  .confirmYes,
+  .toolbar .tool,
+  .toolbar .confirmYes,
   .open {
     min-height: 44px;
   }
-  /* 44px interactive box on touch (design.md), while staying visually quiet — the negative
-   * margins keep the *drawn* control small so it does not compete with `Open`. */
+  /* 44px interactive box on touch (design.md §8). */
   .rowX {
     width: 44px;
     height: 44px;
-    margin: -10px -10px 0 4px;
+    margin: -10px -10px 0 0;
   }
 }
 
@@ -227,26 +319,22 @@
   justify-content: center;
   width: 44px;
   height: 44px;
-  margin: -8px -6px -8px 2px;
+  margin: 0 -10px 0 auto;
   background: transparent;
   border: 0;
-  color: var(--text-3);
+  color: var(--text-2);
   cursor: pointer;
 }
 .closeBtn:hover {
   color: var(--text-1);
 }
-/* `.markAll` normally takes the slack with `margin-left: auto`; when it is absent (nothing
- * unread) the close button has to take it instead, or it collapses next to the title. */
-.closeBtn:first-of-type {
-  margin-left: auto;
-}
 
 /* Phone: the anchored dropdown becomes a drawer sliding in from the right, mirroring the
  * session sidebar's left drawer (#750).
  *
- * The dropdown's right edge tracks the bell, and `width: min(340px, …)` grows LEFTWARDS from
- * there — at 412px wide that laid the panel out at x=-50 with every row clipped, and since
+ * The dropdown's right edge tracks the bell, and its `width: min(420px, …)` (340px when #750
+ * measured this) grows LEFTWARDS from there — at 412px wide that laid the panel out at x=-50 with
+ * every row clipped, and since
  * `scrollWidth === clientWidth` the clipped half could not be scrolled into view at all.
  *
  * Breakpoint is 640px, not the 800px above: 640 is where the topbar collapses and the
@@ -273,17 +361,17 @@
   z-index: 33;
   top: 0;
   right: 0;
-  width: min(85vw, 320px);
+  width: min(92vw, 400px);
   height: 100dvh;
   /* Clear the fixed command bar, same as the sidebar drawer. */
   padding-top: 52px;
   padding-right: env(safe-area-inset-right, 0px);
   overflow-y: auto;
   overscroll-behavior: contain;
-  /* Near-opaque for the same reason the sidebar drawer is (#228): it floats over the live
-   * terminal and mobile Chrome will not blur it, so translucency shows high-contrast terminal
-   * text straight through. */
-  background: color-mix(in srgb, var(--panel) 96%, transparent);
+  /* OPAQUE (#1316). It used to be `--panel` at 96% for the same reason as the sidebar drawer
+   * (#228), but on the light theme even 4% let the page's large headings read straight through
+   * the rows. A list of decisions is read, not glanced at — it gets a solid ground. */
+  background: var(--bg-1);
   border: 0;
   border-left: 1px solid var(--accent);
   box-shadow: -2px 0 14px rgba(0, 0, 0, 0.45);
@@ -304,45 +392,61 @@
 }
 
 /* Rows whose state could not be established (#852). Amber — "not current", never red, which is
- * reserved for errors and failure (docs/design.md). */
+ * reserved for errors and failure (docs/design.md). The hue rides an edge and `--warn-text`, the
+ * AA-readable form of `--status-degraded` (the raw hue is ≈2:1 as text on the light ground). */
 .uncertain {
   margin: 0;
-  padding: 8px 12px;
+  padding: 12px 16px 12px 13px;
   border-top: 1px solid var(--line);
-  color: var(--status-degraded);
-  font-size: 0.74rem;
-  line-height: 1.4;
+  border-left: 3px solid var(--status-degraded);
+  color: var(--warn-text);
+  font-size: 13.5px;
+  line-height: 1.5;
 }
 
 /* The bounded settled window — history, so it is visually quieter than the live rows above. */
 .settled {
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--line-strong);
 }
 .settledHead {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 8px 12px 4px;
+  padding: 12px 16px 4px;
   font-family: var(--font-mono);
-  font-size: 0.62rem;
-  letter-spacing: 0.12em;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--text-3);
 }
 .settledClear {
-  min-height: 44px;
-  padding: 2px 10px;
-  border: 1px solid var(--line-strong);
-  background: transparent;
-  color: var(--text-2);
-  cursor: pointer;
-  font: inherit;
-  font-size: 0.72rem;
+  composes: ghost from "../ui/actionButton.module.css";
 }
-.settledClear:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+.settledHead .settledClear {
+  min-height: 36px;
+  padding: 4px 12px;
+  font-family: inherit;
+  letter-spacing: 0.08em;
+  font-size: 11px;
+}
+.settledRow {
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+.settledRow .title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+.settledRow .foot {
+  margin-top: 6px;
+}
+@media (max-width: 800px) {
+  .settledHead .settledClear {
+    min-height: 44px;
+  }
 }
 
 /* THE COMPACT BAR (#1294; App.css's ≤440px block). Ask's icon joined the bell in the corner, and
