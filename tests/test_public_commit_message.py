@@ -1,15 +1,18 @@
 """`scripts/public-commit-message`: the mirror commit's public message (#1326).
 
-Driven offline: a throwaway repo supplies the commit, `--pr-json` stands in for the forge's
-`/pulls/<n>` response, and the real `check-public-snapshot` is the gate — so a denylist change
+Driven offline: a throwaway repo supplies the commit, `--pr-json` or a local stand-in forge
+supplies the merged PR, and the real `check-public-snapshot` is the gate — so a denylist change
 is exercised here too, not mocked away.
 """
 
 from __future__ import annotations
 
+import http.server
 import json
 import os
+import re
 import subprocess
+import threading
 from pathlib import Path
 
 import pytest
@@ -159,7 +162,78 @@ def test_no_forge_access_degrades_to_the_subject(repo, tmp_path):
     out = _run(r, c, None, tmp_path)  # no GITHUB_* env: the fetch cannot happen
     assert out.returncode == 0, out.stderr
     assert out.stdout == "fix(web): x\n"
-    assert "could not read PR #7" in out.stderr
+    assert "could not look up the PR merged as" in out.stderr
+
+
+@pytest.fixture
+def forge():
+    """A stand-in forge answering `commits/<sha>/pull` from `prs` (sha -> PR); 404 otherwise."""
+    prs: dict[str, dict] = {}
+    seen: list[tuple[str, str | None]] = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            seen.append((self.path, self.headers.get("Authorization")))
+            m = re.fullmatch(r"/api/v1/repos/o/r/commits/([0-9a-f]{40})/pull", self.path)
+            pr = prs.get(m.group(1)) if m else None
+            body = json.dumps(pr or {"message": "not found"}).encode()
+            self.send_response(200 if pr else 404)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    env = {
+        "GITHUB_SERVER_URL": f"http://127.0.0.1:{srv.server_port}",
+        "GITHUB_REPOSITORY": "o/r",
+        "GITHUB_TOKEN": "t0ken",
+    }
+    yield prs, seen, env
+    srv.shutdown()
+
+
+def _run_forge(repo_dir: Path, commit: str, env: dict):
+    base = {k: v for k, v in os.environ.items() if not k.startswith("GITHUB_")}
+    return subprocess.run(
+        [str(SCRIPT), commit], cwd=repo_dir, capture_output=True, text=True, env={**base, **env}
+    )
+
+
+def test_the_pr_is_found_by_its_merge_commit_not_the_subject(repo, forge):
+    """A squash titled with its ISSUE (`… (#1337)`) has no PR number in the subject (#1338)."""
+    r, commit = repo
+    prs, seen, env = forge
+    c = commit("feat(web): a panel (#1337)")
+    prs[c] = _pr(c)
+    out = _run_forge(r, c, env)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.startswith("feat(web): a panel\n\n- The panel moves onto the type scale.")
+    assert seen == [(f"/api/v1/repos/o/r/commits/{c}/pull", "token t0ken")]
+    assert "warning" not in out.stderr
+
+
+def test_a_commit_no_pr_merged_publishes_its_subject_quietly(repo, forge):
+    r, commit = repo
+    _prs, _seen, env = forge
+    c = commit("fix(release): avoid changelog SIGPIPE")
+    out = _run_forge(r, c, env)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout == "fix(release): avoid changelog SIGPIPE\n"
+    assert "warning" not in out.stderr
+
+
+def test_a_forge_error_degrades_to_the_subject(repo, forge):
+    r, commit = repo
+    _prs, _seen, env = forge
+    c = commit("fix(web): x (#7)")
+    out = _run_forge(r, c, {**env, "GITHUB_SERVER_URL": "http://127.0.0.1:1"})  # refused
+    assert out.returncode == 0, out.stderr
+    assert out.stdout == "fix(web): x\n"
+    assert "could not look up the PR merged as" in out.stderr
 
 
 def test_a_direct_push_uses_its_subject(repo, tmp_path):
