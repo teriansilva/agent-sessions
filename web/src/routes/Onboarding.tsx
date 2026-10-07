@@ -17,7 +17,7 @@ import { consentSaveError, saveAnalyticsConsent } from "../lib/analyticsConsent"
 import { DOCS_HOME_URL } from "../lib/links";
 import { EnableLoginDetails } from "../components/EnableLoginDetails";
 import { mintNewSessionId } from "../lib/newSession";
-import { mintsOwnId, useEngineRoster } from "../app/engineRoster";
+import { engineInfo, mintsOwnId, useEngineRoster } from "../app/engineRoster";
 import type { EngineInfo, Folder, TwoFactorEnrollment } from "../types/api";
 import styles from "./Onboarding.module.css";
 import { AiEndpointSetup } from "./AiEndpointSetup";
@@ -233,7 +233,17 @@ export function Onboarding({
   const [newFolder, setNewFolder] = useState("");
   const [folderErr, setFolderErr] = useState<string | null>(null);
   // Launch.
-  const newEngines = useMemo(() => config?.new_session_engines ?? [], [config]);
+  // Onboarding launches a terminal session: API and chat agents (#1209, #1311) are created on the
+  // server from New session instead, so they are not offered here.
+  const newEngines = useMemo(
+    () =>
+      (config?.new_session_engines ?? []).filter((id) => {
+        const runtime = engineInfo(id)?.runtime;
+        return runtime !== "api" && runtime !== "chat";
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-run when the roster lands
+    [config, roster.loaded],
+  );
   const [engineChoice, setEngineChoice] = useState("");
   const engine = engineChoice || newEngines[0] || "";
   // #681: the folder <select> visibly shows its first option, but raw `cwd` stays "" until the

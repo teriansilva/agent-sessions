@@ -541,6 +541,9 @@ function engineState(e: EngineInfo | undefined): {
 } {
   if (!e) return { tone: "idle", text: "Unknown" };
   if (!isActive(e)) return { tone: "deg", text: "Retiring" };
+  // A native API client (#1311) has no binary of its own: it is Ready or Unavailable.
+  if (e.runtime === "api")
+    return e.present ? { tone: "up", text: "Ready" } : { tone: "idle", text: "Unavailable" };
   return e.present
     ? { tone: "up", text: "Present" }
     : { tone: "idle", text: "Absent" };
@@ -584,7 +587,15 @@ function RosterCard({ e, b, catalog }: { e: EngineInfo; b: Budgets; catalog: Ret
           Runtime // {runtimeLabel(e.runtime)}
         </span>
       </div>
-      {e.present && e.bin ? (
+      {e.runtime === "api" && e.api ? (
+        // No binary of its own (#1311): it drives an installed console agent.
+        !retiring && (
+          <p className={e.present ? a.path : a.empty} data-testid="api-client-status">
+            Drives the {engineLabel(e.api.source)} CLI without a terminal
+            {e.present ? "." : ` — unavailable: ${e.api.unavailable_reason ?? "not ready"}`}
+          </p>
+        )
+      ) : e.present && e.bin ? (
         <p className={a.path}>{e.bin}</p>
       ) : (
         !retiring && (

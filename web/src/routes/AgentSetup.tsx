@@ -55,6 +55,9 @@ export default function AgentSetup() {
   const isEnabled = enabled || installation?.enabled === true && installation.active === generation;
   const pending = pendingOperation(operation);
   const isChat = review?.entry.manifest.runtime?.kind === "chat";
+  // A native API client (#1311) drives an already-installed console agent: nothing to sign in to
+  // or run of its own, and its one check is the adapter's readiness against that agent.
+  const apiSource = review?.entry.manifest.runtime?.kind === "api" ? review.entry.manifest.api?.source ?? "its console agent" : null;
   const hasSignin = ["cli-subcommand", "auth-login", "interactive"].includes(review?.entry.manifest.signin?.kind ?? "none");
 
   const accept = useCallback((op: PluginOperation) => {
@@ -256,7 +259,7 @@ export default function AgentSetup() {
         {review.source === "local" && <p className={s.note}>Untrusted local source. Only continue if you trust these exact files and their publisher.</p>}
         <dl className={s.kv}>
           <dt>Installation</dt><dd>{review.adopted_path ?? review.entry.manifest.install?.kind ?? "API agent"}</dd>
-          <dt>Access</dt><dd>{isChat ? "The configured endpoint receives the test message and later conversations." : "Vendor code runs as your host account and can access its files and network."}</dd>
+          <dt>Access</dt><dd>{isChat ? "The configured endpoint receives the test message and later conversations." : apiSource ? `Drives the installed ${apiSource} CLI through its structured protocol, with that agent's login and config. You approve each request it makes.` : "Vendor code runs as your host account and can access its files and network."}</dd>
           <dt>After install</dt><dd>Disabled until verification passes and you explicitly enable it. Existing sessions, credentials and previous installations stay.</dd>
         </dl>
         <details className={s.details}><summary>Source and pinned digests</summary>
@@ -281,7 +284,7 @@ export default function AgentSetup() {
         {isChat ? <AgentEndpointCard engine={review.plugin_id} generation={generation} readOnly={endpointFrozen} onSaved={async () => {
           setCatalog(current => current && ({ ...current, plugins: current.plugins.map(p => ({ ...p, generations: p.generations?.map(g => g.id === generation ? { ...g, verification: null } : g) })) }));
           setEnabled(false); await loadCatalog();
-        }} /> : <>
+        }} /> : apiSource ? <p>Nothing to sign in to: this client uses the {apiSource} agent's own login on this host.</p> : <>
           <p>Sign in with the vendor in this temporary terminal. BattleLab does not save its input or output. The vendor can store credentials in its own account files.</p>
           <p>If the vendor asks you to trust this folder, make that choice here. Verification uses the same private workspace.</p>
           {hasSignin ? <div className={s.row}>
@@ -306,6 +309,7 @@ export default function AgentSetup() {
         </section>
         {!isEnabled && <>
           <p className={s.note}>{isChat ? "Verification sends a fixed test message to the saved endpoint and can consume API quota."
+            : apiSource ? `Verification checks that ${apiSource} is installed, supports native mode and can be contained. It starts nothing and sends nothing to a model.`
             : "Verification runs the agent in a separate workspace, starts and resumes a test conversation, reads its transcript and checks usage where supported. It can access host files, create vendor history, contact the vendor and consume quota."}</p>
           <div className={s.row}>
             <button className={button.ghost} disabled={busy || unresolved} onClick={() => setStep(2)}>Back to account setup</button>

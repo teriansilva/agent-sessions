@@ -1,7 +1,8 @@
 # Engines
 
-BattleLab does not implement agents. It **organizes** them: six AI coding CLIs, a plain shell and
-an API agent that talks to a model endpoint you configure, all presented through one session list. Each one is a **plugin**, described by a
+BattleLab does not implement agents. It **organizes** them: six AI coding CLIs, a plain shell,
+API clients that drive Codex and Claude without a terminal, and an API agent that talks to a model
+endpoint you configure, all presented through one session list. Each one is a **plugin**, described by a
 single declarative manifest (`plugin.toml`) that tells BattleLab everything it needs: the binary,
 the shape of a session id, where the engine keeps its sessions, how to resume and start one, what
 the app may do with it, and how to show it.
@@ -35,12 +36,14 @@ directory), shown with the binary's name instead of its resolved path.
 | Engine | Binary · override | Sessions read from · override | Resume | New session | Permission bypass |
 |---|---|---|---|---|---|
 | **Claude Code** (`claude`) | `claude` · `AGENT_SESSIONS_CLAUDE_BIN` | `~/.claude` | `claude --resume <id>` | `claude --session-id <id>` — pinned id | `--dangerously-skip-permissions` |
+| **Claude — API** (`claude-api`) | Claude Code's | `~/.local/share/agent-sessions/native/claude-api` · `AGENT_SESSIONS_CLAUDE_API_DIR` | contained worker — runtime `api`, protocol `claude-stream-json` | new conversation | — |
 | **opencode** (`opencode`) | `opencode` · `AGENT_SESSIONS_OPENCODE_BIN` | `~/.local/share/opencode` · `AGENT_SESSIONS_OPENCODE_DB`, `AGENT_SESSIONS_OPENCODE_LOG` | `opencode <dir> --session <id>` | `opencode <dir>`, then adopt the id it mints | — |
 | **Codex** (`codex`) | `codex` · `AGENT_SESSIONS_CODEX_BIN` | `~/.codex/sessions` · `AGENT_SESSIONS_CODEX_SESSIONS_DIR` | `codex resume <id>` | `codex --cd <dir>`, then adopt the id it mints | `--dangerously-bypass-approvals-and-sandbox` (new sessions only) |
+| **Codex — API** (`codex-api`) | Codex's | `~/.local/share/agent-sessions/native/codex-api` · `AGENT_SESSIONS_CODEX_API_DIR` | contained worker — runtime `api`, protocol `codex-app-server` | new conversation | — |
 | **Gemini CLI** (`gemini`) | `gemini` · `AGENT_SESSIONS_GEMINI_BIN` | `~/.gemini/tmp` · `AGENT_SESSIONS_GEMINI_TMP_DIR` | `gemini --resume <id>` | `gemini --session-id <id>` — pinned id | `--yolo` `--skip-trust` |
 | **Antigravity** (`antigravity`) | `agy` · `AGENT_SESSIONS_AGY_BIN` | `~/.gemini/antigravity-cli` · `AGENT_SESSIONS_ANTIGRAVITY_DIR` | `agy --conversation <id>` | `agy`, then adopt the id it mints | `--dangerously-skip-permissions` |
 | **Kimi Code** (`kimi`) | `kimi` · `AGENT_SESSIONS_KIMI_BIN` | `~/.kimi-code` · `AGENT_SESSIONS_KIMI_DIR` | `kimi -S <id>` | `kimi`, then adopt the id it mints | `-y` |
-| **API agent** (`apichat`) | — | `~/.local/share/agent-sessions/chat` | no process — runtime `chat`, endpoint `openai-chat` | new conversation | — |
+| **API agent** (`apichat`) | — | `~/.local/share/agent-sessions/chat` · `AGENT_SESSIONS_CHAT_DIR` | no process — runtime `chat`, endpoint `openai-chat` | new conversation | — |
 | **Shell** (`shell`) | `bash` · `AGENT_SESSIONS_BASH_BIN` | `~/.claude/shell-sessions` · `AGENT_SESSIONS_SHELL_DIR` | a fresh process — nothing to resume | `bash -l` — pinned id | — |
 <!-- END generated:engine-table -->
 
@@ -51,11 +54,13 @@ and the scroll-up transcript, so pointing one at a different location moves both
 | Variable | Engine | Overrides |
 |---|---|---|
 | `AGENT_SESSIONS_CLAUDE_BIN` | Claude Code | the binary |
+| `AGENT_SESSIONS_CLAUDE_API_DIR` | Claude — API | the store root (`~/.local/share/agent-sessions/native/claude-api`) |
 | `AGENT_SESSIONS_OPENCODE_BIN` | opencode | the binary |
 | `AGENT_SESSIONS_OPENCODE_DB` | opencode | the store's `db` (`~/.local/share/opencode/opencode.db`) |
 | `AGENT_SESSIONS_OPENCODE_LOG` | opencode | the store's `log` (`~/.local/share/opencode/log/opencode.log`) |
 | `AGENT_SESSIONS_CODEX_BIN` | Codex | the binary |
 | `AGENT_SESSIONS_CODEX_SESSIONS_DIR` | Codex | the store root (`~/.codex/sessions`) |
+| `AGENT_SESSIONS_CODEX_API_DIR` | Codex — API | the store root (`~/.local/share/agent-sessions/native/codex-api`) |
 | `AGENT_SESSIONS_GEMINI_BIN` | Gemini CLI | the binary |
 | `AGENT_SESSIONS_GEMINI_TMP_DIR` | Gemini CLI | the store root (`~/.gemini/tmp`) |
 | `AGENT_SESSIONS_AGY_BIN` | Antigravity | the binary |
@@ -104,8 +109,10 @@ added under **Settings → Agents → *engine***, for a model released after thi
 | Engine | Model at launch | Models offered | Instruction files |
 |---|---|---|---|
 | **Claude Code** (`claude`) | `--model <id>` on new sessions and on resume | `claude-opus-5` (`opus`), `claude-sonnet-5` (`sonnet`), `claude-haiku-4-5` (`haiku`), `claude-fable-5-1`, `claude-opus-4-8`, `claude-sonnet-4-6` | `CLAUDE.md` |
+| **Claude — API** (`claude-api`) | — | — | — |
 | **opencode** (`opencode`) | set in the agent's own configuration | `default` only | `AGENTS.md` |
 | **Codex** (`codex`) | `--model <id>` on new sessions (a resume keeps its model) | `gpt-5-codex`, `gpt-5` | `AGENTS.md` |
+| **Codex — API** (`codex-api`) | — | — | — |
 | **Gemini CLI** (`gemini`) | `--model <id>` on new sessions (a resume keeps its model) | `gemini-2.5-pro`, `gemini-2.5-flash` | `GEMINI.md` |
 | **Antigravity** (`antigravity`) | set in the agent's own configuration | `default` only | `GEMINI.md` |
 | **Kimi Code** (`kimi`) | set in the agent's own configuration | `default` only | `AGENTS.md` |
@@ -131,6 +138,27 @@ Three consequences worth knowing:
 - **AI review still works.** The reviewer builds its input from the transcript *and* the live
   screen, and errors only when both are empty — so a shell is reviewed on its terminal screen
   alone, with no special-casing anywhere in the review code.
+
+## API clients: Codex and Claude without a terminal
+
+**Codex — API** (`codex-api`) and **Claude — API** (`claude-api`) run the CLI you already have
+installed, but through its structured protocol instead of a terminal: Codex's app-server and
+Claude Code's stream-JSON mode. Its login, configuration, MCP servers, skills and instruction
+files all apply — BattleLab adds no tools and no keys of its own. Each session runs in its own
+contained worker; New session lists these under **API — structured, no terminal**.
+
+The session view shows your messages, what the agent did, and every request it makes. A request
+card lists the **whole** request — command, folder, network access, proposed rule changes, or a
+Claude prompt's title, path and reason — and offers only the choices the agent accepts right
+now, one request at a time: there is never an "always allow" button. Codex **file changes** are
+shown with their patch but can only be declined, because nothing guarantees Codex writes exactly
+the patch shown. Interrupt stops the current turn; Stop ends the worker and reports whether it is
+confirmed gone. Closing the tab never cancels a turn: the view picks up where it left off.
+
+A client that cannot start is listed with the reason — the CLI is missing or older than the
+protocol needs, there is no systemd user session, or its console agent is disabled. If the
+console agent is later disabled, existing API conversations stay readable but take no new
+messages until it is back. There is no permission bypass for API clients.
 
 ## The API agent: a model endpoint with no process
 

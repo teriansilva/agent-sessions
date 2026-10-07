@@ -21,8 +21,10 @@ does not remove, so the two cannot drift apart.
 
 <!-- BEGIN generated:engine-stores -->
 - **Claude Code** — `~/.claude`
+- **Claude — API** — `~/.local/share/agent-sessions/native/claude-api`
 - **opencode** — `~/.local/share/opencode`
 - **Codex** — `~/.codex/sessions`
+- **Codex — API** — `~/.local/share/agent-sessions/native/codex-api`
 - **Gemini CLI** — `~/.gemini/tmp`
 - **Antigravity** — `~/.gemini/antigravity-cli`
 - **Kimi Code** — `~/.kimi-code`

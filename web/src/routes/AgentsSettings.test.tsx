@@ -198,7 +198,7 @@ test("roster: an invalid manifest is a card with its source and exact error, and
   expect(within(bad).queryByRole("link")).toBeNull();
   expect(within(bad).queryByRole("button")).toBeNull();
   expect(screen.getByText(/loaded ·/)).toHaveTextContent(
-    "Agents // 8 loaded · 0 retiring · 1 invalid",
+    `Agents // ${FIXTURE.length} loaded · 0 retiring · 1 invalid`,
   );
 });
 
@@ -219,7 +219,7 @@ test("roster: a retiring engine shows why, and offers nothing to start", async (
     expect(chip).toHaveTextContent("(off)");
   }
   expect(screen.getByText(/loaded ·/)).toHaveTextContent(
-    "Agents // 8 loaded · 1 retiring · 0 invalid",
+    `Agents // ${FIXTURE.length} loaded · 1 retiring · 0 invalid`,
   );
 });
 
@@ -611,4 +611,23 @@ test("agent page: a configured-elsewhere agent offers no add field and says why 
   renderPage(<AgentDetail id="opencode" />);
   expect(await screen.findByText(/own configuration/)).toBeInTheDocument();
   expect(screen.queryByTestId("added-models")).not.toBeInTheDocument();
+});
+
+test("roster: an API client card says Ready or why it is unavailable — never 'not installed' (#1311)", async () => {
+  const ready = { ...FIXTURE.find((e) => e.id === "codex-api")!, present: true, supports_new: true, api: { kind: "codex-app-server", source: "codex", unavailable_reason: null } };
+  const down = { ...FIXTURE.find((e) => e.id === "claude-api")!, present: false, supports_new: false, api: { kind: "claude-stream-json", source: "claude", unavailable_reason: "claude 2.1.287 or later is required for native mode" } };
+  vi.mocked(api.engines).mockResolvedValue({
+    engines: FIXTURE.map((e) => (e.id === ready.id ? ready : e.id === down.id ? down : e)),
+    problems: [],
+  });
+  renderPage(<AgentsRoster />);
+  await waitFor(() => expect(screen.getByRole("heading", { name: "Codex — API" })).toBeInTheDocument());
+  const ok = card("Codex — API");
+  expect(within(ok).getByText("Ready")).toBeInTheDocument();
+  expect(within(ok).getByTestId("api-client-status")).toHaveTextContent("Drives the Codex CLI");
+  expect(within(ok).queryByText(/not installed/i)).toBeNull();
+  const no = card("Claude — API");
+  expect(within(no).getByText("Unavailable")).toBeInTheDocument();
+  expect(within(no).getByTestId("api-client-status")).toHaveTextContent("2.1.287 or later");
+  expect(within(no).queryByText(/not installed/i)).toBeNull();
 });

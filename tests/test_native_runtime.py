@@ -137,7 +137,8 @@ def host(tmp_home, tmp_path, monkeypatch):
     monkeypatch.delenv("AGENT_SESSIONS_CODEX_SESSIONS_DIR", raising=False)
     monkeypatch.delenv("AGENT_SESSIONS_CLAUDE_PROJECTS_DIR", raising=False)
     monkeypatch.setenv("AGENT_SESSIONS_PLUGIN_STATE_DIR", str(tmp_path / "plugin-state"))
-    providers = list(registry._PROVIDERS)
+    # The in-tree clients (#1311) are replaced by fixtures whose store is this test's own.
+    providers = [p for p in registry._PROVIDERS if p.engine_id not in ENGINES.values()]
     for source, name in ENGINES.items():
         kind = "codex-app-server" if source == "codex" else "claude-stream-json"
         doc = test_manifest_api._api(name=name, source=source, kind=kind)

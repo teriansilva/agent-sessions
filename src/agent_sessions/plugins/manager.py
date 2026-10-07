@@ -367,7 +367,9 @@ def generation_root(plugin_id: str, generation: str) -> Path:
 
 
 def _record(entry: feed.Entry, root: Path) -> provenance.Record:
-    if entry.manifest.runtime == "chat":
+    if entry.manifest.runtime in ("chat", "api"):
+        # Nothing of its own to execute: the record pins the manifest. An `api` client's
+        # executable is its source's, verified through the source's own record (#1311).
         return provenance.Record(manifest_sha256=entry.manifest.digest)
     relative = entry.manifest.install.entrypoint
     fd, st = provenance.open_verified(str(root / relative), canonicalize=False)
@@ -569,6 +571,10 @@ def required_checks(prov: PluginProvider) -> list[str]:
     m = prov.manifest
     if m.runtime == "chat":
         return ["endpoint"]
+    if m.runtime == "api":
+        # The adapter's own readiness against the live source (#1311): the source resolves to an
+        # active console agent, its CLI meets the protocol floor, and containment is available.
+        return ["source"]
     checks = {"binary", "version", *m.verify}
     if m.store:
         checks.add("store")

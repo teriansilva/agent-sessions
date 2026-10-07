@@ -159,10 +159,11 @@ def entry(value: object, *, signed: bool) -> Entry:
     value = _fields(value, {"manifest", "recipe"})
     raw = canonical(value["manifest"])
     manifest = load_bytes(raw, name="plugin.json", source="signed-feed" if signed else "local")
-    if manifest.runtime == "api":
-        # The native runtime exists (#1278), but roster exposure waits for the custom UI slice
-        # of #1273: until then no installed entry may present a client nothing can render.
-        raise FeedError("native API adapters are not available in this build")
+    if manifest.runtime == "api" and not signed:
+        # A native API client (#1311) only arrives through the operator-signed catalog (or
+        # in-tree). It names no executable, but it does choose which console agent the app
+        # drives without a terminal — not a choice a hand-placed local manifest may make.
+        raise FeedError("a native API client can only be installed from the signed catalog")
     if manifest.id in kinds.ROUTE_RESERVED_IDS:
         raise FeedError("this plugin id is reserved for a Settings route")
     if not signed and manifest.id in kinds.RESERVED_IDS:
@@ -175,8 +176,12 @@ def entry(value: object, *, signed: bool) -> Entry:
     artifacts = recipe["artifacts"]
     install = manifest.install
     if install is None:
-        if artifacts != [] or manifest.runtime != "chat":
+        # `chat` (#1209) executes nothing; `api` (#1311) runs its source console agent's
+        # verified installation. Neither carries artifacts of its own.
+        if manifest.runtime not in ("chat", "api"):
             raise FeedError("a terminal agent needs an install recipe")
+        if artifacts != []:
+            raise FeedError(f"a runtime {manifest.runtime!r} agent installs no artifacts")
         return Entry(manifest, raw, (), hashlib.sha256(canonical(value)).hexdigest())
     if not isinstance(artifacts, list) or not 1 <= len(artifacts) <= MAX_ARTIFACTS:
         raise FeedError("invalid artifact closure")

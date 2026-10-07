@@ -61,6 +61,7 @@ def test_engines_lists_all_providers(auth_cfg, fake_jsonl, tmp_home, monkeypatch
             "label",
             "kind",
             "runtime",
+            "api",
             "display",
             "capabilities",
             "session_id",

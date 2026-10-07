@@ -19,6 +19,9 @@ import type {
   AgentEndpoint,
   AgentEndpointPatch,
   ChatSession,
+  Containment,
+  StructuredEventPage,
+  StructuredSnapshot,
   ChatTurn,
   DashboardSessions,
   AgentBudgets,
@@ -558,6 +561,7 @@ async function upload(
 
 /** A session key's URL segment (`engine:native`). */
 const chatPath = (sid: string) => `/api/chat/${encodeURIComponent(sid)}`;
+const structuredPath = (key: string) => `/api/structured/sessions/${encodeURIComponent(key)}`;
 
 /** One automation's URL (#1201). */
 const autoPath = (id: string) => `${AUTOMATIONS_API}/${encodeURIComponent(id)}`;
@@ -593,6 +597,34 @@ export const api = {
   pluginEndpoint: (id: string, generation: string) => getJsonWithDetail<AgentEndpoint>(`/api/plugins/${enc(id)}/generations/${enc(generation)}/endpoint`),
   pluginEndpointSet: (id: string, generation: string, patch: AgentEndpointPatch) => mutateJson<AgentEndpoint>("PATCH", `/api/plugins/${enc(id)}/generations/${enc(generation)}/endpoint`, patch),
   pluginEndpointTest: (id: string, generation: string, draft: { base_url: string; api_key?: string }) => pluginPost<{ models: string[]; listing: "ok" | "unsupported" }>(`/api/plugins/${enc(id)}/generations/${enc(generation)}/endpoint/test`, draft),
+
+  // ---- Structured sessions (#1311): native API clients ---------------------------------------------
+  /** Create; an exact repeat of `operation_id` returns the same session (never a second one). */
+  structuredCreate: (engine: string, cwd: string, operation_id: string) =>
+    mutateJson<StructuredSnapshot>("POST", "/api/structured/sessions", { engine, cwd, operation_id }),
+  structuredSnapshot: (key: string) =>
+    getJsonWithDetail<StructuredSnapshot>(structuredPath(key)),
+  structuredEvents: (key: string, after: number, limit = 100) =>
+    getJsonWithDetail<StructuredEventPage>(
+      `${structuredPath(key)}/events?after=${after}&limit=${limit}`,
+    ),
+  /** Idempotent on `operation_id`: a repeat observes the recorded turn, never a second write. */
+  structuredSubmit: (key: string, operation_id: string, text: string, expected_revision: number) =>
+    mutateJson<{ state?: string }>("POST", `${structuredPath(key)}/turns`, {
+      operation_id,
+      text,
+      expected_revision,
+    }),
+  structuredDecide: (
+    key: string,
+    body: { decision_id: string; turn_id: string; request_id: string; decision: string },
+  ) => mutateJson<unknown>("POST", `${structuredPath(key)}/decisions`, body),
+  structuredInterrupt: (key: string, operation_id: string, turn_id: string) =>
+    mutateJson<unknown>("POST", `${structuredPath(key)}/interrupt`, { operation_id, turn_id }),
+  structuredStop: (key: string) =>
+    mutateJson<{ containment: Containment }>("POST", `${structuredPath(key)}/stop`),
+  structuredContainment: (key: string) =>
+    getJsonWithDetail<{ containment: Containment }>(`${structuredPath(key)}/containment`),
 
   // ---- API agents (#1209) ------------------------------------------------------------------------
   /** Start a chat-runtime conversation; resolves to its session key (`engine:uuid`). */

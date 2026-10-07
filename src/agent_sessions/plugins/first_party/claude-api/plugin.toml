@@ -1,0 +1,46 @@
+contract = 1
+
+# A native API client (#1311): BattleLab drives the installed Claude Code CLI through its structured
+# protocol (claude-stream-json, #1278) instead of a terminal. Everything executable comes from the console
+# agent named by `api.source`: binary, login, config, MCP servers, skills, instruction files. This
+# manifest names no binary, argv, endpoint, model list or permission flag; the validator refuses
+# them for runtime "api".
+
+[identity]
+id = "claude-api"
+label = "Claude — API"
+publisher = "battlelab"
+version = "1"
+
+[runtime]
+kind = "api"
+
+[api]
+kind = "claude-stream-json"
+source = "claude"
+
+[session_id]
+pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+mint = "pinned"
+
+# BattleLab's journal of each conversation (#1278). The native history stays in the console
+# agent's store; the ownership ledger (#1277) keeps the two clients off one native session.
+[store]
+root = "~/.local/share/agent-sessions/native/claude-api"
+env_override = "AGENT_SESSIONS_CLAUDE_API_DIR"
+layout = "battlelab-chat"
+read_only = false
+
+[capabilities]
+resume = true
+new = true
+archive = true
+
+[transcript]
+kind = "battlelab-chat"
+
+[display]
+order = 15
+name = "claude-api"
+badge = "cca"
+accent = "amber"

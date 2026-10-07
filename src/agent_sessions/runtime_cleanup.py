@@ -39,6 +39,35 @@ class UnresolvableRuntime(RuntimeError):
     """
 
 
+async def contain_native(engine: str, native: str) -> None:
+    """Stop a native API session's worker and PROVE it gone (#1311, Hermes on #1315).
+
+    A native API client (#1278) runs in a contained systemd worker, not a dtach master, so
+    `cleanup_runtime` cannot reach it. Archive stops it through the structured facade first and
+    refuses (`UnresolvableRuntime`, which every archive path already treats as "not archived")
+    unless containment reports ``gone``; a session whose lifecycle record is missing or does not
+    match is refused too. No-op for every other runtime."""
+    prov = engines.get_any(engine)
+    if prov is None or getattr(prov.manifest, "runtime", None) != "api":
+        return
+    from . import structured_runtime
+
+    try:
+        result = await structured_runtime.stop(f"{engine}:{native}")
+    except structured_runtime.StructuredError as exc:
+        # Including 404: a missing or mismatched lifecycle record is NOT evidence that no worker
+        # runs — the record is written before any launch, so its absence is lost state, and a
+        # worker launched under it would be invisible here (Hermes on #1315). Fail closed.
+        raise UnresolvableRuntime(
+            f"the API session's worker could not be stopped: {exc.detail}"
+        ) from None
+    if result.get("containment") != "gone":
+        raise UnresolvableRuntime(
+            "the API session's worker could not be confirmed stopped "
+            f"(containment: {result.get('containment', 'unknown')}); nothing was archived"
+        )
+
+
 async def resolve_runtime_key(engine: str, native: str) -> str:
     """The PHYSICAL key ``engine:native``'s runtime lives under. Raises `UnresolvableRuntime`.
 

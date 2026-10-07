@@ -565,3 +565,11 @@ test("usage analytics: skipping setup records no analytics decision", async () =
   expect(api.completeOnboarding).toHaveBeenCalled();
   expect(api.setAnalyticsConsent).not.toHaveBeenCalled();
 });
+
+test("an API client is not offered by the first-run launch, which starts a terminal session (#1311)", async () => {
+  renderWizard(vi.fn(), cfg({ new_session_engines: ["codex-api", "claude"] }));
+  await gotoLaunchStep();
+  await finishTourToLaunch();
+  await userEvent.click(screen.getByRole("button", { name: /launch session/i }));
+  expect(mockNavigate).toHaveBeenCalledWith(expect.stringMatching(/^\/s\/claude\//), expect.anything());
+});

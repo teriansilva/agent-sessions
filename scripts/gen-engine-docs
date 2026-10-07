@@ -90,6 +90,16 @@ def engine_table() -> str:
             # Nothing is executed: no binary, no argv. The row says how it runs instead (#1209).
             name = f"**{m.identity.label}** (`{m.id}`)"
             store = _code(m.store.root) if m.store is not None else "—"
+            if m.store is not None and m.store.env_override:
+                store += f" · `{m.store.env_override}`"
+            if m.runtime == "api":
+                # A native API client (#1311) runs its SOURCE's binary in a contained worker
+                # through the native protocol; it has no argv, flags or bypass of its own.
+                source = providers[m.api.source].manifest if m.api.source in providers else None
+                binary = f"{source.identity.label}'s" if source is not None else f"`{m.api.source}`'s"
+                how = f"contained worker — runtime `api`, protocol `{m.api.kind}`"
+                rows.append(f"| {name} | {binary} | {store} | {how} | new conversation | — |")
+                continue
             how = f"no process — runtime `{m.runtime}`, endpoint `{m.endpoint.kind}`"
             rows.append(f"| {name} | — | {store} | {how} | new conversation | — |")
             continue

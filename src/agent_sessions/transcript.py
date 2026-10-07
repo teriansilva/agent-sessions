@@ -1210,7 +1210,15 @@ def _chat_adapter(native_id: str, home: Path) -> list[Turn]:
     from . import chat_store
     from .engines import base
 
-    log = chat_store.read(base._store("battlelab-chat", home=home), native_id)
+    root = base._store("battlelab-chat", home=home)
+    scoped = base._STORE_SCOPE.get()
+    if scoped is not None:
+        from .engines import registry
+
+        prov = registry.get_any(scoped)
+        if prov is not None and prov.manifest.runtime == "api":
+            return _native_turns(root, native_id)
+    log = chat_store.read(root, native_id)
     if log is None:
         return []
     out: list[Turn] = []
@@ -1218,6 +1226,41 @@ def _chat_adapter(native_id: str, home: Path) -> list[Turn]:
         out.append(Turn("user", t.text, ts=t.ts or None))
         if t.reply is not None:
             out.append(Turn("assistant", t.reply, ts=t.reply_ts))
+    return out
+
+
+def _native_turns(root: Path, native_id: str) -> list[Turn]:
+    """A native API client's conversation (#1311): the same store layout holds its JOURNAL
+    (#1278), whose records a chat fold would skip — every consumer would see an empty session.
+    Fold it instead: each submitted message, then the agent's settled reply text. Only what the
+    operator sent and the agent answered; approval payloads and tool output are not transcript."""
+    from . import native_journal
+
+    try:
+        journal = native_journal.read(root, native_id)
+    except native_journal.JournalError:
+        return []
+    replies: dict[str, list[str]] = {}
+    final: dict[str, str] = {}
+    for item in journal.events:
+        kind, data = item["event"]["kind"], item["event"]["data"]
+        op = data.get("operation_id")
+        if not isinstance(op, str):
+            continue
+        if kind == "text" and not data.get("partial") and isinstance(data.get("text"), str):
+            replies.setdefault(op, []).append(data["text"])
+        elif kind == "turn_completed" and isinstance(data.get("text"), str):
+            final[op] = data["text"]
+    out: list[Turn] = []
+    for op in journal.operations.values():
+        if op.request.get("action") != "submit":
+            continue
+        text = op.request["params"].get("text")
+        if isinstance(text, str):
+            out.append(Turn("user", text))
+        reply = "".join(replies.get(op.operation_id, ())) or final.get(op.operation_id)
+        if reply:
+            out.append(Turn("assistant", reply))
     return out
 
 

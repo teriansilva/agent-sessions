@@ -368,7 +368,18 @@ def is_forbidden_entrypoint(basename: str) -> bool:
 #: or broken in-tree manifest cannot let a local plugin claim `claude` (independent review of
 #: PR #1112). The loader also reserves every directory under `plugins/first_party/`.
 RESERVED_IDS = frozenset(
-    {"claude", "opencode", "codex", "gemini", "antigravity", "kimi", "shell", "apichat"}
+    {
+        "claude",
+        "opencode",
+        "codex",
+        "gemini",
+        "antigravity",
+        "kimi",
+        "shell",
+        "apichat",
+        "codex-api",
+        "claude-api",
+    }
 )
 
 # Route segments in Settings → Agents, which can never be plugin identities.

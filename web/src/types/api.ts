@@ -1058,6 +1058,8 @@ export interface AppConfig {
   forge?: ForgeConfig;
   /** Engines that are installed AND can start a new session (drives the picker). */
   new_session_engines: string[];
+  /** Native API clients that cannot start, with why (#1311). Optional: older servers omit it. */
+  unavailable_clients?: UnavailableClient[];
   terminal_backend: "ttyd" | "ws" | string;
   /** First-run forced password change pending — the SPA routes to /change-password. */
   must_change_password?: boolean;
@@ -1279,7 +1281,89 @@ export interface EngineInfo {
   /** `retiring` (#1126 PR B): manifest gone, live sessions attach-only. Absent ⇒ active. */
   status?: "active" | "retiring" | string;
   status_reason?: string | null;
+  /** runtime "api" only (#1311): the native protocol, the console agent it drives, and why it
+   *  cannot start right now (null when it can). Absent/null for every other runtime. */
+  api?: { kind: string; source: string; unavailable_reason: string | null } | null;
 }
+
+/** A native API client that cannot start a session, with why (#1311) — `/api/config`. Display
+ *  data only: the server re-checks at create. */
+export interface UnavailableClient {
+  id: string;
+  label: string;
+  reason: string;
+}
+
+// ---- Structured sessions (#1275 / #1278 / #1311) ------------------------------------------------
+
+export type StructuredTurnState =
+  | "running"
+  | "awaiting_approval"
+  | "completed"
+  | "failed"
+  | "interrupted"
+  | "uncertain"
+  | "unavailable";
+
+export interface StructuredTool {
+  id: string;
+  name: string;
+  outcome: string;
+  summary: string;
+}
+
+export interface StructuredTurn {
+  turn_id: string;
+  operation_id: string;
+  state: StructuredTurnState | string;
+  text: string | null;
+  reply: string | null;
+  text_truncated: boolean;
+  reply_truncated: boolean;
+  reason: string | null;
+  tools: StructuredTool[];
+  tools_truncated: boolean;
+}
+
+/** One exact pending request. `payload` is the COMPLETE request the decision answers; `choices`
+ *  are the only decisions the server will take for it right now. */
+export interface StructuredRequest {
+  request_id: string;
+  turn_id: string;
+  kind: string;
+  item_id?: string;
+  summary?: string;
+  payload?: unknown;
+  payload_digest?: string;
+  choices: string[];
+  complete?: boolean;
+}
+
+export interface StructuredSnapshot {
+  session_key: string;
+  revision: number;
+  event_cursor: number;
+  cwd: string;
+  state: StructuredTurnState | "idle" | string;
+  active_turn: string | null;
+  model_requested: string | null;
+  model_effective?: string | null;
+  turns: StructuredTurn[];
+  omitted_turns: number;
+  pending_requests: StructuredRequest[];
+  native?: { native_id: string | null; worker: string | null; background_active: boolean };
+  /** Why this conversation takes no new work (its client is retiring), or null. */
+  read_only?: string | null;
+}
+
+export interface StructuredEventPage {
+  session_key: string;
+  revision: number;
+  next_cursor: number;
+  events: { cursor: number; kind: string }[];
+}
+
+export type Containment = "live" | "gone" | "unknown";
 
 /** One model a launch may request (#1189). `source`: the manifest's list, or an id the operator
  *  added in Settings → Agents. */

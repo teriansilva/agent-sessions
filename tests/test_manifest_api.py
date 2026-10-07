@@ -133,8 +133,9 @@ def test_old_reader_refuses_the_additive_api_runtime(monkeypatch):
 def test_every_existing_manifest_still_parses():
     for path in FIRST_PARTY_DIR.glob("*/plugin.toml"):
         m = manifest.load_file(path)
-        assert m.api is None
-        assert m.runtime in {"pty", "chat"}
+        # Only the native API clients (#1311) declare `[api]`; everything else is unchanged.
+        assert (m.api is not None) is (m.runtime == "api")
+        assert m.runtime in {"pty", "chat"} or m.id in {"codex-api", "claude-api"}
 
 
 @pytest.mark.parametrize(
@@ -263,7 +264,7 @@ def test_registry_validates_sources_after_all_store_kinds(monkeypatch, tmp_path,
     assert ("native-api" in registry.LOAD_PROBLEMS) is (source != "codex")
 
 
-def test_feed_cannot_install_unimplemented_native_adapter():
-    # Before manager._record could dereference install.entrypoint, admission already refuses.
-    with pytest.raises(feed.FeedError, match="native API adapters are not available"):
+def test_local_manifest_cannot_install_a_native_api_client():
+    # #1311: only the operator-signed catalog (or the in-tree roster) may add one.
+    with pytest.raises(feed.FeedError, match="only be installed from the signed catalog"):
         feed.entry({"manifest": _api(), "recipe": {"artifacts": []}}, signed=False)

@@ -472,6 +472,8 @@ class ChatStoreKind:
         return self.store_present()
 
     def _row(self, root: Path, sid: str) -> Session | None:
+        if getattr(self.owner.manifest, "runtime", None) == "api":
+            return self._native_row(root, sid)
         log = read(root, sid)
         if log is None:
             return None
@@ -488,6 +490,34 @@ class ChatStoreKind:
             first_user_message=first,
             archived=False,
             created_at=log.created_at or fs_created_at(st),
+        )
+
+    def _native_row(self, root: Path, sid: str) -> Session | None:
+        """A native API client's conversation (#1311): the same store layout holds its journal
+        (#1278), whose records are not chat turns — read through the journal's own fold."""
+        from . import native_journal
+
+        try:
+            journal = native_journal.read(root, sid)
+            st = (root / f"{sid}.jsonl").stat()
+        except (native_journal.JournalError, OSError):
+            return None
+        first = next(
+            (
+                op.request["params"].get("text") or ""
+                for op in journal.operations.values()
+                if op.request.get("action") == "submit"
+            ),
+            "",
+        )
+        return Session(
+            engine=self.owner.engine_id,
+            uuid=sid,
+            cwd=journal.header["cwd"],
+            last_mtime=st.st_mtime,
+            first_user_message=first,
+            archived=False,
+            created_at=journal.header["created_at"] or fs_created_at(st),
         )
 
     def scan(self) -> list[Session]:

@@ -239,6 +239,12 @@ def register(
             # configured", since it runs no binary. `present` follows the same rule for it.
             can_start = engines.registry.can_start(p)
             present = bin_path is not None or (p.manifest.runtime == "chat" and can_start)
+            # A native API client (#1311) runs its source's binary through a contained worker:
+            # it is "present" when that worker could start, and otherwise says why.
+            api_reason = None
+            if p.manifest.runtime == "api":
+                api_reason = None if can_start else engines.registry.api_unavailable_reason(p)
+                present = can_start
             # Handoff-target capability (#597): the ONE source both the modal's engine tiles and
             # the server-side prepare rejection consume, so a disabled tile can never disagree
             # with what the server would accept. `seed_reason` is the user-facing why-not.
@@ -260,6 +266,13 @@ def register(
                 # How a session of this engine runs (#853 §7). The SPA picks the session surface
                 # from it; `pty` is the only runtime this build has.
                 "runtime": m.runtime,
+                # runtime "api" only (#1311): the protocol, the console agent it drives, and why it
+                # cannot start right now (None when it can).
+                "api": (
+                    {"kind": m.api.kind, "source": m.api.source, "unavailable_reason": api_reason}
+                    if m.api is not None
+                    else None
+                ),
                 "display": {
                     "name": m.display.name,
                     "badge": m.display.badge,
@@ -551,6 +564,9 @@ def register(
         new_session_engines = await asyncio.to_thread(
             lambda: [p.engine_id for p in engines.all_providers() if engines.registry.can_start(p)]
         )
+        # Native API clients that cannot start, with why (#1311): the picker lists them disabled
+        # instead of dropping them. Display data only — create re-checks readiness.
+        unavailable_clients = await asyncio.to_thread(engines.registry.unavailable_api_clients)
         onboarded_explicit = prefs.get_onboarded()
         if onboarded_explicit is not None:
             onboarded_val = onboarded_explicit
@@ -590,6 +606,7 @@ def register(
                 # Never the install id or the day's budget.
                 "analytics": analytics.public_state(),
                 "new_session_engines": new_session_engines,
+                "unavailable_clients": unavailable_clients,
                 "terminal_backend": "ws",
                 "must_change_password": must_change["v"],
                 # "single-user" | "none" — lets the SPA hide login/logout UI when there

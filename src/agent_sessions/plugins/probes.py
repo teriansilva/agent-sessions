@@ -120,6 +120,22 @@ async def _version(prov, item, cwd: Path) -> str:
     return found[0]
 
 
+async def _api_source(prov) -> dict:
+    """A native API client's one check (#1311): the structured adapter's readiness against the
+    live roster with this candidate in it. Local facts only (source resolution, the source CLI's
+    version floor, containment); it starts no worker and sends nothing to a model."""
+    from .. import structured_runtime
+
+    reason = await asyncio.to_thread(structured_runtime.unavailable_reason, prov)
+    return {
+        "check": "source",
+        "passed": reason is None,
+        "detail": "The console agent it drives is installed and supports native mode."
+        if reason is None
+        else reason,
+    }
+
+
 async def _endpoint(plugin_id: str, generation_id: str) -> dict:
     binding = manager._endpoint_binding(plugin_id, generation_id)
     cfg = chat_config.snapshot(manager.endpoint_scope(plugin_id, generation_id))
@@ -174,6 +190,8 @@ async def run(item: dict) -> None:
         with candidate_scope(prov):
             if prov.manifest.runtime == "chat":
                 results["endpoint"] = await _endpoint(plugin_id, generation_id)
+            elif prov.manifest.runtime == "api":
+                results["source"] = await _api_source(prov)
             else:
                 prov.entrypoint_path()
                 results["binary"] = {

@@ -1,0 +1,46 @@
+contract = 1
+
+# A native API client (#1311): BattleLab drives the installed Codex CLI through its structured
+# protocol (codex-app-server, #1278) instead of a terminal. Everything executable comes from the console
+# agent named by `api.source`: binary, login, config, MCP servers, skills, instruction files. This
+# manifest names no binary, argv, endpoint, model list or permission flag; the validator refuses
+# them for runtime "api".
+
+[identity]
+id = "codex-api"
+label = "Codex — API"
+publisher = "battlelab"
+version = "1"
+
+[runtime]
+kind = "api"
+
+[api]
+kind = "codex-app-server"
+source = "codex"
+
+[session_id]
+pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+mint = "pinned"
+
+# BattleLab's journal of each conversation (#1278). The native history stays in the console
+# agent's store; the ownership ledger (#1277) keeps the two clients off one native session.
+[store]
+root = "~/.local/share/agent-sessions/native/codex-api"
+env_override = "AGENT_SESSIONS_CODEX_API_DIR"
+layout = "battlelab-chat"
+read_only = false
+
+[capabilities]
+resume = true
+new = true
+archive = true
+
+[transcript]
+kind = "battlelab-chat"
+
+[display]
+order = 35
+name = "codex-api"
+badge = "cxa"
+accent = "green"

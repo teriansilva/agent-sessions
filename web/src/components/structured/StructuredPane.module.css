@@ -1,0 +1,186 @@
+/* A native API client's session (#1311). Extends the chat pane's grammar (ChatPane.module.css):
+   no radius, 1px lines, mono uppercase labels, amber only for your turns and the primary action.
+   A request waiting for you is a STATE, so its rule and LED take --status-degraded. */
+.badge {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+.kindTag {
+  flex: none;
+  font: 700 10px var(--font-mono);
+  letter-spacing: 0.14em;
+  padding: 3px 6px;
+  border: 1px solid var(--line-strong);
+  color: var(--text-muted);
+}
+.led {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%; /* LEDs are the one round thing (design §3) */
+  flex: none;
+}
+.ledUp {
+  background: var(--status-up);
+}
+.ledWarn {
+  background: var(--status-degraded);
+}
+.ledIdle {
+  background: var(--status-unknown);
+}
+.ledAsk {
+  composes: led;
+  background: var(--status-degraded);
+}
+/* Header and inline controls keep the 44px touch target (design §8). */
+.inline {
+  min-width: 0;
+  margin-left: 8px;
+}
+.banner {
+  margin: 0;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  border-left: 3px solid var(--status-unknown);
+  background: var(--panel);
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.card {
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--status-degraded);
+  background: var(--panel);
+  min-width: 0;
+}
+.cardHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  font: 700 11px var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  overflow-wrap: anywhere;
+}
+.kv {
+  margin: 0;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+  min-width: 0;
+}
+.kvRow {
+  display: grid;
+  grid-template-columns: minmax(96px, max-content) minmax(0, 1fr);
+  gap: 4px 14px;
+  min-width: 0;
+}
+.kv dt {
+  font: 11px var(--font-mono);
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding-top: 2px;
+}
+.kv dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.cmd {
+  display: block;
+  padding: 8px 10px;
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  font: 12.5px/1.5 var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.json {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  font: 12px/1.5 var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.aside {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--text-muted);
+}
+/* A patch scrolls INSIDE its box: diff lines keep their columns, the page never scrolls sideways. */
+.patch {
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  font: 12px/1.55 var(--font-mono);
+  overflow-x: auto;
+  max-height: 420px;
+  overflow-y: auto;
+  padding: 6px 0;
+}
+.patch div div {
+  padding: 0 10px;
+  white-space: pre;
+}
+.patchFile {
+  padding: 2px 10px;
+  color: var(--text-muted);
+  font-weight: 700;
+}
+.add {
+  color: var(--diff-add-fg);
+  background: var(--diff-add-bg);
+}
+.del {
+  color: var(--diff-del-fg);
+  background: var(--diff-del-bg);
+}
+.ids {
+  margin: 0 12px 10px;
+  font: 11px var(--font-mono);
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+.why {
+  margin: 0 12px 10px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+.why b {
+  color: var(--text);
+}
+.pendingDecision {
+  margin: 0 12px 10px;
+  font: 12px var(--font-mono);
+  color: var(--text-muted);
+  border-left: 2px solid var(--status-unknown);
+  padding-left: 8px;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 0 12px 12px;
+}
+@media (max-width: 480px) {
+  .kindTag {
+    display: none; /* the badge and the picker already say API; the state chip needs the room */
+  }
+  .kvRow {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}

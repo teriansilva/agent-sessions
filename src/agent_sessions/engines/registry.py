@@ -215,6 +215,9 @@ STORE_KINDS: dict[str, type] = {
 #: Why a manifest did not load, by loader key — surfaced read-only on `/api/engines` (#853 P4) so
 #: a broken plugin is visible on the Agents page instead of only in the journal. Never executable.
 LOAD_PROBLEMS: dict[str, str] = {}
+#: Labels of native API clients ever dropped for an invalid source (#1311), so the picker can name
+#: one beside its `LOAD_PROBLEMS` reason. Display only: membership in LOAD_PROBLEMS decides.
+_API_LABELS: dict[str, str] = {}
 
 
 def _build_roster(first_party_dir: Path | None = None) -> list[base.EngineProvider]:
@@ -264,6 +267,7 @@ def _build_roster(first_party_dir: Path | None = None) -> list[base.EngineProvid
                 api_source.validate_provider(prov, by_id)
             except api_source.SourceError as exc:
                 LOAD_PROBLEMS[prov.engine_id] = str(exc)
+                _API_LABELS[prov.engine_id] = prov.manifest.identity.label
                 log.error("engine %s has an invalid API source: %s", prov.engine_id, exc)
                 continue
         valid.append(prov)
@@ -388,6 +392,33 @@ def _engines_with_masters(candidates=()) -> set[str] | None:
     return out
 
 
+def _is_api_copy(eid: str, name: str, raw) -> bool:
+    """A recorded native API client retires instead of vanishing (#1311).
+
+    Liveness is proved through dtach sockets, which a native worker never has, so "no master" is
+    no evidence its worker exited. Dropping the copy would strand that worker (stop/probe need a
+    provider) and its history (read-only snapshot). The client also comes back by itself when its
+    source does, so the copy is small and kept; a broken copy is reported by the caller's parse."""
+    from ..plugins import kinds, roster_state
+
+    try:
+        if roster_state.parse_copy(eid, name, raw).runtime != "api":
+            return False
+    except Exception:  # noqa: BLE001 — not provably an API client: the master rule decides
+        return False
+    if eid in kinds.RESERVED_IDS:
+        return True  # in-tree: comes back by itself with its source
+    # A catalog API client the operator removed retires only while a worker of its sessions may
+    # still run (Hermes on #1315): stop/probe/history stay reachable until each is proved gone,
+    # then the next reload drops it instead of keeping it listed forever.
+    from .. import native_runtime
+
+    try:
+        return native_runtime.engine_may_have_workers(eid)
+    except Exception:  # noqa: BLE001 — unknown is not gone: keep it reachable
+        return True
+
+
 def _retiring_provider(m) -> base.EngineProvider:
     from ..plugins import plugins_home, provenance
     from ..plugins.provider import PluginProvider
@@ -432,7 +463,7 @@ def _apply_retirement() -> None:
     for eid, (name, raw) in list(state.manifests.items()):
         if eid in active:
             continue
-        if eid in live:
+        if eid in live or _is_api_copy(eid, name, raw):
             try:
                 retiring[eid] = _retiring_provider(roster_state.parse_copy(eid, name, raw))
                 continue
@@ -532,11 +563,44 @@ def can_start(prov: base.EngineProvider | None) -> bool:
         from .. import chat_config
 
         return chat_config.is_configured(prov.engine_id)
+    if m is not None and m.runtime == "api":
+        return api_unavailable_reason(prov) is None
     if m is not None and m.runtime != "pty":
-        # A parsed native API manifest is not a working adapter (#1275). Only implemented
-        # structured clients may later opt into their own readiness/launch path.
         return False
     return launchable_bin(prov) is not None
+
+
+def unavailable_api_clients() -> list[dict]:
+    """Every native API client that cannot start a session, with why (#1311) — including one the
+    roster dropped because its source is missing or disabled. Display data for the picker: it
+    grants nothing, and create re-checks. Call it OFF the loop."""
+    out = []
+    for prov in all_providers():
+        if prov.manifest.runtime != "api":
+            continue
+        reason = REMOVED_REASON if is_retiring(prov) else api_unavailable_reason(prov)
+        if reason is not None:
+            out.append(
+                {"id": prov.engine_id, "label": prov.manifest.identity.label, "reason": reason}
+            )
+    for eid, why in sorted(current().problems.items()):
+        if eid in _API_LABELS:
+            out.append({"id": eid, "label": _API_LABELS[eid], "reason": why})
+    return out
+
+
+def api_unavailable_reason(prov: base.EngineProvider) -> str | None:
+    """Why a native API client cannot start a session now, or None when it can (#1311).
+
+    The structured facade's own readiness answer (#1278): a declared kind with no implemented
+    adapter is never startable (#1275). Local facts only — the CLI's `--version` is cached by
+    the binary's identity. Call it OFF the loop."""
+    from .. import structured_runtime
+
+    try:
+        return structured_runtime.unavailable_reason(prov)
+    except Exception as exc:  # noqa: BLE001 — a refusal is a reason to show, never a 500
+        return str(exc) or "the client could not be checked"
 
 
 def all_providers() -> list[base.EngineProvider]:

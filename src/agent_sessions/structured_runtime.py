@@ -228,6 +228,19 @@ def describe(engine_id: str, *, check_ready: bool = True) -> ClientDescriptor:
         )
 
 
+def unavailable_reason(prov) -> str | None:
+    """Why this already-resolved native API provider cannot start a session, or None (#1311).
+
+    The roster's start answer for runtime ``api`` — the same adapter readiness ``describe``
+    reports, without taking a second roster snapshot. Not an authorization: create re-checks."""
+    m = prov.manifest
+    adapter = _ADAPTERS.get((m.runtime, _kind(m)))
+    if m.runtime != "api" or adapter is None:
+        return "this native API adapter is not implemented in this build"
+    ready, reason = adapter.ready(prov)
+    return None if ready else (reason or "the client is not ready")
+
+
 def require(engine_id: str, operation: str) -> ClientDescriptor:
     """Require implemented support; the adapter checks live readiness after replay lookup."""
     descriptor = describe(engine_id, check_ready=False)
@@ -355,9 +368,11 @@ def _snapshot(session_key: str, raw: dict) -> dict:
 
 
 async def snapshot(session_key: str) -> dict:
-    engine, native = _key(session_key)
-    raw = await _adapter(engine, "snapshot").snapshot(engine, native)
-    return _snapshot(f"{engine}:{native}", raw)
+    """The bounded view. ``read_only`` is None while the client can take new work, else why not:
+    a retiring native client (its source disabled or removed) still shows its history (#1311)."""
+    engine, native, adapter, read_only = _observation_target(session_key, "snapshot")
+    raw = await adapter.snapshot(engine, native)
+    return {**_snapshot(f"{engine}:{native}", raw), "read_only": read_only}
 
 
 async def create_session(
@@ -439,10 +454,10 @@ async def decide(
 
 async def events(session_key: str, *, after: int, limit: int = 100) -> dict:
     """Durable journal observations after a cursor; the cursor counts records, not time."""
-    engine, native = _key(session_key)
     if type(after) is not int or after < 0 or type(limit) is not int or not 1 <= limit <= 100:
         raise StructuredError(422, "after must be a cursor and limit 1-100")
-    page = await _adapter(engine, "events").events(engine, native, after, limit)
+    engine, native, adapter, _ = _observation_target(session_key, "events")
+    page = await adapter.events(engine, native, after, limit)
     return {"session_key": f"{engine}:{native}", **page}
 
 
@@ -471,6 +486,19 @@ def _containment_target(session_key: str):
         if not isinstance(adapter, _NativeAdapter):
             raise
         return engine, native, adapter
+
+
+def _observation_target(session_key: str, operation: str):
+    """Reads of an existing conversation: a live client as usual, else a retiring NATIVE client
+    through the same fallback as stop/probe, with the reason it takes no new work. Reading grants
+    nothing — submit and decide still require live admission."""
+    try:
+        engine, native = _key(session_key)
+        return engine, native, _adapter(engine, operation), None
+    except StructuredError:
+        engine, native, adapter = _containment_target(session_key)
+        problem = engines.registry.current().problems.get(engine)
+        return engine, native, adapter, problem or engines.REMOVED_REASON
 
 
 async def stop(session_key: str) -> dict:

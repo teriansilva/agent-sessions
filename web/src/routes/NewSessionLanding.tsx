@@ -13,6 +13,7 @@ import {
 import { NEW_PROJECT_PATH } from "../lib/routes";
 import {
   engineInfo,
+  engineLabel,
   engineName,
   mintsOwnId,
   offeredModels,
@@ -33,6 +34,30 @@ import styles from "./NewSessionLanding.module.css";
  *  `returnTo: "/overview"` in router state, and then the launch goes back to the MAP as a window
  *  rather than taking over the screen. The form itself stays a page either way — it wants the
  *  room, and a 720×480 window has none to spare. */
+/** The structured create whose outcome is unknown (#1311), per tab. */
+const PENDING_CREATE = "battlelab.pendingStructuredCreate";
+type PendingCreate = { engine: string; cwd: string; id: string };
+
+function readPendingCreate(): PendingCreate | null {
+  try {
+    const v = JSON.parse(sessionStorage.getItem(PENDING_CREATE) ?? "null") as PendingCreate | null;
+    return v && typeof v.engine === "string" && typeof v.cwd === "string" && typeof v.id === "string"
+      ? v
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function writePendingCreate(v: PendingCreate | null): void {
+  try {
+    if (v) sessionStorage.setItem(PENDING_CREATE, JSON.stringify(v));
+    else sessionStorage.removeItem(PENDING_CREATE);
+  } catch {
+    /* storage unavailable: the in-flight guard still prevents a same-page double create */
+  }
+}
+
 export function NewSessionLanding() {
   const config = useConfig();
   const navigate = useNavigate();
@@ -67,6 +92,12 @@ export function NewSessionLanding() {
     "new",
   );
   const engine = engineChoice || defaultChoice.engine || engines[0] || "";
+  const runtimeOf = (id: string) => engineInfo(id)?.runtime;
+  const apiEngines = engines.filter((id) => runtimeOf(id) === "api" || runtimeOf(id) === "chat");
+  const consoleEngines = engines.filter((id) => !apiEngines.includes(id));
+  const unavailable = config?.unavailable_clients ?? [];
+  const isApi = runtimeOf(engine) === "api";
+  const apiSource = engineInfo(engine)?.api?.source ?? "";
 
   // The model (#1189), BOUND to the engine it was chosen for: switching engine — by the select or
   // by the default resolving differently — reads as `default` again, never as a model the other
@@ -222,8 +253,55 @@ export function NewSessionLanding() {
     }
   };
 
+  // A native API client (#1311) is created on the server too, through the structured route. The
+  // operation id is the create's identity: a retry after an unknown outcome reuses it (the server
+  // returns the same session), and a different agent or folder is a different create. The
+  // unresolved attempt is kept in sessionStorage, so a reload after a lost response retries the
+  // SAME create instead of starting a second session (Hermes on #1315).
+  const startStructured = async () => {
+    if (chatStarting.current) return;
+    chatStarting.current = true;
+    setStartingChat(true);
+    setStartError(null);
+    const prev = readPendingCreate();
+    const attempt =
+      prev && prev.engine === engine && prev.cwd === cwd
+        ? prev
+        : { engine, cwd, id: crypto.randomUUID() };
+    writePendingCreate(attempt);
+    try {
+      const { session_key: key } = await api.structuredCreate(engine, cwd, attempt.id);
+      writePendingCreate(null);
+      if (!mounted.current) return;
+      const id = key.slice(key.indexOf(":") + 1);
+      if (returnToMap && workspace?.requestOpen && workspace.hasRoom) {
+        workspace.requestOpen({ key, engine, id, title: "New session" });
+        navigate(MAP_PATH);
+      } else {
+        navigate(`/s/${engine}/${id}`);
+      }
+      const owningId = owningProjectId(cwd, entities);
+      if (projectSel && projectSel !== owningId) {
+        api.setSessionProject(key, projectSel).catch(() => {});
+      }
+    } catch (e) {
+      if (e instanceof ApiError && e.status < 500) writePendingCreate(null); // refused
+      if (!mounted.current) return;
+      setStartError(
+        e instanceof ApiError && e.message ? e.message : "Couldn’t start that session.",
+      );
+    } finally {
+      chatStarting.current = false;
+      if (mounted.current) setStartingChat(false);
+    }
+  };
+
   const start = () => {
     if (!canStart) return;
+    if (engineInfo(engine)?.runtime === "api") {
+      void startStructured();
+      return;
+    }
     if (engineInfo(engine)?.runtime === "chat") {
       void startChat();
       return;
@@ -284,13 +362,54 @@ export function NewSessionLanding() {
                 setModelChoice(null); // a model belongs to the engine it was chosen for
               }}
             >
-              {engines.map((id) => (
-                <option key={id} value={id}>
-                  {engineName(id)}
-                </option>
-              ))}
+              {/* Console (a terminal) vs API (structured, no terminal) — #1311. A client that
+                  cannot start is listed, disabled, so its absence is explained, not silent. */}
+              <optgroup label="Console — terminal">
+                {consoleEngines.map((id) => (
+                  <option key={id} value={id}>
+                    {engineName(id)}
+                  </option>
+                ))}
+              </optgroup>
+              {(apiEngines.length > 0 || unavailable.length > 0) && (
+                <optgroup label="API — structured, no terminal">
+                  {apiEngines.map((id) => (
+                    <option key={id} value={id}>
+                      {engineLabel(id)}
+                    </option>
+                  ))}
+                  {unavailable.map((c) => (
+                    <option key={c.id} value={`unavailable:${c.id}`} disabled>
+                      {c.label} — unavailable
+                    </option>
+                  ))}
+                </optgroup>
+              )}
             </select>
           </label>
+        )}
+        {isApi && (
+          <div className={styles.about} data-testid="new-session-api-about">
+            <div className={styles.aboutHead}>
+              <span className={`${styles.led} ${styles.ledUp}`} aria-hidden="true" />
+              API client · ready
+            </div>
+            <p>
+              BattleLab drives your installed <b>{engineLabel(apiSource)}</b> CLI through its
+              structured protocol: its login, config, MCP servers and skills apply. No terminal.
+              You answer each request it makes in the session view.
+            </p>
+          </div>
+        )}
+        {unavailable.length > 0 && (
+          <div className={`${styles.about} ${styles.unavailable}`} data-testid="new-session-unavailable">
+            {unavailable.map((c) => (
+              <p key={c.id}>
+                <span className={`${styles.led} ${styles.ledDown}`} aria-hidden="true" />
+                <b>{c.label}</b> is unavailable: <span className={styles.reason}>{c.reason}</span>
+              </p>
+            ))}
+          </div>
         )}
 
         {models.length > 0 ? (
@@ -394,8 +513,10 @@ export function NewSessionLanding() {
           </p>
         ) : null}
 
-        {/* A `chat` agent (#1209) has no tools, so there are no permission prompts to skip. */}
-        {engineInfo(engine)?.runtime !== "chat" && (
+        {/* A `chat` agent (#1209) has no tools, so there are no permission prompts to skip. An
+            `api` client (#1311) never skips them: you answer each request in the session view,
+            and its create route takes no bypass at all. */}
+        {runtimeOf(engine) !== "chat" && runtimeOf(engine) !== "api" && (
         <label className={styles.checkbox}>
           <input
             type="checkbox"

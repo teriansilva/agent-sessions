@@ -90,8 +90,13 @@ def _assignments(bundle: dict, raw: object) -> tuple[list[dict], dict]:
             raise store.StoreError("invalid assignment model")
         requested = {"engine": engine, "model": model}
         provider = roster.by_id.get(engine)
+        # A native API client (#1311) can start a structured session, but flow steps dispatch to
+        # a terminal agent (headless_dispatch.require_pty): it is not an assignment target yet.
         available = bool(
-            provider and engines.is_agent(provider) and engines.registry.can_start(provider)
+            provider
+            and engines.is_agent(provider)
+            and provider.manifest.runtime != "api"
+            and engines.registry.can_start(provider)
         )
         facts["engines"][engine] = {
             "present": available,

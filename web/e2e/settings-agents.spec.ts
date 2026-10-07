@@ -199,12 +199,15 @@ test("roster: every state side by side, 44px targets, long paths wrap, no overfl
     await expect(section.getByText("Retiring", { exact: true })).toBeVisible();
     // The fixture roster carries more than one absent engine (the unconfigured API agent, #1209).
     await expect(section.getByText("Absent", { exact: true }).first()).toBeVisible();
-    await expect(section.getByText(/Agents \/\/ 8 loaded · 1 retiring · 1 invalid/i)).toBeVisible();
+    const loaded = ENGINES.filter((e) => (e.status ?? "active") === "active").length;
+    await expect(
+      section.getByText(new RegExp(`Agents // ${loaded} loaded · 1 retiring · 1 invalid`, "i")),
+    ).toBeVisible();
 
     // The long binary path wraps onto several lines inside its card.
     const path = section.getByText(LONG_BIN, { exact: true });
     const pb = (await path.boundingBox())!;
-    const card = section.locator("li", { has: page.getByRole("heading", { name: "Codex" }) });
+    const card = section.locator("li", { has: page.getByRole("heading", { name: "Codex", exact: true }) });
     const cb = (await card.boundingBox())!;
     expect(pb.height, `path wraps at ${width}px`).toBeGreaterThan(30);
     expect(pb.x + pb.width).toBeLessThanOrEqual(cb.x + cb.width + 1);

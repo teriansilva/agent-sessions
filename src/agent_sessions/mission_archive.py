@@ -247,6 +247,7 @@ async def _teardown_effect(mission_id: str, session_key: str, token: str | None)
     # mission store names; a store that cannot be read is a refusal, never an archived session.
     try:
         runtime_key = await runtime_cleanup.resolve_runtime_key(prov.engine_id, native)
+        await runtime_cleanup.contain_native(prov.engine_id, native)  # API sessions (#1311)
     except runtime_cleanup.UnresolvableRuntime as e:
         why = str(e)
         await missions.run_admitted(

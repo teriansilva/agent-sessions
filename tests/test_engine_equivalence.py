@@ -105,9 +105,21 @@ GOLDEN = {
 }
 
 # The seven P2 engines in their historic order, plus the API agent (#1209, display order 80).
-ORDER = ["claude", "opencode", "codex", "gemini", "antigravity", "kimi", "apichat", "shell"]
+ORDER = [
+    "claude",
+    "claude-api",
+    "opencode",
+    "codex",
+    "codex-api",
+    "gemini",
+    "antigravity",
+    "kimi",
+    "apichat",
+    "shell",
+]
 #: The seven terminal engines P2 converted — what "shipped" means in the equivalence tables below.
-SEVEN = [e for e in ORDER if e != "apichat"]
+#: The API agent (#1209) and the native API clients (#1311) run no terminal argv of their own.
+SEVEN = [e for e in ORDER if e not in ("apichat", "codex-api", "claude-api")]
 
 
 def test_roster_is_the_seven_in_their_historic_order():

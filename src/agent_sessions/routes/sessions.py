@@ -1083,6 +1083,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                                 runtime_key = await runtime_cleanup.resolve_runtime_key(
                                     prov.engine_id, native
                                 )
+                                await runtime_cleanup.contain_native(prov.engine_id, native)
                             except runtime_cleanup.UnresolvableRuntime as e:
                                 results.append({"id": key, "result": failed, "reason": str(e)})
                                 continue
@@ -1490,6 +1491,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # records a session archived while its late-bound agent keeps running.
         try:
             runtime_key = await runtime_cleanup.resolve_runtime_key(prov.engine_id, native)
+            # A native API session's worker is stopped and proved gone first (#1311).
+            await runtime_cleanup.contain_native(prov.engine_id, native)
         except runtime_cleanup.UnresolvableRuntime as e:
             raise HTTPException(status_code=503, detail=str(e)) from None
         with contextlib.suppress(Exception):
@@ -1594,6 +1597,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                             runtime_key = await runtime_cleanup.resolve_runtime_key(
                                 prov.engine_id, native
                             )
+                            await runtime_cleanup.contain_native(prov.engine_id, native)
                         except runtime_cleanup.UnresolvableRuntime:
                             skipped += 1
                             continue

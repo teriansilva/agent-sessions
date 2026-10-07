@@ -173,3 +173,53 @@
   opacity: 0.55;
   cursor: default;
 }
+/* What an API client is, and why one cannot start (#1311). A plain bordered note — not a second
+   framed card — with status LEDs for state only (design §3). */
+.about {
+  border: 1px solid var(--line-strong);
+  background: var(--panel);
+  padding: 10px 12px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.about p {
+  margin: 0;
+}
+.about b {
+  color: var(--text);
+  font-weight: 600;
+}
+.aboutHead {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font: 700 10px var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+.led {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+.ledUp {
+  background: var(--status-up);
+}
+.ledDown {
+  background: var(--status-down);
+}
+.unavailable {
+  border-color: color-mix(in srgb, var(--status-down) 45%, transparent);
+}
+.reason {
+  color: var(--danger-text);
+}

@@ -73,12 +73,14 @@ resume command** under the app's `dtach` PTY. What differs per engine:
 | Engine | Binary · override | Sessions read from · override | Resume | New session | Permission bypass |
 |---|---|---|---|---|---|
 | **Claude Code** (`claude`) | `claude` · `AGENT_SESSIONS_CLAUDE_BIN` | `~/.claude` | `claude --resume <id>` | `claude --session-id <id>` — pinned id | `--dangerously-skip-permissions` |
+| **Claude — API** (`claude-api`) | Claude Code's | `~/.local/share/agent-sessions/native/claude-api` · `AGENT_SESSIONS_CLAUDE_API_DIR` | contained worker — runtime `api`, protocol `claude-stream-json` | new conversation | — |
 | **opencode** (`opencode`) | `opencode` · `AGENT_SESSIONS_OPENCODE_BIN` | `~/.local/share/opencode` · `AGENT_SESSIONS_OPENCODE_DB`, `AGENT_SESSIONS_OPENCODE_LOG` | `opencode <dir> --session <id>` | `opencode <dir>`, then adopt the id it mints | — |
 | **Codex** (`codex`) | `codex` · `AGENT_SESSIONS_CODEX_BIN` | `~/.codex/sessions` · `AGENT_SESSIONS_CODEX_SESSIONS_DIR` | `codex resume <id>` | `codex --cd <dir>`, then adopt the id it mints | `--dangerously-bypass-approvals-and-sandbox` (new sessions only) |
+| **Codex — API** (`codex-api`) | Codex's | `~/.local/share/agent-sessions/native/codex-api` · `AGENT_SESSIONS_CODEX_API_DIR` | contained worker — runtime `api`, protocol `codex-app-server` | new conversation | — |
 | **Gemini CLI** (`gemini`) | `gemini` · `AGENT_SESSIONS_GEMINI_BIN` | `~/.gemini/tmp` · `AGENT_SESSIONS_GEMINI_TMP_DIR` | `gemini --resume <id>` | `gemini --session-id <id>` — pinned id | `--yolo` `--skip-trust` |
 | **Antigravity** (`antigravity`) | `agy` · `AGENT_SESSIONS_AGY_BIN` | `~/.gemini/antigravity-cli` · `AGENT_SESSIONS_ANTIGRAVITY_DIR` | `agy --conversation <id>` | `agy`, then adopt the id it mints | `--dangerously-skip-permissions` |
 | **Kimi Code** (`kimi`) | `kimi` · `AGENT_SESSIONS_KIMI_BIN` | `~/.kimi-code` · `AGENT_SESSIONS_KIMI_DIR` | `kimi -S <id>` | `kimi`, then adopt the id it mints | `-y` |
-| **API agent** (`apichat`) | — | `~/.local/share/agent-sessions/chat` | no process — runtime `chat`, endpoint `openai-chat` | new conversation | — |
+| **API agent** (`apichat`) | — | `~/.local/share/agent-sessions/chat` · `AGENT_SESSIONS_CHAT_DIR` | no process — runtime `chat`, endpoint `openai-chat` | new conversation | — |
 | **Shell** (`shell`) | `bash` · `AGENT_SESSIONS_BASH_BIN` | `~/.claude/shell-sessions` · `AGENT_SESSIONS_SHELL_DIR` | a fresh process — nothing to resume | `bash -l` — pinned id | — |
 <!-- END generated:engine-table -->
 

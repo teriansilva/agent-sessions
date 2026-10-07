@@ -11,6 +11,7 @@
       "label": "Claude Code",
       "kind": "agent",
       "runtime": "pty",
+      "api": null,
       "display": {
         "name": "claude",
         "badge": "cc",
@@ -133,6 +134,60 @@
       "status_reason": null
     },
     {
+      "id": "claude-api",
+      "present": false,
+      "supports_new": false,
+      "supports_seed_start": false,
+      "seed_reason": "no seed-capable start yet",
+      "bin": null,
+      "label": "Claude — API",
+      "kind": "agent",
+      "runtime": "api",
+      "api": {
+        "kind": "claude-stream-json",
+        "source": "claude",
+        "unavailable_reason": "claude 2.1.287 or later is required for native mode"
+      },
+      "display": {
+        "name": "claude-api",
+        "badge": "cca",
+        "accent": "amber",
+        "id_prefix": null,
+        "order": 15
+      },
+      "capabilities": {
+        "resume": true,
+        "new": true,
+        "archive": true,
+        "handoff_target": false,
+        "seed_start": false,
+        "orchestrator_input": false,
+        "raw_tty": false,
+        "owns_transcript": false
+      },
+      "session_id": {
+        "mint": "pinned"
+      },
+      "models": [],
+      "model_select": {
+        "supported": false,
+        "on_resume": false,
+        "configured_elsewhere": false,
+        "offered": []
+      },
+      "instructions": {
+        "files": []
+      },
+      "usage": {
+        "source": "none"
+      },
+      "terminal": {
+        "repaint": "none"
+      },
+      "status": "active",
+      "status_reason": null
+    },
+    {
       "id": "opencode",
       "present": true,
       "supports_new": true,
@@ -142,6 +197,7 @@
       "label": "opencode",
       "kind": "agent",
       "runtime": "pty",
+      "api": null,
       "display": {
         "name": "opencode",
         "badge": "oc",
@@ -193,6 +249,7 @@
       "label": "Codex",
       "kind": "agent",
       "runtime": "pty",
+      "api": null,
       "display": {
         "name": "codex",
         "badge": "cx",
@@ -259,6 +316,60 @@
       "status_reason": null
     },
     {
+      "id": "codex-api",
+      "present": false,
+      "supports_new": false,
+      "supports_seed_start": false,
+      "seed_reason": "no seed-capable start yet",
+      "bin": null,
+      "label": "Codex — API",
+      "kind": "agent",
+      "runtime": "api",
+      "api": {
+        "kind": "codex-app-server",
+        "source": "codex",
+        "unavailable_reason": "codex 0.159.3 or later is required for native mode"
+      },
+      "display": {
+        "name": "codex-api",
+        "badge": "cxa",
+        "accent": "green",
+        "id_prefix": null,
+        "order": 35
+      },
+      "capabilities": {
+        "resume": true,
+        "new": true,
+        "archive": true,
+        "handoff_target": false,
+        "seed_start": false,
+        "orchestrator_input": false,
+        "raw_tty": false,
+        "owns_transcript": false
+      },
+      "session_id": {
+        "mint": "pinned"
+      },
+      "models": [],
+      "model_select": {
+        "supported": false,
+        "on_resume": false,
+        "configured_elsewhere": false,
+        "offered": []
+      },
+      "instructions": {
+        "files": []
+      },
+      "usage": {
+        "source": "none"
+      },
+      "terminal": {
+        "repaint": "none"
+      },
+      "status": "active",
+      "status_reason": null
+    },
+    {
       "id": "gemini",
       "present": true,
       "supports_new": true,
@@ -268,6 +379,7 @@
       "label": "Gemini CLI",
       "kind": "agent",
       "runtime": "pty",
+      "api": null,
       "display": {
         "name": "gemini",
         "badge": "gm",
@@ -343,6 +455,7 @@
       "label": "Antigravity",
       "kind": "agent",
       "runtime": "pty",
+      "api": null,
       "display": {
         "name": "antigravity",
         "badge": "ag",
@@ -394,6 +507,7 @@
       "label": "Kimi Code",
       "kind": "agent",
       "runtime": "pty",
+      "api": null,
       "display": {
         "name": "kimi",
         "badge": "ki",
@@ -440,11 +554,12 @@
       "present": false,
       "supports_new": false,
       "supports_seed_start": false,
-      "seed_reason": "API agent cannot start a session from a brief",
+      "seed_reason": "no seed-capable start yet",
       "bin": null,
       "label": "API agent",
       "kind": "agent",
       "runtime": "chat",
+      "api": null,
       "display": {
         "name": "API agent",
         "badge": "api",
@@ -494,6 +609,7 @@
       "label": "Shell",
       "kind": "terminal",
       "runtime": "pty",
+      "api": null,
       "display": {
         "name": "shell",
         "badge": "sh",

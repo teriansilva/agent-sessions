@@ -560,6 +560,67 @@ class _Unreachable(Exception):
     pass
 
 
+def engine_may_have_workers(engine_id: str) -> bool:
+    """Could any worker of ``engine_id``'s sessions still be running? (#1311, Hermes on #1315)
+
+    Retirement asks this for a removed API client: dropping its provider would make stop,
+    probe and history unreachable. Only a generation recorded ``gone`` (cgroup-proved) counts as
+    over; an unreadable state directory or record answers True. Both the session records and the
+    worker directories are read, so a lost session record cannot hide a running worker. Local
+    files only."""
+    prefix = f"{engine_id}:"
+    try:
+        paths = list(native_state.root().glob("*.json"))
+    except OSError:
+        return True
+    for path in paths:
+        try:
+            record = native_state.read(path)
+        except (OSError, ValueError, native_state.StateError):
+            return True
+        if not isinstance(record, dict):
+            return True
+        if not str(record.get("session_key", "")).startswith(prefix):
+            continue
+        workers = {w for w in record.get("workers") or [] if isinstance(w, str)}
+        if record.get("current_worker"):
+            workers.add(record["current_worker"])
+        for worker in workers:
+            try:
+                phase = native_state.read_lifecycle(worker).get("phase")
+            except (OSError, ValueError, native_state.StateError):
+                return True
+            if phase != "gone":
+                return True
+    # Session records can be lost while their worker runs (Hermes on #1315): the WORKER side is
+    # read too. Every worker not recorded gone that belongs to this client — or whose owner can no
+    # longer be read — keeps it reachable. An empty session listing is never proof of no worker.
+    try:
+        worker_dirs = [d for d in (native_state.root() / "workers").iterdir() if d.is_dir()]
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    for wdir in worker_dirs:
+        try:
+            if str(uuid.UUID(wdir.name)) != wdir.name:
+                continue  # not a worker directory
+        except ValueError:
+            continue
+        try:
+            phase = native_state.read_lifecycle(wdir.name).get("phase")
+            if phase == "gone":
+                continue
+            config = native_state.read_config(wdir.name)
+        except (OSError, ValueError, native_state.StateError):
+            return True
+        if not isinstance(config, dict) or not isinstance(config.get("session_key"), str):
+            return True  # a running worker nobody can attribute: keep every API client reachable
+        if config["session_key"].startswith(prefix):
+            return True
+    return False
+
+
 def _generation(session_id: str) -> Generation | None:
     record = native_state.read_session(session_id)
     if record is None or not record.get("current_worker") or record.get("closed"):
@@ -1008,7 +1069,8 @@ def _live_worker(session_id: str) -> str | None:
 
 
 def _snapshot_sync(engine_id: str, session_id: str) -> dict:
-    prov, record = _session(engine_id, session_id)
+    # A read: it reaches a retiring client's history too (#1311). New work never does.
+    prov, record = _session(engine_id, session_id, retiring_ok=True)
     return project(_journal(prov, session_id), record, _live_worker(session_id))
 
 
@@ -1020,7 +1082,7 @@ async def snapshot(engine_id: str, session_id: str) -> dict:
 
 
 async def events(engine_id: str, session_id: str, after: int, limit: int) -> dict:
-    prov, _ = await asyncio.to_thread(_session, engine_id, session_id)
+    prov, _ = await asyncio.to_thread(partial(_session, engine_id, session_id, retiring_ok=True))
     journal = await asyncio.to_thread(_journal, prov, session_id)
     try:
         return await asyncio.to_thread(journal.page, after, limit)

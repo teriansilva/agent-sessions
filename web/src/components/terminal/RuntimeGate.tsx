@@ -1,13 +1,15 @@
 import type { ReactNode } from "react";
 import { engineLabel, engineInfo, runsInTerminal, useEngineRoster } from "../../app/engineRoster";
 import { ChatPane } from "../chat/ChatPane";
+import { StructuredPane } from "../structured/StructuredPane";
 import styles from "./RuntimeGate.module.css";
 
 /** Chooses a session's surface by its engine's RUNTIME (#853 §7). A `pty` engine gets its terminal
  *  (the children); a `chat` engine (#1209) gets the chat pane — BattleLab talks to its endpoint and
  *  keeps the conversation, so there is no terminal to attach. Any OTHER runtime gets an explicit
  *  panel, never a terminal: a terminal pane for it would show nothing and could not attach (the
- *  server refuses a non-`pty` engine at the ws route too).
+ *  server refuses a non-`pty` engine at the ws route too). An `api` engine (#1311) gets the structured
+ *  pane: the native CLI runs in a contained worker, never in a terminal here.
  *
  *  While the roster is still loading the terminal renders as it always has: the server's
  *  `require_pty` is the boundary, and holding every terminal for a roster fetch would slow every
@@ -29,6 +31,9 @@ export function RuntimeGate({
   // conversation lands on an unmounted pane, never on this one (Hermes on #1219).
   if (runtime === "chat" && id)
     return <ChatPane key={`${engine}:${id}`} engine={engine} id={id} />;
+  // A native API client (#1311): a BattleLab-owned structured view of the CLI it drives.
+  if (runtime === "api" && id)
+    return <StructuredPane key={`${engine}:${id}`} engine={engine} id={id} />;
   return (
     <div className={styles.panel} role="status">
       <p className={styles.tag}>SESSION VIEW // RUNTIME {runtime.toUpperCase()}</p>
