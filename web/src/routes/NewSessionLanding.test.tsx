@@ -27,6 +27,7 @@ vi.mock("../lib/api", async (orig) => {
       setSessionProject: vi.fn(),
       chatNew: vi.fn(),
       structuredCreate: vi.fn(),
+      structuredModels: vi.fn(),
     },
   };
 });
@@ -90,6 +91,16 @@ function renderLanding(
   );
 }
 
+// What a native API client's CLI reports (#1313); the manifest-free roster has no list for it.
+const CLI_MODELS = {
+  status: "ok" as const,
+  reason: null,
+  models: [
+    { id: "gpt-6.1-sol", label: "GPT-6.1 Sol", description: null, efforts: ["low"], is_default: true },
+    { id: "gpt-6-luna", label: "gpt-6-luna", description: null, efforts: [], is_default: false },
+  ],
+};
+
 beforeEach(() => {
   navigateMock.mockReset();
   mockEntities.mockReset();
@@ -98,6 +109,7 @@ beforeEach(() => {
     .mockReset()
     .mockResolvedValue({ id: "x", project_id: "" });
   vi.mocked(api.createProject).mockReset();
+  vi.mocked(api.structuredModels).mockReset().mockResolvedValue(CLI_MODELS);
 });
 
 test.each([
@@ -624,7 +636,7 @@ test("starting an API client creates it on the server — single-flight, no bypa
   await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
   const calls = vi.mocked(api.structuredCreate).mock.calls;
   expect(calls).toHaveLength(2);
-  expect(calls[0]).toEqual(["codex-api", "/d", calls[0][2]]);
+  expect(calls[0]).toEqual(["codex-api", "/d", calls[0][2], "default"]);
   expect(calls[1][2]).toBe(calls[0][2]); // the same create, never a second session
   expect(navigateMock).toHaveBeenCalledWith("/s/codex-api/5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f");
 });
@@ -649,4 +661,96 @@ test("an unresolved API create survives a reload: Start after remount reuses the
   const [a, b] = vi.mocked(api.structuredCreate).mock.calls;
   expect(b[2]).toBe(a[2]);
   expect(sessionStorage.getItem("battlelab.pendingStructuredCreate")).toBeNull();
+});
+
+test("an API client offers the models its own CLI reports and creates on the chosen one (#1313)", async () => {
+  setRoster(FIXTURE);
+  const user = userEvent.setup();
+  vi.mocked(api.structuredCreate)
+    .mockReset()
+    .mockResolvedValue({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
+  renderLanding(["codex-api"], { default_project: "/d" });
+  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  const select = await screen.findByRole("combobox", { name: "Model" });
+  expect(api.structuredModels).toHaveBeenCalledWith("codex-api");
+  expect(Array.from(select.querySelectorAll("option")).map((o) => [o.value, o.textContent])).toEqual([
+    ["default", "default"],
+    ["gpt-6.1-sol", "GPT-6.1 Sol (gpt-6.1-sol)"],
+    ["gpt-6-luna", "gpt-6-luna"],
+  ]);
+  await user.selectOptions(select, "gpt-6-luna");
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
+  const [call] = vi.mocked(api.structuredCreate).mock.calls;
+  expect(call).toEqual(["codex-api", "/d", call[2], "gpt-6-luna"]);
+});
+
+test("an API client whose CLI cannot list models says why and offers default only", async () => {
+  setRoster(FIXTURE);
+  vi.mocked(api.structuredModels).mockResolvedValue({
+    status: "unavailable",
+    models: [],
+    reason: "the agent did not answer in time",
+  });
+  renderLanding(["codex-api"], { default_project: "/d" });
+  expect(await screen.findByTestId("new-session-model-api")).toHaveTextContent(
+    "Models unavailable — the agent did not answer in time. Only default can start.",
+  );
+  expect(screen.queryByRole("combobox", { name: "Model" })).toBeNull();
+});
+
+test("choosing another model after a lost create is a new create, never the same operation id", async () => {
+  setRoster(FIXTURE);
+  sessionStorage.clear();
+  const user = userEvent.setup();
+  vi.mocked(api.structuredCreate)
+    .mockReset()
+    .mockRejectedValueOnce(new TypeError("response lost"))
+    .mockResolvedValueOnce({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
+  renderLanding(["codex-api"], { default_project: "/d" });
+  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  const select = await screen.findByRole("combobox", { name: "Model" });
+  await user.selectOptions(select, "gpt-6.1-sol");
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await screen.findByTestId("start-error");
+  await user.selectOptions(select, "gpt-6-luna");
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
+  const [a, b] = vi.mocked(api.structuredCreate).mock.calls;
+  expect(a[3]).toBe("gpt-6.1-sol");
+  expect(b[3]).toBe("gpt-6-luna");
+  expect(b[2]).not.toBe(a[2]);
+});
+
+test("a chosen API model whose list then fails keeps a select: it shows the stale choice and default still starts", async () => {
+  setRoster(FIXTURE);
+  sessionStorage.clear();
+  const user = userEvent.setup();
+  vi.mocked(api.structuredCreate)
+    .mockReset()
+    .mockResolvedValue({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
+  vi.mocked(api.structuredModels).mockResolvedValue({
+    status: "unavailable",
+    models: [],
+    reason: "the agent did not answer in time",
+  });
+  // A restored draft carries the model chosen before the list became unreadable.
+  const draft: NewSessionDraft = {
+    engineChoice: "codex-api",
+    bypassChoice: null,
+    returnTo: null,
+    projectChoice: "",
+    cwdOverride: null,
+    modelChoice: { engine: "codex-api", model: "gpt-6-luna" },
+  };
+  renderLanding(["codex-api"], { default_project: "/d" }, { restoreDraft: draft });
+  await screen.findByTestId("new-session-model-api");
+  const select = screen.getByRole("combobox", { name: "Model" });
+  expect(select).toHaveValue("gpt-6-luna");
+  expect(screen.getByRole("option", { name: "gpt-6-luna (no longer offered)" })).toBeInTheDocument();
+  await user.selectOptions(select, "default");
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  // calls[0] is the one-shot restore `replace`; the launch is the second navigation.
+  await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(2));
+  expect(vi.mocked(api.structuredCreate).mock.calls[0][3]).toBe("default");
 });

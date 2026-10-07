@@ -47,6 +47,29 @@ def codex():
         params = frame.get("params", {})
         if method == "initialize":
             send({"id": rid, "result": {"userAgent": "fake/0.160.0"}})
+        elif method == "model/list" and os.path.exists("malformed-models"):
+            # A CLI reply of the wrong shape (#1313, Hermes): efforts a number, data items odd.
+            data = [{"model": "fake-odd", "supportedReasoningEfforts": 42}, "not-a-dict", 7]
+            send({"id": rid, "result": {"data": data, "nextCursor": None}})
+        elif method == "model/list":
+            # Two pages (#1313): the cursor must be followed; a hidden model is never offered.
+            if not params.get("cursor"):
+                data = [
+                    {
+                        "model": "fake-large",
+                        "displayName": "Fake Large",
+                        "isDefault": True,
+                        "supportedReasoningEfforts": [
+                            {"reasoningEffort": "low"},
+                            {"reasoningEffort": "high"},
+                        ],
+                    },
+                    {"model": "fake-hidden", "hidden": True},
+                ]
+                send({"id": rid, "result": {"data": data, "nextCursor": "p2"}})
+            else:
+                data = [{"model": "fake-small", "displayName": "Fake Small"}]
+                send({"id": rid, "result": {"data": data, "nextCursor": None}})
         elif method == "thread/start":
             thread = str(uuid.uuid4())
             send(
@@ -213,7 +236,8 @@ def codex():
 
 def claude():
     session = next(
-        a.split("=", 1)[1] for a in sys.argv if a.startswith(("--session-id=", "--resume="))
+        (a.split("=", 1)[1] for a in sys.argv if a.startswith(("--session-id=", "--resume="))),
+        None,  # the model probe (#1313) starts no session
     )
     stream = frames()
     for frame in stream:
@@ -225,7 +249,19 @@ def claude():
                     "response": {
                         "subtype": "success",
                         "request_id": frame["request_id"],
-                        "response": {},
+                        "response": {
+                            "models": [{"value": "fake-odd", "supportedEffortLevels": 42}]
+                            if os.path.exists("malformed-models")
+                            else [
+                                {"value": "default", "displayName": "Default"},
+                                {
+                                    "value": "fake-opus",
+                                    "displayName": "Fake Opus",
+                                    "supportedEffortLevels": ["low", "max"],
+                                },
+                                {"value": "-not-a-model"},
+                            ]
+                        },
                     },
                 }
             )

@@ -35,6 +35,7 @@ from pathlib import Path
 
 from . import (
     chat_store,
+    model_choice,
     native_containment,
     native_ipc,
     native_journal,
@@ -658,6 +659,14 @@ def _create_sync(engine_id: str, session_id: str, cwd: str, model: str | None) -
         raise NativeError(409, str(exc)) from None
     adapter = prov.manifest.api.kind
     session_key = f"{engine_id}:{session_id}"
+    # The model is checked against the client's own list NOW, at the write boundary (#1313): an id
+    # the client does not list is refused before anything exists. A refusal only blocks a NEW
+    # creation; an exact replay compares the request as sent.
+    refused = None
+    try:
+        model = model_choice.select_api(prov, model)
+    except model_choice.ModelRefused as exc:
+        refused = exc
     request = {"cwd": cwd, "model": model, "adapter": adapter}
     root = _journal_root(prov)
     with native_state.session_lock(session_id):
@@ -674,6 +683,8 @@ def _create_sync(engine_id: str, session_id: str, cwd: str, model: str | None) -
                     raise NativeError(409, "this creation did not complete; use a new operation id")
                 return False  # exact replay: observe, never launch a second creation
         else:
+            if refused is not None:
+                raise NativeError(422, refused.detail)
             ready, reason = readiness(prov)
             if not ready:
                 raise NativeError(409, reason or "native client is not ready")

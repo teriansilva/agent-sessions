@@ -95,6 +95,30 @@ def takes_model(manifest) -> bool:
     )
 
 
+def select_api(prov, requested: object) -> str | None:
+    """Resolve a NEW native API session's model (#1313): the model id, or None for `default`.
+
+    The client's own list is the only authority (`native_models` asks its CLI), read now — at the
+    create's write boundary. A list that cannot be read admits `default` only; an id the client
+    does not list is refused, never replaced. Raises `ModelRefused`; nothing is created."""
+    if requested is None or requested == DEFAULT:
+        return None
+    if not isinstance(requested, str) or not _MODEL_ID_RE.fullmatch(requested):
+        raise ModelRefused("invalid", "model is not a valid model id")
+    from . import native_models  # lazy: spawns the client only when a model is asked for
+
+    listing = native_models.models(prov)
+    if listing.status != "ok":
+        raise ModelRefused(
+            "unavailable",
+            f"{prov.engine_id}: its model list is unavailable ({listing.reason}); "
+            f"only {DEFAULT!r} can be requested",
+        )
+    if requested not in listing.ids():
+        raise ModelRefused("not_offered", f"{prov.engine_id}: model {requested!r} is not offered")
+    return requested
+
+
 def operator_ids(engine_id: str) -> list[str]:
     return list(prefs.get_agent_defaults()["models"].get(engine_id, []))
 

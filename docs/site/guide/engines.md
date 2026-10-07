@@ -160,6 +160,11 @@ protocol needs, there is no systemd user session, or its console agent is disabl
 console agent is later disabled, existing API conversations stay readable but take no new
 messages until it is back. There is no permission bypass for API clients.
 
+**Model.** New session offers the models the client's own CLI reports — Codex's app-server model
+list, Claude Code's model picker list — so a model your CLI gained after a BattleLab release shows
+up without an update. **default** leaves the choice to the CLI's own configuration. If the CLI
+cannot be asked, the picker says why and offers **default** only.
+
 ## The API agent: a model endpoint with no process
 
 `apichat` declares `runtime.kind = "chat"`: there is no binary and no terminal. BattleLab sends the

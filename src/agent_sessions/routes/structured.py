@@ -6,6 +6,7 @@ operator input and caller-chosen UUIDs: no execution authority, worker capabilit
 mission correlation is ever read from a browser (mission callers use the facade server-side).
 
 * ``GET  /api/structured/clients/{engine}`` — implemented operations and live readiness.
+* ``GET  /api/structured/clients/{engine}/models`` — the models the client's CLI reports (#1313).
 * ``POST /api/structured/sessions {engine, cwd, operation_id, model?}`` — create; an exact repeat
   of ``operation_id`` returns the same session.
 * ``GET  /api/structured/sessions/{key}`` — bounded snapshot (turns, exact pending requests).
@@ -64,6 +65,19 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
 
         descriptor = await asyncio.to_thread(structured_runtime.describe, engine)
         return JSONResponse(descriptor.as_dict())
+
+    @app.get("/api/structured/clients/{engine}/models")
+    async def structured_models(engine: str, _user: str = Depends(logged_in)) -> JSONResponse:
+        # What the client's own CLI says it can run (#1313); `unavailable` offers `default` only.
+        import asyncio
+
+        from .. import engines, native_models
+
+        prov = engines.get(engine)
+        if prov is None or getattr(prov.manifest, "runtime", None) != "api":
+            raise HTTPException(status_code=404, detail="no such API client")
+        listing = await asyncio.to_thread(native_models.models, prov)
+        return JSONResponse(listing.as_dict())
 
     @app.post("/api/structured/sessions")
     async def structured_create(

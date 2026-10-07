@@ -295,3 +295,35 @@ test("New session: API clients are their own group, unavailable ones say why, no
   expect(Object.keys(created!).sort()).toEqual(["cwd", "engine", "operation_id"]);
   await expect(page.getByTestId("structured-empty")).toBeVisible();
 });
+
+test("New session: an API client offers the models its CLI reports and creates on the chosen one (#1313)", async ({
+  page,
+}) => {
+  await setup(page, "dark", ["codex-api"]);
+  let created: Json | null = null;
+  await page.route("**/api/structured/clients/codex-api/models", (r) =>
+    r.fulfill({
+      json: {
+        status: "ok",
+        reason: null,
+        models: [
+          { id: "gpt-6.1-sol", label: "GPT-6.1 Sol", description: null, efforts: [], is_default: true },
+          { id: "gpt-6-luna", label: "gpt-6-luna", description: null, efforts: [], is_default: false },
+        ],
+      },
+    }),
+  );
+  await page.route("**/api/structured/sessions", async (r) => {
+    created = r.request().postDataJSON() as Json;
+    await r.fulfill({ status: 201, json: snapshot() });
+  });
+  await serveSession(page, () => snapshot());
+  await page.goto("/");
+  const model = page.getByRole("combobox", { name: "Model" });
+  await expect(model.locator("option")).toHaveText(["default", "GPT-6.1 Sol (gpt-6.1-sol)", "gpt-6-luna"]);
+  await model.selectOption("gpt-6.1-sol");
+  await noOverflow(page);
+  await page.getByRole("button", { name: /start session/i }).click();
+  await expect(page).toHaveURL(new RegExp(`/s/codex-api/${ID}$`));
+  expect(created).toMatchObject({ engine: "codex-api", model: "gpt-6.1-sol" });
+});

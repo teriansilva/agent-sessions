@@ -21,6 +21,7 @@ import type {
   ChatSession,
   Containment,
   StructuredEventPage,
+  StructuredModelList,
   StructuredSnapshot,
   ChatTurn,
   DashboardSessions,
@@ -600,8 +601,17 @@ export const api = {
 
   // ---- Structured sessions (#1311): native API clients ---------------------------------------------
   /** Create; an exact repeat of `operation_id` returns the same session (never a second one). */
-  structuredCreate: (engine: string, cwd: string, operation_id: string) =>
-    mutateJson<StructuredSnapshot>("POST", "/api/structured/sessions", { engine, cwd, operation_id }),
+  /** The models the client's own CLI reports (#1313). */
+  structuredModels: (engine: string) =>
+    getJsonWithDetail<StructuredModelList>(`/api/structured/clients/${enc(engine)}/models`),
+  /** `model` omitted = the client's default; otherwise one its CLI lists (#1313). */
+  structuredCreate: (engine: string, cwd: string, operation_id: string, model?: string) =>
+    mutateJson<StructuredSnapshot>("POST", "/api/structured/sessions", {
+      engine,
+      cwd,
+      operation_id,
+      ...(model && model !== "default" ? { model } : {}),
+    }),
   structuredSnapshot: (key: string) =>
     getJsonWithDetail<StructuredSnapshot>(structuredPath(key)),
   structuredEvents: (key: string, after: number, limit = 100) =>

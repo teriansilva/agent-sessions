@@ -1339,6 +1339,22 @@ export interface StructuredRequest {
   complete?: boolean;
 }
 
+/** One model a native API client's own CLI reports (#1313). */
+export interface StructuredModel {
+  id: string;
+  label: string;
+  description: string | null;
+  efforts: string[];
+  is_default: boolean;
+}
+
+/** `GET /api/structured/clients/{engine}/models`: `unavailable` offers `default` only. */
+export interface StructuredModelList {
+  status: "ok" | "unavailable";
+  models: StructuredModel[];
+  reason: string | null;
+}
+
 export interface StructuredSnapshot {
   session_key: string;
   revision: number;

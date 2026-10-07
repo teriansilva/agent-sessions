@@ -22,7 +22,7 @@ import {
 } from "../app/engineRoster";
 import { unavailableDefaultNotice } from "../lib/agentDefaults";
 import { owningProjectId } from "../lib/projectTree";
-import type { ProjectEntity } from "../types/api";
+import type { ProjectEntity, StructuredModelList } from "../types/api";
 import styles from "./NewSessionLanding.module.css";
 
 /** Landing at "/" — no session selected. Pick an engine + project + folder and start a new
@@ -36,7 +36,7 @@ import styles from "./NewSessionLanding.module.css";
  *  room, and a 720×480 window has none to spare. */
 /** The structured create whose outcome is unknown (#1311), per tab. */
 const PENDING_CREATE = "battlelab.pendingStructuredCreate";
-type PendingCreate = { engine: string; cwd: string; id: string };
+type PendingCreate = { engine: string; cwd: string; model?: string; id: string };
 
 function readPendingCreate(): PendingCreate | null {
   try {
@@ -107,7 +107,36 @@ export function NewSessionLanding() {
     restore.draft?.modelChoice ?? null,
   );
   const model = modelChoice?.engine === engine ? modelChoice.model : "default";
-  const models = offeredModels(engine);
+  // A native API client's models come from its own CLI (#1313), asked when it is selected; a
+  // console agent's from the roster. Each option is what is sent (`id`) and what is shown.
+  const [apiModels, setApiModels] = useState<{ engine: string; list: StructuredModelList } | null>(
+    null,
+  );
+  useEffect(() => {
+    if (!isApi) return;
+    let live = true;
+    api
+      .structuredModels(engine)
+      .then((list) => live && setApiModels({ engine, list }))
+      .catch((e) => {
+        if (!live) return;
+        const reason = e instanceof ApiError && e.message ? e.message : "it could not be asked";
+        setApiModels({ engine, list: { status: "unavailable", models: [], reason } });
+      });
+    return () => {
+      live = false;
+    };
+  }, [engine, isApi]);
+  const apiList = isApi && apiModels?.engine === engine ? apiModels.list : null;
+  const models: { id: string; text: string }[] = isApi
+    ? (apiList?.models ?? []).map((m) => ({
+        id: m.id,
+        text: m.label && m.label !== m.id ? `${m.label} (${m.id})` : m.id,
+      }))
+    : offeredModels(engine).map((m) => ({
+        id: m.id,
+        text: m.aliases.length ? `${m.id} (${m.aliases.join(", ")})` : m.id,
+      }));
   const modelSelect = engineInfo(engine)?.model_select;
 
   // Project entities own the default launch folder (#448). projectChoice === null = untouched
@@ -264,13 +293,15 @@ export function NewSessionLanding() {
     setStartingChat(true);
     setStartError(null);
     const prev = readPendingCreate();
+    // The model is part of the create's identity (#1313): choosing another one is another create,
+    // never a retry that retargets the same operation id.
     const attempt =
-      prev && prev.engine === engine && prev.cwd === cwd
+      prev && prev.engine === engine && prev.cwd === cwd && (prev.model ?? "default") === model
         ? prev
-        : { engine, cwd, id: crypto.randomUUID() };
+        : { engine, cwd, model, id: crypto.randomUUID() };
     writePendingCreate(attempt);
     try {
-      const { session_key: key } = await api.structuredCreate(engine, cwd, attempt.id);
+      const { session_key: key } = await api.structuredCreate(engine, cwd, attempt.id, model);
       writePendingCreate(null);
       if (!mounted.current) return;
       const id = key.slice(key.indexOf(":") + 1);
@@ -412,7 +443,14 @@ export function NewSessionLanding() {
           </div>
         )}
 
-        {models.length > 0 ? (
+        {/* A chosen model whose list has since gone (discovery failed, or a restored draft) keeps
+            its select, so what will be sent stays visible and `default` stays one click away. */}
+        {isApi && apiList && apiList.status !== "ok" && (
+          <p className={styles.hint} data-testid="new-session-model-api">
+            {`Models unavailable — ${apiList.reason ?? "the agent listed no models"}. Only default can start.`}
+          </p>
+        )}
+        {models.length > 0 || model !== "default" ? (
           <label className={styles.field}>
             <span>Model</span>
             <select
@@ -424,16 +462,24 @@ export function NewSessionLanding() {
               <option value="default">default</option>
               {models.map((m) => (
                 <option key={m.id} value={m.id}>
-                  {m.aliases.length ? `${m.id} (${m.aliases.join(", ")})` : m.id}
+                  {m.text}
                 </option>
               ))}
               {/* A restored choice the roster no longer lists stays visible, so what is shown is
                   what will be sent — and refused, rather than silently becoming `default`. */}
               {model !== "default" && !models.some((m) => m.id === model) && (
-                <option value={model}>{model} (no longer offered)</option>
+                <option value={model}>
+                  {model} {isApi && apiList === null ? "(checking…)" : "(no longer offered)"}
+                </option>
               )}
             </select>
           </label>
+        ) : isApi ? (
+          apiList === null ? (
+            <p className={styles.hint} data-testid="new-session-model-loading">
+              Model: asking the agent which models it offers…
+            </p>
+          ) : null
         ) : modelSelect?.configured_elsewhere && engineInfo(engine)?.runtime !== "chat" ? (
           <p className={styles.hint} data-testid="new-session-model-elsewhere">
             Model: set in {engineName(engine)}’s own configuration.

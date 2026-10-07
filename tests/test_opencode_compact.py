@@ -615,6 +615,10 @@ def test_launch_site_inventory_requires_review_when_another_route_can_spawn():
         # …and builds the fixed systemd worker command (`native_containment.launch_argv`),
         # which starts BattleLab's own worker, never a provider's console argv.
         ("native_runtime.py", "launch_argv"): 1,
+        # #1313: the model probe asks the admitted source's own CLI which models it offers
+        # (Codex `app-server` model/list, Claude stream-JSON initialize). It starts no session and
+        # writes no history; its adapter kinds (`native_models._DISCOVER`) are never opencode.
+        ("native_models.py", "entrypoint_path"): 1,
     }
     for module, name in ((webterm, "create_subprocess_exec"), (headless_dispatch, "_popen")):
         tree = ast.parse(Path(module.__file__).read_text())
