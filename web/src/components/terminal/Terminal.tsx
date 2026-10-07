@@ -132,6 +132,7 @@ export function Terminal({
   suppressHead,
   headActionsSlot,
   headOverflowRef,
+  headAllRef,
   headReservePx,
   headBarRef,
   onTermStatus,
@@ -192,6 +193,10 @@ export function Terminal({
    *  (`HeadActions` `foldInto: "external"`), so the chrome's single ⋯ menu carries whatever
    *  overflowed, read at menu-open time. */
   headOverflowRef?: { current: HeadAction[] };
+  /** With `suppressHead`: the host's ref for the FULL action list (#1329), published beside
+   *  `headOverflowRef`. The chrome's merged menu omits the session twins of what this pane
+   *  really offers — the overflow alone cannot answer that when nothing folded. */
+  headAllRef?: { current: HeadAction[] };
   /** With `suppressHead`: the bar width the chips must leave for everything else on the
    *  chrome bar (facts run, title, window buttons). See `HeadActions.reservePx`. */
   headReservePx?: number;
@@ -1833,6 +1838,11 @@ export function Terminal({
       title:
         "Session brief: full title, summary, and a chronological recap of this session",
       icon: <ScrollText size={13} aria-hidden="true" />,
+      // #1329: in a window the session ⋯ menu already carries "Session brief", so this
+      // chip is menu-first — it folds into that ONE menu before any trailing action, and
+      // only surfaces on the bar when the chrome has room. The pane's own bar has no such
+      // menu, so it stays a chip there.
+      menuFirst: suppressHead,
       run: (trigger?: HTMLElement | null) => {
         setRecapTrigger(
           trigger ?? (document.activeElement as HTMLElement | null),
@@ -1849,6 +1859,8 @@ export function Terminal({
             title:
               "Hand off: start a new session in another engine, seeded with this session's context",
             icon: <ArrowLeftRight size={13} aria-hidden="true" />,
+            // #1329: the window's ⋯ menu already carries "Hand off…" — menu-first.
+            menuFirst: suppressHead,
             run: (trigger?: HTMLElement | null) => {
               setHandoffTrigger(
                 trigger ?? (document.activeElement as HTMLElement | null),
@@ -1879,6 +1891,8 @@ export function Terminal({
                 title: `Open mission: ${row.mission.title} (${row.mission.state})`,
                 icon: <Crosshair size={13} aria-hidden="true" />,
                 active: true,
+                // #1329: the window's ⋯ menu already carries "Open mission" — menu-first.
+                menuFirst: suppressHead,
                 run: () => navigate(missionLink(row.mission!.id)),
               }
             : {
@@ -1889,6 +1903,8 @@ export function Terminal({
                 aria: "Adopt this session into a mission",
                 title: "Adopt to mission: add this session to an open mission",
                 icon: <Crosshair size={13} aria-hidden="true" />,
+                // #1329: the window's ⋯ menu already carries "Adopt to mission…" — menu-first.
+                menuFirst: suppressHead,
                 run: (trigger?: HTMLElement | null) => {
                   const opener =
                     trigger ?? (document.activeElement as HTMLElement | null);
@@ -2030,6 +2046,7 @@ export function Terminal({
             reservePx={headReservePx}
             foldInto="external"
             overflowRef={headOverflowRef}
+            allRef={headAllRef}
             barRef={headBarRef}
           />,
           headActionsSlot,

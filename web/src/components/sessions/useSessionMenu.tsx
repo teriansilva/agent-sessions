@@ -95,9 +95,16 @@ export interface SessionMenu {
 export function useSessionMenu(
   s: Session,
   h: SessionMenuHandlers,
-  /** `reviewInFlight`: a review of this session is already running, started by a menu host that
-   *  may no longer exist (#968 review). Review now stays disabled until it settles. */
-  opts: { reviewInFlight?: boolean } = {},
+  opts: {
+    /** `reviewInFlight`: a review of this session is already running, started by a menu host that
+     *  may no longer exist (#968 review). Review now stays disabled until it settles. */
+    reviewInFlight?: boolean;
+    /** Session items to leave out (#1329): a window's merged menu carries these as PANE actions
+     *  instead (a chip when the bar has room, the pane group when it does not), so the session
+     *  group must not name them twice. Applied BEFORE `pushGroup`, so dropping a whole group
+     *  leaves no leading or doubled separator. */
+    omit?: ReadonlySet<string>;
+  } = {},
 ): SessionMenu {
   // Re-render when the engine roster lands or changes (#853 P4): this renders agent names,
   // badges or colours, which come from the roster, not from a client-side list.
@@ -158,8 +165,11 @@ export function useSessionMenu(
   // Primary actions, mirrored from the terminal header (#597 follow-up): the session brief and
   // Hand off. Handoff is offered for every engine except `shell` — the header's `canHandoff` gate
   // (no agent transcript to seed). Each stashes the focused element so focus returns on close.
-  const primary: RowMenuEntry[] = [
-    {
+  // `omit` (#1329) drops an item whose pane action a window's merged menu carries instead.
+  const omit = opts.omit;
+  const primary: RowMenuEntry[] = [];
+  if (!omit?.has("brief")) {
+    primary.push({
       key: "brief",
       label: "Session brief",
       ariaLabel: "Open session brief",
@@ -168,10 +178,10 @@ export function useSessionMenu(
         setRecapReturnFocus(document.activeElement as HTMLElement | null);
         setRecapOpen(true);
       },
-    },
-  ];
+    });
+  }
   // Only an engine with an agent behind it can be handed off (#853 P4 — the roster, not an id).
-  if (isAgent(s.engine)) {
+  if (isAgent(s.engine) && !omit?.has("handoff")) {
     primary.push({
       key: "handoff",
       label: "Hand off…",
@@ -191,15 +201,19 @@ export function useSessionMenu(
   // `canonical_key` refuses) are not adoptable either.
   if (s.mission !== undefined && !s.archived && !isNewSessionPlaceholder(s.id)) {
     const held = s.mission;
-    pushGroup([
-      held
-        ? {
+    // `omit` (#1329): the window's merged menu carries the mission action as a pane action.
+    const missionItem: RowMenuEntry | null = held
+      ? omit?.has("open-mission")
+        ? null
+        : {
             key: "open-mission",
             label: "Open mission",
             ariaLabel: `Open mission ${held.title}`,
             icon: <Crosshair size={15} />,
             onSelect: () => navigate(missionLink(held.id)),
           }
+      : omit?.has("adopt-mission")
+        ? null
         : {
             key: "adopt-mission",
             label: "Adopt to mission…",
@@ -210,8 +224,8 @@ export function useSessionMenu(
               setAdoptReturnFocus(document.activeElement as HTMLElement | null);
               setAdopting(true);
             },
-          },
-    ]);
+          };
+    if (missionItem) pushGroup([missionItem]);
   }
 
   // Handoff provenance backlinks (#597 Phase 2): route to a peer session. Peer ids are display

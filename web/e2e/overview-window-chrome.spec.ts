@@ -231,15 +231,45 @@ test.describe("desktop", () => {
     ]) {
       await expect(menu.getByRole("menuitem", { name: new RegExp(`^${name}$`, "i") })).toBeVisible();
     }
-    // The pane group carries the fold — the actions that did not fit — and never repeats the
-    // actions the session group covers (Session brief, Hand off…).
+    // The pane group carries the fold. Since #1329 the session-mirrored pane actions (Recap,
+    // Hand off, mission) are menu-first, so at a width that folds anything they give way FIRST
+    // into the Pane group — and the session group no longer names them.
     const paneItems = await menu
       .locator("[data-menu-group='Pane'] ~ [role='menuitem']")
       .allTextContents();
-    expect(paneItems.join("|")).not.toMatch(/Session brief|Hand off/);
-    expect(paneItems.join("|")).toMatch(/Repaint|text|Files/);
+    expect(paneItems.join("|")).toMatch(/Repaint|text|Files|Recap|Hand off|mission/);
+    // The session group never repeats a pane action: no "Session brief", "Hand off…", "Adopt to
+    // mission…" while the pane side carries the same action.
+    expect(paneItems.join("|")).not.toMatch(/Session brief|Hand off…|Adopt to mission…/);
     await page.keyboard.press("Escape");
     await expect(menu).toBeHidden();
+  });
+
+  test("a session-mirrored action is named ONCE — a chip or the ⋯ menu, never both (#1329)", async ({
+    page,
+  }) => {
+    // The duplicate the operator saw: Recap / Hand off / Adopt to mission as chips on the bar AND
+    // again in the ⋯ menu. Whatever the fold keeps on the bar is the chip; the menu must then drop
+    // its session twin, so one action is named exactly once — chip or menu, never both.
+    await mockApp(page);
+    await openWindow(page);
+    const w = win(page, 1);
+    const chips = await w
+      .locator("[data-head-action]")
+      .evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")));
+
+    await w.locator("[data-window-menu]").click();
+    const menu = page.locator("[role='menu'][aria-label='Session actions']").last();
+    await expect(menu).toBeVisible();
+    const items = await menu
+      .locator("[role='menuitem']")
+      .evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")));
+    // No action's accessible name is on the bar AND in the menu at the same time.
+    expect(chips.filter((n) => n && items.includes(n))).toEqual([]);
+    // The session-mirrored actions are still reachable somewhere — chip or menu.
+    const all = [...chips, ...items];
+    expect(all).toContain("Open session brief");
+    await page.keyboard.press("Escape");
   });
 
   test("a narrow window folds the text-size chips off the bar into that ONE menu", async ({

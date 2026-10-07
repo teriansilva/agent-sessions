@@ -2,7 +2,7 @@ import { MoreHorizontal } from "lucide-react";
 import { createPortal } from "react-dom";
 import { type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import menu from "../files/filePanel.module.css";
-import { foldCount } from "./headActionsFold";
+import { foldSelection } from "./headActionsFold";
 
 export interface HeadAction {
   id: string;
@@ -16,10 +16,23 @@ export interface HeadAction {
   icon: ReactNode;
   active?: boolean;
   disabled?: boolean;
+  /** The overflow menu is this action's canonical home (#1329): a window's chrome bar is slim
+   *  by default and only surfaces this action as a chip when the bar has room to spare. A
+   *  session-mirrored pane action sets it — the session ⋯ menu already carries it under a stable
+   *  name, so the chip is the exception, not the rule. */
+  menuFirst?: boolean;
   /** `trigger` is the element focus should return to when whatever this opens is closed. For an
    *  overflow item that is the persistent "…" button, NOT the menu item — the item unmounts with
    *  the menu, and a modal handed a detached node cannot restore focus at all. */
   run: (trigger?: HTMLElement | null) => void;
+}
+
+/** Whether two folds kept the same actions — the state identity check that keeps a settled fold
+ *  from re-rendering on every ResizeObserver tick. */
+function sameSelection(a: boolean[], b: boolean[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
 }
 
 const GAP = 6; // matches .headActions gap
@@ -42,6 +55,13 @@ const GAP = 6; // matches .headActions gap
  *  new primary affordance) and `Repaint` stays out of the menu: burying the recovery control when
  *  the screen is blank is the wrong trade.
  *
+ *  **A `menuFirst` action folds before the trailing ones (#1329).** The overflow menu is its
+ *  canonical home — a window's chrome bar is slim by default and only surfaces it as a chip when the
+ *  bar has room to spare. A session-mirrored pane action (Recap, Hand off, mission) sets it, because
+ *  the session ⋯ menu already carries it under a stable name; folding it first is what stops the bar
+ *  from showing a chip AND its menu twin. `foldSelection` returns a per-action boolean, so a `menuFirst`
+ *  action folding from the middle leaves no hole — the flex row packs what is left.
+ *
  *  The menu is portalled to <body> because `.terminal-pane` is `overflow: hidden` — the same
  *  reason KeyBar portals its own. KeyBar supplies the measurement and portal pattern only; the
  *  menu a11y (focus-in, arrow keys, Esc, focus return, roving `menuitem`) is implemented here.
@@ -52,7 +72,7 @@ const GAP = 6; // matches .headActions gap
  *  `overflowRef` after every commit, so the chrome reads the CURRENT fold at menu-open time
  *  without a single extra render. The chips that fit stay chips; the rest are reachable only
  *  through that one menu, which is the point: a window never shows two menus. */
-export function HeadActions({ actions, className, btnClassName, labelClassName, collapsed = false, reservePx, foldInto = "self", overflowRef, barRef }: {
+export function HeadActions({ actions, className, btnClassName, labelClassName, collapsed = false, reservePx, foldInto = "self", overflowRef, allRef, barRef }: {
   actions: HeadAction[];
   className: string;
   btnClassName: string;
@@ -78,6 +98,11 @@ export function HeadActions({ actions, className, btnClassName, labelClassName, 
   /** With `foldInto: "external"`: the host's ref to read the overflowed actions from, updated
    *  after every commit so a menu built at open time is never stale. */
   overflowRef?: { current: HeadAction[] };
+  /** With `foldInto: "external"`: the host's ref to read the FULL action list from (#1329),
+   *  published after every commit beside the overflow. A host whose merged menu must omit only the
+   *  twins of actions this pane really offers reads it — `overflowRef` cannot say whether an action
+   *  the fold kept on the bar is offered at all. */
+  allRef?: { current: HeadAction[] };
   /** The BAR the fold budgets against. Default is this wrapper's parent — true in the pane,
    *  where the wrapper sits directly under `.panelHead`; a window's chips sit in a dedicated
    *  slot span instead, so the host passes its bar (`[data-window-head]`) explicitly (#1109).
@@ -91,8 +116,13 @@ export function HeadActions({ actions, className, btnClassName, labelClassName, 
   const widths = useRef<number[]>([]);
   // `w` is the bar width the committed fit was measured at — the measurement-complete invariant
   // the #744 ladder spec waits on (`data-fit-width`), since "the '…' trigger exists" cannot tell a
-  // settled narrower rung from the previous wider one (#909). Absent until the first measurement.
-  const [fit, setFit] = useState<{ sig: string; n: number; w?: number }>({ sig: "", n: actions.length });
+  // settled narrower rung from the previous wider one (#909). `sel` is WHICH actions that fit kept —
+  // a boolean per action, because a `menuFirst` action folds from the middle (#1329). Absent until the
+  // first measurement.
+  const [fit, setFit] = useState<{ sig: string; sel: boolean[]; w?: number }>({
+    sig: "",
+    sel: [],
+  });
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ top: number; right: number; maxHeight: number } | null>(null);
 
@@ -105,9 +135,13 @@ export function HeadActions({ actions, className, btnClassName, labelClassName, 
   // them all and re-measure from scratch. setState-during-render is React's documented way to
   // adjust state to a prop change, and it avoids the extra commit an effect would cost.
   if (fit.sig !== sig) {
-    setFit({ sig, n: actions.length });
+    setFit({ sig, sel: actions.map(() => true) });
   }
-  const visible = collapsed ? 0 : fit.sig === sig ? fit.n : actions.length;
+  const selected = collapsed
+    ? actions.map(() => false)
+    : fit.sig === sig
+      ? fit.sel
+      : actions.map(() => true);
 
   useLayoutEffect(() => {
     const el = wrapRef.current;
@@ -137,9 +171,17 @@ export function HeadActions({ actions, className, btnClassName, labelClassName, 
       // component renders the trigger at all. `foldInto: "external"` folds into a menu the host
       // owns, mounted outside this slot's flow, so nothing here is reserved for it.
       const MORE_W = foldInto === "external" ? 0 : 34;
-      const next = foldCount(widths.current, avail, GAP, MORE_W);
+      const next = foldSelection(
+        widths.current,
+        avail,
+        GAP,
+        MORE_W,
+        actions.map((a) => Boolean(a.menuFirst)),
+      );
       setFit((prev) =>
-        prev.sig === sig && prev.n === next && prev.w === bar ? prev : { sig, n: next, w: bar },
+        prev.sig === sig && prev.w === bar && sameSelection(prev.sel, next)
+          ? prev
+          : { sig, sel: next, w: bar },
       );
     };
     measure();
@@ -151,15 +193,27 @@ export function HeadActions({ actions, className, btnClassName, labelClassName, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sig, collapsed, reservePx]);
 
-  const inline = actions.slice(0, visible);
-  const overflow = actions.slice(visible);
+  const inline = actions.filter((_, i) => selected[i]);
+  const overflow = actions.filter((_, i) => !selected[i]);
 
   // The host's fold is published after EVERY commit, unconditionally: the chrome builds its menu
   // from this ref at open time, so it must name the actions that are actually folded right now.
   // A ref write never re-renders, so this cannot loop — it is what makes the merged menu read
   // current state (disabled flips, a Repaint that just became possible) with no render coupling.
   useEffect(() => {
-    if (overflowRef) overflowRef.current = actions.slice(visible);
+    if (overflowRef) overflowRef.current = overflow;
+    // The FULL list too (#1329): a pane that offers NO action (a chat/api runtime, or the
+    // one-frame gap before the first commit) must publish an EMPTY list, not leave a stale one,
+    // so the host omits nothing and the session entries survive.
+    if (allRef) allRef.current = actions;
+    // Clear both on unmount (#1329): RuntimeGate mounts THIS Terminal while the engine roster
+    // is unknown, then swaps in ChatPane/StructuredPane when a chat/api entry arrives. The host
+    // keeps the same refs, so without this cleanup its ⋯ would still omit session actions the
+    // (now unmounted) pane offered, and run stale callbacks from the torn-down terminal.
+    return () => {
+      if (overflowRef) overflowRef.current = [];
+      if (allRef) allRef.current = [];
+    };
   });
 
   const place = useCallback(() => {

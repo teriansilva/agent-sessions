@@ -13,6 +13,10 @@ import type { MenuAnchor, RowMenuEntry } from "../sidebar/RowMenu";
 type Captured = Record<string, unknown>;
 const captured: Captured[] = [];
 
+/** Whether the mocked pane publishes its head actions. `false` models a chat/api window, which
+ *  mounts no <Terminal> at all (#1329). */
+const headState = vi.hoisted(() => ({ publish: true }));
+
 /** What a mounted HeadActions would publish through `headOverflowRef` — the chrome reads this
  *  ref at menu-open time, so the test seeds it the same way the real fold does. */
 const OVERFLOW: HeadAction[] = [
@@ -53,10 +57,20 @@ const OVERFLOW: HeadAction[] = [
 vi.mock("../terminal/Terminal", () => ({
   Terminal: (props: Captured) => {
     captured.push(props);
-    // Publish the fold exactly once, as HeadActions would after its first commit.
+    // Publish the fold + the full list after every commit, and CLEAR both on unmount — exactly
+    // as the real HeadActions does. Here the pane offers every action in OVERFLOW, so the host must
+    // omit their session twins (Recap → Session brief, Hand off) from the merged menu.
     useEffect(() => {
-      const ref = props.headOverflowRef as { current: HeadAction[] } | undefined;
-      if (ref) ref.current = OVERFLOW;
+      const over = props.headOverflowRef as { current: HeadAction[] } | undefined;
+      const all = props.headAllRef as { current: HeadAction[] } | undefined;
+      if (headState.publish) {
+        if (over) over.current = OVERFLOW;
+        if (all) all.current = OVERFLOW;
+      }
+      return () => {
+        if (over) over.current = [];
+        if (all) all.current = [];
+      };
     });
     return <div data-testid="term" />;
   },
@@ -104,6 +118,7 @@ function renderWindow(props: Partial<typeof BASE> & { onMenu?: (...a: unknown[])
 
 beforeEach(() => {
   captured.length = 0;
+  headState.publish = true;
 });
 
 test("the chrome suppresses the pane's own bar and hands it a chips slot (#1109)", () => {
@@ -130,22 +145,67 @@ test("the ⋯ opens the canvas's merged menu with the fold's overflow, deduped (
   renderWindow({ onMenu });
   await user.click(screen.getByRole("button", { name: "Session actions" }));
   expect(onMenu).toHaveBeenCalledTimes(1);
-  const [wkey, anchor, opener, paneItems] = onMenu.mock.calls[0] as [
+  const [wkey, anchor, opener, paneItems, omit] = onMenu.mock.calls[0] as [
     string,
     MenuAnchor,
     HTMLElement | null,
     RowMenuEntry[],
+    ReadonlySet<string>,
   ];
   expect(wkey).toBe("claude:abc");
   expect(anchor).toHaveProperty("element");
   expect(opener).not.toBeNull();
-  // The pane group carries the fold, as menu entries — minus the actions the session group
-  // already covers (Recap → Session brief, Hand off → Hand off…). Repaint and the text-size
-  // pair remain.
+  // The pane group carries the WHOLE fold, as menu entries (#1329): the merged menu drops the
+  // session group's twins of whatever the pane offers, so the host passes it all through.
   const keys = paneItems
     .filter((e): e is Extract<RowMenuEntry, { key: string }> => typeof e === "object" && "key" in e)
     .map((e) => e.key);
-  expect(keys).toEqual(["repaint", "text-smaller"]);
+  expect(keys).toEqual(["repaint", "recap", "handoff", "text-smaller"]);
+  // ...and names exactly the twins of the pane's offered actions — Recap and Hand off.
+  expect([...omit].sort()).toEqual(["brief", "handoff"]);
+});
+
+test("a pane that mounts no head actions omits nothing, so session actions survive (#1329)", async () => {
+  // A chat/api window mounts no <Terminal> — no chips, no fold, an empty full list. The merged
+  // menu must then keep Session brief / Hand off / mission rather than lose them.
+  headState.publish = false;
+  const onMenu = vi.fn();
+  const user = userEvent.setup();
+  renderWindow({ onMenu });
+  await user.click(screen.getByRole("button", { name: "Session actions" }));
+  const [, , , , omit] = onMenu.mock.calls[0] as [unknown, unknown, unknown, unknown, ReadonlySet<string>];
+  expect([...omit]).toEqual([]);
+});
+
+test("the roster arriving swaps the pane out and clears its published actions (#1329)", async () => {
+  // The lifecycle Hermes found: RuntimeGate mounts the Terminal while the roster is unknown, so it
+  // publishes its actions; the roster then arrives with a chat/api entry and the pane is replaced.
+  // The unmounted pane's HeadActions must clear the host's refs, or the menu keeps omitting.
+  const onMenu = vi.fn();
+  const user = userEvent.setup();
+  const view = renderWindow({ onMenu });
+  await user.click(screen.getByRole("button", { name: "Session actions" }));
+  let omit = onMenu.mock.calls[0][4] as ReadonlySet<string>;
+  expect([...omit].sort()).toEqual(["brief", "handoff"]);
+  await user.keyboard("{Escape}");
+
+  headState.publish = false;
+  await act(async () => {
+    view.rerender(
+      <MemoryRouter initialEntries={["/overview"]}>
+        <Routes>
+          <Route
+            path="/overview"
+            element={<SessionWindow {...BASE} onMenu={onMenu} />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+  });
+
+  await user.click(screen.getByRole("button", { name: "Session actions" }));
+  omit = onMenu.mock.calls[1][4] as ReadonlySet<string>;
+  expect([...omit]).toEqual([]);
 });
 
 test("off the map the ⋯ opens a local PANE-ONLY menu instead (#1109)", async () => {

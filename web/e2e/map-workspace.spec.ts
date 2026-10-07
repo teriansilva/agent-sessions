@@ -446,7 +446,7 @@ test.describe("map workspace", () => {
     // surface along).
     //
     // Asserted on **Hand off's presence**, which is the cleanest observable of `actionKey`:
-    // `canHandoff` is `!actionNative.startsWith("new-")`, so the chip is absent for exactly as
+    // `canHandoff` is `!actionNative.startsWith("new-")`, so it is absent for exactly as
     // long as the pane is still acting on the placeholder. A request-URL assertion is not usable
     // here — other surfaces legitimately name the reconciled id, so the URL appears either way.
     await page.setViewportSize({ width: 1920, height: 1200 });
@@ -460,9 +460,12 @@ test.describe("map workspace", () => {
     await expect(w).toHaveCount(1);
     // Still transporting on the placeholder — that part must NOT change, or the socket dies.
     await expect(w).toHaveAttribute("data-session-window", /:new-/);
-    // ...while the pane inside it acts on the id the engine minted.
+    // ...while the pane inside it acts on the id the engine minted. Hand off is menu-first in a
+    // window (#1329), so it is reachable through the ⋯ menu rather than as a chip.
+    await w.locator("[data-window-menu]").click();
+    const menu = page.locator("[role='menu']").last();
     await expect(
-      w.getByRole("button", { name: /hand off session to another engine/i }),
+      menu.getByRole("menuitem", { name: /hand off session to another engine/i }),
     ).toBeVisible();
   });
 

@@ -4,6 +4,7 @@ import {
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
   useCallback,
+  useEffect,
   useLayoutEffect,
   useRef,
   useState,
@@ -55,17 +56,20 @@ import { RuntimeGate } from "../terminal/RuntimeGate";
  *    a dirty UNSAVED draft is lost. The full-screen pane's dirty-guard paths (Esc, ✕, router
  *    nav) are unchanged. Recorded in the PR for #1109. */
 
-/** The pane actions the session group already carries, so a folded chip never names its modal
- *  twice in one menu (#1109): Recap → the session menu's "Session brief", Hand off → its
- *  "Hand off…", mission adopt/open → its mission group. Applied ONLY on the merged (on-map)
- *  menu; off the map the session group is absent, so the pane menu carries everything. */
-const SESSION_COVERED_PANE_IDS = new Set(["recap", "handoff", "mission"]);
-
 /** What the chrome bar must hold besides the action chips: the grip, the four window buttons
  *  (⋯ – ⤢ ✕), a minimum of title, and the bar's own gaps. The measured facts run is added on
  *  top (`reservePx`), so the fold is decided against what the bar really has — folding a
  *  little early is the safe direction; folding late would clip the title. */
 const CHROME_RESERVE = 214;
+
+/** The session-menu items a pane action mirrors (#1329). Only the ones the mounted pane
+ *  actually offers are omitted from the merged menu's session group — a chat/api runtime mounts no
+ *  head actions at all, so its session items stay. */
+const PANE_TO_SESSION_KEYS: Record<string, string[]> = {
+  recap: ["brief"],
+  handoff: ["handoff"],
+  mission: ["adopt-mission", "open-mission"],
+};
 
 export const SessionWindow = memo(function SessionWindow({
   wkey,
@@ -131,6 +135,8 @@ export const SessionWindow = memo(function SessionWindow({
     anchor: MenuAnchor,
     opener: HTMLElement | null,
     paneItems?: RowMenuEntry[],
+    /** The session-menu keys to omit (#1329): the twins of the actions the pane offers. */
+    omit?: ReadonlySet<string>,
   ) => void;
   /** Set while the session is not on the map (filtered off), which is where the menu reads its
    *  row from. #1109: this no longer disables the ⋯ — it only withdraws the ROW-DEPENDENT
@@ -232,6 +238,11 @@ export const SessionWindow = memo(function SessionWindow({
   // The pane's chips portal into the chrome bar and fold (measured, like the pane's own fold)
   // into THE chrome ⋯ — published through this ref, read at menu-open time.
   const paneOverflowRef = useRef<HeadAction[]>([]);
+  // The pane's FULL action list (#1329), published beside the overflow. The merged menu omits the
+  // session twins of what the pane REALLY offers; the overflow alone cannot say whether an action the
+  // fold kept on the bar is offered at all. A pane that mounts no head actions (a chat/api runtime)
+  // leaves this empty, so nothing is omitted and the session entries survive.
+  const paneAllRef = useRef<HeadAction[]>([]);
   // The chrome's chips slot, as state: <Terminal> receives the ELEMENT to portal into, which
   // only exists after this bar has committed. One extra frame on mount, before any socket has
   // anything to show.
@@ -240,21 +251,20 @@ export const SessionWindow = memo(function SessionWindow({
   // off the map there is no row — but the pane actions never needed one.
   const [paneMenuAnchor, setPaneMenuAnchor] = useState<MenuAnchor | null>(null);
 
-  /** The folded pane actions as menu entries. `dedupe` drops the actions the session group
-   *  already carries (only meaningful when the session group IS rendered); the opener is the
-   *  ⋯ the menu returns focus to — a menu item unmounts with its menu. */
+  /** The folded pane actions as menu entries. The opener is the ⋯ the menu returns focus to —
+   *  a menu item unmounts with its menu. The merged menu DROPS the session group's twins of
+   *  these actions instead (#1329), so a pane action is named once — as a chip when it fits,
+   *  else here. */
   const paneMenuItems = useCallback(
-    (opener: HTMLElement | null, dedupe: boolean): RowMenuEntry[] =>
-      paneOverflowRef.current
-        .filter((a) => !(dedupe && SESSION_COVERED_PANE_IDS.has(a.id)))
-        .map((a) => ({
-          key: a.id,
-          label: a.label,
-          ariaLabel: a.aria,
-          icon: a.icon,
-          disabled: a.disabled,
-          onSelect: () => a.run(opener),
-        })),
+    (opener: HTMLElement | null): RowMenuEntry[] =>
+      paneOverflowRef.current.map((a) => ({
+        key: a.id,
+        label: a.label,
+        ariaLabel: a.aria,
+        icon: a.icon,
+        disabled: a.disabled,
+        onSelect: () => a.run(opener),
+      })),
     [],
   );
 
@@ -265,10 +275,34 @@ export const SessionWindow = memo(function SessionWindow({
         setPaneMenuAnchor(anchor);
         return;
       }
-      onMenu?.(wkey, anchor, opener, paneMenuItems(opener, true));
+      // Omit only the session twins of the actions the pane REALLY offers (#1329): read from
+      // the full list, not the overflow, so a pane that mounts no head actions (a chat/api
+      // runtime) or has not committed its fold yet omits nothing.
+      const offered = new Set(paneAllRef.current.map((a) => a.id));
+      const omit = new Set<string>();
+      for (const [paneId, keys] of Object.entries(PANE_TO_SESSION_KEYS)) {
+        if (!offered.has(paneId)) continue;
+        for (const k of keys) omit.add(k);
+      }
+      onMenu?.(wkey, anchor, opener, paneMenuItems(opener), omit);
     },
     [offMapReason, onMenu, wkey, paneMenuItems],
   );
+
+  // A NATIVE listener, not React's `onContextMenu` on the bar (#1329): the pane's action chips
+  // PORTAL into the bar from <Terminal>, so their React parent is the pane — a synthetic event on
+  // a chip bubbles up the REACT tree to the pane and never reaches the bar's handler. The native
+  // listener follows the DOM, so a right-click anywhere on the bar — chip or not — opens the menu.
+  useEffect(() => {
+    const el = headRef.current;
+    if (!el || !onMenu) return;
+    const onContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      openMergedMenu({ point: { x: e.clientX, y: e.clientY } });
+    };
+    el.addEventListener("contextmenu", onContextMenu);
+    return () => el.removeEventListener("contextmenu", onContextMenu);
+  }, [onMenu, openMergedMenu]);
 
   const startGesture = (
     e: ReactPointerEvent<HTMLElement>,
@@ -354,14 +388,10 @@ export const SessionWindow = memo(function SessionWindow({
         ref={headRef}
         className={styles.head}
         onPointerDown={(e) => startGesture(e, "move")}
-        // Right-click on the title bar opens THE menu at the pointer (#968/#1109): the merged
-        // session+pane menu when the row is on the map, the pane-only menu when it is not. A
-        // hostless window (the ⋯ itself absent) leaves the browser's own menu alone.
-        onContextMenu={(e) => {
-          if (!onMenu) return;
-          e.preventDefault();
-          openMergedMenu({ point: { x: e.clientX, y: e.clientY } });
-        }}
+        // Right-click opens THE menu at the pointer (#968/#1109): the merged session+pane menu
+        // when the row is on the map, the pane-only menu when it is not. Bound as a NATIVE DOM
+        // listener in the effect above — not React's `onContextMenu` — because the action chips
+        // portal in from the pane and a synthetic event on them never bubbles through this bar.
         data-window-head
       >
         <span className={styles.grip} aria-hidden="true">
@@ -450,7 +480,7 @@ export const SessionWindow = memo(function SessionWindow({
           title carries the reason (see the ⋯ above). */}
       {paneMenuAnchor && (
         <MenuPopover
-          items={paneMenuItems(menuBtnRef.current, false)}
+          items={paneMenuItems(menuBtnRef.current)}
           title={title}
           label="Pane actions"
           anchor={paneMenuAnchor}
@@ -493,6 +523,7 @@ export const SessionWindow = memo(function SessionWindow({
           suppressHead
           headActionsSlot={actionsSlot}
           headOverflowRef={paneOverflowRef}
+          headAllRef={paneAllRef}
           headReservePx={factsW + CHROME_RESERVE}
           headBarRef={headRef}
           filesOpen={filesOpen}

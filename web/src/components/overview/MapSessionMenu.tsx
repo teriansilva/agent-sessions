@@ -22,9 +22,10 @@ import { SessionTextDialog } from "./SessionTextDialog";
  *
  *  A WINDOW's ⋯ opens this same menu with `paneItems` (#1109): the pane head actions its chips'
  *  measured fold could not fit, appended as a labelled second group after the session items —
- *  one menu per window, never two. The session group keeps `useSessionMenu`'s items verbatim
- *  (the list that must not fork); the pane group is the host's own fold, deduped BY THE HOST
- *  against the session group so one modal is never named twice. */
+ *  one menu per window, never two. The host also passes `omit` (#1329): the session twins of the
+ *  actions the pane REALLY offers, so one action is never named twice — it is a chip when the bar had
+ *  room, the Pane group when it did not. A chat/api window's pane offers no head actions, so it omits
+ *  nothing and the session group keeps Session brief / Hand off / mission. */
 export function MapSessionMenu({
   session,
   anchor,
@@ -33,6 +34,7 @@ export function MapSessionMenu({
   onDone,
   reviewInFlight,
   paneItems,
+  omit,
 }: {
   /** The live row while the session is on the map, else the row captured when the menu opened —
    *  a dialog already open keeps naming its session after a refetch drops the chip. */
@@ -48,9 +50,12 @@ export function MapSessionMenu({
   /** A review of this session is running — tracked by the canvas per session key, so it survives
    *  this host closing, or being replaced by another session's menu (#968 review). */
   reviewInFlight: boolean;
-  /** The window's folded pane actions (#1109), already converted to menu entries and deduped
-   *  against the session group by the host. Chips that fit never appear here. */
+  /** The window's folded pane actions (#1109), already converted to menu entries by the host.
+   *  Chips that fit never appear here. */
   paneItems?: RowMenuEntry[];
+  /** The session-menu keys the host omits (#1329) — the twins of the actions the pane really
+   *  offers. Absent for a chip's ⋯ (no pane) and for a chat/api window (pane offers none). */
+  omit?: ReadonlySet<string>;
 }) {
   const [editMode, setEditMode] = useState<"none" | "title" | "tag">("none");
   const [editReturnFocus, setEditReturnFocus] = useState<HTMLElement | null>(null);
@@ -63,7 +68,7 @@ export function MapSessionMenu({
         setEditMode(mode);
       },
     },
-    { reviewInFlight },
+    { reviewInFlight, omit },
   );
   const { busy, dialogOpen, reviewing, runBusy } = menu;
 

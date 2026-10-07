@@ -776,13 +776,22 @@ function OverviewCanvasInner({
     anchor: MenuAnchor | null;
     opener: HTMLElement | null;
     row: Session;
-    /** A WINDOW's folded pane actions (#1109), captured at open. Chips' menus carry none. */
-    paneItems: RowMenuEntry[];
+    /** A WINDOW's folded pane actions (#1109), captured at open. Present (even empty) marks a
+     *  pane-backed menu; a chip's menu carries `undefined`. */
+    paneItems: RowMenuEntry[] | undefined;
+    /** The session-menu keys a window's pane twins (#1329), captured at open. */
+    omit?: ReadonlySet<string>;
   } | null>(null);
   const openSessionMenu = useCallback(
-    (key: string, anchor: MenuAnchor, opener: HTMLElement | null, paneItems: RowMenuEntry[] = []) => {
+    (
+      key: string,
+      anchor: MenuAnchor,
+      opener: HTMLElement | null,
+      paneItems?: RowMenuEntry[],
+      omit?: ReadonlySet<string>,
+    ) => {
       const row = rowsRef.current.find((s) => s.id === key);
-      if (row) setMenuTarget({ key, anchor, opener, row, paneItems });
+      if (row) setMenuTarget({ key, anchor, opener, row, paneItems, omit });
     },
     [],
   );
@@ -826,9 +835,10 @@ function OverviewCanvasInner({
       anchor: MenuAnchor,
       opener: HTMLElement | null,
       paneItems: RowMenuEntry[] = [],
+      omit?: ReadonlySet<string>,
     ) => {
       const w = windowsRef.current.find((x) => x.key === wkey);
-      if (w) openSessionMenu(w.actionKey, anchor, opener, paneItems);
+      if (w) openSessionMenu(w.actionKey, anchor, opener, paneItems, omit);
     },
     [openSessionMenu],
   );
@@ -1261,6 +1271,7 @@ function OverviewCanvasInner({
             onDone={onMenuDone}
             reviewInFlight={reviewingKeys.has(menuTarget.key)}
             paneItems={menuTarget.paneItems}
+            omit={menuTarget.omit}
           />
         )}
       </div>

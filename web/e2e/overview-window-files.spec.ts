@@ -471,7 +471,9 @@ test.describe("desktop", () => {
     // put window 1's sheet over window 2's chrome and the chip below would be unclickable.
     const w1 = page.locator(`[data-session-window="${SESSION.id}"]`);
     const bar1 = (await w1.locator("[data-window-head]").boundingBox())!;
-    await page.mouse.move(bar1.x + bar1.width / 2, bar1.y + bar1.height / 2);
+    // Drag by the grip, not the bar's centre: the centre can sit on an action chip
+    // (#1329), and a press on a control deliberately does not start a window drag.
+    await page.mouse.move(bar1.x + 8, bar1.y + bar1.height / 2);
     await page.mouse.down();
     await page.mouse.move(Math.max(40, bar1.x - 900), bar1.y - 200, { steps: 8 });
     await page.mouse.up();
