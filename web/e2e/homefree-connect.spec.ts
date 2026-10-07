@@ -173,6 +173,8 @@ test("connect page starts no animation loop under reduced motion, and falls back
 test.use({
   launchOptions: {
     args: ["--host-resolver-rules=MAP battlelab.superstatus.io 127.0.0.1"],
+    // Replaces the config's launchOptions, so repeat its shared-memory choice (playwright.config.ts).
+    ignoreDefaultArgs: ["--disable-dev-shm-usage"],
   },
 });
 

@@ -10,6 +10,8 @@ import { verifyHuman } from "./connect-helpers";
 test.use({
   launchOptions: {
     args: ["--host-resolver-rules=MAP battlelab.superstatus.io 127.0.0.1"],
+    // Replaces the config's launchOptions, so repeat its shared-memory choice (playwright.config.ts).
+    ignoreDefaultArgs: ["--disable-dev-shm-usage"],
   },
 });
 

@@ -27,6 +27,24 @@ const PORT = Number(
 // resolver rule then gets ERR_CONNECTION_REFUSED.
 const PREVIEW_URL = `http://127.0.0.1:${PORT}`;
 
+// The preview server must die with this Playwright process, however it dies. Playwright runs the
+// webServer in its own process group, so a shard stopped by sibling-watch (#1244) or a runner
+// cancel — which signal the step's group, or SIGKILL Playwright before its teardown runs — left
+// `vite preview` running, reparented to init and squatting its port (15 orphans, up to 2h old,
+// reaped from example-host on 2026-10-07). In CI the command execs vite directly (no npm/sh layer
+// in between) under `setpriv --pdeathsig KILL`, so the KERNEL kills it the moment its parent
+// Playwright exits. Local runs keep `npm run preview` (setpriv is Linux-only).
+const PREVIEW_CMD = process.env.CI
+  ? `exec setpriv --pdeathsig KILL -- node ./node_modules/vite/bin/vite.js preview --host 127.0.0.1 --port ${PORT} --strictPort`
+  : `npm run preview -- --host 127.0.0.1 --port ${PORT} --strictPort`;
+
+// Playwright launches Chromium with --disable-dev-shm-usage by default, which moves its shared
+// memory into the temp dir. That flag is for containers with a tiny /dev/shm; on the CI host
+// executor /dev/shm is a large tmpfs, and the temp dir sat on the runner's disk — the measured CI
+// bottleneck (a shared HDD mirror). Keep Chromium's shared memory in /dev/shm. Specs that set
+// their own `launchOptions` (homefree-*) must repeat this, since `test.use` replaces the object.
+const CHROMIUM_LAUNCH = { ignoreDefaultArgs: ["--disable-dev-shm-usage"] };
+
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: true,
@@ -59,6 +77,7 @@ export default defineConfig({
         },
       ],
     },
+    launchOptions: CHROMIUM_LAUNCH,
     trace: "on-first-retry",
     screenshot: "only-on-failure",
   },
@@ -66,7 +85,7 @@ export default defineConfig({
   webServer: process.env.E2E_BASE_URL
     ? undefined
     : {
-        command: `npm run preview -- --host 127.0.0.1 --port ${PORT} --strictPort`,
+        command: PREVIEW_CMD,
         url: PREVIEW_URL,
         reuseExistingServer: !process.env.CI,
         timeout: 60_000,
