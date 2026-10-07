@@ -783,8 +783,14 @@ def test_malformed_claude_origin_cannot_masquerade_as_operator_turn(origin):
 def test_approval_digest_binds_full_request_without_exposing_it(factory, frame):
     codec = factory()
     event = codec.feed(frame)[0]
+    # Codex binds the frame AND what was presented (for a file change, its patch too).
+    bound = (
+        {"frame": frame, "presented": json.loads(event.data["summary"])}
+        if factory is codex_running
+        else frame
+    )
     expected = hashlib.sha256(
-        json.dumps(frame, sort_keys=True, separators=(",", ":")).encode()
+        json.dumps(bound, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
     assert event.data["payload_digest"] == expected
     assert "frame" not in event.data and "input" not in event.data and "params" not in event.data
@@ -965,3 +971,104 @@ def test_approval_cannot_hide_consequential_payload_beyond_presentation_bound(fa
         codec.feed(frame)
     assert codec._approvals == {}
     assert codec.operation_id == OPERATION
+
+
+def _file_change(request_id=5):
+    return {
+        "id": request_id,
+        "method": "item/fileChange/requestApproval",
+        "params": {"threadId": SESSION, "turnId": TURN, "itemId": "edit-1", "reason": "edit"},
+    }
+
+
+def _patch(diff, turn=TURN):
+    change = {"path": "a.py", "kind": {"type": "update"}, "diff": diff}
+    return {
+        "method": "item/fileChange/patchUpdated",
+        "params": {"threadId": SESSION, "turnId": turn, "itemId": "edit-1", "changes": [change]},
+    }
+
+
+def test_a_file_change_presents_its_patch_but_is_never_approvable():
+    """Nothing binds the patch Codex applies to the one shown (Hermes on #1278)."""
+    codec = codex_running()
+    assert codec.feed(_patch("-a\n+b\n")) == []
+    event = codec.feed(_file_change())[0]
+    assert event.kind == "approval" and event.data["complete"] is False
+    presented = json.loads(event.data["summary"])
+    assert presented["changes"][0]["diff"] == "-a\n+b\n" and presented["reason"] == "edit"
+    reply = codec.decide(event.data["request_id"], "reject")
+    assert reply == {"id": 5, "result": {"decision": "decline"}}
+
+
+def test_a_command_approval_is_complete():
+    event = codex_running().feed(codex_approval())[0]
+    assert event.data["complete"] is True
+
+
+def test_a_file_change_without_a_patch_or_from_another_turn_is_incomplete():
+    codec = codex_running()
+    assert codec.feed(_patch("-a\n+b\n", turn="another-turn")) == []  # not this turn's patch
+    event = codec.feed(_file_change())[0]
+    assert event.data["complete"] is False
+    assert "changes" not in json.loads(event.data["summary"])
+
+
+def test_a_patch_changing_after_presentation_declines_the_stale_approval():
+    codec = codex_running()
+    codec.feed(_patch("-a\n+b\n"))
+    key = codec.feed(_file_change())[0].data["request_id"]
+    events = codec.feed(_patch("-a\n+something else\n"))
+    sends = [e.data["frame"] for e in events if e.kind == "send"]
+    assert sends == [{"id": 5, "result": {"decision": "decline"}}]
+    assert [e.kind for e in events if e.kind != "send"] == ["approval_cancelled"]
+    with pytest.raises(ProtocolError):
+        codec.decide(key, "approve")  # the presented callback is gone
+
+
+def test_a_claude_prompt_presents_its_whole_permission_context():
+    codec = claude_running()
+    frame = claude_approval()
+    frame["request"].update(blocked_path="/etc/hosts", decision_reason="outside cwd", title="t")
+    event = codec.feed(frame)[0]
+    presented = json.loads(event.data["summary"])
+    assert (
+        presented["blocked_path"] == "/etc/hosts" and presented["decision_reason"] == "outside cwd"
+    )
+    assert "subtype" not in presented and event.data["complete"] is True
+
+
+def test_a_claude_sub_agent_prompt_is_refused():
+    codec = claude_running()
+    frame = claude_approval()
+    frame["request"]["agent_id"] = "agent-1"
+    (event,) = codec.feed(frame)
+    assert event.kind == "send" and event.data["frame"]["response"]["subtype"] == "error"
+
+
+def test_an_empty_initial_patch_is_not_a_presented_patch():
+    """Hermes on #1278: `changes: []` from item/started counted as presented."""
+    codec = codex_running()
+    started = {
+        "method": "item/started",
+        "params": {
+            "threadId": SESSION,
+            "turnId": TURN,
+            "item": {"id": "edit-1", "type": "fileChange", "status": "inProgress", "changes": []},
+        },
+    }
+    codec.feed(started)
+    event = codec.feed(_file_change())[0]
+    assert event.data["complete"] is False
+    codec2 = codex_running()
+    codec2.feed(_patch(""))  # a change with an empty diff presents nothing either
+    assert codec2.feed(_file_change())[0].data["complete"] is False
+
+
+def test_an_identical_repeated_patch_keeps_the_pending_request():
+    """Hermes on #1310: only a CHANGED proposal may invalidate a presented request."""
+    codec = codex_running()
+    codec.feed(_patch("-a\n+b\n"))
+    key = codec.feed(_file_change())[0].data["request_id"]
+    assert codec.feed(_patch("-a\n+b\n")) == []
+    assert codec.decide(key, "reject") == {"id": 5, "result": {"decision": "decline"}}

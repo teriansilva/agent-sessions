@@ -244,79 +244,6 @@ async def test_create_submit_replay_and_reconnect_observe_one_native_write(host,
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("source", ["codex", "claude"])
-async def test_exact_approval_is_decided_once_and_stale_after_worker_death(host, project, source):
-    engine = ENGINES[source]
-    key = (await runtime.create_session(engine, str(project), operation_id=ident()))["session_key"]
-    turn = ident()
-    await runtime.submit_turn(key, operation_id=turn, text="APPROVE")
-    snap = await pending(key)
-    request = snap["pending_requests"][0]
-    assert request["turn_id"] == turn and request["choices"] == ["reject", "cancel"]
-    assert "ls -la" in request["summary"] and len(request["payload_digest"]) == 64
-    assert snap["state"] == "awaiting_approval"
-    # Approve is withheld until the review interface can present the whole request (#1273).
-    with pytest.raises(runtime.StructuredError, match="only be declined") as refused:
-        await runtime.decide(
-            key,
-            decision_id=ident(),
-            **{
-                **dict(
-                    turn_id=turn, request_id=request["request_id"], decision="approve", user="op"
-                )
-            },
-        )
-    assert refused.value.status == 409
-    assert not [
-        f
-        for f in frames(project)
-        if f["frame"].get("id") == 77 or f["frame"].get("type") == "control_response"
-    ]
-    decision = ident()
-    args = dict(turn_id=turn, request_id=request["request_id"], decision="reject", user="op")
-    out = await runtime.decide(key, decision_id=decision, **args)
-    assert out["handoff"] == "sent"
-    again = await runtime.decide(key, decision_id=decision, **args)  # replay observes
-    assert again["handoff"] == "sent"
-    snap, settled = await settle(key, turn)
-    expected = "approved:decline" if source == "codex" else "approved:deny"
-    assert settled["reply"] == expected
-    replies = [
-        f
-        for f in frames(project)
-        if f["frame"].get("id") == 77 or f["frame"].get("type") == "control_response"
-    ]
-    assert len(replies) == 1
-    with pytest.raises(runtime.StructuredError) as stale:
-        await runtime.decide(key, decision_id=ident(), **args)
-    assert stale.value.status == 409
-
-    # A callback lost with its worker is never offered again from the journal.
-    second = ident()
-    await runtime.submit_turn(key, operation_id=second, text="APPROVE")
-    request = (await pending(key))["pending_requests"][0]
-    snap = await runtime.snapshot(key)
-    host.kill(snap["native"]["worker"])
-    for _ in range(200):
-        snap = await runtime.snapshot(key)
-        if not snap["pending_requests"]:
-            break
-        await asyncio.sleep(0.05)
-    assert not snap["pending_requests"]
-    turn_view = next(t for t in snap["turns"] if t["turn_id"] == second)
-    assert turn_view["state"] == "uncertain"
-    with pytest.raises(runtime.StructuredError):
-        await runtime.decide(
-            key,
-            decision_id=ident(),
-            turn_id=second,
-            request_id=request["request_id"],
-            decision="reject",
-            user="op",
-        )
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize("source", ["codex", "claude"])
 async def test_native_crash_is_uncertain_never_resent_and_the_next_turn_resumes(
     host, project, source
 ):
@@ -867,31 +794,6 @@ async def test_a_not_current_generation_is_refused_by_the_startup_gate(host, pro
 
 
 @pytest.mark.anyio
-async def test_a_pending_approval_presents_the_complete_request(host, project):
-    """Hermes on #1278: a command excerpt hid network context and proposed amendments."""
-    key = await _codex(project)
-    turn = ident()
-    await runtime.submit_turn(key, operation_id=turn, text="APPROVE")
-    request = (await pending(key))["pending_requests"][0]
-    assert request["payload"]["command"] == "ls -la"
-    assert request["payload"]["networkApprovalContext"] == {"host": "example.invalid"}
-    assert request["payload"]["proposedNetworkPolicyAmendments"]
-    assert "proposedNetworkPolicyAmendments" in request["summary"]
-    assert request["choices"] == ["reject", "cancel"]
-    await runtime.decide(
-        key,
-        decision_id=ident(),
-        turn_id=turn,
-        request_id=request["request_id"],
-        decision="reject",
-        user="op",
-    )
-    await settle(key, turn)
-    reply = next(f["frame"] for f in frames(project) if f["frame"].get("id") == 77)
-    assert reply["result"] == {"decision": "decline"}  # one request, never a policy variant
-
-
-@pytest.mark.anyio
 async def test_another_clients_engine_cannot_reach_a_session_by_its_uuid(host, project):
     """Hermes on #1278: sessions were found by UUID alone, so client B's key could stop A."""
     key = await _codex(project)
@@ -1039,18 +941,125 @@ async def test_a_retiring_clients_running_worker_can_still_be_probed_and_stopped
 
 
 @pytest.mark.anyio
-async def test_the_worker_itself_refuses_approve_over_private_ipc(host, project):
-    """Defence in depth (Hermes on #1309): even a caller that bypasses the web gate and speaks
-    the private protocol cannot approve; nothing reaches the native agent."""
-    key = await _codex(project)
+@pytest.mark.parametrize("source", ["codex", "claude"])
+async def test_a_complete_approval_is_decided_once_by_its_operator_then_stale(
+    host, project, source
+):
+    engine = ENGINES[source]
+    key = (await runtime.create_session(engine, str(project), operation_id=ident()))["session_key"]
     turn = ident()
     await runtime.submit_turn(key, operation_id=turn, text="APPROVE")
+    snap = await pending(key)
+    request = snap["pending_requests"][0]
+    assert request["complete"] and request["choices"] == ["approve", "reject", "cancel"]
+    assert len(request["payload_digest"]) == 64 and snap["state"] == "awaiting_approval"
+    if source == "codex":  # the whole request, not a command excerpt
+        assert request["payload"]["networkApprovalContext"] == {"host": "example.invalid"}
+        assert request["payload"]["proposedNetworkPolicyAmendments"]
+    else:  # the whole permission prompt, not only its input
+        assert request["payload"]["blocked_path"] == "/etc/hosts"
+        assert request["payload"]["decision_reason"] == "outside the working directory"
+        assert request["payload"]["input"] == {"command": "ls -la"}
+    decision = ident()
+    args = dict(turn_id=turn, request_id=request["request_id"], decision="approve")
+    out = await runtime.decide(key, decision_id=decision, user="alice", **args)
+    assert out["handoff"] == "sent"
+    again = await runtime.decide(key, decision_id=decision, user="alice", **args)
+    assert again["handoff"] == "sent"  # exact replay observes
+    with pytest.raises(runtime.StructuredError) as other_actor:
+        await runtime.decide(key, decision_id=decision, user="mallory", **args)
+    assert other_actor.value.status == 409  # who decided is part of the decision
+    _, settled = await settle(key, turn)
+    assert settled["reply"] == ("approved:accept" if source == "codex" else "approved:allow")
+    replies = [
+        f
+        for f in frames(project)
+        if f["frame"].get("id") == 77 or f["frame"].get("type") == "control_response"
+    ]
+    assert len(replies) == 1
+    if source == "codex":
+        assert replies[0]["frame"]["result"] == {"decision": "accept"}  # never policy-wide
+    with pytest.raises(runtime.StructuredError):
+        await runtime.decide(key, decision_id=ident(), user="alice", **args)
+    # A callback lost with its worker is never offered again from the journal.
+    second = ident()
+    await runtime.submit_turn(key, operation_id=second, text="APPROVE")
     request = (await pending(key))["pending_requests"][0]
+    host.kill((await runtime.snapshot(key))["native"]["worker"])
+    for _ in range(200):
+        snap = await runtime.snapshot(key)
+        if not snap["pending_requests"]:
+            break
+        await asyncio.sleep(0.05)
+    assert not snap["pending_requests"]
+    with pytest.raises(runtime.StructuredError):
+        await runtime.decide(
+            key,
+            decision_id=ident(),
+            turn_id=second,
+            request_id=request["request_id"],
+            decision="reject",
+            user="alice",
+        )
+
+
+@pytest.mark.anyio
+async def test_a_file_change_presents_its_patch_but_can_only_be_declined(host, project):
+    """Hermes on #1278: nothing binds the applied patch to the shown one, so no approve."""
+    key = await _codex(project)
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="EDIT")
+    request = (await pending(key))["pending_requests"][0]
+    assert request["kind"] == "file_change" and not request["complete"]
+    assert request["choices"] == ["reject", "cancel"]
+    assert request["payload"]["changes"] == [
+        {"path": "README.md", "kind": {"type": "update"}, "diff": "-old\n+new\n"}
+    ]
+    with pytest.raises(runtime.StructuredError, match="presented completely"):
+        await runtime.decide(
+            key,
+            decision_id=ident(),
+            turn_id=turn,
+            request_id=request["request_id"],
+            decision="approve",
+            user="alice",
+        )
+    await runtime.decide(
+        key,
+        decision_id=ident(),
+        turn_id=turn,
+        request_id=request["request_id"],
+        decision="reject",
+        user="alice",
+    )
+    _, settled = await settle(key, turn)
+    assert settled["reply"] == "edited:decline"
+
+
+@pytest.mark.anyio
+async def test_a_file_change_without_its_patch_can_only_be_declined(host, project):
+    key = await _codex(project)
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="EDIT_NOPATCH")
+    request = (await pending(key))["pending_requests"][0]
+    assert not request["complete"] and request["choices"] == ["reject", "cancel"]
+    with pytest.raises(runtime.StructuredError, match="presented completely") as refused:
+        await runtime.decide(
+            key,
+            decision_id=ident(),
+            turn_id=turn,
+            request_id=request["request_id"],
+            decision="approve",
+            user="alice",
+        )
+    assert refused.value.status == 409
+    assert not [f for f in frames(project) if f["frame"].get("id") == 88]
     gen = native_runtime._generation(key.partition(":")[2])
     journal = native_runtime._journal(
         native_runtime._api_provider(ENGINES["codex"]), key.partition(":")[2]
     )
-    with pytest.raises(native_runtime.NativeError, match="only be declined") as refused:
+    # The worker refuses it too, even to a caller that bypasses the web gate.
+    with pytest.raises(native_runtime.NativeError, match="presented completely"):
         await native_runtime._call(
             gen,
             "decide",
@@ -1064,8 +1073,27 @@ async def test_the_worker_itself_refuses_approve_over_private_ipc(host, project)
                 "decision": "approve",
                 "approval_worker_id": gen.worker_id,
                 "approval_connection_id": gen.config["connection_id"],
+                "actor": "alice",
             },
         )
-    assert refused.value.status == 409
-    assert not [f for f in frames(project) if f["frame"].get("id") == 77]
-    assert (await runtime.snapshot(key))["pending_requests"]  # still pending, still declinable
+    await runtime.decide(
+        key,
+        decision_id=ident(),
+        turn_id=turn,
+        request_id=request["request_id"],
+        decision="reject",
+        user="alice",
+    )
+    _, settled = await settle(key, turn)
+    assert settled["reply"] == "edited:decline"
+
+
+@pytest.mark.anyio
+async def test_a_patch_that_changes_after_presentation_withdraws_the_approval(host, project):
+    """What was shown must be what is approved: a later patch declines the stale callback."""
+    key = await _codex(project)
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="EDIT_CHANGING")
+    _, settled = await settle(key, turn)
+    assert settled["reply"] == "edited:decline"
+    assert not (await runtime.snapshot(key))["pending_requests"]

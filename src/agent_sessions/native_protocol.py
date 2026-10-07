@@ -266,6 +266,10 @@ class CodexCodec(_Codec):
         super().__init__()
         self._early_frames: list[dict[str, Any]] = []
         self._early_size = 0
+        # The latest proposed changes per file-change item of the active turn. A file-change
+        # approval request names only its item; the patch arrives separately and is what an
+        # approval would actually authorize.
+        self._patches: dict[str, list[dict[str, Any]]] = {}
 
     @staticmethod
     def argv(binary: str) -> list[str]:
@@ -371,6 +375,7 @@ class CodexCodec(_Codec):
         self.operation_id = None
         self.native_turn_id = None
         self._approvals.clear()
+        self._patches.clear()
         return [
             _event(
                 "turn_completed",
@@ -494,6 +499,20 @@ class CodexCodec(_Codec):
             ]
         item_id = _identity(params.get("itemId"))
         _approval_bound(frame)
+        presented: dict[str, Any] = dict(params)
+        complete = True
+        if method == "item/fileChange/requestApproval":
+            # The proposed patch is shown so the operator sees what is being declined, but a
+            # file change is NEVER approvable here: nothing binds the patch Codex applies to the
+            # one presented (an accept cannot be unsent, and a later revision could differ).
+            # Approve waits for a version-bound guarantee of that binding (Hermes on #1278).
+            complete = False
+            changes = self._patches.get(item_id)
+            if changes is not None:
+                presented["changes"] = changes
+        if complete and len(_summary(presented)) >= MAX_TEXT:
+            presented, complete = dict(params), False  # cannot be shown whole
+        digest = _digest({"frame": frame, "presented": presented})
         key = self._remember(
             request_id,
             {
@@ -502,26 +521,63 @@ class CodexCodec(_Codec):
                 "native_turn_id": self.native_turn_id,
                 "params": params,
                 "frame": frame,
+                "digest": digest,
+                "complete": complete,
             },
         )
         return [
             _event(
                 "approval",
                 request_id=key,
-                payload_digest=_digest(frame),
+                payload_digest=digest,
                 native_turn_id=self.native_turn_id,
                 operation_id=self.operation_id,
                 item_id=item_id,
                 tool="command"
                 if method == "item/commandExecution/requestApproval"
                 else "file_change",
-                # The COMPLETE request (network context, proposed amendments, cwd …), not a
-                # command excerpt: what the operator sees is everything a decision approves.
-                # `_approval_bound` already refused any frame too large to present whole.
-                summary=_summary(params),
+                # The COMPLETE request (network context, proposed amendments, cwd, and for a
+                # file change its proposed patch), not an excerpt: what the operator sees is
+                # everything a decision approves, and the digest binds exactly that.
+                summary=_summary(presented),
+                complete=complete,
                 choices=["approve", "reject", "cancel"],
             )
         ]
+
+    def _patch(self, params: dict) -> list[NativeEvent]:
+        item_id = _identity(params.get("itemId"))
+        changes = params.get("changes")
+        if not isinstance(changes, list) or any(
+            not isinstance(c, dict)
+            or not isinstance(c.get("path"), str)
+            or not isinstance(c.get("diff"), str)
+            for c in changes
+        ):
+            raise ProtocolError("native file change patch is malformed")
+        if item_id not in self._patches and len(self._patches) >= MAX_PENDING:
+            raise ProtocolError("native file change capacity exceeded")
+        latest = _copy_frame({"changes": changes})["changes"]
+        unchanged = self._patches.get(item_id) == latest
+        self._patches[item_id] = latest
+        if unchanged:
+            return []  # a repeated, identical proposal leaves the presented request standing
+        # A patch that CHANGES after it was presented invalidates the pending approval: what
+        # was shown is no longer what would be applied. Decline it rather than leave it open.
+        stale = [
+            key
+            for key, approval in self._approvals.items()
+            if approval["params"].get("itemId") == item_id and "digest" in approval
+        ]
+        out = []
+        for key in stale:
+            approval = self._approvals.pop(key)
+            self._consumed.add(key)
+            out.append(
+                _event("send", frame={"id": approval["id"], "result": {"decision": "decline"}})
+            )
+            out.append(_event("approval_cancelled", request_id=key))
+        return out
 
     def feed(self, message: dict[str, Any]) -> list[NativeEvent]:
         if self._closed:
@@ -548,6 +604,7 @@ class CodexCodec(_Codec):
                 "item/agentMessage/delta",
                 "item/commandExecution/requestApproval",
                 "item/fileChange/requestApproval",
+                "item/fileChange/patchUpdated",
                 "error",
             }
         ):
@@ -573,6 +630,8 @@ class CodexCodec(_Codec):
             return self._turn(turn, completed=method == "turn/completed")
         if params.get("turnId") != self.native_turn_id or self.operation_id is None:
             return []
+        if method == "item/fileChange/patchUpdated":
+            return self._patch(params)
         common = {"native_turn_id": self.native_turn_id, "operation_id": self.operation_id}
         if method == "error":
             error = params.get("error")
@@ -625,7 +684,10 @@ class CodexCodec(_Codec):
                 "webSearch",
                 "collabAgentToolCall",
             }:
-                return [
+                prior = []
+                if kind == "fileChange" and isinstance(item.get("changes"), list):
+                    prior = self._patch({"itemId": item_id, "changes": item["changes"]})
+                return prior + [
                     _event(
                         "tool",
                         **common,
@@ -768,6 +830,10 @@ class ClaudeCodec(_Codec):
         tool_name = _identity(request.get("tool_name"))
         item_id = _identity(request.get("tool_use_id"))
         _approval_bound(frame)
+        # Everything the prompt carries (blocked_path, decision_reason, title, suggestions,
+        # input …): the operator sees what the decision answers, not only the tool input.
+        presented = {key: value for key, value in request.items() if key != "subtype"}
+        digest = _digest(frame)
         key = self._remember(
             request_id,
             {
@@ -778,18 +844,21 @@ class ClaudeCodec(_Codec):
                 "tool": tool_name,
                 "item_id": item_id,
                 "frame": frame,
+                "digest": digest,
+                "complete": True,
             },
         )
         return [
             _event(
                 "approval",
                 request_id=key,
-                payload_digest=_digest(frame),
+                payload_digest=digest,
                 native_turn_id=self.native_turn_id,
                 operation_id=self.operation_id,
                 item_id=item_id,
                 tool=tool_name,
-                summary=_summary(original_input),
+                summary=_summary(presented),
+                complete=True,
                 choices=["approve", "reject", "cancel"],
             )
         ]

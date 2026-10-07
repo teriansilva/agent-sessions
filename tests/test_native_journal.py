@@ -65,6 +65,7 @@ def request(binding, *, action="submit", operation_id=None, revision=1, **change
             decision="approve",
             approval_worker_id=binding.worker_id,
             approval_connection_id=binding.connection_id,
+            actor="operator",
         )
     elif action == "interrupt":
         params["turn_id"] = str(uuid.uuid4())
@@ -744,3 +745,24 @@ def test_a_same_length_interior_rewrite_is_never_served_from_the_fold_cache(conv
     assert len(path.read_bytes()) == len(raw)
     folded = journal.read(root, session_id)
     assert folded.operations[operation_id].request["params"]["text"] == changed
+
+
+def test_a_decision_written_before_actor_binding_still_folds(conversation):
+    """Hermes on #1278: requiring `actor` on stored records made pre-upgrade journals unreadable."""
+    root, session_id, binding = conversation
+    claim = request(binding, action="decide", decision="reject")
+    journal.claim(root, claim)
+    path = path_of(conversation)
+    lines = path.read_bytes().split(b"\n")
+    legacy = []
+    for line in lines:
+        if b'"native_operation"' in line:
+            record = json.loads(line)
+            record["request"]["params"].pop("actor")
+            line = json.dumps(record).encode()
+        legacy.append(line)
+    path.write_bytes(b"\n".join(legacy))
+    journal._CACHE.clear()
+    folded = journal.read(root, session_id)
+    op = folded.operations[claim["params"]["operation_id"]]
+    assert op.request["action"] == "decide" and "actor" not in op.request["params"]

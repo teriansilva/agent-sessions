@@ -95,6 +95,50 @@ def codex():
                     send({"method": "item/agentMessage/delta", "params": delta})
                     time.sleep(0.01)
                 continue
+            if text in {"EDIT", "EDIT_NOPATCH", "EDIT_CHANGING"}:
+                at = {"threadId": thread, "turnId": turn}
+                change = {"path": "README.md", "kind": {"type": "update"}, "diff": "-old\n+new\n"}
+                if text != "EDIT_NOPATCH":
+                    send(
+                        {
+                            "method": "item/fileChange/patchUpdated",
+                            "params": {**at, "itemId": "edit-1", "changes": [change]},
+                        }
+                    )
+                send(
+                    {
+                        "id": 88,
+                        "method": "item/fileChange/requestApproval",
+                        "params": {**at, "itemId": "edit-1", "reason": "update README"},
+                    }
+                )
+                if text == "EDIT_CHANGING":
+                    changed = {**change, "diff": "-old\n+something else\n"}
+                    send(
+                        {
+                            "method": "item/fileChange/patchUpdated",
+                            "params": {**at, "itemId": "edit-1", "changes": [changed]},
+                        }
+                    )
+                reply = next(stream)
+                answer = "edited:" + reply["result"]["decision"]
+                send(
+                    {
+                        "method": "item/completed",
+                        "params": {
+                            "threadId": thread,
+                            "turnId": turn,
+                            "item": {"id": "msg-1", "type": "agentMessage", "text": answer},
+                        },
+                    }
+                )
+                send(
+                    {
+                        "method": "turn/completed",
+                        "params": {"threadId": thread, "turn": {"id": turn, "status": "completed"}},
+                    }
+                )
+                continue
             if text == "BIG":
                 item = {
                     "id": "cmd-1",
@@ -233,6 +277,9 @@ def claude():
                             "tool_name": "Bash",
                             "tool_use_id": "toolu_1",
                             "input": {"command": "ls -la"},
+                            "blocked_path": "/etc/hosts",
+                            "decision_reason": "outside the working directory",
+                            "title": "Run ls -la",
                         },
                         "session_id": session,
                     }

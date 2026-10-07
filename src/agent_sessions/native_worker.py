@@ -449,7 +449,8 @@ class Worker:
             or params["approval_worker_id"] != self.worker_id
             or params["approval_connection_id"] != self.binding.connection_id
             or approval["operation_id"] != params["turn_id"]
-            or native_protocol._digest(approval["frame"]) != params["payload_digest"]
+            or approval.get("digest", native_protocol._digest(approval["frame"]))
+            != params["payload_digest"]
             or (approval.get("item_id") or approval["params"].get("itemId")) != params["item_id"]
         ):
             return None
@@ -469,11 +470,18 @@ class Worker:
                 return self.error(request, "conflict", "stop targets another worker generation")
             # Validate what can be validated BEFORE a durable claim; a refused request that
             # never claimed can be retried with the same operation id.
-            if action == "decide" and params["decision"] == "approve":
-                # Defence in depth for the web gate: no approval without the review interface.
-                return self.error(request, "unsupported", "native approvals can only be declined")
-            if action == "decide" and self._pending(params) is None:
-                return self.error(request, "stale", "that approval is no longer pending")
+            if action == "decide":
+                pending = self._pending(params)
+                if pending is None:
+                    return self.error(request, "stale", "that approval is no longer pending")
+                if params["decision"] == "approve" and pending.get("complete") is not True:
+                    # Defence in depth for the web gate: only a request presented in full
+                    # (its patch / permission context included) can be approved.
+                    return self.error(
+                        request,
+                        "unsupported",
+                        "this request could not be presented completely; it can only be declined",
+                    )
             if action == "interrupt" and self.codec.operation_id != params["turn_id"]:
                 return self.error(request, "stale", "that turn is not active")
             try:

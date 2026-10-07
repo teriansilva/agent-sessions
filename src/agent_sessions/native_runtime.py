@@ -954,10 +954,14 @@ def project(journal: native_journal.Journal, record: dict, live_worker: str | No
                 # before offering approval (the digest binds the decision to these bytes).
                 "payload": _payload(approval["summary"]),
                 "payload_digest": approval["payload_digest"],
-                # Approve stays withheld until the full-review UI (#1273) can present everything
-                # a native request may authorize (patches, permission context). Declining needs
-                # no review, so reject/cancel remain available.
-                "choices": [c for c in approval["choices"] if c != "approve"],
+                # Approve is offered only for a request presented COMPLETELY (a file change's
+                # patch, a permission prompt's whole context); declining needs no review.
+                "choices": [
+                    c
+                    for c in approval["choices"]
+                    if c != "approve" or approval.get("complete") is True
+                ],
+                "complete": approval.get("complete") is True,
                 "operator_only": True,
                 "context": dict(turn["context"]),
             }
@@ -1130,22 +1134,22 @@ async def decide(
         )
     if decision not in {"approve", "reject", "cancel"}:
         raise NativeError(422, "decision must be approve, reject or cancel")
-    if decision == "approve":
-        raise NativeError(
-            409,
-            "native approvals can only be declined until the review interface (#1273) can "
-            "present the complete request",
-        )
+    if not isinstance(user, str) or not user or len(user) > 128:
+        raise NativeError(422, "a decision needs its authenticated operator")
     prov, _ = await asyncio.to_thread(_session, engine_id, session_id)
     first = await asyncio.to_thread(_journal, prov, session_id)
     previous = first.operations.get(decision_id)
     if previous is not None:
         params = previous.request["params"]
+        # A record from before actor binding has none; replaying it only observes its outcome
+        # (no new effect), so any operator may read it back. Bound records require the same one.
+        recorded_actor = params.get("actor", user)
         if previous.request["action"] != "decide" or (
             params["request_id"],
             params["decision"],
             params["turn_id"],
-        ) != (request_id, decision, turn_id):
+            recorded_actor,
+        ) != (request_id, decision, turn_id, user):
             raise NativeError(409, "decision id already used for a different decision")
         return {
             "turn_id": turn_id,
@@ -1167,7 +1171,12 @@ async def decide(
     if approval is None:
         raise NativeError(409, "that approval is no longer pending")
     if decision not in approval["choices"]:
-        raise NativeError(409, "that decision is not offered for this request")
+        raise NativeError(
+            409,
+            "this request could not be presented completely; it can only be declined"
+            if decision == "approve"
+            else "that decision is not offered for this request",
+        )
     event = next(
         e["event"]["data"]
         for e in reversed(first.events)
@@ -1184,6 +1193,7 @@ async def decide(
         "decision": decision,
         "approval_worker_id": event["worker_id"],
         "approval_connection_id": event["connection_id"],
+        "actor": user,  # who decided is part of the decision's durable identity
     }
     immutable = native_ipc.normalize_immutable_request({"action": "decide", "params": params})
 

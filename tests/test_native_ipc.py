@@ -37,6 +37,7 @@ def params(action):
             "decision": "approve",
             "approval_worker_id": uid(),
             "approval_connection_id": uid(),
+            "actor": "operator",
         },
         "interrupt": {**effect, "turn_id": uid()},
         "stop": {**effect, "target_worker_id": uid()},

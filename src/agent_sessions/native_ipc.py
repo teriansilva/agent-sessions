@@ -270,6 +270,7 @@ def _params(action, value, *, immutable=False):
             "decision",
             "approval_worker_id",
             "approval_connection_id",
+            "actor",
         },
         "interrupt": {"operation_id", "expected_revision", "turn_id"},
         "stop": {"operation_id", "expected_revision", "target_worker_id"},
@@ -277,8 +278,12 @@ def _params(action, value, *, immutable=False):
         "events": {"after", "limit"},
         "snapshot": set(),
     }
-    required = keys[action] - {"operation_id", "expected_revision"} if immutable else keys[action]
-    _object(value, required)
+    # Stored records written before #1278's actor binding have no `actor`; they must stay
+    # readable (an unreadable journal strands the session). New requests always require it.
+    required = (
+        keys[action] - {"operation_id", "expected_revision", "actor"} if immutable else keys[action]
+    )
+    _object(value, required, keys[action] & {"actor"} if immutable else ())
     out = {}
     for key, item in value.items():
         if key.endswith("worker_id") or key in {
@@ -305,6 +310,11 @@ def _params(action, value, *, immutable=False):
             out[key] = _digest(item)
         elif key == "decision":
             out[key] = _choice(item, {"approve", "reject", "cancel"})
+        elif key == "actor":
+            # The authenticated operator, bound into the decision's durable identity (#1278).
+            out[key] = _text(item, 128)
+            if not out[key]:
+                raise IPCError("a decision needs its operator")
         else:
             out[key] = _native(item, 258 if key == "request_id" else 256)
     return out
@@ -400,7 +410,8 @@ _EVENT_FIELDS = {
             "worker_id",
             "connection_id",
         },
-        set(),
+        # Whether `summary` presents EVERYTHING the request authorizes; approve needs it.
+        {"complete"},
     ),
     "approval_cancelled": ({"request_id"}, set()),
     "model": (_COMMON | {"model_effective"}, set()),
@@ -442,6 +453,7 @@ def _event(value):
             "background_active",
             "active",
             "native_will_retry",
+            "complete",
         }:
             out[key] = _boolean(item)
         elif key == "payload_digest":
