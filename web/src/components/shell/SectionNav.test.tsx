@@ -135,7 +135,7 @@ describe("SectionNav", () => {
     const menu = await screen.findByRole("menu", { name: "Library menu" });
     const items = within(menu).getAllByRole("menuitem");
     expect(items.map((i) => [i.textContent, i.getAttribute("href")])).toEqual([
-      ["Templates", "/templates"],
+      ["Prompt Templates", "/templates"],
       ["Automations", "/mission/automations"],
       ["Checklists", "/mission/checklists"],
       ["Playbooks", "/library/playbooks"],

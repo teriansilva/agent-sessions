@@ -222,7 +222,7 @@ export default function Templates() {
     <div className={styles.page}>
       <header className={styles.head}>
         <div className={styles.headLeft}>
-          <h1 className={styles.h1}>Templates</h1>
+          <h1 className={styles.h1}>Prompt Templates</h1>
           <span className={styles.sl} aria-hidden="true">
             //
           </span>
@@ -286,7 +286,7 @@ export default function Templates() {
         </div>
       </header>
 
-      <div className={styles.tabs} role="tablist" aria-label="Templates sections">
+      <div className={styles.tabs} role="tablist" aria-label="Prompt Templates sections">
         <button
           type="button"
           role="tab"

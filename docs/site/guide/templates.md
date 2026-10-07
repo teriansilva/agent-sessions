@@ -1,4 +1,4 @@
-# Templates
+# Prompt Templates
 
 A template is an instruction you send more than once: named text, the reference images that belong
 with it, and `{{field}}` slots you fill in when you use it.
@@ -9,7 +9,7 @@ the [prompt catalog](/reference/), and nothing in BattleLab acts on a template's
 
 ## The library
 
-**Library** in the top bar (or **Library → Templates**) opens `/templates`: a gallery of every template you have
+**Library** in the top bar (or **Library → Prompt Templates**) opens `/templates`: a gallery of every template you have
 saved.
 
 - **Sorted by last use** — the template you most recently *sent* comes first, then the most

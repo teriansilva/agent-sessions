@@ -36,7 +36,7 @@ actually allows:
 Entering Missions opens on the new-mission page: the brief is the centre of the screen, and
 anything that needs you is listed below it. A
 **Template** control inserts a template from your library into the brief; nothing is sent until you
-start the mission. See [Templates](/guide/templates).
+start the mission. See [Prompt Templates](/guide/templates).
 
 The new-mission page is where Missions lands whenever no mission is selected, not a pop-up
 dialog, so it is there in every state the page can be in — including a completely fresh install

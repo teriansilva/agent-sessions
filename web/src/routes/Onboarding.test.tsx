@@ -355,7 +355,7 @@ test("tour mode shows the slideshow and Done closes it", async () => {
   await next();
   expect(screen.getByRole("heading", { name: "Files, git & editing" })).toBeInTheDocument();
   await next();
-  expect(screen.getByRole("heading", { name: "Templates" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Prompt Templates" })).toBeInTheDocument();
   for (let k = 0; k < 4; k++) await next();
   expect(screen.getByText(/home free — from anywhere/i)).toBeInTheDocument();
   await next();

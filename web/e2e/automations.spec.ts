@@ -339,7 +339,7 @@ test("Library names Automations beside Templates, Checklists and Playbooks (#129
   if ((await page.locator(".app.navOpen").count()) > 0) await page.keyboard.press("Escape");
   await page.locator('.hud-topbar [data-testid="section-menu-library"]').click();
   const menu = page.locator('[data-testid="section-menu-library-panel"]');
-  await expect(menu.locator("a[data-subsection]")).toHaveText(["Templates", "Automations", "Checklists", "Playbooks"]);
+  await expect(menu.locator("a[data-subsection]")).toHaveText(["Prompt Templates", "Automations", "Checklists", "Playbooks"]);
   await expect(menu.locator('a[data-subsection="automations"]')).toHaveAttribute("aria-current", "page");
 });
 

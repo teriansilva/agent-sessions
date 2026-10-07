@@ -26,7 +26,7 @@ whole fleet from a laptop or your phone.
   (capped at `GIT_MAX_ENTRIES`, and flagged as truncated past it), and a unified diff one click
   away. It can also fetch, fast-forward pull, switch branches, stage, discard, commit and push —
   each one refusing rather than forcing when the tree has moved under you.
-- **Templates.** A library of instructions you send more than once: the text, its reference images,
+- **Prompt Templates.** A library of instructions you send more than once: the text, its reference images,
   and `{{field}}` slots you fill in at send time. Send one from any session's composer, or insert
   it into a mission brief.
 - **Mission control.** A chat-first console over your work: a rail of *missions*, a thread per

@@ -101,7 +101,7 @@ export const SECTIONS: Section[] = [
     Icon: Library,
     to: TEMPLATES_PATH,
     children: [
-      { id: "templates", label: "Templates", Icon: BookMarked, to: TEMPLATES_PATH },
+      { id: "templates", label: "Prompt Templates", Icon: BookMarked, to: TEMPLATES_PATH },
       { id: "automations", label: "Automations", Icon: CalendarClock, to: AUTOMATIONS_PATH },
       { id: "checklists", label: "Checklists", Icon: ListChecks, to: CHECKLISTS_PATH },
       { id: "playbooks", label: "Playbooks", Icon: Workflow, to: PLAYBOOKS_PATH },

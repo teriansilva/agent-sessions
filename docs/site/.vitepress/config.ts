@@ -145,7 +145,7 @@ export default defineConfig({
           { text: "Projects", link: "/guide/projects" },
           { text: "Files & git", link: "/guide/files-and-git" },
           { text: "Mission control", link: "/guide/missions" },
-          { text: "Templates", link: "/guide/templates" },
+          { text: "Prompt Templates", link: "/guide/templates" },
           { text: "AI review", link: "/guide/ai-review" },
           { text: "Handoff", link: "/guide/handoff" },
           { text: "Dictation", link: "/guide/dictation" },

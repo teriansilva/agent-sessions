@@ -62,7 +62,7 @@ const SLIDES: { img: string; title: string; body: string }[] = [
   },
   {
     img: publicAsset("whatsnew/0.20/templates.svg"),
-    title: "Templates",
+    title: "Prompt Templates",
     body: "Keep reusable instructions with fill-in fields, tags and images. Pick one from any composer — or save a good prompt as a template — and send it to any session.",
   },
   {

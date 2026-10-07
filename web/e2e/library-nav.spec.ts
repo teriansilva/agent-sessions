@@ -47,7 +47,7 @@ test("Library names Templates, Automations, Checklists and Playbooks; Missions h
   ).toHaveCount(0);
   const menu = await libraryMenu(page);
   await expect(menu.locator("a[data-subsection]")).toHaveText([
-    "Templates",
+    "Prompt Templates",
     "Automations",
     "Checklists",
     "Playbooks",

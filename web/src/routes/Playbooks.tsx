@@ -21,7 +21,7 @@ export default function Playbooks() {
         <p className={styles.sub}>
           Until then, the parts exist on their own:{" "}
           <Link to={CHECKLISTS_PATH}>Checklists</Link> say what “done” means for a
-          mission, and <Link to={TEMPLATES_PATH}>Templates</Link> hold the
+          mission, and <Link to={TEMPLATES_PATH}>Prompt Templates</Link> hold the
           instructions sessions start from.
         </p>
       </div>
