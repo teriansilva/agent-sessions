@@ -6,6 +6,7 @@ import { FilePanel } from "../components/files/FilePanel";
 import { pathToken } from "../lib/pathToken";
 import panel from "../components/files/filePanel.module.css";
 import { useIsMobile } from "../lib/useIsMobile";
+import { runsInTerminal, useEngineRoster } from "../app/engineRoster";
 import { isNewSessionPlaceholder } from "../app/sessionsStore";
 import { useSessionRow } from "../app/useSessionRow";
 import { MAP_PATH, useMapWindows } from "../app/workspaceWindows";
@@ -37,6 +38,7 @@ import { RuntimeGate } from "../components/terminal/RuntimeGate";
  *  400px pane). */
 export function SessionView() {
   const { engine, id } = useParams<{ engine: string; id: string }>();
+  useEngineRoster();
   const location = useLocation();
   const navigate = useNavigate();
   const fresh = (location.state as { fresh?: FreshSession } | null)?.fresh;
@@ -249,10 +251,29 @@ export function SessionView() {
   }, []);
 
   if (!shown.engine || !shown.id) return null;
+  // Only the full-screen route passes To map: a session already IN a window must not offer to
+  // window itself (#936), and a phone can never host one.
+  const toMap =
+    workspace && !isMobile && workspace.hostable !== false && !isNewSessionPlaceholder(liveKey)
+      ? onToMap
+      : undefined;
+  // Always present, even before the cwd resolves: #783 pins a VISIBLE DISABLED trigger during
+  // reconciliation. Dropping the action made it vanish and reappear, which reads as a glitch
+  // rather than as "not ready yet".
+  const filesDisabledReason = cwd ? undefined : "This session has not reported a folder yet";
+  const onToggleFiles = (trigger?: HTMLElement | null) => {
+    setFilesTrigger(trigger ?? null);
+    setFilesOpen(!filesOpen);
+  };
   return (
     <div className={panel.sessionRow} ref={rowRef}>
       <div className={panel.sessionTerm}>
-        <RuntimeGate engine={shown.engine} id={shown.id}>
+        {/* The same host facts reach a non-terminal pane through the gate (#1332). */}
+        <RuntimeGate
+          engine={shown.engine}
+          id={shown.id}
+          host={{ rowKey: liveKey, onToMap: toMap, filesOpen, filesDisabledReason, onToggleFiles }}
+        >
           <Terminal
             ref={termRef}
             key={sessionKey}
@@ -268,25 +289,10 @@ export function SessionView() {
             onOpenGallery={onOpenGallery}
             // Only the full-screen route passes this: a session already IN a window must not
             // offer to window itself (#936).
-            onToMap={
-              workspace &&
-              !isMobile &&
-              workspace.hostable !== false &&
-              !isNewSessionPlaceholder(liveKey)
-                ? onToMap
-                : undefined
-            }
+            onToMap={toMap}
             filesOpen={filesOpen}
-            // Always present, even before the cwd resolves: #783 pins a VISIBLE DISABLED trigger
-            // during reconciliation. Dropping the action made it vanish and reappear, which reads
-            // as a glitch rather than as "not ready yet".
-            filesDisabledReason={
-              cwd ? undefined : "This session has not reported a folder yet"
-            }
-            onToggleFiles={(trigger?: HTMLElement | null) => {
-              setFilesTrigger(trigger ?? null);
-              setFilesOpen(!filesOpen);
-            }}
+            filesDisabledReason={filesDisabledReason}
+            onToggleFiles={onToggleFiles}
           />
         </RuntimeGate>
       </div>
@@ -301,12 +307,18 @@ export function SessionView() {
           paneWidth={paneWidth}
           returnFocusTo={filesTrigger}
           onClose={() => setFilesOpen(false)}
-          onSendPath={(path) => {
-            // The panel knows the path; Compose knows the draft; neither knows the other. The
-            // token is built here because this is the only place that holds BOTH the session cwd
-            // (to relativise against) and the handle that reaches Compose.
-            termRef.current?.insertToken(pathToken(path, cwd));
-          }}
+          // Only a terminal pane has the Compose draft a path goes into; an API pane's composer
+          // takes paths in #1332 Phase 3, so until then it offers no send.
+          onSendPath={
+            runsInTerminal(shown.engine) === false
+              ? undefined
+              : (path) => {
+                  // The panel knows the path; Compose knows the draft; neither knows the other.
+                  // The token is built here because this is the only place that holds BOTH the
+                  // session cwd (to relativise against) and the handle that reaches Compose.
+                  termRef.current?.insertToken(pathToken(path, cwd));
+                }
+          }
         />
       )}
     </div>

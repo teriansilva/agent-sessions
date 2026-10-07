@@ -371,3 +371,195 @@ test("New session: an API client offers the models its CLI reports and creates o
   await expect(page).toHaveURL(new RegExp(`/s/codex-api/${ID}$`));
   expect(created).toMatchObject({ engine: "codex-api", model: "gpt-6.1-sol" });
 });
+
+// ---- the pane head and Files (#1332 Phase 2) ---------------------------------------------------
+
+const ROW = {
+  id: `codex-api:${ID}`,
+  engine: "codex-api",
+  uuid: ID,
+  short_uuid: ID.slice(0, 8),
+  cwd: "/home/u/proj",
+  project: { kind: "project", id: "p1", name: "proj", color: "#ffb000" },
+  last_mtime: Math.floor(Date.now() / 1000) - 60,
+  first_user_message: "Fix the flaky login spec",
+  title: "Fix the flaky login spec",
+  sticky: false,
+  archived: false,
+  ai_summary: "",
+};
+
+async function serveRowAndFiles(page: Page) {
+  await page.route("**/api/sessions?**", (r) =>
+    r.fulfill({ json: { sessions: [ROW], next_offset: null, total: 1, facets: { projects: [], engines: [] } } }),
+  );
+  await page.route(new RegExp(`/api/sessions/codex-api(?::|%3A)${ID}$`), (r) => r.fulfill({ json: ROW }));
+  await page.route("**/api/files/capabilities", (r) => r.fulfill({ json: { ok: true, reason: "" } }));
+  await page.route("**/api/files/list**", (r) =>
+    r.fulfill({
+      json: {
+        path: ROW.cwd,
+        parent: "/home/u",
+        root: "/home/u",
+        entries: [{ name: "app.py", path: `${ROW.cwd}/app.py`, kind: "file", size: 10, mtime: 0 }],
+        total: 1,
+        complete: true,
+        truncated: false,
+      },
+    }),
+  );
+}
+
+/** Run a head action wherever the head put it: an inline chip, the measured fold's "…" menu, or
+ *  (≤800px) the ONE Actions menu. Menu items keep the action's accessible name. */
+async function headAction(page: Page, aria: string) {
+  const pane = page.getByTestId("structured-pane");
+  const trigger = pane.getByTestId("head-actions-menu");
+  const chip = pane.locator("[data-head-action]").first();
+  await expect(trigger.or(chip).first()).toBeVisible();
+  // The fold re-measures after the first paint, so a chip seen inline can move into the "…"
+  // menu before the click lands: retry the whole lookup until one path runs the action.
+  let attempt = 0;
+  await expect(async () => {
+    if (attempt++ > 0) await page.keyboard.press("Escape");
+    if (await trigger.isVisible()) {
+      await trigger.click({ timeout: 2000 });
+    } else {
+      const inline = pane.locator("[data-head-action]").and(pane.getByRole("button", { name: aria }));
+      if (await inline.isVisible()) return inline.click({ timeout: 2000 });
+      await pane.getByRole("button", { name: "More session actions" }).click({ timeout: 2000 });
+    }
+    await page.getByRole("menuitem", { name: aria }).click({ timeout: 2000 });
+  }).toPass({ timeout: 20_000 });
+}
+
+test("the API pane carries the terminal's head actions, and Files opens the drawer at the session's folder (#1332)", async ({
+  page,
+}, testInfo) => {
+  await setup(page, "dark");
+  await serveRowAndFiles(page);
+  await serveSession(page, () => snapshot({ turns: [turn({ state: "completed", tools: [], reply: "done" })] }));
+  await page.goto(URL_PATH);
+  const pane = page.getByTestId("structured-pane");
+  await expect(pane.getByTestId("structured-turn")).toBeVisible();
+  if (testInfo.project.name === "mobile") {
+    // ≤800px: ONE Actions menu carries every action; a phone never hosts a window, so no To map.
+    await expect(pane.locator("[data-head-action]")).toHaveCount(0);
+    // The trigger never overlaps the identity run beside it (a squeezed box let it sit on the title).
+    const t = (await pane.getByTestId("head-actions-menu").boundingBox())!;
+    const title = (await pane.getByText("Codex", { exact: true }).first().boundingBox())!;
+    expect(t.x).toBeGreaterThanOrEqual(title.x + title.width);
+    // The worker chip shows its LED only on a phone, and nothing in it is clipped.
+    const worker = pane.getByTestId("structured-worker");
+    await expect(worker).toContainText("worker live"); // still its accessible text
+    expect(await worker.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(0);
+    await pane.getByTestId("head-actions-menu").click();
+    await expect(page.getByRole("menuitem")).toHaveText(["Files", "Recap", "Hand off", "Share link"]);
+    await page.keyboard.press("Escape");
+  } else {
+    const labels = await pane.locator("[data-head-action]").evaluateAll((els) =>
+      els.map((e) => e.getAttribute("aria-label")),
+    );
+    expect(labels.slice(0, 3)).toEqual([
+      "Browse session files",
+      "Open session brief",
+      "Hand off session to another engine",
+    ]);
+  }
+  await expect(page.getByRole("button", { name: /adopt this session/i })).toHaveCount(0);
+  await headAction(page, "Browse session files");
+  await expect(page.locator("[data-file-row]", { hasText: "app.py" })).toBeVisible();
+  // No Compose draft to add a path to until #1332 Phase 3 — the action is not offered.
+  await expect(page.locator("[data-send-path]")).toHaveCount(0);
+  await noOverflow(page);
+});
+
+test("Share link copies the API session's URL (#1332)", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.addInitScript(() => {
+    Object.defineProperty(Navigator.prototype, "share", { value: undefined, configurable: true });
+  });
+  await setup(page, "light");
+  await serveRowAndFiles(page);
+  await serveSession(page, () => snapshot());
+  await page.goto(URL_PATH);
+  await expect(page.getByTestId("structured-empty")).toBeVisible();
+  await headAction(page, "Share a link to this session");
+  await expect(page.locator("[data-link-toast]")).toHaveText("Link copied");
+  const copied = await page.evaluate(() => navigator.clipboard.readText());
+  expect(copied).toBe(new URL(URL_PATH, page.url()).toString());
+});
+
+test("in a map window the API pane has no bar of its own: chips in the chrome, ONE ⋯, Files in the window (#1332, #1109)", async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "windows are desktop-only (#208)");
+  await setup(page, "dark");
+  await serveRowAndFiles(page);
+  await page.route("**/api/config", (r) =>
+    r.fulfill({
+      json: {
+        csrf: "x",
+        new_session_engines: ["codex-api"],
+        unavailable_clients: [],
+        terminal_backend: "ws",
+        auth_mode: "none",
+        default_project: "/home/u/proj",
+        overview_expanded: ["project:p1"],
+        projects_hidden: [],
+        project_names: {},
+        theme: "dark",
+      },
+    }),
+  );
+  await page.route(/\/api\/projects(\?.*)?$/, (r) =>
+    r.fulfill({ json: { projects: [{ id: "p1", name: "proj", color: "#ffb000", archived: false }] } }),
+  );
+  await serveSession(page, () => snapshot({ turns: [turn({ state: "completed", tools: [], reply: "done" })] }));
+  await page.goto("/overview");
+  await page.locator(".tr-ov-chip").first().click();
+  const win = page.locator(`[data-session-window="codex-api:${ID}"]`);
+  await expect(win.getByTestId("structured-turn")).toBeVisible();
+  // The chrome bar is the window's ONLY bar: the pane's own head (worker chip, Stop) is gone.
+  await expect(win.getByTestId("structured-worker")).toHaveCount(0);
+  await expect(win.locator("[data-window-head]")).toHaveCount(1);
+  // ONE menu: the chrome's ⋯, never a second "…" of the pane's own.
+  await expect(win.locator("[data-window-menu]")).toHaveCount(1);
+  await expect(win.getByRole("button", { name: "More session actions" })).toHaveCount(0);
+  const slot = win.locator("[data-window-actions-slot]");
+  // ONE action, ONE name (#1329): Recap and Hand off appear once across the chips and the ⋯ —
+  // with chips inline at the opening width, and again with everything folded at the floor.
+  const named = async () => {
+    const chips = await slot
+      .locator("[data-head-action]")
+      .evaluateAll((els) => els.map((e) => `${e.getAttribute("aria-label")} ${e.textContent}`));
+    await win.locator("[data-window-menu]").click();
+    const menu = page.locator("[role='menu'][aria-label='Session actions']").last();
+    await expect(menu).toBeVisible();
+    const items = await menu
+      .locator("[role='menuitem']")
+      .evaluateAll((els) => els.map((e) => `${e.getAttribute("aria-label")} ${e.textContent}`));
+    await page.keyboard.press("Escape");
+    await expect(menu).toBeHidden();
+    const all = [...chips, ...items];
+    expect(all.filter((n) => /brief|recap/i.test(n))).toHaveLength(1);
+    expect(all.filter((n) => /hand off/i.test(n))).toHaveLength(1);
+    return chips.length;
+  };
+  const inline = await named();
+  await win.locator("[data-window-resize]").focus();
+  for (let i = 0; i < 20; i++) await page.keyboard.press("Shift+ArrowLeft");
+  await expect.poll(async () => slot.locator("[data-head-action]").count()).toBeLessThan(inline);
+  await named();
+
+  const chip = slot.locator("[data-head-action='files']");
+  if (await chip.isVisible()) await chip.click();
+  else {
+    await win.locator("[data-window-menu]").click();
+    await page.getByRole("menuitem", { name: "Browse session files" }).click();
+  }
+  await expect(win.locator("[data-window-files-drawer]")).toBeVisible();
+  await expect(win.locator("[data-file-row]", { hasText: "app.py" })).toBeVisible();
+  // An API pane has no Compose draft yet (#1332 Phase 3), so Files offers no "add to message".
+  await expect(win.locator("[data-send-path]")).toHaveCount(0);
+});

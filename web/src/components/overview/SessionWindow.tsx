@@ -28,7 +28,7 @@ import {
 } from "../sidebar/RowMenu";
 import styles from "./sessionWindow.module.css";
 import { clampRect, type Rect, type Size } from "./workspace";
-import { useEngineRoster } from "../../app/engineRoster";
+import { runsInTerminal, useEngineRoster } from "../../app/engineRoster";
 import { RuntimeGate } from "../terminal/RuntimeGate";
 
 /** One floating session window on the Overview map (#208).
@@ -499,7 +499,28 @@ export const SessionWindow = memo(function SessionWindow({
             instead of the pane — and with the pane gone, its portaled chips (and therefore
             the Files toggle) never render either, so the drawer below stays unreachable for
             a retired engine, exactly as before. */}
-        <RuntimeGate engine={engine} id={id}>
+        <RuntimeGate
+          engine={engine}
+          id={id}
+          // A structured API pane (#1332) takes the same chrome contract as the terminal below:
+          // no bar of its own, chips portalled into the slot, the fold into the ONE ⋯.
+          host={{
+            rowKey: actionKey,
+            suppressHead: true,
+            headActionsSlot: actionsSlot,
+            headOverflowRef: paneOverflowRef,
+            headAllRef: paneAllRef,
+            headReservePx: factsW + CHROME_RESERVE,
+            headBarRef: headRef,
+            onTermStatus,
+            filesOpen,
+            onToggleFiles: (trigger?: HTMLElement | null) => {
+              setFilesTrigger(trigger ?? null);
+              setFilesOpen((open) => !open);
+            },
+            filesDisabledReason: cwd ? undefined : "This session has not reported a folder yet",
+          }}
+        >
         <Terminal
           engine={engine}
           id={id}
@@ -561,11 +582,17 @@ export const SessionWindow = memo(function SessionWindow({
               contained={filesMode === "sheet"}
               returnFocusTo={filesTrigger}
               onClose={() => setFilesOpen(false)}
-              onSendPath={(path) => {
-                // The panel knows the path; Compose knows the draft; neither knows the other.
-                // Same handoff the full-screen pane makes (#792), through this pane's handle.
-                termRef.current?.insertToken(pathToken(path, cwd));
-              }}
+              // Only a terminal pane has the Compose draft a path goes into; an API pane's
+              // composer takes paths in #1332 Phase 3, so until then it offers no send.
+              onSendPath={
+                runsInTerminal(engine) === false
+                  ? undefined
+                  : (path) => {
+                      // The panel knows the path; Compose knows the draft; neither knows the
+                      // other. Same handoff the full-screen pane makes (#792), via this handle.
+                      termRef.current?.insertToken(pathToken(path, cwd));
+                    }
+              }
             />
           </div>
         )}

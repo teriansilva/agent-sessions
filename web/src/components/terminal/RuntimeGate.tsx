@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { engineLabel, engineInfo, runsInTerminal, useEngineRoster } from "../../app/engineRoster";
 import { ChatPane } from "../chat/ChatPane";
 import { StructuredPane } from "../structured/StructuredPane";
+import type { PaneHost } from "./paneHost";
 import styles from "./RuntimeGate.module.css";
 
 /** Chooses a session's surface by its engine's RUNTIME (#853 §7). A `pty` engine gets its terminal
@@ -13,14 +14,18 @@ import styles from "./RuntimeGate.module.css";
  *
  *  While the roster is still loading the terminal renders as it always has: the server's
  *  `require_pty` is the boundary, and holding every terminal for a roster fetch would slow every
- *  page load. `id` is the session's native id, needed by the chat pane. */
+ *  page load. `id` is the session's native id, needed by the chat pane. `host` is what the
+ *  session's host hands the terminal (Files, To map, the window chrome slot); the structured pane
+ *  takes the same set, so an API session gets the same head (#1332). */
 export function RuntimeGate({
   engine,
   id,
+  host,
   children,
 }: {
   engine: string;
   id?: string;
+  host?: PaneHost;
   children: ReactNode;
 }) {
   useEngineRoster();
@@ -33,7 +38,7 @@ export function RuntimeGate({
     return <ChatPane key={`${engine}:${id}`} engine={engine} id={id} />;
   // A native API client (#1311): a BattleLab-owned structured view of the CLI it drives.
   if (runtime === "api" && id)
-    return <StructuredPane key={`${engine}:${id}`} engine={engine} id={id} />;
+    return <StructuredPane key={`${engine}:${id}`} engine={engine} id={id} host={host} />;
   return (
     <div className={styles.panel} role="status">
       <p className={styles.tag}>SESSION VIEW // RUNTIME {runtime.toUpperCase()}</p>

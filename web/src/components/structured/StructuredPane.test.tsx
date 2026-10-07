@@ -323,3 +323,114 @@ test("a worker that exits without a journal record is noticed by the periodic re
   });
   await waitFor(() => expect(screen.getByTestId("structured-worker")).toHaveTextContent("no worker"));
 });
+
+// ---- the pane head (#1332) ---------------------------------------------------------------------
+
+function renderHosted(host: Parameters<typeof StructuredPane>[0]["host"]) {
+  return render(
+    <MemoryRouter>
+      <StructuredPane engine="codex-api" id={ID} host={host} />
+    </MemoryRouter>,
+  );
+}
+
+test("the head carries the terminal's actions that work for an API session — never Adopt to mission", async () => {
+  const onToggleFiles = vi.fn();
+  const onToMap = vi.fn();
+  renderHosted({ onToggleFiles, onToMap, filesOpen: false });
+  await screen.findByTestId("structured-worker");
+  const names = screen
+    .getAllByRole("button")
+    .map((b) => b.getAttribute("aria-label"))
+    .filter(Boolean);
+  expect(names).toEqual(
+    expect.arrayContaining([
+      "Browse session files",
+      "Open session brief",
+      "Hand off session to another engine",
+      "Open this session as a window on the map",
+      "Share a link to this session",
+    ]),
+  );
+  // Ordered as the terminal's head is.
+  const ids = Array.from(document.querySelectorAll("[data-head-action]")).map((b) =>
+    b.getAttribute("aria-label"),
+  );
+  expect(ids).toEqual([
+    "Browse session files",
+    "Open session brief",
+    "Hand off session to another engine",
+    "Open this session as a window on the map",
+    "Share a link to this session",
+  ]);
+  expect(screen.queryByRole("button", { name: /adopt this session/i })).toBeNull();
+  expect(screen.queryByRole("button", { name: /repaint/i })).toBeNull();
+  await userEvent.click(screen.getByRole("button", { name: "Browse session files" }));
+  expect(onToggleFiles).toHaveBeenCalledTimes(1);
+  await userEvent.click(screen.getByRole("button", { name: "Open this session as a window on the map" }));
+  expect(onToMap).toHaveBeenCalledTimes(1);
+});
+
+test("Files is a visible, disabled trigger until the session reports a folder; no host = no Files", async () => {
+  const { unmount } = renderHosted({
+    onToggleFiles: vi.fn(),
+    filesDisabledReason: "This session has not reported a folder yet",
+  });
+  expect(await screen.findByRole("button", { name: "Browse session files" })).toBeDisabled();
+  unmount();
+  renderPane();
+  await screen.findByTestId("structured-worker");
+  expect(screen.queryByRole("button", { name: "Browse session files" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Open session brief" })).toBeInTheDocument();
+});
+
+test("Recap opens the session brief for this session", async () => {
+  renderHosted({});
+  await userEvent.click(await screen.findByRole("button", { name: "Open session brief" }));
+  expect(await screen.findByRole("dialog")).toBeInTheDocument();
+});
+
+test("at ≤800px every action lives in ONE Actions menu", async () => {
+  const original = window.matchMedia;
+  window.matchMedia = ((q: string) =>
+    ({
+      matches: q.includes("max-width: 800px"),
+      media: q,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }) as unknown as MediaQueryList) as typeof window.matchMedia;
+  try {
+    renderHosted({ onToggleFiles: vi.fn() });
+    await screen.findByTestId("structured-worker");
+    expect(document.querySelectorAll("[data-head-action]")).toHaveLength(0);
+    await userEvent.click(screen.getByRole("button", { name: /actions/i }));
+    const items = screen.getAllByRole("menuitem").map((m) => m.textContent);
+    expect(items).toEqual(["Files", "Recap", "Hand off", "Share link"]);
+  } finally {
+    window.matchMedia = original;
+  }
+});
+
+test("in a map window the pane has no bar: its actions portal into the chrome slot, Stop with them", async () => {
+  const slot = document.createElement("span");
+  document.body.appendChild(slot);
+  const onTermStatus = vi.fn();
+  vi.mocked(api.structuredStop).mockResolvedValue({ containment: "gone" });
+  try {
+    renderHosted({
+      suppressHead: true,
+      headActionsSlot: slot,
+      headOverflowRef: { current: [] },
+      onTermStatus,
+      onToggleFiles: vi.fn(),
+    });
+    await waitFor(() => expect(onTermStatus).toHaveBeenLastCalledWith({ kind: "connected" }));
+    expect(screen.queryByTestId("structured-worker")).toBeNull(); // no second bar
+    const chips = within(slot);
+    expect(chips.getByRole("button", { name: "Browse session files" })).toBeInTheDocument();
+    await userEvent.click(chips.getByRole("button", { name: "Stop the worker" }));
+    expect(api.structuredStop).toHaveBeenCalledWith(KEY);
+  } finally {
+    slot.remove();
+  }
+});

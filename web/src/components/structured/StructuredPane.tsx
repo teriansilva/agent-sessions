@@ -1,7 +1,25 @@
+import { ArrowLeftRight, PanelRight, ScrollText, Share2, Square, SquareDashedBottom } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
-import { engineBadge, engineInfo, engineLabel, useEngineRoster } from "../../app/engineRoster";
+import { createPortal } from "react-dom";
+import {
+  engineBadge,
+  engineInfo,
+  engineLabel,
+  isAgent,
+  useEngineRoster,
+} from "../../app/engineRoster";
+import { isNewSessionPlaceholder } from "../../app/sessionsStore";
+import { useSessionRow } from "../../app/useSessionRow";
 import { ApiError, api } from "../../lib/api";
+import { shareLink } from "../../lib/shareLink";
+import type { TermStatus } from "../../lib/termSocket";
+import { useIsMobile } from "../../lib/useIsMobile";
+import { HandoffModal } from "../terminal/HandoffModal";
+import { HeadActions, type HeadAction } from "../terminal/HeadActions";
+import type { PaneHost } from "../terminal/paneHost";
+import { SessionRecapModal } from "../terminal/SessionRecapModal";
+import term from "../terminal/Terminal.module.css";
 import type {
   Containment,
   StructuredRequest,
@@ -272,13 +290,30 @@ function TurnView({
   );
 }
 
+const NO_HOST: PaneHost = {};
+const LINK_TOAST_MS = 1200;
+const LINK_FAILED_TOAST_MS = 2600;
+
 /** A native API client's session (#1311): BattleLab drives the installed CLI through its
  *  structured protocol and keeps a journal; this view only READS it and sends operator input.
  *  Reconnects resume from the event cursor — a closed tab never cancels a turn — and every send
  *  and decision carries an id that makes a retry a no-op on the server. */
-export function StructuredPane({ engine, id }: { engine: string; id: string }) {
+export function StructuredPane({
+  engine,
+  id,
+  host = NO_HOST,
+}: {
+  engine: string;
+  id: string;
+  /** What the session's host hands a pane: Files, To map, a window's chrome slot (#1332). */
+  host?: PaneHost;
+}) {
   useEngineRoster();
   const key = `${engine}:${id}`;
+  // Actions act on the id the URL settled on (#867), the same split the terminal keeps.
+  const actionKey = host.rowKey || key;
+  const row = useSessionRow(key, host.rowKey);
+  const isMobile = useIsMobile();
   // The agent is the console agent this client drives (`api.source`), named by its own label.
   const source = engineInfo(engine)?.api?.source;
   const agent = source ? engineLabel(source) : engineLabel(engine);
@@ -293,6 +328,16 @@ export function StructuredPane({ engine, id }: { engine: string; id: string }) {
   const [interrupting, setInterrupting] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [containment, setContainment] = useState<Containment | null>(null);
+  const [recap, setRecap] = useState<{ open: boolean; trigger: HTMLElement | null }>({
+    open: false,
+    trigger: null,
+  });
+  const [handoff, setHandoff] = useState<{ open: boolean; trigger: HTMLElement | null }>({
+    open: false,
+    trigger: null,
+  });
+  const [linkToast, setLinkToast] = useState<{ tick: number; ok: boolean }>({ tick: 0, ok: true });
+  const actionsBoxRef = useRef<HTMLSpanElement>(null);
   const op = useRef<{ id: string; text: string } | null>(null);
   const cursor = useRef(0);
   const logRef = useRef<HTMLDivElement>(null);
@@ -505,11 +550,151 @@ export function StructuredPane({ engine, id }: { engine: string; id: string }) {
           : { cls: styles.ledIdle, text: "no worker" };
   const model = snap?.model_effective ?? snap?.model_requested ?? null;
 
-  const header = (
+  // A map window's chrome LED reads this pane's connection state (#1109), as it reads the
+  // terminal's socket status: the journal read is this pane's connection.
+  const status: TermStatus = loadError
+    ? { kind: "rejected", reason: loadError }
+    : reconnecting
+      ? { kind: "reconnecting", attempt: 1 }
+      : snap
+        ? { kind: "connected" }
+        : { kind: "connecting" };
+  const onTermStatus = host.onTermStatus;
+  const statusKind = status.kind;
+  const statusReason = status.kind === "rejected" ? status.reason : "";
+  useEffect(() => {
+    if (!onTermStatus) return;
+    onTermStatus(
+      statusKind === "rejected"
+        ? { kind: "rejected", reason: statusReason }
+        : statusKind === "reconnecting"
+          ? { kind: "reconnecting", attempt: 1 }
+          : { kind: statusKind },
+    );
+  }, [onTermStatus, statusKind, statusReason]);
+
+  // The pane head (#1332): the terminal's actions, in the terminal's order, wherever they work
+  // for an API session. Recap and Hand off read the session's journal (#1311's transcript fold);
+  // Adopt to mission is NOT offered — a mission cannot drive a structured session yet (#1273
+  // Phase 3), so adopting one would underwrite work nothing can do. Repaint and text size are
+  // terminal controls.
+  const placeholder = isNewSessionPlaceholder(actionKey);
+  const actionNative = actionKey.slice(actionKey.indexOf(":") + 1);
+  const headActions: HeadAction[] = [
+    ...(host.onToggleFiles
+      ? [
+          {
+            id: "files",
+            label: "Files",
+            aria: "Browse session files",
+            title: host.filesDisabledReason ?? "Browse this session's files and folders",
+            icon: <PanelRight size={13} aria-hidden="true" />,
+            active: host.filesOpen,
+            disabled: Boolean(host.filesDisabledReason),
+            run: (trigger?: HTMLElement | null) => host.onToggleFiles?.(trigger),
+          },
+        ]
+      : []),
+    {
+      id: "recap",
+      label: "Recap",
+      aria: "Open session brief",
+      title: "Session brief: full title, summary, and a chronological recap of this session",
+      icon: <ScrollText size={13} aria-hidden="true" />,
+      run: (trigger?: HTMLElement | null) =>
+        setRecap({ open: true, trigger: trigger ?? (document.activeElement as HTMLElement | null) }),
+    },
+    ...(isAgent(engine) && !placeholder
+      ? [
+          {
+            id: "handoff",
+            label: "Hand off",
+            aria: "Hand off session to another engine",
+            title:
+              "Hand off: start a new session in another engine, seeded with this session's context",
+            icon: <ArrowLeftRight size={13} aria-hidden="true" />,
+            run: (trigger?: HTMLElement | null) =>
+              setHandoff({
+                open: true,
+                trigger: trigger ?? (document.activeElement as HTMLElement | null),
+              }),
+          },
+        ]
+      : []),
+    ...(host.onToMap
+      ? [
+          {
+            id: "to-map",
+            label: "To map",
+            aria: "Open this session as a window on the map",
+            title:
+              "To map: open this session as a floating window on the overview map, alongside the others",
+            icon: <SquareDashedBottom size={13} aria-hidden="true" />,
+            run: () => host.onToMap?.(),
+          },
+        ]
+      : []),
+    ...(!placeholder
+      ? [
+          {
+            id: "share-link",
+            label: "Share link",
+            aria: "Share a link to this session",
+            title: "Share link: send or copy a link that opens this session",
+            icon: <Share2 size={13} aria-hidden="true" />,
+            run: () => {
+              void shareLink({
+                title: row?.title || "BattleLab session",
+                path: `/s/${actionKey.slice(0, actionKey.indexOf(":"))}/${actionNative}`,
+              }).then((outcome) => {
+                if (outcome !== "copied" && outcome !== "failed") return;
+                const tick = Date.now();
+                setLinkToast({ tick, ok: outcome === "copied" });
+                window.setTimeout(
+                  () => setLinkToast((t) => (t.tick === tick ? { tick: 0, ok: true } : t)),
+                  outcome === "copied" ? LINK_TOAST_MS : LINK_FAILED_TOAST_MS,
+                );
+              });
+            },
+          },
+        ]
+      : []),
+    // In a window the pane has no bar of its own, so Stop rides with the actions into the
+    // chrome (and its ⋯): a running worker is never stranded behind a missing button.
+    ...(host.suppressHead && live
+      ? [
+          {
+            id: "stop",
+            label: "Stop",
+            aria: "Stop the worker",
+            title: "Stop: end this session's worker and report whether it is confirmed gone",
+            icon: <Square size={13} aria-hidden="true" />,
+            disabled: stopping,
+            run: () => void stop(),
+          },
+        ]
+      : []),
+  ];
+
+  const header = host.suppressHead ? null : (
     <div className={chat.head}>
       <span className={`${chat.badge} ${styles.badge}`}>{engineBadge(engine).toUpperCase()}</span>
       <span className={chat.title}>{agent}</span>
       <span className={styles.kindTag}>API</span>
+      <span
+        ref={actionsBoxRef}
+        className={isMobile ? `${styles.actionsBox} ${styles.actionsCollapsed}` : styles.actionsBox}
+      >
+        <HeadActions
+          className={term.headActions}
+          btnClassName={term.restartBtn}
+          labelClassName={term.headActionLabel}
+          actions={headActions}
+          collapsed={isMobile}
+          barRef={actionsBoxRef}
+          reservePx={0}
+        />
+      </span>
       <span className={chat.meta}>
         {model && (
           <span className={`${chat.chip} ${chat.model}`} data-testid="structured-model">
@@ -519,7 +704,7 @@ export function StructuredPane({ engine, id }: { engine: string; id: string }) {
         )}
         <span className={chat.chip} data-testid="structured-worker" role="status">
           <span className={`${styles.led} ${workerChip.cls}`} aria-hidden="true" />
-          {workerChip.text}
+          <span className={styles.workerText}>{workerChip.text}</span>
         </span>
         {/* Stop stays available while the client retires: a running worker is never stranded. */}
         {live && (
@@ -531,10 +716,71 @@ export function StructuredPane({ engine, id }: { engine: string; id: string }) {
     </div>
   );
 
+  const overlays = (
+    <>
+      {host.suppressHead &&
+        host.headActionsSlot &&
+        createPortal(
+          <HeadActions
+            className={term.headActions}
+            btnClassName={term.restartBtn}
+            labelClassName={term.headActionLabel}
+            actions={headActions}
+            collapsed={isMobile}
+            reservePx={host.headReservePx}
+            foldInto="external"
+            overflowRef={host.headOverflowRef}
+            allRef={host.headAllRef}
+            barRef={host.headBarRef}
+          />,
+          host.headActionsSlot,
+        )}
+      {recap.open && (
+        <SessionRecapModal
+          sessionId={actionKey}
+          engine={engine}
+          title={row?.title ?? agent}
+          project={row?.project}
+          lastMtime={row?.last_mtime}
+          statusRow={row}
+          summary={row?.ai_summary}
+          recap={row?.ai_recap}
+          interventionRequired={row?.intervention_required}
+          interventionReason={row?.intervention_reason}
+          reviewedAt={row?.reviewed_at}
+          reviewExcluded={row?.review_excluded}
+          onClose={() => setRecap({ open: false, trigger: null })}
+          returnFocusTo={recap.trigger}
+        />
+      )}
+      {handoff.open && (
+        <HandoffModal
+          sessionId={actionKey}
+          engine={engine}
+          title={row?.title ?? agent}
+          onClose={() => setHandoff({ open: false, trigger: null })}
+          returnFocusTo={handoff.trigger}
+        />
+      )}
+      {linkToast.tick !== 0 && (
+        <div
+          key={linkToast.tick}
+          className={linkToast.ok ? term.copiedToast : `${term.copiedToast} ${term.copyFailed}`}
+          role="status"
+          aria-live="polite"
+          data-link-toast=""
+        >
+          {linkToast.ok ? "Link copied" : "Copy needs a secure origin"}
+        </div>
+      )}
+    </>
+  );
+
   if (loadError) {
     return (
-      <div className={chat.pane} data-testid="structured-pane">
+      <div className={`${chat.pane} ${styles.pane}`} data-testid="structured-pane">
         {header}
+        {overlays}
         <div className={chat.center}>
           <p className={chat.note}>{loadError}</p>
         </div>
@@ -545,8 +791,9 @@ export function StructuredPane({ engine, id }: { engine: string; id: string }) {
   const turns = snap?.turns ?? [];
   const pending = snap?.pending_requests ?? [];
   return (
-    <div className={chat.pane} data-testid="structured-pane">
+    <div className={`${chat.pane} ${styles.pane}`} data-testid="structured-pane">
       {header}
+      {overlays}
       {readOnly && (
         <p className={styles.banner} role="status" data-testid="structured-read-only">
           Read only — {snap?.read_only}. The history stays; new messages and decisions are off until

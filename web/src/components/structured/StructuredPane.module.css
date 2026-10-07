@@ -32,6 +32,24 @@
   composes: led;
   background: var(--status-degraded);
 }
+/* The share-link toast (#1332) is placed against the pane. */
+.pane {
+  position: relative;
+}
+/* The pane-head actions (#1332): the remaining width of the bar, the chips flush right before the
+   worker facts. `flex: 1 1 0` makes its width the space left over, never its content — the
+   measured fold (HeadActions, #783) budgets against exactly that. */
+.actionsBox {
+  flex: 1 1 0;
+  min-width: 34px; /* the fold's "…" always fits */
+  display: flex;
+  justify-content: flex-end;
+}
+/* ≤800px the head is ONE labelled Actions trigger (#948 P6): it keeps its natural width and the
+   title ellipsises instead — a share of the leftover space would let it overlap the title. */
+.actionsCollapsed {
+  flex: none;
+}
 /* Header and inline controls keep the 44px touch target (design §8). */
 .inline {
   min-width: 0;
@@ -173,6 +191,20 @@
   padding: 0 12px 12px;
 }
 @media (max-width: 480px) {
+  /* A phone keeps the worker's LED and drops its words from view (still its accessible text):
+     the title and the Actions trigger need the width, and a clipped "worker liv" reads as a bug. */
+  .workerText {
+    /* the app's .sr-only (App.css) */
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
   .kindTag {
     display: none; /* the badge and the picker already say API; the state chip needs the room */
   }
