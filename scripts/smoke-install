@@ -93,7 +93,11 @@ echo "== installer smoke: ref=$REF sha=${SHA:0:12} image=$IMAGE source=$REPO_DIR
 # Single-quoted -c body: $SHA below is expanded by the CONTAINER shell (passed via -e SHA), never
 # by this host shell. The inner here-doc (<<EOS, unquoted) is written by container-root: $SHA
 # expands there; every \$… stays literal so it expands in tester's run.sh.
-docker run --rm -v "$REPO_DIR:/srepo:ro" "${CACHE_ARGS[@]}" -e SHA="$SHA" -e CURL_SHIM="$CURL_SHIM" \
+# /home on tmpfs (exec: the vendored python/node run from there): the install, npm ci and the
+# Vite build all land under /home/tester, and on the CI host the container's overlay layer sits on
+# a shared 5400rpm HDD mirror that is the measured CI bottleneck. The container is --rm anyway,
+# so nothing written there was ever kept; size is a ceiling, not a reservation.
+docker run --rm --tmpfs /home:exec,mode=0755,size=8g -v "$REPO_DIR:/srepo:ro" "${CACHE_ARGS[@]}" -e SHA="$SHA" -e CURL_SHIM="$CURL_SHIM" \
   "$IMAGE" bash -euo pipefail -c '
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq >/dev/null
