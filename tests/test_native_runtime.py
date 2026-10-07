@@ -626,6 +626,10 @@ async def test_an_idle_worker_exits_and_the_next_turn_resumes_the_same_history(
     await runtime.submit_turn(key, operation_id=first, text="one")
     snap, _ = await settle(key, first)
     native, worker = snap["native"]["native_id"], snap["native"]["worker"]
+    # Counted from HERE (#1337): on a loaded runner the creation's own worker can idle out
+    # (0.5 s) before the first turn reaches it, and that turn then resumes in a fresh one —
+    # correct behaviour, but it shifts every count taken from the start of the test.
+    launched = len(host.launches)
     for _ in range(200):
         if native_state.read_lifecycle(worker).get("phase") == "exited":
             break
@@ -633,11 +637,13 @@ async def test_an_idle_worker_exits_and_the_next_turn_resumes_the_same_history(
     assert native_state.read_lifecycle(worker)["phase"] == "exited"
     assert native_state.read_lifecycle(worker)["reason"] == ""
     assert (await runtime.snapshot(key))["native"]["worker"] is None
+    # …and the successor gets a long window, so it cannot idle out before its turn arrives either.
+    monkeypatch.setattr(native_runtime, "WORKER_IDLE_TIMEOUT", 60.0)
     nxt = ident()
     await runtime.submit_turn(key, operation_id=nxt, text="two")
     snap, turn = await settle(key, nxt)
     assert turn["reply"] == "echo:two" and snap["native"]["native_id"] == native
-    assert snap["native"]["worker"] != worker and len(host.launches) == 2
+    assert snap["native"]["worker"] != worker and len(host.launches) == launched + 1
 
 
 def test_lease_sweep_drops_only_gone_generations(host, tmp_path):
