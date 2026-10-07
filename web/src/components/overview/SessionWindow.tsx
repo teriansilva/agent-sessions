@@ -1,4 +1,4 @@
-import { Maximize2, MoreHorizontal, X } from "lucide-react";
+import { Maximize2, Minus, MoreHorizontal, X } from "lucide-react";
 import {
   memo,
   type CSSProperties,
@@ -61,11 +61,11 @@ import { RuntimeGate } from "../terminal/RuntimeGate";
  *  menu; off the map the session group is absent, so the pane menu carries everything. */
 const SESSION_COVERED_PANE_IDS = new Set(["recap", "handoff", "mission"]);
 
-/** What the chrome bar must hold besides the action chips: the grip, the three window buttons
- *  (⋯ ⤢ ✕), a minimum of title, and the bar's own gaps. The measured facts run is added on
+/** What the chrome bar must hold besides the action chips: the grip, the four window buttons
+ *  (⋯ – ⤢ ✕), a minimum of title, and the bar's own gaps. The measured facts run is added on
  *  top (`reservePx`), so the fold is decided against what the bar really has — folding a
  *  little early is the safe direction; folding late would clip the title. */
-const CHROME_RESERVE = 190;
+const CHROME_RESERVE = 214;
 
 export const SessionWindow = memo(function SessionWindow({
   wkey,
@@ -79,6 +79,7 @@ export const SessionWindow = memo(function SessionWindow({
   focused,
   role,
   onFocus,
+  onMinimize,
   onClose,
   onFullScreen,
   onRect,
@@ -112,6 +113,8 @@ export const SessionWindow = memo(function SessionWindow({
   /** Mirrors the pane's own #184/#293 verdict; the pane renders the banner + Take over itself. */
   role: TermRole;
   onFocus: (key: string) => void;
+  /** Park this window in the map's tray. Absent → no – button. */
+  onMinimize?: (key: string) => void;
   onClose: (key: string) => void;
   onFullScreen: (key: string) => void;
   onRect: (key: string, rect: Rect) => void;
@@ -402,6 +405,23 @@ export const SessionWindow = memo(function SessionWindow({
               data-window-menu
             >
               <MoreHorizontal size={13} aria-hidden="true" />
+            </button>
+          )}
+          {onMinimize && (
+            <button
+              type="button"
+              aria-label="Minimize window"
+              title="Minimize window"
+              onClick={(e) => {
+                // Keystrokes must not keep landing in a pane nobody can see.
+                const win = e.currentTarget.closest("section");
+                const active = document.activeElement;
+                if (win && active instanceof HTMLElement && win.contains(active)) active.blur();
+                onMinimize(wkey);
+              }}
+              data-window-minimize
+            >
+              <Minus size={13} aria-hidden="true" />
             </button>
           )}
           <button

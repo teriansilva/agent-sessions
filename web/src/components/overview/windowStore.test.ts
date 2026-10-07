@@ -177,6 +177,22 @@ describe("encodeWorkspace", () => {
   });
 });
 
+describe("a parked (minimized) window", () => {
+  it("round-trips parked, and an ordinary window stores no flag at all", () => {
+    saveWorkspace([win({ minimized: true }), win({ key: "claude:s2", actionKey: "claude:s2", id: "s2", z: 2 })]);
+    const [a, b] = loadWorkspace();
+    expect(a.minimized).toBe(true);
+    expect(b).not.toHaveProperty("minimized");
+  });
+
+  it("reads only a literal true — a hand-edited truthy value does not hide a window", () => {
+    const [w] = decodeWorkspace(
+      JSON.stringify([{ key: "claude:s1", engine: "claude", id: "s1", x: 0, y: 0, w: 720, h: 480, z: 1, minimized: "yes" }]),
+    );
+    expect(w).not.toHaveProperty("minimized");
+  });
+});
+
 describe("the stored cap", () => {
   beforeEach(() => localStorage.clear());
 

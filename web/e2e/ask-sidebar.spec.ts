@@ -158,14 +158,13 @@ test("a question answers, names the sessions it matched, and jumps into one", as
 
   const match = panel.getByTestId("ask-match");
   await expect(match).toContainText("uploads.py");
-  const jump = match.getByRole("link", { name: /jump into fix flaky upload retry/i });
+  const jump = match.getByRole("link", { name: /^open fix flaky upload retry$/i });
   await expect(jump).toHaveAttribute(
     "href",
     "/s/claude/11111111-2222-4333-8444-555555555555",
   );
-  // The answers are not kept — and the copy says what ends them.
-  await expect(panel.getByTestId("ask-transient")).toContainText(/not kept/i);
-  await expect(panel.getByTestId("ask-transient")).toContainText(/reload/i);
+  // The "answers are not kept" notice is gone (operator request).
+  await expect(panel.getByTestId("ask-transient")).toHaveCount(0);
 
   // Jumping in navigates the page BESIDE the panel. On a phone the drawer covered it, so it
   // closes; on a desktop it stays open beside the session.
@@ -194,7 +193,11 @@ test("a match is ONE row: the session and its reason left, the way in right", as
 
   const row = page.getByTestId("ask-match");
   const body = row.locator("> div").first();
-  const jump = row.getByRole("link");
+  // The way in is the actions group: Open, and Open in map where the map can host a window.
+  const jump = row.getByTestId("ask-match-opens");
+  await expect(row.getByRole("button", { name: /in map$/ })).toHaveCount(
+    page.viewportSize()!.width > 800 ? 1 : 0,
+  );
   const [rb, bb, jb] = await Promise.all([
     row.boundingBox(),
     body.boundingBox(),
@@ -208,7 +211,7 @@ test("a match is ONE row: the session and its reason left, the way in right", as
   // …and it sits at the row's right edge rather than floating mid-row.
   expect(rb.x + rb.width - (jb.x + jb.width)).toBeLessThan(2);
   // The coarse-pointer floor survives the reflow.
-  expect(jb.height).toBeGreaterThanOrEqual(44);
+  expect((await row.getByRole("link").boundingBox())!.height).toBeGreaterThanOrEqual(44);
 
   // A PHONE (the panel is ~92vw there) wraps it to its own line rather than crushing the title —
   // still right-aligned, and the page still does not scroll sideways.
@@ -414,7 +417,7 @@ test("Ask is a chat column: composer docked at the bottom, the thread grows up t
     page.getByRole("link", { name: "Open mission Stabilise upload retries" }),
   ).toHaveAttribute("href", `/mission?m=${mid}`);
   await expect(
-    page.getByRole("link", { name: "Jump into fix flaky upload retry" }),
+    page.getByRole("link", { name: "Open fix flaky upload retry" }),
   ).toBeVisible();
   // …and a SHORT thread sits against the composer, not at the top of the column.
   const threadBox = (await page.getByTestId("ask-turns").boundingBox())!;

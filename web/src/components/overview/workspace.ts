@@ -149,6 +149,39 @@ export function cascadeRect(
   );
 }
 
+/** How many windows Arrange can tile into this box with every one fully visible: the grid that
+ *  fits at `MIN_SIZE`. Never less than 1 — a box that can host a window can host one. */
+export function tileCapacity(bounds: Size): number {
+  const cols = Math.max(1, Math.floor(bounds.w / MIN_SIZE.w));
+  const rows = Math.max(1, Math.floor(bounds.h / MIN_SIZE.h));
+  return cols * rows;
+}
+
+/** Tile `count` windows into the box (the map's Arrange). `count` is at most `tileCapacity`;
+ *  anything past it is clamped off, and the caller parks those windows in the tray instead.
+ *
+ *  A grid as close to square as the box allows at `MIN_SIZE`. The floor is load-bearing (it is
+ *  what decides the agent's column count), so tiles never shrink below it — and they never
+ *  OVERLAP either: an earlier cut wrapped the overflow back onto the first cells with a cascade
+ *  step, but a full-box cell clamps that step back to zero, stacking live windows exactly under
+ *  each other with no chrome left to reach (Hermes on #1320). */
+export function tileRects(count: number, bounds: Size): Rect[] {
+  const n = Math.min(Math.max(count, 0), tileCapacity(bounds));
+  if (n === 0) return [];
+  const maxCols = Math.max(1, Math.floor(bounds.w / MIN_SIZE.w));
+  const maxRows = Math.max(1, Math.floor(bounds.h / MIN_SIZE.h));
+  // Squarest grid that holds n: widen until the rows fit.
+  let cols = Math.min(maxCols, Math.ceil(Math.sqrt(n)));
+  while (Math.ceil(n / cols) > maxRows && cols < maxCols) cols++;
+  const rows = Math.ceil(n / cols);
+  const w = Math.floor(Math.max(bounds.w, 0) / cols);
+  const h = Math.floor(Math.max(bounds.h, 0) / rows);
+  const out: Rect[] = [];
+  for (let i = 0; i < n; i++)
+    out.push(clampRect({ x: (i % cols) * w, y: Math.floor(i / cols) * h, w, h }, bounds));
+  return out;
+}
+
 /** Can this overlay box hold a window at its floor?
  *
  *  The workspace needs room, and "desktop" alone does not guarantee it: at an 801px viewport the

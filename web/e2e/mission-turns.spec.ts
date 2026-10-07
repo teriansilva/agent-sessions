@@ -387,9 +387,9 @@ test("ASK stays transient and says why (#948: was the UNTRACKED view's; #1058: n
   await page.getByTestId("composer-input").fill("anything?");
   await page.getByTestId("composer-send").click();
   await expect(page.getByTestId("ask-turns")).toContainText("nothing tracked");
-  await expect(page.getByTestId("ask-transient")).toContainText(
-    "no mission to keep them in",
-  );
+  // The on-screen "not kept" notice was removed at the operator's request; the turns are still
+  // transient (nothing is posted to a mission), which the empty mission-message route proves.
+  await expect(page.getByTestId("ask-transient")).toHaveCount(0);
 });
 
 // --- #1224: the turn STREAMS — Ask's working line and provisional answer, in the mission --------

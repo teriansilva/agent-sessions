@@ -48,6 +48,7 @@ export function WindowLayer({
   topInset,
   anchorCandidates,
   onFocus,
+  onMinimize,
   onClose,
   onFullScreen,
   onRect,
@@ -71,6 +72,8 @@ export function WindowLayer({
    *  cluster it collapses into. */
   anchorCandidates: (sessionKey: string) => string[];
   onFocus: (key: string) => void;
+  /** Park a window in the tray (hidden, still live). Absent → the chrome carries no –. */
+  onMinimize?: (key: string) => void;
   onClose: (key: string) => void;
   onFullScreen: (key: string) => void;
   onRect: (key: string, rect: Rect) => void;
@@ -103,6 +106,8 @@ export function WindowLayer({
   const tethers = useMemo(() => {
     const out: { key: string; d: string; from: Point; focused: boolean }[] = [];
     for (const w of windows) {
+      // A parked window has nothing on screen to point at.
+      if (w.minimized) continue;
       // First candidate that is actually on the map wins: the chip, else the cluster it
       // collapsed into. Neither present (the chip was filtered off the map, the session was
       // archived, the grouping changed) → no tether at all, and the window stays open and
@@ -169,8 +174,12 @@ export function WindowLayer({
       {windows.map((w) => (
         <div
           key={w.key}
-          className={`${styles.slot}${flashKey === w.key ? ` ${styles.flash}` : ""}`}
+          // A parked window stays MOUNTED (unmounting closes its socket) and keeps its layout box:
+          // `visibility: hidden` leaves the pane at its size, so restoring it needs no refit.
+          className={`${styles.slot}${flashKey === w.key ? ` ${styles.flash}` : ""}${w.minimized ? ` ${styles.parked}` : ""}`}
           style={{ zIndex: w.z }}
+          aria-hidden={w.minimized ? true : undefined}
+          data-window-minimized={w.minimized ? "true" : undefined}
         >
           <SessionWindow
             wkey={w.key}
@@ -186,6 +195,7 @@ export function WindowLayer({
             focused={focusedKey === w.key}
             role={w.role}
             onFocus={onFocus}
+            onMinimize={onMinimize}
             onClose={onClose}
             onFullScreen={onFullScreen}
             onRect={onRect}
@@ -200,6 +210,28 @@ export function WindowLayer({
           />
         </div>
       ))}
+      {/* The tray: one chip per parked window, in the order they were opened. A click raises it,
+          which un-parks it (the reducer's `raise`). */}
+      {windows.some((w) => w.minimized) && (
+        <div className={styles.tray} role="toolbar" aria-label="Minimized windows" data-window-tray>
+          {windows
+            .filter((w) => w.minimized)
+            .map((w) => (
+              <button
+                key={w.key}
+                type="button"
+                className={styles.trayChip}
+                onClick={() => onFocus(w.key)}
+                title={`Restore ${w.title}`}
+                aria-label={`Restore window: ${w.title}`}
+                data-window-tray-chip={w.actionKey}
+              >
+                <span className={styles.trayDot} aria-hidden="true" />
+                <span className={styles.trayTitle}>{w.title}</span>
+              </button>
+            ))}
+        </div>
+      )}
       {notice && (
         <div className={styles.notice} role="status" data-window-notice>
           {notice}

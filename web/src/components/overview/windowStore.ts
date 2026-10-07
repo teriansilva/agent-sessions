@@ -39,6 +39,8 @@ export interface StoredWindow {
   w: number;
   h: number;
   z: number;
+  /** Parked in the tray. Optional so a layout written before minimize existed still reads. */
+  minimized?: boolean;
 }
 
 /** Is this a key we may persist?
@@ -90,6 +92,7 @@ function decodeOne(raw: unknown): StoredWindow | null {
     w: Math.max(MIN_SIZE.w, Math.floor(w + 0.5)),
     h: Math.max(MIN_SIZE.h, Math.floor(h + 0.5)),
     z: z === null ? 1 : Math.max(0, Math.floor(z + 0.5)),
+    ...(r.minimized === true ? { minimized: true } : {}),
   };
 }
 
@@ -147,6 +150,7 @@ export function encodeWorkspace(windows: WorkspaceWindow[]): StoredWindow[] {
       w: w.rect.w,
       h: w.rect.h,
       z: w.z,
+      ...(w.minimized ? { minimized: true } : {}),
     });
   }
   return out;

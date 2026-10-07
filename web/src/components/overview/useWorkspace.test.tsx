@@ -371,3 +371,108 @@ describe("useWorkspace", () => {
     expect(result.current.cap).toBe(WINDOW_CAP_MIN);
   });
 });
+
+describe("minimize and arrange", () => {
+  it("minimize parks a window — still open, still under the cap, focus released", () => {
+    const { result } = setup();
+    act(() => {
+      result.current.open(session(1), null, BOUNDS);
+      result.current.open(session(2), null, BOUNDS);
+    });
+    act(() => result.current.minimize("claude:s2"));
+    expect(result.current.windows).toHaveLength(2);
+    expect(result.current.windows.find((w) => w.key === "claude:s2")?.minimized).toBe(true);
+    expect(result.current.focusedKey).toBeNull();
+  });
+
+  it("any raise brings a parked window back on top — the tray chip and a re-open alike", () => {
+    const { result } = setup();
+    act(() => {
+      result.current.open(session(1), null, BOUNDS);
+      result.current.open(session(2), null, BOUNDS);
+    });
+    act(() => result.current.minimize("claude:s1"));
+    act(() => result.current.focus("claude:s1"));
+    const w1 = result.current.windows.find((w) => w.key === "claude:s1")!;
+    expect(w1.minimized).toBe(false);
+    expect(result.current.focusedKey).toBe("claude:s1");
+    expect(w1.z).toBeGreaterThan(result.current.windows.find((w) => w.key === "claude:s2")!.z);
+
+    // A re-open of a parked session (sidebar, Ask "Open in map") restores it rather than refusing.
+    act(() => result.current.minimize("claude:s1"));
+    act(() => result.current.open(session(1), null, BOUNDS));
+    expect(result.current.windows).toHaveLength(2);
+    expect(result.current.windows.find((w) => w.key === "claude:s1")?.minimized).toBe(false);
+  });
+
+  it("arrange tiles the shown windows sorted by name, stacking in that order, parked ones untouched", () => {
+    const { result } = setup();
+    const named = (n: number, title: string): WindowSeed => ({ ...session(n), title });
+    act(() => {
+      result.current.open(named(1, "zeta"), null, BOUNDS);
+      result.current.open(named(2, "Alpha"), null, BOUNDS);
+      result.current.open(named(3, "mid"), null, BOUNDS);
+      result.current.open(named(4, "parked"), null, BOUNDS);
+    });
+    act(() => result.current.minimize("claude:s4"));
+    const parkedBefore = result.current.windows.find((w) => w.key === "claude:s4")!.rect;
+    act(() => result.current.arrange(BOUNDS));
+    const by = (k: string) => result.current.windows.find((w) => w.key === k)!;
+    // 3 windows in 1400×900 → a 2×2 grid at 700×450; name order Alpha, mid, zeta.
+    expect(by("claude:s2").rect).toEqual({ x: 0, y: 0, w: 700, h: 450 });
+    expect(by("claude:s3").rect).toEqual({ x: 700, y: 0, w: 700, h: 450 });
+    expect(by("claude:s1").rect).toEqual({ x: 0, y: 450, w: 700, h: 450 });
+    expect(by("claude:s2").z).toBeLessThan(by("claude:s3").z);
+    expect(by("claude:s3").z).toBeLessThan(by("claude:s1").z);
+    expect(by("claude:s4").rect).toEqual(parkedBefore);
+    expect(by("claude:s4").minimized).toBe(true);
+  });
+
+  it("arrange parks what does not fit at the floor — every window stays reachable (Hermes on #1320)", () => {
+    const { result } = setup();
+    act(() => {
+      for (let n = 1; n <= 8; n++) result.current.open(session(n), null, BOUNDS);
+    });
+    const small = { w: 600, h: 330 }; // hostable, but holds one window at the floor
+    act(() => result.current.arrange(small));
+    const shown = result.current.windows.filter((w) => !w.minimized);
+    expect(shown.map((w) => w.title)).toEqual(["Session 1"]);
+    expect(shown[0].rect).toEqual({ x: 0, y: 0, w: 600, h: 330 });
+    expect(result.current.windows.filter((w) => w.minimized)).toHaveLength(7);
+    expect(result.current.windows).toHaveLength(8); // parked, never closed
+  });
+
+  it("a refused BATCH is kept whole for the map to list, never trimmed to the first (Hermes on #1320)", () => {
+    const { result } = setup();
+    act(() => {
+      for (let n = 1; n <= 3; n++) result.current.requestOpen(session(n));
+    });
+    act(() => result.current.drain(new Map(), BOUNDS, false));
+    expect(result.current.rejected).toHaveLength(3);
+    act(() => result.current.refuseRejected());
+    expect(result.current.rejected).toHaveLength(0);
+    expect(result.current.refused.map((r) => r.seed.key)).toEqual([
+      "claude:s1",
+      "claude:s2",
+      "claude:s3",
+    ]);
+    act(() => result.current.dismissRefused());
+    expect(result.current.refused).toHaveLength(0);
+  });
+
+  it("a stored parked window restores parked", () => {
+    localStorage.setItem(
+      WORKSPACE_KEY,
+      JSON.stringify([
+        { key: "claude:s1", engine: "claude", id: "s1", title: "Session 1", x: 0, y: 0, w: 720, h: 480, z: 1, minimized: true },
+        { key: "claude:s2", engine: "claude", id: "s2", title: "Session 2", x: 0, y: 0, w: 720, h: 480, z: 2 },
+      ]),
+    );
+    const { result } = setup();
+    act(() => result.current.restore(BOUNDS));
+    expect(result.current.windows.map((w) => [w.key, Boolean(w.minimized)])).toEqual([
+      ["claude:s1", true],
+      ["claude:s2", false],
+    ]);
+  });
+});

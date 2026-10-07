@@ -47,14 +47,31 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   // and restore then fills the cap before the queued open gets there (Hermes on #939, round 2).
   // This is a PRECHECK that avoids a pointless round trip; the drain's explicit rejection is what
   // guarantees the launch survives being wrong here.
-  const hasRoom =
-    ws.windows.length + (ws.hydrated ? 0 : ws.restorable.length) < ws.cap;
+  const room = Math.max(
+    0,
+    ws.cap - ws.windows.length - (ws.hydrated ? 0 : ws.restorable.length),
+  );
+  const hasRoom = room > 0;
+  // Keyed on a string signature, not on `ws.windows` (which changes identity on every drag frame).
+  // Before hydration the stored layout counts as open, exactly as it counts against `room`: a
+  // request for one of those sessions is focused by the restore, never a new slot (Hermes on
+  // #1320 — otherwise a reload with a full stored layout disabled their "Open in map").
+  const openSig = [
+    ...ws.windows.map((w) => w.actionKey),
+    ...(ws.hydrated ? [] : ws.restorable.map((w) => w.key)),
+  ]
+    .sort()
+    .join("\n");
+  const openKeys = useMemo(
+    () => new Set(openSig ? openSig.split("\n") : []),
+    [openSig],
+  );
   // The narrow value the shell consumes. It deliberately does NOT spread `ws`: that object gets a
   // new identity on every window rect update, and the sidebar is a consumer — one context would
   // re-render the whole session list on every frame of a window drag.
   const commands = useMemo(
-    () => ({ mapReady, hostable, hasRoom, requestOpen, openInMap }),
-    [mapReady, hostable, hasRoom, requestOpen, openInMap],
+    () => ({ mapReady, hostable, hasRoom, room, openKeys, requestOpen, openInMap }),
+    [mapReady, hostable, hasRoom, room, openKeys, requestOpen, openInMap],
   );
   return (
     <WorkspaceCtx.Provider value={value}>

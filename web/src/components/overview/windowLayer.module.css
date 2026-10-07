@@ -48,6 +48,62 @@
   pointer-events: none;
 }
 
+/* Minimized (parked in the tray): hidden but mounted, so the socket stays live, and `visibility`
+ * keeps the pane's layout box so un-parking needs no refit. Hidden elements take no pointer events. */
+.parked {
+  visibility: hidden;
+}
+
+/* The tray of parked windows, bottom-centre over the map — above the map's hint line, which sits
+ * in a higher stacking layer (z 6) at the bottom edge and would otherwise cover it. */
+.tray {
+  position: absolute;
+  bottom: 40px;
+  left: 50%;
+  z-index: 19;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  max-width: min(90%, 900px);
+  pointer-events: auto;
+  transform: translateX(-50%);
+}
+
+.trayChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 220px;
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
+  color: var(--text-2);
+  cursor: pointer;
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  border: 1px solid var(--line-strong);
+}
+
+.trayChip:hover,
+.trayChip:focus-visible {
+  color: var(--text);
+  border-color: var(--accent);
+  outline: none;
+}
+
+.trayDot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  background: var(--accent);
+}
+
+.trayTitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Duplicate open: the window already exists, so say where it went. */
 .flash > * {
   animation: window-flash 0.9s ease-out;
@@ -73,7 +129,7 @@
 
 .notice {
   position: absolute;
-  bottom: 44px;
+  bottom: 84px;
   left: 50%;
   z-index: 20;
   padding: 6px 10px;

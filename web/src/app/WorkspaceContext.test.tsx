@@ -83,3 +83,46 @@ describe("hasRoom", () => {
     expect(room()).toBe("true");
   });
 });
+
+/** `room` + `openKeys`, Ask's batch admission (Hermes on #1320): before the map has restored, the
+ *  stored layout counts as OPEN as well as against the room — asking for one of those sessions is
+ *  a focus by the restore, never a refused new slot. */
+function KeysProbe() {
+  const ws = useMapWindows();
+  return (
+    <div data-testid="keys" data-room={ws?.room}>
+      {[...(ws?.openKeys ?? [])].sort().join(",")}
+    </div>
+  );
+}
+
+describe("room and openKeys", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("a stored layout filling the cap leaves no room, and every stored session reads as open", () => {
+    localStorage.setItem(CAP_KEY, "2");
+    localStorage.setItem(WORKSPACE_KEY, layout(2));
+    render(
+      <StrictMode>
+        <WorkspaceProvider>
+          <KeysProbe />
+        </WorkspaceProvider>
+      </StrictMode>,
+    );
+    const el = screen.getByTestId("keys");
+    expect(el).toHaveAttribute("data-room", "0");
+    expect(el).toHaveTextContent("claude:s0,claude:s1");
+  });
+
+  it("with nothing stored, nothing is open and the room is the cap", () => {
+    localStorage.setItem(CAP_KEY, "3");
+    render(
+      <WorkspaceProvider>
+        <KeysProbe />
+      </WorkspaceProvider>,
+    );
+    const el = screen.getByTestId("keys");
+    expect(el).toHaveAttribute("data-room", "3");
+    expect(el).toHaveTextContent(/^$/);
+  });
+});

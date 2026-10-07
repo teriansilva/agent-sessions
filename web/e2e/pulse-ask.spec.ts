@@ -6,7 +6,7 @@ import { mockMissions } from "./mission-console";
 
 // Pulse "Ask" (#522): the natural-language session finder embedded at the top of /mission.
 // Real-browser proof (mobile + desktop, per agent-workflow §5), red on pre-#522 builds:
-// type a question → the answer line + the matched session card render → "Jump in" routes
+// type a question → the answer line + the matched session card render → "Open" routes
 // to the session view; and a LONG question wraps inside the thread with no horizontal
 // scroll (the #494 rule extends to the Ask panel).
 
@@ -81,7 +81,7 @@ async function stubApp(page: import("@playwright/test").Page) {
   await page.route("**/api/pulse", (r) => r.fulfill({ json: EMPTY_OVERVIEW }));
 }
 
-test("Ask answers with a matched card and Jump in routes to the session (#522)", async ({
+test("Ask answers with a matched card and Open routes to the session (#522)", async ({
   page,
 }) => {
   await stubApp(page);
@@ -124,9 +124,9 @@ test("Ask answers with a matched card and Jump in routes to the session (#522)",
     page.getByText(/transcript discusses reconnect backoff/i),
   ).toBeVisible();
 
-  // Jump in navigates into the session view (the card id's engine/uuid route).
+  // Open navigates into the session view (the card id's engine/uuid route).
   await page
-    .getByRole("link", { name: /jump into fix ws delta-resume reconnect/i })
+    .getByRole("link", { name: /^open fix ws delta-resume reconnect$/i })
     .click();
   await expect(page).toHaveURL(
     /\/s\/claude\/1b2f3a4c-0000-4000-8000-abcdefabcdef/,
@@ -171,7 +171,7 @@ test("a long question + a matched card fit at 320px — no horizontal scroll (#5
   await expect(
     page.getByText(/that long-token session is this one/i),
   ).toBeVisible();
-  await expect(page.getByRole("link", { name: /jump into/i })).toBeVisible();
+  await expect(page.getByRole("link", { name: /^open /i })).toBeVisible();
 
   // No element on the page is user-scrollable horizontally (same probe as #494).
   const overflowers = await page.evaluate(() => {

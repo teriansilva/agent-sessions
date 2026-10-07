@@ -546,6 +546,47 @@
   border: 1px solid var(--border);
   padding: 4px 9px;
 }
+/* A refused batch (Hermes on #1320): every session that could not open as a window, each with its
+ * own full-screen way in — nothing a batch asked for is dropped silently. */
+.tr-ov-refused {
+  position: absolute;
+  top: 52px;
+  left: 50%;
+  z-index: 7;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  max-width: min(92%, 720px);
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg-1);
+  border: 1px solid var(--status-degraded);
+  transform: translateX(-50%);
+}
+.tr-ov-refused a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 10px;
+  color: var(--accent);
+  border: 1px solid var(--line-strong);
+  text-decoration: none;
+}
+.tr-ov-refused a:hover,
+.tr-ov-refused a:focus-visible {
+  border-color: var(--accent);
+}
+.tr-ov-refused button {
+  margin-left: auto;
+  min-width: 32px;
+  min-height: 32px;
+  color: var(--text-2);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+}
 .tr-ov-partial {
   position: absolute;
   top: 10px;

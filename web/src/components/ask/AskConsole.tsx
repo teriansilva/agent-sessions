@@ -5,18 +5,19 @@
  * It used to be the second mode of the mission composer, behind a `NEW MISSION | ASK` segmented
  * control on the mission landing. That put a question about *sessions* behind a section about
  * *missions*, and made it unlinkable: there was no URL that opened it. The transport, the payload,
- * the answer shape, the match rows and the "Jump in" links are all unchanged — only where it lives.
+ * the answer shape and the match rows are unchanged by that move — only where it lives.
  *
  * **The turns are still transient, and that is a statement about the surface rather than unfinished
  * work.** A mission's turns ARE durable: they go to `POST /api/missions/{id}/message` and live in
- * that mission's timeline (`MissionComposer`, #890). This page has no mission to keep a turn in, so
- * the honest answer is to say so on screen rather than to invent a home for it. Creating a mission
- * is how an operator makes a conversation durable.
+ * that mission's timeline (`MissionComposer`, #890). This page has no mission to keep a turn in.
+ * Creating a mission is how an operator makes a conversation durable. The on-screen notice that
+ * said so under every thread was removed at the operator's request: it was read once and then
+ * cost a line of every conversation.
  *
  * **The turns are this component's own state, and the sidebar keeps the component mounted** (#1294):
  * a conversation outlives closing the panel and navigating, because the operator asked for Ask to
- * sit beside the work. It is still memory only — a reload or New conversation ends it, and the
- * notice under the thread says so. It is never written anywhere, so it is not durable, which is a
+ * sit beside the work. It is still memory only — a reload or New conversation ends it. It is
+ * never written anywhere, so it is not durable, which is a
  * promise the server does not keep.
  *
  * `live` is therefore HYGIENE, not the fence: it keeps a late callback from setting state on a
@@ -33,6 +34,17 @@
  * **Missions are answers too (#1069).** The server may name missions beside sessions; they arrive as
  * `mission_matches` and render as their own group above the sessions, each opening the mission
  * through `missionLink` — the one deep link the console shape-checks.
+ *
+ * **A matched session opens two ways.** "Open" is the full-screen route, as before. "Open in map"
+ * asks the map's window workspace for a floating window and goes to the map — the same request
+ * the sidebar row and "To map" make (`requestOpen`, #936) — and an answer naming several sessions
+ * offers "Open all in map". The drain hands a refused request back to the full-screen route, which
+ * is right for one window and loses the tail of a batch, so a batch is held to what the map is
+ * KNOWN to admit: no more windows than the cap still has room for (`room`, which counts a stored
+ * layout not yet restored), and only once a map measurement said it can host at all (`hostable`
+ * true — "never measured" is enough for one window, whose refusal has a home, not for several).
+ * Window mode is offered only where it exists — never on a phone, never once the map has measured
+ * too small to host one.
  *
  * **It is laid out like the mission thread, because it IS the same kind of surface (#1069).** A chat
  * column: a scrolling thread that grows UP from a composer docked on the bottom edge
@@ -66,9 +78,11 @@ import {
   type RefObject,
 } from "react";
 
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
+import { MAP_PATH, useMapWindows } from "../../app/workspaceWindows";
 import { api } from "../../lib/api";
+import { useIsMobile } from "../../lib/useIsMobile";
 import { missionLink } from "../../lib/missionLink";
 import { settingsPath } from "../../routes/settingsTabs";
 import type {
@@ -79,6 +93,7 @@ import type {
 
 import styles from "../pulse/mission.module.css";
 import { AskComposer } from "./AskComposer";
+import { mapBatch, matchRoute, matchSeed } from "./askMatches";
 import a from "./AskConsole.module.css";
 import type { AskStep } from "./askStep";
 import { AskWorking } from "./AskWorking";
@@ -102,14 +117,6 @@ export interface AskTurn {
 }
 
 let nextTurnId = 1;
-
-/** `engine:uuid` → `/s/:engine/:uuid`, both halves encoded. */
-function matchRoute(key: string): string {
-  const i = key.indexOf(":");
-  const engine = i < 0 ? key : key.slice(0, i);
-  const uuid = i < 0 ? "" : key.slice(i + 1);
-  return `/s/${encodeURIComponent(engine)}/${encodeURIComponent(uuid)}`;
-}
 
 /** Fold one streamed event into its turn. */
 function applyEvent(t: AskTurn, ev: PulseAskEvent): AskTurn {
@@ -156,6 +163,21 @@ export function AskConsole({
   closeRef?: RefObject<HTMLButtonElement | null>;
 }) {
   const [turns, setTurns] = useState<AskTurn[]>([]);
+  const navigate = useNavigate();
+  const isMobile = useIsMobile();
+  const map = useMapWindows();
+  // Window mode where it exists: the map provider is mounted, this is not a phone, and the map
+  // has not measured too small to host one (`null` = never measured, treated as available — the
+  // drain's hand-back covers a wrong guess, as for the pane's "To map").
+  const canMap = Boolean(map) && !isMobile && map?.hostable !== false;
+  const openInMap = useCallback(
+    (list: PulseAskMatch[]) => {
+      if (!map || !list.length) return;
+      for (const m of list) map.requestOpen(matchSeed(m));
+      navigate(MAP_PATH);
+    },
+    [map, navigate],
+  );
   const [busy, setBusy] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   /** False once this page has unmounted. Read at RESOLUTION time, never captured as a value —
@@ -317,19 +339,19 @@ export function AskConsole({
                   className={`${styles.event} ${a.you}`}
                   aria-label="You"
                 >
-                  <div className={styles.eventHead}>You</div>
-                  <div className={styles.eventText}>{t.question}</div>
+                  <div className={`${styles.eventHead} ${a.label}`}>You</div>
+                  <div className={`${styles.eventText} ${a.text}`}>{t.question}</div>
                 </article>
                 <article
                   className={styles.event}
                   aria-label="Answer"
                   aria-busy={t.answer === null && !t.error}
                 >
-                  <div className={styles.eventHead}>Answer</div>
+                  <div className={`${styles.eventHead} ${a.label}`}>Answer</div>
                   {t.answer !== null ? (
                     <>
                       <RevealText
-                        className={styles.eventText}
+                        className={`${styles.eventText} ${a.text}`}
                         text={t.answer}
                         testId="ask-answer"
                       />
@@ -337,7 +359,7 @@ export function AskConsole({
                           are missions, so a sessions-only answer reads as it did before #1069. */}
                       {t.missions.length > 0 ? (
                         <>
-                          <div className={`${styles.eventHead} ${a.group}`}>
+                          <div className={`${styles.eventHead} ${a.label} ${a.group}`}>
                             Missions
                           </div>
                           {t.missions.map((m) => (
@@ -347,9 +369,9 @@ export function AskConsole({
                               data-testid="ask-mission-match"
                             >
                               <div className={styles.matchBody}>
-                                <div className={styles.eventText}>{m.title}</div>
+                                <div className={`${styles.eventText} ${a.text}`}>{m.title}</div>
                                 {m.why ? (
-                                  <div className={styles.objReason}>{m.why}</div>
+                                  <div className={`${styles.objReason} ${a.reason}`}>{m.why}</div>
                                 ) : null}
                               </div>
                               <Link
@@ -362,7 +384,7 @@ export function AskConsole({
                             </div>
                           ))}
                           {t.matches.length > 0 ? (
-                            <div className={`${styles.eventHead} ${a.group}`}>
+                            <div className={`${styles.eventHead} ${a.label} ${a.group}`}>
                               Sessions
                             </div>
                           ) : null}
@@ -376,8 +398,10 @@ export function AskConsole({
                           className={`${styles.matchRow} ${a.arrive}`}
                           data-testid="ask-match"
                         >
-                          <div className={styles.matchBody}>
-                            <div className={styles.eventText}>
+                          <div
+                            className={`${styles.matchBody}${canMap ? ` ${a.matchBody}` : ""}`}
+                          >
+                            <div className={`${styles.eventText} ${a.text}`}>
                               {m.title}
                               {needsYou?.has(m.id) ? (
                                 <span className={a.needsTag} data-testid="ask-match-needs-you">
@@ -387,7 +411,7 @@ export function AskConsole({
                               ) : null}
                             </div>
                             {m.why ? (
-                              <div className={styles.objReason}>{m.why}</div>
+                              <div className={`${styles.objReason} ${a.reason}`}>{m.why}</div>
                             ) : null}
                           </div>
                           {needsYou?.has(m.id) && onDetails ? (
@@ -400,15 +424,68 @@ export function AskConsole({
                               <Info size={16} aria-hidden="true" />
                             </button>
                           ) : null}
-                          <Link
-                            className={styles.openSession}
-                            to={matchRoute(m.id)}
-                            aria-label={`Jump into ${m.title}`}
-                          >
-                            Jump in
-                          </Link>
+                          <span className={a.opens} data-testid="ask-match-opens">
+                            <Link
+                              className={styles.openSession}
+                              to={matchRoute(m.id)}
+                              aria-label={`Open ${m.title}`}
+                              data-testid="ask-match-open"
+                            >
+                              Open
+                            </Link>
+                            {canMap ? (
+                              <button
+                                type="button"
+                                className={`${styles.openSession} ${a.mapBtn}`}
+                                aria-label={`Open ${m.title} in map`}
+                                title={
+                                  map?.openKeys.has(m.id)
+                                    ? "Already open on the map — show its window"
+                                    : map && map.room < 1
+                                      ? "The map's window limit is reached — close a window or raise the limit"
+                                      : "Open as a floating window on the map"
+                                }
+                                disabled={
+                                  !map?.openKeys.has(m.id) && (map?.room ?? 0) < 1
+                                }
+                                onClick={() => openInMap([m])}
+                                data-testid="ask-match-map"
+                              >
+                                Open in map
+                              </button>
+                            ) : null}
+                          </span>
                         </div>
                       ))}
+                      {canMap && map && map.hostable === true && t.matches.length > 1
+                        ? (() => {
+                            const { take, left } = mapBatch(
+                              t.matches,
+                              map.openKeys,
+                              map.room,
+                            );
+                            return (
+                              <div className={a.batch}>
+                                <button
+                                  type="button"
+                                  className={`${styles.openSession} ${a.mapBtn}`}
+                                  disabled={take.length === 0}
+                                  onClick={() => openInMap(take)}
+                                  title={
+                                    left > 0
+                                      ? `The map's window limit leaves room for ${take.length} of these ${t.matches.length} — close a window or raise the limit for the rest`
+                                      : `Open all ${t.matches.length} as floating windows on the map`
+                                  }
+                                  data-testid="ask-match-map-all"
+                                >
+                                  {left > 0
+                                    ? `Open ${take.length} of ${t.matches.length} in map`
+                                    : `Open all ${t.matches.length} in map`}
+                                </button>
+                              </div>
+                            );
+                          })()
+                        : null}
                       {t.provisional ? <AskWorking step={t.step} /> : null}
                     </>
                   ) : t.error ? null : (
@@ -422,11 +499,6 @@ export function AskConsole({
                 </article>
               </div>
             ))}
-            <div className={styles.objReason} data-testid="ask-transient">
-              These answers are not kept — Ask has no mission to keep them in, so
-              they disappear when you reload or start a new conversation. A
-              mission's own conversation is saved.
-            </div>
           </div>
         )}
       </div>

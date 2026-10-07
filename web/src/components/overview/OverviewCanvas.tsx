@@ -19,6 +19,7 @@ import {
   FolderTree,
   Minus,
   Plus,
+  LayoutGrid,
   RotateCcw,
   SquareDashedBottom,
 } from "lucide-react";
@@ -33,7 +34,7 @@ import {
   useState,
 } from "react";
 import { flushSync } from "react-dom";
-import { useLocation, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useConfig } from "../../app/config";
 import { useOverviewPrefs } from "../../app/overviewPrefs";
 import { isNewSessionPlaceholder } from "../../app/sessionsStore";
@@ -66,7 +67,7 @@ import { anchorPointOf } from "./nodeAnchor";
 import { OverviewActionsCtx } from "./overviewActions";
 import { ProjectGroupNode } from "./ProjectGroupNode";
 import { SessionNode } from "./SessionNode";
-import type { WindowSeed } from "./useWorkspace";
+import type { WindowRequest, WindowSeed } from "./useWorkspace";
 import { WindowLayer } from "./WindowLayer";
 import {
   canHostWindow,
@@ -178,6 +179,8 @@ function OverviewCanvasInner({
     detach,
     drain,
     clearRejected,
+    refuseRejected,
+    dismissRefused,
     setCap,
     close: closeWindow,
   } = ws;
@@ -405,18 +408,26 @@ function OverviewCanvasInner({
   // A refused request is handed BACK to the route it came from — the full-screen pane, carrying
   // `fresh` so the launch still happens. Anything else loses work the operator has already done.
   //
-  // Only the first can be handed back; there is one screen. In practice there is never more than
-  // one, because every caller queues in response to a single press and navigates here at once.
+  // There is one screen, so only ONE can be handed back. A refused BATCH (Ask's "Open all in map":
+  // the map measured too small since the offer was made — `hostable` is the last measurement and
+  // can be stale, Hermes on #1320) therefore does not navigate at all: the operator stays here and
+  // every refused session is listed with its own way in. Handing back the first and clearing the
+  // rest would lose them silently.
   const rejected = ws.rejected;
+  const refused = ws.refused;
   useEffect(() => {
     if (!rejected.length) return;
+    if (rejected.length > 1) {
+      refuseRejected();
+      return;
+    }
     const [first] = rejected;
     clearRejected();
     navigate(
       `/s/${encodeURIComponent(first.seed.engine)}/${encodeURIComponent(first.seed.id)}`,
       first.fresh ? { state: { fresh: first.fresh } } : undefined,
     );
-  }, [rejected, clearRejected, navigate]);
+  }, [rejected, clearRejected, refuseRejected, navigate]);
 
   // Renames reach an OPEN window's chrome through the MAP's list: the live index goes to the
   // workspace, which keeps each window's own title current. The map's list updates on its own
@@ -1106,6 +1117,16 @@ function OverviewCanvasInner({
                   </button>
                 </span>
               </span>
+              {ws.windows.some((w) => !w.minimized) && (
+                <button
+                  type="button"
+                  onClick={() => ws.arrange(bounds)}
+                  title="Arrange: tile the open windows across the map, sorted by name — any that don't fit go to the tray"
+                  data-window-arrange
+                >
+                  <LayoutGrid size={14} aria-hidden="true" /> Arrange
+                </button>
+              )}
               {ws.windows.length > 0 && (
                 <button
                   type="button"
@@ -1119,6 +1140,33 @@ function OverviewCanvasInner({
             </>
           )}
         </div>
+        {refused.length > 0 && (
+          <div className="tr-ov-refused" role="alert" data-map-refused>
+            <span>
+              {canOpenWindow
+                ? "These sessions could not open as windows (the window limit is full):"
+                : "The map is too small for windows here, so these sessions did not open:"}
+            </span>
+            {refused.map((r: WindowRequest) => (
+              <Link
+                key={r.seed.key}
+                to={`/s/${encodeURIComponent(r.seed.engine)}/${encodeURIComponent(r.seed.id)}`}
+                state={r.fresh ? { fresh: r.fresh } : undefined}
+                data-map-refused-link={r.seed.key}
+              >
+                {r.seed.title}
+              </Link>
+            ))}
+            <button
+              type="button"
+              aria-label="Dismiss"
+              onClick={dismissRefused}
+              data-map-refused-dismiss
+            >
+              ✕
+            </button>
+          </div>
+        )}
         {(createErr || dragErr || actionErr) && (
           <div className="tr-ov-toolbar-err" role="alert" data-map-error>
             {createErr || dragErr || actionErr}
@@ -1189,6 +1237,7 @@ function OverviewCanvasInner({
             topInset={box.top}
             anchorCandidates={anchorCandidates}
             onFocus={ws.focus}
+            onMinimize={ws.minimize}
             onClose={ws.close}
             onFullScreen={onFullScreen}
             onRect={ws.setRect}

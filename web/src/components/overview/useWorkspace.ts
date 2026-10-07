@@ -15,6 +15,8 @@ import {
   canOpen,
   cascadeRect,
   clampWindowCap,
+  tileCapacity,
+  tileRects,
   type Point,
   type Rect,
   type Size,
@@ -85,6 +87,11 @@ export interface WorkspaceWindow {
   /** One-shot launch params for a window opened from the new-session flow (#936). `<Terminal>`
    *  freezes them itself (`freshRef`), so this is only ever read at mount. */
   fresh?: FreshSession;
+  /** Parked in the map's tray. The window is HIDDEN, never unmounted: unmounting `<Terminal>`
+   *  closes its socket, and a minimized session is one the operator still wants live. It keeps
+   *  its rect and its place under the cap. Any raise (a click on its tray chip, a re-open from
+   *  the sidebar or Ask) brings it back. */
+  minimized?: boolean;
 }
 
 /** How long the "already open" flash on a duplicate open lasts (matches the CSS animation). */
@@ -114,6 +121,10 @@ interface State {
    *  infer it from a notice), and the canvas hands the first one back to the full-screen route.
    *  Transient, never persisted (Hermes on #939, rounds 1 + 2). */
   rejected: WindowRequest[];
+  /** A refused BATCH, kept for the map to list (Hermes on #1320). There is one screen, so only a
+   *  single refusal can be handed back to its full-screen route; when several are refused at once
+   *  the operator stays on the map and every one is listed with its own way in, until dismissed. */
+  refused: WindowRequest[];
   /** The layout read from storage, waiting for a map that can host it. Held rather than applied
    *  at construction because the gates that decide whether a window may open at all —
    *  `canHostWindow`, the mobile breakpoint — are the canvas's to evaluate, and applying a
@@ -137,6 +148,11 @@ type Action =
       rect?: Rect;
     }
   | { type: "focus"; key: string }
+  | { type: "minimize"; key: string }
+  | {
+      type: "arrange";
+      bounds: Size;
+    }
   | { type: "close"; key: string }
   | { type: "closeAll" }
   | { type: "rect"; key: string; rect: Rect }
@@ -153,6 +169,8 @@ type Action =
       canHost: boolean;
     }
   | { type: "clearRejected" }
+  | { type: "refuseRejected" }
+  | { type: "dismissRefused" }
   | { type: "restore"; bounds: Size }
   | { type: "detach" }
   | { type: "cap"; cap: number }
@@ -177,6 +195,18 @@ const holderOf = (
 function raise(state: State, key: string): State {
   const w = state.windows.find((x) => x.key === key);
   if (!w) return state;
+  // Raising a parked window brings it back: every way of asking for a session on screen — its
+  // tray chip, a sidebar click, Ask's "Open in map" — goes through here.
+  if (w.minimized) {
+    const top = topZ(state.windows) + 1;
+    return {
+      ...state,
+      focusedKey: key,
+      windows: state.windows.map((x) =>
+        x.key === key ? { ...x, z: top, minimized: false } : x,
+      ),
+    };
+  }
   // Already on top → keep the SAME window array, so pressing inside the focused window does not
   // hand the mounted pane a new object to re-render against.
   if (w.z === topZ(state.windows)) {
@@ -262,6 +292,48 @@ function reduce(state: State, action: Action): State {
       );
     case "focus":
       return raise(state, action.key);
+    case "minimize": {
+      const w = state.windows.find((x) => x.key === action.key);
+      if (!w || w.minimized) return state;
+      return {
+        ...state,
+        windows: state.windows.map((x) =>
+          x.key === action.key ? { ...x, minimized: true } : x,
+        ),
+        focusedKey: state.focusedKey === action.key ? null : state.focusedKey,
+        flashKey: state.flashKey === action.key ? null : state.flashKey,
+      };
+    }
+    case "arrange": {
+      // Tile the windows on screen, sorted by name; the parked ones stay in the tray. Tiles never
+      // overlap: windows past what the box holds at the floor (`tileCapacity`) are PARKED, so
+      // every window stays reachable — on screen, or as a chip in the tray (Hermes on #1320).
+      const shown = state.windows
+        .filter((w) => !w.minimized)
+        .sort(
+          (a, b) =>
+            a.title.localeCompare(b.title, undefined, { sensitivity: "base" }) ||
+            a.key.localeCompare(b.key),
+        );
+      if (!shown.length) return state;
+      const tiled = shown.slice(0, tileCapacity(action.bounds));
+      const rects = tileRects(tiled.length, action.bounds);
+      const base = topZ(state.windows);
+      const placed = new Map(
+        tiled.map((w, i) => [w.key, { rect: rects[i], z: base + 1 + i }]),
+      );
+      const parked = new Set(shown.slice(tiled.length).map((w) => w.key));
+      return {
+        ...state,
+        windows: state.windows.map((w) => {
+          const p = placed.get(w.key);
+          if (p) return { ...w, rect: p.rect, z: p.z };
+          return parked.has(w.key) ? { ...w, minimized: true } : w;
+        }),
+        focusedKey:
+          state.focusedKey && parked.has(state.focusedKey) ? null : state.focusedKey,
+      };
+    }
     case "close": {
       // Unmounting the window unmounts <Terminal>, which closes its socket and detaches its
       // document-level listeners. There is nothing else to tear down here.
@@ -371,6 +443,12 @@ function reduce(state: State, action: Action): State {
     }
     case "clearRejected":
       return state.rejected.length ? { ...state, rejected: [] } : state;
+    case "refuseRejected":
+      return state.rejected.length
+        ? { ...state, rejected: [], refused: [...state.refused, ...state.rejected] }
+        : state;
+    case "dismissRefused":
+      return state.refused.length ? { ...state, refused: [] } : state;
     case "restore": {
       if (!state.restorable.length)
         return state.hydrated ? state : { ...state, hydrated: true };
@@ -396,6 +474,13 @@ function reduce(state: State, action: Action): State {
           rectOf(w),
           WINDOW_CAP_MAX,
         );
+        if (w.minimized)
+          next = {
+            ...next,
+            windows: next.windows.map((x) =>
+              x.key === w.key ? { ...x, minimized: true } : x,
+            ),
+          };
       }
       // A session missing from the map's list is NOT treated as deleted, and that is deliberate:
       // the list is filtered, paginated and scope-stripped, so absence from it says nothing about
@@ -486,6 +571,10 @@ export interface Workspace extends State {
   drain: (anchors: Map<string, Point | null>, bounds: Size, canHost: boolean) => void;
   /** The canvas has handed the refused requests back to the full-screen route. */
   clearRejected: () => void;
+  /** Several were refused at once: keep them all (`refused`) for the map to list. */
+  refuseRejected: () => void;
+  /** The operator dismissed the refused-batch list. */
+  dismissRefused: () => void;
   /** The map is unmounting: no window has a live pane any more, so each record adopts the
    *  canonical identity it reconciled to and drops its launch params. */
   detach: () => void;
@@ -493,6 +582,11 @@ export interface Workspace extends State {
    *  start persisting. Idempotent: the second call in a StrictMode double-mount is a no-op. */
   restore: (bounds: Size) => void;
   focus: (key: string) => void;
+  /** Park a window in the map's tray — hidden, still live (`WorkspaceWindow.minimized`). */
+  minimize: (key: string) => void;
+  /** Tile the windows on screen into the box, sorted by name; any that do not fit at the floor
+   *  are parked in the tray. */
+  arrange: (bounds: Size) => void;
   close: (key: string) => void;
   closeAll: () => void;
   setRect: (key: string, rect: Rect) => void;
@@ -511,6 +605,7 @@ function init(): State {
     flashKey: null,
     notice: null,
     rejected: [],
+    refused: [],
     cap: loadWindowCap(),
     pending: [],
     restorable: loadWorkspace(),
@@ -589,12 +684,22 @@ export function useWorkspace(): Workspace {
     [],
   );
   const clearRejected = useCallback(() => dispatch({ type: "clearRejected" }), []);
+  const refuseRejected = useCallback(() => dispatch({ type: "refuseRejected" }), []);
+  const dismissRefused = useCallback(() => dispatch({ type: "dismissRefused" }), []);
   const restore = useCallback(
     (bounds: Size) => dispatch({ type: "restore", bounds }),
     [],
   );
   const detach = useCallback(() => dispatch({ type: "detach" }), []);
   const focus = useCallback((key: string) => dispatch({ type: "focus", key }), []);
+  const minimize = useCallback(
+    (key: string) => dispatch({ type: "minimize", key }),
+    [],
+  );
+  const arrange = useCallback(
+    (bounds: Size) => dispatch({ type: "arrange", bounds }),
+    [],
+  );
   const close = useCallback((key: string) => dispatch({ type: "close", key }), []);
   const closeAll = useCallback(() => dispatch({ type: "closeAll" }), []);
   const setRect = useCallback(
@@ -624,9 +729,13 @@ export function useWorkspace(): Workspace {
       requestOpen,
       drain,
       clearRejected,
+      refuseRejected,
+      dismissRefused,
       restore,
       detach,
       focus,
+      minimize,
+      arrange,
       close,
       closeAll,
       setRect,
@@ -641,9 +750,13 @@ export function useWorkspace(): Workspace {
       requestOpen,
       drain,
       clearRejected,
+      refuseRejected,
+      dismissRefused,
       restore,
       detach,
       focus,
+      minimize,
+      arrange,
       close,
       closeAll,
       setRect,

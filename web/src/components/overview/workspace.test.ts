@@ -12,6 +12,8 @@ import {
   MIN_SIZE,
   tetherAnchor,
   tetherPath,
+  tileCapacity,
+  tileRects,
   WINDOW_CAP,
   WINDOW_CAP_MAX,
   WINDOW_CAP_MIN,
@@ -175,5 +177,55 @@ describe("the operator's window cap (#936)", () => {
     // Default preserved for the call sites that predate the setting.
     expect(canOpen(WINDOW_CAP - 1)).toBe(true);
     expect(canOpen(WINDOW_CAP)).toBe(false);
+  });
+});
+
+describe("tileRects", () => {
+  it("lays a near-square grid across the box", () => {
+    expect(tileRects(4, { w: 1400, h: 900 })).toEqual([
+      { x: 0, y: 0, w: 700, h: 450 },
+      { x: 700, y: 0, w: 700, h: 450 },
+      { x: 0, y: 450, w: 700, h: 450 },
+      { x: 700, y: 450, w: 700, h: 450 },
+    ]);
+  });
+
+  it("never tiles below the floor, and never more than fit — capacity is the floor grid", () => {
+    expect(tileCapacity({ w: 1200, h: 700 })).toBe(4);
+    expect(tileCapacity({ w: 600, h: 330 })).toBe(1);
+    const r = tileRects(5, { w: 1200, h: 700 });
+    expect(r).toHaveLength(4);
+    for (const x of r) {
+      expect(x.w).toBeGreaterThanOrEqual(MIN_SIZE.w);
+      expect(x.h).toBeGreaterThanOrEqual(MIN_SIZE.h);
+    }
+  });
+
+  it("no two tiles overlap, at any count and any hostable box (Hermes on #1320)", () => {
+    // The first cut wrapped overflow onto the first cells with a cascade step that a full-box cell
+    // clamps back to zero: tileRects(8, 600×330) was eight identical rects.
+    const boxes = [
+      { w: 600, h: 330 },
+      { w: 1200, h: 700 },
+      { w: 1400, h: 900 },
+      { w: 1920, h: 400 },
+      { w: 2560, h: 1300 },
+    ];
+    for (const b of boxes)
+      for (let n = 1; n <= 16; n++) {
+        const r = tileRects(n, b);
+        expect(r.length).toBe(Math.min(n, tileCapacity(b)));
+        for (let i = 0; i < r.length; i++)
+          for (let j = i + 1; j < r.length; j++) {
+            const [p, q] = [r[i], r[j]];
+            const overlap = p.x < q.x + q.w && q.x < p.x + p.w && p.y < q.y + q.h && q.y < p.y + p.h;
+            expect(overlap, `${n} in ${b.w}×${b.h}: tiles ${i},${j}`).toBe(false);
+          }
+      }
+  });
+
+  it("one window fills the box; zero is nothing", () => {
+    expect(tileRects(1, { w: 1000, h: 600 })).toEqual([{ x: 0, y: 0, w: 1000, h: 600 }]);
+    expect(tileRects(0, { w: 1000, h: 600 })).toEqual([]);
   });
 });

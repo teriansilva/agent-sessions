@@ -36,6 +36,58 @@
   margin-top: 10px;
 }
 
+/* The thread's type, a step up from the mission thread's dense primitives: Ask is read in a narrow
+ * sidebar, often at arm's length (operator, 2026-10). Doubled selectors so they win over
+ * `mission.module.css` whatever order the two sheets load in. */
+.text.text {
+  font-size: 0.95rem;
+  line-height: 1.55;
+}
+.reason.reason {
+  margin-top: 2px;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--text-2);
+}
+.label.label {
+  font-size: 0.7rem;
+}
+
+/* A session row carries two ways in, so its title gives up some basis to keep both on the line in
+ * the 440px sidebar; it still wraps them under the title on a phone. */
+.matchBody.matchBody {
+  flex-basis: 140px;
+}
+
+/* A matched session's two ways in, kept together on the row's right edge. */
+.opens {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: auto;
+}
+.opens.opens > * {
+  margin-left: 0;
+}
+.mapBtn.mapBtn {
+  font-family: inherit;
+  cursor: pointer;
+}
+.mapBtn:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.mapBtn.mapBtn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+/* "Open all in map", under the session rows it acts on. */
+.batch {
+  display: flex;
+  justify-content: flex-end;
+  margin: 10px 0 0 10px;
+}
+
 /* #1086: an answer row for a session on the NEEDS YOU list. The dot is STATE (`--status-degraded`,
  * the same needs-you colour the list uses), never decoration. */
 .needsTag {
@@ -138,7 +190,7 @@
 
 .greeting {
   margin: 0 0 12px;
-  font-size: 0.9rem;
+  font-size: 1rem;
   line-height: 1.5;
   color: var(--text-2);
 }

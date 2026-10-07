@@ -4,7 +4,7 @@
  *  Five of these descend from `Composer.test.tsx`, which descended from `Pulse.test.tsx`'s Ask cases
  *  (#522): the answer renders, a 409 surfaces the server's own detail rather than a generic error, a
  *  follow-up replays the prior turns as history, an unconfigured endpoint disables the control and
- *  makes no call, and the page says the answers are not kept.
+ *  makes no call. (The "answers are not kept" notice was removed at the operator's request.)
  *
  *  **What changed with the move, and what it means for these tests.** The composer's discard rule
  *  needed a `visit()` token compared at resolution time, because switching missions or flipping
@@ -31,13 +31,19 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StrictMode, useState } from "react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+
+import {
+  WorkspaceCommandsCtx,
+  type WorkspaceCommands,
+} from "../../app/workspaceWindows";
 import { beforeEach, expect, test, vi } from "vitest";
 
 import { api, ApiError } from "../../lib/api";
 import type { PulseAskEvent, PulseAskResult } from "../../types/api";
 
 import { AskConsole } from "./AskConsole";
+import { mapBatch } from "./askMatches";
 
 vi.mock("../../lib/api", async () => {
   const actual =
@@ -117,7 +123,7 @@ test("a matched session is named, explained and reachable (#522)", async () => {
   const row = await screen.findByTestId("ask-match");
   expect(within(row).getByText("uploads.py")).toBeInTheDocument();
   expect(
-    within(row).getByRole("link", { name: "Jump into fix flaky upload retry" }),
+    within(row).getByRole("link", { name: "Open fix flaky upload retry" }),
   ).toHaveAttribute("href", "/s/claude/abc-123");
 });
 
@@ -157,7 +163,7 @@ test("a matched mission is named, explained and opens the mission (#1069)", asyn
     .filter((t) => t === "Missions" || t === "Sessions");
   expect(heads).toEqual(["Missions", "Sessions"]);
   expect(
-    within(turn).getByRole("link", { name: "Jump into ws backoff" }),
+    within(turn).getByRole("link", { name: "Open ws backoff" }),
   ).toHaveAttribute("href", "/s/claude/abc-123");
 });
 
@@ -239,7 +245,7 @@ test("an unconfigured endpoint disables the control and makes no call (#522)", a
   expect(api.pulseAskStream).not.toHaveBeenCalled();
 });
 
-test("the page says these answers are not kept (#878)", async () => {
+test('the thread carries no "answers are not kept" notice (operator request)', async () => {
   answerWith({
     answer: "ok",
     matches: [],
@@ -249,13 +255,9 @@ test("the page says these answers are not kept (#878)", async () => {
   mount(<AskConsole configured />);
   await userEvent.type(screen.getByTestId("composer-input"), "x");
   await userEvent.click(screen.getByTestId("composer-send"));
-  // The operator is told, rather than discovering it by reloading and finding nothing. Since #1294
-  // the conversation survives navigation (the sidebar keeps it), so the copy names what DOES end
-  // it: a reload, or New conversation.
-  const note = await screen.findByTestId("ask-transient");
-  expect(note).toHaveTextContent(/not kept|disappear/i);
-  expect(note).toHaveTextContent(/reload/i);
-  expect(note).toHaveTextContent(/new conversation/i);
+  await screen.findByTestId("ask-answer");
+  expect(screen.queryByTestId("ask-transient")).toBeNull();
+  expect(screen.queryByText(/not kept/i)).toBeNull();
 });
 
 test("a reply that lands AFTER leaving is DISCARDED, and returning finds nothing", async () => {
@@ -531,4 +533,114 @@ test("an aborted ask that settles LATE does not unlock the box under the next qu
   // Still busy with "new": the late settle of "old" must not have re-enabled Send.
   expect(screen.getByTestId("composer-send")).toBeDisabled();
   expect(screen.getByTestId("ask-working")).toBeInTheDocument();
+});
+
+// --- Open / Open in map (operator request, 2026-10) ------------------------------------------
+
+const M = (id: string, title = id) => ({ id, title, why: "" });
+
+test("mapBatch: open windows always ride along; new ones only as far as the cap's room", () => {
+  const ms = [M("claude:a"), M("claude:b"), M("claude:c"), M("claude:d")];
+  const r = mapBatch(ms, new Set(["claude:c"]), 2);
+  expect(r.take.map((m) => m.id)).toEqual(["claude:a", "claude:b", "claude:c"]);
+  expect(r.left).toBe(1);
+  expect(mapBatch(ms, new Set(), 0)).toEqual({ take: [], left: 4 });
+  expect(mapBatch(ms, new Set(), 9).left).toBe(0);
+});
+
+function commands(over: Partial<WorkspaceCommands> = {}): WorkspaceCommands {
+  return {
+    mapReady: false,
+    hostable: true,
+    hasRoom: true,
+    room: 8,
+    openKeys: new Set(),
+    requestOpen: vi.fn(),
+    openInMap: vi.fn(() => false),
+    ...over,
+  };
+}
+
+function mountWithMap(cmds: WorkspaceCommands) {
+  return render(
+    <MemoryRouter initialEntries={["/dashboard"]}>
+      <WorkspaceCommandsCtx.Provider value={cmds}>
+        <Routes>
+          <Route path="/overview" element={<div data-testid="on-map" />} />
+          <Route path="*" element={<AskConsole configured />} />
+        </Routes>
+      </WorkspaceCommandsCtx.Provider>
+    </MemoryRouter>,
+  );
+}
+
+async function askTwo() {
+  answerWith({
+    answer: "Two sessions.",
+    matches: [
+      { id: "claude:abc", title: "upload retry", why: "" },
+      { id: "codex:def", title: "ws backoff", why: "" },
+    ],
+    stage: "catalog",
+    configured: true,
+  });
+  await userEvent.type(screen.getByTestId("composer-input"), "q");
+  await userEvent.click(screen.getByTestId("composer-send"));
+  await screen.findAllByTestId("ask-match");
+}
+
+test("a match offers Open AND Open in map; Open in map queues a window and goes to the map", async () => {
+  const cmds = commands();
+  mountWithMap(cmds);
+  await askTwo();
+  const row = screen.getAllByTestId("ask-match")[1];
+  expect(within(row).getByRole("link", { name: "Open ws backoff" })).toHaveAttribute(
+    "href",
+    "/s/codex/def",
+  );
+  await userEvent.click(within(row).getByRole("button", { name: "Open ws backoff in map" }));
+  expect(cmds.requestOpen).toHaveBeenCalledTimes(1);
+  expect(cmds.requestOpen).toHaveBeenCalledWith({
+    key: "codex:def",
+    engine: "codex",
+    id: "def",
+    title: "ws backoff",
+  });
+  expect(await screen.findByTestId("on-map")).toBeInTheDocument();
+});
+
+test("several matches offer Open all in map, which queues every one", async () => {
+  const cmds = commands();
+  mountWithMap(cmds);
+  await askTwo();
+  await userEvent.click(screen.getByTestId("ask-match-map-all"));
+  expect(vi.mocked(cmds.requestOpen).mock.calls.map((c) => c[0].key)).toEqual([
+    "claude:abc",
+    "codex:def",
+  ]);
+});
+
+test("Open all says how many fit when the cap is nearly full, and asks for no more", async () => {
+  const cmds = commands({ room: 1 });
+  mountWithMap(cmds);
+  await askTwo();
+  const all = screen.getByTestId("ask-match-map-all");
+  expect(all).toHaveTextContent("Open 1 of 2 in map");
+  await userEvent.click(all);
+  expect(vi.mocked(cmds.requestOpen).mock.calls.map((c) => c[0].key)).toEqual(["claude:abc"]);
+});
+
+test("no window mode where the map cannot host one — Open stays", async () => {
+  mountWithMap(commands({ hostable: false }));
+  await askTwo();
+  expect(screen.queryByTestId("ask-match-map")).toBeNull();
+  expect(screen.queryByTestId("ask-match-map-all")).toBeNull();
+  expect(screen.getAllByTestId("ask-match-open")).toHaveLength(2);
+});
+
+test("Open all is offered only once a map measurement said it can host — one window's refusal has a home, a batch's tail does not (Hermes on #1320)", async () => {
+  mountWithMap(commands({ hostable: null }));
+  await askTwo();
+  expect(screen.getAllByTestId("ask-match-map")).toHaveLength(2);
+  expect(screen.queryByTestId("ask-match-map-all")).toBeNull();
 });

@@ -63,6 +63,15 @@ export interface WorkspaceCommands {
    *  the new-session form asks this while the map is unmounted, so a mount-scoped answer would
    *  always be "no" and the hand-back would never happen. */
   hasRoom: boolean;
+  /** How many MORE windows the cap admits right now (same arithmetic as `hasRoom`), so a surface
+   *  opening several at once (Ask's "Open all in map") can ask for no more than fit — the drain
+   *  hands a refused request back to the full-screen route, which is right for one and wrong
+   *  for the tail of a batch. */
+  room: number;
+  /** The sessions that already have a window (by `actionKey`) — including, before hydration, the
+   *  stored layout still waiting to be restored. Re-opening one focuses it and costs no room.
+   *  Identity changes only when the SET of open sessions does, never on a drag. */
+  openKeys: ReadonlySet<string>;
   requestOpen: Workspace["requestOpen"];
   openInMap: (seed: WindowSeed) => boolean;
 }
