@@ -1,0 +1,126 @@
+/* Agent replies as Markdown (#1332). BattleLab grammar: flat surfaces, no radius, no gradients;
+   mono uppercase sub-headings, square bullets, the accent only on links. */
+.md {
+  overflow-wrap: anywhere;
+}
+.md > :first-child {
+  margin-top: 0;
+}
+.md > :last-child {
+  margin-bottom: 0;
+}
+.md p {
+  margin: 0 0 10px;
+}
+.md h1,
+.md h2,
+.md h3,
+.md h4,
+.md h5,
+.md h6 {
+  margin: 14px 0 6px;
+  font: 600 12px/1.4 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+.md h1 {
+  font-size: 13px;
+}
+.md ul,
+.md ol {
+  margin: 0 0 10px;
+  padding-left: 20px;
+}
+.md ul {
+  list-style: square;
+}
+.md li {
+  margin: 2px 0;
+}
+.md li::marker {
+  color: var(--text-muted);
+}
+.md a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.md blockquote {
+  margin: 0 0 10px;
+  padding-left: 10px;
+  border-left: 2px solid var(--line-strong);
+  color: var(--text-muted);
+}
+.md hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 12px 0;
+}
+.md :not(pre) > code {
+  padding: 1px 4px;
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  font: 12.5px/1.4 var(--font-mono);
+}
+.deadLink,
+.image {
+  color: var(--text-muted);
+}
+.block {
+  margin: 8px 0 10px;
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+}
+.blockHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 4px 2px 10px;
+  border-bottom: 1px solid var(--line);
+  font: 11px var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+.copy {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 8px;
+  background: none;
+  border: 0;
+  color: var(--text-muted);
+  font: inherit;
+  cursor: pointer;
+}
+.copy:hover,
+.copy:focus-visible {
+  color: var(--text);
+}
+.block pre {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font: 12.5px/1.5 var(--font-mono);
+  white-space: pre;
+}
+.tableWrap {
+  margin: 0 0 10px;
+  overflow-x: auto;
+}
+.tableWrap table {
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.tableWrap th,
+.tableWrap td {
+  border: 1px solid var(--line);
+  padding: 4px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+.tableWrap th {
+  font: 600 11px var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}

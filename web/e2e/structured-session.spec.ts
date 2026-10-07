@@ -296,6 +296,50 @@ test("New session: API clients are their own group, unavailable ones say why, no
   await expect(page.getByTestId("structured-empty")).toBeVisible();
 });
 
+const MD_REPLY = [
+  "## Result",
+  "",
+  "The spec is **green** after `retries: 0`:",
+  "",
+  "- 20/20 runs passed",
+  "- no new warnings",
+  "",
+  "```ts",
+  `await page.goto("/login"); // ${"x".repeat(160)}`,
+  "```",
+  "",
+  "See [the run](https://example.com/run/1) — <script>window.__pwned = 1</script>",
+].join("\n");
+
+for (const theme of ["dark", "light"] as const) {
+  test(`an agent reply renders as Markdown, inert to HTML, without widening the page (#1332, ${theme})`, async ({
+    page,
+  }) => {
+    await setup(page, theme);
+    await serveSession(page, () =>
+      snapshot({ turns: [turn({ state: "completed", tools: [], reply: MD_REPLY })] }),
+    );
+    await page.goto(URL_PATH);
+    const reply = page.getByTestId("structured-turn").locator("h2", { hasText: "Result" });
+    await expect(reply).toBeVisible();
+    const turnEl = page.getByTestId("structured-turn");
+    await expect(turnEl.locator("strong")).toHaveText("green");
+    await expect(turnEl.locator("p code")).toHaveText("retries: 0");
+    await expect(turnEl.locator("ul > li")).toHaveCount(2);
+    const code = page.getByTestId("md-code");
+    await expect(code).toContainText("ts");
+    await expect(code.locator("pre code")).toContainText('await page.goto("/login");');
+    const link = turnEl.getByRole("link", { name: "the run" });
+    await expect(link).toHaveAttribute("href", "https://example.com/run/1");
+    await expect(link).toHaveAttribute("rel", "noopener noreferrer");
+    expect(await page.evaluate(() => (window as unknown as { __pwned?: number }).__pwned)).toBeUndefined();
+    await expect(turnEl.locator("script")).toHaveCount(0);
+    await expect(turnEl).not.toContainText("**");
+    await noOverflow(page);
+    await targets(page, code);
+  });
+}
+
 test("New session: an API client offers the models its CLI reports and creates on the chosen one (#1313)", async ({
   page,
 }) => {

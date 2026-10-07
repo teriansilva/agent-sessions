@@ -9,6 +9,7 @@ import type {
   StructuredTurn,
 } from "../../types/api";
 import chat from "../chat/ChatPane.module.css";
+import { Markdown } from "./Markdown";
 import styles from "./StructuredPane.module.css";
 import {
   choiceLabel,
@@ -233,8 +234,7 @@ function TurnView({
         <div className={`${chat.turn} ${chat.asst}`}>
           <div className={chat.who}>{agent}</div>
           <div className={chat.txt}>
-            <span className={chat.prose}>{turn.reply}</span>
-            {turn.reply_truncated && "…"}
+            <Markdown text={turn.reply_truncated ? `${turn.reply}…` : turn.reply} />
           </div>
         </div>
       )}
