@@ -537,6 +537,36 @@ def test_install_sh_self_contained_toolchain():
 
 
 @pytest.mark.e2e_install
+def _stub_engine_bins(tmp_path: Path) -> dict[str, Path]:
+    """One executable stub per engine binary, keyed by its explicit ``*_BIN`` env var.
+
+    The installer ends with ``agent-sessions doctor``, which rewrites the env file's ``*_BIN``
+    lines from live discovery (explicit env var > PATH > known dirs / npm-global). Left to the
+    host, that made this test assert the RUNNER's agent installs: on example-host codex sits under
+    ~/.npm-global and was swapped by an update between the two installs, so the "env untouched"
+    check failed on a line the installer does not own. An explicit, executable ``*_BIN`` wins
+    discovery outright, so the host can no longer leak in.
+    """
+    from agent_sessions import discover
+
+    stubs: dict[str, Path] = {}
+    bindir = tmp_path / "engine-stubs"
+    bindir.mkdir()
+    for name in discover.engine_ids():
+        if discover._manifest(name).binary is None:
+            continue
+        stub = bindir / discover._bin_name(name)
+        stub.write_text("#!/bin/sh\nexit 0\n")
+        stub.chmod(0o755)
+        stubs[discover.envvar(name)] = stub
+    return stubs
+
+
+def _installer_owned(env_text: str, doctor_keys: set[str]) -> list[str]:
+    """The env lines the INSTALLER owns — everything except doctor's host-derived ``*_BIN``s."""
+    return [ln for ln in env_text.splitlines() if ln.split("=", 1)[0] not in doctor_keys]
+
+
 @pytest.mark.skipif(not shutil.which("git"), reason="git required")
 def test_installer_end_to_end(tmp_path):
     home = tmp_path / "prefix"
@@ -562,6 +592,9 @@ def test_installer_end_to_end(tmp_path):
         # ~/.config/agent-sessions/prefs.json (per the "never touch real config" rule).
         "AGENT_SESSIONS_PREFS": str(tmp_path / "prefs.json"),
     }
+    # Hermetic engine discovery: doctor records these stubs, never the host's installs.
+    stubs = _stub_engine_bins(tmp_path)
+    env.update({key: str(path) for key, path in stubs.items()})
     r = subprocess.run(
         ["sh", str(INSTALL_SH)], env=env, capture_output=True, text=True, timeout=600
     )
@@ -611,6 +644,16 @@ def test_installer_end_to_end(tmp_path):
 
     assert verify_password(password, hash_line.split("=", 1)[1])
 
+    # Doctor recorded exactly the stubs — nothing from the host's PATH or npm-global.
+    for key, path in stubs.items():
+        assert f"{key}={path}\n" in text, key
+
+    # Regression: an agent binary that disappears between installs (an update swapping it
+    # mid-test, as on example-host) must not break the idempotence check. Remove one stub; the
+    # re-run may drop that doctor-owned line, and every line the installer owns stays identical.
+    stubs["AGENT_SESSIONS_CODEX_BIN"].unlink()
+    env.pop("AGENT_SESSIONS_CODEX_BIN")
+
     # Re-run = idempotent upgrade: keeps the env (no new password printed) and keeps the
     # prior release dir for rollback; `current` points at the new one.
     r2 = subprocess.run(
@@ -618,7 +661,9 @@ def test_installer_end_to_end(tmp_path):
     )
     assert r2.returncode == 0, r2.stderr
     assert "password:" not in r2.stdout  # existing credentials kept
-    assert envf.read_text() == text  # env untouched
+    after = envf.read_text()
+    assert _installer_owned(after, set(stubs)) == _installer_owned(text, set(stubs))  # untouched
+    assert f"AGENT_SESSIONS_CODEX_BIN={stubs['AGENT_SESSIONS_CODEX_BIN']}" not in after
     releases2 = sorted((home / "releases").iterdir())
     assert len(releases2) == 2  # prior kept for rollback
     assert current.resolve() == sorted(releases2)[-1].resolve()
