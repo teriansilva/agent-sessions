@@ -39,3 +39,5 @@ scripts/resolve-visual-scope.mjs   export-ignore
 # The publish gate itself — internal tooling (it names the internal-token denylist) and runs
 # from the source checkout during publish, never needs to be in the public snapshot.
 scripts/check-public-snapshot      export-ignore
+# Builds the mirror commit's message from the private forge's PR (#1326); runs the gate above.
+scripts/public-commit-message      export-ignore

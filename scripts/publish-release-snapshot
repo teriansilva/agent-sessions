@@ -4,7 +4,7 @@
 # repo instead of only in CI against the real mirror (#832 Phase 1).
 #
 # usage: publish-release-snapshot <ref> <remote-url> [--signers FILE] [--key FILE] [--dry-run]
-#                                 [--only-if-tip FORGE]
+#                                 [--only-if-tip FORGE] [--message-file FILE]
 #
 # ONE WRITER FOR THE MIRROR'S `main` (#1250). A release publishes its signed TAG only and never
 # touches `main`; `main` is written solely by publish-public.yml, whose runs share one
@@ -19,6 +19,12 @@
 # after a newer one has published; with this check it pushes nothing. The race left — the tip
 # moving between this read and the push — is closed by the serialisation: the newer commit's
 # run is queued behind this one and publishes after it.
+#
+# --message-file FILE (branch publishes only, #1326): the snapshot commit's message, instead of
+# "publish: snapshot of <ref>". publish-public.yml builds it with scripts/public-commit-message
+# (PR title + scrubbed summary, denylist-scanned). A release REFUSES it: the release snapshot is
+# recomputed and compared on every resume (below), so its message must stay a pure function of
+# the ref.
 #
 # WHY DETERMINISM IS PART OF THE SECURITY STORY, not a tidiness nicety:
 #
@@ -40,7 +46,7 @@ set -eu
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 note() { printf '%s\n' "$*"; }
 
-REF=""; REMOTE=""; SIGNERS=""; KEY=""; DRY=0; SOURCE=""; TIP_OF=""
+REF=""; REMOTE=""; SIGNERS=""; KEY=""; DRY=0; SOURCE=""; TIP_OF=""; MSG_FILE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --signers) SIGNERS="${2:-}"; shift 2 ;;
@@ -50,6 +56,7 @@ while [ $# -gt 0 ]; do
     --source)  SOURCE="${2:-}"; shift 2 ;;
     --key)     KEY="${2:-}"; shift 2 ;;
     --only-if-tip) TIP_OF="${2:-}"; shift 2; [ -n "$TIP_OF" ] || die "--only-if-tip needs a remote" ;;
+    --message-file) MSG_FILE="${2:-}"; shift 2; [ -n "$MSG_FILE" ] || die "--message-file needs a file" ;;
     --dry-run) DRY=1; shift ;;
     -*)        die "unknown option: $1" ;;
     *)         if [ -z "$REF" ]; then REF="$1"; elif [ -z "$REMOTE" ]; then REMOTE="$1";
@@ -80,9 +87,15 @@ case "$REF" in v[0-9]*) IS_RELEASE=1 ;; esac
 # controls. Here the candidate is what WE are about to produce, and the root is the reviewed
 # copy in the repository we were checked out from.
 [ "$IS_RELEASE" -eq 0 ] || [ -s "$SIGNERS" ] || die "trust root missing or empty: $SIGNERS"
+if [ -n "$MSG_FILE" ]; then
+  [ "$IS_RELEASE" -eq 0 ] || die "--message-file is for branch publishes; a release's message is fixed so the release recomputes"
+  [ -s "$MSG_FILE" ] || die "message file missing or empty: $MSG_FILE"
+  MSG_FILE="$(cd "$(dirname "$MSG_FILE")" && pwd)/$(basename "$MSG_FILE")"
+fi
 
 OUT="$(mktemp -d)"
-trap 'rm -rf "$OUT"' EXIT INT TERM
+MSGSCAN="$(mktemp -d)"
+trap 'rm -rf "$OUT" "$MSGSCAN"' EXIT INT TERM
 git archive --format=tar "$SRC_COMMIT" | tar -x -C "$OUT"
 
 cd "$OUT"
@@ -90,9 +103,36 @@ git init -q -b main
 git config user.name "agent-sessions-publish"
 git config user.email "agent-sessions-publish@users.noreply.github.com"
 git add -A
+if [ -n "$MSG_FILE" ]; then
+  set -- -F "$MSG_FILE"
+else
+  set -- -m "publish: snapshot of $REF"
+fi
 GIT_AUTHOR_DATE="$SRC_DATE" GIT_COMMITTER_DATE="$SRC_DATE" \
-  git commit -q -m "publish: snapshot of $REF" \
+  git commit -q --cleanup=whitespace "$@" \
   || die "nothing to publish for $REF (empty snapshot?)"
+if [ -n "$MSG_FILE" ]; then
+  # Scan the message EXACTLY as git committed it — after its whitespace cleanup — with the
+  # snapshot's own denylist, not the file it came from, plus a location tripwire: the structural
+  # half of public-commit-message's frame (markup and location characters, `//`, a colon glued
+  # to the next character — every scheme, port and IPv6 —, an absolute path, an IPv4, `www.`).
+  # It is a strict subset of the builder's rules, so a message the builder passed never trips
+  # it; one that does means the builder was bypassed. Anything but a clean result — a hit, a scanner
+  # that is missing or fails, a grep that errors (only exit 1 means "looked, found nothing") —
+  # re-commits with the generic message: same tree, same dates, so the result is still a pure
+  # function of the source.
+  git log -1 --format=%B HEAD > "$MSGSCAN/COMMIT_MESSAGE"
+  _loc=0
+  grep -qiE '[][<>{}@\\|^~]|//|:[^[:space:]]|(^|[[:space:](])/[^[:space:]/]|[0-9]{1,3}(\.[0-9]{1,3}){3}|(^|[^a-z0-9])www\.' \
+    "$MSGSCAN/COMMIT_MESSAGE" || _loc=$?
+  if [ "$_loc" -ne 1 ] \
+     || ! "$SRC/scripts/check-public-snapshot" scan-tree "$MSGSCAN" >/dev/null 2>&1; then
+    note "fallback: the committed message did not scan clean — publishing the generic message"
+    GIT_AUTHOR_DATE="$SRC_DATE" GIT_COMMITTER_DATE="$SRC_DATE" \
+      git commit -q --amend --cleanup=whitespace -m "publish: snapshot of $REF" \
+      || die "could not fall back to the generic message"
+  fi
+fi
 SNAP="$(git rev-parse HEAD)"
 
 if [ "$IS_RELEASE" -eq 1 ]; then

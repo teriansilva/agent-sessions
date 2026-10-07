@@ -472,3 +472,165 @@ def test_a_merge_landing_after_the_tip_read_is_published_by_its_own_run(world, f
     assert after_c != after_a, "C's run did not carry the mirror forward"
     snap_c = _publish_branch(world, c, "--dry-run").stdout.strip().splitlines()[-1]
     assert after_c == snap_c
+
+
+# ---- --message-file (#1326): branch publishes carry the public message; releases refuse it ----
+
+
+def _mirror_main_message(w) -> str:
+    return subprocess.run(
+        ["git", "--git-dir", str(w["mirror"]), "log", "-1", "--format=%B", "main"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+
+def _with_scanner(w):
+    """The final-message scan runs the source checkout's own gate; the fixture has none."""
+    dst = w["src"] / "scripts/check-public-snapshot"
+    dst.write_bytes((REPO / "scripts/check-public-snapshot").read_bytes())
+    dst.chmod(0o755)
+
+
+def test_a_branch_publish_uses_the_message_file(world, tmp_path):
+    _with_scanner(world)
+    msg = tmp_path / "msg"
+    msg.write_text("feat(web): a panel\n\n- one\n#### a heading survives\n")
+    r = _publish_branch(world, "main", "--message-file", str(msg))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _mirror_main_message(world) == "feat(web): a panel\n\n- one\n#### a heading survives\n\n"
+
+
+def test_a_branch_publish_without_a_message_file_keeps_the_generic_message(world):
+    r = _publish_branch(world, "main")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _mirror_main_message(world) == "publish: snapshot of main\n\n"
+
+
+def test_a_release_refuses_a_message_file(world, tmp_path):
+    msg = tmp_path / "msg"
+    msg.write_text("anything\n")
+    r = _publish_release(world, "--message-file", str(msg))
+    assert r.returncode != 0
+    assert "--message-file is for branch publishes" in r.stderr
+    assert "refs/tags/v0.20.0" not in _refs(world["mirror"]), "refused, but pushed anyway"
+
+
+def test_an_empty_message_file_refuses_before_pushing(world, tmp_path):
+    msg = tmp_path / "msg"
+    msg.write_text("")
+    r = _publish_branch(world, "main", "--message-file", str(msg))
+    assert r.returncode != 0
+    assert "refs/heads/main" not in _refs(world["mirror"])
+
+
+def test_a_committed_message_that_hits_the_denylist_publishes_the_generic_one(world, tmp_path):
+    """Hermes on #1326: scan the message as COMMITTED, not only the file it came from."""
+    _with_scanner(world)
+    msg = tmp_path / "msg"
+    msg.write_text("feat: x\n\n- checked on " + "mb-" + "infrabot\n")
+    r = _publish_branch(world, "main", "--message-file", str(msg))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "fallback" in r.stdout
+    assert _mirror_main_message(world) == "publish: snapshot of main\n\n"
+
+
+@pytest.mark.parametrize(
+    "loc",
+    [
+        "ftp://vault.example.invalid/private/report",
+        "www.vault.example.invalid/private",
+        "[details](https://vault.example.invalid/p_(v1)?key=k)",
+        "ops@vault.corp.lan",
+        "10.20.30.40",
+        "//[fd00::1]/private/report",
+        "fe80::1",
+        '<a href="/private">x</a>',
+        "/srv/private/report",
+        "back\\slash",
+    ],
+)
+def test_a_committed_message_with_a_location_publishes_the_generic_one(world, tmp_path, loc):
+    """Hermes on #1327: the tripwire on the COMMITTED message, for a builder that was bypassed."""
+    _with_scanner(world)
+    msg = tmp_path / "msg"
+    msg.write_text(f"feat: x\n\n- see {loc}\n")
+    r = _publish_branch(world, "main", "--message-file", str(msg))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _mirror_main_message(world) == "publish: snapshot of main\n\n"
+
+
+def test_a_message_the_builder_passes_is_not_tripped_by_the_publisher(world, tmp_path):
+    """The tripwire must stay a subset of the builder's frame, or every real summary would be
+    replaced by the generic message."""
+    _with_scanner(world)
+    text = (
+        "feat(web): a panel\n\n"
+        "- `Open` fills `--accent`/`--on-accent` on hover; ✕ sits apart; ≥44px at ≤800px.\n"
+        "- Two-tier header: `NOTIFICATIONS ● N unread`, then `Clear all? Yes / Cancel`.\n"
+        "- `web/src/app/origins.test.ts`, `docs/design.md` and `install.sh`.\n"
+    )
+    msg = tmp_path / "msg"
+    msg.write_text(text)
+    r = _publish_branch(world, "main", "--message-file", str(msg))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "fallback" not in r.stdout
+    assert _mirror_main_message(world) == text + "\n"
+
+
+def test_a_missing_scanner_publishes_the_generic_message(world, tmp_path):
+    msg = tmp_path / "msg"
+    msg.write_text("feat: a clean message\n")
+    r = _publish_branch(world, "main", "--message-file", str(msg))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _mirror_main_message(world) == "publish: snapshot of main\n\n"
+
+
+def test_the_fallback_is_the_same_commit_as_a_generic_publish(world, tmp_path):
+    """The fallback must not cost determinism: it recomputes to the generic publish's SHA."""
+    r = _publish_branch(world, "main", "--dry-run")
+    generic = r.stdout.strip().splitlines()[-1]
+    msg = tmp_path / "msg"
+    msg.write_text("feat: x " + "infrastructure" + "-docs\n")
+    _with_scanner(world)
+    r = _publish_branch(world, "main", "--message-file", str(msg), "--dry-run")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.stdout.strip().splitlines()[-1] == generic
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "## Summary\n- real\n\n## Test plan\n```md\n## Summary\n- PRIVATE-PLAN-SENTINEL\n```\n",
+        "## Summary\n- real\n\n   ## Test plan\n- PRIVATE-PLAN-SENTINEL\n",  # round 4
+        "<!--\n## Summary\n- PRIVATE-PLAN-SENTINEL\n-->\n## Test plan\n- test\n",  # round 5
+    ],
+)
+def test_builder_to_mirror_only_the_real_summary_publishes(world, tmp_path, body):
+    """Hermes on #1327, rounds 3 to 5, end to end: no other section's text reaches the mirror.
+    Where the body's shape is not the template's, the builder falls back to the title alone."""
+    _with_scanner(world)
+    src = world["src"]
+    builder = src / "scripts/public-commit-message"
+    builder.write_bytes((REPO / "scripts/public-commit-message").read_bytes())
+    builder.chmod(0o755)
+    _git(src, "commit", "-q", "--allow-empty", "-m", "feat(web): a panel (#5)")
+    sha = _git(src, "rev-parse", "HEAD").stdout.strip()
+    pr = tmp_path / "pr.json"
+    pr.write_text(
+        __import__("json").dumps(
+            {"merged": True, "merge_commit_sha": sha, "title": "feat(web): a panel", "body": body}
+        )
+    )
+    msg = tmp_path / "msg"
+    built = subprocess.run(
+        [str(builder), sha, "--pr-json", str(pr)], cwd=src, capture_output=True, text=True
+    )
+    assert built.returncode == 0, built.stderr
+    msg.write_text(built.stdout)
+    r = _publish_branch(world, "main", "--message-file", str(msg))
+    assert r.returncode == 0, r.stdout + r.stderr
+    published = _mirror_main_message(world)
+    assert "SENTINEL" not in published
+    assert published == "feat(web): a panel\n\n"  # not the template's shape: title alone
