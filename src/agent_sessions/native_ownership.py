@@ -651,6 +651,37 @@ def bind(app_session_key: str, *, operation_id: str, owner_token: str, native_id
         )
 
 
+def discharge(app_session_key: str, *, operation_id: str, owner_token: str) -> bool:
+    """Release an UNBOUND creation intent under caller-held launch admission (#1278).
+
+    The only recovery for a reservation: the native runtime calls it after proving the owning
+    worker's exact containment gone AND that no turn was ever claimed for the session. A bound
+    history is permanent and is never discharged; a mismatched owner refuses. Returns whether
+    a pending row was removed (an already-discharged intent is an idempotent no-op).
+    """
+    _app_key(app_session_key)
+    _uuid(operation_id, "operation id")
+    _uuid(owner_token, "owner token")
+    with _ledger() as con:
+        if con is None:
+            return False
+        row = con.execute(
+            "SELECT * FROM ownership WHERE app_session_key=?", (app_session_key,)
+        ).fetchone()
+        if row is None:
+            return False
+        current = _intent(row)
+        if current.operation_id != operation_id or current.owner_token != owner_token:
+            raise OwnershipError("conflict", "only the original creation owner may discharge it")
+        if current.native_id is not None:
+            raise OwnershipError("owned", "a bound native history is permanent")
+        con.execute(
+            "DELETE FROM ownership WHERE app_session_key=? AND native_id IS NULL",
+            (app_session_key,),
+        )
+        return True
+
+
 def lookup(app_session_key: str) -> Intent | None:
     _app_key(app_session_key)
     with _ledger() as con:

@@ -80,6 +80,79 @@ def test_release_retention_honours_operator_hold(tmp_path, hold):
     assert (prefix / "current").resolve() == releases / "release-0"
 
 
+def _prune(tmp_path, prepare=None):
+    prefix = tmp_path / "install"
+    releases = prefix / "releases"
+    releases.mkdir(parents=True)
+    for index in range(6):
+        release = releases / f"release-{index}"
+        release.mkdir()
+        os.utime(release, (1000 + index, 1000 + index))
+    (prefix / "current").symlink_to(releases / "release-0")
+    if prepare is not None:
+        prepare(releases)
+        for index in range(6):
+            os.utime(releases / f"release-{index}", (1000 + index, 1000 + index))
+    harness = tmp_path / "retention.sh"
+    harness.write_text(INSTALL_SH.read_text().replace('\nmain "$@"\n', "\nprune_releases\n"))
+    env = {k: v for k, v in os.environ.items() if not k.startswith("AGENT_SESSIONS_")}
+    env.update(AGENT_SESSIONS_HOME=str(prefix), AGENT_SESSIONS_NO_SERVICE="1")
+    return prefix, releases, harness, env
+
+
+def test_release_retention_keeps_a_release_a_native_worker_leases(tmp_path):
+    """#1278: a release holding a native-leases entry is never pruned (a worker runs from it)."""
+
+    def lease(releases):
+        (releases / "release-1" / "native-leases").mkdir()
+        (releases / "release-1" / "native-leases" / "worker").write_text("")
+        (releases / "release-2" / "native-leases").mkdir()  # emptied lease dir: prunable
+
+    prefix, releases, harness, env = _prune(tmp_path, lease)
+    result = subprocess.run(
+        ["sh", str(harness)], env=env, capture_output=True, text=True, timeout=10
+    )
+    assert result.returncode == 0, result.stderr
+    assert {p.name for p in releases.iterdir()} == {f"release-{i}" for i in (0, 1, 3, 4, 5)}
+    assert (prefix / ".release-prune.lock").exists()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can read a 000 directory")
+def test_release_retention_treats_an_unreadable_lease_dir_as_leased(tmp_path):
+    def lease(releases):
+        locked = releases / "release-1" / "native-leases"
+        locked.mkdir()
+        (locked / "worker").write_text("")
+        locked.chmod(0)
+
+    prefix, releases, harness, env = _prune(tmp_path, lease)
+    try:
+        result = subprocess.run(
+            ["sh", str(harness)], env=env, capture_output=True, text=True, timeout=10
+        )
+    finally:
+        (releases / "release-1" / "native-leases").chmod(0o700)
+    assert result.returncode == 0, result.stderr
+    assert "release-1" in {p.name for p in releases.iterdir()}
+
+
+def test_release_retention_waits_for_a_lease_writer_holding_the_prune_lock(tmp_path):
+    import fcntl
+
+    prefix, releases, harness, env = _prune(tmp_path)
+    fd = os.open(prefix / ".release-prune.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        child = subprocess.Popen(["sh", str(harness)], env=env, text=True)
+        with pytest.raises(subprocess.TimeoutExpired):
+            child.wait(timeout=1)
+        assert len(list(releases.iterdir())) == 6  # nothing pruned while a lease may be written
+    finally:
+        os.close(fd)
+    assert child.wait(timeout=10) == 0
+    assert len(list(releases.iterdir())) == 4
+
+
 def test_install_sh_interactive_bind_selection():
     # #487: an interactive install offers a bind-address choice instead of silently leaving the
     # operator on an unreachable 127.0.0.1.

@@ -607,6 +607,14 @@ def test_launch_site_inventory_requires_review_when_another_route_can_spawn():
         # The preflight probe asks for the provenance-checked binary directly instead of reading
         # argv[0] off a throwaway `new_launch_argv` (#853 §2b) — the same consumer, renamed.
         ("headless_dispatch.py", "entrypoint_path"): 1,
+        # #1278: native readiness probes the admitted source's `--version`, and a worker launch
+        # records that same provenance-checked path for its contained native child. Native API
+        # sources are only codex-app-server / claude-stream-json — never opencode, whose
+        # maintenance admission this inventory guards.
+        ("native_runtime.py", "entrypoint_path"): 2,
+        # …and builds the fixed systemd worker command (`native_containment.launch_argv`),
+        # which starts BattleLab's own worker, never a provider's console argv.
+        ("native_runtime.py", "launch_argv"): 1,
     }
     for module, name in ((webterm, "create_subprocess_exec"), (headless_dispatch, "_popen")):
         tree = ast.parse(Path(module.__file__).read_text())

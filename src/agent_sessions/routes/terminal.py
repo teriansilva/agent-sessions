@@ -6,8 +6,9 @@ server-owned SessionStream handoff, and per-tab claim/demote. Moved verbatim fro
 OpenCode LAUNCH/NEW takes shared maintenance admission (#1040) before building the spawn;
 compaction refuses it with retryable 4502. ATTACH does not create an engine. The non-inherited
 admission is forwarded through both serving paths and released after actual process creation.
-Warm ATTACH also checks permanent native-history ownership, under the same admission lock as
-native binding. An absent discovery row is not permission to attach to an API-owned history.
+Warm ATTACH also checks permanent native-history ownership, WITHOUT the launch lock (binding
+refuses a history whose console socket is live). An absent discovery row is not permission to
+attach to an API-owned history.
 
 Two attach models live here, selected by ``owner.takeover_enabled()`` (#293,
 default OFF):

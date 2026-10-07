@@ -1527,12 +1527,31 @@ prune_releases() {
   fi
   # Keep the newest $KEEP_RELEASES (plus whatever `current` points at) for rollback.
   [ -d "$RELEASES" ] || return 0
-  cur="$(readlink "$CURRENT" 2>/dev/null || true)"
-  # shellcheck disable=SC2012
-  ls -1dt "$RELEASES"/*/ 2>/dev/null | tail -n +"$((KEEP_RELEASES + 1))" | while read -r d; do
-    [ "${d%/}" = "$cur" ] && continue
-    rm -rf "$d"
-  done
+  # A running native worker (#1278) leases the exact release it executes from: a release with
+  # any entry under native-leases/ is never pruned. The lease is written under this same lock,
+  # so a worker cannot start from a release this pass already decided to remove. No flock →
+  # no evidence → keep everything.
+  if ! command -v flock >/dev/null 2>&1; then
+    log "flock unavailable — kept all rollback copies (native-leases cannot be checked)"
+    return 0
+  fi
+  (
+    flock 9 || exit 0
+    cur="$(readlink "$CURRENT" 2>/dev/null || true)"
+    # shellcheck disable=SC2012
+    ls -1dt "$RELEASES"/*/ 2>/dev/null | tail -n +"$((KEEP_RELEASES + 1))" | while read -r d; do
+      [ "${d%/}" = "$cur" ] && continue
+      if [ -e "${d}native-leases" ] || [ -L "${d}native-leases" ]; then
+        # An unreadable lease directory is not evidence of "no lease".
+        _leases="$(ls -A "${d}native-leases" 2>/dev/null)" || _leases=unreadable
+        if [ -n "$_leases" ]; then
+          log "kept ${d%/} — a native worker still runs from it (native-leases)"
+          continue
+        fi
+      fi
+      rm -rf "$d"
+    done
+  ) 9>"$PREFIX/.release-prune.lock"
 }
 
 _healthcheck() {

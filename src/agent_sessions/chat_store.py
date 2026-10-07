@@ -43,8 +43,10 @@ import fcntl
 import json
 import os
 import re
+import stat
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -199,20 +201,98 @@ def append(root: Path, session_id: str, *records: dict) -> None:
     fd = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CLOEXEC | os.O_NOFOLLOW)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
-        # "replace": a lone surrogate from anywhere upstream is written as "?" rather than raising
-        # and losing the whole batch of records (Hermes on #1228). Callers already pass
-        # `chat_tools.printable` text; this is the last line of defence, not the first.
-        data = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records).encode(
-            "utf-8", "replace"
-        )
-        size = os.fstat(fd).st_size
-        if size and os.pread(fd, 1, size - 1) != b"\n":
-            data = b"\n" + data
-        view = memoryview(data)
-        while view:
-            n = os.write(fd, view)
-            view = view[n:]
+        _append_fd(fd, _records_bytes(records))
+    finally:
+        os.close(fd)
+
+
+def _records_bytes(records) -> bytes:
+    # Preserve the existing chat replacement rule for unpaired Unicode surrogates (#1228).
+    return "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records).encode(
+        "utf-8", "replace"
+    )
+
+
+def _append_fd(fd: int, data: bytes, *, repair_tail: bool = True) -> None:
+    size = os.fstat(fd).st_size
+    if repair_tail and size and os.pread(fd, 1, size - 1) != b"\n":
+        data = b"\n" + data
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        if not written:
+            raise OSError("conversation append made no progress")
+        view = view[written:]
+    os.fsync(fd)
+
+
+def read_shared(root: Path, session_id: str, *, max_bytes: int) -> bytes:
+    """A consistent snapshot of a private bounded journal under a SHARED flock (#1278).
+
+    Appends hold the exclusive lock, so this never observes a partial transaction. It applies
+    the same private-file checks as `transaction` and writes nothing. It still crosses fsync:
+    a writer that died between write and sync must not have its bytes observed (and acted on)
+    before they are durable. Syncing an already clean file is cheap.
+    """
+    fd = os.open(_path(root, session_id), os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH)
+        st = os.fstat(fd)
+        if (
+            not stat.S_ISREG(st.st_mode)
+            or st.st_uid != os.geteuid()
+            or st.st_mode & 0o077
+            or st.st_nlink != 1
+            or st.st_size > max_bytes
+        ):
+            raise ValueError("conversation is not a private bounded journal")
+        raw = os.pread(fd, max_bytes + 1, 0)
+        if len(raw) != st.st_size:
+            raise ValueError("conversation changed while reading")
         os.fsync(fd)
+        return raw
+    finally:
+        os.close(fd)
+
+
+def transaction(
+    root: Path,
+    session_id: str,
+    update: Callable[[bytes], tuple[list[dict], object]],
+    *,
+    max_bytes: int,
+):
+    """Read/compare/append under the existing journal flock, with a hard byte bound.
+
+    Native clients use this to claim an operation before stdin handoff (#1278). The callback
+    receives the exact bytes, including any torn tail, and must fail closed on unreadable
+    native state. It returns records to append and its result; it never performs an RPC.
+    Replay with no new records still crosses fsync before its result is returned. Callers
+    must separately enforce worker ownership and execution authority at the effect boundary.
+    """
+    if type(max_bytes) is not int or max_bytes <= 0:
+        raise ValueError("conversation transaction needs a positive byte bound")
+    fd = os.open(_path(root, session_id), os.O_RDWR | os.O_APPEND | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        st = os.fstat(fd)
+        if (
+            not stat.S_ISREG(st.st_mode)
+            or st.st_uid != os.geteuid()
+            or st.st_mode & 0o077
+            or st.st_nlink != 1
+            or st.st_size > max_bytes
+        ):
+            raise ValueError("conversation is not a private bounded journal")
+        raw = os.pread(fd, max_bytes + 1, 0)
+        if len(raw) != st.st_size:
+            raise ValueError("conversation changed while reading")
+        records, result = update(raw)
+        data = _records_bytes(records)
+        if len(raw) + len(data) + bool(data and raw and not raw.endswith(b"\n")) > max_bytes:
+            raise ValueError("conversation journal capacity was reached")
+        _append_fd(fd, data, repair_tail=bool(data))
+        return result
     finally:
         os.close(fd)
 

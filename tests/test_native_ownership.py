@@ -645,3 +645,44 @@ def test_an_unrelated_concrete_console_never_blocks_binding(state, source):
     native = uid()
     with sessionlock.acquire(f"codex:{uid()}"):  # another console, its own history
         assert bind(args, native).native_id == native
+
+
+def test_discharge_releases_only_an_unbound_creation_for_its_original_owner(state, source):
+    """#1278: the one recovery path for a reservation; a bound history is permanent."""
+    pending = reservation(source)
+    ownership.reserve(**pending)
+    prov = provider(source.canonical_path)
+    rejected("pending", ownership.check_console, prov, f"new-{uid()}")
+    with storage.locked(admission.LOCK):
+        rejected(
+            "conflict",
+            ownership.discharge,
+            pending["app_session_key"],
+            operation_id=pending["operation_id"],
+            owner_token=uid(),
+        )
+        assert ownership.discharge(
+            pending["app_session_key"],
+            operation_id=pending["operation_id"],
+            owner_token=pending["owner_token"],
+        )
+        assert not ownership.discharge(
+            pending["app_session_key"],
+            operation_id=pending["operation_id"],
+            owner_token=pending["owner_token"],
+        )
+    assert ownership.lookup(pending["app_session_key"]) is None
+    ownership.check_console(prov, f"new-{uid()}")
+    bound = reservation(source)
+    ownership.reserve(**bound)
+    native = uid()
+    bind(bound, native)
+    with storage.locked(admission.LOCK):
+        rejected(
+            "owned",
+            ownership.discharge,
+            bound["app_session_key"],
+            operation_id=bound["operation_id"],
+            owner_token=bound["owner_token"],
+        )
+    rejected("owned", ownership.check_console, prov, native)

@@ -8,10 +8,11 @@ Native manifests can be validated before their adapters ship, but cannot execute
 
 from __future__ import annotations
 
+import subprocess
 from dataclasses import asdict, dataclass
 from types import MappingProxyType
 
-from . import chat_config, chat_runtime, chat_store, engines
+from . import chat_config, chat_runtime, chat_store, engines, native_runtime
 from .engine_errors import EngineError
 from .plugins import api_source
 from .structured_types import ExecutionGuard, normalize_context
@@ -83,8 +84,85 @@ class _ChatAdapter:
         return await _call(chat_runtime.decide, *args, **kwargs)
 
 
+class _NativeAdapter:
+    """Contained native protocol workers (#1278). Vendor login stays the vendor's."""
+
+    authentication = "vendor_native"
+
+    @staticmethod
+    def operations(prov) -> tuple[str, ...]:
+        return ("create", "snapshot", "submit", "decide", "events", "interrupt", "stop", "probe")
+
+    @staticmethod
+    def ready(prov) -> tuple[bool, str | None]:
+        return native_runtime.readiness(prov)
+
+    async def create(self, engine, cwd, *, session_id, model=None, execution_admission=None):
+        return await _native(
+            native_runtime.create,
+            engine,
+            cwd,
+            session_id=session_id,
+            model=model,
+            execution_admission=execution_admission,
+        )
+
+    async def snapshot(self, engine, native):
+        return await _native(native_runtime.snapshot, engine, native)
+
+    async def submit(self, engine, native, tid, text, **kwargs):
+        return await _native(native_runtime.submit, engine, native, tid, text, **kwargs)
+
+    async def decide(self, engine, native, turn_id, request_id, decision, user, **kwargs):
+        return await _native(
+            native_runtime.decide, engine, native, turn_id, request_id, decision, user, **kwargs
+        )
+
+    async def events(self, engine, native, after, limit):
+        return await _native(native_runtime.events, engine, native, after, limit)
+
+    async def interrupt(self, engine, native, **kwargs):
+        return await _native(native_runtime.interrupt, engine, native, **kwargs)
+
+    async def stop(self, engine, native):
+        return await _native(native_runtime.stop, engine, native)
+
+    async def probe(self, engine, native):
+        return await _native(native_runtime.probe, engine, native)
+
+
+async def _native(fn, *args, **kwargs):
+    from . import native_journal, native_ownership, native_state
+    from .plugins import storage
+
+    try:
+        return await fn(*args, **kwargs)
+    except native_runtime.NativeError as exc:
+        raise StructuredError(exc.status, exc.detail) from None
+    except native_journal.JournalError as exc:
+        raise StructuredError(
+            503, f"the conversation journal is unavailable: {exc.detail}"
+        ) from None
+    except (
+        native_state.StateError,
+        native_ownership.OwnershipError,
+        storage.StateError,
+        OSError,
+        subprocess.SubprocessError,
+    ) as exc:
+        # Lifecycle locks, private state, the ownership ledger or systemd were unavailable:
+        # a retryable refusal, never a 500 (and never a guess about what happened).
+        raise StructuredError(503, f"the native runtime is unavailable: {exc}") from None
+
+
 # A manifest selects reviewed behavior; it cannot register code or invent a supported operation.
-_ADAPTERS = MappingProxyType({("chat", "openai-chat"): _ChatAdapter()})
+_ADAPTERS = MappingProxyType(
+    {
+        ("chat", "openai-chat"): _ChatAdapter(),
+        ("api", "codex-app-server"): _NativeAdapter(),
+        ("api", "claude-stream-json"): _NativeAdapter(),
+    }
+)
 
 
 def _kind(manifest) -> str | None:
@@ -95,8 +173,12 @@ def _kind(manifest) -> str | None:
     return None
 
 
-def describe(engine_id: str) -> ClientDescriptor:
-    """Current capability/readiness data, never an authorization grant or a network probe."""
+def describe(engine_id: str, *, check_ready: bool = True) -> ClientDescriptor:
+    """Current capability/readiness data, never an authorization grant or a network probe.
+
+    ``check_ready=False`` answers only which operations are implemented: readiness can run
+    local probes (a vendor CLI's ``--version``), which every facade call must not repeat.
+    """
     with engines.registry.snapshot_scope(fresh=True) as roster:
         prov = roster.by_id.get(engine_id)
         if prov is None:
@@ -130,6 +212,8 @@ def describe(engine_id: str) -> ClientDescriptor:
             )
         if not engines.registry.admits(prov):
             ready, reason = False, "the agent changed or was removed"
+        elif not check_ready:
+            ready, reason = False, "readiness not checked"
         else:
             ready, reason = adapter.ready(prov)
         return ClientDescriptor(
@@ -146,9 +230,10 @@ def describe(engine_id: str) -> ClientDescriptor:
 
 def require(engine_id: str, operation: str) -> ClientDescriptor:
     """Require implemented support; the adapter checks live readiness after replay lookup."""
-    descriptor = describe(engine_id)
+    descriptor = describe(engine_id, check_ready=False)
     if operation not in descriptor.operations:
-        raise StructuredError(409, descriptor.reason or f"{operation} is not supported")
+        reason = None if descriptor.reason == "readiness not checked" else descriptor.reason
+        raise StructuredError(409, reason or f"{operation} is not supported")
     return descriptor
 
 
@@ -228,8 +313,8 @@ def _snapshot(session_key: str, raw: dict) -> dict:
     # Spend the display budget on newest turns first; return chronological order.
     turns = [_turn(t, budget) for t in reversed(all_turns[-SNAPSHOT_TURNS:])]
     turns.reverse()
-    requests = []
-    for turn in all_turns:
+    requests = list(raw.get("pending_requests") or [])
+    for turn in all_turns if "pending_requests" not in raw else ():
         if turn["status"] != "awaiting_approval":
             continue
         for proposal in turn.get("proposals", []):
@@ -265,6 +350,7 @@ def _snapshot(session_key: str, raw: dict) -> dict:
         "turns": turns,
         "omitted_turns": max(0, len(all_turns) - len(turns)),
         "pending_requests": requests,
+        **({"native": dict(raw["native"])} if "native" in raw else {}),
     }
 
 
@@ -349,3 +435,52 @@ async def decide(
         execution_admission=execution_admission,
     )
     return {"session_key": f"{engine}:{native}", "decision_id": decision_id, **result}
+
+
+async def events(session_key: str, *, after: int, limit: int = 100) -> dict:
+    """Durable journal observations after a cursor; the cursor counts records, not time."""
+    engine, native = _key(session_key)
+    if type(after) is not int or after < 0 or type(limit) is not int or not 1 <= limit <= 100:
+        raise StructuredError(422, "after must be a cursor and limit 1-100")
+    page = await _adapter(engine, "events").events(engine, native, after, limit)
+    return {"session_key": f"{engine}:{native}", **page}
+
+
+async def interrupt(session_key: str, *, operation_id: str, turn_id: str) -> dict:
+    """Request interruption of the exact active turn. Acknowledgement is not completion."""
+    engine, native = _key(session_key)
+    result = await _adapter(engine, "interrupt").interrupt(
+        engine, native, operation_id=_operation_id(operation_id), turn_id=_operation_id(turn_id)
+    )
+    return {"session_key": f"{engine}:{native}", **result}
+
+
+def _containment_target(session_key: str):
+    """Stop/probe reach an ALREADY-ADMITTED native worker even when its provider is retiring:
+    retirement must not strand a running process (Hermes on #1278). New work still requires
+    live admission through `_key`/`_adapter`."""
+    try:
+        engine, native = _key(session_key)
+        return engine, native, _adapter(engine, "stop")
+    except StructuredError:
+        engine, sep, native = session_key.partition(":")
+        prov = engines.get_any(engine) if sep else None
+        if prov is None or _ADAPTERS.get((prov.manifest.runtime, _kind(prov.manifest))) is None:
+            raise
+        adapter = _ADAPTERS[(prov.manifest.runtime, _kind(prov.manifest))]
+        if not isinstance(adapter, _NativeAdapter):
+            raise
+        return engine, native, adapter
+
+
+async def stop(session_key: str) -> dict:
+    """Close the session's worker generation and report proved containment."""
+    engine, native, adapter = _containment_target(session_key)
+    result = await adapter.stop(engine, native)
+    return {"session_key": f"{engine}:{native}", **result}
+
+
+async def probe(session_key: str) -> dict:
+    engine, native, adapter = _containment_target(session_key)
+    result = await adapter.probe(engine, native)
+    return {"session_key": f"{engine}:{native}", **result}

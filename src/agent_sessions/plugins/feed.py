@@ -160,8 +160,8 @@ def entry(value: object, *, signed: bool) -> Entry:
     raw = canonical(value["manifest"])
     manifest = load_bytes(raw, name="plugin.json", source="signed-feed" if signed else "local")
     if manifest.runtime == "api":
-        # #1275 reserves the source/protocol contract, but no native adapter is implemented yet.
-        # Refuse before the manager can treat this source-only entry as an executable install.
+        # The native runtime exists (#1278), but roster exposure waits for the custom UI slice
+        # of #1273: until then no installed entry may present a client nothing can render.
         raise FeedError("native API adapters are not available in this build")
     if manifest.id in kinds.ROUTE_RESERVED_IDS:
         raise FeedError("this plugin id is reserved for a Settings route")

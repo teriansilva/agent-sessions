@@ -81,6 +81,7 @@ from .routes import pulse as pulse_routes
 from .routes import scrollback as scrollback_routes
 from .routes import sessions as sessions_routes
 from .routes import spa as spa_routes
+from .routes import structured as structured_routes
 from .routes import system as system_routes
 from .routes import templates as templates_routes
 from .routes import terminal as terminal_routes
@@ -617,6 +618,8 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     ai_review_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
     # API agents (#1209): conversations BattleLab holds itself, and each agent's endpoint.
     chat_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
+    # Structured clients (#1278): the transport-neutral facade, incl. contained native workers.
+    structured_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
     # Prompt catalog (#824): the one read/write surface for every AI system prompt.
     prompts_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
     # Cross-engine handoff (#597): prepare (seed preview + handle) / commit (mint + bind).
