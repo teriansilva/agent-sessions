@@ -36,6 +36,7 @@ vi.mock("../lib/api", async () => {
       agentUsageRefresh: vi.fn(),
       setAgentBudgets: vi.fn(),
       system: vi.fn(),
+      resources: vi.fn().mockRejectedValue(new Error("Resource readings unavailable in this fixture")),
       updateCheck: vi.fn(),
       updateApply: vi.fn(),
       // #1085: the Updates card reads the installer's progress record.

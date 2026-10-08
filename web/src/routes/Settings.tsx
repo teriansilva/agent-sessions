@@ -1,3 +1,4 @@
+import { ResourceLimits } from "../components/settings/ResourceLimits";
 import encodeQR from "@paulmillr/qr";
 import {
   Archive,
@@ -2547,7 +2548,7 @@ export function Settings() {
         {section === "security" && <SecurityPanel />}
         {section === "updates" && <UpdatesCard />}
         {section === "analytics" && <AnalyticsCard />}
-        {section === "system" && <SystemCard />}
+        {section === "system" && <><SystemCard /><ResourceLimits /></>}
         {section === "maintenance" && (
           <>
             <CleanupCard />

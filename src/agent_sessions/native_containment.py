@@ -25,6 +25,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Literal
 
+from . import resource_limits
+
 MAX_SHOW_BYTES = 16 * 1024
 MAX_CGROUP_BYTES = 4096
 _INVOCATION = re.compile(r"[0-9a-f]{32}")
@@ -142,6 +144,7 @@ def launch_argv(
     state_dir: str,
     home: str,
     runtime_dir: str | None = None,
+    tasks_max: int = resource_limits.DEFAULTS["api_tasks"],
 ) -> list[str]:
     """Build the one contained service command; no scope/passthrough fallback exists.
 
@@ -151,6 +154,8 @@ def launch_argv(
     """
     if not isinstance(worker, WorkerIdentity):
         raise ContainmentError("a reserved worker identity is required")
+    if not resource_limits.valid("api_tasks", tasks_max):
+        raise ContainmentError("invalid API worker task limit")
     environment = [
         f"HOME={_path(home)}",
         "PATH=/usr/local/bin:/usr/bin:/bin",
@@ -184,7 +189,7 @@ def launch_argv(
         "--property=TimeoutStartSec=30",
         "--property=TimeoutStopSec=15",
         "--property=RuntimeMaxSec=86400",
-        "--property=TasksMax=2048",
+        f"--property=TasksMax={tasks_max}",
         "--property=MemoryMax=8G",
         "--property=OOMPolicy=kill",
         "--property=Delegate=no",

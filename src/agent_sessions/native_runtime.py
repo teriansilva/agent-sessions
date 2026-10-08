@@ -405,6 +405,9 @@ def _launch_locked(session_id: str, record: dict, prov, binding, *, mode: str) -
         # creation's generation is born only from `starting` (the `/start` that set it, under this
         # same lock) or `started`. Fail closed here, where every generation is born.
         raise NativeError(409, "this session has not been started; start or discard it")
+    from . import resource_limits
+
+    policy = resource_limits.values()
     worker = native_containment.WorkerIdentity.mint()
     python, release = interpreter()
     state_dir = native_state.root()
@@ -432,6 +435,9 @@ def _launch_locked(session_id: str, record: dict, prov, binding, *, mode: str) -
         "user": os.environ.get("USER"),
         "logname": os.environ.get("LOGNAME"),
         "server_env": _server_env(),
+        "thread_environment": resource_limits.thread_environment(
+            os.environ, policy["library_threads"]
+        ),
         "idle_timeout": WORKER_IDLE_TIMEOUT,
     }
     if adapter == "opencode-acp":
@@ -468,6 +474,7 @@ def _launch_locked(session_id: str, record: dict, prov, binding, *, mode: str) -
         state_dir=str(state_dir),
         home=str(Path.home()),
         runtime_dir=runtime if re.fullmatch(r"/run/user/[0-9]{1,10}", runtime) else None,
+        tasks_max=policy["api_tasks"],
     )
     launched = HOST.launch(argv)
     observation = HOST.show(worker)

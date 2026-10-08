@@ -29,7 +29,7 @@ export type VisualPath = {
   /** An interaction to run after `goto`, before `waitFor` (#1109): the consolidated window
    *  chrome only exists on an OPEN window, and a capture that only visits a route cannot show
    *  it. The one shipped step opens the first session chip as a window. */
-  prepare?: "open-first-window";
+  prepare?: "open-first-window" | "resource-controls" | "resource-usage";
 };
 
 /** Screen formats — every area is captured at each (the operator asked for several). */
@@ -56,6 +56,24 @@ const SPA_MOUNTED = {
 } as const;
 
 export const VISUAL_PATHS: VisualPath[] = [
+  {
+    group: "authed",
+    path: "/settings/system",
+    name: "settings-resources",
+    description: "Settings — finite next-launch resource budgets and environment overrides",
+    requireAuth: "admin",
+    prepare: "resource-controls",
+    waitFor: { selector: '#resources-heading', timeoutMs: 12000 },
+  },
+  {
+    group: "authed",
+    path: "/settings/system",
+    name: "settings-resource-usage",
+    description: "Settings — observed running task budgets and inherited pressure",
+    requireAuth: "admin",
+    prepare: "resource-usage",
+    waitFor: { selector: '#resource-usage-heading', timeoutMs: 12000 },
+  },
   {
     group: "authed",
     path: "/library/playbooks/create/new",

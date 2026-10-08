@@ -468,12 +468,36 @@ def test_journal_records_no_raw_native_frames(host, project):
 @pytest.mark.anyio
 async def test_real_systemd_contains_and_stops_a_worker(tmp_home, tmp_path, project, monkeypatch):
     """The production Host: a transient unit, a pinned invocation, cgroup-proved teardown."""
+    from agent_sessions import resource_limits, resource_usage
+
+    resource_limits.save({"api_tasks": 512, "library_threads": 3})
+    for name in resource_limits.THREAD_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(native_runtime, "HOST", native_runtime.Host())
     bindir = tmp_path / "engine-bin"
     bindir.mkdir()
     bindir.chmod(0o755)
     script = bindir / "codex"
-    script.write_text(f"#!{sys.executable}\n" + FAKE.read_text())
+    # Inert children exercise the real native child's inherited finite group/env.
+    probe = """
+import json, os, pathlib, subprocess, sys
+if 'app-server' in sys.argv:
+    relative = pathlib.Path('/proc/self/cgroup').read_text().strip().split(':', 2)[2]
+    cg = pathlib.Path('/sys/fs/cgroup') / relative.lstrip('/')
+    before = (cg / 'pids.events').read_text()
+    command = [sys.executable, '-c', 'import time; time.sleep(0.25)']
+    peers = [subprocess.Popen(command) for _ in range(8)]
+    try:
+        loaded = int((cg / 'pids.current').read_text())
+        subprocess.run([sys.executable, '-c', 'pass'], check=True)
+    finally:
+        for peer in peers: peer.wait(timeout=5)
+    evidence = {'before': before, 'after': (cg / 'pids.events').read_text(),
+                'maximum': (cg / 'pids.max').read_text().strip(), 'loaded': loaded,
+                'threads': os.environ.get('RAYON_NUM_THREADS')}
+    pathlib.Path('resource-probe.json').write_text(json.dumps(evidence))
+"""
+    script.write_text(f"#!{sys.executable}\n" + probe + "\n" + FAKE.read_text())
     script.chmod(0o755)
     monkeypatch.setenv("AGENT_SESSIONS_CODEX_BIN", str(script))
     monkeypatch.delenv("AGENT_SESSIONS_CODEX_SESSIONS_DIR", raising=False)
@@ -491,6 +515,20 @@ async def test_real_systemd_contains_and_stops_a_worker(tmp_home, tmp_path, proj
         worker = native_state.read_session(session_id)["current_worker"]
         life = native_state.read_lifecycle(worker)
         assert life["invocation_id"] and life["control_group"].endswith(".service")
+        observed = resource_usage.observe(
+            Path("/sys/fs/cgroup") / life["control_group"].lstrip("/")
+        )
+        assert observed["own"]["maximum"] == 512
+        evidence = json.loads((project / "resource-probe.json").read_text())
+        assert evidence["maximum"] == "512" and evidence["threads"] == "3"
+        assert evidence["before"] == evidence["after"] and evidence["loaded"] >= 10
+        resource_limits.save({"api_tasks": 2048})
+        assert (
+            resource_usage.observe(Path("/sys/fs/cgroup") / life["control_group"].lstrip("/"))[
+                "own"
+            ]["maximum"]
+            == 512
+        )
         turn = ident()
         await runtime.submit_turn(key, operation_id=turn, text="hello")
         await settle(key, turn)
@@ -1181,3 +1219,27 @@ async def test_a_client_that_takes_no_pictures_refuses_them_before_anything_is_s
         await runtime.submit_turn(key, operation_id=ident(), text="x", attachments=["../x.png"])
     assert bogus.value.status == 422
     assert not [f for f in frames(project) if f["frame"].get("method") == "turn/start"]
+
+
+@pytest.mark.anyio
+async def test_resource_policy_is_frozen_per_generation(host, project, monkeypatch):
+    from agent_sessions import resource_limits
+
+    resource_limits.save({"api_tasks": 1024, "library_threads": 3})
+    for name in resource_limits.THREAD_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("OPENBLAS_NUM_THREADS", "1")
+    created = await runtime.create_session("codex-api", str(project), operation_id=ident())
+    assert "--property=TasksMax=1024" in host.launches[-1]
+    key = created["session_key"]
+    record = native_state.read_session(key.split(":", 1)[1])
+    worker = record["current_worker"]
+    path = native_state.root() / "workers" / worker / "config.json"
+    config = json.loads(path.read_text())
+    assert config["thread_environment"]["RAYON_NUM_THREADS"] == "3"
+    assert config["thread_environment"]["OPENBLAS_NUM_THREADS"] == "1"
+    resource_limits.save({"api_tasks": 2048, "library_threads": 12})
+    await runtime.probe(key)
+    assert len(host.launches) == 1
+    assert json.loads(path.read_text()) == config
+    assert native_state.read_session(key.split(":", 1)[1])["current_worker"] == worker

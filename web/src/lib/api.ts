@@ -1,3 +1,4 @@
+import type { Resources, ResourceSettings, ResourceValues } from "../types/resources";
 // Typed client for the FastAPI `/api/*` surface. Same-origin; cookie session auth.
 // Mutations (later) attach the CSRF token + are origin-checked server-side.
 import type { AuthoringSchema, Files } from "../components/playbooks/playbookDraft";
@@ -764,6 +765,8 @@ export const api = {
     ),
   /** Host/system info for the Settings → System card (fail-soft fields). */
   system: () => getJson<SystemInfo>("/api/system"),
+  resources: () => getJson<Resources>("/api/system/resources"),
+  setResources: (body: Partial<ResourceValues>) => mutateJson<{ settings: ResourceSettings }>("POST", "/api/system/resources", body),
   /** Self-update: compare the running version to the channel's latest. */
   updateCheck: () => getJson<UpdateInfo>("/api/update/check"),
   /** Apply the channel's latest (re-runs the installer detached). CSRF-guarded; 202. */

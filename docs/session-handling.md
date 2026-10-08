@@ -311,7 +311,7 @@ from one `TasksMax` budget. On LAUNCH the built dtach argv is now wrapped by
 ```
 systemd-run --user --scope --collect --quiet \
   --unit as-<engine>-<sid8>-<nonce>.scope \
-  -p TasksMax=2048 … -- dtach -c <sock> -z -E -r winch <agent argv…>
+  -p TasksMax=4096 … -- dtach -c <sock> -z -E -r winch <agent argv…>
 ```
 
 - `--scope` fork/execs the payload in-process, so the PTY wiring, the
@@ -332,27 +332,41 @@ systemd-run --user --scope --collect --quiet \
 | Env | Default | Meaning |
 |---|---|---|
 | `AGENT_SESSIONS_SESSION_SCOPES` | `1` | `0` disables scoping entirely (logged once as *disabled (config)*). |
-| `AGENT_SESSIONS_SCOPE_PROPERTIES` | `TasksMax=2048` | Space-separated `Key=Value` systemd properties applied per scope. Strictly validated (`Key=Value` charset) so env contents can never inject argv tokens. Memory limits are deliberately not defaulted — opt in after verifying controller delegation on staging. |
+| `AGENT_SESSIONS_SCOPE_PROPERTIES` | `TasksMax=4096` | Legacy space-separated systemd properties. Valid non-task properties are retained; missing/invalid TasksMax gets the finite default. A saved console task limit wins over the legacy task property. |
 | `AGENT_SESSIONS_SYSTEMD_RUN_BIN` | `systemd-run` | Override for tests/unusual installs. |
 
-**Setting `AGENT_SESSIONS_SCOPE_PROPERTIES` replaces the default outright — it does not merge.**
-So an operator adding a memory limit must restate the task budget:
+Settings → System exposes console tasks (recommended **4096**), API worker tasks (**4096**),
+and background library threads (**8**). Task values accept 256–16384; library threads accept
+1–64. **Saving affects new launches only**, never attaches or running worker generations.
+The screen distinguishes next-launch settings from current cgroup limits and inherited pressure.
 
-```sh
-# in $PREFIX/env (~/.local/share/agent-sessions/env), then: systemctl --user restart agent-sessions
-AGENT_SESSIONS_SCOPE_PROPERTIES=TasksMax=2048 MemoryHigh=8G
-```
+Before a console task value is saved, a valid legacy `TasksMax` remains effective, including
+percentages and `infinity`; the UI labels it as an environment override. Saving explicitly
+replaces that override for future launches. Other valid properties, such as `MemoryHigh=8G`,
+remain intact. An environment string without TasksMax now receives the finite 4096 default.
+Malformed tokens/task values are ignored and the Settings screen reports a notice. The installer
+preserves existing env keys across upgrades.
 
-`install.sh` preserves existing keys in that file across upgrades, so a tuned value survives a
-reinstall. A token that isn't a bare `Key=Value` is dropped with a warning rather than passed on.
+The fixed `OPENBLAS_NUM_THREADS`, `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `RAYON_NUM_THREADS` and
+`TOKIO_WORKER_THREADS` defaults are applied only when the launch environment has no explicit
+value. Native workers freeze the same fixed-name environment in their private generation config;
+no other host variable gains access to the native child. A child may change its library defaults:
+the task cgroup, where available, is the actual resource boundary.
 
-#### Why the task budget is 2048 (#785)
+#### Why the recommended task budget is 4096 (#1362)
 
-It was `512`, and that was not a ceiling only a runaway process could reach: on one production
-host a journal scan found **eight** real sessions hitting `cgroup: fork rejected by pids
-controller` in five days — agents running out of PIDs during ordinary work, with `fork()`
-returning `EAGAIN` mid-task. 2048 keeps the property that matters: it is still far below the
-broker unit's own `TasksMax=8192`, so a fork bomb exhausts its own scope and not the host.
+The previous 2048 ceiling was exhausted by a shared coding daemon, connectors and builds inside
+one console scope. 4096 gives development work more headroom, while bounded library pools avoid
+reserving one worker per host CPU. It is a per-process-group budget, not a cap on saved sessions
+or a guarantee of one group per conversation. Parent cgroup budgets remain independent shared
+constraints. The previous 512 ceiling had already caused real-session exhaustion (#785).
+
+Read-only diagnostics inspect known local console scopes and API worker services, including
+ancestor task limits. Missing counters remain unknown. Warnings start at 80%, critical pressure
+at 95%; denial counts are cumulative for the current group lifetime. The bounded collector
+never spawns a process, scans transcripts, resizes groups or cleans up sessions. Console scoping
+keeps its existing unavailable/disabled fallback; native worker containment still fails closed.
+See [the resource policy invariant](invariants/resource-limits.md).
 
 **A scope bounds resources, not signals — and that hole is still open.** In one observed outage a
 process inside a session scope sent `SIGINT` to the `systemd --user` manager; systemd reads that

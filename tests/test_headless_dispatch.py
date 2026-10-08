@@ -1525,3 +1525,33 @@ async def test_disable_during_preparation_fences_every_headless_spawn(env, reg, 
     assert not out.ok and out.reason == "agent removed"
     assert not spawns
     assert bool(probes) == (phase == "after-probe")
+
+
+@pytest.mark.anyio
+async def test_saved_resource_policy_reaches_the_headless_spawn(env, prov, reg, monkeypatch):
+    from agent_sessions import resource_limits, scopedspawn
+
+    resource_limits.save({"console_tasks": 3072, "library_threads": 6})
+    for name in resource_limits.THREAD_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("OPENBLAS_NUM_THREADS", "1")
+    monkeypatch.setattr(scopedspawn, "enabled", lambda: True)
+    monkeypatch.setattr(scopedspawn, "available", lambda: True)
+    _stub_spawn(monkeypatch)
+    _stub_started(monkeypatch)
+    original = headless_dispatch._popen
+    observed = []
+
+    def capture(argv, **kwargs):
+        observed.append((argv, kwargs["env"]))
+        return original(argv, **kwargs)
+
+    monkeypatch.setattr(headless_dispatch, "_popen", capture)
+    outcome = await headless_dispatch.dispatch(
+        registry=reg, engine="claude", cwd=str(env), brief="go"
+    )
+    assert outcome.ok and len(observed) == 1
+    command, environment = observed[0]
+    assert "TasksMax=3072" in command
+    assert environment["OPENBLAS_NUM_THREADS"] == "1"
+    assert environment["OMP_NUM_THREADS"] == environment["RAYON_NUM_THREADS"] == "6"

@@ -757,6 +757,9 @@ async def dispatch(
         env.setdefault("TERM", "xterm-256color")
         env.setdefault("COLORTERM", "truecolor")
         env.update(launch_env)
+        from . import resource_limits
+
+        env.update(resource_limits.thread_environment(env))
         # OWNERSHIP STARTS HERE, not at `transfer()` (#898 review 5, finding 2).
         #
         # The moment `create_subprocess_exec` is entered, the lock fd may already have been

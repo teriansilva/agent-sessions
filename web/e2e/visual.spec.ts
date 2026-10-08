@@ -94,6 +94,12 @@ async function prepareOpenFirstWindow(page: Page): Promise<void> {
 /** Run the entry's declared interaction, if any, between `goto` and `waitFor`. */
 async function runPrepare(page: Page, p: VisualPath): Promise<void> {
   if (p.prepare === "open-first-window") await prepareOpenFirstWindow(page);
+  if (p.prepare === "resource-controls" || p.prepare === "resource-usage") {
+    await page.locator('#resources-heading + p').waitFor();
+    await page.getByLabel("Console session task limit").waitFor();
+    const heading = p.prepare === "resource-controls" ? "#resources-heading" : "#resource-usage-heading";
+    await page.locator(heading).evaluate((el) => el.scrollIntoView({ block: "start" }));
+  }
 }
 
 test("visual capture", async ({ browser }, info) => {

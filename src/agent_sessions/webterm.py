@@ -610,6 +610,10 @@ async def run(
     env = dict(os.environ)
     env.setdefault("TERM", "xterm-256color")
     env.setdefault("COLORTERM", "truecolor")
+    if launch_provider is not None:
+        from . import resource_limits
+
+        env.update(resource_limits.thread_environment(env))
 
     def create():
         return asyncio.create_subprocess_exec(

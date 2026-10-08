@@ -99,6 +99,16 @@ def native_environment(config: dict) -> dict[str, str]:
         "TERM": "dumb",
         "NO_COLOR": "1",
     }
+    from .resource_limits import THREAD_VARIABLES
+
+    # Frozen at generation launch; old configs retain their original environment.
+    threads = config.get("thread_environment", {})
+    if not isinstance(threads, dict) or any(
+        key not in THREAD_VARIABLES or not isinstance(value, str) or "\0" in value
+        for key, value in threads.items()
+    ):
+        raise WorkerError("invalid library thread environment")
+    env.update(threads)
     for key in ("USER", "LOGNAME"):
         if isinstance(config.get(key.lower()), str):
             env[key] = config[key.lower()]

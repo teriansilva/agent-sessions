@@ -59,7 +59,7 @@ def test_launch_has_one_contained_entrypoint_and_private_output():
         "Restart=no",
         "SendSIGKILL=yes",
         "RuntimeMaxSec=86400",
-        "TasksMax=2048",
+        "TasksMax=4096",
         "MemoryMax=8G",
         "Delegate=no",
         "StandardInput=null",

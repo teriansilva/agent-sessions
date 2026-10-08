@@ -36,6 +36,8 @@ import shutil
 import subprocess
 import time
 
+from . import resource_limits
+
 log = logging.getLogger("agent_sessions.scopedspawn")
 
 SYSTEMD_RUN_BIN = os.environ.get("AGENT_SESSIONS_SYSTEMD_RUN_BIN") or "systemd-run"
@@ -44,10 +46,6 @@ SYSTEMD_RUN_BIN = os.environ.get("AGENT_SESSIONS_SYSTEMD_RUN_BIN") or "systemd-r
 # lifetime — a user manager that worked once practically never goes away, while one
 # that is briefly absent (e.g. during login-session churn) deserves another look.
 _REPROBE_AFTER_S = 300.0
-
-# `-p` properties come from the environment; accept only a strict Key=Value shape so a
-# weird env value can never smuggle extra argv tokens into the spawn.
-_PROP_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*=[A-Za-z0-9.%:_-]+$")
 
 # Unit names share dtach's sanitizer intent: engine ids / uuids only ever contain safe
 # chars, but never trust them blindly.
@@ -94,36 +92,15 @@ def available() -> bool:
     return ok
 
 
-#: Per-session task budget. Well below the broker's own ``TasksMax=8192``, so the stated intent
-#: — exhaust your OWN scope, never the host — still holds.
-#:
-#: Raised from 512 (#785). 512 was not a theoretical ceiling that ordinary work stays under: a
-#: journal scan found **8 real sessions** hitting `cgroup: fork rejected by pids controller` in
-#: five days, and one of them (2026-08-04 01:27:54) is the same second in which a `node` process
-#: inside that scope sent SIGINT to `systemd --user`, which activated `exit.target` and tore down
-#: every user unit on the host for 5h45m. The signal is the far more serious defect and is not
-#: fixed here — a cgroup scope bounds resources, not signals, and closing that needs either
-#: systemd ≥ 256 (`PrivatePIDs=`) or a dedicated UID (see the issue). But an agent that routinely
-#: runs out of PIDs is the state from which that misfire was reached, and it is also just broken
-#: for the user: `fork()` starts returning EAGAIN mid-task.
-DEFAULT_TASKS_MAX = 2048
+# Finite recommended launch budget (#1362). Shared daemon/thread-heavy development
+# exhausted the previous 2048 ceiling. Settings win over legacy TasksMax only after
+# an explicit save; neither a save nor an attach changes an already running scope.
+DEFAULT_TASKS_MAX = resource_limits.DEFAULTS["console_tasks"]
 
 
 def _properties() -> list[str]:
-    """Validated ``-p Key=Value`` pairs from AGENT_SESSIONS_SCOPE_PROPERTIES.
-
-    Default budget: ``DEFAULT_TASKS_MAX``, well below the broker's own ceiling, so a
-    fork bomb in one session exhausts its own scope, not the host. Memory properties
-    are deliberately NOT defaulted — sessions legitimately run heavy builds; operators
-    opt in (after probing controller delegation on staging, #346)."""
-    raw = os.environ.get("AGENT_SESSIONS_SCOPE_PROPERTIES", f"TasksMax={DEFAULT_TASKS_MAX}")
-    out: list[str] = []
-    for token in raw.split():
-        if _PROP_RE.match(token):
-            out += ["-p", token]
-        else:
-            log.warning("scope property %r rejected (expected Key=Value); dropped", token)
-    return out
+    """Preserve valid legacy properties; apply the shared next-launch task policy."""
+    return [arg for prop in resource_limits.console_policy()["properties"] for arg in ("-p", prop)]
 
 
 def unit_name(engine: str, session_id: str) -> str:

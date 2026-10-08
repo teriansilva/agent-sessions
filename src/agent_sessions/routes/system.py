@@ -25,6 +25,8 @@ from .. import (
     prefs,
     project_dirs,
     ptybridge,
+    resource_limits,
+    resource_usage,
     scancache,
     scopedspawn,
     session_input,
@@ -477,6 +479,34 @@ def register(
             return rows
 
         return JSONResponse({"sessions": await asyncio.to_thread(_collect)})
+
+    @app.get("/api/system/resources")
+    async def resources_get(_: str = Depends(logged_in)) -> JSONResponse:
+        def collect():
+            return {"settings": resource_limits.settings(), "usage": resource_usage.collect()}
+
+        return JSONResponse(await asyncio.to_thread(collect))
+
+    @app.post("/api/system/resources")
+    async def resources_set(
+        request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        data = bytearray()
+        async for chunk in request.stream():
+            data.extend(chunk)
+            if len(data) > 4096:
+                raise HTTPException(status_code=413, detail="resource settings body too large")
+        try:
+            body = json.loads(data)
+        except (ValueError, UnicodeError):
+            raise HTTPException(status_code=400, detail="invalid JSON body") from None
+        try:
+            await asyncio.to_thread(resource_limits.save, body)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        except OSError:
+            raise HTTPException(status_code=503, detail="could not save resource limits") from None
+        return JSONResponse({"settings": await asyncio.to_thread(resource_limits.settings)})
 
     @app.get("/api/update/check")
     async def update_check(_: str = Depends(logged_in)) -> JSONResponse:
