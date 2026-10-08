@@ -7,7 +7,7 @@ tests/fixtures/claude_startup_*.bin binary
 
 # --- Public-mirror filter — issue #322 (pre-publish security gate) -----------------------
 # Paths marked `export-ignore` are stripped by `git archive`, so they are EXCLUDED from the
-# filtered flat-snapshot the publish workflow pushes to the PUBLIC GitHub mirror
+# filtered snapshots the publish workflow appends to the PUBLIC GitHub mirror
 # (github.com/teriansilva/agent-sessions). The private Forgejo repo keeps EVERYTHING; only
 # the public surface is filtered. This is the single list to maintain — add one line per new
 # org-internal path. `scripts/check-public-snapshot` hard-fails if any of these ever appears
@@ -41,3 +41,6 @@ scripts/resolve-visual-scope.mjs   export-ignore
 scripts/check-public-snapshot      export-ignore
 # Builds the mirror commit's message from the private forge's PR (#1326); runs the gate above.
 scripts/public-commit-message      export-ignore
+# One-time historical migration tooling and its policy/fixtures are private (#1352).
+scripts/rebuild-public-history     export-ignore
+tests/test_rebuild_public_history.py export-ignore

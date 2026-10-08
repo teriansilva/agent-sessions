@@ -22,7 +22,7 @@ const CI_RUN = process.env.GITHUB_RUN_ID ?? process.env.GITHUB_RUN_NUMBER;
 const PORT = Number(
   process.env.E2E_PORT ?? (CI_RUN ? 41000 + ((Number(CI_RUN) % 4000) + 1) : 41873),
 );
-// 127.0.0.1, not localhost: hosts that resolve localhost to ::1 first (example-host) bind the
+// 127.0.0.1, not localhost: hosts that resolve localhost to ::1 first (the runner) bind the
 // preview server IPv6-only, and the homefree specs' `MAP battlelab.superstatus.io 127.0.0.1`
 // resolver rule then gets ERR_CONNECTION_REFUSED.
 const PREVIEW_URL = `http://127.0.0.1:${PORT}`;
@@ -31,7 +31,7 @@ const PREVIEW_URL = `http://127.0.0.1:${PORT}`;
 // webServer in its own process group, so a shard stopped by sibling-watch (#1244) or a runner
 // cancel — which signal the step's group, or SIGKILL Playwright before its teardown runs — left
 // `vite preview` running, reparented to init and squatting its port (15 orphans, up to 2h old,
-// reaped from example-host on 2026-10-07). In CI the command execs vite directly (no npm/sh layer
+// reaped from the runner on 2026-10-07). In CI the command execs vite directly (no npm/sh layer
 // in between) under `setpriv --pdeathsig KILL`, so the KERNEL kills it the moment its parent
 // Playwright exits. Local runs keep `npm run preview` (setpriv is Linux-only).
 const PREVIEW_CMD = process.env.CI

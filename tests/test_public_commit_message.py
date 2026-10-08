@@ -327,10 +327,24 @@ def test_the_subject_fallback_is_tidied_when_the_api_fails(repo, tmp_path):
 
 def test_a_title_carrying_chatter_or_an_image_falls_back_to_the_generic_message(repo, tmp_path):
     r, commit = repo
-    for title in ("fix: apply Hermes round 3", "feat: shot ![x](https://a.example/attachments/1)"):
+    for title in (
+        "fix: apply Hermes round 3",
+        "feat: shot ![x](https://a.example/attachments/1)",
+        "fix: resize mb-" + "runners",
+        "fix: migrate mb-" + "forgejo",
+        "fix: tune pm-" + "privatehost",
+    ):
         c = commit(title + " (#5)")
         out = _run(r, c, _pr(c, title=title, body=""), tmp_path)
         assert out.stdout == "publish: snapshot of main\n", title
+
+
+def test_a_summary_drops_bare_internal_hostnames(repo, tmp_path):
+    r, commit = repo
+    c = commit("fix: reduce wait times")
+    body = "## Summary\n- Faster builds.\n- Resized mb-" + "runners yesterday.\n"
+    out = _run(r, c, _pr(c, title="fix: reduce wait times", body=body), tmp_path)
+    assert out.stdout == "fix: reduce wait times\n\n- Faster builds.\n"
 
 
 # ---- only the body's own Summary section (Hermes on #1327, round 3) ----

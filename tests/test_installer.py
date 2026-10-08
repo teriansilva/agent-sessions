@@ -542,7 +542,7 @@ def _stub_engine_bins(tmp_path: Path) -> dict[str, Path]:
 
     The installer ends with ``agent-sessions doctor``, which rewrites the env file's ``*_BIN``
     lines from live discovery (explicit env var > PATH > known dirs / npm-global). Left to the
-    host, that made this test assert the RUNNER's agent installs: on example-host codex sits under
+    host, that made this test assert the RUNNER's agent installs: on the runner codex sits under
     ~/.npm-global and was swapped by an update between the two installs, so the "env untouched"
     check failed on a line the installer does not own. An explicit, executable ``*_BIN`` wins
     discovery outright, so the host can no longer leak in.
@@ -649,7 +649,7 @@ def test_installer_end_to_end(tmp_path):
         assert f"{key}={path}\n" in text, key
 
     # Regression: an agent binary that disappears between installs (an update swapping it
-    # mid-test, as on example-host) must not break the idempotence check. Remove one stub; the
+    # mid-test, as on the runner) must not break the idempotence check. Remove one stub; the
     # re-run may drop that doctor-owned line, and every line the installer owns stays identical.
     stubs["AGENT_SESSIONS_CODEX_BIN"].unlink()
     env.pop("AGENT_SESSIONS_CODEX_BIN")

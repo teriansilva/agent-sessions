@@ -3,7 +3,7 @@
 Playwright runs its webServer in a process group of its own, so a shard stopped by
 sibling-watch (#1244) or a runner cancel — which signal the step's group, or SIGKILL Playwright
 before its teardown runs — used to leave `vite preview` reparented to init, squatting its port
-for hours (15 such orphans were reaped from example-host on 2026-10-07). In CI the webServer now
+for hours (15 such orphans were reaped from the runner on 2026-10-07). In CI the webServer now
 execs vite under `setpriv --pdeathsig KILL`, so the kernel kills it when Playwright exits.
 
 Playwright also launches Chromium with `--disable-dev-shm-usage` by default, which moves its

@@ -216,7 +216,7 @@ def test_every_slot_caller_reads_the_same_cap_knob() -> None:
 
     Both workflows that wrap a browser run in e2e_slot_run must pass E2E_SLOTS from the one repo
     variable with the same fallback, so the cap is a single, revertable knob. The fallback is 4:
-    one PR's full shard set, sized for example-host once the host had headroom again.
+    one PR's full shard set, sized for the runner once the host had headroom again.
     """
     root = Path(__file__).resolve().parent.parent / ".forgejo" / "workflows"
     knob = "E2E_SLOTS: ${{ vars.E2E_SLOTS || '4' }}"

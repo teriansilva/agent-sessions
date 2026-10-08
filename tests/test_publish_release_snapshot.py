@@ -364,12 +364,13 @@ def test_an_older_run_finishing_last_does_not_rewind_the_mirror(world, forge):
     assert _refs(world["mirror"])["refs/heads/main"] == after_b, "the older run rewound main"
 
 
-def test_without_the_guard_the_older_run_does_rewind(world, forge):
-    """Pins that the test above measures the guard, not an accident of the fixture."""
+def test_without_the_guard_an_older_tree_can_still_be_appended(world, forge):
+    """Fast-forward ancestry alone cannot prevent reverting content to an older source tree."""
     _publish_branch(world, forge["b"])
     after_b = _refs(world["mirror"])["refs/heads/main"]
     _publish_branch(world, forge["a"])
     assert _refs(world["mirror"])["refs/heads/main"] != after_b
+    assert _git(world["mirror"], "show", "main:app.py").stdout == "app\n"
 
 
 def test_an_unreadable_forge_fails_closed(world, forge, tmp_path):
@@ -634,3 +635,119 @@ def test_builder_to_mirror_only_the_real_summary_publishes(world, tmp_path, body
     published = _mirror_main_message(world)
     assert "SENTINEL" not in published
     assert published == "feat(web): a panel\n\n"  # not the template's shape: title alone
+
+
+# ---- continuous public ancestry (#1352), starting with the existing root ----------
+
+
+def test_successive_publishes_keep_history_filtered_and_exact(world, forge):
+    src, mirror = world["src"], world["mirror"]
+    roots = []
+    for source in (forge["a"], forge["b"]):
+        r = _publish_branch(world, source)
+        assert r.returncode == 0, r.stdout + r.stderr
+        roots.append(_refs(mirror)["refs/heads/main"])
+    _git(src, "rm", "app.py")
+    (src / "new.py").write_text("new app\n")
+    _git(src, "add", "new.py")
+    _git(src, "commit", "-qm", "private source description must not escape")
+    r = _publish_branch(world, "main")
+    assert r.returncode == 0, r.stdout + r.stderr
+    roots.append(_refs(mirror)["refs/heads/main"])
+    assert _git(mirror, "rev-list", "--reverse", "main").stdout.splitlines() == roots
+    assert _git(mirror, "show", "main:new.py").stdout == "new app\n"
+    assert _git(mirror, "show", "main~1:app.py").stdout == "app v2\n"
+    assert _git(mirror, "show", "main~2:app.py").stdout == "app\n"
+    assert _git(mirror, "cat-file", "-e", "main:app.py", check=False).returncode != 0
+    for sha in roots:
+        assert "INTERNAL.md" not in _git(mirror, "ls-tree", "-r", "--name-only", sha).stdout
+    private = set(_git(src, "rev-list", "--all").stdout.splitlines())
+    assert not private.intersection(roots), "private commits reached the mirror"
+    metadata = _git(mirror, "log", "--format=%an <%ae> %cn <%ce>%n%B", "main").stdout
+    assert "private source description" not in metadata
+    assert "t@e" not in metadata
+    assert "agent-sessions-publish@users.noreply.github.com" in metadata
+
+
+def test_same_tree_retry_ignores_changed_source_date_and_message(world, tmp_path):
+    _with_scanner(world)
+    msg = tmp_path / "message"
+    msg.write_text("feat: original description\n")
+    r = _publish_branch(world, "main", "--message-file", str(msg))
+    assert r.returncode == 0, r.stderr
+    before = _refs(world["mirror"])
+    _git(world["src"], "commit", "--allow-empty", "-qm", "another private-only change")
+    msg.write_text("feat: changed description\n")
+    for extra in ((), ("--dry-run",)):
+        r = _publish_branch(world, "main", "--message-file", str(msg), *extra)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "reuse" in r.stdout
+        assert _refs(world["mirror"]) == before
+        assert r.stdout.splitlines()[-1] == before["refs/heads/main"]
+    assert _mirror_main_message(world) == "feat: original description\n\n"
+
+
+def test_dry_run_computes_the_append_without_mutating_refs(world, forge):
+    _publish_branch(world, forge["a"])
+    before = _refs(world["mirror"])
+    dry = _publish_branch(world, forge["b"], "--dry-run")
+    assert dry.returncode == 0, dry.stderr
+    assert _refs(world["mirror"]) == before
+    result = _publish_branch(world, forge["b"])
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines()[-1] == dry.stdout.splitlines()[-1]
+
+
+def test_unreadable_public_remote_fails_even_for_a_dry_run(world, tmp_path):
+    world["mirror"] = tmp_path / "unreachable.git"
+    result = _publish_branch(world, "main", "--dry-run")
+    assert result.returncode != 0
+    assert "refusing to publish blind" in result.stderr
+
+
+def test_concurrent_public_update_after_fetch_is_not_overwritten(
+    world, forge, tmp_path, monkeypatch
+):
+    _publish_branch(world, forge["a"])
+    before = _refs(world["mirror"])["refs/heads/main"]
+    # An independent writer has a valid successor ready but publishes it only after our fetch.
+    other = tmp_path / "other-writer"
+    _git(tmp_path, "clone", "-q", "-b", "main", str(world["mirror"]), str(other))
+    _git(other, "config", "user.name", "public writer")
+    _git(other, "config", "user.email", "public@example.com")
+    (other / "concurrent.txt").write_text("preserve this published change\n")
+    _git(other, "add", "concurrent.txt")
+    _git(other, "commit", "-qm", "concurrent public change")
+    competing = _git(other, "rev-parse", "HEAD").stdout.strip()
+    real_git = __import__("shutil").which("git")
+    shim = tmp_path / "shim"
+    shim.mkdir()
+    (shim / "git").write_text(
+        '#!/bin/sh\n"$REAL_GIT" "$@"; rc=$?\n'
+        'if [ "$1" = fetch ] && [ "$rc" -eq 0 ]; then\n'
+        '  "$REAL_GIT" -C "$OTHER_WRITER" push -q origin main || exit 90\n'
+        'fi\nexit "$rc"\n'
+    )
+    (shim / "git").chmod(0o755)
+    monkeypatch.setenv("REAL_GIT", real_git)
+    monkeypatch.setenv("OTHER_WRITER", str(other))
+    monkeypatch.setenv("PATH", f"{shim}:{__import__('os').environ['PATH']}")
+    result = _publish_branch(world, forge["b"])
+    assert result.returncode != 0
+    assert "could not fast-forward" in result.stderr
+    assert _refs(world["mirror"])["refs/heads/main"] == competing != before
+
+
+def test_existing_signed_tag_identity_survives_branch_history(world, forge):
+    _publish_release(world)
+    tags = _refs(world["mirror"])
+    for source in (forge["a"], forge["b"]):
+        result = _publish_branch(world, source)
+        assert result.returncode == 0, result.stderr
+    before = _refs(world["mirror"])
+    result = _publish_release(world)
+    assert result.returncode == 0, result.stderr
+    assert _refs(world["mirror"]) == before
+    for ref, sha in tags.items():
+        assert before[ref] == sha
+    assert _git(world["mirror"], "rev-list", "--count", "main").stdout.strip() == "2"

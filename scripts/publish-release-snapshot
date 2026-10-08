@@ -1,6 +1,7 @@
 #!/bin/sh
-# Publish a filtered flat snapshot of <ref> to a mirror remote — deterministically, signed,
-# and idempotently. Extracted from publish-public.yml so it can be tested against a local bare
+# Publish a filtered snapshot of <ref> to a mirror remote. Branch updates append to public
+# history; releases remain independent deterministic, signed snapshots. Both are idempotent.
+# Extracted from publish-public.yml so it can be tested against a local bare
 # repo instead of only in CI against the real mirror (#832 Phase 1).
 #
 # usage: publish-release-snapshot <ref> <remote-url> [--signers FILE] [--key FILE] [--dry-run]
@@ -26,7 +27,12 @@
 # recomputed and compared on every resume (below), so its message must stay a pure function of
 # the ref.
 #
-# WHY DETERMINISM IS PART OF THE SECURITY STORY, not a tidiness nicety:
+# Branches attach only the mirror's public parent, never the source repository's history
+# (#1352). Identical public trees are no-ops, even when message metadata changes. A normal
+# push rejects a concurrent writer instead of overwriting it. Release construction below is
+# independent of that public parent: its identity must remain stable across branch updates.
+#
+# WHY RELEASE DETERMINISM IS PART OF THE SECURITY STORY, not a tidiness nicety:
 #
 # The old shape rebuilt the snapshot with wall-clock author/committer dates and force-pushed
 # both the branch and the tag. Two dispatches of the SAME release therefore produced different
@@ -192,17 +198,44 @@ if [ "$MOVE_MAIN" -eq 1 ] && [ -n "$TIP_OF" ]; then
   fi
 fi
 
+# Extend only the already-public history, in this isolated snapshot repository. A successful
+# lookup with no main (exit 2) can bootstrap; network/auth failures must never look empty.
+if [ "$MOVE_MAIN" -eq 1 ]; then
+  lookup=0
+  git ls-remote --exit-code "$REMOTE" refs/heads/main >/dev/null || lookup=$?
+  case "$lookup" in
+    0)
+      git fetch -q --no-tags "$REMOTE" refs/heads/main:refs/remotes/public/main \
+        || die "could not fetch the public main history"
+      PARENT="$(git rev-parse refs/remotes/public/main)"
+      TREE="$(git rev-parse 'HEAD^{tree}')"
+      if [ "$TREE" = "$(git rev-parse "${PARENT}^{tree}")" ]; then
+        note "reuse: public main already has the same filtered tree — nothing pushed"
+        printf '%s\n' "$PARENT"
+        exit 0
+      fi
+      # Reuse the exact message already scrubbed/scanned above. commit-tree never imports a
+      # private parent, author, commit body or signature from the source repository.
+      git log -1 --format=%B HEAD > "$MSGSCAN/PUBLIC_MESSAGE"
+      SNAP="$(GIT_AUTHOR_DATE="$SRC_DATE" GIT_COMMITTER_DATE="$SRC_DATE" \
+        git commit-tree "$TREE" -p "$PARENT" -F "$MSGSCAN/PUBLIC_MESSAGE")" \
+        || die "could not append the public commit"
+      git update-ref refs/heads/main "$SNAP"
+      ;;
+    2) : ;; # confirmed absent: the filtered root commit bootstraps main
+    *) die "could not read the public main history — refusing to publish blind" ;;
+  esac
+fi
+
 if [ "$DRY" -eq 1 ]; then
   note "dry-run: would publish $REF at $SNAP"
   printf '%s\n' "$SNAP"
   exit 0
 fi
 
-# `main` is a rolling flat snapshot and is force-pushed by design — it carries no history to
-# preserve. Determinism makes even that idempotent: the same commit recomputes to the same
-# snapshot, so a repeat dispatch pushes the identical SHA.
+# A concurrent update after our fetch must reject rather than discard public history.
 if [ "$MOVE_MAIN" -eq 1 ]; then
-  git push -q -f "$REMOTE" main || die "could not push the snapshot branch"
+  git push -q "$REMOTE" main || die "could not fast-forward the public main history"
 fi
 if [ "$IS_RELEASE" -eq 1 ]; then
   # NOT force. A release tag that already exists took the verified-reuse path above; reaching
