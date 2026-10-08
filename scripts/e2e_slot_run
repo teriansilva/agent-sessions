@@ -28,7 +28,7 @@
 #         within E2E_SLOT_WAIT_S.
 #
 # Environment:
-#   E2E_SLOTS         number of slots, host-wide (default 3 — ~36 Chromium processes at 2 workers a slot)
+#   E2E_SLOTS         number of slots, host-wide (default 4 — one PR's full shard set; see web-ci.yml for the sizing)
 #   E2E_SLOT_DIR      slot directory (default /tmp/agent-sessions-e2e-slots)
 #   E2E_SLOT_WAIT_S   longest wait for a slot before failing closed (default 3600)
 #   E2E_SLOT_POLL_S   delay between rounds while every slot is busy (default 10)
@@ -46,7 +46,7 @@ if [ "${1:-}" = "--held" ]; then
   slot="$2"
   waited="$3"
   shift 3
-  echo "e2e_slot_run: holding slot ${slot}/${E2E_SLOTS:-3} after ${waited}s wait (pid $$, nice ${E2E_NICE:-10})"
+  echo "e2e_slot_run: holding slot ${slot}/${E2E_SLOTS:-4} after ${waited}s wait (pid $$, nice ${E2E_NICE:-10})"
   # Browsers run niced: the org runners are shared with every repo's validations, and an
   # un-niced Chromium fleet starved their vitest/pytest into RPC timeouts. Niceness is inherited,
   # so this covers Playwright, its browsers and the preview server it starts.
@@ -64,7 +64,7 @@ if [ "$#" -eq 0 ]; then
   exit 2
 fi
 
-slots="${E2E_SLOTS:-3}"
+slots="${E2E_SLOTS:-4}"
 case "${E2E_NICE:-10}" in
   '' | *[!0-9]*)
     echo "e2e_slot_run: E2E_NICE must be a non-negative integer, got '${E2E_NICE}'" >&2

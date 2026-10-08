@@ -215,11 +215,11 @@ def test_every_slot_caller_reads_the_same_cap_knob() -> None:
     """The cap only means anything if every caller agrees on it (see the script header).
 
     Both workflows that wrap a browser run in e2e_slot_run must pass E2E_SLOTS from the one repo
-    variable with the same fallback, so the cap is a single, revertable knob. The fallback is 3:
-    a slot is ~11-12 Chromium processes, and the org runners are shared with every repo's CI.
+    variable with the same fallback, so the cap is a single, revertable knob. The fallback is 4:
+    one PR's full shard set, sized for example-host once the host had headroom again.
     """
     root = Path(__file__).resolve().parent.parent / ".forgejo" / "workflows"
-    knob = "E2E_SLOTS: ${{ vars.E2E_SLOTS || '3' }}"
+    knob = "E2E_SLOTS: ${{ vars.E2E_SLOTS || '4' }}"
     callers = [p for p in sorted(root.glob("*.yml")) if "e2e_slot_run" in p.read_text()]
     assert {p.name for p in callers} >= {"web-ci.yml", "appmode-e2e.yml", "pr-visual.yml"}, callers
     for p in callers:
