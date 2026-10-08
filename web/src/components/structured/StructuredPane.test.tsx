@@ -241,7 +241,8 @@ test("a lost connection says the turn keeps running and resumes from the cursor"
     await vi.advanceTimersByTimeAsync(1_500);
   });
   expect(await screen.findByTestId("structured-reconnecting")).toHaveTextContent("event 4");
-  expect(screen.getByTestId("structured-worker")).toHaveTextContent("reconnecting");
+  // The head's link LED says it, as a terminal's does for its socket (#1348).
+  expect(document.querySelector("[data-head-led]")).toHaveAttribute("data-head-led", "reconnecting");
   expect(api.structuredInterrupt).not.toHaveBeenCalled();
   expect(api.structuredSubmit).not.toHaveBeenCalled();
 });
@@ -266,13 +267,13 @@ test("a retiring client's history is read only: no send, no decisions", async ()
     expect(b).toBeDisabled();
   }
   // …but a running worker is never stranded: Stop stays (review of #1311).
-  expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Stop the worker" })).toBeEnabled();
 });
 
 test("stop reports the proved containment, not just the click", async () => {
   vi.mocked(api.structuredStop).mockResolvedValue({ containment: "gone" });
   renderPane();
-  await userEvent.click(await screen.findByRole("button", { name: "Stop" }));
+  await userEvent.click(await screen.findByRole("button", { name: "Stop the worker" }));
   await waitFor(() => expect(screen.getByTestId("structured-worker")).toHaveTextContent("stopped"));
 });
 
@@ -307,7 +308,7 @@ test("a retiring client's live worker can still be stopped", async () => {
   vi.mocked(api.structuredStop).mockResolvedValue({ containment: "gone" });
   renderPane();
   await screen.findByTestId("structured-read-only");
-  await userEvent.click(screen.getByRole("button", { name: "Stop" }));
+  await userEvent.click(screen.getByRole("button", { name: "Stop the worker" }));
   expect(api.structuredStop).toHaveBeenCalledWith(KEY);
 });
 
@@ -319,7 +320,7 @@ test("an older snapshot that arrives late never rolls the view back", async () =
   vi.mocked(api.structuredStop).mockResolvedValue({ containment: "gone" });
   renderPane();
   expect(await screen.findByText("kept")).toBeInTheDocument();
-  await userEvent.click(screen.getByRole("button", { name: "Stop" })); // triggers a re-read → rev 4
+  await userEvent.click(screen.getByRole("button", { name: "Stop the worker" })); // triggers a re-read → rev 4
   await waitFor(() => expect(api.structuredSnapshot).toHaveBeenCalledTimes(2));
   expect(screen.getByText("kept")).toBeInTheDocument();
 });
@@ -338,6 +339,34 @@ test("a worker that exits without a journal record is noticed by the periodic re
 });
 
 // ---- the pane head (#1332) ---------------------------------------------------------------------
+
+test("the pane wears the terminal's bar and composer, and opens on an info screen (#1348)", async () => {
+  clearSent();
+  renderPane();
+  const info = await screen.findByRole("region", { name: "Session info" });
+  // The facts, not the old "No terminal: …" paragraph.
+  expect(screen.queryByText(/no terminal/i)).toBeNull();
+  expect(within(info).getByText("Model").nextElementSibling).toHaveTextContent("gpt-5-codex");
+  expect(within(info).getByText("Folder").nextElementSibling).toHaveTextContent("/w");
+  expect(within(info).getByText("Worker").nextElementSibling).toHaveTextContent("worker live");
+  // The terminal's own bar: the shared facts run (LED + engine box) and its actions.
+  const bar = document.querySelector("[data-panel-head]") as HTMLElement;
+  expect(bar).not.toBeNull();
+  expect(bar.querySelector("[data-head-led]")).toHaveAttribute("data-head-led", "live");
+  expect(within(bar).getByRole("button", { name: "Stop the worker" })).toBeInTheDocument();
+  // The terminal's composer: one row of chips (KeyBar), then push-to-talk's slot and Send.
+  const form = screen.getByRole("form", { name: "Compose message" });
+  const chips = Array.from(form.querySelectorAll("[data-key]")).map((b) => b.getAttribute("aria-label"));
+  expect(chips).toEqual(["Use a template"]);
+  expect(within(form).getByRole("button", { name: "Send" })).toBeDisabled();
+});
+
+test("a conversation with turns shows no info screen", async () => {
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(snap({ turns: [turn({ reply: "hi" })] }));
+  renderPane();
+  await screen.findByTestId("structured-turn");
+  expect(screen.queryByRole("region", { name: "Session info" })).toBeNull();
+});
 
 function renderHosted(host: Parameters<typeof StructuredPane>[0]["host"]) {
   return render(
@@ -375,6 +404,7 @@ test("the head carries the terminal's actions that work for an API session — n
     "Hand off session to another engine",
     "Open this session as a window on the map",
     "Share a link to this session",
+    "Stop the worker",
   ]);
   expect(screen.queryByRole("button", { name: /adopt this session/i })).toBeNull();
   expect(screen.queryByRole("button", { name: /repaint/i })).toBeNull();
@@ -418,7 +448,7 @@ test("at ≤800px every action lives in ONE Actions menu", async () => {
     expect(document.querySelectorAll("[data-head-action]")).toHaveLength(0);
     await userEvent.click(screen.getByRole("button", { name: /actions/i }));
     const items = screen.getAllByRole("menuitem").map((m) => m.textContent);
-    expect(items).toEqual(["Files", "Recap", "Hand off", "Share link"]);
+    expect(items).toEqual(["Files", "Recap", "Hand off", "Share link", "Stop"]);
   } finally {
     window.matchMedia = original;
   }
@@ -438,7 +468,7 @@ test("in a map window the pane has no bar: its actions portal into the chrome sl
       onToggleFiles: vi.fn(),
     });
     await waitFor(() => expect(onTermStatus).toHaveBeenLastCalledWith({ kind: "connected" }));
-    expect(screen.queryByTestId("structured-worker")).toBeNull(); // no second bar
+    expect(document.querySelector("[data-panel-head]")).toBeNull(); // no second bar
     const chips = within(slot);
     expect(chips.getByRole("button", { name: "Browse session files" })).toBeInTheDocument();
     await userEvent.click(chips.getByRole("button", { name: "Stop the worker" }));
@@ -676,7 +706,7 @@ test("a send is recorded once per operation, confirmed only when the server has 
   expect(readSent()).toHaveLength(1); // the same operation: no second entry
   [entry] = readSent();
   expect(entry.confirmed).toBe(true);
-  await userEvent.click(screen.getByRole("button", { name: /^Sent$/ }));
+  await userEvent.click(screen.getByRole("button", { name: "Sent messages" }));
   await userEvent.click(await screen.findByRole("button", { name: /restore/i }));
   expect(screen.getByRole("textbox")).toHaveValue("look at this  ");
   expect(screen.getAllByTestId("structured-attachment")).toHaveLength(1);
@@ -691,7 +721,7 @@ test("Restore into a client that takes no pictures keeps the words and says what
     ]),
   );
   renderPane();
-  await userEvent.click(await screen.findByRole("button", { name: /^Sent$/ }));
+  await userEvent.click(await screen.findByRole("button", { name: "Sent messages" }));
   await userEvent.click(await screen.findByRole("button", { name: /restore/i }));
   expect(screen.getByRole("textbox")).toHaveValue("from the terminal");
   expect(screen.queryAllByTestId("structured-attachment")).toHaveLength(0);
@@ -714,7 +744,7 @@ test("a template inserts its filled text and its pictures; a secret template can
     ],
   } as never);
   renderPane();
-  await userEvent.click(await screen.findByRole("button", { name: /templates/i }));
+  await userEvent.click(await screen.findByRole("button", { name: "Use a template" }));
   await userEvent.click(await screen.findByText("Deploy"));
   expect(screen.getByRole("button", { name: "Insert Deploy into message" })).toBeDisabled();
   await userEvent.click(screen.getByText("Repro steps"));
@@ -730,12 +760,12 @@ test("Sent appears when the shared ring gets its first entry after mount — thi
   clearSent();
   renderPane();
   await screen.findByRole("textbox");
-  expect(screen.queryByRole("button", { name: /^Sent$/ })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Sent messages" })).toBeNull();
   // Another composer in this tab (a terminal, a map window) sends.
   act(() => {
     appendSent({ text: "from the terminal", attachments: [], session: "claude:s" });
   });
-  expect(await screen.findByRole("button", { name: /^Sent$/ })).toBeVisible();
+  expect(await screen.findByRole("button", { name: "Sent messages" })).toBeVisible();
   clearSent();
   // Another TAB writes: only a `storage` event arrives.
   const entry = { id: "x", text: "other tab", attachments: [], ts: 1, confirmed: true, session: null };
@@ -743,7 +773,7 @@ test("Sent appears when the shared ring gets its first entry after mount — thi
   act(() => {
     window.dispatchEvent(new StorageEvent("storage", { key: "as:sent:v1" }));
   });
-  await userEvent.click(await screen.findByRole("button", { name: /^Sent$/ }));
+  await userEvent.click(await screen.findByRole("button", { name: "Sent messages" }));
   expect(await screen.findByText("other tab")).toBeVisible();
 });
 
@@ -765,7 +795,7 @@ test("Restoring a CONFIRMED message and sending it again is a new turn, never a 
   vi.mocked(api.structuredSubmit).mockResolvedValue({});
   renderPane();
   await waitFor(() => expect(readSent()[0].confirmed).toBe(true));
-  await userEvent.click(await screen.findByRole("button", { name: /^Sent$/ }));
+  await userEvent.click(await screen.findByRole("button", { name: "Sent messages" }));
   await userEvent.click(await screen.findByRole("button", { name: /restore/i }));
   await userEvent.click(screen.getByRole("button", { name: "Send" }));
   const [call] = vi.mocked(api.structuredSubmit).mock.calls;
@@ -781,11 +811,11 @@ test("Templates and Sent wait while a picture uploads: a restore never abandons 
   const late = deferredUpload();
   renderPane();
   await userEvent.upload(await screen.findByTestId("structured-file-input"), [png()]);
-  expect(screen.getByRole("button", { name: /^Sent$/ })).toBeDisabled();
-  expect(screen.getByRole("button", { name: /templates/i })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Sent messages" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Use a template" })).toBeDisabled();
   await act(async () => late(9));
   await screen.findByTestId("structured-attachment");
-  expect(screen.getByRole("button", { name: /^Sent$/ })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Sent messages" })).toBeEnabled();
 });
 
 test("committed, answer and re-read lost, reload: Restore + Send re-sends under the SAME id — never a second turn", async () => {
@@ -808,7 +838,7 @@ test("committed, answer and re-read lost, reload: Restore + Send re-sends under 
   vi.mocked(api.structuredSnapshot).mockReset().mockResolvedValue(snap());
   vi.mocked(api.structuredSubmit).mockResolvedValueOnce({});
   renderPane();
-  await userEvent.click(await screen.findByRole("button", { name: /^Sent$/ }));
+  await userEvent.click(await screen.findByRole("button", { name: "Sent messages" }));
   expect(await screen.findByText("Outcome unknown")).toBeVisible();
   expect(screen.queryByText("Unconfirmed")).toBeNull();
   await userEvent.click(screen.getByRole("button", { name: /restore/i }));

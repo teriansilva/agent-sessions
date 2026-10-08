@@ -161,12 +161,12 @@ test("Send during a hold waits for the tail — never a half sentence", async ()
 test("while dictating, Templates cannot replace the draft the recognizer is writing", async () => {
   renderPane();
   await screen.findByRole("textbox");
-  expect(screen.getByRole("button", { name: /templates/i })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Use a template" })).toBeEnabled();
   await hold();
-  expect(screen.getByRole("button", { name: /templates/i })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Use a template" })).toBeDisabled();
   fireEvent.pointerUp(mic(), HOLD);
   act(() => last!.end());
-  await waitFor(() => expect(screen.getByRole("button", { name: /templates/i })).toBeEnabled());
+  await waitFor(() => expect(screen.getByRole("button", { name: "Use a template" })).toBeEnabled());
 });
 
 test("Space outside the chip never starts dictation in the API pane (the terminal composer owns it)", async () => {

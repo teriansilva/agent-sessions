@@ -6,6 +6,7 @@ import {
   PanelRight,
   Paperclip,
   ScrollText,
+  Send,
   Share2,
   Square,
   SquareDashedBottom,
@@ -13,13 +14,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ClipboardEvent as ReactClipboardEvent, KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
-import {
-  engineBadge,
-  engineInfo,
-  engineLabel,
-  isAgent,
-  useEngineRoster,
-} from "../../app/engineRoster";
+import { engineInfo, engineLabel, isAgent, useEngineRoster } from "../../app/engineRoster";
 import { isNewSessionPlaceholder } from "../../app/sessionsStore";
 import { useSessionRow } from "../../app/useSessionRow";
 import { ApiError, api } from "../../lib/api";
@@ -39,12 +34,15 @@ import type { TermStatus } from "../../lib/termSocket";
 import { useIsMobile } from "../../lib/useIsMobile";
 import { HandoffModal } from "../terminal/HandoffModal";
 import { HeadActions, type HeadAction } from "../terminal/HeadActions";
+import { HeadFacts } from "../terminal/HeadFacts";
+import { KeyBar, type KeyAction } from "../terminal/KeyBar";
 import type { PaneHost } from "../terminal/paneHost";
 import { SessionRecapModal } from "../terminal/SessionRecapModal";
 import { SentMessagesModal } from "../terminal/SentMessagesModal";
 import { TemplatePickerModal } from "../templates/TemplatePickerModal";
 import { UploadImage } from "../templates/UploadImage";
 import { useDictation } from "../terminal/useDictation";
+import compose from "../terminal/Compose.module.css";
 import term from "../terminal/Terminal.module.css";
 import type {
   Containment,
@@ -386,6 +384,13 @@ export function StructuredPane({
   const [historyOpen, setHistoryOpen] = useState<HTMLElement | null>(null);
   const [templatesOpen, setTemplatesOpen] = useState<HTMLElement | null>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  // The terminal composer's auto-grow: the box follows its text up to 28% of the viewport.
+  useEffect(() => {
+    const ta = taRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = `${Math.min(ta.scrollHeight, Math.round(window.innerHeight * 0.28))}px`;
+  }, [draft]);
   /** The history entry of the operation in flight: one entry per operation, not per retry. */
   const historyFor = useRef<{ op: string; id: string | null } | null>(null);
   // An "outcome unknown" entry of THIS session is settled by the conversation itself: once its
@@ -429,7 +434,6 @@ export function StructuredPane({
     trigger: null,
   });
   const [linkToast, setLinkToast] = useState<{ tick: number; ok: boolean }>({ tick: 0, ok: true });
-  const actionsBoxRef = useRef<HTMLSpanElement>(null);
   const op = useRef<{ id: string; text: string } | null>(null);
   const cursor = useRef(0);
   const logRef = useRef<HTMLDivElement>(null);
@@ -981,9 +985,9 @@ export function StructuredPane({
           },
         ]
       : []),
-    // In a window the pane has no bar of its own, so Stop rides with the actions into the
-    // chrome (and its ⋯): a running worker is never stranded behind a missing button.
-    ...(host.suppressHead && live
+    // Stop is a head action while a worker runs, in the pane's own bar and in a window's chrome
+    // (and either one's ⋯): a running worker is never stranded behind a missing button.
+    ...(live
       ? [
           {
             id: "stop",
@@ -998,43 +1002,65 @@ export function StructuredPane({
       : []),
   ];
 
+  // The composer's chips, in the terminal's order where they overlap (attach, Sent, Templates).
+  // The terminal-only keys (arrows, esc, tab, collapse) have nothing to drive here.
+  const toolsBusy = busy || uploading || dictating;
+  const keyActions: KeyAction[] =
+    readOnly || !snap
+      ? []
+      : [
+          ...(snap.images
+            ? [
+                {
+                  id: "attach",
+                  aria: "Attach images",
+                  title: "Attach images",
+                  icon: <Paperclip size={16} />,
+                  disabled: busy || attachments.length + inFlight >= MAX_IMAGES,
+                  run: () => fileRef.current?.click(),
+                },
+              ]
+            : []),
+          ...(history.length > 0
+            ? [
+                {
+                  id: "history",
+                  aria: "Sent messages",
+                  title: `Sent messages (last ${history.length})`,
+                  icon: <History size={16} />,
+                  disabled: toolsBusy,
+                  run: () => {
+                    setHistory(readSent()); // another tab may have sent since we last looked
+                    // The chip may sit in KeyBar's "…" menu: focus returns to whatever held it.
+                    setHistoryOpen(document.activeElement as HTMLElement);
+                  },
+                },
+              ]
+            : []),
+          {
+            id: "templates",
+            aria: "Use a template",
+            title: "Use a saved template — fill it in, then insert it here",
+            icon: <BookMarked size={16} />,
+            disabled: toolsBusy,
+            run: () => setTemplatesOpen(document.activeElement as HTMLElement),
+          },
+        ];
+
+  // The terminal session's own bar (#1348): the shared facts run + the same actions, so an API
+  // session and a terminal session cannot drift apart. The journal read is this pane's link LED.
   const header = host.suppressHead ? null : (
-    <div className={chat.head}>
-      <span className={`${chat.badge} ${styles.badge}`}>{engineBadge(engine).toUpperCase()}</span>
-      <span className={chat.title}>{agent}</span>
-      <span className={styles.kindTag}>API</span>
-      <span
-        ref={actionsBoxRef}
-        className={isMobile ? `${styles.actionsBox} ${styles.actionsCollapsed}` : styles.actionsBox}
-      >
-        <HeadActions
-          className={term.headActions}
-          btnClassName={term.restartBtn}
-          labelClassName={term.headActionLabel}
-          actions={headActions}
-          collapsed={isMobile}
-          barRef={actionsBoxRef}
-          reservePx={0}
-        />
+    <div className={term.panelHead} data-panel-head="">
+      <span className={term.headLeft}>
+        <HeadFacts engine={engine} status={status} row={row} />
       </span>
-      <span className={chat.meta}>
-        {model && (
-          <span className={`${chat.chip} ${chat.model}`} data-testid="structured-model">
-            <span className={chat.sq} aria-hidden="true" />
-            {model}
-          </span>
-        )}
-        <span className={chat.chip} data-testid="structured-worker" role="status">
-          <span className={`${styles.led} ${workerChip.cls}`} aria-hidden="true" />
-          <span className={styles.workerText}>{workerChip.text}</span>
-        </span>
-        {/* Stop stays available while the client retires: a running worker is never stranded. */}
-        {live && (
-          <button type="button" className={`${chat.ghost} ${styles.inline}`} disabled={stopping} onClick={() => void stop()}>
-            Stop
-          </button>
-        )}
-      </span>
+      <HeadActions
+        className={term.headActions}
+        btnClassName={term.restartBtn}
+        labelClassName={term.headActionLabel}
+        actions={headActions}
+        collapsed={isMobile}
+      />
     </div>
   );
 
@@ -1125,12 +1151,36 @@ export function StructuredPane({
       <div className={chat.log} ref={logRef} aria-live="polite">
         {snap && turns.length === 0 && (
           <div className={chat.center} data-testid="structured-empty">
-            <p className={chat.note}>
-              No terminal: BattleLab drives your installed {agent} CLI through its structured
-              protocol, with its own login, config, MCP servers and skills. You answer each
-              request it makes here.
-            </p>
-            <code className={chat.chip}>{snap.cwd}</code>
+            <section className={styles.info} aria-label="Session info">
+              <p className={styles.infoTag}>{agent} · API</p>
+              <dl className={styles.infoFacts}>
+                <div>
+                  <dt>Agent</dt>
+                  <dd>{agent}</dd>
+                </div>
+                <div>
+                  <dt>Client</dt>
+                  <dd>{engineLabel(engine)}</dd>
+                </div>
+                <div>
+                  <dt>Model</dt>
+                  <dd data-testid="structured-model">{model ?? "agent default"}</dd>
+                </div>
+                <div>
+                  <dt>Folder</dt>
+                  <dd>
+                    <code title={snap.cwd}>{snap.cwd}</code>
+                  </dd>
+                </div>
+                <div>
+                  <dt>Worker</dt>
+                  <dd data-testid="structured-worker" role="status">
+                    <span className={`${styles.led} ${workerChip.cls}`} aria-hidden="true" />
+                    {workerChip.text}
+                  </dd>
+                </div>
+              </dl>
+            </section>
           </div>
         )}
         {snap && snap.omitted_turns > 0 && (
@@ -1161,40 +1211,76 @@ export function StructuredPane({
           {sendError ?? actionError}
         </p>
       )}
-      {!readOnly && snap && (
-        <div className={styles.tools} role="toolbar" aria-label="Message tools">
-          <button
-            type="button"
-            className={styles.tool}
-            title="Use a saved template — fill it in, then insert it here"
-            disabled={busy || uploading || dictating}
-            onClick={(e) => setTemplatesOpen(e.currentTarget)}
-          >
-            <BookMarked size={16} aria-hidden />
-            Templates
-          </button>
-          {history.length > 0 && (
-            <button
-              type="button"
-              className={styles.tool}
-              title={`Sent messages (last ${history.length})`}
-              disabled={busy || uploading || dictating}
-              onClick={(e) => {
-                setHistory(readSent()); // another tab may have sent since we last looked
-                setHistoryOpen(e.currentTarget);
-              }}
-            >
-              <History size={16} aria-hidden />
-              Sent
-            </button>
+      {/* The terminal session's composer (#1348): Compose.module.css itself, so the two cannot
+          drift — pills, the text box, then ONE row of chips, the push-to-talk chip and Send. */}
+      <form
+        className={compose.compose}
+        aria-label="Compose message"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void send();
+        }}
+      >
+        <div className={compose.fields}>
+          {attachments.length > 0 && (
+            <div className={compose.pills} aria-label="Attached images" role="list">
+              {attachments.map((a) => (
+                <span
+                  key={a.stored}
+                  className={compose.pill}
+                  title={a.name}
+                  role="listitem"
+                  data-testid="structured-attachment"
+                >
+                  <span className={compose.pn}>{a.name}</span>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${a.name}`}
+                    disabled={busy}
+                    onClick={() => removeAttachment(a.stored)}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
           )}
-          {dictSupported && (
+          <textarea
+            ref={taRef}
+            className={compose.textarea}
+            aria-label={`Message ${agent}`}
+            placeholder={
+              readOnly
+                ? "This conversation is read only"
+                : active
+                  ? `${agent} is working — your next message waits for this turn`
+                  : `Message ${agent} — Enter sends, Shift+Enter = newline.`
+            }
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={onKey}
+            onPaste={onPaste}
+            readOnly={busy}
+            rows={2}
+            disabled={readOnly}
+          />
+        </div>
+        <div className={compose.row}>
+          <KeyBar actions={keyActions} />
+          <span className={compose.spacer} role="status">
+            {dictNote}
+          </span>
+          {!readOnly && snap && dictSupported && (
             <button
               type="button"
               ref={micBtnRef}
-              className={`${styles.tool} ${
-                dictListening ? styles.micOn : dictFinalizing ? styles.micFinalizing : ""
-              }`}
+              className={
+                dictListening
+                  ? `${compose.mic} ${compose.micOn}`
+                  : dictFinalizing
+                    ? `${compose.mic} ${compose.micFinalizing}`
+                    : compose.mic
+              }
               aria-label={
                 dictListening
                   ? "Stop voice input — release to finish"
@@ -1215,98 +1301,37 @@ export function StructuredPane({
               {...micHandlers}
             >
               <Mic size={16} aria-hidden />
-              Push to talk
+              <span className={compose.micLabel}>Push to talk</span>
             </button>
           )}
-          <span className={styles.toolNote} role="status">
-            {dictNote}
-          </span>
+          <button
+            type="submit"
+            className={`${compose.send} shine`}
+            title="Send + Enter"
+            disabled={
+              readOnly ||
+              busy ||
+              uploading ||
+              active ||
+              !snap ||
+              (!draft.trim() && attachments.length === 0)
+            }
+          >
+            <Send size={15} aria-hidden />
+            {uploading ? "Uploading" : "Send"}
+          </button>
         </div>
-      )}
-      {attachments.length > 0 && (
-        <ul className={styles.attachments} aria-label="Attached images">
-          {attachments.map((a) => (
-            <li key={a.stored} className={styles.attachment} data-testid="structured-attachment">
-              <span className={styles.attachmentThumbBox}>
-                <UploadImage path={a.stored} alt="" className={styles.attachmentThumb} />
-              </span>
-              <span className={styles.attachmentName}>{a.name}</span>
-              <button
-                type="button"
-                className={styles.attachmentRemove}
-                aria-label={`Remove ${a.name}`}
-                disabled={busy}
-                onClick={() => removeAttachment(a.stored)}
-              >
-                ×
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-      <form
-        className={chat.comp}
-        onSubmit={(e) => {
-          e.preventDefault();
-          void send();
-        }}
-      >
-        <textarea
-          ref={taRef}
-          className={chat.ta}
-          aria-label={`Message ${agent}`}
-          placeholder={
-            readOnly
-              ? "This conversation is read only"
-              : active
-                ? `${agent} is working — your next message waits for this turn`
-                : `Message ${agent}…`
-          }
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={onKey}
-          onPaste={onPaste}
-          readOnly={busy}
-          rows={2}
-          disabled={readOnly}
-        />
         {snap?.images && !readOnly && (
-          <>
-            <input
-              ref={fileRef}
-              type="file"
-              accept="image/png,image/jpeg,image/gif,image/webp"
-              multiple
-              hidden
-              data-testid="structured-file-input"
-              onChange={(e) => void attach(Array.from(e.target.files ?? []))}
-            />
-            <button
-              type="button"
-              className={styles.attach}
-              aria-label="Attach images"
-              title="Attach images"
-              disabled={busy || attachments.length + inFlight >= MAX_IMAGES}
-              onClick={() => fileRef.current?.click()}
-            >
-              <Paperclip size={18} aria-hidden />
-            </button>
-          </>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp"
+            multiple
+            hidden
+            data-testid="structured-file-input"
+            onChange={(e) => void attach(Array.from(e.target.files ?? []))}
+          />
         )}
-        <button
-          type="submit"
-          className={chat.send}
-          disabled={
-            readOnly ||
-            busy ||
-            uploading ||
-            active ||
-            !snap ||
-            (!draft.trim() && attachments.length === 0)
-          }
-        >
-          {uploading ? "Uploading" : "Send"}
-        </button>
       </form>
       {historyOpen && (
         <SentMessagesModal

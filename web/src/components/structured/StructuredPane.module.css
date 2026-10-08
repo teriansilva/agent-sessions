@@ -1,18 +1,6 @@
 /* A native API client's session (#1311). Extends the chat pane's grammar (ChatPane.module.css):
    no radius, 1px lines, mono uppercase labels, amber only for your turns and the primary action.
    A request waiting for you is a STATE, so its rule and LED take --status-degraded. */
-.badge {
-  border-color: var(--line-strong);
-  color: var(--text);
-}
-.kindTag {
-  flex: none;
-  font: 700 10px var(--font-mono);
-  letter-spacing: 0.14em;
-  padding: 3px 6px;
-  border: 1px solid var(--line-strong);
-  color: var(--text-muted);
-}
 .led {
   width: 7px;
   height: 7px;
@@ -35,20 +23,6 @@
 /* The share-link toast (#1332) is placed against the pane. */
 .pane {
   position: relative;
-}
-/* The pane-head actions (#1332): the remaining width of the bar, the chips flush right before the
-   worker facts. `flex: 1 1 0` makes its width the space left over, never its content — the
-   measured fold (HeadActions, #783) budgets against exactly that. */
-.actionsBox {
-  flex: 1 1 0;
-  min-width: 34px; /* the fold's "…" always fits */
-  display: flex;
-  justify-content: flex-end;
-}
-/* ≤800px the head is ONE labelled Actions trigger (#948 P6): it keeps its natural width and the
-   title ellipsises instead — a share of the leftover space would let it overlap the title. */
-.actionsCollapsed {
-  flex: none;
 }
 /* Header and inline controls keep the 44px touch target (design §8). */
 .inline {
@@ -191,23 +165,6 @@
   padding: 0 12px 12px;
 }
 @media (max-width: 480px) {
-  /* A phone keeps the worker's LED and drops its words from view (still its accessible text):
-     the title and the Actions trigger need the width, and a clipped "worker liv" reads as a bug. */
-  .workerText {
-    /* the app's .sr-only (App.css) */
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
-    border: 0;
-  }
-  .kindTag {
-    display: none; /* the badge and the picker already say API; the state chip needs the room */
-  }
   .kvRow {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -217,76 +174,7 @@
   }
 }
 
-/* #1332 Phase 3: pictures in a send. Square, token colours, 44px targets. */
-.attach {
-  min-width: 44px;
-  min-height: 44px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  color: var(--text);
-  border: 1px solid var(--line-strong);
-  border-radius: 0;
-  cursor: pointer;
-}
-.attach:disabled {
-  color: var(--text-muted);
-  cursor: default;
-}
-.attach:focus-visible,
-.attachmentRemove:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-.attachments {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin: 0;
-  padding: 8px 14px 0;
-  list-style: none;
-  border-top: 1px solid var(--line);
-  background: var(--panel);
-}
-.attachment {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 100%;
-  min-width: 0;
-  padding: 2px 2px 2px 4px;
-  border: 1px solid var(--border);
-  background: var(--glass-strong);
-  font: 12px var(--font-mono);
-}
-.attachmentThumbBox {
-  width: 32px;
-  height: 32px;
-  flex: none;
-}
-.attachmentThumb {
-  display: block;
-  width: 32px;
-  height: 32px;
-  object-fit: cover;
-}
-.attachmentName {
-  min-width: 0;
-  max-width: 24ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.attachmentRemove {
-  min-width: 44px;
-  min-height: 44px;
-  background: none;
-  border: 0;
-  color: var(--text-muted);
-  font-size: 16px;
-  cursor: pointer;
-}
+/* #1332 Phase 3: pictures in a sent turn. */
 .turnImages {
   display: flex;
   flex-wrap: wrap;
@@ -310,62 +198,52 @@
   color: var(--text-muted);
 }
 
-/* #1332 Phase 3b: Templates and Sent, the terminal composer's tools, above the message box. */
-.tools {
-  display: flex;
-  flex-wrap: wrap; /* a phone wraps Templates · Sent · Push to talk rather than overflow */
-  gap: 6px;
-  padding: 8px 14px 0;
-  border-top: 1px solid var(--line);
-  background: var(--panel);
-}
-.tool {
-  min-height: 44px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 12px;
-  background: transparent;
-  color: var(--text);
+/* #1348: before the first turn the log shows what this session is — the agent, the API client
+   the manifest names, the model, the folder and the worker — in the HUD's key/value grammar. */
+.info {
+  width: min(460px, 100%);
   border: 1px solid var(--line-strong);
-  border-radius: 0;
+  background: var(--panel);
+  text-align: left;
+}
+.infoTag {
+  margin: 0;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
   font: 700 11px var(--font-mono);
-  letter-spacing: 0.08em;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
-  cursor: pointer;
-}
-.tool:disabled {
   color: var(--text-muted);
-  cursor: default;
 }
-.tool:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+.infoFacts {
+  margin: 0;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
 }
-
-/* #1332 Phase 3c: push-to-talk in the tools row — the terminal composer's recording states. */
-.tool {
-  touch-action: none; /* a hold is a hold: no scroll or zoom gesture steals the pointer */
+.infoFacts div {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 14px;
+  align-items: baseline;
 }
-.micOn {
-  --rec: #ff5a5a;
-  color: var(--rec);
-  border-color: var(--rec);
-  background: color-mix(in srgb, var(--rec) 16%, transparent);
+.infoFacts dt {
+  font: 11px var(--font-mono);
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
-:global([data-theme="light"]) .micOn {
-  --rec: #d62f2f;
-}
-.micFinalizing {
-  color: var(--text-muted);
-  border-style: dashed;
-}
-.toolNote {
-  align-self: center;
+.infoFacts dd {
+  margin: 0;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  overflow-wrap: anywhere;
+}
+.infoFacts code {
   font: 12px var(--font-mono);
-  color: var(--text-muted);
+  overflow-wrap: anywhere;
 }

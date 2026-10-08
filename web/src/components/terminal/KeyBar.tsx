@@ -18,6 +18,8 @@ export interface KeyAction {
   /** Icon for the inline button; `text` is used instead when set (the "esc" chip). */
   icon?: ReactNode;
   text?: string;
+  /** Greyed out and inert (the API composer's tools while a message is sending). */
+  disabled?: boolean;
   run: () => void;
 }
 
@@ -148,6 +150,7 @@ export function KeyBar({ actions }: { actions: KeyAction[] }) {
           aria-label={a.aria}
           title={a.title}
           className={a.text ? styles.txt : undefined}
+          disabled={a.disabled}
           onClick={a.run}
         >
           {a.text ?? a.icon}
@@ -184,6 +187,7 @@ export function KeyBar({ actions }: { actions: KeyAction[] }) {
                 role="menuitem"
                 aria-label={a.aria}
                 title={a.title}
+                disabled={a.disabled}
                 onClick={() => {
                   a.run();
                   setMenuOpen(false);

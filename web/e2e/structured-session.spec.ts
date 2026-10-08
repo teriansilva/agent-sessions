@@ -118,6 +118,24 @@ async function targets(page: Page, scope: ReturnType<Page["getByTestId"]>) {
   }
 }
 
+/** The composer is the terminal's (#1348): its chips are the terminal composer's chip — one row,
+ *  one height, square — and Send is its amber CTA, never the old chat-pane buttons. */
+async function terminalChips(form: ReturnType<Page["getByTestId"]>) {
+  await expect(form.locator("[data-key]").first()).toBeVisible(); // the chips follow the snapshot
+  const chips = await form.locator("[data-key]").all();
+  const send = form.getByRole("button", { name: "Send" });
+  const row = (await send.boundingBox())!;
+  for (const c of chips) {
+    const b = (await c.boundingBox())!;
+    expect(b.height).toBe(32);
+    expect(Math.abs(b.y + b.height / 2 - (row.y + row.height / 2))).toBeLessThanOrEqual(1); // one row
+    expect(await c.evaluate((el) => getComputedStyle(el).borderRadius)).toBe("0px");
+  }
+  // The text box sits ABOVE the row, as in the terminal.
+  const ta = (await form.getByRole("textbox").boundingBox())!;
+  expect(ta.y + ta.height).toBeLessThanOrEqual(row.y);
+}
+
 for (const theme of ["dark", "light"] as const) {
   test(`a command approval shows the whole request; approve once settles from the snapshot (${theme})`, async ({
     page,
@@ -262,7 +280,8 @@ test("a lost connection keeps the turn and resumes from the cursor; nothing is r
   await expect(page.getByTestId("structured-working")).toBeVisible();
   offline = true;
   await expect(page.getByTestId("structured-reconnecting")).toContainText("event 4");
-  await expect(page.getByTestId("structured-worker")).toContainText("reconnecting");
+  // The head's link LED says it, as a terminal's does for its socket (#1348).
+  await expect(page.locator("[data-panel-head] [data-head-led]")).toHaveAttribute("data-head-led", "reconnecting");
   offline = false;
   await expect(page.getByTestId("structured-reconnecting")).toHaveCount(0, { timeout: 20_000 });
   expect(posts).toEqual([]);
@@ -294,6 +313,13 @@ test("New session: API clients are their own group, unavailable ones say why, no
   expect(created).toMatchObject({ engine: "codex-api", cwd: "/home/u/proj" });
   expect(Object.keys(created!).sort()).toEqual(["cwd", "engine", "operation_id"]);
   await expect(page.getByTestId("structured-empty")).toBeVisible();
+  // The info screen (#1348): what this session is, never the old "No terminal: …" paragraph.
+  const info = page.getByRole("region", { name: "Session info" });
+  await expect(info).toContainText("/home/u/proj");
+  await expect(info.getByTestId("structured-worker")).toBeVisible();
+  await expect(page.getByText(/no terminal/i)).toHaveCount(0);
+  await terminalChips(page.getByRole("form", { name: "Compose message" }));
+  await noOverflow(page);
 });
 
 const MD_REPLY = [
@@ -445,16 +471,12 @@ test("the API pane carries the terminal's head actions, and Files opens the draw
   if (testInfo.project.name === "mobile") {
     // ≤800px: ONE Actions menu carries every action; a phone never hosts a window, so no To map.
     await expect(pane.locator("[data-head-action]")).toHaveCount(0);
-    // The trigger never overlaps the identity run beside it (a squeezed box let it sit on the title).
+    // The trigger never overlaps the facts run beside it (the terminal's own bar, #1348).
     const t = (await pane.getByTestId("head-actions-menu").boundingBox())!;
-    const title = (await pane.getByText("Codex", { exact: true }).first().boundingBox())!;
-    expect(t.x).toBeGreaterThanOrEqual(title.x + title.width);
-    // The worker chip shows its LED only on a phone, and nothing in it is clipped.
-    const worker = pane.getByTestId("structured-worker");
-    await expect(worker).toContainText("worker live"); // still its accessible text
-    expect(await worker.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(0);
+    const led = (await pane.locator("[data-panel-head] [data-head-led]").boundingBox())!;
+    expect(t.x).toBeGreaterThanOrEqual(led.x + led.width);
     await pane.getByTestId("head-actions-menu").click();
-    await expect(page.getByRole("menuitem")).toHaveText(["Files", "Recap", "Hand off", "Share link"]);
+    await expect(page.getByRole("menuitem")).toHaveText(["Files", "Recap", "Hand off", "Share link", "Stop"]);
     await page.keyboard.press("Escape");
   } else {
     const labels = await pane.locator("[data-head-action]").evaluateAll((els) =>
@@ -521,7 +543,7 @@ test("in a map window the API pane has no bar of its own: chips in the chrome, O
   const win = page.locator(`[data-session-window="codex-api:${ID}"]`);
   await expect(win.getByTestId("structured-turn")).toBeVisible();
   // The chrome bar is the window's ONLY bar: the pane's own head (worker chip, Stop) is gone.
-  await expect(win.getByTestId("structured-worker")).toHaveCount(0);
+  await expect(win.locator("[data-panel-head]")).toHaveCount(0);
   await expect(win.locator("[data-window-head]")).toHaveCount(1);
   // ONE menu: the chrome's ⋯, never a second "…" of the pane's own.
   await expect(win.locator("[data-window-menu]")).toHaveCount(1);
@@ -621,11 +643,10 @@ for (const theme of ["dark", "light"] as const) {
     }, PNG_B64);
     const chip = page.getByTestId("structured-attachment");
     await expect(chip).toContainText("shot.png");
-    await expect(chip.locator("img")).toHaveJSProperty("complete", true);
-    // The picture's slot never squeezes the name: "shot.png" fits whole beside its thumbnail.
+    // The terminal composer's pill (#1348): the name, whole, and its ×.
     expect(await chip.getByText("shot.png").evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(0);
+    await expect(chip.getByRole("button", { name: "Remove shot.png" })).toBeVisible();
     await noOverflow(page);
-    await targets(page, page.getByRole("list", { name: "Attached images" }));
     await box.fill("what is clipped here?");
     await page.getByRole("button", { name: "Send" }).click();
     await expect.poll(() => posted).not.toBeNull();
@@ -706,11 +727,11 @@ for (const theme of ["dark", "light"] as const) {
       await r.fulfill({ status: 202, json: { state: "running" } });
     });
     await page.goto(URL_PATH);
-    const tools = page.getByRole("toolbar", { name: "Message tools" });
+    const tools = page.getByRole("form", { name: "Compose message" });
     await expect(tools).toBeVisible();
-    await targets(page, tools);
+    await terminalChips(tools);
     await noOverflow(page);
-    await tools.getByRole("button", { name: /templates/i }).click();
+    await tools.getByRole("button", { name: "Use a template" }).click();
     await page.getByText("Repro steps").click();
     await page.getByRole("textbox", { name: /^What/ }).fill("the logout bug");
     await page.getByRole("button", { name: "Insert Repro steps into message" }).click();
@@ -721,7 +742,7 @@ for (const theme of ["dark", "light"] as const) {
     await expect.poll(() => posted).not.toBeNull();
     expect(posted).toMatchObject({ text: "Reproduce the logout bug in a real browser", attachments: [STORED] });
     await expect(box).toHaveValue("");
-    await tools.getByRole("button", { name: /^Sent$/ }).click();
+    await tools.getByRole("button", { name: "Sent messages" }).click();
     await page.getByRole("button", { name: /restore/i }).first().click();
     await expect(box).toHaveValue("Reproduce the logout bug in a real browser");
     await expect(page.getByTestId("structured-attachment")).toHaveCount(1);
@@ -762,10 +783,10 @@ for (const theme of ["dark", "light"] as const) {
       await r.fulfill({ status: 202, json: { state: "running" } });
     });
     await page.goto(URL_PATH);
-    const tools = page.getByRole("toolbar", { name: "Message tools" });
+    const tools = page.getByRole("form", { name: "Compose message" });
     const mic = tools.getByRole("button", { name: /voice input/i });
     await expect(mic).toBeVisible();
-    await targets(page, tools);
+    await terminalChips(tools);
     await noOverflow(page);
     const box = (await mic.boundingBox())!;
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);

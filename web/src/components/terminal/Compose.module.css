@@ -102,21 +102,28 @@
   border-radius: 0;
   cursor: pointer;
 }
-.keys button:hover,
+.keys button:hover:not(:disabled),
 .moreKey:hover,
 .toggle:hover,
-.mic:hover {
+.mic:hover:not(:disabled) {
   color: var(--accent);
   border-color: var(--accent-soft);
   background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
-.keys button:active,
+.keys button:active:not(:disabled),
 .moreKey:active,
 .toggle:active,
-.mic:active {
+.mic:active:not(:disabled) {
   color: var(--on-accent);
   background: var(--accent);
   border-color: var(--accent);
+}
+/* Inert chips (the API composer's tools while a send is in flight) grey out like a disabled Send. */
+.keys button:disabled,
+.keyMenu button:disabled,
+.mic:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 /* The mic sits in the right cluster (before Send) and never shrinks. */
 .mic {
