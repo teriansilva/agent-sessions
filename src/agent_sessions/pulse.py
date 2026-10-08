@@ -216,6 +216,11 @@ def build_cards(
                 # backfilled) leaves `fingerprint_for()` identical and the #441 Phase-3 loop skips
                 # the scan as "unchanged", so the cards keep their pre-recap synthesis forever.
                 "_recap_fingerprint": m.recap_fingerprint,
+                # Internal (#1020): the structured assessment and the failed-refresh stamp the
+                # decision pass projects it with (`assessment.project`). Stripped from the public
+                # artifact like the recap; it moves with `_review_fingerprint`, written together.
+                "_ai_assessment": m.ai_assessment,
+                "_review_failed_at": m.review_failed_at,
             }
         )
     cards.sort(key=lambda c: (_STATE_ORDER[c["state"]], -c["last_activity"]))

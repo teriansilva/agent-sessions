@@ -192,13 +192,13 @@ async def _sweep(registry, cfg: dict) -> tuple[list[str], int]:
     for key, meta in _candidates(registry):
         if attempts >= SWEEP_CAP:
             break
-        # Change detection BEFORE any network I/O: gather_input is exactly what
+        # Change detection BEFORE any network I/O: gather_review_input is exactly what
         # run_review hashes+persists, so fingerprint equality ⇔ the endpoint would see
         # the same input it already reviewed. Nothing to review / a gather error just
         # skips the session (fail-soft, no endpoint call either way).
         try:
             _, fingerprint = await asyncio.to_thread(
-                review.gather_input, key, max_chars, aliases, require_transcript=True
+                review.gather_review_input, key, max_chars, aliases, require_transcript=True
             )
         except Exception:
             # Includes ReviewError("nothing to review") — common for fresh/quiet

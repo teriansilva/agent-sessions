@@ -2422,8 +2422,7 @@ def test_api_config_advertises_shell_new_session(auth_cfg, fake_jsonl, tmp_home,
 
 
 def test_session_lookup_returns_the_same_row_shape_as_the_list(auth_cfg, fake_jsonl):
-    """One row, byte-identical to the list's — both go through `_row`, so the pane and the
-    sidebar can never disagree about a session."""
+    """One row shape; only the detail lookup expands the lazy assessment (#1020)."""
     c = _client(auth_cfg)
     _login(c, auth_cfg)
     uuid = "11111111-1111-1111-1111-111111111111"
@@ -2432,7 +2431,15 @@ def test_session_lookup_returns_the_same_row_shape_as_the_list(auth_cfg, fake_js
     )
     r = c.get(f"/api/sessions/claude:{uuid}")
     assert r.status_code == 200
-    assert r.json() == listed
+    detail = r.json()
+    assert listed["assessment"] is None
+    assert detail["assessment"] == {
+        "schema_version": 1,
+        "status": "missing",
+        "stale_reasons": [],
+        "refresh_failed_at": None,
+    }
+    assert detail == {**listed, "assessment": detail["assessment"]}
 
 
 def test_session_lookup_accepts_a_bare_uuid(auth_cfg, fake_jsonl):

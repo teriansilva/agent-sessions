@@ -389,12 +389,14 @@ def test_review_prompts_always_end_with_the_insufficient_rule(tmp_home, pid):
     wording of the prompt — the live install's tail prompt is customised, and without the rule
     the model wrote a brief about its splash-screen input ("no prior context available")."""
     clause = prompts.INSUFFICIENT_CLAUSE
+    # The tail review also carries the structured-assessment rule (#1020), BEFORE the refusal.
+    suffix = f"{prompts.ASSESSMENT_CLAUSE}\n{clause}" if pid == "tail_review" else clause
     assert prompts.effective(pid).endswith(clause)
-    assert prompts.guard_suffix(pid) == clause
+    assert prompts.guard_suffix(pid) == suffix
 
     prompts.set_value(pid, "Summarise the session in one line.")
     eff = prompts.effective(pid)
-    assert eff == f"Summarise the session in one line.\n{clause}"
+    assert eff == f"Summarise the session in one line.\n{suffix}"
     assert eff in prompts.effective_set()
 
     # An operator who pasted the clause into their own text gets it once, last — never twice,
@@ -403,6 +405,26 @@ def test_review_prompts_always_end_with_the_insufficient_rule(tmp_home, pid):
     eff = prompts.effective(pid)
     assert eff.count(clause) == 1 and eff.endswith(clause)
     assert clause not in prompts.editable(pid)
+
+
+def test_the_tail_review_always_asks_for_the_structured_assessment(tmp_home):
+    """#1020: the server parses the reply's `assessment` (`assessment.normalize`), so the rule that
+    asks for it is locked like the refusal rule — an operator's own tail prompt (the live install's
+    is customised) cannot drop it, a pasted copy is not doubled, and a copy of either clause saved
+    on its own (the refusal rule alone, as the prompt carried it before #1020) is stripped too."""
+    a, ins = prompts.ASSESSMENT_CLAUSE, prompts.INSUFFICIENT_CLAUSE
+    for saved in (
+        f"{a}\nOne line per session.",
+        f"One line per session.\n{ins}",
+        f"{ins}\n{a}\nOne line per session.",
+    ):
+        prompts.set_value("tail_review", saved)
+        eff = prompts.effective("tail_review")
+        assert eff == f"One line per session.\n{a}\n{ins}"
+        assert eff.count(a) == 1 and eff.count(ins) == 1
+        assert a not in prompts.editable("tail_review")
+        assert ins not in prompts.editable("tail_review")
+    assert prompts.ASSESSMENT_CLAUSE not in prompts.effective("session_recap")
 
 
 def test_unlocked_prompts_are_unchanged(tmp_home):

@@ -74,6 +74,13 @@ def _working_keys(registry) -> set[str]:
     return keys
 
 
+def _assessment_state(card: dict) -> tuple[str, str, str]:
+    """``(status, context_source, stale reasons)`` of the card's assessment, as the digest
+    sees it."""
+    view, source = orchestrator.assessment_view(card)
+    return view["status"], source, ",".join(view["stale_reasons"])
+
+
 def world_fingerprint(
     cards: list[dict],
     cfg: dict | None = None,
@@ -125,6 +132,12 @@ def world_fingerprint(
                     # fingerprint and the sweep would skip as unchanged. Bucketed hourly so a
                     # ticking clock alone doesn't force a call every sweep.
                     int(max(0.0, now - float(c.get("last_activity") or now)) // 3600),
+                    # The assessment's freshness (#1020 review finding 4): the digest labels a
+                    # record `assessment_stale` once a refresh fails or the session moves, and a
+                    # failed refresh changes no review fingerprint — without these the pass that
+                    # would read the new label is skipped as "unchanged".
+                    c.get("_review_failed_at") or 0,
+                    *_assessment_state(c),
                 ]
                 for c in cards
             ),

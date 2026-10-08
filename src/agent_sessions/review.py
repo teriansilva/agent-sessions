@@ -16,9 +16,16 @@ JSON shaped as ``{"summary", "title", "intervention_required", "reason"}``; a se
 shape guard + length caps treat the model output strictly as data (no tool calls, no actions).
 
 Fail-soft contract (#356 staleness semantics): ANY failure — endpoint down, timeout, bad
-JSON, empty input — raises :class:`ReviewError` and persists NOTHING, so the last good
+JSON, empty input — raises :class:`ReviewError` and persists no result, so the last good
 result (and its ``reviewed_at`` stale age) survives instead of a failure masquerading as a
-fresh review. The API key never appears in errors or logs; callers surface ``str(exc)``.
+fresh review. The one write a failure makes is ``review_failed_at`` (#1020, after the input was
+read), so the structured assessment can be projected as stale rather than current. The API key
+never appears in errors or logs; callers surface ``str(exc)``.
+
+The reply also carries a bounded structured assessment (#1020, ``assessment.py``) — current state,
+blocker, decision needed, task and constraints — in the SAME call. The review input adds the
+user's messages that fall outside the transcript tail (``gather_review_input``), so a long
+session's opening request and mid-session corrections still reach it.
 
 The periodic scheduler lives in ``ai_review_loop`` (#356 Phase 2); this module stays
 deliberately scheduler-free.
@@ -38,7 +45,7 @@ from pathlib import Path
 
 import httpx
 
-from . import metadata, prefs, prompts, scrollback, template_secrets, transcript
+from . import assessment, metadata, prefs, prompts, scrollback, template_secrets, transcript
 
 # Output field caps — server-owned, applied AFTER parsing so an over-long model reply is
 # truncated rather than rejected (the shape is the contract; the length is hygiene).
@@ -194,7 +201,10 @@ def _turns(key: str, aliases: dict[str, str] | None = None) -> list:
     if adapter is None:
         return []
     try:
-        return list(adapter(native, Path.home()))
+        got = adapter(native, Path.home())
+        # Keep the reader's truncation flag (#1020): coverage must not claim a whole history the
+        # reader never returned.
+        return transcript.tagged_turns(list(got), transcript.was_truncated(got))
     except Exception:
         return []
 
@@ -222,8 +232,14 @@ def _plain_transcript(key: str, aliases: dict[str, str] | None = None) -> str:
     it to the id the engine's own transcript store uses (#611) or every in-app-created session
     on those engines reviews with an empty transcript, on nothing but its terminal screen.
     """
+    return _render(_turns(key, aliases))
+
+
+def _render(turns: list) -> str:
+    """Turns as the plain text every prompt reads: one ``<role>[/<kind>]: <text>`` line each, so a
+    tool result (``tool/result``) can never read as something the user typed."""
     lines: list[str] = []
-    for t in _turns(key, aliases):
+    for t in turns:
         text = (t.text or "").strip()
         if not text:
             continue
@@ -468,15 +484,63 @@ def gather_input(
     registry forever. It is prepended after the hash so it also can never be the thing that falls
     off the front when the body is truncated.
     """
+    return _gather(key, max_input_chars, aliases, require_transcript=require_transcript)
+
+
+def gather_review_input(
+    key: str,
+    max_input_chars: int,
+    aliases: dict[str, str] | None = None,
+    *,
+    require_transcript: bool = False,
+    info: dict | None = None,
+) -> tuple[str, str]:
+    """:func:`gather_input` as the session REVIEW reads it (#1020): the same sections, plus the
+    user messages that fall outside the transcript tail.
+
+    The tail alone loses what the user asked for and every later correction once a session runs
+    long — measured on #1020, a 132 000-character history kept neither the opening request nor a
+    mid-session "keep deployment on hold" in its 24 000-character input. Those messages are what
+    the structured assessment's ``task`` and ``constraints`` are made of, so the review gets them
+    in a labelled section of their own (`_earlier_user_section`). A session short enough for its
+    tail to hold every user message gets no such section, and its input — and fingerprint — are
+    byte-identical to :func:`gather_input`'s.
+
+    ``info``, when given, is filled with what the assessment record needs and the text cannot
+    say: ``coverage`` (what the input holds), ``sources`` (section text, for quote checks) and
+    ``latest_source_at``. Both the background sweep and :func:`run_review` call this, so change
+    detection and the review hash the same input.
+    """
+    return _gather(
+        key,
+        max_input_chars,
+        aliases,
+        require_transcript=require_transcript,
+        earlier_user=True,
+        info=info,
+    )
+
+
+def _gather(
+    key: str,
+    max_input_chars: int,
+    aliases: dict[str, str] | None,
+    *,
+    require_transcript: bool = False,
+    earlier_user: bool = False,
+    info: dict | None = None,
+) -> tuple[str, str]:
     phys_key = _physical(key)
     if aliases is None:
         aliases = _load_aliases()
-    transcript_text = _plain_transcript(key, aliases)
+    turns = _turns(key, aliases)
+    transcript_text = _render(turns)
     live_text = scrollback.live_tail_text(phys_key, _screen_budget(max_input_chars))
     if not transcript_text and not live_text:
         raise ReviewError("nothing to review: no transcript and no live terminal output")
     if require_transcript and not transcript_text and keeps_transcript(key):
         raise ReviewError("nothing to review yet: the conversation has no turn")
+    coverage: dict = {}
     body = _assemble(
         key,
         max_input_chars,
@@ -484,9 +548,135 @@ def gather_input(
         _TRANSCRIPT_TAIL_HEADING,
         live_text,
         keep_transcript="tail",
+        earlier_user=_user_entries(turns) if earlier_user else None,
+        coverage=coverage,
     )
+    if transcript.was_truncated(turns):
+        # The reader kept only the newest records (#1020 review finding 5): whatever the body
+        # holds, the history before them never reached it, so neither can read as complete.
+        if coverage.get("transcript") == "complete":
+            coverage["transcript"] = "tail"
+        if "operator_messages" in coverage:
+            coverage["operator_messages"] = "partial"
     fingerprint = hashlib.sha256(body.encode("utf-8", "replace")).hexdigest()
+    if info is not None:
+        stamps = [t.ts for t in turns if isinstance(getattr(t, "ts", None), int | float)]
+        latest = max(stamps) if stamps else None
+        if not keeps_transcript(key):
+            latest = scrollback.get_last_output_at(phys_key)
+        info["coverage"] = coverage
+        info["latest_source_at"] = latest
+        info["sources"] = {
+            "transcript": coverage.pop("_transcript_text", ""),
+            "screen": live_text or "",
+            "operator": coverage.pop("_operator_text", []),
+        }
+    coverage.pop("_transcript_text", None)
+    coverage.pop("_operator_text", None)
     return _with_context(key, phys_key, body, aliases), fingerprint
+
+
+# The earlier-user-messages section (#1020). Bounded as a fixed share like the screen and the
+# draft, so the transcript tail stays the elastic part.
+EARLIER_USER_MAX = 3000
+EARLIER_USER_MESSAGE_MAX = 600
+_EARLIER_USER_HEADING = (
+    "## Earlier user messages (recorded as user messages in the transcript, before the tail "
+    "below; oldest first — a later message supersedes an earlier one)\n"
+)
+
+
+def _earlier_user_budget(max_input_chars: int) -> int:
+    return max(0, min(EARLIER_USER_MAX, max_input_chars // 6))
+
+
+def _user_lines(turns: list) -> list[str]:
+    """Every user TEXT turn, rendered exactly as `_render` renders it. A tool result is
+    ``role=tool`` in every canonical reader, so it can never be selected here."""
+    out = []
+    for t in turns:
+        text = (t.text or "").strip()
+        if t.role == "user" and t.kind == "text" and text:
+            out.append(f"user: {text}")
+    return out
+
+
+def _user_entries(turns: list) -> list[tuple[int, str]]:
+    """``(offset, line)`` for every user TEXT turn: the line as ``_render`` renders it and where it
+    starts in ``_render(turns)``. The offset is what lets the earlier section ask "is this TURN in
+    the tail", rather than "does this text occur somewhere in the tail" (#1020 review finding 2:
+    a short "no" occurs inside a later "no worries, ship it" and was dropped as already shown)."""
+    out: list[tuple[int, str]] = []
+    pos = 0
+    for t in turns:
+        text = (t.text or "").strip()
+        if not text:
+            continue
+        line = f"{t.role if t.kind == 'text' else f'{t.role}/{t.kind}'}: {text}"
+        if t.role == "user" and t.kind == "text":
+            out.append((pos, line))
+        pos += len(line) + 1
+    return out
+
+
+def _earlier_user_section(
+    entries: list[tuple[int, str]],
+    window_start: int,
+    budget: int,
+    *,
+    sources: list[str] | None = None,
+) -> tuple[str, str]:
+    """``(section, coverage)`` for the user messages the transcript tail will not contain.
+
+    ``entries`` are ``_user_entries``; ``window_start`` is the offset in the rendered transcript
+    from which the tail certainly keeps everything (a lower bound on what it keeps). A turn that
+    STARTS at or after it is whole in the tail; every earlier one is missing — membership by
+    position, never by substring. The missing are offered the opening message first (what the
+    session was asked to do),
+    then newest-first (what supersedes it), each cut to ``EARLIER_USER_MESSAGE_MAX``; whatever
+    does not fit is counted in a marker, never dropped silently. ``coverage`` is ``complete`` when
+    every user line reaches the model whole, ``partial`` otherwise, ``none`` with no user line.
+    """
+    if not entries:
+        return "", "none"
+    lines = [ln for _off, ln in entries]
+    missing = [(i, ln) for i, (off, ln) in enumerate(entries) if off < window_start]
+    if not missing:
+        return "", "complete"
+    # The opening message, then newest-first, STOPPING at the first that does not fit: the kept
+    # lines are then the first plus a contiguous newest run, so at most one gap needs a marker,
+    # and the marker's room is reserved up front so the section never exceeds its budget.
+    marker = "[{n} earlier user message(s) omitted]"
+    room = budget - len(_EARLIER_USER_HEADING) - len(marker.format(n=len(lines))) - 1
+    chosen: dict[int, str] = {}
+    cut = False
+    for i, ln in [missing[0], *reversed(missing[1:])]:
+        text = ln
+        if len(text) > EARLIER_USER_MESSAGE_MAX:
+            text = text[: EARLIER_USER_MESSAGE_MAX - 1] + "\u2026"
+        if len(text) + 1 > room:
+            break
+        cut = cut or text != ln
+        chosen[i] = text
+        room -= len(text) + 1
+    if not chosen:
+        return "", "partial"
+    body: list[str] = []
+    run = 0
+    for i, _ln in missing:
+        if i not in chosen:
+            run += 1
+            continue
+        if run:
+            body.append(marker.format(n=run))
+            run = 0
+        body.append(chosen[i])
+    if run:
+        body.append(marker.format(n=run))
+    complete = len(chosen) == len(missing) and not cut
+    if sources is not None:
+        sources.extend(chosen.values())
+    return _EARLIER_USER_HEADING + "\n".join(body), "complete" if complete else "partial"
 
 
 def _assemble(
@@ -498,6 +688,8 @@ def _assemble(
     *,
     keep_transcript: str,
     sample: Callable[[str, int], str] | None = None,
+    earlier_user: list[tuple[int, str]] | None = None,
+    coverage: dict | None = None,
 ) -> str:
     """Join the body's sections so the total never exceeds ``budget`` **by construction**, and no
     section is ever emitted without its heading.
@@ -508,6 +700,10 @@ def _assemble(
     everything, then tail-truncate the result — could shear every heading off the front, leaving
     the model an unlabeled blend of transcript, terminal output, and (worst) the user's UNSENT
     draft, which #560 exists to keep distinguishable from completed work.
+
+    ``earlier_user`` (the review path, #1020) adds the user messages the tail will not reach as a
+    third fixed share, placed BEFORE the tail because it is older. ``coverage``, when given, is
+    filled with what the body ended up holding.
     """
     sections: list[str] = []
     spent = 0
@@ -518,6 +714,21 @@ def _assemble(
         if fixed:
             spent += len(fixed) + 2  # + the "\n\n" separator
 
+    earlier, earlier_cov = "", "none"
+    operator_sources: list[str] = []
+    if earlier_user is not None:
+        share = _earlier_user_budget(budget)
+        # What the tail keeps at LEAST: its room once the earlier section takes its whole share.
+        floor = max(0, budget - spent - share - 2 - len(transcript_heading))
+        window_start = len(transcript_text) - min(floor, len(transcript_text))
+        earlier, earlier_cov = _earlier_user_section(
+            earlier_user, window_start, share, sources=operator_sources
+        )
+        if earlier:
+            spent += len(earlier) + 2
+            sections.append(earlier)
+
+    kept = ""
     if transcript_text:
         room = budget - spent
         if sample is not None:
@@ -525,10 +736,31 @@ def _assemble(
         head = _section(transcript_heading, transcript_text, room, keep=keep_transcript)
         if head:
             sections.append(head)
+            kept = head[len(transcript_heading) :]
+    if earlier_user is not None and kept:
+        # Intersect each real user turn with the actual retained tail. Do not re-parse role
+        # labels from text (an assistant or tool can print those), or join across omitted spans.
+        tail_start = len(transcript_text) - len(kept)
+        operator_sources.extend(
+            line[max(0, tail_start - offset) :]
+            for offset, line in earlier_user
+            if offset + len(line) > tail_start
+        )
     if screen:
         sections.append(screen)
     if draft:
         sections.append(draft)
+    if coverage is not None:
+        if not transcript_text:
+            coverage["transcript"] = "none"
+        else:
+            coverage["transcript"] = "complete" if len(kept) >= len(transcript_text) else "tail"
+        if earlier_user is not None:
+            coverage["operator_messages"] = earlier_cov
+        coverage["screen"] = bool(screen)
+        coverage["draft"] = bool(draft)
+        coverage["_transcript_text"] = (earlier + "\n" + kept) if earlier else kept
+        coverage["_operator_text"] = operator_sources
     return "\n\n".join(sections)
 
 
@@ -636,6 +868,10 @@ def _shape_guard(obj: dict) -> dict:
         # alongside required=True.
         "intervention_required": required,
         "reason": reason if required else "",
+        # The structured assessment (#1020), still RAW: `assessment.normalize` bounds it against
+        # the sections it may quote, which only the caller holds. Absent → None, never an error:
+        # the summary contract above stands on its own.
+        "assessment": obj.get("assessment"),
     }
 
 
@@ -726,41 +962,43 @@ async def run_review(key: str, aliases: dict[str, str] | None = None) -> dict:
     Raises NotConfiguredError / ReviewError — never partial writes.
 
     ``aliases`` (``metadata.load_aliases()``) is threaded in by the sweep so the sidecar is read
-    once per pass rather than once per session; omit it and each gather reads it itself."""
+    once per pass rather than once per session; omit it and each gather reads it itself.
+
+    The reply also carries the structured assessment (#1020, ``prompts.ASSESSMENT_CLAUSE``),
+    bounded by ``assessment.normalize`` and stored as ``ai_assessment`` in the same write as the
+    summary. A reply without a usable one keeps the previous record, which then reads as stale
+    (its source fingerprint is no longer the review's). A review that fails after its input was
+    read records ``review_failed_at`` and nothing else, so the last good summary, recap and
+    assessment survive and the API can say they were not refreshed."""
     cfg = _require_config()
+    info: dict = {}
+    read_at = time.time()
     text, fingerprint = await asyncio.to_thread(
-        gather_input, key, int(cfg["max_input_chars"]), aliases
+        gather_review_input, key, int(cfg["max_input_chars"]), aliases, info=info
     )
-    body = {
-        "model": cfg["model"],
-        "messages": [
-            {"role": "system", "content": prompts.effective("tail_review")},
-            {"role": "user", "content": text},
-        ],
-        "temperature": 0,
-        "stream": False,
-    }
+    rk = metadata.resolve_key(key)
     try:
-        r = await _post_chat(cfg, body)
-    except httpx.HTTPError as e:
-        raise _transport_error(e, cfg, subject="review endpoint") from None
-    if r.status_code != 200:
-        raise ReviewError(f"review endpoint returned HTTP {r.status_code}")
-    try:
-        payload = r.json()
-    except ValueError:
-        raise ReviewError("review endpoint returned an unexpected response shape") from None
-    _reject_if_truncated(payload, subject="review endpoint")
-    try:
-        content = payload["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError):
-        raise ReviewError("review endpoint returned an unexpected response shape") from None
-    result = _shape_guard(_extract_json(str(content)))
+        result = await _tail_review_call(cfg, text)
+    except InsufficientInputError:
+        raise
+    except ReviewError:
+        _note_failure(rk, read_at)
+        raise
+    norm = assessment.normalize(result.pop("assessment", None), info.get("sources"))
+    extra: dict = {}
+    if norm is not None:
+        extra["ai_assessment"] = assessment.record(
+            *norm,
+            source_fingerprint=fingerprint,
+            source_read_at=read_at,
+            latest_source_at=info.get("latest_source_at"),
+            assessed_at=time.time(),
+            coverage=info.get("coverage"),
+        )
     # Write against the RESOLVED sidecar key (Hermes on PR #367): for a reconciled
     # opencode session the existing title/sticky/archive sidecar lives under the
     # placeholder physical key — patching the logical key would create a sparse
     # shadowing entry and hide that state from the list read path.
-    rk = metadata.resolve_key(key)
     meta = metadata.patch(
         rk,
         ai_summary=result["summary"],
@@ -769,6 +1007,8 @@ async def run_review(key: str, aliases: dict[str, str] | None = None) -> dict:
         intervention_reason=result["reason"],
         reviewed_at=time.time(),
         review_fingerprint=fingerprint,
+        review_failed_at=None,
+        **extra,
     )
     # Chronological recap (#481): a SECOND, INDEPENDENT pass over the whole-session transcript.
     # Best-effort by design — a recap failure leaves the last good ``ai_recap`` untouched and
@@ -801,7 +1041,132 @@ async def run_review(key: str, aliases: dict[str, str] | None = None) -> dict:
         "review_excluded": meta.review_excluded,
         "ai_recap": meta.ai_recap,
         "recap_fingerprint": meta.recap_fingerprint,
+        "assessment": assessment.project(
+            meta.ai_assessment,
+            review_fingerprint=meta.review_fingerprint,
+            review_failed_at=meta.review_failed_at,
+        ),
     }
+
+
+async def _tail_review_call(cfg: dict, text: str) -> dict:
+    """The tail review's one model call, shape-guarded. Raises ReviewError on any failure."""
+    body = {
+        "model": cfg["model"],
+        "messages": [
+            {"role": "system", "content": prompts.effective("tail_review")},
+            {"role": "user", "content": text},
+        ],
+        "temperature": 0,
+        "stream": False,
+    }
+    try:
+        r = await _post_chat(cfg, body)
+    except httpx.HTTPError as e:
+        raise _transport_error(e, cfg, subject="review endpoint") from None
+    if r.status_code != 200:
+        raise ReviewError(f"review endpoint returned HTTP {r.status_code}")
+    try:
+        payload = r.json()
+    except ValueError:
+        raise ReviewError("review endpoint returned an unexpected response shape") from None
+    failure: ReviewError | None = None
+    try:
+        _reject_if_truncated(payload, subject="review endpoint")
+    except ReviewError as e:
+        failure = e
+    try:
+        content = payload["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        raise failure or ReviewError(
+            "review endpoint returned an unexpected response shape"
+        ) from None
+    if failure is None:
+        try:
+            return _shape_guard(_extract_json(str(content)))
+        except MalformedReplyError as e:
+            failure = e
+    return _salvaged_core(str(content or ""), failure)
+
+
+# Read complete ROOT members only. Regex searches can mistake nested debug fields for the
+# verdict, or a string containing a JSON example for actual review keys.
+_CORE_KEYS = frozenset({"summary", "title", "reason", "intervention_required", "insufficient"})
+
+
+def _salvaged_core(content: str, failure: ReviewError) -> dict:
+    """Recover complete top-level members before assessment, then apply the ordinary guard.
+
+    Walk JSON values with the decoder, so nested objects/arrays and escaped strings cannot
+    supply root keys. Stop at the assessment or EOF between complete members. Before the
+    assessment, malformed syntax, incomplete members and duplicate keys refuse recovery;
+    no search skips past damaged JSON or treats a decoder error as proof of truncation.
+    """
+    s = _FENCE_RE.sub("", content or "").strip()
+    if not s.startswith("{"):
+        raise failure
+    decoder = json.JSONDecoder()
+    pos = 1
+    seen: set[str] = set()
+    obj: dict = {}
+    while pos < len(s):
+        while pos < len(s) and s[pos].isspace():
+            pos += 1
+        if pos >= len(s):
+            break
+        if s[pos] == "}":
+            raise failure  # empty root or trailing comma: neither supplies a valid verdict
+        try:
+            key, pos = decoder.raw_decode(s, pos)
+            if not isinstance(key, str) or key in seen:
+                raise failure
+            seen.add(key)
+            while pos < len(s) and s[pos].isspace():
+                pos += 1
+            if pos >= len(s) or s[pos] != ":":
+                raise failure
+            pos += 1
+            if key == "assessment":
+                break
+            while pos < len(s) and s[pos].isspace():
+                pos += 1
+            value, pos = decoder.raw_decode(s, pos)
+        except (ValueError, RecursionError):
+            raise failure from None
+        while pos < len(s) and s[pos].isspace():
+            pos += 1
+        if pos < len(s) and s[pos] not in ",}":
+            raise failure
+        if key in _CORE_KEYS:
+            obj[key] = value
+        if pos >= len(s):
+            break
+        if s[pos] == "}":
+            if s[pos + 1 :].strip():
+                raise failure
+            break
+        pos += 1
+    if not obj:
+        raise failure
+    try:
+        out = _shape_guard(obj)
+    except InsufficientInputError:
+        raise
+    except ReviewError:
+        raise failure from None
+    out["assessment"] = None
+    return out
+
+
+def _note_failure(rk: str, started_at: float) -> None:
+    """Record that a refresh was attempted and failed — the one write a failed review makes.
+
+    Only the timestamp: the last good summary, recap and assessment stay exactly as they were, and
+    the assessment projection reads them as stale rather than current. A success committed
+    since this attempt began wins, fenced inside the metadata write lock. Best-effort: failing
+    to record the failure must never replace the error the caller is about to raise."""
+    with contextlib.suppress(Exception):
+        metadata.patch(rk, review_failed_at=time.time(), failed_review_started_at=started_at)
 
 
 # Statuses that mean "this server does not accept an optional field" rather than "your request
@@ -884,7 +1249,8 @@ def _reject_if_truncated(payload: object, *, subject: str) -> None:
     as well (the budget went to thinking), which used to surface as "unexpected response shape".
 
     Shape problems themselves stay the caller's existing error to raise, so a malformed payload
-    falls through untouched.
+    falls through untouched. The tail review (#1020) catches this to salvage its own complete
+    scalar keys (`_salvaged_core`) — never the cut assessment — before failing.
     """
     try:
         finish = payload["choices"][0].get("finish_reason")  # type: ignore[index]

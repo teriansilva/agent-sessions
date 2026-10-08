@@ -19,6 +19,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, fields
 from pathlib import Path
 
+from . import assessment
+
 
 def _legacy_bare_engine():
     """``(engine_id, id_pattern)`` of the ONE engine whose manifest claims `legacy_bare_id` — the
@@ -161,6 +163,16 @@ class SessionMeta:
     # value untouched (never rolls back the summary/intervention write, and vice-versa).
     ai_recap: str = ""
     recap_fingerprint: str = ""
+    # Structured assessment (#1020): the bounded, versioned record `assessment.record` builds from
+    # the tail review's reply — current state, blocker, decision needed, task, constraints, with
+    # the source fingerprint and read time it describes. None = no record (unknown). Validated by
+    # `assessment.from_stored` on BOTH write (`patch`) and read, so a stored row can never carry an
+    # unbounded or misshapen record. Read through `assessment.project`, which decides freshness.
+    ai_assessment: dict | None = None
+    # When the last review attempt FAILED after reading its input (#1020); cleared by a success.
+    # The one field a failed review writes: the last good results stay, and the assessment
+    # projection uses this to say they were not refreshed.
+    review_failed_at: float | None = None
     # Server-side compose draft (#477): the unsent text + pasted-image attachment pills
     # for this session's compose box, so a draft survives refresh / session switch and is
     # available cross-device (one server, one sidecar). None = no draft. Shape when set:
@@ -621,6 +633,8 @@ def _index_from_raw(raw: dict, *, normalized: bool = False) -> dict[str, Session
             orchestrator_excluded=bool(val.get("orchestrator_excluded", False)),
             ai_recap=str(val.get("ai_recap", "") or ""),
             recap_fingerprint=str(val.get("recap_fingerprint", "") or ""),
+            ai_assessment=assessment.from_stored(val.get("ai_assessment")),
+            review_failed_at=assessment.finite_number(val.get("review_failed_at")),
             draft=(val["draft"] if isinstance(val.get("draft"), dict) else None),
             color=color,
             # Handoff provenance (#597) — plain strings; read-time fail-soft like the
@@ -673,12 +687,15 @@ def requested_model_in(index: dict[str, SessionMeta], aliases: dict[str, str], k
 
 def patch(
     key: str,
+    *,
+    failed_review_started_at: float | None = None,
     **fields,
 ) -> SessionMeta:
     """Read-modify-write a single session's metadata under an exclusive flock.
 
     ``key`` is the engine-qualified id (``<engine>:<native_id>``). Returns the new
-    SessionMeta.
+    SessionMeta. A failure-only write may supply ``failed_review_started_at``: a success
+    committed since that attempt began wins, checked under this same exclusive lock.
     """
     path = _default_path()
     allowed = {
@@ -706,6 +723,9 @@ def patch(
         # Chronological recap (#481) — written by the review pass, never by the rename path.
         "ai_recap",
         "recap_fingerprint",
+        # Structured assessment + failed-refresh stamp (#1020) — written by the review pass only.
+        "ai_assessment",
+        "review_failed_at",
         # Compose draft (#477) — written by the draft route; a dict or None.
         "draft",
         # Per-session color override (#571) — written by the color route. Validated by
@@ -725,6 +745,16 @@ def patch(
     bad = set(fields) - allowed
     if bad:
         raise ValueError(f"unknown metadata fields: {sorted(bad)}")
+    if failed_review_started_at is not None and (
+        set(fields) != {"review_failed_at"}
+        or assessment.finite_number(failed_review_started_at) is None
+    ):
+        raise ValueError("failed_review_started_at is only valid for a failed review timestamp")
+    if fields.get("review_failed_at") is not None:
+        stamp = assessment.finite_number(fields["review_failed_at"])
+        if stamp is None:
+            raise ValueError("review_failed_at must be a finite number or null")
+        fields["review_failed_at"] = stamp
 
     with _exclusive(path) as fh:
         try:
@@ -746,6 +776,13 @@ def patch(
         existing = data.get(key, {})
         if not isinstance(existing, dict):
             existing = {}
+        reviewed_at = assessment.finite_number(existing.get("reviewed_at"))
+        if (
+            failed_review_started_at is not None
+            and reviewed_at is not None
+            and reviewed_at >= failed_review_started_at
+        ):
+            return _index_from_raw({key: existing}, normalized=True)[key]
         meta_dict = {
             "title": existing.get("title", ""),
             "sticky": existing.get("sticky", False),
@@ -763,6 +800,8 @@ def patch(
             "orchestrator_excluded": existing.get("orchestrator_excluded", False),
             "ai_recap": existing.get("ai_recap", ""),
             "recap_fingerprint": existing.get("recap_fingerprint", ""),
+            "ai_assessment": assessment.from_stored(existing.get("ai_assessment")),
+            "review_failed_at": assessment.finite_number(existing.get("review_failed_at")),
             "draft": existing.get("draft"),
             # Per-session color override (#571): persisted only when non-empty on write,
             # so a freshly-untouched row reads back as ``""`` (no override), not ``"#fff"``.
@@ -790,6 +829,13 @@ def patch(
         # the same ``ValueError`` the route layer would have raised.
         if "color" in fields:
             meta_dict["color"] = validate_color(fields["color"])
+        # The assessment is bounded on WRITE as well as on read (#1020): whatever a caller hands
+        # in is re-validated, and something that is not a record refuses the write.
+        if fields.get("ai_assessment") is not None:
+            rec = assessment.from_stored(fields["ai_assessment"])
+            if rec is None:
+                raise ValueError("ai_assessment is not a valid assessment record")
+            meta_dict["ai_assessment"] = rec
         data[key] = meta_dict
         _rewrite_in_place(fh, data)
         # The persisted sidecar dict MAY carry unmodeled keys (the preservation

@@ -44,6 +44,7 @@ import uuid
 from collections.abc import Callable
 
 from . import (
+    assessment,
     automation,
     engines,
     metadata,
@@ -414,26 +415,66 @@ def _digest_menu(menu: object) -> dict | None:
     return {"question": _clamp(menu.get("question"), MENU_LABEL_MAX), "options": options}
 
 
+def assessment_view(card: dict) -> tuple[dict, str]:
+    """``(projection, context_source)`` for a card's assessment — what the digest leads with.
+
+    Shared with the loop's skip-fingerprint (`orchestrator_loop.fingerprint_for`), so a record
+    going stale — the session moved, a refresh failed, a newer review came back without one —
+    changes what the next pass would be sent AND re-arms that pass (#1020 review finding 4)."""
+    view = assessment.project(
+        card.get("_ai_assessment"),
+        review_fingerprint=str(card.get("_review_fingerprint") or ""),
+        last_activity=card.get("last_activity"),
+        review_failed_at=card.get("_review_failed_at"),
+    )
+    if view["status"] == "missing":
+        return view, "recap_last_line"
+    return view, ("assessment" if view["status"] == "current" else "assessment_stale")
+
+
 def _digest_entry(card: dict, now: float, extras: dict | None = None) -> dict:
     """The trimmed per-session view the model sees. Bounded fields only, never internal keys,
     never a raw transcript by default — transcripts are pulled per-session as *evidence*, after a
     proposal names one, exactly as ``pulse_chat`` Stage 2 does. ``extras`` (from
     :func:`_digest_extras`) adds what the Session review settings allow: the screen's prompt and
-    menu, and at Deep a bounded transcript tail and this session's earlier outcomes."""
+    menu, and at Deep a bounded transcript tail and this session's earlier outcomes.
+
+    **Where the session stands leads, from explicit fields (#1020).** ``current_state``,
+    ``blocker``, ``decision_needed`` and the user's ``constraints`` come from the structured
+    assessment, each at the assessment's own cap — never re-cut here, so a blocker that survived
+    the record survives the digest. ``context_source`` says where they came from and whether they
+    are current: ``assessment``, ``assessment_stale`` (the session moved, or a refresh failed,
+    after it was written), or ``recap_last_line`` for a session reviewed before assessments
+    existed. When a NEWER review came back without an assessment, the record describes an older
+    input, so that review's recap line rides along as ``newer_recap_last_line`` — labelled, never
+    merged into the record's fields. ``summary`` is the one-line preview ONLY: it no longer falls
+    back to the recap's first 300 characters, which was how session histories reached decisions
+    as current state.
+    """
     project = card.get("project") or {}
     recap = str(card.get("_ai_recap") or "")
-    summary = str(card.get("ai_summary") or recap or "")[:SUMMARY_MAX]
-    entry = {
+    view, source = assessment_view(card)
+    entry: dict = {
         "id": card["id"],
         "engine": card.get("engine", ""),
         "title": _clamp(card.get("title"), TITLE_MAX),
         "project": _clamp(project.get("name"), PROJECT_MAX),
         "state": card.get("state", ""),
         "needs_user": bool(card.get("intervention_required")),
-        "summary": summary,
-        "current_state": _clamp(_state_line(recap), STATE_LINE_MAX),
-        "age_hours": round((now - float(card.get("last_activity") or now)) / 3600, 1),
     }
+    if view["status"] == "missing":
+        entry["current_state"] = _clamp(_state_line(recap), STATE_LINE_MAX)
+    else:
+        entry["current_state"] = view["current_state"]
+        for k in ("blocker", "decision_needed", "constraints"):
+            if view[k]:
+                entry[k] = view[k]
+        newer = _state_line(recap)
+        if "newer_review_without_assessment" in view["stale_reasons"] and newer:
+            entry["newer_recap_last_line"] = _clamp(newer, STATE_LINE_MAX)
+    entry["context_source"] = source
+    entry["summary"] = _clamp(card.get("ai_summary"), SUMMARY_MAX)
+    entry["age_hours"] = round((now - float(card.get("last_activity") or now)) / 3600, 1)
     reason = card.get("intervention_reason")
     if card.get("intervention_required") and isinstance(reason, str) and reason.strip():
         entry["needs_user_reason"] = _clamp(reason, REASON_MAX)

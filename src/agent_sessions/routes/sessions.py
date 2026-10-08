@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from .. import (
     aitasks,
     archive,
+    assessment,
     autosort,
     engines,
     fsbrowse,
@@ -29,6 +30,7 @@ from .. import (
     project_dirs,
     projects,
     ptybridge,
+    review,
     runtime_cleanup,
     scanner,
     transcript,
@@ -364,6 +366,10 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # reads it (a transcript tail per row would make the list a walk); the one-session
             # lookup fills it in `_lookup_row`.
             "model_effective": None,
+            # The structured assessment (#1020), projected with its per-source freshness. Like
+            # `model_effective`, every row carries the key and only the one-session lookup fills
+            # it (`_lookup_row`): the list stays lean, `null` there means "not read here".
+            "assessment": None,
         }
 
     def _membership_index() -> dict[str, dict] | None:
@@ -825,6 +831,18 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                     row = _lookup_row(key)
         return None if row is _NOT_FOUND else row
 
+    def _assessment_activity(row: dict) -> float | None:
+        """The session's own clock, for the assessment's freshness (#1020): its newest
+        conversation record (`last_mtime`). A screen-only engine keeps no conversation, so its
+        newest terminal output stands in. Terminal output is NOT used for engines that keep a
+        transcript: a status-line tick or a title blink would mark every assessment stale."""
+        last = row.get("last_mtime")
+        if review.keeps_transcript(row["id"]):
+            return last
+        out = row.get("last_output_at")
+        stamps = [v for v in (last, out) if isinstance(v, int | float)]
+        return max(stamps) if stamps else None
+
     def _lookup_row(key: str):
         aliases = metadata.load_aliases()
         meta_index = metadata.load()
@@ -855,6 +873,12 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             row["running"] = engines.physical_key(row["id"], aliases) in _running_keys()
             # Filled only here (#1189): the key is on every row (`_row`), null = not read/unknown.
             row["model_effective"] = transcript.effective_model(s.engine, s.uuid, Path.home())
+            row["assessment"] = assessment.project(
+                m.ai_assessment,
+                review_fingerprint=m.review_fingerprint,
+                last_activity=_assessment_activity(row),
+                review_failed_at=m.review_failed_at,
+            )
             return row
         return _NOT_FOUND
 

@@ -694,8 +694,12 @@ def test_list_and_lookup_rows_share_one_shape_and_only_the_lookup_reads_the_mode
     assert set(listed) == set(looked)
     assert listed["model_effective"] is None
     assert looked["model_effective"] == "claude-sonnet-5"
-    assert {k: v for k, v in looked.items() if k != "model_effective"} == {
-        k: v for k, v in listed.items() if k != "model_effective"
+    # The structured assessment (#1020) follows the same rule: null on the list, projected on the
+    # lookup (here "missing": the session was never reviewed).
+    assert listed["assessment"] is None and looked["assessment"]["status"] == "missing"
+    lookup_only = {"model_effective", "assessment"}
+    assert {k: v for k, v in looked.items() if k not in lookup_only} == {
+        k: v for k, v in listed.items() if k not in lookup_only
     }
     assert listed["model_requested"] is None and looked["model_requested"] is None
 

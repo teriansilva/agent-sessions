@@ -1,0 +1,2971 @@
+{
+ "what": "Stage 2 (#1020) baseline: the standalone review/recap and mission-supervisor input paths over the frozen corpus (corpus.json), measured by scripts/assessment-baseline.",
+ "not_measured": "Model accuracy. Rows are input sizes, marker retention, wire-request counts, wall-clock latency and output sizes. One run per revision; latency is a single-sample observation on a shared endpoint, not a benchmark.",
+ "endpoint": "deepseek-v4.1-flash behind the operator's OpenAI-compatible gateway; shipped default prompts (not the operator's custom tail prompt); calls strictly sequential",
+ "measured_on": "2026-10-08",
+ "base_sha": "aed97ada6ed7960f876f617b981dddf9739ed77e",
+ "production_output_sizes": {
+  "note": "Read-only aggregate over the live install's session sidecar (lengths only, no content): 42 rows, 38 reviewed.",
+  "ai_summary_chars": {
+   "median": 85,
+   "p90": 100,
+   "max": 115
+  },
+  "ai_recap_chars": {
+   "median": 668,
+   "p90": 941,
+   "max": 1153
+  },
+  "ai_recap_lines": {
+   "median": 5,
+   "p90": 6,
+   "max": 7
+  },
+  "intervention_required_rows": 11
+ },
+ "before": {
+  "offline": [
+   {
+    "case_id": "current-ci-blocker-over-old-design",
+    "path": "session-review",
+    "source_chars": 619,
+    "input_budget": 24000,
+    "input_chars": 1098,
+    "markers_in_input": {
+     "Awaiting the operator decision on when to retry": true,
+     "Reject unknown fields": true
+    }
+   },
+   {
+    "case_id": "current-ci-blocker-over-old-design",
+    "path": "session-recap",
+    "source_chars": 619,
+    "input_budget": 24000,
+    "input_chars": 1098,
+    "markers_in_input": {
+     "Awaiting the operator decision on when to retry": true,
+     "Reject unknown fields": true
+    }
+   },
+   {
+    "case_id": "current-ci-blocker-over-old-design",
+    "path": "standalone-digest",
+    "input_chars": 393,
+    "fields": [
+     "age_hours",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   },
+   {
+    "case_id": "current-state-after-long-chronological-opening",
+    "path": "session-review",
+    "source_chars": 35433,
+    "input_budget": 24000,
+    "input_chars": 24000,
+    "markers_in_input": {
+     "keep the legacy column for one release, or drop it now": true,
+     "Refactor the storage layer behind one interface": false
+    }
+   },
+   {
+    "case_id": "current-state-after-long-chronological-opening",
+    "path": "session-recap",
+    "source_chars": 35433,
+    "input_budget": 24000,
+    "input_chars": 24000,
+    "markers_in_input": {
+     "keep the legacy column for one release, or drop it now": true,
+     "Refactor the storage layer behind one interface": true
+    }
+   },
+   {
+    "case_id": "current-state-after-long-chronological-opening",
+    "path": "standalone-digest",
+    "input_chars": 359,
+    "fields": [
+     "age_hours",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   },
+   {
+    "case_id": "middle-history-operator-correction",
+    "path": "session-review",
+    "source_chars": 105815,
+    "input_budget": 24000,
+    "input_chars": 24000,
+    "markers_in_input": {
+     "Keep production deployment on hold until I explicitly release it": false,
+     "Implement and release the feature": false,
+     "Ready for the next step": true
+    }
+   },
+   {
+    "case_id": "middle-history-operator-correction",
+    "path": "session-recap",
+    "source_chars": 105815,
+    "input_budget": 24000,
+    "input_chars": 24000,
+    "markers_in_input": {
+     "Keep production deployment on hold until I explicitly release it": false,
+     "Implement and release the feature": true,
+     "Ready for the next step": true
+    }
+   },
+   {
+    "case_id": "middle-history-operator-correction",
+    "path": "mission-supervisor",
+    "source_chars": 105815,
+    "input_budget": 6000,
+    "input_chars": 6116,
+    "markers_in_input": {
+     "Keep production deployment on hold until I explicitly release it": false,
+     "Implement and release the feature": true,
+     "Ready for the next step": true
+    }
+   },
+   {
+    "case_id": "middle-history-operator-correction",
+    "path": "standalone-digest",
+    "input_chars": 231,
+    "fields": [
+     "age_hours",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   },
+   {
+    "case_id": "retention-removed-operative-correction",
+    "path": "session-review",
+    "source_chars": 48,
+    "input_budget": 24000,
+    "input_chars": 475,
+    "markers_in_input": {
+     "Ready for the next step": true
+    }
+   },
+   {
+    "case_id": "retention-removed-operative-correction",
+    "path": "session-recap",
+    "source_chars": 48,
+    "input_budget": 24000,
+    "input_chars": 475,
+    "markers_in_input": {
+     "Ready for the next step": true
+    }
+   },
+   {
+    "case_id": "retention-removed-operative-correction",
+    "path": "mission-supervisor",
+    "source_chars": 48,
+    "input_budget": 6000,
+    "input_chars": 591,
+    "markers_in_input": {
+     "Ready for the next step": true
+    }
+   },
+   {
+    "case_id": "retention-removed-operative-correction",
+    "path": "standalone-digest",
+    "input_chars": 237,
+    "fields": [
+     "age_hours",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   },
+   {
+    "case_id": "paused-mission-still-owns-session",
+    "path": "session-review",
+    "source_chars": 94,
+    "input_budget": 24000,
+    "input_chars": 528,
+    "markers_in_input": {
+     "Waiting to continue after the tests": true
+    }
+   },
+   {
+    "case_id": "paused-mission-still-owns-session",
+    "path": "session-recap",
+    "source_chars": 94,
+    "input_budget": 24000,
+    "input_chars": 528,
+    "markers_in_input": {
+     "Waiting to continue after the tests": true
+    }
+   },
+   {
+    "case_id": "paused-mission-still-owns-session",
+    "path": "mission-supervisor",
+    "source_chars": 94,
+    "input_budget": 6000,
+    "input_chars": 633,
+    "markers_in_input": {
+     "Waiting to continue after the tests": true
+    }
+   },
+   {
+    "case_id": "paused-mission-still-owns-session",
+    "path": "standalone-digest",
+    "input_chars": 232,
+    "fields": [
+     "age_hours",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   },
+   {
+    "case_id": "finished-standalone-is-not-blocked",
+    "path": "session-review",
+    "source_chars": 256,
+    "input_budget": 24000,
+    "input_chars": 690,
+    "markers_in_input": {
+     "No remaining work": true
+    }
+   },
+   {
+    "case_id": "finished-standalone-is-not-blocked",
+    "path": "session-recap",
+    "source_chars": 256,
+    "input_budget": 24000,
+    "input_chars": 690,
+    "markers_in_input": {
+     "No remaining work": true
+    }
+   },
+   {
+    "case_id": "finished-standalone-is-not-blocked",
+    "path": "standalone-digest",
+    "input_chars": 231,
+    "fields": [
+     "age_hours",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   },
+   {
+    "case_id": "late-assessment-after-new-source",
+    "path": "session-review",
+    "source_chars": 125,
+    "input_budget": 24000,
+    "input_chars": 559,
+    "markers_in_input": {
+     "delivery completed": true
+    }
+   },
+   {
+    "case_id": "late-assessment-after-new-source",
+    "path": "session-recap",
+    "source_chars": 125,
+    "input_budget": 24000,
+    "input_chars": 559,
+    "markers_in_input": {
+     "delivery completed": true
+    }
+   },
+   {
+    "case_id": "late-assessment-after-new-source",
+    "path": "standalone-digest",
+    "input_chars": 231,
+    "fields": [
+     "age_hours",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   },
+   {
+    "case_id": "agent-report-does-not-settle-objective",
+    "path": "session-review",
+    "source_chars": 103,
+    "input_budget": 24000,
+    "input_chars": 537,
+    "markers_in_input": {
+     "All checks passed; the objective is done": true
+    }
+   },
+   {
+    "case_id": "agent-report-does-not-settle-objective",
+    "path": "session-recap",
+    "source_chars": 103,
+    "input_budget": 24000,
+    "input_chars": 537,
+    "markers_in_input": {
+     "All checks passed; the objective is done": true
+    }
+   },
+   {
+    "case_id": "agent-report-does-not-settle-objective",
+    "path": "mission-supervisor",
+    "source_chars": 103,
+    "input_budget": 6000,
+    "input_chars": 672,
+    "markers_in_input": {
+     "All checks passed; the objective is done": true
+    }
+   },
+   {
+    "case_id": "agent-report-does-not-settle-objective",
+    "path": "standalone-digest",
+    "input_chars": 233,
+    "fields": [
+     "age_hours",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   },
+   {
+    "case_id": "shell-screen-only",
+    "path": "session-review",
+    "source_chars": 65,
+    "input_budget": 24000,
+    "input_chars": 458,
+    "markers_in_input": {
+     "required TOOLCHAIN_ROOT is not set": true
+    }
+   },
+   {
+    "case_id": "shell-screen-only",
+    "path": "session-recap",
+    "source_chars": 65,
+    "input_budget": 24000,
+    "input_chars": 458,
+    "markers_in_input": {
+     "required TOOLCHAIN_ROOT is not set": true
+    }
+   },
+   {
+    "case_id": "shell-screen-only",
+    "path": "standalone-digest",
+    "input_chars": 214,
+    "fields": [
+     "age_hours",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   },
+   {
+    "case_id": "transcript-engine-missing-transcript",
+    "path": "session-review",
+    "source_chars": 38,
+    "input_budget": 24000,
+    "input_chars": 431,
+    "markers_in_input": {}
+   },
+   {
+    "case_id": "transcript-engine-missing-transcript",
+    "path": "session-recap",
+    "source_chars": 38,
+    "input_budget": 24000,
+    "input_chars": 431,
+    "markers_in_input": {}
+   },
+   {
+    "case_id": "transcript-engine-missing-transcript",
+    "path": "standalone-digest",
+    "input_chars": 235,
+    "fields": [
+     "age_hours",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   },
+   {
+    "case_id": "last-good-assessment-refresh-fails",
+    "path": "session-review",
+    "source_chars": 42,
+    "input_budget": 24000,
+    "input_chars": 476,
+    "markers_in_input": {
+     "Tests running": true
+    }
+   },
+   {
+    "case_id": "last-good-assessment-refresh-fails",
+    "path": "session-recap",
+    "source_chars": 42,
+    "input_budget": 24000,
+    "input_chars": 476,
+    "markers_in_input": {
+     "Tests running": true
+    }
+   },
+   {
+    "case_id": "last-good-assessment-refresh-fails",
+    "path": "standalone-digest",
+    "input_chars": 233,
+    "fields": [
+     "age_hours",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   },
+   {
+    "case_id": "mission-fact-change-with-unchanged-terminal",
+    "path": "session-review",
+    "source_chars": 88,
+    "input_budget": 24000,
+    "input_chars": 522,
+    "markers_in_input": {
+     "waiting for checks": true
+    }
+   },
+   {
+    "case_id": "mission-fact-change-with-unchanged-terminal",
+    "path": "session-recap",
+    "source_chars": 88,
+    "input_budget": 24000,
+    "input_chars": 522,
+    "markers_in_input": {
+     "waiting for checks": true
+    }
+   },
+   {
+    "case_id": "mission-fact-change-with-unchanged-terminal",
+    "path": "mission-supervisor",
+    "source_chars": 88,
+    "input_budget": 6000,
+    "input_chars": 670,
+    "markers_in_input": {
+     "waiting for checks": true
+    }
+   },
+   {
+    "case_id": "mission-fact-change-with-unchanged-terminal",
+    "path": "standalone-digest",
+    "input_chars": 242,
+    "fields": [
+     "age_hours",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   },
+   {
+    "case_id": "adopted-during-model-call",
+    "path": "session-review",
+    "source_chars": 79,
+    "input_budget": 24000,
+    "input_chars": 513,
+    "markers_in_input": {
+     "Paused before the last step": true
+    }
+   },
+   {
+    "case_id": "adopted-during-model-call",
+    "path": "session-recap",
+    "source_chars": 79,
+    "input_budget": 24000,
+    "input_chars": 513,
+    "markers_in_input": {
+     "Paused before the last step": true
+    }
+   },
+   {
+    "case_id": "adopted-during-model-call",
+    "path": "standalone-digest",
+    "input_chars": 224,
+    "fields": [
+     "age_hours",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   },
+   {
+    "case_id": "ci-blocker-does-not-erase-code-review-blocker",
+    "path": "session-review",
+    "source_chars": 412,
+    "input_budget": 24000,
+    "input_chars": 874,
+    "markers_in_input": {
+     "swallows authoritative read failures": true,
+     "Browser timing assertions failed": true
+    }
+   },
+   {
+    "case_id": "ci-blocker-does-not-erase-code-review-blocker",
+    "path": "session-recap",
+    "source_chars": 412,
+    "input_budget": 24000,
+    "input_chars": 874,
+    "markers_in_input": {
+     "swallows authoritative read failures": true,
+     "Browser timing assertions failed": true
+    }
+   },
+   {
+    "case_id": "ci-blocker-does-not-erase-code-review-blocker",
+    "path": "mission-supervisor",
+    "source_chars": 412,
+    "input_budget": 6000,
+    "input_chars": 1164,
+    "markers_in_input": {
+     "swallows authoritative read failures": true,
+     "Browser timing assertions failed": true
+    }
+   },
+   {
+    "case_id": "ci-blocker-does-not-erase-code-review-blocker",
+    "path": "standalone-digest",
+    "input_chars": 292,
+    "fields": [
+     "age_hours",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   },
+   {
+    "case_id": "tool-output-is-not-operator-direction",
+    "path": "session-review",
+    "source_chars": 190,
+    "input_budget": 24000,
+    "input_chars": 638,
+    "markers_in_input": {
+     "production deployment remains on hold": true
+    }
+   },
+   {
+    "case_id": "tool-output-is-not-operator-direction",
+    "path": "session-recap",
+    "source_chars": 190,
+    "input_budget": 24000,
+    "input_chars": 638,
+    "markers_in_input": {
+     "production deployment remains on hold": true
+    }
+   },
+   {
+    "case_id": "tool-output-is-not-operator-direction",
+    "path": "mission-supervisor",
+    "source_chars": 190,
+    "input_budget": 6000,
+    "input_chars": 779,
+    "markers_in_input": {
+     "production deployment remains on hold": true
+    }
+   },
+   {
+    "case_id": "tool-output-is-not-operator-direction",
+    "path": "standalone-digest",
+    "input_chars": 236,
+    "fields": [
+     "age_hours",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   },
+   {
+    "case_id": "two-sessions-share-mission-not-current-blocker",
+    "path": "session-review",
+    "source_chars": 179,
+    "input_budget": 24000,
+    "input_chars": 627,
+    "markers_in_input": {
+     "overwrites an edit made while the request was in flight": true
+    }
+   },
+   {
+    "case_id": "two-sessions-share-mission-not-current-blocker",
+    "path": "session-recap",
+    "source_chars": 179,
+    "input_budget": 24000,
+    "input_chars": 627,
+    "markers_in_input": {
+     "overwrites an edit made while the request was in flight": true
+    }
+   },
+   {
+    "case_id": "two-sessions-share-mission-not-current-blocker",
+    "path": "mission-supervisor",
+    "source_chars": 179,
+    "input_budget": 6000,
+    "input_chars": 822,
+    "markers_in_input": {
+     "overwrites an edit made while the request was in flight": true
+    }
+   },
+   {
+    "case_id": "two-sessions-share-mission-not-current-blocker",
+    "path": "standalone-digest",
+    "input_chars": 243,
+    "fields": [
+     "age_hours",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   }
+  ],
+  "wire_requests_per_standalone_review": [
+   2
+  ],
+  "live_summary": {
+   "mission-supervisor": {
+    "calls": 8,
+    "median_ms": 2069.5,
+    "max_ms": 3688,
+    "median_input_chars": 4026.5,
+    "median_output_chars": 316.0,
+    "median_completion_tokens": 75.0
+   },
+   "session-recap": {
+    "calls": 14,
+    "median_ms": 1885.5,
+    "max_ms": 7050,
+    "median_input_chars": 1719.0,
+    "median_output_chars": 210.5,
+    "median_completion_tokens": 48.0
+   },
+   "session-review": {
+    "calls": 16,
+    "median_ms": 1310.5,
+    "max_ms": 4446,
+    "median_input_chars": 1351.0,
+    "median_output_chars": 161.5,
+    "median_completion_tokens": 36.0
+   }
+  },
+  "live_calls": [
+   {
+    "case_id": "current-ci-blocker-over-old-design",
+    "path": "session-review",
+    "status": 200,
+    "execution_ms": 2294,
+    "input_chars": 1901,
+    "output_chars": 270,
+    "prompt_tokens": 415,
+    "completion_tokens": 61
+   },
+   {
+    "case_id": "current-ci-blocker-over-old-design",
+    "path": "session-recap",
+    "status": 200,
+    "execution_ms": 2623,
+    "input_chars": 2224,
+    "output_chars": 473,
+    "prompt_tokens": 494,
+    "completion_tokens": 110
+   },
+   {
+    "case_id": "current-state-after-long-chronological-opening",
+    "path": "session-review",
+    "status": 200,
+    "execution_ms": 1707,
+    "input_chars": 24803,
+    "output_chars": 275,
+    "prompt_tokens": 5098,
+    "completion_tokens": 64
+   },
+   {
+    "case_id": "current-state-after-long-chronological-opening",
+    "path": "session-recap",
+    "status": 200,
+    "execution_ms": 7050,
+    "input_chars": 25126,
+    "output_chars": 390,
+    "prompt_tokens": 5183,
+    "completion_tokens": 98
+   },
+   {
+    "case_id": "middle-history-operator-correction",
+    "path": "session-review",
+    "status": 200,
+    "execution_ms": 4446,
+    "input_chars": 24803,
+    "output_chars": 219,
+    "prompt_tokens": 3492,
+    "completion_tokens": 49
+   },
+   {
+    "case_id": "middle-history-operator-correction",
+    "path": "session-recap",
+    "status": 200,
+    "execution_ms": 4669,
+    "input_chars": 25126,
+    "output_chars": 234,
+    "prompt_tokens": 3580,
+    "completion_tokens": 50
+   },
+   {
+    "case_id": "middle-history-operator-correction",
+    "path": "mission-supervisor",
+    "status": 200,
+    "execution_ms": 3688,
+    "input_chars": 9417,
+    "output_chars": 332,
+    "prompt_tokens": 1679,
+    "completion_tokens": 79
+   },
+   {
+    "case_id": "retention-removed-operative-correction",
+    "path": "session-review",
+    "status": 200,
+    "execution_ms": 675,
+    "input_chars": 1278,
+    "output_chars": 22,
+    "prompt_tokens": 282,
+    "completion_tokens": 7
+   },
+   {
+    "case_id": "retention-removed-operative-correction",
+    "path": "session-review",
+    "error": "nothing to review yet: the session shows no work"
+   },
+   {
+    "case_id": "retention-removed-operative-correction",
+    "path": "mission-supervisor",
+    "status": 200,
+    "execution_ms": 1895,
+    "input_chars": 3892,
+    "output_chars": 237,
+    "prompt_tokens": 924,
+    "completion_tokens": 64
+   },
+   {
+    "case_id": "paused-mission-still-owns-session",
+    "path": "session-review",
+    "status": 200,
+    "execution_ms": 1275,
+    "input_chars": 1331,
+    "output_chars": 132,
+    "prompt_tokens": 291,
+    "completion_tokens": 31
+   },
+   {
+    "case_id": "paused-mission-still-owns-session",
+    "path": "session-recap",
+    "status": 200,
+    "execution_ms": 2005,
+    "input_chars": 1654,
+    "output_chars": 232,
+    "prompt_tokens": 370,
+    "completion_tokens": 60
+   },
+   {
+    "case_id": "paused-mission-still-owns-session",
+    "path": "mission-supervisor",
+    "status": 200,
+    "execution_ms": 2718,
+    "input_chars": 3934,
+    "output_chars": 362,
+    "prompt_tokens": 932,
+    "completion_tokens": 90
+   },
+   {
+    "case_id": "finished-standalone-is-not-blocked",
+    "path": "session-review",
+    "status": 200,
+    "execution_ms": 1158,
+    "input_chars": 1493,
+    "output_chars": 157,
+    "prompt_tokens": 324,
+    "completion_tokens": 39
+   },
+   {
+    "case_id": "finished-standalone-is-not-blocked",
+    "path": "session-recap",
+    "status": 200,
+    "execution_ms": 1672,
+    "input_chars": 1816,
+    "output_chars": 159,
+    "prompt_tokens": 403,
+    "completion_tokens": 45
+   },
+   {
+    "case_id": "late-assessment-after-new-source",
+    "path": "session-review",
+    "status": 200,
+    "execution_ms": 1161,
+    "input_chars": 1362,
+    "output_chars": 141,
+    "prompt_tokens": 295,
+    "completion_tokens": 30
+   },
+   {
+    "case_id": "late-assessment-after-new-source",
+    "path": "session-recap",
+    "status": 200,
+    "execution_ms": 1513,
+    "input_chars": 1685,
+    "output_chars": 150,
+    "prompt_tokens": 374,
+    "completion_tokens": 35
+   },
+   {
+    "case_id": "agent-report-does-not-settle-objective",
+    "path": "session-review",
+    "status": 200,
+    "execution_ms": 1172,
+    "input_chars": 1340,
+    "output_chars": 118,
+    "prompt_tokens": 295,
+    "completion_tokens": 28
+   },
+   {
+    "case_id": "agent-report-does-not-settle-objective",
+    "path": "session-recap",
+    "status": 200,
+    "execution_ms": 1560,
+    "input_chars": 1663,
+    "output_chars": 176,
+    "prompt_tokens": 374,
+    "completion_tokens": 44
+   },
+   {
+    "case_id": "agent-report-does-not-settle-objective",
+    "path": "mission-supervisor",
+    "status": 200,
+    "execution_ms": 1825,
+    "input_chars": 3973,
+    "output_chars": 249,
+    "prompt_tokens": 945,
+    "completion_tokens": 63
+   },
+   {
+    "case_id": "shell-screen-only",
+    "path": "session-review",
+    "status": 200,
+    "execution_ms": 1536,
+    "input_chars": 1261,
+    "output_chars": 166,
+    "prompt_tokens": 281,
+    "completion_tokens": 43
+   },
+   {
+    "case_id": "shell-screen-only",
+    "path": "session-recap",
+    "status": 200,
+    "execution_ms": 1587,
+    "input_chars": 1584,
+    "output_chars": 141,
+    "prompt_tokens": 360,
+    "completion_tokens": 46
+   },
+   {
+    "case_id": "transcript-engine-missing-transcript",
+    "path": "session-review",
+    "status": 200,
+    "execution_ms": 651,
+    "input_chars": 1234,
+    "output_chars": 22,
+    "prompt_tokens": 270,
+    "completion_tokens": 7
+   },
+   {
+    "case_id": "transcript-engine-missing-transcript",
+    "path": "session-review",
+    "error": "nothing to review yet: the session shows no work"
+   },
+   {
+    "case_id": "last-good-assessment-refresh-fails",
+    "path": "session-review",
+    "status": 200,
+    "execution_ms": 1189,
+    "input_chars": 1279,
+    "output_chars": 104,
+    "prompt_tokens": 282,
+    "completion_tokens": 27
+   },
+   {
+    "case_id": "last-good-assessment-refresh-fails",
+    "path": "session-recap",
+    "status": 200,
+    "execution_ms": 1415,
+    "input_chars": 1602,
+    "output_chars": 119,
+    "prompt_tokens": 361,
+    "completion_tokens": 32
+   },
+   {
+    "case_id": "mission-fact-change-with-unchanged-terminal",
+    "path": "session-review",
+    "status": 200,
+    "execution_ms": 1296,
+    "input_chars": 1325,
+    "output_chars": 126,
+    "prompt_tokens": 293,
+    "completion_tokens": 33
+   },
+   {
+    "case_id": "mission-fact-change-with-unchanged-terminal",
+    "path": "session-recap",
+    "status": 200,
+    "execution_ms": 1766,
+    "input_chars": 1648,
+    "output_chars": 189,
+    "prompt_tokens": 372,
+    "completion_tokens": 46
+   },
+   {
+    "case_id": "mission-fact-change-with-unchanged-terminal",
+    "path": "mission-supervisor",
+    "status": 200,
+    "execution_ms": 1712,
+    "input_chars": 3971,
+    "output_chars": 197,
+    "prompt_tokens": 945,
+    "completion_tokens": 55
+   },
+   {
+    "case_id": "adopted-during-model-call",
+    "path": "session-review",
+    "status": 200,
+    "execution_ms": 1648,
+    "input_chars": 1316,
+    "output_chars": 206,
+    "prompt_tokens": 290,
+    "completion_tokens": 48
+   },
+   {
+    "case_id": "adopted-during-model-call",
+    "path": "session-recap",
+    "status": 200,
+    "execution_ms": 1615,
+    "input_chars": 1639,
+    "output_chars": 181,
+    "prompt_tokens": 369,
+    "completion_tokens": 43
+   },
+   {
+    "case_id": "ci-blocker-does-not-erase-code-review-blocker",
+    "path": "session-review",
+    "status": 200,
+    "execution_ms": 1370,
+    "input_chars": 1677,
+    "output_chars": 183,
+    "prompt_tokens": 355,
+    "completion_tokens": 38
+   },
+   {
+    "case_id": "ci-blocker-does-not-erase-code-review-blocker",
+    "path": "session-recap",
+    "status": 200,
+    "execution_ms": 2612,
+    "input_chars": 2000,
+    "output_chars": 459,
+    "prompt_tokens": 434,
+    "completion_tokens": 96
+   },
+   {
+    "case_id": "ci-blocker-does-not-erase-code-review-blocker",
+    "path": "mission-supervisor",
+    "status": 200,
+    "execution_ms": 3136,
+    "input_chars": 4465,
+    "output_chars": 498,
+    "prompt_tokens": 1039,
+    "completion_tokens": 106
+   },
+   {
+    "case_id": "tool-output-is-not-operator-direction",
+    "path": "session-review",
+    "status": 200,
+    "execution_ms": 1325,
+    "input_chars": 1441,
+    "output_chars": 168,
+    "prompt_tokens": 309,
+    "completion_tokens": 34
+   },
+   {
+    "case_id": "tool-output-is-not-operator-direction",
+    "path": "session-recap",
+    "status": 200,
+    "execution_ms": 2261,
+    "input_chars": 1764,
+    "output_chars": 302,
+    "prompt_tokens": 388,
+    "completion_tokens": 66
+   },
+   {
+    "case_id": "tool-output-is-not-operator-direction",
+    "path": "mission-supervisor",
+    "status": 200,
+    "execution_ms": 2244,
+    "input_chars": 4080,
+    "output_chars": 342,
+    "prompt_tokens": 955,
+    "completion_tokens": 76
+   },
+   {
+    "case_id": "two-sessions-share-mission-not-current-blocker",
+    "path": "session-review",
+    "status": 200,
+    "execution_ms": 1388,
+    "input_chars": 1430,
+    "output_chars": 184,
+    "prompt_tokens": 313,
+    "completion_tokens": 40
+   },
+   {
+    "case_id": "two-sessions-share-mission-not-current-blocker",
+    "path": "session-recap",
+    "status": 200,
+    "execution_ms": 2151,
+    "input_chars": 1753,
+    "output_chars": 296,
+    "prompt_tokens": 392,
+    "completion_tokens": 69
+   },
+   {
+    "case_id": "two-sessions-share-mission-not-current-blocker",
+    "path": "mission-supervisor",
+    "status": 200,
+    "execution_ms": 1831,
+    "input_chars": 4123,
+    "output_chars": 300,
+    "prompt_tokens": 972,
+    "completion_tokens": 74
+   }
+  ],
+  "corpus_cases": 16
+ },
+ "after": {
+  "offline": [
+   {
+    "case_id": "current-ci-blocker-over-old-design",
+    "path": "session-review",
+    "source_chars": 619,
+    "input_budget": 24000,
+    "input_chars": 1098,
+    "markers_in_input": {
+     "Awaiting the operator decision on when to retry": true,
+     "Reject unknown fields": true
+    }
+   },
+   {
+    "case_id": "current-ci-blocker-over-old-design",
+    "path": "session-recap",
+    "source_chars": 619,
+    "input_budget": 24000,
+    "input_chars": 1098,
+    "markers_in_input": {
+     "Awaiting the operator decision on when to retry": true,
+     "Reject unknown fields": true
+    }
+   },
+   {
+    "case_id": "current-ci-blocker-over-old-design",
+    "path": "standalone-digest",
+    "input_chars": 430,
+    "fields": [
+     "age_hours",
+     "context_source",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   },
+   {
+    "case_id": "current-state-after-long-chronological-opening",
+    "path": "session-review",
+    "source_chars": 35433,
+    "input_budget": 24000,
+    "input_chars": 24000,
+    "markers_in_input": {
+     "keep the legacy column for one release, or drop it now": true,
+     "Refactor the storage layer behind one interface": true
+    }
+   },
+   {
+    "case_id": "current-state-after-long-chronological-opening",
+    "path": "session-recap",
+    "source_chars": 35433,
+    "input_budget": 24000,
+    "input_chars": 24000,
+    "markers_in_input": {
+     "keep the legacy column for one release, or drop it now": true,
+     "Refactor the storage layer behind one interface": true
+    }
+   },
+   {
+    "case_id": "current-state-after-long-chronological-opening",
+    "path": "standalone-digest",
+    "input_chars": 396,
+    "fields": [
+     "age_hours",
+     "context_source",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   },
+   {
+    "case_id": "middle-history-operator-correction",
+    "path": "session-review",
+    "source_chars": 105815,
+    "input_budget": 24000,
+    "input_chars": 24000,
+    "markers_in_input": {
+     "Keep production deployment on hold until I explicitly release it": true,
+     "Implement and release the feature": true,
+     "Ready for the next step": true
+    }
+   },
+   {
+    "case_id": "middle-history-operator-correction",
+    "path": "session-recap",
+    "source_chars": 105815,
+    "input_budget": 24000,
+    "input_chars": 24000,
+    "markers_in_input": {
+     "Keep production deployment on hold until I explicitly release it": false,
+     "Implement and release the feature": true,
+     "Ready for the next step": true
+    }
+   },
+   {
+    "case_id": "middle-history-operator-correction",
+    "path": "mission-supervisor",
+    "source_chars": 105815,
+    "input_budget": 6000,
+    "input_chars": 6116,
+    "markers_in_input": {
+     "Keep production deployment on hold until I explicitly release it": false,
+     "Implement and release the feature": true,
+     "Ready for the next step": true
+    }
+   },
+   {
+    "case_id": "middle-history-operator-correction",
+    "path": "standalone-digest",
+    "input_chars": 268,
+    "fields": [
+     "age_hours",
+     "context_source",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   },
+   {
+    "case_id": "retention-removed-operative-correction",
+    "path": "session-review",
+    "source_chars": 48,
+    "input_budget": 24000,
+    "input_chars": 475,
+    "markers_in_input": {
+     "Ready for the next step": true
+    }
+   },
+   {
+    "case_id": "retention-removed-operative-correction",
+    "path": "session-recap",
+    "source_chars": 48,
+    "input_budget": 24000,
+    "input_chars": 475,
+    "markers_in_input": {
+     "Ready for the next step": true
+    }
+   },
+   {
+    "case_id": "retention-removed-operative-correction",
+    "path": "mission-supervisor",
+    "source_chars": 48,
+    "input_budget": 6000,
+    "input_chars": 591,
+    "markers_in_input": {
+     "Ready for the next step": true
+    }
+   },
+   {
+    "case_id": "retention-removed-operative-correction",
+    "path": "standalone-digest",
+    "input_chars": 274,
+    "fields": [
+     "age_hours",
+     "context_source",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   },
+   {
+    "case_id": "paused-mission-still-owns-session",
+    "path": "session-review",
+    "source_chars": 94,
+    "input_budget": 24000,
+    "input_chars": 528,
+    "markers_in_input": {
+     "Waiting to continue after the tests": true
+    }
+   },
+   {
+    "case_id": "paused-mission-still-owns-session",
+    "path": "session-recap",
+    "source_chars": 94,
+    "input_budget": 24000,
+    "input_chars": 528,
+    "markers_in_input": {
+     "Waiting to continue after the tests": true
+    }
+   },
+   {
+    "case_id": "paused-mission-still-owns-session",
+    "path": "mission-supervisor",
+    "source_chars": 94,
+    "input_budget": 6000,
+    "input_chars": 633,
+    "markers_in_input": {
+     "Waiting to continue after the tests": true
+    }
+   },
+   {
+    "case_id": "paused-mission-still-owns-session",
+    "path": "standalone-digest",
+    "input_chars": 269,
+    "fields": [
+     "age_hours",
+     "context_source",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   },
+   {
+    "case_id": "finished-standalone-is-not-blocked",
+    "path": "session-review",
+    "source_chars": 256,
+    "input_budget": 24000,
+    "input_chars": 690,
+    "markers_in_input": {
+     "No remaining work": true
+    }
+   },
+   {
+    "case_id": "finished-standalone-is-not-blocked",
+    "path": "session-recap",
+    "source_chars": 256,
+    "input_budget": 24000,
+    "input_chars": 690,
+    "markers_in_input": {
+     "No remaining work": true
+    }
+   },
+   {
+    "case_id": "finished-standalone-is-not-blocked",
+    "path": "standalone-digest",
+    "input_chars": 268,
+    "fields": [
+     "age_hours",
+     "context_source",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   },
+   {
+    "case_id": "late-assessment-after-new-source",
+    "path": "session-review",
+    "source_chars": 125,
+    "input_budget": 24000,
+    "input_chars": 559,
+    "markers_in_input": {
+     "delivery completed": true
+    }
+   },
+   {
+    "case_id": "late-assessment-after-new-source",
+    "path": "session-recap",
+    "source_chars": 125,
+    "input_budget": 24000,
+    "input_chars": 559,
+    "markers_in_input": {
+     "delivery completed": true
+    }
+   },
+   {
+    "case_id": "late-assessment-after-new-source",
+    "path": "standalone-digest",
+    "input_chars": 268,
+    "fields": [
+     "age_hours",
+     "context_source",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   },
+   {
+    "case_id": "agent-report-does-not-settle-objective",
+    "path": "session-review",
+    "source_chars": 103,
+    "input_budget": 24000,
+    "input_chars": 537,
+    "markers_in_input": {
+     "All checks passed; the objective is done": true
+    }
+   },
+   {
+    "case_id": "agent-report-does-not-settle-objective",
+    "path": "session-recap",
+    "source_chars": 103,
+    "input_budget": 24000,
+    "input_chars": 537,
+    "markers_in_input": {
+     "All checks passed; the objective is done": true
+    }
+   },
+   {
+    "case_id": "agent-report-does-not-settle-objective",
+    "path": "mission-supervisor",
+    "source_chars": 103,
+    "input_budget": 6000,
+    "input_chars": 672,
+    "markers_in_input": {
+     "All checks passed; the objective is done": true
+    }
+   },
+   {
+    "case_id": "agent-report-does-not-settle-objective",
+    "path": "standalone-digest",
+    "input_chars": 270,
+    "fields": [
+     "age_hours",
+     "context_source",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   },
+   {
+    "case_id": "shell-screen-only",
+    "path": "session-review",
+    "source_chars": 65,
+    "input_budget": 24000,
+    "input_chars": 458,
+    "markers_in_input": {
+     "required TOOLCHAIN_ROOT is not set": true
+    }
+   },
+   {
+    "case_id": "shell-screen-only",
+    "path": "session-recap",
+    "source_chars": 65,
+    "input_budget": 24000,
+    "input_chars": 458,
+    "markers_in_input": {
+     "required TOOLCHAIN_ROOT is not set": true
+    }
+   },
+   {
+    "case_id": "shell-screen-only",
+    "path": "standalone-digest",
+    "input_chars": 251,
+    "fields": [
+     "age_hours",
+     "context_source",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   },
+   {
+    "case_id": "transcript-engine-missing-transcript",
+    "path": "session-review",
+    "source_chars": 38,
+    "input_budget": 24000,
+    "input_chars": 431,
+    "markers_in_input": {}
+   },
+   {
+    "case_id": "transcript-engine-missing-transcript",
+    "path": "session-recap",
+    "source_chars": 38,
+    "input_budget": 24000,
+    "input_chars": 431,
+    "markers_in_input": {}
+   },
+   {
+    "case_id": "transcript-engine-missing-transcript",
+    "path": "standalone-digest",
+    "input_chars": 272,
+    "fields": [
+     "age_hours",
+     "context_source",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   },
+   {
+    "case_id": "last-good-assessment-refresh-fails",
+    "path": "session-review",
+    "source_chars": 42,
+    "input_budget": 24000,
+    "input_chars": 476,
+    "markers_in_input": {
+     "Tests running": true
+    }
+   },
+   {
+    "case_id": "last-good-assessment-refresh-fails",
+    "path": "session-recap",
+    "source_chars": 42,
+    "input_budget": 24000,
+    "input_chars": 476,
+    "markers_in_input": {
+     "Tests running": true
+    }
+   },
+   {
+    "case_id": "last-good-assessment-refresh-fails",
+    "path": "standalone-digest",
+    "input_chars": 270,
+    "fields": [
+     "age_hours",
+     "context_source",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   },
+   {
+    "case_id": "mission-fact-change-with-unchanged-terminal",
+    "path": "session-review",
+    "source_chars": 88,
+    "input_budget": 24000,
+    "input_chars": 522,
+    "markers_in_input": {
+     "waiting for checks": true
+    }
+   },
+   {
+    "case_id": "mission-fact-change-with-unchanged-terminal",
+    "path": "session-recap",
+    "source_chars": 88,
+    "input_budget": 24000,
+    "input_chars": 522,
+    "markers_in_input": {
+     "waiting for checks": true
+    }
+   },
+   {
+    "case_id": "mission-fact-change-with-unchanged-terminal",
+    "path": "mission-supervisor",
+    "source_chars": 88,
+    "input_budget": 6000,
+    "input_chars": 670,
+    "markers_in_input": {
+     "waiting for checks": true
+    }
+   },
+   {
+    "case_id": "mission-fact-change-with-unchanged-terminal",
+    "path": "standalone-digest",
+    "input_chars": 279,
+    "fields": [
+     "age_hours",
+     "context_source",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   },
+   {
+    "case_id": "adopted-during-model-call",
+    "path": "session-review",
+    "source_chars": 79,
+    "input_budget": 24000,
+    "input_chars": 513,
+    "markers_in_input": {
+     "Paused before the last step": true
+    }
+   },
+   {
+    "case_id": "adopted-during-model-call",
+    "path": "session-recap",
+    "source_chars": 79,
+    "input_budget": 24000,
+    "input_chars": 513,
+    "markers_in_input": {
+     "Paused before the last step": true
+    }
+   },
+   {
+    "case_id": "adopted-during-model-call",
+    "path": "standalone-digest",
+    "input_chars": 261,
+    "fields": [
+     "age_hours",
+     "context_source",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   },
+   {
+    "case_id": "ci-blocker-does-not-erase-code-review-blocker",
+    "path": "session-review",
+    "source_chars": 412,
+    "input_budget": 24000,
+    "input_chars": 874,
+    "markers_in_input": {
+     "swallows authoritative read failures": true,
+     "Browser timing assertions failed": true
+    }
+   },
+   {
+    "case_id": "ci-blocker-does-not-erase-code-review-blocker",
+    "path": "session-recap",
+    "source_chars": 412,
+    "input_budget": 24000,
+    "input_chars": 874,
+    "markers_in_input": {
+     "swallows authoritative read failures": true,
+     "Browser timing assertions failed": true
+    }
+   },
+   {
+    "case_id": "ci-blocker-does-not-erase-code-review-blocker",
+    "path": "mission-supervisor",
+    "source_chars": 412,
+    "input_budget": 6000,
+    "input_chars": 1164,
+    "markers_in_input": {
+     "swallows authoritative read failures": true,
+     "Browser timing assertions failed": true
+    }
+   },
+   {
+    "case_id": "ci-blocker-does-not-erase-code-review-blocker",
+    "path": "standalone-digest",
+    "input_chars": 329,
+    "fields": [
+     "age_hours",
+     "context_source",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   },
+   {
+    "case_id": "tool-output-is-not-operator-direction",
+    "path": "session-review",
+    "source_chars": 190,
+    "input_budget": 24000,
+    "input_chars": 638,
+    "markers_in_input": {
+     "production deployment remains on hold": true
+    }
+   },
+   {
+    "case_id": "tool-output-is-not-operator-direction",
+    "path": "session-recap",
+    "source_chars": 190,
+    "input_budget": 24000,
+    "input_chars": 638,
+    "markers_in_input": {
+     "production deployment remains on hold": true
+    }
+   },
+   {
+    "case_id": "tool-output-is-not-operator-direction",
+    "path": "mission-supervisor",
+    "source_chars": 190,
+    "input_budget": 6000,
+    "input_chars": 779,
+    "markers_in_input": {
+     "production deployment remains on hold": true
+    }
+   },
+   {
+    "case_id": "tool-output-is-not-operator-direction",
+    "path": "standalone-digest",
+    "input_chars": 273,
+    "fields": [
+     "age_hours",
+     "context_source",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   },
+   {
+    "case_id": "two-sessions-share-mission-not-current-blocker",
+    "path": "session-review",
+    "source_chars": 179,
+    "input_budget": 24000,
+    "input_chars": 627,
+    "markers_in_input": {
+     "overwrites an edit made while the request was in flight": true
+    }
+   },
+   {
+    "case_id": "two-sessions-share-mission-not-current-blocker",
+    "path": "session-recap",
+    "source_chars": 179,
+    "input_budget": 24000,
+    "input_chars": 627,
+    "markers_in_input": {
+     "overwrites an edit made while the request was in flight": true
+    }
+   },
+   {
+    "case_id": "two-sessions-share-mission-not-current-blocker",
+    "path": "mission-supervisor",
+    "source_chars": 179,
+    "input_budget": 6000,
+    "input_chars": 822,
+    "markers_in_input": {
+     "overwrites an edit made while the request was in flight": true
+    }
+   },
+   {
+    "case_id": "two-sessions-share-mission-not-current-blocker",
+    "path": "standalone-digest",
+    "input_chars": 280,
+    "fields": [
+     "age_hours",
+     "context_source",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   },
+   {
+    "case_id": "claude-harness-records-are-not-operator",
+    "path": "session-review",
+    "source_chars": 887,
+    "input_budget": 24000,
+    "input_chars": 1013,
+    "markers_in_input": {
+     "Do not touch the release branch": true
+    }
+   },
+   {
+    "case_id": "claude-harness-records-are-not-operator",
+    "path": "session-recap",
+    "source_chars": 887,
+    "input_budget": 24000,
+    "input_chars": 1013,
+    "markers_in_input": {
+     "Do not touch the release branch": true
+    }
+   },
+   {
+    "case_id": "claude-harness-records-are-not-operator",
+    "path": "standalone-digest",
+    "input_chars": 275,
+    "fields": [
+     "age_hours",
+     "context_source",
+     "current_state",
+     "engine",
+     "id",
+     "needs_user",
+     "project",
+     "state",
+     "summary",
+     "title"
+    ]
+   }
+  ],
+  "wire_requests_per_standalone_review": [
+   {
+    "case_id": "current-ci-blocker-over-old-design",
+    "path": "session-review+recap",
+    "wire_requests": 2
+   },
+   {
+    "case_id": "current-state-after-long-chronological-opening",
+    "path": "session-review+recap",
+    "wire_requests": 2
+   },
+   {
+    "case_id": "middle-history-operator-correction",
+    "path": "session-review+recap",
+    "wire_requests": 2
+   },
+   {
+    "case_id": "retention-removed-operative-correction",
+    "path": "session-review+recap",
+    "wire_requests": 2
+   },
+   {
+    "case_id": "paused-mission-still-owns-session",
+    "path": "session-review+recap",
+    "wire_requests": 2
+   },
+   {
+    "case_id": "finished-standalone-is-not-blocked",
+    "path": "session-review+recap",
+    "wire_requests": 2
+   },
+   {
+    "case_id": "late-assessment-after-new-source",
+    "path": "session-review+recap",
+    "wire_requests": 2
+   },
+   {
+    "case_id": "agent-report-does-not-settle-objective",
+    "path": "session-review+recap",
+    "wire_requests": 2
+   },
+   {
+    "case_id": "shell-screen-only",
+    "path": "session-review+recap",
+    "wire_requests": 2
+   },
+   {
+    "case_id": "transcript-engine-missing-transcript",
+    "path": "session-review+recap",
+    "wire_requests": 2
+   },
+   {
+    "case_id": "last-good-assessment-refresh-fails",
+    "path": "session-review+recap",
+    "wire_requests": 2
+   },
+   {
+    "case_id": "mission-fact-change-with-unchanged-terminal",
+    "path": "session-review+recap",
+    "wire_requests": 2
+   },
+   {
+    "case_id": "adopted-during-model-call",
+    "path": "session-review+recap",
+    "wire_requests": 2
+   },
+   {
+    "case_id": "ci-blocker-does-not-erase-code-review-blocker",
+    "path": "session-review+recap",
+    "wire_requests": 2
+   },
+   {
+    "case_id": "tool-output-is-not-operator-direction",
+    "path": "session-review+recap",
+    "wire_requests": 2
+   },
+   {
+    "case_id": "two-sessions-share-mission-not-current-blocker",
+    "path": "session-review+recap",
+    "wire_requests": 2
+   },
+   {
+    "case_id": "claude-harness-records-are-not-operator",
+    "path": "session-review+recap",
+    "wire_requests": 2
+   }
+  ],
+  "live_summary": {
+   "mission-supervisor": {
+    "calls": 8,
+    "median_ms": 3604.5,
+    "max_ms": 8804,
+    "median_input_chars": 4026.5,
+    "median_output_chars": 286.0,
+    "median_completion_tokens": 68.5
+   },
+   "session-recap": {
+    "calls": 14,
+    "median_ms": 1725.0,
+    "max_ms": 8807,
+    "median_input_chars": 1719.0,
+    "median_output_chars": 190.0,
+    "median_completion_tokens": 47.0
+   },
+   "session-review": {
+    "calls": 16,
+    "median_ms": 3954.5,
+    "max_ms": 10715,
+    "median_input_chars": 2252.0,
+    "median_output_chars": 689.0,
+    "median_completion_tokens": 170.5
+   }
+  },
+  "live_calls": [
+   {
+    "case_id": "current-ci-blocker-over-old-design",
+    "path": "session-review",
+    "status": 200,
+    "execution_ms": 6656,
+    "input_chars": 2802,
+    "output_chars": 1187,
+    "prompt_tokens": 630,
+    "completion_tokens": 276
+   },
+   {
+    "case_id": "current-ci-blocker-over-old-design",
+    "path": "session-recap",
+    "status": 200,
+    "execution_ms": 2802,
+    "input_chars": 2224,
+    "output_chars": 555,
+    "prompt_tokens": 494,
+    "completion_tokens": 125
+   },
+   {
+    "case_id": "current-state-after-long-chronological-opening",
+    "path": "session-review",
+    "status": 200,
+    "execution_ms": 6551,
+    "input_chars": 25704,
+    "output_chars": 1375,
+    "prompt_tokens": 5315,
+    "completion_tokens": 323
+   },
+   {
+    "case_id": "current-state-after-long-chronological-opening",
+    "path": "session-recap",
+    "status": 200,
+    "execution_ms": 3357,
+    "input_chars": 25126,
+    "output_chars": 390,
+    "prompt_tokens": 5183,
+    "completion_tokens": 98
+   },
+   {
+    "case_id": "middle-history-operator-correction",
+    "path": "session-review",
+    "status": 200,
+    "execution_ms": 7679,
+    "input_chars": 25704,
+    "output_chars": 954,
+    "prompt_tokens": 3721,
+    "completion_tokens": 196
+   },
+   {
+    "case_id": "middle-history-operator-correction",
+    "path": "session-recap",
+    "status": 200,
+    "execution_ms": 1581,
+    "input_chars": 25126,
+    "output_chars": 234,
+    "prompt_tokens": 3580,
+    "completion_tokens": 50
+   },
+   {
+    "case_id": "middle-history-operator-correction",
+    "path": "mission-supervisor",
+    "status": 200,
+    "execution_ms": 3566,
+    "input_chars": 9417,
+    "output_chars": 251,
+    "prompt_tokens": 1679,
+    "completion_tokens": 62
+   },
+   {
+    "case_id": "retention-removed-operative-correction",
+    "path": "session-review",
+    "status": 200,
+    "execution_ms": 1018,
+    "input_chars": 2179,
+    "output_chars": 22,
+    "prompt_tokens": 497,
+    "completion_tokens": 7
+   },
+   {
+    "case_id": "retention-removed-operative-correction",
+    "path": "session-review",
+    "error": "nothing to review yet: the session shows no work"
+   },
+   {
+    "case_id": "retention-removed-operative-correction",
+    "path": "mission-supervisor",
+    "status": 200,
+    "execution_ms": 2009,
+    "input_chars": 3892,
+    "output_chars": 239,
+    "prompt_tokens": 924,
+    "completion_tokens": 63
+   },
+   {
+    "case_id": "paused-mission-still-owns-session",
+    "path": "session-review",
+    "status": 200,
+    "execution_ms": 3443,
+    "input_chars": 2232,
+    "output_chars": 567,
+    "prompt_tokens": 506,
+    "completion_tokens": 143
+   },
+   {
+    "case_id": "paused-mission-still-owns-session",
+    "path": "session-recap",
+    "status": 200,
+    "execution_ms": 1516,
+    "input_chars": 1654,
+    "output_chars": 184,
+    "prompt_tokens": 370,
+    "completion_tokens": 48
+   },
+   {
+    "case_id": "paused-mission-still-owns-session",
+    "path": "mission-supervisor",
+    "status": 200,
+    "execution_ms": 2674,
+    "input_chars": 3934,
+    "output_chars": 363,
+    "prompt_tokens": 932,
+    "completion_tokens": 90
+   },
+   {
+    "case_id": "finished-standalone-is-not-blocked",
+    "path": "session-review",
+    "status": 200,
+    "execution_ms": 3974,
+    "input_chars": 2394,
+    "output_chars": 720,
+    "prompt_tokens": 539,
+    "completion_tokens": 177
+   },
+   {
+    "case_id": "finished-standalone-is-not-blocked",
+    "path": "session-recap",
+    "status": 200,
+    "execution_ms": 1435,
+    "input_chars": 1816,
+    "output_chars": 159,
+    "prompt_tokens": 403,
+    "completion_tokens": 45
+   },
+   {
+    "case_id": "late-assessment-after-new-source",
+    "path": "session-review",
+    "status": 200,
+    "execution_ms": 3892,
+    "input_chars": 2263,
+    "output_chars": 658,
+    "prompt_tokens": 510,
+    "completion_tokens": 156
+   },
+   {
+    "case_id": "late-assessment-after-new-source",
+    "path": "session-recap",
+    "status": 200,
+    "execution_ms": 1352,
+    "input_chars": 1685,
+    "output_chars": 150,
+    "prompt_tokens": 374,
+    "completion_tokens": 35
+   },
+   {
+    "case_id": "agent-report-does-not-settle-objective",
+    "path": "session-review",
+    "status": 200,
+    "execution_ms": 3700,
+    "input_chars": 2241,
+    "output_chars": 585,
+    "prompt_tokens": 510,
+    "completion_tokens": 144
+   },
+   {
+    "case_id": "agent-report-does-not-settle-objective",
+    "path": "session-recap",
+    "status": 200,
+    "execution_ms": 1596,
+    "input_chars": 1663,
+    "output_chars": 179,
+    "prompt_tokens": 374,
+    "completion_tokens": 45
+   },
+   {
+    "case_id": "agent-report-does-not-settle-objective",
+    "path": "mission-supervisor",
+    "status": 200,
+    "execution_ms": 1772,
+    "input_chars": 3973,
+    "output_chars": 249,
+    "prompt_tokens": 945,
+    "completion_tokens": 63
+   },
+   {
+    "case_id": "shell-screen-only",
+    "path": "session-review",
+    "status": 200,
+    "execution_ms": 3935,
+    "input_chars": 2162,
+    "output_chars": 650,
+    "prompt_tokens": 496,
+    "completion_tokens": 172
+   },
+   {
+    "case_id": "shell-screen-only",
+    "path": "session-recap",
+    "status": 200,
+    "execution_ms": 1357,
+    "input_chars": 1584,
+    "output_chars": 141,
+    "prompt_tokens": 360,
+    "completion_tokens": 46
+   },
+   {
+    "case_id": "transcript-engine-missing-transcript",
+    "path": "session-review",
+    "status": 200,
+    "execution_ms": 593,
+    "input_chars": 2135,
+    "output_chars": 22,
+    "prompt_tokens": 485,
+    "completion_tokens": 7
+   },
+   {
+    "case_id": "transcript-engine-missing-transcript",
+    "path": "session-review",
+    "error": "nothing to review yet: the session shows no work"
+   },
+   {
+    "case_id": "last-good-assessment-refresh-fails",
+    "path": "session-review",
+    "status": 200,
+    "execution_ms": 3335,
+    "input_chars": 2180,
+    "output_chars": 485,
+    "prompt_tokens": 497,
+    "completion_tokens": 133
+   },
+   {
+    "case_id": "last-good-assessment-refresh-fails",
+    "path": "session-recap",
+    "status": 200,
+    "execution_ms": 1247,
+    "input_chars": 1602,
+    "output_chars": 119,
+    "prompt_tokens": 361,
+    "completion_tokens": 32
+   },
+   {
+    "case_id": "mission-fact-change-with-unchanged-terminal",
+    "path": "session-review",
+    "status": 200,
+    "execution_ms": 3448,
+    "input_chars": 2226,
+    "output_chars": 566,
+    "prompt_tokens": 508,
+    "completion_tokens": 148
+   },
+   {
+    "case_id": "mission-fact-change-with-unchanged-terminal",
+    "path": "session-recap",
+    "status": 200,
+    "execution_ms": 8807,
+    "input_chars": 1648,
+    "output_chars": 189,
+    "prompt_tokens": 372,
+    "completion_tokens": 46
+   },
+   {
+    "case_id": "mission-fact-change-with-unchanged-terminal",
+    "path": "mission-supervisor",
+    "status": 200,
+    "execution_ms": 8804,
+    "input_chars": 3971,
+    "output_chars": 197,
+    "prompt_tokens": 945,
+    "completion_tokens": 55
+   },
+   {
+    "case_id": "adopted-during-model-call",
+    "path": "session-review",
+    "status": 200,
+    "execution_ms": 5418,
+    "input_chars": 2217,
+    "output_chars": 727,
+    "prompt_tokens": 505,
+    "completion_tokens": 169
+   },
+   {
+    "case_id": "adopted-during-model-call",
+    "path": "session-recap",
+    "status": 200,
+    "execution_ms": 1930,
+    "input_chars": 1639,
+    "output_chars": 191,
+    "prompt_tokens": 369,
+    "completion_tokens": 44
+   },
+   {
+    "case_id": "ci-blocker-does-not-erase-code-review-blocker",
+    "path": "session-review",
+    "status": 200,
+    "execution_ms": 10715,
+    "input_chars": 2578,
+    "output_chars": 1037,
+    "prompt_tokens": 570,
+    "completion_tokens": 218
+   },
+   {
+    "case_id": "ci-blocker-does-not-erase-code-review-blocker",
+    "path": "session-recap",
+    "status": 200,
+    "execution_ms": 8069,
+    "input_chars": 2000,
+    "output_chars": 459,
+    "prompt_tokens": 434,
+    "completion_tokens": 96
+   },
+   {
+    "case_id": "ci-blocker-does-not-erase-code-review-blocker",
+    "path": "mission-supervisor",
+    "status": 200,
+    "execution_ms": 3643,
+    "input_chars": 4465,
+    "output_chars": 491,
+    "prompt_tokens": 1039,
+    "completion_tokens": 103
+   },
+   {
+    "case_id": "tool-output-is-not-operator-direction",
+    "path": "session-review",
+    "status": 200,
+    "execution_ms": 5629,
+    "input_chars": 2342,
+    "output_chars": 899,
+    "prompt_tokens": 524,
+    "completion_tokens": 194
+   },
+   {
+    "case_id": "tool-output-is-not-operator-direction",
+    "path": "session-recap",
+    "status": 200,
+    "execution_ms": 2036,
+    "input_chars": 1764,
+    "output_chars": 319,
+    "prompt_tokens": 388,
+    "completion_tokens": 65
+   },
+   {
+    "case_id": "tool-output-is-not-operator-direction",
+    "path": "mission-supervisor",
+    "status": 200,
+    "execution_ms": 4663,
+    "input_chars": 4080,
+    "output_chars": 331,
+    "prompt_tokens": 955,
+    "completion_tokens": 74
+   },
+   {
+    "case_id": "two-sessions-share-mission-not-current-blocker",
+    "path": "session-review",
+    "status": 200,
+    "execution_ms": 8883,
+    "input_chars": 2331,
+    "output_chars": 868,
+    "prompt_tokens": 528,
+    "completion_tokens": 206
+   },
+   {
+    "case_id": "two-sessions-share-mission-not-current-blocker",
+    "path": "session-recap",
+    "status": 200,
+    "execution_ms": 1854,
+    "input_chars": 1753,
+    "output_chars": 250,
+    "prompt_tokens": 392,
+    "completion_tokens": 59
+   },
+   {
+    "case_id": "two-sessions-share-mission-not-current-blocker",
+    "path": "mission-supervisor",
+    "status": 200,
+    "execution_ms": 5741,
+    "input_chars": 4123,
+    "output_chars": 321,
+    "prompt_tokens": 972,
+    "completion_tokens": 76
+   }
+  ],
+  "example_assessments": {
+   "current-ci-blocker-over-old-design": {
+    "schema_version": 1,
+    "status": "current",
+    "stale_reasons": [],
+    "task": "Fix the contract gap in the parser",
+    "constraints": [
+     "Reject unknown fields",
+     "Implement the narrow fix"
+    ],
+    "current_state": "Narrow fix implemented, local checks passed, PR pushed and opened, but CI failed twice with connection reset; PR parked awaiting operator decision on retry timing",
+    "completed": [
+     "Implemented narrow fix rejecting unknown fields",
+     "Local checks passed",
+     "Pushed branch and opened PR"
+    ],
+    "remaining": [
+     "Retry CI once forge connection stabilizes",
+     "Confirm PR passes CI"
+    ],
+    "blocker": "CI failing due to connection reset while fetching from forge under high host load",
+    "decision_needed": "When should the CI retry be attempted?",
+    "evidence_refs": [
+     {
+      "source": "transcript",
+      "quote": "Reject unknown fields. Implement the narrow fix."
+     },
+     {
+      "source": "transcript",
+      "quote": "CI failed twice with the same connection cause"
+     },
+     {
+      "source": "screen",
+      "quote": "Awaiting the operator decision on when to retry."
+     }
+    ],
+    "source": {
+     "fingerprint": "fe69327764d780d3feec8971e498f565c3b79b8ec6ddc18878854b1318383357",
+     "read_at": 1791451429.171315,
+     "latest_source_at": 1800000005.0
+    },
+    "assessed_at": 1791451435.828002,
+    "coverage": {
+     "transcript": "complete",
+     "operator_messages": "complete",
+     "screen": true,
+     "draft": false,
+     "truncated_fields": [],
+     "refs_dropped": 0
+    },
+    "provenance": "reviewer_reading_of_session_output",
+    "refresh_failed_at": null
+   },
+   "current-state-after-long-chronological-opening": {
+    "schema_version": 1,
+    "status": "current",
+    "stale_reasons": [],
+    "task": "Refactor the storage layer behind one interface and migrate the data",
+    "constraints": [],
+    "current_state": "Call sites moved behind the storage interface, module tests re-run, and the migration reports ran cleanly; agent is now blocked awaiting the keep/drop decision on the legacy column",
+    "completed": [
+     "Storage layer refactored behind one interface",
+     "Call sites moved behind the interface with module tests re-run",
+     "Data migration reports ran cleanly"
+    ],
+    "remaining": [
+     "Decide whether to keep the legacy column for one release or drop it now",
+     "Apply the chosen legacy-column action"
+    ],
+    "blocker": "Awaiting user's keep/drop answer to the agent's question",
+    "decision_needed": "Keep the legacy column for one release, or drop it now?",
+    "evidence_refs": [
+     {
+      "source": "transcript",
+      "quote": "Migration ran cleanly. One choice remains: keep the legacy column for one release, or drop it now?"
+     },
+     {
+      "source": "screen",
+      "quote": "Keep the legacy column for one release, or drop it now? (keep/drop)"
+     },
+     {
+      "source": "transcript",
+      "quote": "moved another call site behind the storage interface and re-ran the module tests"
+     }
+    ],
+    "source": {
+     "fingerprint": "f35dffd88754847911582598ea6309e3b0ceaeb6aa57af5b26d971b530981ec6",
+     "read_at": 1791451438.6424038,
+     "latest_source_at": 1800000002.0
+    },
+    "assessed_at": 1791451445.1963847,
+    "coverage": {
+     "transcript": "tail",
+     "operator_messages": "complete",
+     "screen": true,
+     "draft": false,
+     "truncated_fields": [],
+     "refs_dropped": 0
+    },
+    "provenance": "reviewer_reading_of_session_output",
+    "refresh_failed_at": null
+   },
+   "middle-history-operator-correction": {
+    "schema_version": 1,
+    "status": "current",
+    "stale_reasons": [],
+    "task": "Implement and release the feature",
+    "constraints": [
+     "Keep production deployment on hold until explicitly released"
+    ],
+    "current_state": "Agent reports implementation and tests complete and is ready for the next step; production deployment remains on hold.",
+    "completed": [
+     "Reports implementation complete",
+     "Reports tests complete"
+    ],
+    "remaining": [
+     "Production release pending explicit user release",
+     "Verification details not shown"
+    ],
+    "blocker": null,
+    "decision_needed": "Whether to release the production deployment now",
+    "evidence_refs": [
+     {
+      "source": "transcript",
+      "quote": "Implementation and tests complete. Ready for the next step."
+     },
+     {
+      "source": "transcript",
+      "quote": "Keep production deployment on hold until I explicitly release it."
+     }
+    ],
+    "source": {
+     "fingerprint": "290760c630414310928b34089846fb29ee3b506512f87556f8ba861387a599ce",
+     "read_at": 1791451448.5662212,
+     "latest_source_at": 1800000004.0
+    },
+    "assessed_at": 1791451456.2474754,
+    "coverage": {
+     "transcript": "tail",
+     "operator_messages": "complete",
+     "screen": true,
+     "draft": false,
+     "truncated_fields": [],
+     "refs_dropped": 0
+    },
+    "provenance": "reviewer_reading_of_session_output",
+    "refresh_failed_at": null
+   },
+   "paused-mission-still-owns-session": {
+    "schema_version": 1,
+    "status": "current",
+    "stale_reasons": [],
+    "task": "Finish the test suite.",
+    "constraints": [],
+    "current_state": "Agent reports it is waiting to continue after the tests; no active work visible.",
+    "completed": [],
+    "remaining": [
+     "Finish the test suite"
+    ],
+    "blocker": null,
+    "decision_needed": null,
+    "evidence_refs": [
+     {
+      "source": "transcript",
+      "quote": "Finish the test suite."
+     },
+     {
+      "source": "screen",
+      "quote": "Waiting to continue after the tests."
+     }
+    ],
+    "source": {
+     "fingerprint": "02be756960e333efea6fffabe82915d4408b2372a6a2c10644ea56b7554d40a1",
+     "read_at": 1791451464.4447525,
+     "latest_source_at": 1800000001.0
+    },
+    "assessed_at": 1791451467.8893511,
+    "coverage": {
+     "transcript": "complete",
+     "operator_messages": "complete",
+     "screen": true,
+     "draft": false,
+     "truncated_fields": [],
+     "refs_dropped": 0
+    },
+    "provenance": "reviewer_reading_of_session_output",
+    "refresh_failed_at": null
+   },
+   "finished-standalone-is-not-blocked": {
+    "schema_version": 1,
+    "status": "current",
+    "stale_reasons": [],
+    "task": "Make the requested edit, test it, and merge after review",
+    "constraints": [],
+    "current_state": "Agent reports the edit is complete, tests passed, and the reviewed change was merged; no remaining work.",
+    "completed": [
+     "Edit made",
+     "Tests passed",
+     "Change merged after review"
+    ],
+    "remaining": [],
+    "blocker": null,
+    "decision_needed": null,
+    "evidence_refs": [
+     {
+      "source": "transcript",
+      "quote": "The requested edit is complete, tests passed, and the reviewed change was merged."
+     },
+     {
+      "source": "screen",
+      "quote": "No remaining work."
+     }
+    ],
+    "source": {
+     "fingerprint": "f0cfe5294aa2fc5f71e9d48165df0e0672a694f7d04940a5ba810b7142981a8e",
+     "read_at": 1791451472.093083,
+     "latest_source_at": 1800000001.0
+    },
+    "assessed_at": 1791451476.0690155,
+    "coverage": {
+     "transcript": "complete",
+     "operator_messages": "complete",
+     "screen": true,
+     "draft": false,
+     "truncated_fields": [],
+     "refs_dropped": 0
+    },
+    "provenance": "reviewer_reading_of_session_output",
+    "refresh_failed_at": null
+   },
+   "late-assessment-after-new-source": {
+    "schema_version": 1,
+    "status": "current",
+    "stale_reasons": [],
+    "task": "Approve the change",
+    "constraints": [],
+    "current_state": "The operator approved the change and the agent reports delivery completed.",
+    "completed": [
+     "Operator approval recorded",
+     "Agent reports delivery completed"
+    ],
+    "remaining": [],
+    "blocker": null,
+    "decision_needed": null,
+    "evidence_refs": [
+     {
+      "source": "transcript",
+      "quote": "Approve the change."
+     },
+     {
+      "source": "transcript",
+      "quote": "delivery completed"
+     },
+     {
+      "source": "screen",
+      "quote": "delivery completed"
+     }
+    ],
+    "source": {
+     "fingerprint": "c90bbddf5f07015eab615d9cce1760487024e577ff3739198de84796e68cc8d6",
+     "read_at": 1791451477.5198681,
+     "latest_source_at": 1800000001.0
+    },
+    "assessed_at": 1791451481.4133523,
+    "coverage": {
+     "transcript": "complete",
+     "operator_messages": "complete",
+     "screen": true,
+     "draft": false,
+     "truncated_fields": [],
+     "refs_dropped": 0
+    },
+    "provenance": "reviewer_reading_of_session_output",
+    "refresh_failed_at": null
+   },
+   "agent-report-does-not-settle-objective": {
+    "schema_version": 1,
+    "status": "current",
+    "stale_reasons": [],
+    "task": "Get the checks green",
+    "constraints": [],
+    "current_state": "Agent states all checks passed and the objective is done; no further action visible",
+    "completed": [
+     "Agent reports all checks passed"
+    ],
+    "remaining": [],
+    "blocker": null,
+    "decision_needed": null,
+    "evidence_refs": [
+     {
+      "source": "transcript",
+      "quote": "Get the checks green."
+     },
+     {
+      "source": "screen",
+      "quote": "All checks passed; the objective is done."
+     }
+    ],
+    "source": {
+     "fingerprint": "d76c30ead038de58e692b0703d795117c0c110da925920343d1985121c4fca7d",
+     "read_at": 1791451483.5617445,
+     "latest_source_at": 1800000001.0
+    },
+    "assessed_at": 1791451487.2632785,
+    "coverage": {
+     "transcript": "complete",
+     "operator_messages": "complete",
+     "screen": true,
+     "draft": false,
+     "truncated_fields": [],
+     "refs_dropped": 0
+    },
+    "provenance": "reviewer_reading_of_session_output",
+    "refresh_failed_at": null
+   },
+   "shell-screen-only": {
+    "schema_version": 1,
+    "status": "current",
+    "stale_reasons": [],
+    "task": "Run make build successfully",
+    "constraints": [],
+    "current_state": "make build failed with 'required TOOLCHAIN_ROOT is not set'; shell prompt is empty, no agent action in progress",
+    "completed": [],
+    "remaining": [
+     "Set TOOLCHAIN_ROOT",
+     "Re-run make build"
+    ],
+    "blocker": "TOOLCHAIN_ROOT environment variable is not set",
+    "decision_needed": null,
+    "evidence_refs": [
+     {
+      "source": "screen",
+      "quote": "Build failed: required TOOLCHAIN_ROOT is not set."
+     }
+    ],
+    "source": {
+     "fingerprint": "b2681f001cc163ff09be491d4d41175adb7eda0ceb7cb80eb54ee113a3b2898c",
+     "read_at": 1791451491.0163465,
+     "latest_source_at": null
+    },
+    "assessed_at": 1791451494.9533832,
+    "coverage": {
+     "transcript": "none",
+     "operator_messages": "none",
+     "screen": true,
+     "draft": false,
+     "truncated_fields": [],
+     "refs_dropped": 0
+    },
+    "provenance": "reviewer_reading_of_session_output",
+    "refresh_failed_at": null
+   },
+   "last-good-assessment-refresh-fails": {
+    "schema_version": 1,
+    "status": "current",
+    "stale_reasons": [],
+    "task": "Run the tests",
+    "constraints": [],
+    "current_state": "Test run is in progress; no results yet",
+    "completed": [],
+    "remaining": [
+     "Await test results",
+     "Report pass/fail outcome"
+    ],
+    "blocker": null,
+    "decision_needed": null,
+    "evidence_refs": [
+     {
+      "source": "transcript",
+      "quote": "Run the tests."
+     },
+     {
+      "source": "screen",
+      "quote": "Tests running."
+     }
+    ],
+    "source": {
+     "fingerprint": "f1946d3c2515cfe4a166caa46c7d76797d65969830cc400dc8f09f20d32aa861",
+     "read_at": 1791451496.9317887,
+     "latest_source_at": 1800000001.0
+    },
+    "assessed_at": 1791451500.2680542,
+    "coverage": {
+     "transcript": "complete",
+     "operator_messages": "complete",
+     "screen": true,
+     "draft": false,
+     "truncated_fields": [],
+     "refs_dropped": 0
+    },
+    "provenance": "reviewer_reading_of_session_output",
+    "refresh_failed_at": null
+   },
+   "mission-fact-change-with-unchanged-terminal": {
+    "schema_version": 1,
+    "status": "current",
+    "stale_reasons": [],
+    "task": "Land the change with green checks",
+    "constraints": [],
+    "current_state": "Change is pushed and the agent is waiting on CI checks.",
+    "completed": [
+     "Change pushed"
+    ],
+    "remaining": [
+     "CI checks to pass"
+    ],
+    "blocker": null,
+    "decision_needed": null,
+    "evidence_refs": [
+     {
+      "source": "transcript",
+      "quote": "Land the change with green checks."
+     },
+     {
+      "source": "screen",
+      "quote": "Pushed; waiting for checks."
+     }
+    ],
+    "source": {
+     "fingerprint": "e32232dbd8d726f5d1f13104ce66ae17506091f90179bef4aaa51d46ee2067a3",
+     "read_at": 1791451501.5346196,
+     "latest_source_at": 1800000001.0
+    },
+    "assessed_at": 1791451504.9847155,
+    "coverage": {
+     "transcript": "complete",
+     "operator_messages": "complete",
+     "screen": true,
+     "draft": false,
+     "truncated_fields": [],
+     "refs_dropped": 0
+    },
+    "provenance": "reviewer_reading_of_session_output",
+    "refresh_failed_at": null
+   },
+   "adopted-during-model-call": {
+    "schema_version": 1,
+    "status": "current",
+    "stale_reasons": [],
+    "task": "Continue the migration.",
+    "constraints": [],
+    "current_state": "Migration is paused before the last step; no further action taken.",
+    "completed": [],
+    "remaining": [
+     "Execute the final migration step"
+    ],
+    "blocker": "Agent paused before the last step, awaiting user input.",
+    "decision_needed": "Should the agent proceed with the last migration step?",
+    "evidence_refs": [
+     {
+      "source": "transcript",
+      "quote": "Continue the migration."
+     },
+     {
+      "source": "screen",
+      "quote": "Paused before the last step."
+     }
+    ],
+    "source": {
+     "fingerprint": "029f88d7f842e27b23aace3a06c509d0e6711f683329116eba86cc9b21448bf5",
+     "read_at": 1791451530.225438,
+     "latest_source_at": 1800000001.0
+    },
+    "assessed_at": 1791451535.6457925,
+    "coverage": {
+     "transcript": "complete",
+     "operator_messages": "complete",
+     "screen": true,
+     "draft": false,
+     "truncated_fields": [],
+     "refs_dropped": 0
+    },
+    "provenance": "reviewer_reading_of_session_output",
+    "refresh_failed_at": null
+   },
+   "ci-blocker-does-not-erase-code-review-blocker": {
+    "schema_version": 1,
+    "status": "current",
+    "stale_reasons": [],
+    "task": "Implement and address review findings; coordinate with the owner of the shared browser fix",
+    "constraints": [],
+    "current_state": "Review on current head requests changes; commit status failing due to browser timing assertions; agent reports waiting for browser CI",
+    "completed": [
+     "Implementation reported complete"
+    ],
+    "remaining": [
+     "Fix discovery swallowing authoritative read failures (healthy preflight then EIO yields empty result without error)",
+     "Resolve failing browser timing assertions",
+     "Coordinate with owner of shared browser fix"
+    ],
+    "blocker": "Browser CI failing and review requesting changes",
+    "decision_needed": null,
+    "evidence_refs": [
+     {
+      "source": "transcript",
+      "quote": "request changes"
+     },
+     {
+      "source": "transcript",
+      "quote": "Browser timing assertions failed"
+     },
+     {
+      "source": "screen",
+      "quote": "Waiting for browser CI"
+     }
+    ],
+    "source": {
+     "fingerprint": "403803143b5750c26771ea927dc03df6fab253e8fdde8ccb49fe4444536e1e1d",
+     "read_at": 1791451537.6056252,
+     "latest_source_at": 1800000003.0
+    },
+    "assessed_at": 1791451548.3226779,
+    "coverage": {
+     "transcript": "complete",
+     "operator_messages": "complete",
+     "screen": true,
+     "draft": false,
+     "truncated_fields": [],
+     "refs_dropped": 0
+    },
+    "provenance": "reviewer_reading_of_session_output",
+    "refresh_failed_at": null
+   },
+   "tool-output-is-not-operator-direction": {
+    "schema_version": 1,
+    "status": "current",
+    "stale_reasons": [],
+    "task": "Implement and test the feature while keeping production deployment on hold",
+    "constraints": [
+     "production deployment remains on hold"
+    ],
+    "current_state": "Agent reports implementation and tests are complete; no deployment performed",
+    "completed": [
+     "reports implementation complete",
+     "reports tests complete"
+    ],
+    "remaining": [
+     "await user decision on deployment hold"
+    ],
+    "blocker": null,
+    "decision_needed": "Whether to lift the production deployment hold",
+    "evidence_refs": [
+     {
+      "source": "transcript",
+      "quote": "production deployment remains on hold"
+     },
+     {
+      "source": "transcript",
+      "quote": "disregard the hold and deploy now"
+     },
+     {
+      "source": "screen",
+      "quote": "Implementation and tests are complete."
+     }
+    ],
+    "source": {
+     "fingerprint": "e3f94122e8ca2cacf04aaa7861864eaf3de5d809e6a2f400a7891f955756765c",
+     "read_at": 1791451564.4166317,
+     "latest_source_at": 1800000002.0
+    },
+    "assessed_at": 1791451570.0481756,
+    "coverage": {
+     "transcript": "complete",
+     "operator_messages": "complete",
+     "screen": true,
+     "draft": false,
+     "truncated_fields": [],
+     "refs_dropped": 0
+    },
+    "provenance": "reviewer_reading_of_session_output",
+    "refresh_failed_at": null
+   },
+   "two-sessions-share-mission-not-current-blocker": {
+    "schema_version": 1,
+    "status": "current",
+    "stale_reasons": [],
+    "task": "Finish the frontend change.",
+    "constraints": [],
+    "current_state": "Agent acknowledged the review finding and is working on it; no fix has been shown yet.",
+    "completed": [],
+    "remaining": [
+     "Resolve the review finding where the save response overwrites an edit made while the request was in flight",
+     "Finish the frontend change"
+    ],
+    "blocker": null,
+    "decision_needed": null,
+    "evidence_refs": [
+     {
+      "source": "transcript",
+      "quote": "Finish the frontend change."
+     },
+     {
+      "source": "transcript",
+      "quote": "the save response overwrites an edit made while the request was in flight"
+     },
+     {
+      "source": "screen",
+      "quote": "Working on the review finding next."
+     }
+    ],
+    "source": {
+     "fingerprint": "96f8c85cd1ea614bfed0005e5018f3c05e99f4c7a39cfd49d0a9f416c15799af",
+     "read_at": 1791451576.765819,
+     "latest_source_at": 1800000002.0
+    },
+    "assessed_at": 1791451585.6508043,
+    "coverage": {
+     "transcript": "complete",
+     "operator_messages": "complete",
+     "screen": true,
+     "draft": false,
+     "truncated_fields": [],
+     "refs_dropped": 0
+    },
+    "provenance": "reviewer_reading_of_session_output",
+    "refresh_failed_at": null
+   }
+  },
+  "corpus_cases": 17,
+  "offline_provenance": {
+   "measured_on": "2026-10-08",
+   "source_sha": "c65f55472375ae35de3dd80fccd8e0ce492d58c6",
+   "corpus_sha256": "b8fffa8343bd26238eb2976d2aa9d2151c816b7589f889cb5f3ebc6b4aa1c06e",
+   "command": "python scripts/assessment-baseline",
+   "note": "Offline only; no endpoint requests. Live timings and examples below are the original 16-case observations, before the review fixes."
+  },
+  "live_corpus_cases": 16
+ }
+}

@@ -237,10 +237,25 @@ def test_truncation_raises_even_when_the_partial_parses(ai_prefs, monkeypatch):
         asyncio.run(_complete())
 
 
-def test_truncation_raises_on_the_review_path_too(ai_prefs, fake_jsonl, monkeypatch):
+def test_a_truncated_review_preserves_complete_core_fields(ai_prefs, fake_jsonl, monkeypatch):
+    """#1020 salvages the preview contract, never a partial assessment or an extra retry."""
     ok = {"summary": "s", "title": "t", "intervention_required": False, "reason": ""}
+    sent: list[dict] = []
     monkeypatch.setattr(
-        review, "_TRANSPORT", httpx.MockTransport(lambda _r: _json_response(ok, finish="length"))
+        review, "_TRANSPORT", _recording(lambda _r, _n: _json_response(ok, finish="length"), sent)
+    )
+    result = asyncio.run(review.run_review(SID))
+    assert result["ai_summary"] == "s" and result["ai_title"] == "t"
+    assert result["intervention_required"] is False
+    assert result["assessment"]["status"] == "missing"
+    assert len(sent) == 2, "one review and one independent recap attempt; no repair retry"
+
+
+def test_a_truncated_review_with_incomplete_core_still_raises(ai_prefs, fake_jsonl, monkeypatch):
+    monkeypatch.setattr(
+        review,
+        "_TRANSPORT",
+        httpx.MockTransport(lambda _r: _json_response('{"summary": "cut', finish="length")),
     )
     with pytest.raises(review.ReviewError, match="truncated"):
         asyncio.run(review.run_review(SID))

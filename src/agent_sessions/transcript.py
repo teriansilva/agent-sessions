@@ -46,7 +46,10 @@ class Turn:
 
     ``role``: "user" | "assistant" | "system" | "tool".
     ``kind``: "text" (a message) | "tool" (a one-line tool-call summary) | "result"
-    (a truncated tool result). The renderer styles by ``kind``/``role``; everything else is text.
+    (a truncated tool result) | "context" (a ``user``-role record the harness injected — a
+    compaction summary, a command wrapper or its captured output — rendered like a user turn but
+    never selected as something the user said, #1020). The renderer styles by ``kind``/``role``;
+    everything else is text.
     ``ts``: when the engine recorded the message (epoch seconds), or ``None`` where it does not say.
     Set on text turns; it plays no part in equality, so a Turn compares by what it renders.
     """
@@ -55,6 +58,28 @@ class Turn:
     text: str
     kind: str = "text"
     ts: float | None = field(default=None, compare=False, repr=False)
+
+
+class Turns(list):
+    """A reader's Turns, saying whether the read was CUT (#1020 review finding 5).
+
+    Every file reader keeps only the newest ``_TAIL_BYTES`` / ``DEFAULT_MAX_MESSAGES``, so a long
+    session's opening request and early corrections are not in what it returns. A caller that
+    reports coverage ("every user message reached the model") has to know that, and the list
+    alone cannot say it. Still a ``list``: every existing consumer is unaffected."""
+
+    truncated: bool = False
+
+
+def tagged_turns(items: list[Turn], truncated: bool) -> Turns:
+    out = Turns(items)
+    out.truncated = bool(truncated)
+    return out
+
+
+def was_truncated(turns: object) -> bool:
+    """True when ``turns`` came from a reader that dropped older records to fit its caps."""
+    return bool(getattr(turns, "truncated", False))
 
 
 def _when(value: object) -> float | None:
@@ -530,6 +555,34 @@ def _path_locator(resolve: Callable[[str, Path], Path | None]) -> SourceLocator:
 _TAIL_BYTES = _env_int("AGENT_SESSIONS_TRANSCRIPT_TAIL_BYTES", 8 * 1024 * 1024)
 
 
+# Claude Code records harness context as ordinary ``type:"user"`` records (#1020 review finding 1):
+# the compaction summary ("This session is being continued…", ``isCompactSummary``), the
+# local-command caveat (``isMeta``, often the very first record), a slash command's
+# ``<command-name>`` wrapper, and a ``!`` command's captured ``<bash-stdout>`` / ``<bash-stderr>``
+# — which can hold file or web content nobody vetted. None of it is the operator directing the
+# session. The codex equivalent is ``engines.codex.is_injected_context``.
+_CLAUDE_INJECTED_PREFIXES: tuple[str, ...] = (
+    "<bash-stdout>",
+    "<bash-stderr>",
+    "<local-command-",
+    "<command-name>",
+    "<command-message>",
+    "<command-args>",
+)
+
+
+def claude_is_injected(record: dict, text: str) -> bool:
+    """True when a Claude ``user`` record's text is harness-injected context, not the operator.
+
+    Such a turn is read with ``kind="context"`` rather than dropped: scroll-up still shows it
+    (the renderer styles a user turn by role), while every consumer that selects the operator's
+    messages by ``kind == "text"`` — the review's earlier-user section, handoff, the launch
+    binder, template suggestions — no longer mistakes it for one."""
+    if record.get("isMeta") is True or record.get("isCompactSummary") is True:
+        return True
+    return text.lstrip().startswith(_CLAUDE_INJECTED_PREFIXES)
+
+
 def claude_turns_from_jsonl(path: Path, *, max_messages: int = DEFAULT_MAX_MESSAGES) -> list[Turn]:
     """Parse a Claude Code session JSONL into Turns. ``message.content`` is a str or a list of
     ``text`` / ``thinking`` / ``tool_use`` / ``tool_result`` blocks; ``thinking`` is hidden, tool
@@ -539,7 +592,8 @@ def claude_turns_from_jsonl(path: Path, *, max_messages: int = DEFAULT_MAX_MESSA
     try:
         with path.open("rb") as fh:
             size = path.stat().st_size
-            if size > _TAIL_BYTES:
+            cut = size > _TAIL_BYTES
+            if cut:
                 fh.seek(size - _TAIL_BYTES)
                 fh.readline()  # discard the (likely partial) first line after the seek
             data = fh.read()
@@ -557,6 +611,7 @@ def claude_turns_from_jsonl(path: Path, *, max_messages: int = DEFAULT_MAX_MESSA
         if isinstance(o, dict) and o.get("type") in ("user", "assistant"):
             recs.append(o)
     turns: list[Turn] = []
+    cut = cut or len(recs) > max_messages
     for o in recs[-max_messages:]:
         msg = o.get("message") or {}
         role = msg.get("role") or o.get("type") or "assistant"
@@ -567,7 +622,9 @@ def claude_turns_from_jsonl(path: Path, *, max_messages: int = DEFAULT_MAX_MESSA
                 continue
             bt = b.get("type")
             if bt == "text" and (b.get("text") or "").strip():
-                turns.append(Turn(role, b["text"].strip(), "text", _when(o.get("timestamp"))))
+                text = b["text"].strip()
+                kind = "context" if role == "user" and claude_is_injected(o, text) else "text"
+                turns.append(Turn(role, text, kind, _when(o.get("timestamp"))))
             elif bt == "tool_use":
                 inp = b.get("input") if isinstance(b.get("input"), dict) else {}
                 arg = (
@@ -584,7 +641,7 @@ def claude_turns_from_jsonl(path: Path, *, max_messages: int = DEFAULT_MAX_MESSA
                 if txt.strip():
                     turns.append(Turn("tool", txt, "result"))
             # "thinking" blocks are intentionally omitted from scroll-up.
-    return turns
+    return tagged_turns(turns, cut)
 
 
 def claude_jsonl_path(native_id: str, home: Path) -> Path | None:
@@ -633,6 +690,14 @@ def _read_tail(path: Path) -> bytes:
             return fh.read()
     except OSError:
         return b""
+
+
+def _over_tail(path: Path) -> bool:
+    """True when ``path`` is larger than what :func:`_read_tail` reads, so its head was cut."""
+    try:
+        return path.stat().st_size > _TAIL_BYTES
+    except OSError:
+        return False
 
 
 def _jsonl_dicts(data: bytes) -> list[dict]:
@@ -708,7 +773,10 @@ def _codex_adapter(native_id: str, home: Path) -> list[Turn]:
     path = codex_rollout_path(native_id, home)
     if path is None:
         return []
-    return _codex_turns_from_records(_jsonl_dicts(_read_tail(path)))[-DEFAULT_MAX_MESSAGES:]
+    turns = _codex_turns_from_records(_jsonl_dicts(_read_tail(path)))
+    return tagged_turns(
+        turns[-DEFAULT_MAX_MESSAGES:], _over_tail(path) or len(turns) > DEFAULT_MAX_MESSAGES
+    )
 
 
 register_adapter("codex-rollout", _codex_adapter)
@@ -876,7 +944,8 @@ def _kimi_adapter(native_id: str, home: Path) -> list[Turn]:
         truncated = False
     if truncated:
         recs = _kimi_drop_partial_head(recs)
-    return _kimi_cap(_kimi_turns_from_wire(recs))
+    turns = _kimi_turns_from_wire(recs)
+    return tagged_turns(_kimi_cap(turns), truncated or len(turns) > DEFAULT_MAX_MESSAGES)
 
 
 register_adapter("kimi-wire", _kimi_adapter)
@@ -937,6 +1006,7 @@ def _opencode_turns_strict(native_id: str, home: Path) -> list[Turn]:
             "SELECT id, data FROM message WHERE session_id=? ORDER BY id DESC LIMIT ?",
             (native_id, DEFAULT_MAX_MESSAGES),
         ).fetchall()
+        cut = len(rows) >= DEFAULT_MAX_MESSAGES  # LIMIT reached: older messages may exist
         rows = rows[::-1]  # oldest-first
         turns: list[Turn] = []
         for mid, mdata in rows:
@@ -951,7 +1021,7 @@ def _opencode_turns_strict(native_id: str, home: Path) -> list[Turn]:
                 "SELECT data FROM part WHERE message_id=? ORDER BY id", (mid,)
             ).fetchall()
             turns.extend(_opencode_message_turns(role, parts, ts))
-        return turns
+        return tagged_turns(turns, cut)
     finally:
         conn.close()
 
@@ -1111,6 +1181,7 @@ def _gemini_turns_from_jsonl(path: Path, *, max_messages: int = DEFAULT_MAX_MESS
     assistant messages (the ``thoughts`` field — hidden thinking — is omitted); the ``kind:"main"``
     header and ``info`` records are skipped. gemini stores no tool-call records in the chat log."""
     recs = _jsonl_dicts(_read_tail(path))
+    cut = _over_tail(path) or len(recs) > max_messages
     turns: list[Turn] = []
     for o in recs[-max_messages:]:
         t = o.get("type")
@@ -1122,7 +1193,7 @@ def _gemini_turns_from_jsonl(path: Path, *, max_messages: int = DEFAULT_MAX_MESS
             text = _gemini_text(o.get("content"))
             if text:
                 turns.append(Turn("assistant", text, "text"))
-    return turns
+    return tagged_turns(turns, cut)
 
 
 def _gemini_adapter(native_id: str, home: Path) -> list[Turn]:
@@ -1152,6 +1223,7 @@ def _antigravity_turns_from_jsonl(
     from .engines import antigravity
 
     recs = _jsonl_dicts(_read_tail(path))
+    cut = _over_tail(path) or len(recs) > max_messages
     turns: list[Turn] = []
     for o in recs[-max_messages:]:
         t = o.get("type")
@@ -1163,7 +1235,7 @@ def _antigravity_turns_from_jsonl(
             content = o.get("content")
             if isinstance(content, str) and content.strip():
                 turns.append(Turn("assistant", content.strip(), "text"))
-    return turns
+    return tagged_turns(turns, cut)
 
 
 def _antigravity_adapter(native_id: str, home: Path) -> list[Turn]:
