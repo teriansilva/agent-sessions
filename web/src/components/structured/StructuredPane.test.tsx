@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { resetRoster, setRoster } from "../../app/engineRoster";
 import { ApiError, api } from "../../lib/api";
+import { imageFilesFromAsyncClipboard } from "../../lib/clipboardImages";
 import fixture from "../../test/roster.fixture.json";
 import type { EngineInfo, StructuredSnapshot, StructuredTurn } from "../../types/api";
 import { RuntimeGate } from "../terminal/RuntimeGate";
@@ -20,8 +21,17 @@ vi.mock("../../lib/api", async () => {
       structuredDecide: vi.fn(),
       structuredInterrupt: vi.fn(),
       structuredStop: vi.fn(),
+      upload: vi.fn(),
+      uploadBlob: vi.fn(() => new Promise(() => {})),
     },
   };
+});
+
+vi.mock("../../lib/clipboardImages", async () => {
+  const actual = await vi.importActual<typeof import("../../lib/clipboardImages")>(
+    "../../lib/clipboardImages",
+  );
+  return { ...actual, imageFilesFromAsyncClipboard: vi.fn(async () => []) };
 });
 
 const ID = "5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f";
@@ -433,4 +443,189 @@ test("in a map window the pane has no bar: its actions portal into the chrome sl
   } finally {
     slot.remove();
   }
+});
+
+// ---- pictures in a send (#1332 Phase 3) --------------------------------------------------------
+
+function png(name = "shot.png") {
+  return new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], name, { type: "image/png" });
+}
+
+function uploaded(n: number) {
+  vi.mocked(api.upload).mockResolvedValueOnce({
+    path: `/h/.agent-sessions/uploads/20261008-01000${n}-shot.png`,
+    name: "shot.png",
+    stored: `20261008-01000${n}-shot.png`,
+  });
+}
+
+test("a client that takes no pictures offers no attach", async () => {
+  renderPane();
+  await screen.findByRole("textbox");
+  expect(screen.queryByRole("button", { name: "Attach images" })).toBeNull();
+});
+
+test("attached pictures ride the send by upload name; changing them mints a new operation", async () => {
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(snap({ images: true }));
+  vi.mocked(api.structuredSubmit).mockRejectedValueOnce(new TypeError("network")).mockResolvedValue({});
+  uploaded(1);
+  uploaded(2);
+  renderPane();
+  await screen.findByRole("button", { name: "Attach images" });
+  await userEvent.upload(screen.getByTestId("structured-file-input"), [png("a.png"), png("b.png")]);
+  expect(await screen.findAllByTestId("structured-attachment")).toHaveLength(2);
+  await userEvent.type(screen.getByRole("textbox"), "what is wrong here");
+  await userEvent.click(screen.getByRole("button", { name: "Send" }));
+  await screen.findByTestId("structured-error"); // unknown outcome: kept for a safe retry
+  await userEvent.click(screen.getAllByRole("button", { name: "Remove shot.png" })[1]);
+  await userEvent.click(screen.getByRole("button", { name: "Send" }));
+  const [first, second] = vi.mocked(api.structuredSubmit).mock.calls;
+  expect(first[2]).toBe("what is wrong here");
+  expect(first[4]).toEqual(["20261008-010001-shot.png", "20261008-010002-shot.png"]);
+  expect(second[4]).toEqual(["20261008-010001-shot.png"]);
+  expect(second[1]).not.toBe(first[1]); // different pictures = a different request
+  await waitFor(() => expect(screen.queryAllByTestId("structured-attachment")).toHaveLength(0));
+});
+
+test("a picture alone can be sent; a pasted image becomes an attachment", async () => {
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(snap({ images: true }));
+  vi.mocked(api.structuredSubmit).mockResolvedValue({});
+  uploaded(3);
+  renderPane();
+  const box = await screen.findByRole("textbox");
+  expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+  box.focus();
+  await userEvent.paste({
+    files: [png()],
+    items: [{ kind: "file", type: "image/png", getAsFile: () => png() }],
+    getData: () => "",
+  } as unknown as DataTransfer);
+  await screen.findByTestId("structured-attachment");
+  const sendBtn = screen.getByRole("button", { name: "Send" });
+  await waitFor(() => expect(sendBtn).toBeEnabled());
+  await userEvent.click(sendBtn);
+  const [call] = vi.mocked(api.structuredSubmit).mock.calls;
+  expect(call[2]).toBe("");
+  expect(call[4]).toEqual(["20261008-010003-shot.png"]);
+});
+
+test("a fifth picture is refused before upload, with the cap stated", async () => {
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(snap({ images: true }));
+  for (let i = 1; i <= 4; i++) uploaded(i);
+  renderPane();
+  await screen.findByRole("button", { name: "Attach images" });
+  await userEvent.upload(
+    screen.getByTestId("structured-file-input"),
+    [1, 2, 3, 4, 5].map((i) => png(`${i}.png`)),
+  );
+  expect(await screen.findByTestId("structured-error")).toHaveTextContent("at most 4 images");
+  await waitFor(() => expect(screen.getAllByTestId("structured-attachment")).toHaveLength(4));
+  expect(api.upload).toHaveBeenCalledTimes(4);
+  expect(screen.getByRole("button", { name: "Attach images" })).toBeDisabled();
+});
+
+function deferredUpload() {
+  let resolve!: (n: number) => void;
+  const p = new Promise<number>((r) => (resolve = r));
+  vi.mocked(api.upload).mockImplementationOnce(async () => {
+    const n = await p;
+    return {
+      path: `/h/.agent-sessions/uploads/20261008-01000${n}-shot.png`,
+      name: `shot${n}.png`,
+      stored: `20261008-01000${n}-shot.png`,
+    };
+  });
+  return resolve;
+}
+
+test("overlapping uploads hold the send until EVERY picture has landed (Hermes on #1345)", async () => {
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(snap({ images: true }));
+  vi.mocked(api.structuredSubmit).mockResolvedValue({});
+  const first = deferredUpload();
+  const second = deferredUpload();
+  renderPane();
+  const input = await screen.findByTestId("structured-file-input");
+  await userEvent.type(screen.getByRole("textbox"), "compare these");
+  await userEvent.upload(input, [png("a.png")]);
+  await userEvent.upload(input, [png("b.png")]);
+  const sendBtn = screen.getByRole("button", { name: /Send|Uploading/ });
+  await act(async () => first(1));
+  await screen.findByTestId("structured-attachment");
+  expect(sendBtn).toBeDisabled(); // the second picture is still in flight
+  await userEvent.keyboard("{Enter}"); // Enter takes the same guard as the button
+  expect(api.structuredSubmit).not.toHaveBeenCalled();
+  await act(async () => second(2));
+  await waitFor(() => expect(screen.getAllByTestId("structured-attachment")).toHaveLength(2));
+  await waitFor(() => expect(sendBtn).toBeEnabled());
+  await userEvent.click(sendBtn);
+  const [call] = vi.mocked(api.structuredSubmit).mock.calls;
+  expect(call[4]).toEqual(["20261008-010001-shot.png", "20261008-010002-shot.png"]);
+});
+
+test("overlapping batches never exceed the cap: in-flight pictures hold their slots", async () => {
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(snap({ images: true }));
+  const releases = [1, 2, 3, 4].map(() => deferredUpload());
+  renderPane();
+  const input = await screen.findByTestId("structured-file-input");
+  await userEvent.upload(input, [png("1.png"), png("2.png"), png("3.png")]);
+  await userEvent.upload(input, [png("4.png"), png("5.png"), png("6.png")]);
+  expect(await screen.findByTestId("structured-error")).toHaveTextContent("at most 4 images");
+  await act(async () => releases.forEach((r, i) => r(i + 1)));
+  await waitFor(() => expect(screen.getAllByTestId("structured-attachment")).toHaveLength(4));
+  expect(api.upload).toHaveBeenCalledTimes(4);
+});
+
+/** A paste whose DataTransfer yields no usable file — the deferred-clipboard shape (#530). */
+const deferredPaste = {
+  files: [],
+  items: [{ kind: "file", type: "", getAsFile: () => null }],
+  getData: () => "",
+} as unknown as DataTransfer;
+
+test("a deferred clipboard read holds the send until its picture lands (Hermes on #1345, round 2)", async () => {
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(snap({ images: true }));
+  vi.mocked(api.structuredSubmit).mockResolvedValue({});
+  let read!: (files: File[]) => void;
+  vi.mocked(imageFilesFromAsyncClipboard).mockImplementationOnce(
+    () => new Promise<File[]>((r) => (read = r)),
+  );
+  uploaded(5);
+  renderPane();
+  const box = await screen.findByRole("textbox");
+  await userEvent.type(box, "see this");
+  box.focus();
+  await userEvent.paste(deferredPaste);
+  const sendBtn = screen.getByRole("button", { name: /Send|Uploading/ });
+  expect(sendBtn).toBeDisabled(); // the clipboard is still being read
+  await userEvent.keyboard("{Enter}");
+  expect(api.structuredSubmit).not.toHaveBeenCalled();
+  await act(async () => read([png()]));
+  await screen.findByTestId("structured-attachment");
+  await waitFor(() => expect(sendBtn).toBeEnabled());
+  await userEvent.click(sendBtn);
+  expect(vi.mocked(api.structuredSubmit).mock.calls[0][4]).toEqual(["20261008-010005-shot.png"]);
+});
+
+test("a paste while a message is sending joins nothing: no upload, no stray chip after", async () => {
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(snap({ images: true }));
+  let post!: () => void;
+  vi.mocked(api.structuredSubmit).mockImplementationOnce(
+    () => new Promise((r) => (post = () => r({}))),
+  );
+  uploaded(6);
+  renderPane();
+  const box = await screen.findByRole("textbox");
+  await userEvent.upload(screen.getByTestId("structured-file-input"), [png()]);
+  await screen.findByTestId("structured-attachment");
+  await userEvent.type(box, "first");
+  await userEvent.click(screen.getByRole("button", { name: "Send" }));
+  box.focus();
+  await userEvent.paste({
+    files: [png("late.png")],
+    items: [{ kind: "file", type: "image/png", getAsFile: () => png("late.png") }],
+    getData: () => "",
+  } as unknown as DataTransfer);
+  await act(async () => post());
+  await waitFor(() => expect(screen.queryAllByTestId("structured-attachment")).toHaveLength(0));
+  expect(api.upload).toHaveBeenCalledTimes(1); // only the picture that was sent
 });

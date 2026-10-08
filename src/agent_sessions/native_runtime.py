@@ -43,7 +43,7 @@ from . import (
     native_protocol,
     native_state,
 )
-from .plugins import api_source, storage
+from .plugins import api_source, kinds, storage
 
 READY_TIMEOUT = 120.0
 SHUTTING_DOWN = "the native worker is shutting down; retry"
@@ -923,6 +923,10 @@ def project(journal: native_journal.Journal, record: dict, live_worker: str | No
                 "turn_id": op.operation_id,
                 "status": "pending",
                 "text": params["text"],
+                "attachments": [
+                    {"stored": a["stored"], "mime": a["mime"]}
+                    for a in params.get("attachments") or ()
+                ],
                 "reply": "",
                 "partial": "",
                 "context": params.get("context") or {},
@@ -1118,19 +1122,25 @@ async def submit(
     *,
     expected_revision: int | None = None,
     context: dict | None = None,
+    attachments: list[dict] | None = None,
     execution_admission=None,
     idempotent: bool = True,
 ) -> dict:
+    """``attachments``: pictures ALREADY admitted by ``native_images.admit`` (#1332 Phase 3)."""
     if execution_admission is not None:
         raise NativeError(
             409, "native clients cannot enforce caller authority across processes yet"
         )
     try:
-        native_protocol.validate_text(text)
+        native_protocol.validate_text(text, allow_empty=bool(attachments))
     except native_protocol.ProtocolError as exc:
         raise NativeError(422, str(exc)) from None
     prov, _ = await asyncio.to_thread(_session, engine_id, session_id)
     params = {"text": text, "context": context or {}}
+    if attachments:
+        if not kinds.API_IMAGE_INPUT.get(prov.manifest.api.kind, False):
+            raise NativeError(422, "this client takes no images")
+        params["attachments"] = attachments
     immutable = native_ipc.normalize_immutable_request({"action": "submit", "params": params})
     for _ in range(3):
         journal = await asyncio.to_thread(_journal, prov, session_id)
@@ -1154,7 +1164,11 @@ async def submit(
     else:
         raise NativeError(409, "the conversation kept changing; retry")
     if receipt["handoff"] == "not_sent":
-        raise NativeError(409, "the agent is busy with another turn; this turn was not sent")
+        raise NativeError(
+            409,
+            "this turn was not sent: the agent is busy with another turn"
+            + (", or an attached image changed" if attachments else ""),
+        )
     return receipt
 
 

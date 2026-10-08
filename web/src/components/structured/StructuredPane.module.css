@@ -216,3 +216,96 @@
     align-items: stretch;
   }
 }
+
+/* #1332 Phase 3: pictures in a send. Square, token colours, 44px targets. */
+.attach {
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  cursor: pointer;
+}
+.attach:disabled {
+  color: var(--text-muted);
+  cursor: default;
+}
+.attach:focus-visible,
+.attachmentRemove:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 8px 14px 0;
+  list-style: none;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+}
+.attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 2px 2px 2px 4px;
+  border: 1px solid var(--border);
+  background: var(--glass-strong);
+  font: 12px var(--font-mono);
+}
+.attachmentThumbBox {
+  width: 32px;
+  height: 32px;
+  flex: none;
+}
+.attachmentThumb {
+  display: block;
+  width: 32px;
+  height: 32px;
+  object-fit: cover;
+}
+.attachmentName {
+  min-width: 0;
+  max-width: 24ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attachmentRemove {
+  min-width: 44px;
+  min-height: 44px;
+  background: none;
+  border: 0;
+  color: var(--text-muted);
+  font-size: 16px;
+  cursor: pointer;
+}
+.turnImages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0;
+}
+.turnImageBox {
+  display: block;
+  flex: none;
+  max-width: min(240px, 100%);
+}
+.turnImage {
+  display: block;
+  max-width: min(240px, 100%);
+  max-height: 180px;
+  object-fit: contain;
+  border: 1px solid var(--line);
+}
+.turnImageGone {
+  font: 12px var(--font-mono);
+  color: var(--text-muted);
+}

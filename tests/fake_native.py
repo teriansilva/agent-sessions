@@ -91,7 +91,11 @@ def codex():
             )
         elif method == "turn/start":
             turn = str(uuid.uuid4())
-            text = params["input"][0]["text"]
+            # #1332 Phase 3: pictures arrive as data-URL image items before the words.
+            images = [i for i in params["input"] if i["type"] == "image"]
+            text = "".join(i["text"] for i in params["input"] if i["type"] == "text")
+            if images:
+                text = f"IMAGES:{len(images)}:" + images[0]["url"][:22] + ":" + text
             if text == "REFUSE":
                 send({"id": rid, "error": {"code": -32000, "message": "turn refused by agent"}})
                 continue
@@ -289,6 +293,10 @@ def claude():
             )
         elif kind == "user":
             text = frame["message"]["content"]
+            if isinstance(text, list):  # #1332 Phase 3: base64 image blocks, then the words
+                images = [b for b in text if b["type"] == "image"]
+                words = "".join(b["text"] for b in text if b["type"] == "text")
+                text = f"IMAGES:{len(images)}:{images[0]['source']['media_type']}:" + words
             # Like the real CLI: the history file appears with the first turn, not before.
             slug = os.getcwd().replace("/", "-")
             history = os.path.join(os.environ["HOME"], ".claude", "projects", slug)

@@ -8,13 +8,14 @@ Native manifests can be validated before their adapters ship, but cannot execute
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 from dataclasses import asdict, dataclass
 from types import MappingProxyType
 
-from . import chat_config, chat_runtime, chat_store, engines, native_runtime
+from . import chat_config, chat_runtime, chat_store, engines, native_images, native_runtime
 from .engine_errors import EngineError
-from .plugins import api_source
+from .plugins import api_source, kinds
 from .structured_types import ExecutionGuard, normalize_context
 
 SNAPSHOT_TURNS = 50
@@ -43,6 +44,8 @@ class ClientDescriptor:
     authentication: str
     # Deliberately false until the complete mission observation/stop/authority cutover lands.
     mission_ready: bool = False
+    # The client's protocol takes pictures in a turn (`kinds.API_IMAGE_INPUT`, #1332 Phase 3).
+    images: bool = False
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -225,6 +228,7 @@ def describe(engine_id: str, *, check_ready: bool = True) -> ClientDescriptor:
             ready,
             reason,
             adapter.authentication,
+            images=m.runtime == "api" and kinds.API_IMAGE_INPUT.get(kind or "", False),
         )
 
 
@@ -310,6 +314,10 @@ def _turn(turn: dict, text_budget: list[int] | None = None) -> dict:
         "text": text,
         "reply": reply,
         "text_truncated": text_cut,
+        # Names only: the browser shows each through the upload read-back route (#1332).
+        "attachments": [
+            {"stored": a["stored"], "mime": a["mime"]} for a in turn.get("attachments") or ()
+        ],
         "reply_truncated": reply_cut or bool(turn.get("truncated")),
         "reason": turn.get("reason"),
         "context": dict(turn.get("context") or {}),
@@ -372,7 +380,12 @@ async def snapshot(session_key: str) -> dict:
     a retiring native client (its source disabled or removed) still shows its history (#1311)."""
     engine, native, adapter, read_only = _observation_target(session_key, "snapshot")
     raw = await adapter.snapshot(engine, native)
-    return {**_snapshot(f"{engine}:{native}", raw), "read_only": read_only}
+    return {
+        **_snapshot(f"{engine}:{native}", raw),
+        "read_only": read_only,
+        # Whether the composer offers pictures (#1332 Phase 3); submit re-checks it.
+        "images": describe(engine, check_ready=False).images,
+    }
 
 
 async def create_session(
@@ -401,8 +414,10 @@ async def submit_turn(
     text: str,
     expected_revision: int | None = None,
     context: dict | None = None,
+    attachments: list[str] | None = None,
     execution_admission: ExecutionGuard | None = None,
 ) -> dict:
+    """``attachments``: upload names (#1332 Phase 3), admitted here before anything durable."""
     engine, native = _key(session_key)
     adapter = _adapter(engine, "submit")
     try:
@@ -410,6 +425,14 @@ async def submit_turn(
     except ValueError as exc:
         raise StructuredError(422, str(exc)) from None
     tid = _operation_id(operation_id)
+    images = {}
+    if attachments:
+        if not isinstance(adapter, _NativeAdapter):
+            raise StructuredError(422, "this client takes no images")
+        try:
+            images["attachments"] = await asyncio.to_thread(native_images.admit, attachments)
+        except native_images.ImageError as exc:
+            raise StructuredError(422, str(exc)) from None
     await adapter.submit(
         engine,
         native,
@@ -417,6 +440,7 @@ async def submit_turn(
         text,
         expected_revision=expected_revision,
         context=context,
+        **images,
         execution_admission=execution_admission,
         idempotent=True,
     )

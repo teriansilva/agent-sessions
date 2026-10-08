@@ -137,7 +137,8 @@ export function choiceLabel(choice: string, req: StructuredRequest): string {
 }
 
 /** The operation id for a send: reused while the text is the same (a retry after an unknown
- *  outcome is then a no-op on the server), new as soon as the text changes. */
+ *  outcome is then a no-op on the server), new as soon as the text changes. `text` is the
+ *  send's whole identity — `sendIdentity` folds the attached pictures in (#1332 Phase 3). */
 export function operationFor(
   prev: { id: string; text: string } | null,
   text: string,
@@ -161,4 +162,10 @@ export function turnStateLabel(state: string): string {
     default:
       return state;
   }
+}
+
+/** A send's identity for `operationFor`: its words AND its pictures, so attaching or removing a
+ *  picture mints a new operation id exactly as editing the text does (#1332 Phase 3). */
+export function sendIdentity(text: string, attachments: readonly string[]): string {
+  return JSON.stringify([text, attachments]);
 }

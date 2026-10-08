@@ -120,7 +120,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         _csrf: None = Depends(csrf_guard),
     ) -> JSONResponse:
         body = await _json(
-            request, {"operation_id", "text", "expected_revision"}, {"operation_id", "text"}
+            request,
+            {"operation_id", "text", "expected_revision", "attachments"},
+            {"operation_id", "text"},
         )
         out = await _run(
             structured_runtime.submit_turn(
@@ -128,6 +130,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
                 operation_id=body["operation_id"],
                 text=body["text"],
                 expected_revision=_revision(body.get("expected_revision")),
+                # Upload names (#1332 Phase 3); the facade admits each before anything durable.
+                attachments=body.get("attachments"),
             )
         )
         return JSONResponse(out, status_code=202 if out.get("state") == "running" else 200)

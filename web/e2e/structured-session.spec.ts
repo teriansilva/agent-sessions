@@ -563,3 +563,87 @@ test("in a map window the API pane has no bar of its own: chips in the chrome, O
   // An API pane has no Compose draft yet (#1332 Phase 3), so Files offers no "add to message".
   await expect(win.locator("[data-send-path]")).toHaveCount(0);
 });
+
+// ---- pictures in a send (#1332 Phase 3) --------------------------------------------------------
+
+/** A 96×64 checked PNG: big enough that the thumbnail is visibly a picture. */
+const PNG_B64 = [
+  "iVBORw0KGgoAAAANSUhEUgAAAGAAAABACAIAAABqVuVZAAAAi0lEQVR42u3aMRHAMAwDQMPJWBQFm6kMUwzacvbfCY",
+  "D0s+p8FWWtJ8q7T5Tb+hQgQIAAAQIECBAgQIAAAQIECFAzoGmD0z6AAAECBAgQIECAAAECBAgQIEDdgKYNTvsAAgQI",
+  "ECBAgAABAgQIECBAgAB1A3Kg8jADBAgQIECAAAECBAgQIECAAI0C+gHzA/HhyUVm9wAAAABJRU5ErkJggg==",
+].join("");
+const STORED = "20261008-010000-shot.png";
+
+for (const theme of ["dark", "light"] as const) {
+  test(`paste an image → it shows as a chip → send carries it → the turn shows the thumbnail (#1332, ${theme})`, async ({
+    page,
+  }) => {
+    await setup(page, theme);
+    let posted: Json | null = null;
+    await page.route("**/api/upload", (r) =>
+      r.fulfill({ json: { path: `/home/u/.agent-sessions/uploads/${STORED}`, name: "shot.png", stored: STORED } }),
+    );
+    await page.route(`**/api/uploads/${STORED}`, (r) =>
+      r.fulfill({ body: Buffer.from(PNG_B64, "base64"), contentType: "image/png" }),
+    );
+    await serveSession(page, () =>
+      posted
+        ? snapshot({
+            images: true,
+            revision: 5,
+            turns: [
+              turn({
+                turn_id: posted.operation_id,
+                operation_id: posted.operation_id,
+                state: "completed",
+                text: posted.text,
+                reply: "The **button** is clipped.",
+                tools: [],
+                attachments: [{ stored: STORED, mime: "image/png" }],
+              }),
+            ],
+          })
+        : snapshot({ images: true }),
+    );
+    // After serveSession: the newest route wins, and its pattern also matches `/turns`.
+    await page.route(new RegExp(`/api/structured/sessions/codex-api(?::|%3A)${ID}/turns$`), async (r) => {
+      posted = r.request().postDataJSON() as Json;
+      await r.fulfill({ status: 202, json: { state: "running" } });
+    });
+    await page.goto(URL_PATH);
+    const box = page.getByRole("textbox", { name: /Message/ });
+    await expect(box).toBeVisible();
+    await box.evaluate((el, b64) => {
+      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      const dt = new DataTransfer();
+      dt.items.add(new File([bytes], "shot.png", { type: "image/png" }));
+      el.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+    }, PNG_B64);
+    const chip = page.getByTestId("structured-attachment");
+    await expect(chip).toContainText("shot.png");
+    await expect(chip.locator("img")).toHaveJSProperty("complete", true);
+    // The picture's slot never squeezes the name: "shot.png" fits whole beside its thumbnail.
+    expect(await chip.getByText("shot.png").evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(0);
+    await noOverflow(page);
+    await targets(page, page.getByRole("list", { name: "Attached images" }));
+    await box.fill("what is clipped here?");
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect.poll(() => posted).not.toBeNull();
+    expect(posted).toMatchObject({ text: "what is clipped here?", attachments: [STORED] });
+    const sent = page.getByTestId("structured-turn");
+    const thumb = sent.getByRole("img", { name: "Attached image" });
+    await expect(thumb).toBeVisible();
+    expect(await thumb.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(96);
+    expect((await thumb.boundingBox())!.width).toBeGreaterThanOrEqual(90); // shown, not a dot
+    await expect(chip).toHaveCount(0);
+    await noOverflow(page);
+  });
+}
+
+test("a client that takes no pictures shows no attach control (#1332)", async ({ page }) => {
+  await setup(page, "dark");
+  await serveSession(page, () => snapshot({ images: false }));
+  await page.goto(URL_PATH);
+  await expect(page.getByRole("textbox", { name: /Message/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Attach images" })).toHaveCount(0);
+});

@@ -25,6 +25,7 @@ import secrets
 import uuid
 from dataclasses import dataclass
 
+from . import native_images
 from .native_protocol import ProtocolError, validate_text
 from .structured_types import normalize_context
 
@@ -283,7 +284,12 @@ def _params(action, value, *, immutable=False):
     required = (
         keys[action] - {"operation_id", "expected_revision", "actor"} if immutable else keys[action]
     )
-    _object(value, required, keys[action] & {"actor"} if immutable else ())
+    # Pictures are optional on a submit, and a text-only turn's identity has no such key, so a
+    # turn journaled before #1332 Phase 3 still reads (and replays) exactly as it was written.
+    optional = (keys[action] & {"actor"} if immutable else set()) | (
+        {"attachments"} if action == "submit" else set()
+    )
+    _object(value, required, optional)
     out = {}
     for key, item in value.items():
         if key.endswith("worker_id") or key in {
@@ -297,10 +303,15 @@ def _params(action, value, *, immutable=False):
         elif key == "limit":
             out[key] = _integer(item, minimum=1, maximum=MAX_EVENTS)
         elif key == "text":
+            # Checked below, once it is known whether pictures carry the turn.
+            out[key] = _text(item, MAX_TEXT)
+        elif key == "attachments":
             try:
-                out[key] = validate_text(_text(item, MAX_TEXT))
-            except ProtocolError:
-                raise IPCError("invalid private IPC submit text") from None
+                out[key] = native_images.normalize(item)
+            except native_images.ImageError:
+                raise IPCError("invalid private IPC attachments") from None
+            if not out[key]:
+                raise IPCError("invalid private IPC attachments")
         elif key == "context":
             try:
                 out[key] = normalize_context(item)
@@ -317,6 +328,11 @@ def _params(action, value, *, immutable=False):
                 raise IPCError("a decision needs its operator")
         else:
             out[key] = _native(item, 258 if key == "request_id" else 256)
+    if "text" in out:
+        try:
+            out["text"] = validate_text(out["text"], allow_empty="attachments" in out)
+        except ProtocolError:
+            raise IPCError("invalid private IPC submit text") from None
     return out
 
 

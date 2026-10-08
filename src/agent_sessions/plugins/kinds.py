@@ -48,6 +48,12 @@ API_SOURCE_KINDS = {
     "claude-stream-json": ("claude-projects", "claude-jsonl"),
 }
 API_KINDS = frozenset(API_SOURCE_KINDS)
+#: Whether a native protocol takes pictures in a turn (#1332 Phase 3). Every kind decides —
+#: a test pins the keys to `API_KINDS`, so a new adapter cannot ship without saying.
+API_IMAGE_INPUT = {
+    "codex-app-server": True,  # turn/start input: {"type": "image", "url": "data:…"}
+    "claude-stream-json": True,  # user message content: base64 image blocks
+}
 #: The BattleLab conversation store owns UUIDs independently of a native agent's session id.
 API_SESSION_PATTERN = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 #: `endpoint.kind` — the wire format a `chat` plugin speaks. The endpoint's URL, key and model are

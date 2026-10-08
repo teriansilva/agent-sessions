@@ -37,7 +37,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import native_ipc, native_journal, native_protocol, native_state
+from . import native_images, native_ipc, native_journal, native_protocol, native_state
 
 EXIT_REFUSED = 3
 EXIT_FAILED = 4
@@ -190,7 +190,8 @@ class Worker:
 
     async def write(self, frame: dict) -> None:
         assert self.proc is not None and self.proc.stdin is not None
-        self.proc.stdin.write(native_protocol.encode(frame))
+        # BattleLab's own frames; a turn's inlined pictures may exceed the read cap (#1332).
+        self.proc.stdin.write(native_protocol.encode(frame, native_protocol.MAX_WRITE_FRAME_BYTES))
         # A child that stops reading must not hold the effect lock (and with it stop) forever.
         await asyncio.wait_for(self.proc.stdin.drain(), 15)
 
@@ -528,7 +529,14 @@ class Worker:
 
     def frame(self, action: str, params: dict) -> dict | None:
         if action == "submit":
-            return self.codec.submit(params["text"], params["operation_id"])
+            images = ()
+            if params.get("attachments"):
+                try:
+                    # Re-read and re-verified against the journaled digest (#1332 Phase 3).
+                    images = native_images.inline(params["attachments"])
+                except native_images.ImageError as exc:
+                    raise native_protocol.ProtocolError(str(exc)) from None
+            return self.codec.submit(params["text"], params["operation_id"], images)
         if action == "decide":
             return self.codec.decide(params["request_id"], params["decision"])
         if action == "interrupt":

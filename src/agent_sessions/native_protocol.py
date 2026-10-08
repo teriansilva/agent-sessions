@@ -27,6 +27,9 @@ from typing import Any
 CODEX_MIN_VERSION = (0, 159, 3)
 CLAUDE_MIN_VERSION = (2, 1, 287)
 MAX_FRAME_BYTES = 1_048_576
+#: What BattleLab may WRITE to the agent in one frame: a turn's text plus up to four inlined
+#: 5 MiB pictures as base64 (``native_images``). Frames read FROM the agent keep the 1 MiB cap.
+MAX_WRITE_FRAME_BYTES = MAX_FRAME_BYTES + 4 * (-(-5 * 1024 * 1024 // 3) * 4 + 256)
 MAX_TEXT = 20_000
 MAX_INPUT_TEXT = 200_000
 MAX_PENDING = 128
@@ -96,9 +99,16 @@ def _model(value: str | None) -> str | None:
     return value
 
 
-def validate_text(text: Any) -> str:
-    """Validate before a durable submit claim; reserve room for protocol metadata."""
-    if not isinstance(text, str) or not text.strip() or len(text) > MAX_INPUT_TEXT:
+def validate_text(text: Any, *, allow_empty: bool = False) -> str:
+    """Validate before a durable submit claim; reserve room for protocol metadata.
+
+    ``allow_empty``: a turn its pictures carry (#1332 Phase 3) may have no words.
+    """
+    if (
+        not isinstance(text, str)
+        or (not text.strip() and not allow_empty)
+        or len(text) > MAX_INPUT_TEXT
+    ):
         raise ProtocolError("turn text is empty or exceeds the size limit")
     try:
         size = len(json.dumps(text, ensure_ascii=False).encode("utf-8"))
@@ -114,13 +124,13 @@ def _observed_model(value: Any) -> str | None:
     return value if isinstance(value, str) and _MODEL.fullmatch(value) else None
 
 
-def _copy_frame(value: Any) -> dict[str, Any]:
+def _copy_frame(value: Any, limit: int = MAX_FRAME_BYTES) -> dict[str, Any]:
     """A bounded deep copy also prevents callers mutating a pending approval."""
     if not isinstance(value, dict):
         raise ProtocolError("expected a JSON object")
     try:
         encoded = json.dumps(value, allow_nan=False, ensure_ascii=False, separators=(",", ":"))
-        if len(encoded.encode("utf-8")) + 1 > MAX_FRAME_BYTES:
+        if len(encoded.encode("utf-8")) + 1 > limit:
             raise ProtocolError("native frame exceeds the size limit")
         result = json.loads(encoded)
         stack = [(result, 0)]
@@ -137,10 +147,10 @@ def _copy_frame(value: Any) -> dict[str, Any]:
         raise ProtocolError("invalid native JSON frame") from exc
 
 
-def encode(frame: dict[str, Any]) -> bytes:
+def encode(frame: dict[str, Any], limit: int = MAX_FRAME_BYTES) -> bytes:
     """Encode one admitted complete JSONL frame (never shell input)."""
     return (
-        json.dumps(_copy_frame(frame), ensure_ascii=False, separators=(",", ":")) + "\n"
+        json.dumps(_copy_frame(frame, limit), ensure_ascii=False, separators=(",", ":")) + "\n"
     ).encode()
 
 
@@ -212,10 +222,10 @@ class _Codec:
         self._requests[request_id] = (action, operation_id)
         return request_id
 
-    def _submit(self, text: str, operation_id: str) -> None:
+    def _submit(self, text: str, operation_id: str, images=()) -> None:
         if self._closed or self.operation_id is not None:
             raise ProtocolError("native turn is already active or connection closed")
-        validate_text(text)
+        validate_text(text, allow_empty=bool(images))
         self.operation_id = _uuid(operation_id)
         self._consumed.clear()
         self.native_turn_id = None
@@ -323,15 +333,21 @@ class CodexCodec(_Codec):
             params["model"] = model
         return params
 
-    def submit(self, text: str, operation_id: str) -> dict:
+    def submit(self, text: str, operation_id: str, images=()) -> dict:
+        """``images``: ``(mime, base64)`` pairs, sent inline as data URLs (#1332 Phase 3)."""
         if self.native_id is None:
             raise ProtocolError("native thread is not bound")
-        self._submit(text, operation_id)
+        self._submit(text, operation_id, images)
+        items: list[dict] = [
+            {"type": "image", "url": f"data:{mime};base64,{data}"} for mime, data in images
+        ]
+        if text.strip():
+            items.append({"type": "text", "text": text})
         return self._request(
             "turn/start",
             {
                 "threadId": self.native_id,
-                "input": [{"type": "text", "text": text}],
+                "input": items,
                 "clientUserMessageId": self.operation_id,
             },
             self.operation_id,
@@ -756,18 +772,27 @@ class ClaudeCodec(_Codec):
     def initialize(self) -> dict:
         return self._request("initialize", hooks=None)
 
-    def submit(self, text: str, operation_id: str) -> dict:
+    def submit(self, text: str, operation_id: str, images=()) -> dict:
+        """``images``: ``(mime, base64)`` pairs, sent as base64 image blocks (#1332 Phase 3)."""
         if len(self._results) >= MAX_RESULTS:
             raise ProtocolError(
                 "native result replay capacity exceeded; a new connection is required"
             )
-        self._submit(text, operation_id)
+        self._submit(text, operation_id, images)
         self.native_turn_id = self.operation_id
+        content: str | list[dict] = text
+        if images:
+            content = [
+                {"type": "image", "source": {"type": "base64", "media_type": mime, "data": data}}
+                for mime, data in images
+            ]
+            if text.strip():
+                content.append({"type": "text", "text": text})
         return {
             "type": "user",
             "uuid": self.operation_id,
             "session_id": self.native_id,
-            "message": {"role": "user", "content": text},
+            "message": {"role": "user", "content": content},
             "parent_tool_use_id": None,
             "origin": {"kind": "human"},
             "client_composed": True,

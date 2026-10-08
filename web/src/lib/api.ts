@@ -619,11 +619,19 @@ export const api = {
       `${structuredPath(key)}/events?after=${after}&limit=${limit}`,
     ),
   /** Idempotent on `operation_id`: a repeat observes the recorded turn, never a second write. */
-  structuredSubmit: (key: string, operation_id: string, text: string, expected_revision: number) =>
+  structuredSubmit: (
+    key: string,
+    operation_id: string,
+    text: string,
+    expected_revision: number,
+    attachments: string[] = [],
+  ) =>
     mutateJson<{ state?: string }>("POST", `${structuredPath(key)}/turns`, {
       operation_id,
       text,
       expected_revision,
+      // Upload names (#1332 Phase 3); omitted when none, so a text turn's body is unchanged.
+      ...(attachments.length ? { attachments } : {}),
     }),
   structuredDecide: (
     key: string,

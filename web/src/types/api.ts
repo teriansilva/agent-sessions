@@ -1323,6 +1323,8 @@ export interface StructuredTurn {
   reason: string | null;
   tools: StructuredTool[];
   tools_truncated: boolean;
+  /** The pictures the turn carried (#1332 Phase 3): upload names, shown via the read-back route. */
+  attachments?: { stored: string; mime: string }[];
 }
 
 /** One exact pending request. `payload` is the COMPLETE request the decision answers; `choices`
@@ -1370,6 +1372,8 @@ export interface StructuredSnapshot {
   native?: { native_id: string | null; worker: string | null; background_active: boolean };
   /** Why this conversation takes no new work (its client is retiring), or null. */
   read_only?: string | null;
+  /** The client's protocol takes pictures in a turn (#1332 Phase 3). */
+  images?: boolean;
 }
 
 export interface StructuredEventPage {

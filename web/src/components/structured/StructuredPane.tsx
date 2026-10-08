@@ -1,6 +1,14 @@
-import { ArrowLeftRight, PanelRight, ScrollText, Share2, Square, SquareDashedBottom } from "lucide-react";
+import {
+  ArrowLeftRight,
+  PanelRight,
+  Paperclip,
+  ScrollText,
+  Share2,
+  Square,
+  SquareDashedBottom,
+} from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { KeyboardEvent } from "react";
+import type { ClipboardEvent as ReactClipboardEvent, KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 import {
   engineBadge,
@@ -12,6 +20,8 @@ import {
 import { isNewSessionPlaceholder } from "../../app/sessionsStore";
 import { useSessionRow } from "../../app/useSessionRow";
 import { ApiError, api } from "../../lib/api";
+import { imageFilesFromAsyncClipboard, imageFilesFromData } from "../../lib/clipboardImages";
+import { uploadStoredName } from "../../lib/templateMessage";
 import { shareLink } from "../../lib/shareLink";
 import type { TermStatus } from "../../lib/termSocket";
 import { useIsMobile } from "../../lib/useIsMobile";
@@ -19,6 +29,7 @@ import { HandoffModal } from "../terminal/HandoffModal";
 import { HeadActions, type HeadAction } from "../terminal/HeadActions";
 import type { PaneHost } from "../terminal/paneHost";
 import { SessionRecapModal } from "../terminal/SessionRecapModal";
+import { UploadImage } from "../templates/UploadImage";
 import term from "../terminal/Terminal.module.css";
 import type {
   Containment,
@@ -34,6 +45,7 @@ import {
   isActive,
   operationFor,
   requestIds,
+  sendIdentity,
   requestRows,
   requestTitle,
   reviewOnly,
@@ -46,6 +58,8 @@ export const STRUCTURED_ACTIVE_POLL_MS = 1_000;
 export const STRUCTURED_IDLE_POLL_MS = 10_000;
 /** Reconnect back-off ceiling after failed reads. */
 const MAX_BACKOFF_MS = 15_000;
+/** Pictures per message — the server's cap (`native_images.MAX_IMAGES`), checked again there. */
+const MAX_IMAGES = 4;
 
 const uuid = () => crypto.randomUUID();
 
@@ -222,10 +236,27 @@ function TurnView({
     <div className={chat.exchange} data-testid="structured-turn" data-state={turn.state}>
       <div className={`${chat.turn} ${chat.user}`}>
         <div className={chat.who}>you</div>
-        <div className={chat.txt}>
-          {turn.text}
-          {turn.text_truncated && "…"}
-        </div>
+        {!!turn.attachments?.length && (
+          <div className={styles.turnImages}>
+            {turn.attachments.map((a) => (
+              // UploadImage's slot fills its parent: this box bounds it to one thumbnail.
+              <span key={a.stored} className={styles.turnImageBox}>
+                <UploadImage
+                  path={a.stored}
+                  alt="Attached image"
+                  className={styles.turnImage}
+                  fallback={<span className={styles.turnImageGone}>image no longer available</span>}
+                />
+              </span>
+            ))}
+          </div>
+        )}
+        {!!turn.text && (
+          <div className={chat.txt}>
+            {turn.text}
+            {turn.text_truncated && "…"}
+          </div>
+        )}
       </div>
       {turn.tools.length > 0 && (
         <ul className={chat.tools} aria-label="What the agent did">
@@ -321,6 +352,19 @@ export function StructuredPane({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reconnecting, setReconnecting] = useState(false);
   const [draft, setDraft] = useState("");
+  // #1332 Phase 3: the pictures this send carries, by the upload they landed in.
+  const [attachments, setAttachments] = useState<{ name: string; stored: string }[]>([]);
+  // Uploads in flight, counted (Hermes on #1345): overlapping pastes each hold a slot, a send
+  // waits for ALL of them, and the cap counts reserved slots — never a stale render's length.
+  const [inFlight, setInFlight] = useState(0);
+  const uploading = inFlight > 0;
+  const slots = useRef({ held: 0, inFlight: 0 }); // synchronous truth; state only renders it
+  // A send in flight admits no new picture, and every draft clear starts a new generation: an
+  // upload or clipboard read that settles into an older generation is dropped, never carried
+  // onto the next message (Hermes on #1345, round 2).
+  const sending = useRef(false);
+  const generation = useRef(0);
+  const fileRef = useRef<HTMLInputElement>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [deciding, setDeciding] = useState<Deciding | null>(null);
@@ -434,15 +478,19 @@ export function StructuredPane({
 
   const send = async () => {
     const text = draft.trim();
-    if (!text || busy || active || readOnly || !snap) return;
-    const attempt = operationFor(op.current, text, uuid);
+    const names = attachments.map((a) => a.stored);
+    if ((!text && !names.length) || busy || active || readOnly || !snap) return;
+    if (slots.current.inFlight > 0 || sending.current) return; // a picture is still on its way
+    const attempt = operationFor(op.current, sendIdentity(text, names), uuid);
     op.current = attempt;
+    sending.current = true;
     setBusy(true);
     setSendError(null);
     try {
-      await api.structuredSubmit(key, attempt.id, text, snap.revision);
+      await api.structuredSubmit(key, attempt.id, text, snap.revision, names);
       op.current = null;
       setDraft("");
+      clearAttachments();
       setContainment(null);
       await load();
     } catch (e) {
@@ -450,6 +498,7 @@ export function StructuredPane({
       if (s?.turns.some((t) => t.turn_id === attempt.id)) {
         op.current = null;
         setDraft("");
+        clearAttachments();
       } else if (definite(e)) {
         op.current = null; // refused: nothing was recorded under that id
         setSendError(
@@ -463,6 +512,7 @@ export function StructuredPane({
         );
       }
     } finally {
+      sending.current = false;
       setBusy(false);
     }
   };
@@ -529,6 +579,94 @@ export function StructuredPane({
       setStopping(false);
       await load();
     }
+  };
+
+  /** Upload pictures into this send (#1332 Phase 3). The server re-checks every one — format by
+   *  content, size, count — when the turn is submitted; this only keeps the obvious out. */
+  const clearAttachments = () => {
+    generation.current += 1;
+    slots.current.held = 0;
+    setAttachments([]);
+  };
+  const removeAttachment = (stored: string) => {
+    slots.current.held -= 1;
+    setAttachments((prev) => prev.filter((x) => x.stored !== stored));
+  };
+
+  const attach = async (files: File[]) => {
+    if (sending.current) {
+      setSendError("Wait until this message is sent before attaching another image.");
+      return;
+    }
+    const images = files.filter((f) => f.type.startsWith("image/"));
+    if (!images.length) {
+      if (files.length) setSendError("Only images can be attached here.");
+      return;
+    }
+    // Reserve slots NOW, before any await: a second paste racing this one sees them taken.
+    const room = MAX_IMAGES - slots.current.held - slots.current.inFlight;
+    const taken = images.slice(0, Math.max(0, room));
+    if (taken.length < images.length) setSendError(`A message carries at most ${MAX_IMAGES} images.`);
+    else setSendError(null);
+    if (!taken.length) return;
+    slots.current.inFlight += taken.length;
+    setInFlight(slots.current.inFlight);
+    const gen = generation.current;
+    let failed = false;
+    try {
+      for (const file of taken) {
+        try {
+          const up = await api.upload(file);
+          if (gen !== generation.current) continue; // its draft was sent or cleared meanwhile
+          const stored = up.stored ?? uploadStoredName(up.path);
+          slots.current.held += 1;
+          setAttachments((prev) => [...prev, { name: up.name, stored }]);
+        } catch {
+          failed = true;
+        } finally {
+          slots.current.inFlight -= 1;
+          setInFlight(slots.current.inFlight);
+        }
+      }
+    } finally {
+      if (failed) setSendError("An image could not be uploaded.");
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+
+  // An image paste becomes an attachment; plain text is left to the textarea. A deferred
+  // clipboard that delivers neither falls back to the async clipboard (#530), as Compose does.
+  const onPaste = (e: ReactClipboardEvent<HTMLTextAreaElement>) => {
+    if (!snap?.images) return;
+    if (sending.current) {
+      // A read-only textarea still receives paste: nothing joins a message already sending.
+      e.preventDefault();
+      return;
+    }
+    const images = imageFilesFromData(e.clipboardData);
+    if (images.length) {
+      e.preventDefault();
+      void attach(images);
+      return;
+    }
+    if (e.clipboardData?.getData("text/plain")) return;
+    if (!Array.from(e.clipboardData?.items ?? []).some((i) => i.kind === "file")) return;
+    e.preventDefault();
+    // The deferred read holds a slot like an upload does, so Send waits for it too.
+    slots.current.inFlight += 1;
+    setInFlight(slots.current.inFlight);
+    const gen = generation.current;
+    const release = () => {
+      slots.current.inFlight -= 1;
+      setInFlight(slots.current.inFlight);
+    };
+    void imageFilesFromAsyncClipboard().then(
+      (fallback) => {
+        release();
+        if (fallback.length && gen === generation.current) void attach(fallback);
+      },
+      release,
+    );
   };
 
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -839,6 +977,27 @@ export function StructuredPane({
           {sendError ?? actionError}
         </p>
       )}
+      {attachments.length > 0 && (
+        <ul className={styles.attachments} aria-label="Attached images">
+          {attachments.map((a) => (
+            <li key={a.stored} className={styles.attachment} data-testid="structured-attachment">
+              <span className={styles.attachmentThumbBox}>
+                <UploadImage path={a.stored} alt="" className={styles.attachmentThumb} />
+              </span>
+              <span className={styles.attachmentName}>{a.name}</span>
+              <button
+                type="button"
+                className={styles.attachmentRemove}
+                aria-label={`Remove ${a.name}`}
+                disabled={busy}
+                onClick={() => removeAttachment(a.stored)}
+              >
+                ×
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
       <form
         className={chat.comp}
         onSubmit={(e) => {
@@ -859,16 +1018,47 @@ export function StructuredPane({
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={onKey}
+          onPaste={onPaste}
           readOnly={busy}
           rows={2}
           disabled={readOnly}
         />
+        {snap?.images && !readOnly && (
+          <>
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/png,image/jpeg,image/gif,image/webp"
+              multiple
+              hidden
+              data-testid="structured-file-input"
+              onChange={(e) => void attach(Array.from(e.target.files ?? []))}
+            />
+            <button
+              type="button"
+              className={styles.attach}
+              aria-label="Attach images"
+              title="Attach images"
+              disabled={busy || attachments.length + inFlight >= MAX_IMAGES}
+              onClick={() => fileRef.current?.click()}
+            >
+              <Paperclip size={18} aria-hidden />
+            </button>
+          </>
+        )}
         <button
           type="submit"
           className={chat.send}
-          disabled={readOnly || busy || active || !snap || !draft.trim()}
+          disabled={
+            readOnly ||
+            busy ||
+            uploading ||
+            active ||
+            !snap ||
+            (!draft.trim() && attachments.length === 0)
+          }
         >
-          Send
+          {uploading ? "Uploading" : "Send"}
         </button>
       </form>
     </div>

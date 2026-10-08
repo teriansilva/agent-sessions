@@ -596,6 +596,13 @@ def test_routes_require_login_and_csrf_and_drive_a_native_session(host, project,
                 break
             time.sleep(0.05)
         assert snap["turns"][-1]["reply"] == "echo:hi"
+        assert client["images"] is True and snap["images"] is True  # #1332 Phase 3
+        # A picture must be an upload: a path is refused before anything is recorded.
+        refused = c.post(
+            f"/api/structured/sessions/{key}/turns",
+            json={"operation_id": ident(), "text": "x", "attachments": ["/etc/hosts"]},
+        )
+        assert refused.status_code == 422, refused.text
         events = c.get(f"/api/structured/sessions/{key}/events?after=0&limit=5").json()
         assert len(events["events"]) <= 5 and events["next_cursor"] >= 1
         assert c.get(f"/api/structured/sessions/{key}/containment").json() == {
@@ -1104,3 +1111,70 @@ async def test_a_patch_that_changes_after_presentation_withdraws_the_approval(ho
     _, settled = await settle(key, turn)
     assert settled["reply"] == "edited:decline"
     assert not (await runtime.snapshot(key))["pending_requests"]
+
+
+_PNG = b"\x89PNG\r\n\x1a\n" + bytes(range(64))
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("source", ["codex", "claude"])
+async def test_a_turn_carries_pictures_to_the_agent_but_never_into_the_journal(
+    host, project, source, tmp_path
+):
+    """#1332 Phase 3: the picture reaches the agent inline; the record keeps its name only."""
+    import base64
+
+    uploads = tmp_path / ".agent-sessions" / "uploads"
+    uploads.mkdir(parents=True, mode=0o700, exist_ok=True)
+    stored = "20261008-010000-shot.png"
+    (uploads / stored).write_bytes(_PNG)
+    engine = ENGINES[source]
+    assert runtime.describe(engine).images
+    key = (await runtime.create_session(engine, str(project), operation_id=ident()))["session_key"]
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="look", attachments=[stored])
+    snap, settled = await settle(key, turn)
+    assert settled["reply"].startswith("echo:IMAGES:1:") and settled["reply"].endswith(":look")
+    assert "image/png" in settled["reply"]
+    assert settled["attachments"] == [{"stored": stored, "mime": "image/png"}]
+    # The same id naming a different picture is a different request.
+    (uploads / "20261008-010001-other.png").write_bytes(_PNG + b"!")
+    with pytest.raises(runtime.StructuredError) as changed:
+        await runtime.submit_turn(
+            key, operation_id=turn, text="look", attachments=["20261008-010001-other.png"]
+        )
+    assert changed.value.status == 409
+    # Bytes went to the agent (its own frame log) and nowhere BattleLab keeps.
+    encoded = base64.b64encode(_PNG).decode("ascii").encode()
+    for path in tmp_path.rglob("*"):
+        if path.is_file() and project not in path.parents and uploads not in path.parents:
+            assert encoded not in path.read_bytes(), path
+    # A picture-only turn needs no words.
+    only = ident()
+    await runtime.submit_turn(key, operation_id=only, text="", attachments=[stored])
+    _, settled = await settle(key, only)
+    assert settled["reply"].startswith("echo:IMAGES:1:")
+
+
+@pytest.mark.anyio
+async def test_a_client_that_takes_no_pictures_refuses_them_before_anything_is_sent(
+    host, project, tmp_path, monkeypatch
+):
+    from agent_sessions.plugins import kinds
+
+    uploads = tmp_path / ".agent-sessions" / "uploads"
+    uploads.mkdir(parents=True, mode=0o700, exist_ok=True)
+    (uploads / "20261008-010000-shot.png").write_bytes(_PNG)
+    engine = ENGINES["codex"]
+    key = (await runtime.create_session(engine, str(project), operation_id=ident()))["session_key"]
+    monkeypatch.setitem(kinds.API_IMAGE_INPUT, "codex-app-server", False)
+    assert not runtime.describe(engine).images
+    with pytest.raises(runtime.StructuredError) as refused:
+        await runtime.submit_turn(
+            key, operation_id=ident(), text="look", attachments=["20261008-010000-shot.png"]
+        )
+    assert refused.value.status == 422
+    with pytest.raises(runtime.StructuredError) as bogus:
+        await runtime.submit_turn(key, operation_id=ident(), text="x", attachments=["../x.png"])
+    assert bogus.value.status == 422
+    assert not [f for f in frames(project) if f["frame"].get("method") == "turn/start"]
