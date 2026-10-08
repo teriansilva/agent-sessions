@@ -90,6 +90,7 @@ HTTP_MODULES = frozenset(
         "webpush",
         "appproxy",
         "forge",
+        "forge_write",
         "mission_probes",
         "analytics",
         "agent_usage",
@@ -138,6 +139,10 @@ POST_SITES = {
     # ONE call site each, counted. A second GET added beside either is a mismatch here rather than
     # an inherited pass — which is the entire point of counting rather than listing.
     ("forge", "_get"): 1,  # `ForgeClient._get` — the adapter's single read
+    # PLAYBOOK PUBLICATION (#1196): `ForgeWriter._send`, GET or POST only (create a repository,
+    # open a pull request, and the reads those need) against the operator-bound `forge`
+    # connection, https only, no redirects, token in a header. No prompt. No delete path exists.
+    ("forge_write", "_send"): 1,
     ("mission_probes", "_probe_http"): 1,  # `http_status` / `http_revision`
     # USAGE ANALYTICS (#1009): the one opt-in daily report to the project's Umami. A FIXED
     # destination — no request, pref or model output reaches its URL, headers or body — and one

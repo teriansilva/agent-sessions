@@ -27,6 +27,18 @@ Single-project deployment lifecycle (#1191), under ``/api/projects/{project}/pla
 * ``POST   …/playbook/remove/plan``  — the removal dry run and the digest that authorizes it
 * ``POST   …/playbook/remove``       — ``{digest, operation_id}``; a same-id retry recovers
 
+Playbooks and git (#1196):
+
+* ``POST   /api/playbooks/clone``                — ``{url, parent, name}``: clone, fresh folder
+* ``POST   …/playbook/git/seed``                 — ``git init`` + commit exactly the applied paths
+* ``POST   …/playbook/git/remote/plan``          — the forge target, shown first, and its digest
+* ``POST   …/playbook/git/remote``               — ``{…plan inputs, digest, operation_id}``: create,
+  add the remote, push; a same-id retry resumes and never duplicates; there is no delete route
+* ``POST   …/playbook/git/publish/plan``         — approved base, branch, exact paths, the target
+* ``POST   …/playbook/git/publish``              — ``{…plan inputs, digest, operation_id}``: commit,
+  push the branch, open or adopt the PR; a same-id retry resumes
+* ``GET    …/playbook/git/{operation}``          — a publication operation's recorded progress
+
 Reads need a session; every write needs the session AND ``csrf_guard`` (which carries the
 Origin/Referer check). Every response is ``no-store``. Each handler reads its own input — the path
 id, and a body or ``revision`` query value it validates itself — so FastAPI binds nothing else from
@@ -44,7 +56,18 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from .. import template_vars
-from ..playbooks import apply, fleet, lifecycle, remove, review, store, targets, verify
+from ..playbooks import (
+    apply,
+    fleet,
+    lifecycle,
+    publication,
+    remove,
+    repo_git,
+    review,
+    store,
+    targets,
+    verify,
+)
 
 NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 PREFIX = "/api/playbooks"
@@ -405,3 +428,66 @@ def register(app: FastAPI, *, logged_in, csrf_guard, signing_key: str) -> None:
         _csrf: None = Depends(csrf_guard),
     ) -> JSONResponse:
         return await _write(_create_target, pid, request)
+
+    # --- playbooks and git (#1196) ---------------------------------------------------------
+
+    def _guarded(fn):
+        def run(*args):
+            with repo_git.git_errors():
+                return fn(*args)
+
+        return run
+
+    @app.post(PREFIX + "/clone")
+    async def clone_repository(
+        request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        body = await _read_body(request)
+        if isinstance(body, JSONResponse):
+            return body
+        out = await _run(_guarded(repo_git.clone), body)
+        return out if isinstance(out, JSONResponse) else _json(out, 201)
+
+    def _seed(project: str, body: dict) -> dict:
+        return repo_git.seed(project, body)
+
+    def _remote_plan(project: str, body: dict) -> dict:
+        return publication.plan_remote(project, body, key=signing_key)
+
+    def _remote_create(project: str, body: dict) -> dict:
+        return publication.create_remote(project, body, key=signing_key)
+
+    def _publish_plan(project: str, body: dict) -> dict:
+        return publication.plan_update(project, body, key=signing_key)
+
+    def _publish(project: str, body: dict) -> dict:
+        return publication.publish_update(project, body, key=signing_key)
+
+    def _git_write(fn):
+        guarded = _guarded(fn)
+
+        async def handler(
+            project: str,
+            request: Request,
+            _user: str = Depends(logged_in),
+            _csrf: None = Depends(csrf_guard),
+        ) -> JSONResponse:
+            return await _write(guarded, project, request)
+
+        return handler
+
+    for tail, fn, name in (
+        ("/git/seed", _seed, "seed_repository"),
+        ("/git/remote/plan", _remote_plan, "plan_remote_repository"),
+        ("/git/remote", _remote_create, "create_remote_repository"),
+        ("/git/publish/plan", _publish_plan, "plan_publication"),
+        ("/git/publish", _publish, "publish_update"),
+    ):
+        app.post(DEPLOY + tail, name=name)(_git_write(fn))
+
+    @app.get(DEPLOY + "/git/{operation}")
+    async def publication_operation(
+        project: str, operation: str, _user: str = Depends(logged_in)
+    ) -> JSONResponse:
+        out = await _run(_guarded(publication.operation), project, operation)
+        return out if isinstance(out, JSONResponse) else _json(out)

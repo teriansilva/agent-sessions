@@ -4078,6 +4078,8 @@ def git_commit_paths(
     paths: object,
     expect: object = None,
     head: object = None,
+    *,
+    blobs: dict[str, tuple[str, str] | None] | None = None,
 ) -> dict:
     """Commit exactly the selected paths as they are NOW, leaving the rest of the index alone.
 
@@ -4110,12 +4112,21 @@ def git_commit_paths(
     means the commit exists but some entries were not moved — they now read as staged reversals
     of it, which the status reports as ``unsettled`` until SETTLE (:func:`git_settle`) or the
     operator's own staging resolves them.
+
+    **``blobs`` binds CONTENT, not only rows** (#1196). A row fingerprint is ``(size, mtime)`` on
+    the worktree side, so a rewrite that keeps both is not seen. A caller that knows the exact
+    bytes it means to commit (a playbook update, bound to its apply record) passes ``{path:
+    (mode, oid) | None}``: the snapshot that BECOMES the tree must carry exactly those blob ids
+    (``None`` = the path is absent), or nothing is built. ``mode`` is compared only as symlink
+    (``120000``) versus regular file, since the executable bit is the operator's.
     """
     message = _check_message(message)
     seen_head = _expect_head(head)
     repo = resolve_repo(path)
     names = validate_paths(repo, paths, staged=None)
     want = _expect_map(expect, names, "commit")
+    if blobs is not None and set(blobs) != set(names):
+        raise FsError("the content binding does not name exactly the paths committed", status=422)
     if _has_unmerged(repo):
         raise FsError("resolve the conflict in the session before committing", status=409)
     if not _head_branch(repo):
@@ -4177,6 +4188,20 @@ def git_commit_paths(
         # Bind the hashed bytes to the rows the operator confirmed: an edit that landed while the
         # snapshot was taken changes a row fingerprint and refuses here, before anything is built.
         verify_rows(repo, want, "commit", renames=True)
+        for n in names if blobs is not None else ():
+            bound, got = blobs[n], snapshot[n]
+            same = (bound is None and got is None) or (
+                bound is not None
+                and got is not None
+                and got[1] == bound[1]
+                and (got[0] == "120000") == (bound[0] == "120000")
+            )
+            if not same:
+                raise FsError(
+                    f"{n!r} is no longer the content that was reviewed, so nothing was committed. "
+                    "Review it again.",
+                    status=409,
+                )
         if any(e is not None and e[0] == "160000" for e in snapshot.values()):
             raise FsError(
                 "a selected path is a submodule, which the panel does not commit — commit it in "

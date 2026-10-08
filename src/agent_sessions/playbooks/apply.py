@@ -33,6 +33,7 @@ from . import (
     mutation_plan,
     replay_plan,
     review,
+    schema,
     secret_files,
     store,
 )
@@ -582,9 +583,16 @@ def apply(pid: str, op: str, receipt: str, *, key: str) -> dict:
             else:
                 record.pop("secret_root", None)
                 record.pop("secret_dir", None)
+            record["applied_paths"] = applied_paths(
+                record.get("applied_paths") if journal["basis_state"] == "applied" else None,
+                changes,
+                op,
+                plan.public,
+            )
             record["rituals"] = rituals(plan.public, record["id"])
             record["review_facts"] = review_facts(plan.public)
             record["verify_facts"] = verify_facts(plan.bundle)
+            record["connection_params"] = connection_params(plan.bundle)
             record["generation"] = record.get("generation", 0) + 1
             record["state"] = "applied"
             journal["state"] = "complete"
@@ -729,6 +737,63 @@ def verify_facts(bundle: dict) -> dict:
         },
         "binaries": list(bundle["requires"]["binaries"]),
     }
+
+
+#: Bound on the cumulative applied-path map; past it the map restarts from the latest apply.
+APPLIED_PATHS_MAX = schema.MAX_MATERIALS
+
+
+def applied_paths(
+    previous: dict | None, changes: list[mutation_plan.Change], op: str, public: dict
+) -> dict:
+    """What the deployment last WROTE at every path, for committing it to git (#1196).
+
+    Cumulative across applies of the same deployment, so an update applied twice before it is
+    published still commits both. Each path holds the REVIEWED `after` of the latest apply
+    (`{"kind": "file", "digest"}` sha256 of the bytes, `{"kind": "symlink", "target"}`, or None
+    for a removal), and a `keep` refreshes it too: the operator reviewed those bytes, so an edit
+    re-applied as-is is the new baseline rather than a drift that blocks every publication.
+
+    A **seed** is the project's from the moment it is created, so it is recorded only as
+    `{"kind": "seed"}`, never with a digest: the first seed commit takes its bytes as they are
+    then, and an update never commits or checks it. A path the deployment no longer owns (demoted
+    to a reference, or an undo that left the operator's bytes in place) is dropped. No content
+    or secret is stored here.
+    """
+    paths = dict(previous["paths"]) if isinstance(previous, dict) else {}
+    for change in changes:
+        owned = (change.ownership or {}).get("kind")
+        after = change.after
+        if owned == "seed":
+            paths[change.path] = {"kind": "seed"}
+        elif owned == "reference" or (
+            change.ownership is None and change.action == "keep" and after.kind != "absent"
+        ):
+            paths.pop(change.path, None)
+        elif after.kind == "absent":
+            paths[change.path] = None
+        elif after.kind == "symlink":
+            paths[change.path] = {"kind": "symlink", "target": after.target}
+        elif after.kind == "file" and after.data is not None:
+            paths[change.path] = {"kind": "file", "digest": materials.digest(after.data)}
+    if len(paths) > APPLIED_PATHS_MAX:
+        return applied_paths(None, changes, op, public)
+    return {
+        "operation_id": op,
+        "version": public["playbook"]["version"],
+        "revision": public["playbook"]["revision"],
+        "paths": paths,
+    }
+
+
+def connection_params(bundle: dict) -> dict:
+    """Which variable feeds each connection parameter, as applied (#1196).
+
+    A publication resolves the forge URL from the project's bindings at the moment it resolves
+    the token, and refuses when that differs from the URL the apply recorded; it needs the
+    variable name to do so, and the editable source may have changed since apply.
+    """
+    return {c["name"]: dict(c["params"]) for c in bundle["connections"]}
 
 
 def review_facts(public: dict) -> dict:

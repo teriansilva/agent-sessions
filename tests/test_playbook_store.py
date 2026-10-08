@@ -707,8 +707,10 @@ def test_no_playbook_route_exposes_a_parameter_as_request_input(auth_cfg):
         ]
         assert exposed == [], (path, exposed)
         assert {p.name for p in flat.path_params} <= {"pid", "name", "project", "operation"}, path
-    # authoring + review/confirm + the deployment lifecycle; recovery has no purge endpoint
-    assert len(seen) == 21, seen
+    # authoring + review/confirm + the deployment lifecycle + git (#1196: clone, seed, remote
+    # plan/create, publish plan/publish, operation status); recovery has no purge endpoint and
+    # no route deletes a remote repository
+    assert len(seen) == 28, seen
 
 
 def test_the_routes_need_a_session_csrf_and_the_origin_and_are_never_cached(auth_cfg, tmp_home):
