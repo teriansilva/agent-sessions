@@ -29,6 +29,13 @@ whole fleet from a laptop or your phone.
 - **Prompt Templates.** A library of instructions you send more than once: the text, its reference images,
   and `{{field}}` slots you fill in at send time. Send one from any session's composer, or insert
   it into a mission brief.
+- **Playbook library.** Browse installed bundles by source, domain, flow step or agent. Each
+  detail page shows its flow, instructions, materials, variables and requirements. Duplicate a
+  bundle into the local library, choose the default, or delete an unused local copy. Projects
+  stay on their deployed revision; verify their recorded deployment on demand and review the
+  exact file changes before applying an eligible fleet update. Interrupted updates retain their
+  retry identity in the current browser tab. Flow editing and the new-project wizard are still
+  separate, unfinished slices of the playbook rollout.
 - **Mission control.** A chat-first console over your work: a rail of *missions*, a thread per
   mission, and an objective list that says what "done" means before the work starts. It adopts
   sessions you started yourself, checks the objectives it can check, and follows through — nudging

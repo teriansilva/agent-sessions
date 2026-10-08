@@ -1,6 +1,7 @@
 // Typed client for the FastAPI `/api/*` surface. Same-origin; cookie session auth.
 // Mutations (later) attach the CSRF token + are origin-checked server-side.
 import type { PluginCatalog, PluginReview, PluginOperation, PluginAction } from "../types/plugins";
+import type { PlaybookDetail, PlaybookFleet, PlaybookFleetResult, PlaybookFleetReview, PlaybookList, PlaybookVerify, PlaybookWriteResult } from "../types/playbooks";
 import {
   AUTOMATION_ORIGINS_API,
   AUTOMATIONS_API,
@@ -1930,6 +1931,25 @@ export const api = {
       `/api/missions/${encodeURIComponent(id)}/objectives/${encodeURIComponent(objectiveKey)}/stand-down`,
       { episode },
     ),
+
+  // Bundles (#1192). Every mutation uses the loaded revision and the shared CSRF transport.
+  playbooks: () => getJsonWithDetail<PlaybookList>("/api/playbooks"),
+  playbook: (id: string) => getJsonWithDetail<PlaybookDetail>(`/api/playbooks/${encodeURIComponent(id)}`),
+  duplicatePlaybook: (id: string, revision: string) =>
+    mutateJson<PlaybookDetail & PlaybookWriteResult>("POST", `/api/playbooks/${encodeURIComponent(id)}/duplicate`, { revision }),
+  deletePlaybook: (id: string, revision: string) =>
+    mutateJson<PlaybookWriteResult>("DELETE", `/api/playbooks/${encodeURIComponent(id)}?revision=${encodeURIComponent(revision)}`),
+  setDefaultPlaybook: (id: string, revision: string, expectDefault: string | null) =>
+    mutateJson<PlaybookWriteResult>("PUT", `/api/playbooks/${encodeURIComponent(id)}/default`, { revision, expect_default: expectDefault }),
+  clearDefaultPlaybook: (id: string) =>
+    mutateJson<PlaybookWriteResult>("DELETE", `/api/playbooks/${encodeURIComponent(id)}/default`),
+  playbookProjects: (id: string) => getJsonWithDetail<PlaybookFleet>(`/api/playbooks/${encodeURIComponent(id)}/projects`),
+  verifyPlaybook: (project: string) => getJsonWithDetail<PlaybookVerify>(`/api/projects/${encodeURIComponent(project)}/playbook/verify`),
+  reviewPlaybookFleet: (id: string) => mutateJson<PlaybookFleetReview>("POST", `/api/playbooks/${encodeURIComponent(id)}/fleet/review`, {}),
+  updatePlaybookFleet: (id: string, digest: string, operationId: string) =>
+    mutateJson<PlaybookFleetResult>("POST", `/api/playbooks/${encodeURIComponent(id)}/fleet/update`, { digest, operation_id: operationId }),
+  playbookFleetOperation: (id: string, operationId: string) =>
+    getJsonWithDetail<PlaybookFleetResult>(`/api/playbooks/${encodeURIComponent(id)}/fleet/${encodeURIComponent(operationId)}`),
 
   // ---- automations (#1201) -----------------------------------------------------------------------
   automations: () => getJsonWithDetail<AutomationList>(AUTOMATIONS_API),

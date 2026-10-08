@@ -79,15 +79,16 @@ test("Library names Templates, Automations, Checklists and Playbooks; Missions h
   await expect(bar.locator('[data-section="library"]')).toHaveAttribute("aria-current", "page");
 });
 
-test("Playbooks has a Library entry and a page that says it is in the works", async ({ page }) => {
+test("Playbooks has a Library entry and its gallery", async ({ page }) => {
+  await page.route("**/api/playbooks", (r) => r.fulfill({ json: { playbooks: [], default: null, recovery_total: 0 } }));
   await page.goto(MISSION_PATH);
   const menu = await libraryMenu(page);
   await menu.locator('a[data-subsection="playbooks"]').click();
   await expect(page).toHaveURL(new RegExp(`${PLAYBOOKS_PATH}$`));
   const pg = page.getByTestId("playbooks-page");
   await expect(pg.getByRole("heading", { level: 1, name: "Playbooks" })).toBeVisible();
-  await expect(pg).toContainText(/in the works/i);
-  await expect(pg.getByRole("link", { name: "Checklists" })).toHaveAttribute("href", CHECKLISTS_PATH);
+  await expect(pg).toContainText("No playbooks on this host.");
+  await expect(pg.getByLabel("Search playbooks")).toBeVisible();
 });
 
 test("the old Settings address redirects, and Settings no longer lists Checklists", async ({

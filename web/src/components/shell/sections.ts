@@ -138,6 +138,6 @@ export function activeSubsection(pathname: string): SubsectionId | null {
   if (pathname === AUTOMATIONS_PATH || pathname.startsWith(`${AUTOMATIONS_PATH}/`))
     return "automations";
   if (pathname === CHECKLISTS_PATH) return "checklists";
-  if (pathname === PLAYBOOKS_PATH) return "playbooks";
+  if (pathname === PLAYBOOKS_PATH || pathname.startsWith(`${PLAYBOOKS_PATH}/`)) return "playbooks";
   return null;
 }

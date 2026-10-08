@@ -1,0 +1,317 @@
+.page {
+  position: relative;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  padding: 24px;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.page *,
+.review * {
+  box-sizing: border-box;
+  min-width: 0;
+}
+.page h1 {
+  margin: 8px 0 12px;
+  font-size: 24px;
+}
+.page h2 {
+  font-size: 15px;
+  margin: 0 0 12px;
+}
+.page p {
+  color: var(--text-2);
+  line-height: 1.6;
+  margin: 8px 0;
+}
+.page code,
+.review code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.kicker {
+  font: 11px var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.13em;
+  color: var(--text-2);
+}
+.intro {
+  max-width: 780px;
+}
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+  margin: 24px 0;
+}
+.filters label {
+  display: grid;
+  gap: 6px;
+  font: 12px var(--font-mono);
+}
+.filters label:first-child {
+  flex: 1 1 280px;
+}
+.filters input,
+.filters select {
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 12px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  color: var(--text-1);
+  border-radius: 0;
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
+  gap: 16px;
+  align-items: stretch;
+}
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 18px;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-1);
+}
+.card h2 {
+  font-size: 17px;
+  margin: 0;
+}
+.card .actions {
+  margin-top: auto;
+  padding-top: 12px;
+}
+.tags {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  color: var(--text-2);
+  font: 10px var(--font-mono);
+}
+.badge {
+  padding: 3px 6px;
+  border: 1px solid var(--line-strong);
+  font: 11px var(--font-mono);
+}
+.defaultTag {
+  padding: 4px 6px;
+  color: var(--on-accent);
+  background: var(--accent);
+  text-transform: uppercase;
+}
+.flow {
+  background: var(--surface-3);
+  padding: 12px;
+  margin: 4px 0;
+}
+.flow ol {
+  padding-left: 20px;
+  margin-bottom: 0;
+}
+.flow li {
+  margin: 12px 0;
+  font-size: 13px;
+}
+.actor {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  border: 1px solid var(--line-strong);
+  border-left-width: 3px;
+  background: var(--bg-2);
+  font-size: 12px;
+}
+.flow .actor,
+.flow .badge {
+  margin: 4px 0 0 6px;
+}
+.counts {
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.actions a {
+  text-decoration: none;
+}
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+.back {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--accent);
+  margin-bottom: 12px;
+}
+.detailGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 28px;
+  margin-top: 24px;
+}
+.section {
+  margin: 24px 0;
+}
+.section > h2 {
+  font: 12px var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+.stepList {
+  padding: 0;
+  list-style-position: inside;
+}
+.stepList li {
+  border-left: 2px solid var(--line-strong);
+  padding: 12px 16px;
+  margin: 8px 0;
+  background: var(--bg-1);
+}
+.stepList li > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.section dl > div {
+  border-bottom: 1px solid var(--line);
+  padding: 10px 0;
+}
+.section dd {
+  margin: 6px 0 0;
+  color: var(--text-2);
+}
+.section ul {
+  padding-left: 18px;
+  line-height: 1.8;
+}
+.page pre,
+.review pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 12px/1.6 var(--font-mono);
+  padding: 12px;
+  background: var(--surface-3);
+  max-width: 100%;
+}
+.page summary {
+  min-height: 44px;
+  cursor: pointer;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+.markdown h1,
+.markdown h2 {
+  font-size: 17px;
+}
+.fleet {
+  border-top: 1px solid var(--line-strong);
+}
+.project {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 18px;
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  padding: 16px 0;
+}
+.good,
+.page .good {
+  color: var(--ok-text);
+}
+.warn,
+.page .warn {
+  color: var(--warn-text);
+}
+.error {
+  color: var(--danger-text);
+  padding: 12px 0;
+}
+.error button {
+  margin: 8px;
+}
+.invalid {
+  border-color: var(--status-down);
+}
+.empty {
+  padding: 24px 0;
+}
+.review {
+  overflow-wrap: anywhere;
+}
+.review section {
+  padding: 12px 0;
+  border-top: 1px solid var(--line-strong);
+}
+.review h3 {
+  margin: 8px 0;
+}
+.dialog {
+  margin: auto;
+  padding: 18px;
+  overflow-wrap: anywhere;
+}
+.dialog::backdrop {
+  background: color-mix(in srgb, var(--bg-0) 70%, transparent);
+}
+.dialogBody {
+  max-height: 50dvh;
+  overflow: auto;
+}
+.dialog h2 {
+  font-size: 18px;
+}
+.danger {
+  color: var(--danger-text);
+  background: var(--bg-2);
+  border-color: var(--status-down);
+}
+@media (max-width: 800px) {
+  .dialog {
+    margin: auto auto 10px;
+    width: calc(100% - 20px);
+  }
+  .page {
+    padding: 16px;
+  }
+  .detailGrid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+  .project {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+  .filters label {
+    flex: 1 1 120px;
+  }
+  .filters label:first-child {
+    flex-basis: 100%;
+  }
+  .header .actions {
+    width: 100%;
+  }
+  .header .actions button {
+    flex: 1 1 auto;
+  }
+}

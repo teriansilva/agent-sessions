@@ -336,6 +336,7 @@ function Layout() {
     location.pathname === NEW_PROJECT_PATH ||
     location.pathname === DASHBOARD_PATH ||
     location.pathname === PLAYBOOKS_PATH ||
+    location.pathname.startsWith(`${PLAYBOOKS_PATH}/`) ||
     location.pathname === TEMPLATES_PATH ||
     location.pathname.startsWith(`${TEMPLATES_PATH}/`);
   /** Which of the five work sections the current route belongs to, `null` on Settings (#1058).
@@ -764,6 +765,7 @@ function Layout() {
                   {/* Ask's old page (#1171): now the dashboard with the sidebar open (#1294). */}
                   <Route path={ASK_PATH} element={<AskRedirect />} />
                   <Route path={PLAYBOOKS_PATH} element={<Playbooks />} />
+                  <Route path={`${PLAYBOOKS_PATH}/:playbookId`} element={<Playbooks />} />
                   <Route path={NEW_PROJECT_PATH} element={<NewProject />} />
                   <Route path="/templates" element={<Templates />} />
                   <Route path="/templates/new" element={<TemplateEditor />} />

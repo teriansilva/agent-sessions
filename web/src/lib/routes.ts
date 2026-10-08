@@ -34,9 +34,11 @@ export const MAP_PATH = "/overview";
 /** The instruction-template gallery (#905). */
 export const TEMPLATES_PATH = "/templates";
 
-/** Library → Playbooks (#1294): the home of #1096's playbooks. Its page is still in the works
- *  (#1192); until then the route says so and points at what exists. */
+/** Library → Playbooks: bundle gallery and detail (#1192). */
 export const PLAYBOOKS_PATH = "/library/playbooks";
+export function playbookPath(id: string): string {
+  return `${PLAYBOOKS_PATH}/${encodeURIComponent(id)}`;
+}
 
 /** The mission checklists editor, under Library in the nav (#1294; it was under Missions). It used to be a Settings
  *  tab (Settings → AI → Checklists); `/settings/ai-playbooks` still redirects here. */

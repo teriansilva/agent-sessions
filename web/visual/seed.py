@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import sqlite3
 import sys
 import time
@@ -477,6 +478,13 @@ if __name__ == "__main__":
         raise SystemExit("usage: seed.py <home-dir>")
     target = Path(sys.argv[1])
     seed(target)
+    # Valid local bundles, copied only into the explicitly isolated visual HOME.
+    playbooks = target / ".config" / "agent-sessions" / "playbooks"
+    shutil.copytree(
+        Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "playbooks",
+        playbooks,
+        dirs_exist_ok=True,
+    )
     print(
         f"seeded {target}: claude(2) + codex(1) + gemini(1) + antigravity(1) "
         "+ kimi(1) + opencode(1) + pulse-cache + 1 project entity + chat edit approval"

@@ -57,6 +57,22 @@ const SPA_MOUNTED = {
 
 export const VISUAL_PATHS: VisualPath[] = [
   {
+    group: "authed",
+    path: "/library/playbooks",
+    name: "playbooks",
+    description: "Playbook gallery — flow previews, source and domain filters",
+    requireAuth: "admin",
+    waitFor: { selector: '[data-testid="playbook-card-forge-workflow"]', timeoutMs: 12000 },
+  },
+  {
+    group: "authed",
+    path: "/library/playbooks/forge-workflow",
+    name: "playbook-detail",
+    description: "Playbook detail — flow actors, materials, variables and project deployments",
+    requireAuth: "admin",
+    waitFor: { selector: '[data-testid="playbooks-page"] h1', timeoutMs: 12000 },
+  },
+  {
     group: "public",
     path: "/login",
     name: "login",
