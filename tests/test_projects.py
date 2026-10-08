@@ -271,7 +271,9 @@ def test_projects_crud_roundtrip(auth_cfg, fake_jsonl):
     assert r.status_code == 200
     pid = r.json()["id"]
 
-    r = c.patch(f"/api/projects/{pid}", json={"name": "SampleProject 2", "color": "#5fd7ff"}, headers=h)
+    r = c.patch(
+        f"/api/projects/{pid}", json={"name": "SampleProject 2", "color": "#5fd7ff"}, headers=h
+    )
     assert r.status_code == 200
     assert r.json()["name"] == "SampleProject 2" and r.json()["color"] == "#5fd7ff"
 

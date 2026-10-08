@@ -55,17 +55,23 @@ def test_clean_tree_passes(tmp_path: Path) -> None:
     assert "OK" in r.stdout
 
 
-def test_denied_token_in_contents_fails(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "token", [DENIED, "Ca" + "yoo", "post" + "pilot", "ro-" + "infrastructure"]
+)
+def test_denied_token_in_contents_fails(tmp_path: Path, token: str) -> None:
     """The whole point: a generated page that names an internal host must not ship."""
-    (tmp_path / "index.html").write_text(f"<p>built on {DENIED}</p>\n")
+    (tmp_path / "index.html").write_text(f"<p>built on {token}</p>\n")
     r = scan(tmp_path)
     assert r.returncode == 1
     assert "LEAK" in r.stderr
 
 
-def test_denied_token_in_pathname_fails(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "token", [DENIED, "Ca" + "yoo", "post" + "pilot", "ro-" + "infrastructure"]
+)
+def test_denied_token_in_pathname_fails(tmp_path: Path, token: str) -> None:
     """A file whose NAME carries the token leaks it via the URL even if its bytes are clean."""
-    (tmp_path / f"{DENIED}.html").write_text("<p>clean body</p>\n")
+    (tmp_path / f"{token}.html").write_text("<p>clean body</p>\n")
     r = scan(tmp_path)
     assert r.returncode == 1
     assert "pathnames" in r.stderr

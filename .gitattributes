@@ -15,6 +15,7 @@ tests/fixtures/claude_startup_*.bin binary
 
 # Org-internal CI / deploy automation (bot identities, Hermes webhook, runner hosts + IPs).
 .forgejo/                          export-ignore
+node_modules/                      export-ignore
 deploy/agent-sessions.service      export-ignore
 
 # Org-internal agent-workflow + process docs (internal hosts, Hermes, infra cross-refs).
@@ -28,6 +29,10 @@ docs/PROGRESS.md                   export-ignore
 docs/releasing.md                  export-ignore
 docs/release-signing.md            export-ignore
 docs/design.md                     export-ignore
+# Internal UI review artifacts may contain real session text and private PR references.
+design-review/                     export-ignore
+docs/mockup-*                      export-ignore
+docs/maintenance-1040/             export-ignore
 
 # Internal landing/marketing page for the hosted instance (battlelab + edge/proxy refs).
 landing/                           export-ignore
