@@ -74,7 +74,9 @@ class _ChatAdapter:
             return False, "configure this agent's endpoint in Settings → Agents"
         return True, None
 
-    async def create(self, *args, **kwargs):
+    async def create(self, *args, bypass=False, **kwargs):
+        if bypass:
+            raise StructuredError(422, "this agent has no permission prompts to skip")
         return await _call(chat_runtime.new_session, *args, **kwargs)
 
     async def snapshot(self, *args, **kwargs):
@@ -94,19 +96,32 @@ class _NativeAdapter:
 
     @staticmethod
     def operations(prov) -> tuple[str, ...]:
-        return ("create", "snapshot", "submit", "decide", "events", "interrupt", "stop", "probe")
+        return (
+            "create",
+            "start",
+            "snapshot",
+            "submit",
+            "decide",
+            "events",
+            "interrupt",
+            "stop",
+            "probe",
+        )
 
     @staticmethod
     def ready(prov) -> tuple[bool, str | None]:
         return native_runtime.readiness(prov)
 
-    async def create(self, engine, cwd, *, session_id, model=None, execution_admission=None):
+    async def create(
+        self, engine, cwd, *, session_id, model=None, bypass=False, execution_admission=None
+    ):
         return await _native(
             native_runtime.create,
             engine,
             cwd,
             session_id=session_id,
             model=model,
+            bypass=bypass,
             execution_admission=execution_admission,
         )
 
@@ -123,6 +138,9 @@ class _NativeAdapter:
 
     async def events(self, engine, native, after, limit):
         return await _native(native_runtime.events, engine, native, after, limit)
+
+    async def start(self, engine, native):
+        return await _native(native_runtime.start, engine, native)
 
     async def interrupt(self, engine, native, **kwargs):
         return await _native(native_runtime.interrupt, engine, native, **kwargs)
@@ -367,6 +385,17 @@ def _snapshot(session_key: str, raw: dict) -> dict:
         "state": state,
         "active_turn": raw.get("in_flight"),
         "model_requested": raw.get("model"),
+        # Skip-permissions is fixed at create (#1339): the head shows it, nothing can change it.
+        "bypass": bool(raw.get("bypass")),
+        # Two-phase skip start (#1339): waiting for `start`, or expired without ever running.
+        "pending_start": bool(raw.get("pending_start")),
+        **(
+            {"start_expires_at": raw["start_expires_at"]}
+            if raw.get("start_expires_at") and raw.get("pending_start")
+            else {}
+        ),
+        **({"start_incomplete": True} if raw.get("start_incomplete") else {}),
+        **({"start_expired": True} if raw.get("start_expired") else {}),
         # Configuration is a request, never proof of the model the endpoint actually executed.
         "model_effective": raw.get("model_effective"),
         "turns": turns,
@@ -395,6 +424,7 @@ async def create_session(
     *,
     operation_id: str,
     model: str | None = None,
+    bypass: bool = False,
     execution_admission: ExecutionGuard | None = None,
 ) -> dict:
     adapter = _adapter(engine, "create")
@@ -403,6 +433,7 @@ async def create_session(
         cwd,
         session_id=_operation_id(operation_id),
         model=model,
+        bypass=bypass,
         execution_admission=execution_admission,
     )
     return await snapshot(f"{engine}:{sid}")
@@ -484,6 +515,14 @@ async def events(session_key: str, *, after: int, limit: int = 100) -> dict:
     engine, native, adapter, _ = _observation_target(session_key, "events")
     page = await adapter.events(engine, native, after, limit)
     return {"session_key": f"{engine}:{native}", **page}
+
+
+async def start_session(session_key: str) -> dict:
+    """Launch a skip-permissions creation the operator has SEEN succeed (#1339): its create
+    reserved and launched nothing. Idempotent: a repeat after a launch only observes."""
+    engine, native = _key(session_key)
+    await _adapter(engine, "start").start(engine, native)
+    return await snapshot(f"{engine}:{native}")
 
 
 async def interrupt(session_key: str, *, operation_id: str, turn_id: str) -> dict:

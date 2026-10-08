@@ -168,7 +168,15 @@ confirmed gone. Closing the tab never cancels a turn: the view picks up where it
 A client that cannot start is listed with the reason — the CLI is missing or older than the
 protocol needs, there is no systemd user session, or its console agent is disabled. If the
 console agent is later disabled, existing API conversations stay readable but take no new
-messages until it is back. There is no permission bypass for API clients.
+messages until it is back.
+
+**Skip permission prompts.** New session offers the same toggle for the Codex and Claude API
+clients, unticked by default. A session started with it ticked never asks: Codex
+runs with no approvals and no sandbox, Claude in its `bypassPermissions` mode. The choice is fixed
+for the session (a resume keeps it) and the session header shows SKIP PERMISSIONS. Such a session
+is launched only once BattleLab has confirmed your start: if the connection drops mid-start,
+the session waits with **Start (skips prompts)** and **Discard**, and an unconfirmed one expires
+after 10 minutes without ever running.
 
 **Model.** New session offers the models the client's own CLI reports — Codex's app-server model
 list, Claude Code's model picker list — so a model your CLI gained after a BattleLab release shows

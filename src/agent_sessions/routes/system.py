@@ -267,9 +267,15 @@ def register(
                 # from it; `pty` is the only runtime this build has.
                 "runtime": m.runtime,
                 # runtime "api" only (#1311): the protocol, the console agent it drives, and why it
-                # cannot start right now (None when it can).
+                # cannot start right now (None when it can). `can_bypass` (#1339): whether its
+                # adapter maps "Skip permission prompts" — the create route re-checks.
                 "api": (
-                    {"kind": m.api.kind, "source": m.api.source, "unavailable_reason": api_reason}
+                    {
+                        "kind": m.api.kind,
+                        "source": m.api.source,
+                        "unavailable_reason": api_reason,
+                        "can_bypass": m.api.kind in kinds.API_BYPASS_KINDS,
+                    }
                     if m.api is not None
                     else None
                 ),

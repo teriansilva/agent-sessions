@@ -1282,8 +1282,14 @@ export interface EngineInfo {
   status?: "active" | "retiring" | string;
   status_reason?: string | null;
   /** runtime "api" only (#1311): the native protocol, the console agent it drives, and why it
-   *  cannot start right now (null when it can). Absent/null for every other runtime. */
-  api?: { kind: string; source: string; unavailable_reason: string | null } | null;
+   *  cannot start right now (null when it can). Absent/null for every other runtime.
+   *  `can_bypass` (#1339): its adapter maps "Skip permission prompts"; the server re-checks. */
+  api?: {
+    kind: string;
+    source: string;
+    unavailable_reason: string | null;
+    can_bypass?: boolean;
+  } | null;
 }
 
 /** A native API client that cannot start a session, with why (#1311) — `/api/config`. Display
@@ -1366,6 +1372,15 @@ export interface StructuredSnapshot {
   active_turn: string | null;
   model_requested: string | null;
   model_effective?: string | null;
+  /** Started with "Skip permission prompts" (#1339). Fixed at create; the client never asks. */
+  bypass?: boolean;
+  /** A skip creation waits for `start` (#1339): nothing runs until the operator confirms it. */
+  pending_start?: boolean;
+  start_expires_at?: number;
+  /** Authorized, but its launch never happened (interrupted): Start reconciles it. */
+  start_incomplete?: boolean;
+  /** It waited too long and was never launched. */
+  start_expired?: boolean;
   turns: StructuredTurn[];
   omitted_turns: number;
   pending_requests: StructuredRequest[];

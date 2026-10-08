@@ -146,7 +146,8 @@
       "api": {
         "kind": "claude-stream-json",
         "source": "claude",
-        "unavailable_reason": "claude 2.1.287 or later is required for native mode"
+        "unavailable_reason": "claude 2.1.287 or later is required for native mode",
+        "can_bypass": true
       },
       "display": {
         "name": "claude-api",
@@ -382,7 +383,8 @@
       "api": {
         "kind": "codex-app-server",
         "source": "codex",
-        "unavailable_reason": "codex 0.159.3 or later is required for native mode"
+        "unavailable_reason": "codex 0.159.3 or later is required for native mode",
+        "can_bypass": true
       },
       "display": {
         "name": "codex-api",

@@ -51,6 +51,9 @@ API_SOURCE_KINDS = {
     "opencode-acp": ("opencode-sqlite", "opencode-sqlite"),
 }
 API_KINDS = frozenset(API_SOURCE_KINDS)
+#: API kinds whose adapter maps "Skip permission prompts" onto its own protocol (#1339). Any
+#: other kind refuses the field at create rather than launching under a mode it cannot honour.
+API_BYPASS_KINDS = frozenset({"codex-app-server", "claude-stream-json"})
 #: Whether a native protocol takes pictures in a turn (#1332 Phase 3). Every kind decides —
 #: a test pins the keys to `API_KINDS`, so a new adapter cannot ship without saying.
 API_IMAGE_INPUT = {

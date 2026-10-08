@@ -298,10 +298,10 @@ class CodexCodec(_Codec):
     def initialized() -> dict:
         return {"method": "initialized"}
 
-    def create(self, cwd: str, model: str | None = None) -> dict:
+    def create(self, cwd: str, model: str | None = None, *, bypass: bool = False) -> dict:
         if self.native_id is not None:
             raise ProtocolError("native thread is already bound")
-        params = self.create_params(cwd, model)
+        params = self.create_params(cwd, model, bypass=bypass)
         return self._request("thread/start", params)
 
     def read(self, thread_id: str) -> dict:
@@ -311,8 +311,10 @@ class CodexCodec(_Codec):
         self._expected_sessions[frame["id"]] = thread_id
         return frame
 
-    def resume(self, thread_id: str, cwd: str, model: str | None = None) -> dict:
-        params = self.create_params(cwd, model)
+    def resume(
+        self, thread_id: str, cwd: str, model: str | None = None, *, bypass: bool = False
+    ) -> dict:
+        params = self.create_params(cwd, model, bypass=bypass)
         params["threadId"] = _identity(thread_id)
         # Never hydrate the full history into one frame: a long thread exceeds the frame bound
         # and could then never be resumed. BattleLab's own journal already holds what it saw.
@@ -322,12 +324,14 @@ class CodexCodec(_Codec):
         return frame
 
     @staticmethod
-    def create_params(cwd: str, model: str | None) -> dict[str, Any]:
+    def create_params(cwd: str, model: str | None, *, bypass: bool = False) -> dict[str, Any]:
+        # Skip-permissions (#1339) is the structured twin of the console's
+        # `--dangerously-bypass-approvals-and-sandbox`: Codex never asks and runs unsandboxed.
         params: dict[str, Any] = {
             "cwd": _path(cwd),
-            "approvalPolicy": "untrusted",
+            "approvalPolicy": "never" if bypass is True else "untrusted",
             "approvalsReviewer": "user",
-            "sandbox": "read-only",
+            "sandbox": "danger-full-access" if bypass is True else "read-only",
         }
         if _model(model) is not None:
             params["model"] = model
@@ -737,7 +741,12 @@ class ClaudeCodec(_Codec):
 
     @staticmethod
     def argv(
-        binary: str, session_id: str, *, resume: bool = False, model: str | None = None
+        binary: str,
+        session_id: str,
+        *,
+        resume: bool = False,
+        model: str | None = None,
+        bypass: bool = False,
     ) -> list[str]:
         native_id = _uuid(session_id)
         argv = [
@@ -754,7 +763,8 @@ class ClaudeCodec(_Codec):
             "--permission-prompt-tool",
             "stdio",
             "--permission-mode",
-            "default",
+            # Skip-permissions (#1339): fixed per session, so every generation gets the same mode.
+            "bypassPermissions" if bypass is True else "default",
             "--include-partial-messages",
             f"--{'resume' if resume else 'session-id'}={native_id}",
         ]

@@ -80,7 +80,7 @@ async function setup(page: Page, theme: "dark" | "light", engines = ["codex-api"
       "codex-api": {
         present: true,
         supports_new: true,
-        api: { kind: "codex-app-server", source: "codex", unavailable_reason: null },
+        api: { kind: "codex-app-server", source: "codex", unavailable_reason: null, can_bypass: true },
       },
     },
   });
@@ -90,7 +90,10 @@ async function setup(page: Page, theme: "dark" | "light", engines = ["codex-api"
 async function serveSession(
   page: Page,
   state: () => Json,
-  handlers: { decide?: (r: Route, body: Json) => Promise<void> | void } = {},
+  handlers: {
+    decide?: (r: Route, body: Json) => Promise<void> | void;
+    start?: (r: Route) => Promise<void> | void;
+  } = {},
 ) {
   await page.route(SESSION, async (r) => {
     const sub = r.request().url().match(SESSION)?.[1] ?? "";
@@ -99,6 +102,7 @@ async function serveSession(
       return r.fulfill({ json: { session_key: s.session_key, revision: s.revision, next_cursor: s.revision, events: [] } });
     }
     if (sub === "/decisions" && handlers.decide) return handlers.decide(r, r.request().postDataJSON() as Json);
+    if (sub === "/start" && handlers.start) return handlers.start(r);
     if (sub === "") return r.fulfill({ json: state() });
     return r.fulfill({ status: 404, json: { detail: "not mocked" } });
   });
@@ -288,7 +292,7 @@ test("a lost connection keeps the turn and resumes from the cursor; nothing is r
   await noOverflow(page);
 });
 
-test("New session: API clients are their own group, unavailable ones say why, no bypass; Start creates on the server", async ({
+test("New session: API clients are their own group, unavailable ones say why; a guarded Start creates on the server", async ({
   page,
 }) => {
   await setup(page, "dark", ["claude", "codex-api"]);
@@ -306,11 +310,16 @@ test("New session: API clients are their own group, unavailable ones say why, no
   await expect(page.getByRole("checkbox", { name: /skip permission prompts/i })).toBeVisible();
   await agent.selectOption("codex-api");
   await expect(page.getByTestId("new-session-api-about")).toContainText("Codex");
-  await expect(page.getByRole("checkbox", { name: /skip permission prompts/i })).toHaveCount(0);
+  // #1339: the toggle is offered for an API client whose adapter maps it; unticked = guarded.
+  const skip = page.getByRole("checkbox", { name: /skip permission prompts/i });
+  await expect(skip).toBeVisible();
+  await skip.uncheck();
+  await expect(page.getByTestId("api-bypass-warning")).toHaveCount(0);
   await noOverflow(page);
   await page.getByRole("button", { name: /start session/i }).click();
   await expect(page).toHaveURL(new RegExp(`/s/codex-api/${ID}$`));
   expect(created).toMatchObject({ engine: "codex-api", cwd: "/home/u/proj" });
+  // A guarded create is the same request it always was: no `bypass` key at all.
   expect(Object.keys(created!).sort()).toEqual(["cwd", "engine", "operation_id"]);
   await expect(page.getByTestId("structured-empty")).toBeVisible();
   // The info screen (#1348): what this session is, never the old "No terminal: …" paragraph.
@@ -320,6 +329,190 @@ test("New session: API clients are their own group, unavailable ones say why, no
   await expect(page.getByText(/no terminal/i)).toHaveCount(0);
   await terminalChips(page.getByRole("form", { name: "Compose message" }));
   await noOverflow(page);
+  await expect(page.getByTestId("structured-bypass")).toHaveCount(0);
+});
+
+test("New session: Skip permission prompts creates, THEN starts the session — and the head says so (#1339)", async ({
+  page,
+}) => {
+  await setup(page, "dark", ["claude", "codex-api"]);
+  const calls: string[] = [];
+  let created: Json | null = null;
+  let started = false;
+  await page.route("**/api/structured/sessions", async (r) => {
+    calls.push("create");
+    created = r.request().postDataJSON() as Json;
+    await r.fulfill({ status: 201, json: snapshot({ bypass: true, pending_start: true, native: null }) });
+  });
+  await serveSession(page, () => snapshot({ bypass: true, pending_start: !started }), {
+    start: (r) => {
+      calls.push("start");
+      started = true;
+      return r.fulfill({ json: snapshot({ bypass: true }) });
+    },
+  });
+  await page.goto("/");
+  await page.getByRole("combobox", { name: "Agent" }).selectOption("codex-api");
+  const skip = page.getByRole("checkbox", { name: /skip permission prompts/i });
+  await skip.check();
+  await expect(page.getByTestId("api-bypass-warning")).toContainText("won’t ask");
+  await noOverflow(page);
+  await page.getByRole("button", { name: /start session/i }).click();
+  await expect(page).toHaveURL(new RegExp(`/s/codex-api/${ID}$`));
+  expect(created).toMatchObject({ engine: "codex-api", cwd: "/home/u/proj", bypass: true });
+  expect(calls).toEqual(["create", "start"]); // launched only after the create's response
+  await expect(page.getByTestId("structured-bypass")).toBeVisible();
+  await expect(page.getByTestId("structured-bypass")).toHaveText(/skip permissions/i);
+  await expect(page.getByTestId("structured-pending-start")).toHaveCount(0);
+  await noOverflow(page);
+});
+
+test("An unstarted skip session (its start was lost) offers Start or Discard; Start launches it (#1339)", async ({
+  page,
+}) => {
+  await setup(page, "dark");
+  let started = false;
+  let starts = 0;
+  await serveSession(page, () => snapshot({ bypass: true, pending_start: !started, ...(started ? {} : { native: null }) }), {
+    start: (r) => {
+      starts += 1;
+      started = true;
+      return r.fulfill({ json: snapshot({ bypass: true }) });
+    },
+  });
+  await page.goto(`/s/codex-api/${ID}`);
+  const panel = page.getByTestId("structured-pending-start");
+  await expect(panel).toContainText("Nothing has run");
+  await expect(page.getByRole("textbox", { name: /message/i })).toBeDisabled();
+  await noOverflow(page);
+  await panel.getByRole("button", { name: "Start (skips prompts)" }).click();
+  await expect(panel).toHaveCount(0);
+  expect(starts).toBe(1);
+  await expect(page.getByRole("textbox", { name: /message/i })).toBeEnabled();
+});
+
+test("New session: a console skip choice never carries into an API client (Hermes on #1341)", async ({
+  page,
+}) => {
+  await setup(page, "dark", ["claude", "codex-api"]);
+  let created: Json | null = null;
+  await page.route("**/api/structured/sessions", async (r) => {
+    created = r.request().postDataJSON() as Json;
+    await r.fulfill({ status: 201, json: snapshot() });
+  });
+  await serveSession(page, () => snapshot());
+  await page.goto("/");
+  const skip = page.getByRole("checkbox", { name: /skip permission prompts/i });
+  await skip.uncheck(); // the console agent: off…
+  await skip.check(); // …and explicitly on again
+  await page.getByRole("combobox", { name: "Agent" }).selectOption("codex-api");
+  await expect(skip).not.toBeChecked();
+  await expect(page.getByTestId("api-bypass-warning")).toHaveCount(0);
+  await page.getByRole("button", { name: /start session/i }).click();
+  await expect(page).toHaveURL(new RegExp(`/s/codex-api/${ID}$`));
+  expect(Object.keys(created!).sort()).toEqual(["cwd", "engine", "operation_id"]);
+});
+
+test("New session: a lost skip create keeps no client slot — the error points at the session list; it waits there with Start (5913)", async ({
+  page,
+}) => {
+  await setup(page, "dark", ["claude", "codex-api"]);
+  const bodies: Json[] = [];
+  await page.route("**/api/structured/sessions", async (r) => {
+    bodies.push(r.request().postDataJSON() as Json);
+    return r.abort("connectionreset"); // the server made it, but the response is lost
+  });
+  // The server's record: the made session is unstarted (two-phase) — its view offers Start.
+  await page.route(/\/api\/structured\/sessions\/codex-api(?::|%3A)[0-9a-f-]+(\/events)?(\?.*)?$/, (r) => {
+    const made = bodies.length > 0 && r.request().url().includes(String(bodies[0].operation_id));
+    if (!made) return r.fulfill({ status: 404, json: { detail: "no such native session" } });
+    const s = snapshot({
+      session_key: `codex-api:${bodies[0].operation_id}`,
+      bypass: true,
+      pending_start: true,
+      native: null,
+    });
+    return r.request().url().includes("/events")
+      ? r.fulfill({ json: { session_key: s.session_key, revision: 4, next_cursor: 4, events: [] } })
+      : r.fulfill({ json: s });
+  });
+  await page.goto("/");
+  await page.getByRole("combobox", { name: "Agent" }).selectOption("codex-api");
+  await page.getByRole("checkbox", { name: /skip permission prompts/i }).check();
+  await page.getByRole("button", { name: /start session/i }).click();
+  await expect(page.getByTestId("start-error")).toContainText("waits in your session list");
+  expect(await page.evaluate(() => sessionStorage.getItem("battlelab.pendingStructuredCreate"))).toBeNull();
+  await page.reload();
+  await page.getByRole("combobox", { name: "Agent" }).selectOption("codex-api");
+  await expect(page.getByRole("checkbox", { name: /skip permission prompts/i })).not.toBeChecked();
+  await expect(page.getByTestId("api-recovered-create")).toHaveCount(0);
+  // Opened from the list, it waits — nothing ran — with Start / Discard.
+  await page.goto(`/s/codex-api/${String(bodies[0].operation_id)}`);
+  await expect(page.getByTestId("structured-pending-start")).toContainText("Nothing has run");
+  await noOverflow(page);
+  expect(bodies).toHaveLength(1);
+});
+
+test("New session: a later skip create never erases a lost guarded create — reload still offers it (Hermes 5916)", async ({
+  page,
+}) => {
+  await setup(page, "dark", ["claude", "codex-api"]);
+  const bodies: Json[] = [];
+  await page.route("**/api/structured/sessions", async (r) => {
+    const body = r.request().postDataJSON() as Json;
+    bodies.push(body);
+    if (bodies.length === 1) return r.abort("connectionreset"); // guarded: made, response lost
+    await r.fulfill({ status: 201, json: snapshot({ bypass: true, pending_start: true, native: null }) });
+  });
+  await page.route(/\/api\/structured\/sessions\/codex-api(?::|%3A)[0-9a-f-]+(\/[a-z]+)?(\?.*)?$/, (r) => {
+    const url = r.request().url();
+    if (url.endsWith("/start")) return r.fulfill({ json: snapshot({ bypass: true }) });
+    if (url.includes("/events")) return r.fulfill({ json: { session_key: `codex-api:${ID}`, revision: 4, next_cursor: 4, events: [] } });
+    return r.fulfill({ json: snapshot({ session_key: `codex-api:${String(bodies[0]?.operation_id)}` }) });
+  });
+  await page.goto("/");
+  const agent = page.getByRole("combobox", { name: "Agent" });
+  await agent.selectOption("codex-api");
+  await page.getByRole("button", { name: /start session/i }).click();
+  await expect(page.getByTestId("start-error")).toBeVisible();
+  await page.getByRole("checkbox", { name: /skip permission prompts/i }).check();
+  await page.getByRole("button", { name: /start session/i }).click();
+  await expect(page).toHaveURL(new RegExp(`/s/codex-api/${ID}$`));
+  const slot = await page.evaluate(() => sessionStorage.getItem("battlelab.pendingStructuredCreate"));
+  expect(JSON.parse(slot!).id).toBe(bodies[0].operation_id);
+  await page.goto("/");
+  await expect(page.getByTestId("api-recovered-create")).toContainText("did create a session");
+});
+
+test("New session: a skip tick never survives an agent change (Hermes 5913)", async ({ page }) => {
+  await setup(page, "dark", ["claude", "codex-api"]);
+  await page.goto("/");
+  const agent = page.getByRole("combobox", { name: "Agent" });
+  const skip = page.getByRole("checkbox", { name: /skip permission prompts/i });
+  await agent.selectOption("codex-api");
+  await skip.check();
+  await agent.selectOption("claude");
+  await agent.selectOption("codex-api");
+  await expect(skip).not.toBeChecked();
+  await expect(page.getByTestId("api-bypass-warning")).toHaveCount(0);
+});
+
+test("New session: an API client whose adapter cannot skip prompts offers no toggle (#1339)", async ({
+  page,
+}) => {
+  await setup(page, "dark", ["claude", "codex-api"]);
+  await mockRoster(page, {
+    overrides: {
+      "codex-api": {
+        present: true,
+        supports_new: true,
+        api: { kind: "codex-app-server", source: "codex", unavailable_reason: null, can_bypass: false },
+      },
+    },
+  });
+  await page.goto("/");
+  await page.getByRole("combobox", { name: "Agent" }).selectOption("codex-api");
+  await expect(page.getByRole("checkbox", { name: /skip permission prompts/i })).toHaveCount(0);
 });
 
 const MD_REPLY = [
@@ -585,6 +778,67 @@ test("in a map window the API pane has no bar of its own: chips in the chrome, O
   // An API pane has no Compose draft yet (#1332 Phase 3), so Files offers no "add to message".
   await expect(win.locator("[data-send-path]")).toHaveCount(0);
 });
+
+for (const theme of ["dark", "light"] as const) {
+  for (const bypass of [true, false]) {
+    test(`in a map window a skip session still says SKIP PERMISSIONS — bypass=${bypass} (#1339, ${theme})`, async ({
+      page,
+    }, testInfo) => {
+      test.skip(testInfo.project.name !== "desktop", "windows are desktop-only (#208)");
+      await setup(page, theme);
+      await serveRowAndFiles(page);
+      await page.route("**/api/config", (r) =>
+        r.fulfill({
+          json: {
+            csrf: "x",
+            new_session_engines: ["codex-api"],
+            unavailable_clients: [],
+            terminal_backend: "ws",
+            auth_mode: "none",
+            default_project: "/home/u/proj",
+            overview_expanded: ["project:p1"],
+            projects_hidden: [],
+            project_names: {},
+            theme,
+          },
+        }),
+      );
+      await page.route(/\/api\/projects(\?.*)?$/, (r) =>
+        r.fulfill({ json: { projects: [{ id: "p1", name: "proj", color: "#ffb000", archived: false }] } }),
+      );
+      await serveSession(page, () =>
+        snapshot({ bypass, turns: [turn({ state: "completed", tools: [], reply: "done" })] }),
+      );
+      await page.goto("/overview");
+      await page.locator(".tr-ov-chip").first().click();
+      const win = page.locator(`[data-session-window="codex-api:${ID}"]`);
+      await expect(win.getByTestId("structured-turn")).toBeVisible();
+      await expect(win.locator("[data-panel-head]")).toHaveCount(0); // the pane's head is hidden here
+      const banner = win.getByTestId("structured-bypass-banner");
+      if (bypass) {
+        await expect(banner).toBeVisible();
+        await expect(banner).toContainText(/skip permissions/i);
+        const colors = await banner.evaluate((el) => {
+          const actual = getComputedStyle(el);
+          const probe = document.createElement("span");
+          probe.style.borderLeftColor = "var(--status-degraded)";
+          probe.style.color = "var(--warn-text)";
+          el.append(probe);
+          const expected = getComputedStyle(probe);
+          const colors = {
+            actual: { border: actual.borderLeftColor, text: actual.color },
+            expected: { border: expected.borderLeftColor, text: expected.color },
+          };
+          probe.remove();
+          return colors;
+        });
+        expect(colors.actual).toEqual(colors.expected);
+      } else {
+        await expect(banner).toHaveCount(0);
+      }
+    });
+  }
+}
 
 // ---- pictures in a send (#1332 Phase 3) --------------------------------------------------------
 

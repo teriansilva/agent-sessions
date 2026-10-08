@@ -36,12 +36,18 @@ import styles from "./NewSessionLanding.module.css";
  *  room, and a 720×480 window has none to spare. */
 /** The structured create whose outcome is unknown (#1311), per tab. */
 const PENDING_CREATE = "battlelab.pendingStructuredCreate";
-type PendingCreate = { engine: string; cwd: string; model?: string; id: string };
+/** `model` (#1313) and `bypass` (#1339) are part of the create's identity: a retry reuses the id
+ *  only for the same choices, so a reload can never resend an id with a different one. */
+type PendingCreate = { engine: string; cwd: string; model?: string; id: string; bypass?: boolean };
 
 function readPendingCreate(): PendingCreate | null {
   try {
     const v = JSON.parse(sessionStorage.getItem(PENDING_CREATE) ?? "null") as PendingCreate | null;
-    return v && typeof v.engine === "string" && typeof v.cwd === "string" && typeof v.id === "string"
+    return v &&
+      typeof v.engine === "string" &&
+      typeof v.cwd === "string" &&
+      typeof v.id === "string" &&
+      (v.bypass === undefined || typeof v.bypass === "boolean")
       ? v
       : null;
   } catch {
@@ -77,10 +83,42 @@ export function NewSessionLanding() {
   );
   // `null` = untouched: the stored default applies (#1128), and `true` — today's behaviour — until
   // the config has loaded. The operator's choice on this form always wins, for this session.
-  const [bypassChoice, setBypass] = useState<boolean | null>(
+  const [bypassChoice, setConsoleBypass] = useState<boolean | null>(
     restore.draft?.bypassChoice ?? null,
   );
-  const bypass = bypassChoice ?? config?.agent_defaults?.bypass ?? true;
+  // An API client's skip choice is SEPARATE and BOUND to the engine it was ticked for (#1339,
+  // Hermes on #1341): a console choice never carries into an API client, switching agents always
+  // starts guarded, and it is never restored from a draft — only a tick on this form, for this
+  // client, skips its prompts. The tick is never restored or replayed — not on reload, not for a
+  // retry (Hermes on #1341, rounds 1–2): an unresolved create is resolved by ASKING THE SERVER
+  // below, never by re-sending a skip the operator did not just tick.
+  const [apiBypassChoice, setApiBypassChoice] = useState<{ engine: string; value: boolean } | null>(
+    null,
+  );
+  // An earlier create that the server DID make, found on load (its operation id is its session id).
+  const [recovered, setRecovered] = useState<PendingCreate | null>(null);
+  useEffect(() => {
+    const p = readPendingCreate();
+    if (!p) return;
+    if (p.bypass) {
+      writePendingCreate(null); // a slot from an older build: skip creates keep none (#1339)
+      return;
+    }
+    let live = true;
+    // The lookup only OFFERS it; the slot is discharged when the operator opens it (below), never
+    // from here — an unmounted or late callback must not erase the only pointer (Hermes 5920).
+    api
+      .structuredSnapshot(`${p.engine}:${p.id}`)
+      .then(() => {
+        if (live) setRecovered(p);
+      })
+      .catch(() => {
+        // Never made (or not yet): the guarded attempt keeps its id for a harmless same-form retry.
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
 
   const roster = useEngineRoster();
   const engines = config?.new_session_engines ?? [];
@@ -98,6 +136,14 @@ export function NewSessionLanding() {
   const unavailable = config?.unavailable_clients ?? [];
   const isApi = runtimeOf(engine) === "api";
   const apiSource = engineInfo(engine)?.api?.source ?? "";
+  const apiCanBypass = isApi && engineInfo(engine)?.api?.can_bypass === true;
+  // An API client starts GUARDED unless ticked on this form (#1339): the operator approved the
+  // option, not a default-on posture, so the stored console default does not apply to it.
+  const bypass = isApi
+    ? apiBypassChoice?.engine === engine && apiBypassChoice.value
+    : (bypassChoice ?? config?.agent_defaults?.bypass ?? true);
+  const setBypass = (value: boolean) =>
+    isApi ? setApiBypassChoice({ engine, value }) : setConsoleBypass(value);
 
   // The model (#1189), BOUND to the engine it was chosen for: switching engine — by the select or
   // by the default resolving differently — reads as `default` again, never as a model the other
@@ -293,16 +339,43 @@ export function NewSessionLanding() {
     setStartingChat(true);
     setStartError(null);
     const prev = readPendingCreate();
-    // The model is part of the create's identity (#1313): choosing another one is another create,
-    // never a retry that retargets the same operation id.
+    // The model (#1313) and the permission mode (#1339) are part of the create's identity:
+    // choosing another one is another create, never a retry that retargets the same operation id.
+    const skip = apiCanBypass && bypass;
+    // A skip create keeps NO client recovery slot (Hermes 5913): with the two-phase start a lost
+    // one can never run, and the server lists it — its view offers Start / Discard until it
+    // expires. Only a guarded create reuses an unresolved id.
     const attempt =
-      prev && prev.engine === engine && prev.cwd === cwd && (prev.model ?? "default") === model
+      !skip &&
+      prev &&
+      !prev.bypass &&
+      prev.engine === engine &&
+      prev.cwd === cwd &&
+      (prev.model ?? "default") === model
         ? prev
-        : { engine, cwd, model, id: crypto.randomUUID() };
-    writePendingCreate(attempt);
+        : { engine, cwd, model, id: crypto.randomUUID(), bypass: skip };
+    if (skip) {
+      if (prev?.bypass) writePendingCreate(null);
+    } else {
+      writePendingCreate(attempt);
+    }
+    const clearAttempt = () => {
+      if (readPendingCreate()?.id === attempt.id) writePendingCreate(null);
+    };
     try {
-      const { session_key: key } = await api.structuredCreate(engine, cwd, attempt.id, model);
-      writePendingCreate(null);
+      const { session_key: key } = await api.structuredCreate(
+        engine,
+        cwd,
+        attempt.id,
+        model,
+        Boolean(attempt.bypass),
+      );
+      clearAttempt(); // only THIS attempt's slot — a lost guarded one stays recoverable (5916)
+      if (attempt.bypass) {
+        // Phase 2 (#1339): only now — the create's response is in hand — does it launch. A lost
+        // start is safe: the session view shows Start / Discard until it is confirmed.
+        await api.structuredStart(key).catch(() => {});
+      }
       if (!mounted.current) return;
       const id = key.slice(key.indexOf(":") + 1);
       if (returnToMap && workspace?.requestOpen && workspace.hasRoom) {
@@ -316,14 +389,22 @@ export function NewSessionLanding() {
         api.setSessionProject(key, projectSel).catch(() => {});
       }
     } catch (e) {
-      if (e instanceof ApiError && e.status < 500) writePendingCreate(null); // refused
+      if (e instanceof ApiError && e.status < 500) clearAttempt(); // refused
       if (!mounted.current) return;
       setStartError(
-        e instanceof ApiError && e.message ? e.message : "Couldn’t start that session.",
+        (e instanceof ApiError && e.message ? e.message : "Couldn’t start that session.") +
+          (attempt.bypass && !(e instanceof ApiError && e.status < 500)
+            ? " If it was created, it waits in your session list and runs only if you start it there."
+            : ""),
       );
     } finally {
       chatStarting.current = false;
-      if (mounted.current) setStartingChat(false);
+      if (mounted.current) {
+        setStartingChat(false);
+        // One tick authorizes ONE create (Hermes on #1341, review 5876): after any skip attempt,
+        // whatever its outcome, a further skip create needs a fresh tick.
+        if (attempt.bypass) setApiBypassChoice(null);
+      }
     }
   };
 
@@ -391,6 +472,7 @@ export function NewSessionLanding() {
               onChange={(e) => {
                 setEngineChoice(e.target.value);
                 setModelChoice(null); // a model belongs to the engine it was chosen for
+                setApiBypassChoice(null); // a skip tick never survives an agent change (Hermes 5913)
               }}
             >
               {/* Console (a terminal) vs API (structured, no terminal) — #1311. A client that
@@ -428,7 +510,9 @@ export function NewSessionLanding() {
             <p>
               BattleLab drives your installed <b>{engineLabel(apiSource)}</b> CLI through its
               structured protocol: its login, config, MCP servers and skills apply. No terminal.
-              You answer each request it makes in the session view.
+              {apiCanBypass
+                ? " You answer each request it makes in the session view, unless you skip permission prompts below."
+                : " You answer each request it makes in the session view."}
             </p>
           </div>
         )}
@@ -560,9 +644,9 @@ export function NewSessionLanding() {
         ) : null}
 
         {/* A `chat` agent (#1209) has no tools, so there are no permission prompts to skip. An
-            `api` client (#1311) never skips them: you answer each request in the session view,
-            and its create route takes no bypass at all. */}
-        {runtimeOf(engine) !== "chat" && runtimeOf(engine) !== "api" && (
+            `api` client (#1339) offers it only when the server says its adapter maps it
+            (`api.can_bypass`); the create route re-checks. */}
+        {runtimeOf(engine) !== "chat" && (!isApi || apiCanBypass) && (
         <label className={styles.checkbox}>
           <input
             type="checkbox"
@@ -571,6 +655,27 @@ export function NewSessionLanding() {
           />
           <span>Skip permission prompts</span>
         </label>
+        )}
+        {isApi && apiCanBypass && bypass && (
+          <p className={styles.hint} data-testid="api-bypass-warning">
+            {engineLabel(apiSource)} won’t ask before running commands or editing files, and
+            runs without its sandbox. Fixed for this session.
+          </p>
+        )}
+        {recovered && (
+          <p className={styles.hint} role="status" data-testid="api-recovered-create">
+            An earlier start of {engineLabel(recovered.engine)}
+            {recovered.bypass ? " with Skip permission prompts" : ""} did create a session.{" "}
+            <Link
+              to={`/s/${recovered.engine}/${recovered.id}`}
+              onClick={() => {
+                // Discharged only now, and only if the slot still points at THIS session.
+                if (readPendingCreate()?.id === recovered.id) writePendingCreate(null);
+              }}
+            >
+              Open it
+            </Link>
+          </p>
         )}
 
         <button

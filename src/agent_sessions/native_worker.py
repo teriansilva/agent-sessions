@@ -223,6 +223,7 @@ class Worker:
             self.native_id,
             resume=self.config["mode"] == "resume",
             model=self.config.get("model"),
+            bypass=self.config.get("bypass") is True,
         )
 
     async def spawn(self) -> None:
@@ -501,10 +502,11 @@ class Worker:
             return
         await self.write(self.codec.initialized())
         cwd, model = self.config["cwd"], self.config.get("model")
+        bypass = self.config.get("bypass") is True
         if self.native_id is not None:
-            await self.request(self.codec.resume(self.native_id, cwd, model))
+            await self.request(self.codec.resume(self.native_id, cwd, model, bypass=bypass))
             return
-        event = await self.request(self.codec.create(cwd, model))
+        event = await self.request(self.codec.create(cwd, model, bypass=bypass))
         native_id = event.data["native_id"]
         await asyncio.to_thread(self.bind, native_id)
         self.native_id = native_id

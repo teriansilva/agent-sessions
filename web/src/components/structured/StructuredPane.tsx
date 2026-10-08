@@ -527,6 +527,8 @@ export function StructuredPane({
   }, [snap?.turns.length, snap?.pending_requests.length]);
 
   const readOnly = !!snap?.read_only;
+  // An unstarted (or expired) skip creation takes no message: nothing runs until Start (#1339).
+  const notStarted = !!snap?.pending_start || !!snap?.start_expired;
 
   // Push-to-talk (#1332 Phase 3c): the terminal composer's own recognizer lifecycle, writing into
   // this draft. No global Space hotkey — the terminal composer on the same page keeps that.
@@ -667,6 +669,22 @@ export function StructuredPane({
       setActionError(`Interrupt not sent: ${detail(e, "no answer")}`);
     } finally {
       setInterrupting(false);
+      await load();
+    }
+  };
+
+  // The second phase of a skip-permissions creation (#1339): nothing ran yet; the operator starts
+  // it here or discards it (the existing stop closes a never-launched creation for good).
+  const [starting, setStarting] = useState(false);
+  const startPending = async () => {
+    setStarting(true);
+    setActionError(null);
+    try {
+      apply(await api.structuredStart(key));
+    } catch (e) {
+      setActionError(`Couldn’t start: ${detail(e, "no answer")}`);
+    } finally {
+      setStarting(false);
       await load();
     }
   };
@@ -1053,6 +1071,20 @@ export function StructuredPane({
     <div className={term.panelHead} data-panel-head="">
       <span className={term.headLeft}>
         <HeadFacts engine={engine} status={status} row={row} />
+        {/* Skip-permissions is fixed at create (#1339): say so, so a session that never asks is
+            never mistaken for one that does. */}
+        {snap?.bypass && (
+          <span
+            className={`${chat.chip} ${styles.skipChip}`}
+            data-testid="structured-bypass"
+            title="Started with Skip permission prompts: this agent never asks before acting."
+          >
+            <span className={styles.skipLong}>Skip permissions</span>
+            <span className={styles.skipShort} aria-hidden="true">
+              Skip
+            </span>
+          </span>
+        )}
       </span>
       <HeadActions
         className={term.headActions}
@@ -1142,6 +1174,48 @@ export function StructuredPane({
     <div className={`${chat.pane} ${styles.pane}`} data-testid="structured-pane">
       {header}
       {overlays}
+      {snap?.pending_start && (
+        <div className={styles.banner} role="status" data-testid="structured-pending-start">
+          <p>
+            {snap.start_incomplete
+              ? "This session’s start didn’t finish. Nothing has run; start it again or discard it."
+              : "This session skips permission prompts and hasn’t started. Nothing has run."}
+          </p>
+          <button
+            type="button"
+            className={chat.send}
+            disabled={starting || stopping}
+            onClick={() => void startPending()}
+          >
+            Start (skips prompts)
+          </button>
+          <button
+            type="button"
+            className={`${chat.ghost} ${styles.inline}`}
+            disabled={starting || stopping}
+            onClick={() => void stop()}
+          >
+            Discard
+          </button>
+        </div>
+      )}
+      {snap?.start_expired && (
+        <p className={styles.banner} role="status" data-testid="structured-start-expired">
+          This session’s start expired before it was confirmed. It never ran.
+        </p>
+      )}
+      {/* A map window hides this pane's head behind its own chrome (#1109), and that chrome
+          carries no permission mode: say it here, always visible, so a session that never asks
+          is never mistaken for one that does (#1339, Hermes 5948). */}
+      {host.suppressHead && snap?.bypass && (
+        <p
+          className={`${styles.banner} ${styles.skipBanner}`}
+          role="status"
+          data-testid="structured-bypass-banner"
+        >
+          <b>Skip permissions</b> — this agent never asks before acting.
+        </p>
+      )}
       {readOnly && (
         <p className={styles.banner} role="status" data-testid="structured-read-only">
           Read only — {snap?.read_only}. The history stays; new messages and decisions are off until
@@ -1252,9 +1326,11 @@ export function StructuredPane({
             placeholder={
               readOnly
                 ? "This conversation is read only"
-                : active
-                  ? `${agent} is working — your next message waits for this turn`
-                  : `Message ${agent} — Enter sends, Shift+Enter = newline.`
+                : notStarted
+                  ? "Start this session first"
+                  : active
+                    ? `${agent} is working — your next message waits for this turn`
+                    : `Message ${agent} — Enter sends, Shift+Enter = newline.`
             }
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
@@ -1262,7 +1338,7 @@ export function StructuredPane({
             onPaste={onPaste}
             readOnly={busy}
             rows={2}
-            disabled={readOnly}
+            disabled={readOnly || notStarted}
           />
         </div>
         <div className={compose.row}>
@@ -1310,6 +1386,7 @@ export function StructuredPane({
             title="Send + Enter"
             disabled={
               readOnly ||
+              notStarted ||
               busy ||
               uploading ||
               active ||

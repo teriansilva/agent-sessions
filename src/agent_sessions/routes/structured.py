@@ -7,8 +7,10 @@ mission correlation is ever read from a browser (mission callers use the facade 
 
 * ``GET  /api/structured/clients/{engine}`` — implemented operations and live readiness.
 * ``GET  /api/structured/clients/{engine}/models`` — the models the client's CLI reports (#1313).
-* ``POST /api/structured/sessions {engine, cwd, operation_id, model?}`` — create; an exact repeat
-  of ``operation_id`` returns the same session.
+* ``POST /api/structured/sessions {engine, cwd, operation_id, model?, bypass?}`` — create; an
+  exact repeat of ``operation_id`` returns the same session (a ``bypass`` one waits for ``start``).
+* ``POST /api/structured/sessions/{key}/start`` — launch a skip-permissions creation (#1339);
+  its create reserved and launched nothing. Idempotent.
 * ``GET  /api/structured/sessions/{key}`` — bounded snapshot (turns, exact pending requests).
 * ``GET  /api/structured/sessions/{key}/events?after=&limit=`` — durable journal cursor page.
 * ``POST /api/structured/sessions/{key}/turns {operation_id, text, expected_revision?}``
@@ -84,19 +86,32 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
     ) -> JSONResponse:
         body = await _json(
-            request, {"engine", "cwd", "operation_id", "model"}, {"engine", "cwd", "operation_id"}
+            request,
+            {"engine", "cwd", "operation_id", "model", "bypass"},
+            {"engine", "cwd", "operation_id"},
         )
         if not isinstance(body["engine"], str):
             raise HTTPException(status_code=422, detail="engine must be a string")
+        if not isinstance(body.get("bypass", False), bool):
+            raise HTTPException(status_code=422, detail="bypass must be a boolean")
         out = await _run(
             structured_runtime.create_session(
                 body["engine"],
                 body["cwd"],
                 operation_id=body["operation_id"],
                 model=body.get("model"),
+                bypass=body.get("bypass", False),
             )
         )
         return JSONResponse(out, status_code=201)
+
+    @app.post("/api/structured/sessions/{key}/start")
+    async def structured_start(
+        key: str, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        # The second phase of a skip-permissions creation (#1339): the SPA calls it only after it
+        # has received the create response, so a lost response can never launch unobserved.
+        return JSONResponse(await _run(structured_runtime.start_session(key)))
 
     @app.get("/api/structured/sessions/{key}")
     async def structured_snapshot(key: str, _user: str = Depends(logged_in)) -> JSONResponse:

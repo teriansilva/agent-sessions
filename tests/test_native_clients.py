@@ -123,20 +123,22 @@ def test_config_reports_unavailable_clients_and_new_session_engines(app_client, 
         "kind": "codex-app-server",
         "source": "codex",
         "unavailable_reason": "too old",
+        "can_bypass": True,
     }
     assert rows["claude-api"]["api"]["unavailable_reason"] is None
     assert rows["claude-api"]["supports_new"] is True and rows["claude-api"]["present"] is True
     assert rows["codex"]["api"] is None
 
 
-def test_structured_create_has_no_bypass_field(app_client):
+def test_structured_create_takes_bypass_only_as_a_boolean(app_client):
+    """#1339 replaced "no bypass field" with an immutable boolean (tests/test_api_bypass.py)."""
     r = app_client.post(
         "/api/structured/sessions",
         json={
             "engine": "codex-api",
             "cwd": "/tmp",
             "operation_id": str(uuid.uuid4()),
-            "bypass": True,
+            "bypass": "yes",
         },
     )
     assert r.status_code == 422 and "bypass" in r.json()["detail"]

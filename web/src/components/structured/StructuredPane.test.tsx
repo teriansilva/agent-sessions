@@ -22,6 +22,7 @@ vi.mock("../../lib/api", async () => {
       structuredDecide: vi.fn(),
       structuredInterrupt: vi.fn(),
       structuredStop: vi.fn(),
+      structuredStart: vi.fn(),
       upload: vi.fn(),
       templates: vi.fn(),
       templateVariables: vi.fn(() => Promise.resolve({ variables: [], limits: {} })),
@@ -105,6 +106,61 @@ test("RuntimeGate opens an api engine in the structured pane, never a terminal",
   );
   expect(await screen.findByTestId("structured-pane")).toBeInTheDocument();
   expect(screen.queryByTestId("terminal")).toBeNull();
+});
+
+test("an unstarted skip session offers Start or Discard and takes no message (#1339)", async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(
+    snap({ bypass: true, pending_start: true, start_expires_at: Date.now() / 1000 + 600, native: undefined }),
+  );
+  vi.mocked(api.structuredStart).mockResolvedValue(snap({ bypass: true, pending_start: false }));
+  renderPane();
+  const panel = await screen.findByTestId("structured-pending-start");
+  expect(panel).toHaveTextContent("Nothing has run");
+  expect(screen.getByRole("textbox", { name: /message/i })).toBeDisabled();
+  await user.click(screen.getByRole("button", { name: "Start (skips prompts)" }));
+  expect(api.structuredStart).toHaveBeenCalledWith(KEY);
+  expect(api.structuredStop).not.toHaveBeenCalled();
+});
+
+test("an interrupted start still offers Start, saying it didn't finish (Hermes 5908)", async () => {
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(
+    snap({ bypass: true, pending_start: true, start_incomplete: true, native: undefined }),
+  );
+  renderPane();
+  const panel = await screen.findByTestId("structured-pending-start");
+  expect(panel).toHaveTextContent("didn’t finish");
+  expect(screen.getByRole("button", { name: "Start (skips prompts)" })).toBeEnabled();
+});
+
+test("Discard on an unstarted skip session stops it; an expired one says it never ran (#1339)", async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(
+    snap({ bypass: true, pending_start: true, start_expires_at: Date.now() / 1000 + 600, native: undefined }),
+  );
+  vi.mocked(api.structuredStop).mockResolvedValue({ containment: "gone" });
+  const view = renderPane();
+  await user.click(await screen.findByRole("button", { name: "Discard" }));
+  expect(api.structuredStop).toHaveBeenCalledWith(KEY);
+  expect(api.structuredStart).not.toHaveBeenCalled();
+  view.unmount();
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(
+    snap({ bypass: true, pending_start: false, start_expired: true, native: undefined }),
+  );
+  renderPane();
+  expect(await screen.findByTestId("structured-start-expired")).toHaveTextContent("never ran");
+  expect(screen.queryByTestId("structured-pending-start")).toBeNull();
+});
+
+test("a skip-permissions session says so in the head; a guarded one does not (#1339)", async () => {
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(snap({ bypass: true }));
+  const view = renderPane();
+  expect(await screen.findByTestId("structured-bypass")).toHaveTextContent(/skip permissions/i);
+  view.unmount();
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(snap());
+  renderPane();
+  await screen.findByTestId("structured-worker");
+  expect(screen.queryByTestId("structured-bypass")).toBeNull();
 });
 
 test("a command approval shows its complete request and only the server's choices", async () => {
@@ -875,4 +931,17 @@ test("a held retry the conversation shows as recorded is retired: Send can never
   await userEvent.click(screen.getByRole("button", { name: "Send" }));
   const calls = vi.mocked(api.structuredSubmit).mock.calls;
   expect(calls[calls.length - 1][1]).not.toBe(landed); // a repeat is a new turn
+});
+
+test.each([
+  [true, 1],
+  [false, 0],
+])("in a map window (head suppressed) a skip session still says so: bypass=%s (Hermes 5948)", async (bypass, shown) => {
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(snap({ bypass }));
+  renderHosted({ suppressHead: true });
+  await screen.findByTestId("structured-worker");
+  expect(screen.queryAllByTestId("structured-bypass-banner")).toHaveLength(shown);
+  if (shown) {
+    expect(screen.getByTestId("structured-bypass-banner")).toHaveTextContent(/skip permissions/i);
+  }
 });

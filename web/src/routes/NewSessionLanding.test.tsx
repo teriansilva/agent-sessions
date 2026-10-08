@@ -5,7 +5,7 @@ import { beforeEach, expect, test, vi } from "vitest";
 import { ConfigCtx } from "../app/config";
 import { setRoster } from "../app/engineRoster";
 import fixture from "../test/roster.fixture.json";
-import { api } from "../lib/api";
+import { ApiError, api } from "../lib/api";
 import { mintNewSessionId } from "../lib/newSession";
 import type { NewSessionDraft } from "../lib/newProject";
 import { MAP_PATH, NEW_PROJECT_PATH } from "../lib/routes";
@@ -28,6 +28,8 @@ vi.mock("../lib/api", async (orig) => {
       chatNew: vi.fn(),
       structuredCreate: vi.fn(),
       structuredModels: vi.fn(),
+      structuredSnapshot: vi.fn(),
+      structuredStart: vi.fn(),
     },
   };
 });
@@ -110,6 +112,11 @@ beforeEach(() => {
     .mockResolvedValue({ id: "x", project_id: "" });
   vi.mocked(api.createProject).mockReset();
   vi.mocked(api.structuredModels).mockReset().mockResolvedValue(CLI_MODELS);
+  // An unresolved create is looked up on load (#1339): by default the server never made it.
+  vi.mocked(api.structuredSnapshot)
+    .mockReset()
+    .mockRejectedValue(new ApiError(404, "no such native session"));
+  vi.mocked(api.structuredStart).mockReset().mockResolvedValue({} as never);
 });
 
 test.each([
@@ -398,6 +405,11 @@ test("a starred project with no default folder falls through to the legacy cwd (
 
 const FIXTURE = fixture.engines as EngineInfo[];
 
+/** The fixture with one API client's `api` block patched (#1339). */
+function withApi(rows: EngineInfo[], id: string, patch: Partial<NonNullable<EngineInfo["api"]>>) {
+  return rows.map((r) => (r.id === id && r.api ? { ...r, api: { ...r.api, ...patch } } : r));
+}
+
 async function startAndReadFresh(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole("button", { name: /start session/i }));
   return navigateMock.mock.calls[0] as [string, { state: { fresh: unknown } }];
@@ -609,17 +621,327 @@ test("agents are grouped Console vs API; an unavailable client is listed, disabl
   );
 });
 
-test("an API client shows what it is and offers no permission bypass", async () => {
+test("an API client offers Skip permission prompts, unticked, only when its adapter maps it (#1339)", async () => {
   setRoster(FIXTURE);
   const user = userEvent.setup();
-  renderLanding(["claude", "codex-api"], { default_project: "/d" });
-  expect(await screen.findByRole("checkbox", { name: /skip permission prompts/i })).toBeInTheDocument();
+  const view = renderLanding(["claude", "codex-api"], {
+    default_project: "/d",
+    agent_defaults: { default_engine: "claude", bypass: true },
+  });
+  // The console agent follows the stored default (on)…
+  expect(await screen.findByRole("checkbox", { name: /skip permission prompts/i })).toBeChecked();
   await user.selectOptions(screen.getByRole("combobox", { name: "Agent" }), "codex-api");
   expect(screen.getByTestId("new-session-api-about")).toHaveTextContent("Codex");
+  const skip = screen.getByRole("checkbox", { name: /skip permission prompts/i });
+  // Guarded by default: the console default does not apply to an API client (#1339).
+  expect(skip).not.toBeChecked();
+  expect(screen.queryByTestId("api-bypass-warning")).toBeNull();
+  await user.click(skip);
+  expect(screen.getByTestId("api-bypass-warning")).toHaveTextContent("Fixed for this session");
+  view.unmount();
+  // A client whose adapter has not mapped it (the server says so) offers no toggle at all.
+  setRoster(withApi(FIXTURE, "codex-api", { can_bypass: false }));
+  renderLanding(["claude", "codex-api"], { default_project: "/d" });
+  await user.selectOptions(await screen.findByRole("combobox", { name: "Agent" }), "codex-api");
   expect(screen.queryByRole("checkbox", { name: /skip permission prompts/i })).toBeNull();
 });
 
-test("starting an API client creates it on the server — single-flight, no bypass, retry reuses the id", async () => {
+test("a console skip choice never carries into an API client (Hermes on #1341)", async () => {
+  setRoster(FIXTURE);
+  sessionStorage.clear();
+  const user = userEvent.setup();
+  vi.mocked(api.structuredCreate)
+    .mockReset()
+    .mockResolvedValueOnce({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
+  renderLanding(["claude", "codex-api"], { default_project: "/d" });
+  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  const consoleSkip = screen.getByRole("checkbox", { name: /skip permission prompts/i });
+  await user.click(consoleSkip); // off…
+  await user.click(consoleSkip); // …and explicitly on again, for the console agent
+  expect(consoleSkip).toBeChecked();
+  await user.selectOptions(screen.getByRole("combobox", { name: "Agent" }), "codex-api");
+  expect(screen.getByRole("checkbox", { name: /skip permission prompts/i })).not.toBeChecked();
+  expect(screen.queryByTestId("api-bypass-warning")).toBeNull();
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
+  expect(vi.mocked(api.structuredCreate).mock.calls[0][4]).toBe(false);
+});
+
+test("an API skip tick is never restored from a draft and never survives an agent change (#1339, 5913)", async () => {
+  setRoster(FIXTURE);
+  const user = userEvent.setup();
+  const draft: NewSessionDraft = {
+    engineChoice: "codex-api",
+    bypassChoice: true,
+    returnTo: null,
+    projectChoice: null,
+    cwdOverride: null,
+  };
+  renderLanding(["claude", "codex-api"], { default_project: "/d" }, { restoreDraft: draft });
+  const skip = await screen.findByRole("checkbox", { name: /skip permission prompts/i });
+  expect(skip).not.toBeChecked(); // a draft's (console) choice is not an API tick
+  await user.click(skip);
+  expect(skip).toBeChecked();
+  // Leaving the client and coming back clears it: every agent change needs a fresh tick (5913).
+  await user.selectOptions(screen.getByRole("combobox", { name: "Agent" }), "claude");
+  expect(screen.getByRole("checkbox", { name: /skip permission prompts/i })).toBeChecked(); // console: its own (restored) choice
+  await user.selectOptions(screen.getByRole("combobox", { name: "Agent" }), "codex-api");
+  expect(screen.getByRole("checkbox", { name: /skip permission prompts/i })).not.toBeChecked();
+});
+
+test("a lost skip create keeps no client slot: the error points at the session list, a reload asks nothing (5913)", async () => {
+  setRoster(FIXTURE);
+  sessionStorage.clear();
+  const user = userEvent.setup();
+  vi.mocked(api.structuredCreate).mockReset().mockRejectedValueOnce(new TypeError("response lost"));
+  const first = renderLanding(["codex-api"], { default_project: "/d" });
+  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await user.click(screen.getByRole("checkbox", { name: /skip permission prompts/i }));
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  expect(await screen.findByTestId("start-error")).toHaveTextContent(
+    "waits in your session list and runs only if you start it there",
+  );
+  expect(sessionStorage.getItem("battlelab.pendingStructuredCreate")).toBeNull();
+  first.unmount(); // the page reloads
+  renderLanding(["codex-api"], { default_project: "/d" });
+  await screen.findByRole("combobox", { name: "Project" });
+  expect(api.structuredSnapshot).not.toHaveBeenCalled();
+  expect(screen.queryByTestId("api-recovered-create")).toBeNull();
+  expect(screen.getByRole("checkbox", { name: /skip permission prompts/i })).not.toBeChecked();
+});
+
+test("a lost skip create on the same form: the next create is a new, guarded one and leaves no slot (5913)", async () => {
+  setRoster(FIXTURE);
+  sessionStorage.clear();
+  const user = userEvent.setup();
+  vi.mocked(api.structuredCreate)
+    .mockReset()
+    .mockRejectedValueOnce(new TypeError("response lost"))
+    .mockRejectedValueOnce(new TypeError("response lost"));
+  renderLanding(["codex-api"], { default_project: "/d" });
+  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await user.click(screen.getByRole("checkbox", { name: /skip permission prompts/i }));
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await screen.findByTestId("start-error");
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await vi.waitFor(() => expect(api.structuredCreate).toHaveBeenCalledTimes(2));
+  const [a, b] = vi.mocked(api.structuredCreate).mock.calls;
+  expect(a[4]).toBe(true);
+  expect(b[4]).toBe(false);
+  expect(b[2]).not.toBe(a[2]);
+  // Only the guarded one is held for a same-form retry; the skip one is the server's to list.
+  expect(JSON.parse(sessionStorage.getItem("battlelab.pendingStructuredCreate")!).id).toBe(b[2]);
+  sessionStorage.clear();
+});
+
+test("a lost skip create the server never made is forgotten: the next start is guarded, with a new id (#1339)", async () => {
+  setRoster(FIXTURE);
+  sessionStorage.clear();
+  const user = userEvent.setup();
+  vi.mocked(api.structuredCreate)
+    .mockReset()
+    .mockRejectedValueOnce(new TypeError("response lost"))
+    .mockResolvedValueOnce({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
+  const first = renderLanding(["codex-api"], { default_project: "/d" });
+  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await user.click(screen.getByRole("checkbox", { name: /skip permission prompts/i }));
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await screen.findByTestId("start-error");
+  first.unmount();
+  renderLanding(["codex-api"], { default_project: "/d" }); // the lookup 404s (beforeEach)
+  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await vi.waitFor(() =>
+    expect(sessionStorage.getItem("battlelab.pendingStructuredCreate")).toBeNull(),
+  );
+  expect(screen.getByRole("checkbox", { name: /skip permission prompts/i })).not.toBeChecked();
+  expect(screen.queryByTestId("api-recovered-create")).toBeNull();
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
+  const [a, b] = vi.mocked(api.structuredCreate).mock.calls;
+  expect(a[4]).toBe(true);
+  expect(b[4]).toBe(false); // a skip is only ever sent by a fresh tick
+  expect(b[2]).not.toBe(a[2]);
+});
+
+test("a fresh API form is still guarded when the pending create was guarded (#1339)", async () => {
+  setRoster(FIXTURE);
+  sessionStorage.setItem(
+    "battlelab.pendingStructuredCreate",
+    JSON.stringify({ engine: "codex-api", cwd: "/d", id: "x", bypass: false }),
+  );
+  renderLanding(["codex-api"], { default_project: "/d" });
+  expect(await screen.findByRole("checkbox", { name: /skip permission prompts/i })).not.toBeChecked();
+  expect(screen.queryByTestId("api-recovered-create")).toBeNull();
+  sessionStorage.clear();
+});
+
+test.each([
+  ["succeeds", "ok"],
+  ["is refused", "refused"],
+])("a later skip create that %s never clears a lost guarded create's slot (Hermes 5916)", async (_, outcome) => {
+  setRoster(FIXTURE);
+  sessionStorage.clear();
+  const user = userEvent.setup();
+  vi.mocked(api.structuredCreate)
+    .mockReset()
+    .mockRejectedValueOnce(new TypeError("response lost")); // the guarded one: committed, response lost
+  if (outcome === "ok") {
+    vi.mocked(api.structuredCreate).mockResolvedValueOnce({
+      session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f",
+    } as never);
+  } else {
+    vi.mocked(api.structuredCreate).mockRejectedValueOnce(new ApiError(422, "refused"));
+  }
+  renderLanding(["codex-api"], { default_project: "/d" });
+  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await user.click(screen.getByRole("button", { name: /start session/i })); // guarded
+  await screen.findByTestId("start-error");
+  const guarded = JSON.parse(sessionStorage.getItem("battlelab.pendingStructuredCreate")!) as { id: string };
+  await user.click(screen.getByRole("checkbox", { name: /skip permission prompts/i }));
+  await user.click(screen.getByRole("button", { name: /start session/i })); // a different, skip create
+  await vi.waitFor(() => expect(api.structuredCreate).toHaveBeenCalledTimes(2));
+  await vi.waitFor(() =>
+    expect(JSON.parse(sessionStorage.getItem("battlelab.pendingStructuredCreate")!).id).toBe(guarded.id),
+  );
+  sessionStorage.clear();
+});
+
+test("a found create stays recoverable until it is OPENED — a late or unmounted lookup erases nothing (Hermes 5920)", async () => {
+  setRoster(FIXTURE);
+  sessionStorage.setItem(
+    "battlelab.pendingStructuredCreate",
+    JSON.stringify({ engine: "codex-api", cwd: "/d", id: "made-id" }),
+  );
+  let release!: () => void;
+  vi.mocked(api.structuredSnapshot)
+    .mockReset()
+    .mockImplementationOnce(() => new Promise((r) => (release = () => r({} as never))))
+    .mockResolvedValue({} as never);
+  const first = renderLanding(["codex-api"], { default_project: "/d" });
+  await screen.findByRole("combobox", { name: "Project" });
+  first.unmount(); // navigated away before the lookup answered
+  release();
+  await new Promise((r) => setTimeout(r, 0));
+  expect(JSON.parse(sessionStorage.getItem("battlelab.pendingStructuredCreate")!).id).toBe("made-id");
+  const user = userEvent.setup();
+  renderLanding(["codex-api"], { default_project: "/d" }); // back to the form: offered again
+  const link = await screen.findByRole("link", { name: "Open it" });
+  expect(sessionStorage.getItem("battlelab.pendingStructuredCreate")).not.toBeNull();
+  await user.click(link);
+  expect(sessionStorage.getItem("battlelab.pendingStructuredCreate")).toBeNull();
+});
+
+test("a skip create is launched only after its response arrived: create, THEN start (#1339)", async () => {
+  setRoster(FIXTURE);
+  sessionStorage.clear();
+  const user = userEvent.setup();
+  const order: string[] = [];
+  vi.mocked(api.structuredCreate)
+    .mockReset()
+    .mockImplementationOnce(async () => {
+      order.push("create");
+      return { session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never;
+    });
+  vi.mocked(api.structuredStart).mockImplementationOnce(async () => {
+    order.push("start");
+    return {} as never;
+  });
+  renderLanding(["codex-api"], { default_project: "/d" });
+  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await user.click(screen.getByRole("checkbox", { name: /skip permission prompts/i }));
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
+  expect(order).toEqual(["create", "start"]);
+  expect(api.structuredStart).toHaveBeenCalledWith("codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f");
+});
+
+test("a guarded create never calls start (#1339)", async () => {
+  setRoster(FIXTURE);
+  sessionStorage.clear();
+  const user = userEvent.setup();
+  vi.mocked(api.structuredCreate)
+    .mockReset()
+    .mockResolvedValueOnce({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
+  renderLanding(["codex-api"], { default_project: "/d" });
+  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
+  expect(api.structuredStart).not.toHaveBeenCalled();
+});
+
+test("one tick authorizes one create: after a lost skip attempt the next create is guarded (Hermes on #1341, 5876)", async () => {
+  setRoster(FIXTURE);
+  sessionStorage.clear();
+  const user = userEvent.setup();
+  vi.mocked(api.structuredCreate)
+    .mockReset()
+    .mockRejectedValueOnce(new TypeError("response lost"))
+    .mockResolvedValueOnce({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
+  renderLanding(["codex-api"], { default_project: "/d" });
+  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await user.click(screen.getByRole("checkbox", { name: /skip permission prompts/i }));
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await screen.findByTestId("start-error");
+  expect(screen.getByRole("checkbox", { name: /skip permission prompts/i })).not.toBeChecked();
+  await user.selectOptions(screen.getByRole("combobox", { name: "Model" }), "gpt-6-luna"); // a different create
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
+  const [a, b] = vi.mocked(api.structuredCreate).mock.calls;
+  expect(a[4]).toBe(true);
+  expect(b[4]).toBe(false);
+  expect(b[2]).not.toBe(a[2]);
+});
+
+test.each([
+  ["found", () => Promise.resolve({} as never)],
+  ["404", () => Promise.reject(new ApiError(404, "no such native session"))],
+])("an older recovery lookup (%s) never clears a newer create's id (Hermes on #1341, 5876)", async (_, settle) => {
+  setRoster(FIXTURE);
+  sessionStorage.setItem(
+    "battlelab.pendingStructuredCreate",
+    JSON.stringify({ engine: "codex-api", cwd: "/old", id: "old-id" }),
+  );
+  let release!: () => void;
+  vi.mocked(api.structuredSnapshot)
+    .mockReset()
+    .mockImplementationOnce(() => new Promise((r) => (release = () => r(undefined as never))).then(settle));
+  vi.mocked(api.structuredCreate).mockReset().mockRejectedValueOnce(new TypeError("response lost"));
+  const user = userEvent.setup();
+  renderLanding(["codex-api"], { default_project: "/d" });
+  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await user.click(screen.getByRole("button", { name: /start session/i })); // a NEW, guarded create
+  await screen.findByTestId("start-error");
+  const newer = JSON.parse(sessionStorage.getItem("battlelab.pendingStructuredCreate")!) as { id: string };
+  expect(newer.id).not.toBe("old-id");
+  release(); // the old lookup settles late
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  expect(JSON.parse(sessionStorage.getItem("battlelab.pendingStructuredCreate")!).id).toBe(newer.id);
+  sessionStorage.clear();
+});
+
+test("a retry reuses the id only for the same mode: switching it is a new create (#1339)", async () => {
+  setRoster(FIXTURE);
+  sessionStorage.clear();
+  const user = userEvent.setup();
+  vi.mocked(api.structuredCreate)
+    .mockReset()
+    .mockRejectedValueOnce(new TypeError("response lost"))
+    .mockResolvedValueOnce({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
+  renderLanding(["codex-api"], { default_project: "/d" });
+  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await screen.findByTestId("start-error");
+  await user.click(screen.getByRole("checkbox", { name: /skip permission prompts/i }));
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
+  const [a, b] = vi.mocked(api.structuredCreate).mock.calls;
+  expect(a[4]).toBe(false);
+  expect(b[4]).toBe(true);
+  expect(b[2]).not.toBe(a[2]); // never resend an id with the other mode
+});
+
+test("starting an API client creates it on the server — single-flight, retry reuses the id", async () => {
   setRoster(FIXTURE);
   const user = userEvent.setup();
   vi.mocked(api.structuredCreate)
@@ -636,7 +958,7 @@ test("starting an API client creates it on the server — single-flight, no bypa
   await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
   const calls = vi.mocked(api.structuredCreate).mock.calls;
   expect(calls).toHaveLength(2);
-  expect(calls[0]).toEqual(["codex-api", "/d", calls[0][2], "default"]);
+  expect(calls[0]).toEqual(["codex-api", "/d", calls[0][2], "default", false]); // guarded by default (#1339)
   expect(calls[1][2]).toBe(calls[0][2]); // the same create, never a second session
   expect(navigateMock).toHaveBeenCalledWith("/s/codex-api/5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f");
 });
@@ -682,7 +1004,7 @@ test("an API client offers the models its own CLI reports and creates on the cho
   await user.click(screen.getByRole("button", { name: /start session/i }));
   await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
   const [call] = vi.mocked(api.structuredCreate).mock.calls;
-  expect(call).toEqual(["codex-api", "/d", call[2], "gpt-6-luna"]);
+  expect(call).toEqual(["codex-api", "/d", call[2], "gpt-6-luna", false]); // + guarded (#1339)
 });
 
 test("an API client whose CLI cannot list models says why and offers default only", async () => {

@@ -151,6 +151,7 @@ def test_an_activated_signed_client_is_offered_exactly_when_its_adapter_is_ready
             "kind": "codex-app-server",
             "source": "codex",
             "unavailable_reason": reason,
+            "can_bypass": True,  # codex-app-server maps skip-permissions (#1339)
         }
         assert ("native-api" in c.get("/api/config").json()["new_session_engines"]) is ready
     finally:

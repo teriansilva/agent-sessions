@@ -398,6 +398,11 @@ def _server_env() -> dict[str, str]:
 
 def _launch_locked(session_id: str, record: dict, prov, binding, *, mode: str) -> str:
     """Mint, persist intent, lease, launch and pin one generation. Caller holds the lock."""
+    if _start_state(record) not in (None, STARTING, STARTED):
+        # Two-phase skip start (#1339; state machine, operator decision on #1341): a skip
+        # creation's generation is born only from `starting` (the `/start` that set it, under this
+        # same lock) or `started`. Fail closed here, where every generation is born.
+        raise NativeError(409, "this session has not been started; start or discard it")
     worker = native_containment.WorkerIdentity.mint()
     python, release = interpreter()
     state_dir = native_state.root()
@@ -414,6 +419,8 @@ def _launch_locked(session_id: str, record: dict, prov, binding, *, mode: str) -
         "binary": _entrypoint(binding.source),
         "cwd": record["request"]["cwd"],
         "model": record["request"]["model"],
+        # Read from the recorded request on every generation, so a resume can never flip it.
+        "bypass": bool(record["request"].get("bypass")),
         "mode": mode,
         "native_id": record.get("native_id"),
         "journal_root": str(_journal_root(prov)),
@@ -666,16 +673,22 @@ def _validate_create(cwd: object, model: object) -> tuple[str, str | None]:
     return cwd, model
 
 
-def _create_sync(engine_id: str, session_id: str, cwd: str, model: str | None) -> bool:
-    """Returns True when a generation must be awaited (a new launch happened)."""
-    from .engines import registry
+def _create_sync(
+    engine_id: str, session_id: str, cwd: str, model: str | None, bypass: bool = False
+) -> bool:
+    """Returns True when a generation must be awaited (a new launch happened).
 
+    ``bypass`` (#1339) is part of the immutable create request: recorded only when set, so a
+    guarded request is byte-identical to one written before the field existed, and a replay of
+    the same operation id with the other mode conflicts instead of flipping it."""
     prov = _api_provider(engine_id)
     try:
         binding = api_source.resolve(prov)
     except api_source.SourceError as exc:
         raise NativeError(409, str(exc)) from None
     adapter = prov.manifest.api.kind
+    if bypass and adapter not in kinds.API_BYPASS_KINDS:
+        raise NativeError(422, "this client cannot skip permission prompts yet")
     session_key = f"{engine_id}:{session_id}"
     # The model is checked against the client's own list NOW, at the write boundary (#1313): an id
     # the client does not list is refused before anything exists. A refusal only blocks a NEW
@@ -686,6 +699,8 @@ def _create_sync(engine_id: str, session_id: str, cwd: str, model: str | None) -
     except model_choice.ModelRefused as exc:
         refused = exc
     request = {"cwd": cwd, "model": model, "adapter": adapter}
+    if bypass:
+        request["bypass"] = True
     root = _journal_root(prov)
     with native_state.session_lock(session_id):
         record = native_state.read_session(session_id)
@@ -721,6 +736,12 @@ def _create_sync(engine_id: str, session_id: str, cwd: str, model: str | None) -
                 "workers": [],
                 "created_at": time.time(),
             }
+            if bypass:
+                record["start"] = {
+                    "state": PENDING,
+                    "gen": None,
+                    "expires_at": time.time() + PENDING_START_TTL,
+                }
             native_state.write_session(session_id, record)
         try:
             chat_store.create(
@@ -732,29 +753,44 @@ def _create_sync(engine_id: str, session_id: str, cwd: str, model: str | None) -
             )
         except FileExistsError:
             native_journal.read(root, session_id)  # an existing header must be ours, intact
-        source = native_ownership.source_identity(binding.source)
-        if source is None:
-            raise NativeError(409, "the native source has no recognised history store")
-        with storage.locked("launch", wait=30):
-            if not registry.admits(binding.source) or not api_source.admits(binding):
-                raise NativeError(409, "the agent changed or was removed")
-            native_ownership.reserve(
-                session_key,
-                source,
-                operation_id=session_id,
-                request={"cwd": cwd, "model": model, "adapter": adapter},
-                owner_token=record["owner_token"],
-            )
-            if record["native_id"] is not None:
-                # Claude: the id is ours, so permanent exclusion commits before any process.
-                native_ownership.bind(
-                    session_key,
-                    operation_id=session_id,
-                    owner_token=record["owner_token"],
-                    native_id=record["native_id"],
-                )
-        _launch_locked(session_id, record, prov, binding, mode="create")
+        if record["request"].get("bypass"):
+            # A skip creation reserves and launches NOTHING from create — not the first call, not
+            # a replay, not after an interrupted start (Hermes 5908): only `start` does (#1339).
+            return False
+        _reserve_and_launch_locked(session_id, record, prov, binding)
         return True
+
+
+def _reserve_and_launch_locked(
+    session_id: str, record: dict, prov, binding, *, mode: str = "create"
+) -> str:
+    """Commit ownership and launch the FIRST generation of a creation (or a retried skip start's
+    successor). Caller holds the lock."""
+    from .engines import registry
+
+    session_key = record["session_key"]
+    source = native_ownership.source_identity(binding.source)
+    if source is None:
+        raise NativeError(409, "the native source has no recognised history store")
+    with storage.locked("launch", wait=30):
+        if not registry.admits(binding.source) or not api_source.admits(binding):
+            raise NativeError(409, "the agent changed or was removed")
+        native_ownership.reserve(
+            session_key,
+            source,
+            operation_id=session_id,
+            request=dict(record["request"]),
+            owner_token=record["owner_token"],
+        )
+        if record["native_id"] is not None:
+            # Claude: the id is ours, so permanent exclusion commits before any process.
+            native_ownership.bind(
+                session_key,
+                operation_id=session_id,
+                owner_token=record["owner_token"],
+                native_id=record["native_id"],
+            )
+    return _launch_locked(session_id, record, prov, binding, mode=mode)
 
 
 async def create(
@@ -763,15 +799,18 @@ async def create(
     *,
     session_id: str,
     model: str | None = None,
+    bypass: bool = False,
     execution_admission=None,
 ) -> str:
+    if not isinstance(bypass, bool):
+        raise NativeError(422, "bypass must be a boolean")
     if execution_admission is not None:
         raise NativeError(
             409, "native clients cannot enforce caller authority across processes yet"
         )
     cwd, model = _validate_create(cwd, model)
     try:
-        launched = await asyncio.to_thread(_create_sync, engine_id, session_id, cwd, model)
+        launched = await asyncio.to_thread(_create_sync, engine_id, session_id, cwd, model, bypass)
     except (native_state.StateError, native_ownership.OwnershipError, storage.StateError) as exc:
         raise NativeError(503, str(exc)) from None
     except native_journal.JournalError as exc:
@@ -787,6 +826,166 @@ async def create(
                 with contextlib.suppress(Exception):
                     await stop(engine_id, session_id)
                 raise
+    return session_id
+
+
+# --- start (the second phase of a skip-permissions creation, #1339) ---------------------------
+
+#: How long a skip creation waits for its `start` before it is closed, never launched.
+PENDING_START_TTL = 600.0
+
+
+# The skip-start state machine (#1339; operator decision on #1341 after review 5926). ONE field,
+# `record["start"] = {"state", "gen", "expires_at"}`, only on `bypass` creations; every transition
+# is a compare-and-set under the session lock, and every launch path is gated on it:
+#
+#   pending ──/start──▶ starting(gen W) ──W ready (CAS state+gen)──▶ started
+#      │                    │  W fails (CAS) ──▶ failed ──/start──▶ starting(W') …
+#      ├─expiry─▶ expired   └──────── Discard (from pending/starting/failed) ──▶ discarded
+#
+# `expired` and `discarded` are terminal: nothing leaves them. A completion or failure that
+# arrives for a generation that is no longer the starting one (Discard won the race, a newer
+# start replaced it) is a no-op. Only `starting` (inside the `/start` that set it) and `started`
+# may launch a generation; a turn needs `started`.
+PENDING, STARTING, STARTED, FAILED = "pending", "starting", "started", "failed"
+DISCARDED, EXPIRED = "discarded", "expired"
+
+
+def _start_state(record: dict, now: float | None = None) -> str | None:
+    """The skip start's state (expiry applied), or None for a guarded creation."""
+    if not record["request"].get("bypass"):
+        return None
+    start = record.get("start") or {}
+    state = start.get("state")
+    if state not in {PENDING, STARTING, STARTED, FAILED, DISCARDED, EXPIRED}:
+        return DISCARDED  # an unreadable state never launches anything
+    if state == PENDING:
+        expires = start.get("expires_at")
+        if not isinstance(expires, int | float) or (now or time.time()) > expires:
+            return EXPIRED
+    return state
+
+
+def _set_start(record: dict, state: str, gen: str | None = None) -> None:
+    record["start"] = {**(record.get("start") or {}), "state": state, "gen": gen, "at": time.time()}
+
+
+def pending_start_view(record: dict) -> dict:
+    """What a snapshot says about a skip creation's start."""
+    state = _start_state(record)
+    if state is None or state in {STARTED, DISCARDED}:
+        return {"pending_start": False}
+    if state == EXPIRED:
+        return {"pending_start": False, "start_expired": True}
+    if state == PENDING:
+        return {"pending_start": True, "start_expires_at": record["start"]["expires_at"]}
+    return {"pending_start": True, "start_incomplete": True}  # starting / failed: Start reconciles
+
+
+def _start_sync(engine_id: str, session_id: str) -> str | None:
+    """The worker id this call launched, or None when the start is already complete."""
+    prov, _ = _session(engine_id, session_id)
+    try:
+        binding = api_source.resolve(prov)
+    except api_source.SourceError as exc:
+        raise NativeError(409, str(exc)) from None
+    with native_state.session_lock(session_id):
+        _, record = _session(engine_id, session_id)
+        state = _start_state(record)
+        if state is None:
+            if record.get("generations"):
+                return None  # a guarded creation has nothing to start: observe
+            raise NativeError(409, "this session has nothing to start")
+        if state == STARTED:
+            return None  # a retried start only observes
+        if state == DISCARDED:
+            raise NativeError(409, "this creation was discarded; use a new operation id")
+        if state == EXPIRED:
+            if record["start"].get("state") != EXPIRED:
+                _set_start(record, EXPIRED)
+                native_state.write_session(session_id, record)
+            raise NativeError(410, "this start expired; start a new session")
+        if state == STARTING:
+            gen = record["start"].get("gen")
+            if gen is not None and _live_worker(session_id) == gen:
+                if native_state.read_lifecycle(gen).get("phase") == "ready":
+                    # It came up; the process that would have recorded it died. Record it now.
+                    _set_start(record, STARTED, gen)
+                    native_state.write_session(session_id, record)
+                    return None
+                raise NativeError(409, "this session is starting; wait for it")
+            # starting, but its worker is gone: treat as failed and start again below
+        # pending, failed, or a dead starting: (re)launch. Checked on EVERY launch (Hermes 5913).
+        if binding.source.engine_id != record["source_engine"]:
+            raise NativeError(409, "the session's original native source is not available")
+        ready, reason = readiness(prov)
+        if not ready:
+            raise NativeError(409, reason or "native client is not ready")
+        mode = "create"
+        if record.get("generations"):
+            # A retry after a failed launch: every earlier generation must be PROVED gone first.
+            if _settle_generations(session_id, record):
+                raise NativeError(
+                    409, "the previous start's worker is not proved gone; discard and start anew"
+                )
+            if record.get("native_id") is None:
+                intent = native_ownership.lookup(record["session_key"])
+                if intent is not None and intent.native_id is not None:
+                    record["native_id"] = intent.native_id
+            if record["adapter"] == "codex-app-server" and record.get("native_id"):
+                mode = "resume"
+            elif record["adapter"] == "claude-stream-json" and _claude_history_exists(
+                binding.source, record["native_id"]
+            ):
+                mode = "resume"
+        # The operator's start, durable BEFORE anything is reserved or launched.
+        _set_start(record, STARTING, None)
+        native_state.write_session(session_id, record)
+        try:
+            worker_id = _reserve_and_launch_locked(session_id, record, prov, binding, mode=mode)
+        except Exception:
+            _set_start(record, FAILED, None)
+            native_state.write_session(session_id, record)
+            raise
+        _set_start(record, STARTING, worker_id)
+        native_state.write_session(session_id, record)
+        return worker_id
+
+
+def _finish_start(session_id: str, worker_id: str, ok: bool) -> bool:
+    """CAS `starting(worker_id)` → started / failed. False when the state moved on meanwhile
+    (Discard won the race, or a newer start replaced this generation): then this is a no-op."""
+    with native_state.session_lock(session_id):
+        record = native_state.read_session(session_id)
+        if record is None:
+            return False
+        start = record.get("start") or {}
+        if start.get("state") != STARTING or start.get("gen") != worker_id:
+            return False
+        if ok and _live_worker(session_id) != worker_id:
+            ok = False  # it reported ready, then vanished before this landed
+        _set_start(record, STARTED if ok else FAILED, worker_id if ok else None)
+        native_state.write_session(session_id, record)
+        return ok
+
+
+async def start(engine_id: str, session_id: str) -> str:
+    try:
+        worker_id = await asyncio.to_thread(_start_sync, engine_id, session_id)
+    except (native_state.StateError, native_ownership.OwnershipError, storage.StateError) as exc:
+        raise NativeError(503, str(exc)) from None
+    if worker_id is None:
+        return session_id
+    try:
+        await _wait_ready(worker_id)
+    except NativeError:
+        # Contain it (internal: NOT a discard), then fail the start only if still ours.
+        with contextlib.suppress(Exception):
+            await stop(engine_id, session_id, discard=False)
+        await asyncio.to_thread(_finish_start, session_id, worker_id, False)
+        raise
+    if not await asyncio.to_thread(_finish_start, session_id, worker_id, True):
+        raise NativeError(409, "this start was discarded or replaced before it completed")
     return session_id
 
 
@@ -822,6 +1021,10 @@ def _relaunch_sync(engine_id: str, session_id: str) -> str | None:
         raise NativeError(409, str(exc)) from None
     with native_state.session_lock(session_id):
         _, record = _session(engine_id, session_id)
+        if _start_state(record) not in (None, STARTED):
+            # Refuse BEFORE touching the record: a turn must neither launch a skip creation that
+            # `start` has not launched, nor close it as a side effect (#1339, Hermes 5908).
+            raise NativeError(409, "this session has not been started; start or discard it")
         if binding.source.engine_id != record["source_engine"]:
             raise NativeError(409, "the session's original native source is not available")
         current = record.get("current_worker")
@@ -1069,6 +1272,8 @@ def project(journal: native_journal.Journal, record: dict, live_worker: str | No
         "cwd": journal.header["cwd"],
         "in_flight": in_flight,
         "model": record["request"]["model"],
+        "bypass": bool(record["request"].get("bypass")),
+        **pending_start_view(record),
         "model_effective": model_effective,
         "pending_requests": requests,
         "native": {
@@ -1342,12 +1547,16 @@ def _gone(session_id: str, worker_id: str) -> bool:
     return observation is not None and observation.load_state == "not-found"
 
 
-def _stop_sync(engine_id: str, session_id: str) -> str:
+def _stop_sync(engine_id: str, session_id: str, discard: bool = True) -> str:
     with native_state.session_lock(session_id, wait=STOP_TIMEOUT):
         record = native_state.read_session(session_id)
         if record is None:
             raise NativeError(404, "no such native session")
         record["closed"] = True
+        if discard and _start_state(record) in {PENDING, STARTING, FAILED, EXPIRED}:
+            # The operator's Discard of a skip creation that never completed its start: terminal,
+            # in the same write — a later /start, a late readiness and a turn all refuse (5926).
+            _set_start(record, DISCARDED)
         native_state.write_session(session_id, record)
         for worker_id in record.get("workers", []):
             identity = _identity(worker_id)
@@ -1411,8 +1620,21 @@ def _discharge_if_unused(engine_id: str, session_id: str, record: dict) -> None:
             )
 
 
-async def stop(engine_id: str, session_id: str) -> dict:
+def _discard_start(session_id: str) -> None:
+    """Record the operator's Discard of an unfinished skip start FIRST, under the session lock,
+    before any await (Hermes 5941): a completion that lands while the worker stop is in flight
+    then fails its CAS instead of marking the discarded creation started."""
+    with native_state.session_lock(session_id, wait=STOP_TIMEOUT):
+        record = native_state.read_session(session_id)
+        if record is not None and _start_state(record) in {PENDING, STARTING, FAILED, EXPIRED}:
+            _set_start(record, DISCARDED)
+            native_state.write_session(session_id, record)
+
+
+async def stop(engine_id: str, session_id: str, *, discard: bool = True) -> dict:
     await asyncio.to_thread(partial(_session, engine_id, session_id, retiring_ok=True))
+    if discard:
+        await asyncio.to_thread(_discard_start, session_id)
     gen = await asyncio.to_thread(_generation, session_id)
     if gen is not None:
         with contextlib.suppress(NativeError, _Unreachable):
@@ -1430,7 +1652,11 @@ async def stop(engine_id: str, session_id: str) -> dict:
                 },
                 timeout=5,
             )
-    return {"containment": await asyncio.to_thread(_stop_sync, engine_id, session_id)}
+    return {
+        "containment": await asyncio.to_thread(
+            partial(_stop_sync, engine_id, session_id, discard=discard)
+        )
+    }
 
 
 def _probe_sync(engine_id: str, session_id: str) -> str:

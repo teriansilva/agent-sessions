@@ -20,6 +20,17 @@
   composes: led;
   background: var(--status-degraded);
 }
+/* Skip-permissions (#1339) is a standing STATE of the session, so it takes the warning status
+   colour (design §3: red is reserved for active failure). Text uses --warn-text for contrast. */
+.skipChip {
+  border-color: var(--status-degraded);
+  color: var(--warn-text);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.skipShort {
+  display: none;
+}
 /* The share-link toast (#1332) is placed against the pane. */
 .pane {
   position: relative;
@@ -37,6 +48,16 @@
   background: var(--panel);
   font-size: 13px;
   color: var(--text-muted);
+}
+/* The same state in a map window, where the pane's head is hidden (#1339). */
+.skipBanner {
+  border-left-color: var(--status-degraded);
+  color: var(--warn-text);
+}
+.skipBanner b {
+  font: 700 11px var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 .card {
   border: 1px solid var(--line-strong);
@@ -165,6 +186,18 @@
   padding: 0 12px 12px;
 }
 @media (max-width: 480px) {
+  /* A phone keeps the chip short so it never clips the title; the full words stay for readers. */
+  .skipLong {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+  .skipShort {
+    display: inline;
+  }
   .kvRow {
     grid-template-columns: minmax(0, 1fr);
   }

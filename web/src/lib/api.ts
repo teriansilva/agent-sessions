@@ -604,13 +604,22 @@ export const api = {
   /** The models the client's own CLI reports (#1313). */
   structuredModels: (engine: string) =>
     getJsonWithDetail<StructuredModelList>(`/api/structured/clients/${enc(engine)}/models`),
-  /** `model` omitted = the client's default; otherwise one its CLI lists (#1313). */
-  structuredCreate: (engine: string, cwd: string, operation_id: string, model?: string) =>
+  /** `model` omitted = the client's default; otherwise one its CLI lists (#1313). `bypass` (#1339)
+   *  is fixed for the session; sent only when set, so a guarded create is the same request it
+   *  always was. */
+  structuredCreate: (
+    engine: string,
+    cwd: string,
+    operation_id: string,
+    model?: string,
+    bypass = false,
+  ) =>
     mutateJson<StructuredSnapshot>("POST", "/api/structured/sessions", {
       engine,
       cwd,
       operation_id,
       ...(model && model !== "default" ? { model } : {}),
+      ...(bypass ? { bypass: true } : {}),
     }),
   structuredSnapshot: (key: string) =>
     getJsonWithDetail<StructuredSnapshot>(structuredPath(key)),
@@ -639,6 +648,9 @@ export const api = {
   ) => mutateJson<unknown>("POST", `${structuredPath(key)}/decisions`, body),
   structuredInterrupt: (key: string, operation_id: string, turn_id: string) =>
     mutateJson<unknown>("POST", `${structuredPath(key)}/interrupt`, { operation_id, turn_id }),
+  /** Launch a skip-permissions creation the operator has seen succeed (#1339). Idempotent. */
+  structuredStart: (key: string) =>
+    mutateJson<StructuredSnapshot>("POST", `${structuredPath(key)}/start`),
   structuredStop: (key: string) =>
     mutateJson<{ containment: Containment }>("POST", `${structuredPath(key)}/stop`),
   structuredContainment: (key: string) =>

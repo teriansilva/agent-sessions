@@ -199,6 +199,7 @@ async def test_create_submit_replay_and_reconnect_observe_one_native_write(host,
     assert described.ready, described.reason
     assert described.operations == (
         "create",
+        "start",  # the second phase of a skip-permissions creation (#1339)
         "snapshot",
         "submit",
         "decide",
