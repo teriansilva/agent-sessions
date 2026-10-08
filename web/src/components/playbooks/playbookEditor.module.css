@@ -112,6 +112,9 @@
   gap: 28px;
   margin-top: 24px;
 }
+.canvasWorkspace {
+  grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
+}
 .steps {
   padding: 0;
   list-style: none;

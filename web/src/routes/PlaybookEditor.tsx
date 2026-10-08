@@ -43,6 +43,8 @@ import type {
 import type { PlaybookDetail, PlaybookWriteResult } from "../types/playbooks";
 import buttons from "../components/ui/actionButton.module.css";
 import styles from "../components/playbooks/playbookEditor.module.css";
+import { PlaybookFlowCanvas } from "../components/playbooks/PlaybookFlowCanvas";
+import { useIsMobile } from "../lib/useIsMobile";
 
 export default function PlaybookEditor() {
   const { playbookId } = useParams();
@@ -108,6 +110,9 @@ function Editor({
       Object.keys(baseline.documents).find((p) => p.startsWith("flows/")) ?? "",
   );
   const [selected, setSelected] = useState("");
+  const [view, setView] = useState<"canvas" | "list">("canvas");
+  const mobile = useIsMobile();
+  const canvas = !mobile && view === "canvas";
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const allowLeave = useRef(false);
@@ -466,9 +471,35 @@ function Editor({
               document(MANIFEST, { ...manifest, variables })
             }
           />
-          <div className={styles.workspace}>
+          <div
+            className={`${styles.workspace} ${canvas ? styles.canvasWorkspace : ""}`}
+          >
             <section aria-label="Flow steps">
               <h2 tabIndex={-1}>Flow steps</h2>
+              {!mobile && (
+                <div className={styles.actions} aria-label="Flow view">
+                  <button
+                    type="button"
+                    className={
+                      view === "canvas" ? buttons.primary : buttons.ghost
+                    }
+                    aria-pressed={view === "canvas"}
+                    onClick={() => setView("canvas")}
+                  >
+                    Canvas
+                  </button>
+                  <button
+                    type="button"
+                    className={
+                      view === "list" ? buttons.primary : buttons.ghost
+                    }
+                    aria-pressed={view === "list"}
+                    onClick={() => setView("list")}
+                  >
+                    List
+                  </button>
+                </div>
+              )}
               <Choice
                 label="Flow"
                 value={path}
@@ -481,51 +512,71 @@ function Editor({
                   setSelected("");
                 }}
               />
-              <Choice
-                label="Default flow"
-                value={manifest.flows?.default ?? ""}
-                choices={paths.map(flowId)}
-                optional
-                onChange={(value) =>
-                  document(MANIFEST, {
-                    ...manifest,
-                    flows: value ? { default: value } : {},
-                  })
-                }
-              />
-              <button
-                type="button"
-                className={buttons.ghost}
-                disabled={paths.length >= schema.limits.flows}
-                onClick={() => {
-                  const p = flowPath(freshId("flow"));
-                  document(p, {
-                    format: manifest.format,
-                    title: "New flow",
-                    steps: [newStep()],
-                  });
-                  setPath(p);
-                  setSelected("");
-                }}
-              >
-                Add flow
-              </button>
+              <details>
+                <summary>Flow settings</summary>
+                <Choice
+                  label="Default flow"
+                  value={manifest.flows?.default ?? ""}
+                  choices={paths.map(flowId)}
+                  optional
+                  onChange={(value) =>
+                    document(MANIFEST, {
+                      ...manifest,
+                      flows: value ? { default: value } : {},
+                    })
+                  }
+                />
+                <button
+                  type="button"
+                  className={buttons.ghost}
+                  disabled={paths.length >= schema.limits.flows}
+                  onClick={() => {
+                    const p = flowPath(freshId("flow"));
+                    document(p, {
+                      format: manifest.format,
+                      title: "New flow",
+                      steps: [newStep()],
+                    });
+                    setPath(p);
+                    setSelected("");
+                  }}
+                >
+                  Add flow
+                </button>
+                {flow && (
+                  <>
+                    <TextField
+                      label="Flow title"
+                      value={flow.title}
+                      onChange={(title) => document(path, { ...flow, title })}
+                      field="title"
+                    />
+                    <TextField
+                      label="Flow description"
+                      value={flow.description ?? ""}
+                      onChange={(description) =>
+                        document(path, { ...flow, description })
+                      }
+                    />
+                  </>
+                )}
+              </details>
               {flow && (
                 <>
-                  <TextField
-                    label="Flow title"
-                    value={flow.title}
-                    onChange={(title) => document(path, { ...flow, title })}
-                    field="title"
-                  />
-                  <TextField
-                    label="Flow description"
-                    value={flow.description ?? ""}
-                    onChange={(description) =>
-                      document(path, { ...flow, description })
-                    }
-                  />
-                  <ol className={styles.steps}>
+                  {canvas && (
+                    <PlaybookFlowCanvas
+                      key={path}
+                      steps={flow.steps}
+                      selected={selectedStep?.id}
+                      onSelect={selectStep}
+                      onChange={
+                        busy
+                          ? undefined
+                          : (steps) => document(path, { ...flow, steps })
+                      }
+                    />
+                  )}
+                  <ol className={styles.steps} hidden={canvas}>
                     {flow.steps.map((s, index) => (
                       <li key={s.id} data-selected={selectedStep?.id === s.id}>
                         <button
@@ -584,7 +635,7 @@ function Editor({
                       </li>
                     ))}
                   </ol>
-                  <p>
+                  <p hidden={canvas}>
                     Order controls presentation. Dependencies determine when a
                     step can begin.
                   </p>

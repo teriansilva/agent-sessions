@@ -2,13 +2,19 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import { ApiError, api } from "../../lib/api";
-import { PLAYBOOKS_PATH, playbookPath, playbookEditPath } from "../../lib/routes";
+import {
+  PLAYBOOKS_PATH,
+  playbookPath,
+  playbookEditPath,
+} from "../../lib/routes";
 import type {
   PlaybookDetail,
   PlaybookWriteResult,
 } from "../../types/playbooks";
 import { PlaybookDialog } from "./PlaybookDialog";
-import { PlaybookActor, PlaybookSource } from "./PlaybookCard";
+import { PlaybookSource } from "./PlaybookCard";
+import { PlaybookFlowPreview } from "./PlaybookFlowPreview";
+import { flowPath, type Step } from "./playbookDraft";
 import { PlaybookFleetView } from "./PlaybookFleet";
 import { errorText, usePlaybookRead } from "./usePlaybooks";
 import buttons from "../ui/actionButton.module.css";
@@ -97,8 +103,7 @@ export function PlaybookDetailPage({ id }: { id: string }) {
       const record =
         e instanceof ApiError
           ? (e.record as
-              | { projects?: { id: string; name?: string }[] }
-              | undefined)
+              { projects?: { id: string; name?: string }[] } | undefined)
           : undefined;
       if (record?.projects?.length)
         text += ` Remove deployments first: ${record.projects.map((p) => p.name || p.id).join(", ")}.`;
@@ -133,7 +138,11 @@ export function PlaybookDetailPage({ id }: { id: string }) {
               <PlaybookSource card={pb} />
             </div>
             <div className={styles.actions}>
-              {pb.ok && pb.editable && <Link className={buttons.primary} to={playbookEditPath(id)}>Edit playbook</Link>}
+              {pb.ok && pb.editable && (
+                <Link className={buttons.primary} to={playbookEditPath(id)}>
+                  Edit playbook
+                </Link>
+              )}
               {pb.ok && (
                 <button
                   className={buttons.ghost}
@@ -196,23 +205,12 @@ export function PlaybookDetailPage({ id }: { id: string }) {
                   {(pb.flows ?? []).map((flow) => (
                     <section key={flow.id} className={styles.section}>
                       <h2>Flow // {flow.title}</h2>
-                      <ol className={styles.stepList}>
-                        {flow.steps.map((step) => (
-                          <li key={step.id}>
-                            <div>
-                              <strong>{step.title}</strong>
-                              <PlaybookActor step={step} />
-                            </div>
-                            <p>
-                              {step.note
-                                ? "Note · gates nothing"
-                                : step.after.length
-                                  ? `After: ${step.after.join(", ")}`
-                                  : "Starting step"}
-                            </p>
-                          </li>
-                        ))}
-                      </ol>
+                      <PlaybookFlowPreview
+                        steps={
+                          (pb.documents?.[flowPath(flow.id)]?.steps ??
+                            flow.steps) as Step[]
+                        }
+                      />
                     </section>
                   ))}
                   {!pb.flows?.length && <p>No flow defined.</p>}

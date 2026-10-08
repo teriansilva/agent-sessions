@@ -34,11 +34,14 @@ whole fleet from a laptop or your phone.
   bundle into the local library, choose the default, or delete an unused local copy. Projects
   stay on their deployed revision; verify their recorded deployment on demand and review the
   exact file changes before applying an eligible fleet update. Interrupted updates retain their
-  retry identity in the current browser tab. Flow editing and the new-project wizard are still
-  separate, unfinished slices of the playbook rollout.
+  retry identity in the current browser tab. Flow execution and the new-project wizard's
+  playbook selection remain separate slices of the rollout.
 - **Playbook authoring.** Open **Library → Playbooks → New playbook**, name the playbook,
   then add steps and choose each step's actor and model. Dependencies determine execution order;
   checklist evidence, bounded rework and independent-review constraints describe completion.
+  On desktop, **Canvas** draws dependency arrows and bounded rework paths; select a step to edit
+  it in the inspector. **List** offers the same controls for keyboard use and is used on phones.
+  Dragging nodes changes only the layout. Saving a flow does not execute it.
   **Save playbook** adds it to your local library; **Edit playbook** opens a saved local bundle.
   Duplicate bundled/catalog playbooks to local before editing. A conflicting save keeps the draft
   for comparison, saving as a new playbook, or explicit discard. Drafts live in this tab; cancel

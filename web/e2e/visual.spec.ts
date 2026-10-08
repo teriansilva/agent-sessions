@@ -94,6 +94,11 @@ async function prepareOpenFirstWindow(page: Page): Promise<void> {
 /** Run the entry's declared interaction, if any, between `goto` and `waitFor`. */
 async function runPrepare(page: Page, p: VisualPath): Promise<void> {
   if (p.prepare === "open-first-window") await prepareOpenFirstWindow(page);
+  if (p.prepare === "playbook-flow") {
+    const section = page.getByRole("region", { name: "Flow steps", exact: true });
+    await section.waitFor();
+    await section.evaluate((el) => el.scrollIntoView({ block: "start" }));
+  }
   if (p.prepare === "resource-controls" || p.prepare === "resource-usage") {
     await page.locator('#resources-heading + p').waitFor();
     await page.getByLabel("Console session task limit").waitFor();

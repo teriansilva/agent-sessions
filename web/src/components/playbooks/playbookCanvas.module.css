@@ -1,0 +1,90 @@
+.root {
+  min-width: 0;
+}
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 10px 0;
+}
+.toolbar button {
+  min-height: 44px;
+  min-width: 44px;
+}
+.canvas {
+  height: 460px;
+  min-width: 0;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-0);
+}
+.node {
+  width: 224px;
+  min-height: 136px;
+  padding: 14px 18px;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-1);
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.node[data-selected="true"] {
+  border-color: var(--accent);
+  outline: 1px solid var(--accent);
+}
+.node strong {
+  display: block;
+  font-size: 14px;
+}
+.id,
+.meta {
+  display: block;
+  font: 11px var(--font-mono);
+  color: var(--text-2);
+  margin: 8px 0;
+}
+.edgeLabel {
+  position: absolute;
+  max-width: 260px;
+  padding: 4px 8px;
+  border: 1px dashed var(--line-strong);
+  background: var(--bg-0);
+  color: var(--text-2);
+  font: 11px var(--font-mono);
+  overflow-wrap: anywhere;
+}
+.hint {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-2);
+}
+.root :global(.react-flow__handle) {
+  width: 18px;
+  height: 28px;
+  border: 1px solid var(--text-2);
+  border-radius: 0;
+  background: var(--bg-2);
+}
+.root :global(.react-flow__handle:hover) {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+.root :global(.react-flow__handle).reworkHandle {
+  opacity: 0;
+  pointer-events: none;
+  width: 1px;
+  height: 1px;
+}
+.root :global(.react-flow__node:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+.root :global(.react-flow__edge.selected .react-flow__edge-path) {
+  stroke: var(--accent) !important;
+  stroke-width: 3;
+}
+@media (pointer: coarse) {
+  .root :global(.react-flow__handle) {
+    width: 44px;
+    height: 44px;
+  }
+}

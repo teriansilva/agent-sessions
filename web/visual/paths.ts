@@ -29,7 +29,11 @@ export type VisualPath = {
   /** An interaction to run after `goto`, before `waitFor` (#1109): the consolidated window
    *  chrome only exists on an OPEN window, and a capture that only visits a route cannot show
    *  it. The one shipped step opens the first session chip as a window. */
-  prepare?: "open-first-window" | "resource-controls" | "resource-usage";
+  prepare?:
+    | "open-first-window"
+    | "resource-controls"
+    | "resource-usage"
+    | "playbook-flow";
 };
 
 /** Screen formats — every area is captured at each (the operator asked for several). */
@@ -60,19 +64,21 @@ export const VISUAL_PATHS: VisualPath[] = [
     group: "authed",
     path: "/settings/system",
     name: "settings-resources",
-    description: "Settings — finite next-launch resource budgets and environment overrides",
+    description:
+      "Settings — finite next-launch resource budgets and environment overrides",
     requireAuth: "admin",
     prepare: "resource-controls",
-    waitFor: { selector: '#resources-heading', timeoutMs: 12000 },
+    waitFor: { selector: "#resources-heading", timeoutMs: 12000 },
   },
   {
     group: "authed",
     path: "/settings/system",
     name: "settings-resource-usage",
-    description: "Settings — observed running task budgets and inherited pressure",
+    description:
+      "Settings — observed running task budgets and inherited pressure",
     requireAuth: "admin",
     prepare: "resource-usage",
-    waitFor: { selector: '#resource-usage-heading', timeoutMs: 12000 },
+    waitFor: { selector: "#resource-usage-heading", timeoutMs: 12000 },
   },
   {
     group: "authed",
@@ -80,13 +86,18 @@ export const VISUAL_PATHS: VisualPath[] = [
     name: "playbook-new",
     description: "New local playbook — identity and accessible flow editor",
     requireAuth: "admin",
-    waitFor: { selector: '[data-testid="playbook-editor"] input[data-field="identity.name"]', timeoutMs: 12000 },
+    waitFor: {
+      selector:
+        '[data-testid="playbook-editor"] input[data-field="identity.name"]',
+      timeoutMs: 12000,
+    },
   },
   {
     group: "authed",
     path: "/library/playbooks/forge-workflow/edit",
     name: "playbook-editor",
-    description: "Playbook editor — preserved bundle and step inspector",
+    description: "Playbook editor — canvas/list flow and shared step inspector",
+    prepare: "playbook-flow",
     requireAuth: "admin",
     waitFor: { selector: '[aria-label="Step inspector"]', timeoutMs: 12000 },
   },
@@ -96,15 +107,22 @@ export const VISUAL_PATHS: VisualPath[] = [
     name: "playbooks",
     description: "Playbook gallery — flow previews, source and domain filters",
     requireAuth: "admin",
-    waitFor: { selector: '[data-testid="playbook-card-forge-workflow"]', timeoutMs: 12000 },
+    waitFor: {
+      selector: '[data-testid="playbook-card-forge-workflow"]',
+      timeoutMs: 12000,
+    },
   },
   {
     group: "authed",
     path: "/library/playbooks/forge-workflow",
     name: "playbook-detail",
-    description: "Playbook detail — flow actors, materials, variables and project deployments",
+    description:
+      "Playbook detail — flow actors, materials, variables and project deployments",
     requireAuth: "admin",
-    waitFor: { selector: '[data-testid="playbooks-page"] h1', timeoutMs: 12000 },
+    waitFor: {
+      selector: '[data-testid="playbooks-page"] h1',
+      timeoutMs: 12000,
+    },
   },
   {
     group: "public",
@@ -164,7 +182,8 @@ export const VISUAL_PATHS: VisualPath[] = [
     group: "authed",
     path: "/settings/agents/apichat",
     name: "settings-agent-tools",
-    description: "API agent endpoint — read and propose edits opt-in with per-file consent",
+    description:
+      "API agent endpoint — read and propose edits opt-in with per-file consent",
     requireAuth: "admin",
     waitFor: { selector: 'input[value="write"]', timeoutMs: 8000 },
   },
@@ -172,7 +191,8 @@ export const VISUAL_PATHS: VisualPath[] = [
     group: "authed",
     path: "/s/apichat/019e2ba1-1590-7003-8e4a-51ab62cec905",
     name: "chat-edit-approval",
-    description: "API agent — pending file change, complete diff and separate approval controls",
+    description:
+      "API agent — pending file change, complete diff and separate approval controls",
     requireAuth: "admin",
     waitFor: { selector: '[data-testid="chat-proposal"]', timeoutMs: 12000 },
   },
