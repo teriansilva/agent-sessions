@@ -647,3 +647,84 @@ test("a client that takes no pictures shows no attach control (#1332)", async ({
   await expect(page.getByRole("textbox", { name: /Message/ })).toBeVisible();
   await expect(page.getByRole("button", { name: "Attach images" })).toHaveCount(0);
 });
+
+// ---- templates and sent history (#1332 Phase 3b) -----------------------------------------------
+
+for (const theme of ["dark", "light"] as const) {
+  test(`a template inserts into the message, sends with its picture, and Sent restores it (#1332, ${theme})`, async ({
+    page,
+  }) => {
+    await setup(page, theme);
+    await page.addInitScript(() => localStorage.removeItem("as:sent:v1"));
+    let posted: Json | null = null;
+    await page.route("**/api/template-variables", (r) => r.fulfill({ json: { variables: [], limits: {} } }));
+    await page.route("**/api/templates", (r) =>
+      r.fulfill({
+        json: {
+          templates: [
+            {
+              id: "repro",
+              name: "Repro steps",
+              description: "Reproduce a UI bug",
+              tags: [],
+              body: "Reproduce {{what}} in a real browser",
+              fields: [{ name: "what", label: "What", default: "", required: true }],
+              images: [{ name: "shot.png", path: `/home/u/.agent-sessions/uploads/${STORED}` }],
+              created_at: 1,
+              updated_at: 1,
+              used_count: 0,
+              last_used_at: null,
+            },
+          ],
+        },
+      }),
+    );
+    await page.route(`**/api/uploads/${STORED}`, (r) =>
+      r.fulfill({ body: Buffer.from(PNG_B64, "base64"), contentType: "image/png" }),
+    );
+    await serveSession(page, () =>
+      posted
+        ? snapshot({
+            images: true,
+            revision: 5,
+            turns: [
+              turn({
+                turn_id: posted.operation_id,
+                operation_id: posted.operation_id,
+                state: "completed",
+                text: posted.text,
+                reply: "Reproduced.",
+                tools: [],
+                attachments: [{ stored: STORED, mime: "image/png" }],
+              }),
+            ],
+          })
+        : snapshot({ images: true }),
+    );
+    await page.route(new RegExp(`/api/structured/sessions/codex-api(?::|%3A)${ID}/turns$`), async (r) => {
+      posted = r.request().postDataJSON() as Json;
+      await r.fulfill({ status: 202, json: { state: "running" } });
+    });
+    await page.goto(URL_PATH);
+    const tools = page.getByRole("toolbar", { name: "Message tools" });
+    await expect(tools).toBeVisible();
+    await targets(page, tools);
+    await noOverflow(page);
+    await tools.getByRole("button", { name: /templates/i }).click();
+    await page.getByText("Repro steps").click();
+    await page.getByRole("textbox", { name: /^What/ }).fill("the logout bug");
+    await page.getByRole("button", { name: "Insert Repro steps into message" }).click();
+    const box = page.getByRole("textbox", { name: /Message/ });
+    await expect(box).toHaveValue("Reproduce the logout bug in a real browser");
+    await expect(page.getByTestId("structured-attachment")).toHaveCount(1);
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect.poll(() => posted).not.toBeNull();
+    expect(posted).toMatchObject({ text: "Reproduce the logout bug in a real browser", attachments: [STORED] });
+    await expect(box).toHaveValue("");
+    await tools.getByRole("button", { name: /^Sent$/ }).click();
+    await page.getByRole("button", { name: /restore/i }).first().click();
+    await expect(box).toHaveValue("Reproduce the logout bug in a real browser");
+    await expect(page.getByTestId("structured-attachment")).toHaveCount(1);
+    await noOverflow(page);
+  });
+}

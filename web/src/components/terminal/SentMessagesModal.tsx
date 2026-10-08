@@ -104,14 +104,23 @@ export function SentMessagesModal({
                 <span className={styles.when}>
                   {relTime(Math.floor(e.ts / 1000))}
                 </span>
-                {!e.confirmed && (
-                  <span
-                    className={styles.badge}
-                    title="This send never reached the socket"
-                  >
-                    Unconfirmed
-                  </span>
-                )}
+                {!e.confirmed &&
+                  (e.operation ? (
+                    // An API send whose answer was lost: it may well have been recorded.
+                    <span
+                      className={styles.badge}
+                      title="BattleLab never heard back about this send. Restoring it unchanged sends it again safely — the server recognises it and never runs it twice."
+                    >
+                      Outcome unknown
+                    </span>
+                  ) : (
+                    <span
+                      className={styles.badge}
+                      title="This send never reached the socket"
+                    >
+                      Unconfirmed
+                    </span>
+                  ))}
                 {e.session !== currentSession && (
                   <span className={styles.other}>· other session</span>
                 )}

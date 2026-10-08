@@ -1,5 +1,7 @@
 import {
   ArrowLeftRight,
+  BookMarked,
+  History,
   PanelRight,
   Paperclip,
   ScrollText,
@@ -21,7 +23,16 @@ import { isNewSessionPlaceholder } from "../../app/sessionsStore";
 import { useSessionRow } from "../../app/useSessionRow";
 import { ApiError, api } from "../../lib/api";
 import { imageFilesFromAsyncClipboard, imageFilesFromData } from "../../lib/clipboardImages";
-import { uploadStoredName } from "../../lib/templateMessage";
+import {
+  appendSent,
+  confirmOperation,
+  confirmSent,
+  readSent,
+  SENT_HISTORY_EVENT,
+  SENT_HISTORY_KEY,
+  type SentMessage,
+} from "../../lib/sentHistory";
+import { substituteFields, uploadStoredName } from "../../lib/templateMessage";
 import { shareLink } from "../../lib/shareLink";
 import type { TermStatus } from "../../lib/termSocket";
 import { useIsMobile } from "../../lib/useIsMobile";
@@ -29,10 +40,13 @@ import { HandoffModal } from "../terminal/HandoffModal";
 import { HeadActions, type HeadAction } from "../terminal/HeadActions";
 import type { PaneHost } from "../terminal/paneHost";
 import { SessionRecapModal } from "../terminal/SessionRecapModal";
+import { SentMessagesModal } from "../terminal/SentMessagesModal";
+import { TemplatePickerModal } from "../templates/TemplatePickerModal";
 import { UploadImage } from "../templates/UploadImage";
 import term from "../terminal/Terminal.module.css";
 import type {
   Containment,
+  Template,
   StructuredRequest,
   StructuredSnapshot,
   StructuredTurn,
@@ -364,6 +378,38 @@ export function StructuredPane({
   // onto the next message (Hermes on #1345, round 2).
   const sending = useRef(false);
   const generation = useRef(0);
+  // Sent history and templates (#1332 Phase 3b): the terminal composer's ring and picker.
+  const [history, setHistory] = useState<SentMessage[]>(() => readSent());
+  // Open = the trigger focus returns to on close; null = closed.
+  const [historyOpen, setHistoryOpen] = useState<HTMLElement | null>(null);
+  const [templatesOpen, setTemplatesOpen] = useState<HTMLElement | null>(null);
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  /** The history entry of the operation in flight: one entry per operation, not per retry. */
+  const historyFor = useRef<{ op: string; id: string | null } | null>(null);
+  // An "outcome unknown" entry of THIS session is settled by the conversation itself: once its
+  // operation shows up as a turn, the server had it (Hermes on #1346).
+  useEffect(() => {
+    if (!snap) return;
+    const turns = new Set(snap.turns.map((t) => t.turn_id));
+    const settled = readSent().filter(
+      (e) => !e.confirmed && e.session === key && e.operation && turns.has(e.operation),
+    );
+    for (const e of settled) confirmOperation(e.operation!);
+  }, [snap, key]);
+  // The ring is shared: another tab (`storage`) or another composer in this tab can write the
+  // first entry after this pane mounted, and Sent must appear then (Hermes on #1346).
+  useEffect(() => {
+    const refresh = () => setHistory(readSent());
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === null || e.key === SENT_HISTORY_KEY) refresh();
+    };
+    window.addEventListener("storage", onStorage);
+    window.addEventListener(SENT_HISTORY_EVENT, refresh);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener(SENT_HISTORY_EVENT, refresh);
+    };
+  }, []);
   const fileRef = useRef<HTMLInputElement>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -483,11 +529,27 @@ export function StructuredPane({
     if (slots.current.inFlight > 0 || sending.current) return; // a picture is still on its way
     const attempt = operationFor(op.current, sendIdentity(text, names), uuid);
     op.current = attempt;
+    if (historyFor.current?.op !== attempt.id) {
+      // Recorded at submit time, untrimmed, so Restore round-trips exactly what was typed.
+      historyFor.current = {
+        op: attempt.id,
+        id: appendSent({ text: draft, attachments: names, session: key, operation: attempt.id }),
+      };
+      setHistory(readSent());
+    }
+    const sent = () => {
+      // The server recorded the turn — never a claim that the agent has acted on it.
+      if (historyFor.current?.op === attempt.id && historyFor.current.id) {
+        confirmSent(historyFor.current.id);
+        setHistory(readSent());
+      }
+    };
     sending.current = true;
     setBusy(true);
     setSendError(null);
     try {
       await api.structuredSubmit(key, attempt.id, text, snap.revision, names);
+      sent();
       op.current = null;
       setDraft("");
       clearAttachments();
@@ -496,6 +558,7 @@ export function StructuredPane({
     } catch (e) {
       const s = await load();
       if (s?.turns.some((t) => t.turn_id === attempt.id)) {
+        sent();
         op.current = null;
         setDraft("");
         clearAttachments();
@@ -584,13 +647,82 @@ export function StructuredPane({
   /** Upload pictures into this send (#1332 Phase 3). The server re-checks every one — format by
    *  content, size, count — when the turn is submitted; this only keeps the obvious out. */
   const clearAttachments = () => {
+    // A new draft: the old one's pending uploads and clipboard reads are abandoned — their slots
+    // are released here, and their completions (fenced by generation) touch nothing of this one.
     generation.current += 1;
     slots.current.held = 0;
+    slots.current.inFlight = 0;
+    setInFlight(0);
     setAttachments([]);
   };
   const removeAttachment = (stored: string) => {
     slots.current.held -= 1;
     setAttachments((prev) => prev.filter((x) => x.stored !== stored));
+  };
+
+  // The retry this pane is holding (a lost answer, a failed re-read) has landed: retire its id
+  // so Send can never replay it (Hermes on #1346). If the draft is still exactly that message, it
+  // WAS sent — clear it as a send does; an edited draft stays, as a new request.
+  useEffect(() => {
+    const held = op.current;
+    if (!held || !snap || sending.current) return;
+    if (!snap.turns.some((t) => t.turn_id === held.id)) return;
+    op.current = null;
+    const names = attachments.map((a) => a.stored);
+    if (sendIdentity(draft.trim(), names) === held.text) {
+      setDraft("");
+      clearAttachments();
+      setSendError(null);
+    }
+  }, [snap, draft, attachments]);
+
+  /** Restore / Insert (#1332 Phase 3b): replace the draft with `text` and these uploads. Only
+   *  pictures this client takes come along, up to the cap; what is left behind is said. */
+  const fill = (text: string, uploads: string[]): string[] | null => {
+    if (sending.current || slots.current.inFlight > 0) return null; // tools are disabled then too
+    clearAttachments();
+    const pictures = snap?.images ? uploads.filter((p) => /\.(png|jpe?g|gif|webp)$/i.test(p)) : [];
+    const kept = pictures.slice(0, MAX_IMAGES).map((p) => {
+      const stored = uploadStoredName(p);
+      return { name: stored, stored };
+    });
+    slots.current.held = kept.length;
+    setAttachments(kept);
+    op.current = null; // a new draft is a new request
+    setDraft(text);
+    const dropped = uploads.length - kept.length;
+    setSendError(
+      dropped > 0
+        ? `${dropped} attachment${dropped === 1 ? " was" : "s were"} left out: ${
+            snap?.images ? `only up to ${MAX_IMAGES} images can be sent here` : `${agent} takes no images`
+          }.`
+        : null,
+    );
+    requestAnimationFrame(() => taRef.current?.focus());
+    return kept.map((k) => k.stored);
+  };
+  // Restore and Insert make a FRESH draft, and only while nothing is in flight — a restore can
+  // never abandon work or interleave with a send (Hermes on #1346). One exception keeps a
+  // possibly-recorded turn from running twice: THIS session's entry whose outcome is unknown
+  // re-sends unchanged under its own operation id, so the server replays it if it has it. A
+  // confirmed entry is a deliberate repeat (new id); any edit is a new request.
+  const restoreSent = (entry: SentMessage) => {
+    setHistoryOpen(null);
+    const names = fill(entry.text, entry.attachments);
+    if (names && entry.operation && entry.session === key && !entry.confirmed) {
+      op.current = { id: entry.operation, text: sendIdentity(entry.text.trim(), names) };
+      historyFor.current = { op: entry.operation, id: entry.id };
+    }
+  };
+  // INSERT only: a template with secret fields is rendered and delivered by the server, which
+  // has no structured-session path yet — the picker disables Insert for it, so no secret ever
+  // reaches this text box.
+  const insertTemplate = (t: Template, values: Record<string, string>) => {
+    setTemplatesOpen(null);
+    fill(
+      substituteFields(t.body, t.fields, values),
+      t.images.map((i) => i.path),
+    );
   };
 
   const attach = async (files: File[]) => {
@@ -624,13 +756,18 @@ export function StructuredPane({
         } catch {
           failed = true;
         } finally {
-          slots.current.inFlight -= 1;
-          setInFlight(slots.current.inFlight);
+          // An abandoned draft's slot was already released by `clearAttachments`.
+          if (gen === generation.current) {
+            slots.current.inFlight -= 1;
+            setInFlight(slots.current.inFlight);
+          }
         }
       }
     } finally {
-      if (failed) setSendError("An image could not be uploaded.");
-      if (fileRef.current) fileRef.current.value = "";
+      if (gen === generation.current) {
+        if (failed) setSendError("An image could not be uploaded.");
+        if (fileRef.current) fileRef.current.value = "";
+      }
     }
   };
 
@@ -657,6 +794,7 @@ export function StructuredPane({
     setInFlight(slots.current.inFlight);
     const gen = generation.current;
     const release = () => {
+      if (gen !== generation.current) return; // released already, with its draft
       slots.current.inFlight -= 1;
       setInFlight(slots.current.inFlight);
     };
@@ -977,6 +1115,35 @@ export function StructuredPane({
           {sendError ?? actionError}
         </p>
       )}
+      {!readOnly && snap && (
+        <div className={styles.tools} role="toolbar" aria-label="Message tools">
+          <button
+            type="button"
+            className={styles.tool}
+            title="Use a saved template — fill it in, then insert it here"
+            disabled={busy || uploading}
+            onClick={(e) => setTemplatesOpen(e.currentTarget)}
+          >
+            <BookMarked size={16} aria-hidden />
+            Templates
+          </button>
+          {history.length > 0 && (
+            <button
+              type="button"
+              className={styles.tool}
+              title={`Sent messages (last ${history.length})`}
+              disabled={busy || uploading}
+              onClick={(e) => {
+                setHistory(readSent()); // another tab may have sent since we last looked
+                setHistoryOpen(e.currentTarget);
+              }}
+            >
+              <History size={16} aria-hidden />
+              Sent
+            </button>
+          )}
+        </div>
+      )}
       {attachments.length > 0 && (
         <ul className={styles.attachments} aria-label="Attached images">
           {attachments.map((a) => (
@@ -1006,6 +1173,7 @@ export function StructuredPane({
         }}
       >
         <textarea
+          ref={taRef}
           className={chat.ta}
           aria-label={`Message ${agent}`}
           placeholder={
@@ -1061,6 +1229,24 @@ export function StructuredPane({
           {uploading ? "Uploading" : "Send"}
         </button>
       </form>
+      {historyOpen && (
+        <SentMessagesModal
+          entries={history}
+          currentSession={key}
+          onRestore={restoreSent}
+          onClose={() => setHistoryOpen(null)}
+          returnFocusTo={historyOpen}
+        />
+      )}
+      {templatesOpen && (
+        <TemplatePickerModal
+          onInsert={insertTemplate}
+          insertLabel="Insert into message"
+          insertTarget="message"
+          onClose={() => setTemplatesOpen(null)}
+          returnFocusTo={templatesOpen}
+        />
+      )}
     </div>
   );
 }

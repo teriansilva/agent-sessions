@@ -27,9 +27,14 @@ export interface SentMessage {
   confirmed: boolean;
   /** Engine-qualified session id, or null for a not-yet-reconciled fresh launch. */
   session: string | null;
+  /** API sessions (#1332): the structured operation id. Unconfirmed WITH one means the outcome
+   *  is unknown, not "never sent" — and re-sending it unchanged under this id is idempotent. */
+  operation?: string;
 }
 
 export const SENT_HISTORY_KEY = "as:sent:v1";
+/** Dispatched on `window` after every write in this tab. */
+export const SENT_HISTORY_EVENT = "as:sent-changed";
 /** The operator asked for "the last 10". */
 export const MAX_ENTRIES = 10;
 /** Total serialized budget, so one giant paste can't exhaust the localStorage quota. */
@@ -53,7 +58,8 @@ function isEntry(v: unknown): v is SentMessage {
     e.attachments.every((a) => typeof a === "string") &&
     typeof e.ts === "number" &&
     typeof e.confirmed === "boolean" &&
-    (e.session === null || typeof e.session === "string")
+    (e.session === null || typeof e.session === "string") &&
+    (e.operation === undefined || typeof e.operation === "string")
   );
 }
 
@@ -84,6 +90,9 @@ function write(entries: SentMessage[]): boolean {
   if (!s) return false;
   try {
     s.setItem(SENT_HISTORY_KEY, JSON.stringify(entries));
+    // `storage` fires in OTHER tabs only; a second composer in this tab (a map window, an API
+    // pane) listens for this instead (#1332 Phase 3b).
+    if (typeof window !== "undefined") window.dispatchEvent(new Event(SENT_HISTORY_EVENT));
     return true;
   } catch {
     return false; // quota exceeded / private mode — the send must not care
@@ -104,6 +113,7 @@ export function appendSent(entry: {
   text: string;
   attachments: string[];
   session: string | null;
+  operation?: string;
 }): string | null {
   const id = newId();
   const next = fit([
@@ -117,6 +127,15 @@ export function appendSent(entry: {
 export function confirmSent(id: string): void {
   const entries = readSent();
   const hit = entries.find((e) => e.id === id);
+  if (!hit || hit.confirmed) return;
+  hit.confirmed = true;
+  write(entries);
+}
+
+/** Mark the entry recorded under an API operation id as delivered (the server has the turn). */
+export function confirmOperation(operation: string): void {
+  const entries = readSent();
+  const hit = entries.find((e) => e.operation === operation);
   if (!hit || hit.confirmed) return;
   hit.confirmed = true;
   write(entries);

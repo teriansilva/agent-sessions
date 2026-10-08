@@ -5,8 +5,9 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { resetRoster, setRoster } from "../../app/engineRoster";
 import { ApiError, api } from "../../lib/api";
 import { imageFilesFromAsyncClipboard } from "../../lib/clipboardImages";
+import { appendSent, clearSent, readSent } from "../../lib/sentHistory";
 import fixture from "../../test/roster.fixture.json";
-import type { EngineInfo, StructuredSnapshot, StructuredTurn } from "../../types/api";
+import type { EngineInfo, StructuredSnapshot, StructuredTurn, Template } from "../../types/api";
 import { RuntimeGate } from "../terminal/RuntimeGate";
 import { StructuredPane } from "./StructuredPane";
 
@@ -22,6 +23,8 @@ vi.mock("../../lib/api", async () => {
       structuredInterrupt: vi.fn(),
       structuredStop: vi.fn(),
       upload: vi.fn(),
+      templates: vi.fn(),
+      templateVariables: vi.fn(() => Promise.resolve({ variables: [], limits: {} })),
       uploadBlob: vi.fn(() => new Promise(() => {})),
     },
   };
@@ -628,4 +631,218 @@ test("a paste while a message is sending joins nothing: no upload, no stray chip
   await act(async () => post());
   await waitFor(() => expect(screen.queryAllByTestId("structured-attachment")).toHaveLength(0));
   expect(api.upload).toHaveBeenCalledTimes(1); // only the picture that was sent
+});
+
+// ---- sent history and templates (#1332 Phase 3b) ------------------------------------------------
+
+function template(over: Partial<Template> = {}): Template {
+  return {
+    id: "repro",
+    name: "Repro steps",
+    description: "",
+    tags: [],
+    body: "Reproduce {{what}} in a real browser",
+    fields: [{ name: "what", label: "What", default: "", required: true }],
+    images: [{ name: "shot.png", path: "/u/.agent-sessions/uploads/20261008-020000-shot.png" }],
+    created_at: 1,
+    updated_at: 1,
+    used_count: 0,
+    last_used_at: null,
+    ...over,
+  };
+}
+
+test("a send is recorded once per operation, confirmed only when the server has it, and Restore refills it", async () => {
+  clearSent();
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(snap({ images: true }));
+  vi.mocked(api.structuredSubmit).mockRejectedValueOnce(new TypeError("network")).mockResolvedValueOnce({});
+  uploaded(7);
+  renderPane();
+  await userEvent.upload(await screen.findByTestId("structured-file-input"), [png()]);
+  await screen.findByTestId("structured-attachment");
+  await userEvent.type(screen.getByRole("textbox"), "look at this  ");
+  await userEvent.click(screen.getByRole("button", { name: "Send" }));
+  await screen.findByTestId("structured-error");
+  let [entry] = readSent();
+  expect(readSent()).toHaveLength(1);
+  expect(entry).toMatchObject({
+    text: "look at this  ", // untrimmed, so Restore round-trips it
+    attachments: ["20261008-010007-shot.png"],
+    session: KEY,
+    confirmed: false,
+  });
+  await userEvent.click(screen.getByRole("button", { name: "Send" })); // the safe retry
+  await waitFor(() => expect(screen.getByRole("textbox")).toHaveValue(""));
+  expect(readSent()).toHaveLength(1); // the same operation: no second entry
+  [entry] = readSent();
+  expect(entry.confirmed).toBe(true);
+  await userEvent.click(screen.getByRole("button", { name: /^Sent$/ }));
+  await userEvent.click(await screen.findByRole("button", { name: /restore/i }));
+  expect(screen.getByRole("textbox")).toHaveValue("look at this  ");
+  expect(screen.getAllByTestId("structured-attachment")).toHaveLength(1);
+});
+
+test("Restore into a client that takes no pictures keeps the words and says what was left out", async () => {
+  clearSent();
+  localStorage.setItem(
+    "as:sent:v1",
+    JSON.stringify([
+      { id: "a", text: "from the terminal", attachments: ["/u/x/20261008-1-shot.png"], ts: 1, confirmed: true, session: "claude:s" },
+    ]),
+  );
+  renderPane();
+  await userEvent.click(await screen.findByRole("button", { name: /^Sent$/ }));
+  await userEvent.click(await screen.findByRole("button", { name: /restore/i }));
+  expect(screen.getByRole("textbox")).toHaveValue("from the terminal");
+  expect(screen.queryAllByTestId("structured-attachment")).toHaveLength(0);
+  expect(screen.getByTestId("structured-error")).toHaveTextContent("Codex takes no images");
+});
+
+test("a template inserts its filled text and its pictures; a secret template cannot be inserted", async () => {
+  clearSent();
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(snap({ images: true }));
+  vi.mocked(api.templates).mockResolvedValue({
+    templates: [
+      template(),
+      template({
+        id: "deploy",
+        name: "Deploy",
+        body: "token {{t}}",
+        images: [],
+        fields: [{ name: "t", label: "Token", default: "", required: true, source: "template", kind: "secret" }],
+      }),
+    ],
+  } as never);
+  renderPane();
+  await userEvent.click(await screen.findByRole("button", { name: /templates/i }));
+  await userEvent.click(await screen.findByText("Deploy"));
+  expect(screen.getByRole("button", { name: "Insert Deploy into message" })).toBeDisabled();
+  await userEvent.click(screen.getByText("Repro steps"));
+  await userEvent.type(screen.getByRole("textbox", { name: /^What/ }), "the logout bug");
+  await userEvent.click(screen.getByRole("button", { name: "Insert Repro steps into message" }));
+  expect(screen.getByRole("textbox")).toHaveValue("Reproduce the logout bug in a real browser");
+  expect(screen.getAllByTestId("structured-attachment")).toHaveLength(1);
+  expect(api.structuredSubmit).not.toHaveBeenCalled(); // Insert never sends
+});
+
+
+test("Sent appears when the shared ring gets its first entry after mount — this tab or another", async () => {
+  clearSent();
+  renderPane();
+  await screen.findByRole("textbox");
+  expect(screen.queryByRole("button", { name: /^Sent$/ })).toBeNull();
+  // Another composer in this tab (a terminal, a map window) sends.
+  act(() => {
+    appendSent({ text: "from the terminal", attachments: [], session: "claude:s" });
+  });
+  expect(await screen.findByRole("button", { name: /^Sent$/ })).toBeVisible();
+  clearSent();
+  // Another TAB writes: only a `storage` event arrives.
+  const entry = { id: "x", text: "other tab", attachments: [], ts: 1, confirmed: true, session: null };
+  localStorage.setItem("as:sent:v1", JSON.stringify([entry]));
+  act(() => {
+    window.dispatchEvent(new StorageEvent("storage", { key: "as:sent:v1" }));
+  });
+  await userEvent.click(await screen.findByRole("button", { name: /^Sent$/ }));
+  expect(await screen.findByText("other tab")).toBeVisible();
+});
+
+
+test("an unknown outcome is settled by the conversation: its operation appears as a turn", async () => {
+  clearSent();
+  const op = "77777777-7777-4777-8777-777777777777";
+  appendSent({ text: "deploy it", attachments: [], session: KEY, operation: op });
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(snap({ turns: [turn({ turn_id: op, operation_id: op })] }));
+  renderPane();
+  await waitFor(() => expect(readSent()[0].confirmed).toBe(true));
+});
+
+test("Restoring a CONFIRMED message and sending it again is a new turn, never a replay of the old one", async () => {
+  clearSent();
+  const op = "88888888-8888-4888-8888-888888888888";
+  appendSent({ text: "run the suite", attachments: [], session: KEY, operation: op });
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(snap({ turns: [turn({ turn_id: op, operation_id: op })] }));
+  vi.mocked(api.structuredSubmit).mockResolvedValue({});
+  renderPane();
+  await waitFor(() => expect(readSent()[0].confirmed).toBe(true));
+  await userEvent.click(await screen.findByRole("button", { name: /^Sent$/ }));
+  await userEvent.click(await screen.findByRole("button", { name: /restore/i }));
+  await userEvent.click(screen.getByRole("button", { name: "Send" }));
+  const [call] = vi.mocked(api.structuredSubmit).mock.calls;
+  expect(call[1]).not.toBe(op);
+  expect(call[2]).toBe("run the suite");
+  expect(readSent()).toHaveLength(2); // a new send, recorded as one
+});
+
+test("Templates and Sent wait while a picture uploads: a restore never abandons work in flight", async () => {
+  clearSent();
+  appendSent({ text: "older words", attachments: [], session: KEY });
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(snap({ images: true }));
+  const late = deferredUpload();
+  renderPane();
+  await userEvent.upload(await screen.findByTestId("structured-file-input"), [png()]);
+  expect(screen.getByRole("button", { name: /^Sent$/ })).toBeDisabled();
+  expect(screen.getByRole("button", { name: /templates/i })).toBeDisabled();
+  await act(async () => late(9));
+  await screen.findByTestId("structured-attachment");
+  expect(screen.getByRole("button", { name: /^Sent$/ })).toBeEnabled();
+});
+
+test("committed, answer and re-read lost, reload: Restore + Send re-sends under the SAME id — never a second turn", async () => {
+  clearSent();
+  let reads = 0;
+  vi.mocked(api.structuredSnapshot).mockImplementation(async () => {
+    reads += 1;
+    if (reads > 1) throw new TypeError("network");
+    return snap();
+  });
+  vi.mocked(api.structuredSubmit).mockRejectedValueOnce(new TypeError("network"));
+  const first = renderPane();
+  await userEvent.type(await screen.findByRole("textbox"), "deploy it");
+  await userEvent.click(screen.getByRole("button", { name: "Send" }));
+  await screen.findByTestId("structured-error");
+  const lostOp = vi.mocked(api.structuredSubmit).mock.calls[0][1];
+  expect(readSent()[0]).toMatchObject({ operation: lostOp, confirmed: false });
+  first.unmount(); // a reload
+
+  vi.mocked(api.structuredSnapshot).mockReset().mockResolvedValue(snap());
+  vi.mocked(api.structuredSubmit).mockResolvedValueOnce({});
+  renderPane();
+  await userEvent.click(await screen.findByRole("button", { name: /^Sent$/ }));
+  expect(await screen.findByText("Outcome unknown")).toBeVisible();
+  expect(screen.queryByText("Unconfirmed")).toBeNull();
+  await userEvent.click(screen.getByRole("button", { name: /restore/i }));
+  await userEvent.click(screen.getByRole("button", { name: "Send" }));
+  expect(vi.mocked(api.structuredSubmit).mock.calls[1][1]).toBe(lostOp); // the server replays it
+  expect(readSent()).toHaveLength(1);
+});
+
+test("a held retry the conversation shows as recorded is retired: Send can never replay it (Hermes on #1346)", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  let reads = 0;
+  let landed: string | null = null;
+  vi.mocked(api.structuredSnapshot).mockImplementation(async () => {
+    reads += 1;
+    if (reads === 2) throw new TypeError("network"); // the re-read right after the lost answer
+    return landed ? snap({ turns: [turn({ turn_id: landed, operation_id: landed, text: "deploy it" })] }) : snap();
+  });
+  vi.mocked(api.structuredSubmit).mockImplementationOnce(async (_k, op) => {
+    landed = op; // the server recorded it — only the answer is lost
+    throw new TypeError("network");
+  });
+  vi.mocked(api.structuredSubmit).mockResolvedValue({});
+  renderPane();
+  const box = await screen.findByRole("textbox");
+  await userEvent.type(box, "deploy it");
+  await userEvent.click(screen.getByRole("button", { name: "Send" }));
+  await screen.findByTestId("structured-error");
+  expect(box).toHaveValue("deploy it"); // kept for a safe retry
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(15_000); // the periodic re-read finds the turn
+  });
+  await waitFor(() => expect(box).toHaveValue("")); // it WAS sent: the draft is cleared
+  await userEvent.type(box, "deploy it");
+  await userEvent.click(screen.getByRole("button", { name: "Send" }));
+  const calls = vi.mocked(api.structuredSubmit).mock.calls;
+  expect(calls[calls.length - 1][1]).not.toBe(landed); // a repeat is a new turn
 });

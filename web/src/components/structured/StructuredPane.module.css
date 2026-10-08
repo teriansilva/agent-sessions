@@ -309,3 +309,35 @@
   font: 12px var(--font-mono);
   color: var(--text-muted);
 }
+
+/* #1332 Phase 3b: Templates and Sent, the terminal composer's tools, above the message box. */
+.tools {
+  display: flex;
+  gap: 6px;
+  padding: 8px 14px 0;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+}
+.tool {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  font: 700 11px var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.tool:disabled {
+  color: var(--text-muted);
+  cursor: default;
+}
+.tool:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}

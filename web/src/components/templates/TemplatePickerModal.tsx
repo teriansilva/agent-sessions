@@ -60,6 +60,7 @@ export function TemplatePickerModal({
   onInsert,
   onSend,
   insertLabel = "Insert into composer",
+  insertTarget,
   onClose,
   onOpenGallery,
   returnFocusTo,
@@ -75,6 +76,9 @@ export function TemplatePickerModal({
   onSend?: (t: Template, values: FieldValues) => void;
   /** The Insert button's wording — "Insert into composer" by default. */
   insertLabel?: string;
+  /** What Insert's accessible name says it inserts into. Defaults to "composer" with `onSend`
+   *  and "mission brief" without; an API session inserts without sending (#1332 Phase 3b). */
+  insertTarget?: string;
   onClose: () => void;
   /** The gallery links, as an in-app navigation (the composer flushes its draft first). Without
    *  it the links are plain anchors — the picker never assumes a router (#908 round 4). */
@@ -479,7 +483,7 @@ export function TemplatePickerModal({
                         <button
                           type="button"
                           className={styles.act}
-                          aria-label={`Insert ${t.name} into ${onSend ? "composer" : "mission brief"}`}
+                          aria-label={`Insert ${t.name} into ${insertTarget ?? (onSend ? "composer" : "mission brief")}`}
                           disabled={blocked || secret || sending}
                           title={
                             secret
