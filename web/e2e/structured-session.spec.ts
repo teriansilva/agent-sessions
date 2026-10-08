@@ -728,3 +728,58 @@ for (const theme of ["dark", "light"] as const) {
     await noOverflow(page);
   });
 }
+
+// ---- push-to-talk (#1332 Phase 3c) -------------------------------------------------------------
+
+const API_SPEECH_STUB = `
+window.__recog = { started: 0, stopped: 0 };
+window.SpeechRecognition = class {
+  constructor() { this.onresult = null; this.onerror = null; this.onend = null; }
+  start() {
+    window.__recog.started++;
+    setTimeout(() => this.onresult && this.onresult({ resultIndex: 0,
+      results: [{ 0: { transcript: "check the logout" }, isFinal: false, length: 1 }] }), 30);
+    setTimeout(() => this.onresult && this.onresult({ resultIndex: 0,
+      results: [{ 0: { transcript: "check the logout spec" }, isFinal: true, length: 1 }] }), 80);
+  }
+  stop() { window.__recog.stopped++; setTimeout(() => this.onend && this.onend(), 20); }
+  abort() { this.onend && this.onend(); }
+};
+Object.defineProperty(navigator, "mediaDevices", {
+  configurable: true,
+  value: { getUserMedia: () => Promise.resolve({ getTracks: () => [{ stop() {} }] }) },
+});
+`;
+
+for (const theme of ["dark", "light"] as const) {
+  test(`hold to talk dictates into the API message and it sends (#1332, ${theme})`, async ({ page }) => {
+    await page.addInitScript(API_SPEECH_STUB);
+    await setup(page, theme);
+    let posted: Json | null = null;
+    await serveSession(page, () => snapshot());
+    await page.route(new RegExp(`/api/structured/sessions/codex-api(?::|%3A)${ID}/turns$`), async (r) => {
+      posted = r.request().postDataJSON() as Json;
+      await r.fulfill({ status: 202, json: { state: "running" } });
+    });
+    await page.goto(URL_PATH);
+    const tools = page.getByRole("toolbar", { name: "Message tools" });
+    const mic = tools.getByRole("button", { name: /voice input/i });
+    await expect(mic).toBeVisible();
+    await targets(page, tools);
+    await noOverflow(page);
+    const box = (await mic.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    const text = page.getByRole("textbox", { name: /Message/ });
+    await expect(text).toHaveValue("check the logout spec");
+    await expect(mic).toHaveAttribute("aria-pressed", "true");
+    await page.mouse.up();
+    await expect(mic).toHaveAttribute("aria-label", "Start voice input — hold to talk");
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect.poll(() => posted).not.toBeNull();
+    expect(posted).toMatchObject({ text: "check the logout spec" });
+    // Space in the page never dictates here: the terminal composer owns that hotkey.
+    await page.locator("body").press("Space");
+    expect(await page.evaluate(() => (window as unknown as { __recog: { started: number } }).__recog.started)).toBe(1);
+  });
+}

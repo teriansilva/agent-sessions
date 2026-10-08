@@ -313,6 +313,7 @@
 /* #1332 Phase 3b: Templates and Sent, the terminal composer's tools, above the message box. */
 .tools {
   display: flex;
+  flex-wrap: wrap; /* a phone wraps Templates · Sent · Push to talk rather than overflow */
   gap: 6px;
   padding: 8px 14px 0;
   border-top: 1px solid var(--line);
@@ -340,4 +341,31 @@
 .tool:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
+}
+
+/* #1332 Phase 3c: push-to-talk in the tools row — the terminal composer's recording states. */
+.tool {
+  touch-action: none; /* a hold is a hold: no scroll or zoom gesture steals the pointer */
+}
+.micOn {
+  --rec: #ff5a5a;
+  color: var(--rec);
+  border-color: var(--rec);
+  background: color-mix(in srgb, var(--rec) 16%, transparent);
+}
+:global([data-theme="light"]) .micOn {
+  --rec: #d62f2f;
+}
+.micFinalizing {
+  color: var(--text-muted);
+  border-style: dashed;
+}
+.toolNote {
+  align-self: center;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 12px var(--font-mono);
+  color: var(--text-muted);
 }

@@ -2,6 +2,7 @@ import {
   ArrowLeftRight,
   BookMarked,
   History,
+  Mic,
   PanelRight,
   Paperclip,
   ScrollText,
@@ -43,6 +44,7 @@ import { SessionRecapModal } from "../terminal/SessionRecapModal";
 import { SentMessagesModal } from "../terminal/SentMessagesModal";
 import { TemplatePickerModal } from "../templates/TemplatePickerModal";
 import { UploadImage } from "../templates/UploadImage";
+import { useDictation } from "../terminal/useDictation";
 import term from "../terminal/Terminal.module.css";
 import type {
   Containment,
@@ -522,7 +524,42 @@ export function StructuredPane({
 
   const readOnly = !!snap?.read_only;
 
+  // Push-to-talk (#1332 Phase 3c): the terminal composer's own recognizer lifecycle, writing into
+  // this draft. No global Space hotkey — the terminal composer on the same page keeps that.
+  const [dictNote, setDictNote] = useState("");
+  const dict = useDictation(
+    {
+      readDraft: () => draft,
+      writeDraft: setDraft,
+      note: (message) => {
+        setDictNote(message);
+        window.setTimeout(() => setDictNote(""), 4000);
+      },
+      globalSpace: false,
+    },
+    !readOnly && !!snap,
+  );
+  const {
+    listening: dictListening,
+    finalizing: dictFinalizing,
+    supported: dictSupported,
+    micBtnRef,
+    micHandlers,
+  } = dict;
+  /** Dictation still owes the draft words: a held mic (set at the press, before the mic grant)
+   *  or a finalizing tail. Handlers re-check `dict.settled()` for the exact state. */
+  const dictating = dictListening || dictFinalizing;
+  // A send pressed while dictation still owes the draft words is HELD and re-issued once the
+  // draft has settled, as the terminal composer does (Hermes on #908) — never a half sentence.
+  const sendAfterDictation = useRef(false);
+
   const send = async () => {
+    if (!dict.settled()) {
+      sendAfterDictation.current = true;
+      if (!dict.finalizingNow()) dict.release(); // end capture; the tail still lands
+      if (!dict.settled()) return;
+      sendAfterDictation.current = false;
+    }
     const text = draft.trim();
     const names = attachments.map((a) => a.stored);
     if ((!text && !names.length) || busy || active || readOnly || !snap) return;
@@ -679,7 +716,9 @@ export function StructuredPane({
   /** Restore / Insert (#1332 Phase 3b): replace the draft with `text` and these uploads. Only
    *  pictures this client takes come along, up to the cap; what is left behind is said. */
   const fill = (text: string, uploads: string[]): string[] | null => {
-    if (sending.current || slots.current.inFlight > 0) return null; // tools are disabled then too
+    // Tools are disabled then too. A live dictation would overwrite a replaced draft with its
+    // next result, so it counts as in flight.
+    if (sending.current || slots.current.inFlight > 0 || !dict.settled()) return null;
     clearAttachments();
     const pictures = snap?.images ? uploads.filter((p) => /\.(png|jpe?g|gif|webp)$/i.test(p)) : [];
     const kept = pictures.slice(0, MAX_IMAGES).map((p) => {
@@ -701,6 +740,13 @@ export function StructuredPane({
     requestAnimationFrame(() => taRef.current?.focus());
     return kept.map((k) => k.stored);
   };
+  useEffect(() => {
+    if (!sendAfterDictation.current || dictFinalizing || !dict.settled()) return;
+    sendAfterDictation.current = false;
+    void send();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-checked whenever dictation or the draft moves; `send` reads the latest state
+  }, [dictFinalizing, dictListening, draft]);
+
   // Restore and Insert make a FRESH draft, and only while nothing is in flight — a restore can
   // never abandon work or interleave with a send (Hermes on #1346). One exception keeps a
   // possibly-recorded turn from running twice: THIS session's entry whose outcome is unknown
@@ -1121,7 +1167,7 @@ export function StructuredPane({
             type="button"
             className={styles.tool}
             title="Use a saved template — fill it in, then insert it here"
-            disabled={busy || uploading}
+            disabled={busy || uploading || dictating}
             onClick={(e) => setTemplatesOpen(e.currentTarget)}
           >
             <BookMarked size={16} aria-hidden />
@@ -1132,7 +1178,7 @@ export function StructuredPane({
               type="button"
               className={styles.tool}
               title={`Sent messages (last ${history.length})`}
-              disabled={busy || uploading}
+              disabled={busy || uploading || dictating}
               onClick={(e) => {
                 setHistory(readSent()); // another tab may have sent since we last looked
                 setHistoryOpen(e.currentTarget);
@@ -1142,6 +1188,39 @@ export function StructuredPane({
               Sent
             </button>
           )}
+          {dictSupported && (
+            <button
+              type="button"
+              ref={micBtnRef}
+              className={`${styles.tool} ${
+                dictListening ? styles.micOn : dictFinalizing ? styles.micFinalizing : ""
+              }`}
+              aria-label={
+                dictListening
+                  ? "Stop voice input — release to finish"
+                  : dictFinalizing
+                    ? "Finishing voice input"
+                    : "Start voice input — hold to talk"
+              }
+              aria-pressed={dictListening}
+              aria-disabled={dictFinalizing || busy}
+              title={
+                dictListening
+                  ? "Release to stop — the last phrase still lands"
+                  : dictFinalizing
+                    ? "Finishing transcription…"
+                    : "Hold to talk"
+              }
+              disabled={busy}
+              {...micHandlers}
+            >
+              <Mic size={16} aria-hidden />
+              Push to talk
+            </button>
+          )}
+          <span className={styles.toolNote} role="status">
+            {dictNote}
+          </span>
         </div>
       )}
       {attachments.length > 0 && (
