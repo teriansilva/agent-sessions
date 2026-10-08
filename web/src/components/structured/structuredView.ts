@@ -126,11 +126,12 @@ export function reviewOnly(req: StructuredRequest): boolean {
   return !req.choices.includes("approve");
 }
 
-/** The button text for one server-offered choice. There is never an "always" / "for session"
- *  variant: the server offers none, and the view invents none. */
+/** The button text for one server-offered choice. "Approve always" (#1339) lists only the
+ *  snapshot's own `always` grants; the view invents none. */
 export function choiceLabel(choice: string, req: StructuredRequest): string {
   const tool = req.kind !== "command" && req.kind !== "file_change";
   if (choice === "approve") return tool ? "Allow once" : "Approve once";
+  if (choice === "always") return tool ? "Allow always" : "Approve always";
   if (choice === "reject") return req.kind === "file_change" ? "Decline" : tool ? "Deny" : "Reject";
   if (choice === "cancel") return "Reject and stop the turn";
   return choice;

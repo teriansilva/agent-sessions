@@ -1,5 +1,6 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 import { mockRoster } from "./roster";
+import directoryGrants from "../../tests/fixtures/claude_directory_grants.json" with { type: "json" };
 
 // #1311: a native API client's session is a STRUCTURED VIEW, never a terminal. The server is
 // mocked: the snapshot route is a small state machine, so the spec drives the real client through
@@ -1057,4 +1058,168 @@ for (const theme of ["dark", "light"] as const) {
     await page.locator("body").press("Space");
     expect(await page.evaluate(() => (window as unknown as { __recog: { started: number } }).__recog.started)).toBe(1);
   });
+}
+
+// ---- #1339: approve always + risk marks -----------------------------------------------------------
+
+const ALWAYS_PERSIST = {
+  id: "g0123456789abcdef",
+  scope: "persistent",
+  label:
+    "Always allow `cat shared/agent-workflow.md` and any command starting with it · saved to Codex's exec policy (persists)",
+};
+const ALWAYS_SESSION = {
+  id: "gfedcba9876543210",
+  scope: "session",
+  label: "Allow `cat shared/agent-workflow.md` for the rest of this session",
+};
+
+function askState(over: Json): Json {
+  return snapshot({
+    state: "awaiting_approval",
+    active_turn: TURN,
+    turns: [turn()],
+    pending_requests: [
+      {
+        request_id: "7",
+        turn_id: TURN,
+        kind: "command",
+        choices: ["approve", "reject", "cancel"],
+        complete: true,
+        payload_digest: "3b0e9d2aa41c",
+        payload: { command: "/bin/bash -lc 'cat shared/agent-workflow.md'", cwd: "/home/u/proj" },
+        ...over,
+      },
+    ],
+  });
+}
+
+for (const theme of ["dark", "light"] as const) {
+  test(`Approve always offers the request's own grants with their breadth and sends one (${theme}) (#1339)`, async ({
+    page,
+  }) => {
+    await setup(page, theme);
+    let decided: Json | null = null;
+    let state = askState({ always: [ALWAYS_PERSIST, ALWAYS_SESSION], risk: { level: "none", reasons: [] } });
+    await serveSession(page, () => state, {
+      decide: async (r, body) => {
+        decided = body;
+        state = snapshot({ revision: 6, event_cursor: 6, turns: [turn({ state: "completed", reply: "done" })] });
+        await r.fulfill({ json: { decision: "always" } });
+      },
+    });
+    await page.goto(URL_PATH);
+    const card = page.getByTestId("structured-request");
+    await expect(card).toBeVisible();
+    await expect(card.getByTestId("structured-risk")).toHaveCount(0);
+    const toggle = card.getByTestId("structured-always");
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    const options = card.getByTestId("structured-always-option");
+    await expect(options).toHaveText([ALWAYS_PERSIST.label, ALWAYS_SESSION.label]);
+    await expect(card).toContainText("BattleLab never adds or widens one");
+    await noOverflow(page);
+    await targets(page, card);
+    // Opening moves focus into the grants; Escape closes them and returns it to the toggle.
+    await expect(options.first()).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(options).toHaveCount(0);
+    await expect(toggle).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(options.first()).toBeFocused();
+    await options.first().click();
+    await expect(page.getByTestId("structured-request")).toHaveCount(0);
+    expect(decided).toMatchObject({ request_id: "7", turn_id: TURN, decision: "always", grant: ALWAYS_PERSIST.id });
+  });
+
+  test(`a risky command offers a labelled standing grant and sends the chosen id (${theme}) (#1339)`, async ({
+    page,
+  }) => {
+    await setup(page, theme);
+    const risky = { level: "risky", reasons: ["force-pushes over remote history"] };
+    let decided: Json | null = null;
+    const grant = {
+      ...ALWAYS_PERSIST,
+      label: "Always allow `git push --force` and any command starting with it · saved to Codex's exec policy (persists) · RISKY: force-pushes over remote history",
+    };
+    let state = askState({
+      payload: { command: "git push --force origin main", cwd: "/home/u/proj" },
+      always: [grant],
+      risk: risky,
+    });
+    (state.turns as Json[])[0] = turn({
+      tools: [
+        { id: "t1", name: "commandExecution", outcome: "completed", summary: "rm -rf dist", risk: { level: "risky", reasons: ["deletes files recursively or forcibly"] } },
+        { id: "t2", name: "commandExecution", outcome: "completed", summary: "‹unreadable›", risk: { level: "unknown", reasons: [] } },
+      ],
+    });
+    await serveSession(page, () => state, {
+      decide: async (r, body) => {
+        decided = body;
+        state = snapshot({ revision: 6, event_cursor: 6, turns: [turn({ state: "completed", reply: "done" })] });
+        await r.fulfill({ json: { decision: "always" } });
+      },
+    });
+    await page.goto(URL_PATH);
+    const card = page.getByTestId("structured-request");
+    await expect(card.getByTestId("structured-risk")).toContainText("force-pushes over remote history");
+    await card.getByTestId("structured-always").click();
+    const option = card.getByTestId("structured-always-option");
+    await expect(option).toHaveText(grant.label);
+    const rows = page.getByTestId("structured-tool");
+    await expect(rows.nth(0).getByTestId("structured-risk")).toContainText("deletes files recursively");
+    await expect(rows.nth(1).getByTestId("structured-risk")).toHaveText("not classified");
+    // The mark is the WARNING status colour, never the failure red.
+    const color = await card.getByTestId("structured-risk").evaluate((el) => getComputedStyle(el).borderLeftColor);
+    const degraded = await page.evaluate(() => {
+      const probe = document.createElement("span");
+      probe.style.color = "var(--status-degraded)";
+      document.body.append(probe);
+      const c = getComputedStyle(probe).color;
+      probe.remove();
+      return c;
+    });
+    expect(color).toBe(degraded);
+    await noOverflow(page);
+    await targets(page, card);
+    await option.click();
+    await expect(page.getByTestId("structured-request")).toHaveCount(0);
+    expect(decided).toMatchObject({ request_id: "7", turn_id: TURN, decision: "always", grant: grant.id });
+  });
+}
+
+// Shared responses are pinned to native_grants.derive by test_api_always.py.
+for (const theme of ["dark", "light"] as const) {
+  for (const fixture of directoryGrants) {
+    test(`a directory grant with ${fixture.risk.level} classification discloses its risk at consent (${theme}) (#1339)`, async ({ page }) => {
+      await setup(page, theme);
+      let decided: Json | null = null;
+      let state = askState({ kind: "Bash", ...fixture });
+      await serveSession(page, () => state, {
+        decide: async (r, body) => {
+          decided = body;
+          state = snapshot({ revision: 6, event_cursor: 6, turns: [turn({ state: "completed", reply: "done" })] });
+          await r.fulfill({ json: { decision: "always" } });
+        },
+      });
+      await page.goto(URL_PATH);
+      const card = page.getByTestId("structured-request");
+      const note = fixture.risk.level === "risky"
+        ? "RISKY: deletes files recursively or forcibly"
+        : "not classified";
+      const mark = card.getByTestId("structured-risk");
+      await expect(mark).toBeVisible();
+      await card.getByTestId("structured-always").click();
+      const option = card.getByTestId("structured-always-option");
+      await expect(option).toContainText("Allow access to `/srv/data` · this session only");
+      await expect(option).toContainText(note);
+      await expect(mark).toBeVisible();
+      await targets(page, card);
+      await noOverflow(page);
+      await option.click();
+      await expect(page.getByTestId("structured-request")).toHaveCount(0);
+      expect(decided).toMatchObject({ request_id: "7", turn_id: TURN, decision: "always", grant: fixture.always[0].id });
+    });
+  }
 }

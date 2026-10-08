@@ -299,7 +299,7 @@ def test_persistent_permission_decisions_are_never_serialized(decision):
         (claude_running(), claude_approval()),
     ]:
         request = codec.feed(frame)[0].data["request_id"]
-        with pytest.raises(ProtocolError, match="one-operation"):
+        with pytest.raises(ProtocolError, match="unsupported permission decision"):
             codec.decide(request, decision)
         assert codec.decide(request, "reject")
 

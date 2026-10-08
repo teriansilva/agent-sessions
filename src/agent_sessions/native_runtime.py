@@ -37,11 +37,13 @@ from . import (
     chat_store,
     model_choice,
     native_containment,
+    native_grants,
     native_ipc,
     native_journal,
     native_ownership,
     native_protocol,
     native_state,
+    risk_marks,
 )
 from .plugins import api_source, kinds, storage
 
@@ -1137,6 +1139,7 @@ def project(journal: native_journal.Journal, record: dict, live_worker: str | No
     native_id = record.get("native_id")
     model_effective = None
     background = False
+    cwd = journal.header.get("cwd")
     for op in journal.operations.values():
         params = op.request["params"]
         if op.request["action"] == "submit":
@@ -1195,6 +1198,13 @@ def project(journal: native_journal.Journal, record: dict, live_worker: str | No
                 turn["tools"].append(entry)
             else:
                 existing.update({k: v for k, v in entry.items() if v})
+            # The same advisory classifier as a pending card (#1339): a tool row that ran a
+            # command — asked or, in a skip-permissions session, never asked — says so.
+            row = existing if existing is not None else entry
+            if data.get("summary") and "risk" not in row:
+                risk = _tool_risk(row["name"], data["summary"], cwd)
+                if risk is not None:
+                    row["risk"] = risk
         elif kind == "turn_completed":
             turn["completed"] = True
             turn["status"] = "done" if data["state"] == "completed" else "failed"
@@ -1240,6 +1250,7 @@ def project(journal: native_journal.Journal, record: dict, live_worker: str | No
         if turn is None or turn["turn_id"] != in_flight:
             continue
         turn["status"] = "awaiting_approval"
+        offered = _offered(record.get("adapter"), approval, cwd)
         requests.append(
             {
                 "request_id": request_id,
@@ -1259,6 +1270,10 @@ def project(journal: native_journal.Journal, record: dict, live_worker: str | No
                     if c != "approve" or approval.get("complete") is True
                 ],
                 "complete": approval.get("complete") is True,
+                # #1339: the standing grants the request itself proposed, each labelled with what
+                # it covers (risky ones included — operator direction), and the advisory risk.
+                "always": [native_grants.public(c) for c in offered["always"]],
+                "risk": offered["risk"],
                 "operator_only": True,
                 "context": dict(turn["context"]),
             }
@@ -1282,6 +1297,32 @@ def project(journal: native_journal.Journal, record: dict, live_worker: str | No
             "background_active": background,
         },
     }
+
+
+def _offered(adapter: str | None, approval: dict, cwd: str | None) -> dict:
+    """What a pending request may be answered with beyond once (#1339), derived only from the
+    journaled request as presented. Incomplete requests get no grant."""
+    if approval.get("complete") is not True:
+        payload = _payload(approval["summary"])
+        risk = native_grants.derive(adapter or "", approval.get("tool"), payload, cwd)["risk"]
+        return {"always": [], "risk": risk}
+    return native_grants.derive(
+        adapter or "", approval.get("tool"), _payload(approval["summary"]), cwd
+    )
+
+
+def _tool_risk(name: str, summary: str, cwd: str | None) -> dict | None:
+    """A tool row's advisory risk: Codex rows carry the command line, Claude rows the input."""
+    if name == "commandExecution":
+        return risk_marks.classify(summary, cwd)
+    if name in {"Bash", "Write", "Edit", "MultiEdit", "NotebookEdit"}:
+        payload = _payload(summary)
+        return (
+            risk_marks.classify_tool(name, payload, cwd)
+            if isinstance(payload, dict)
+            else risk_marks.unknown()
+        )
+    return None
 
 
 def _payload(summary: str):
@@ -1436,14 +1477,19 @@ async def decide(
     *,
     decision_id: str,
     expected_revision: int | None = None,
+    grant: str | None = None,
     execution_admission=None,
 ) -> dict:
     if execution_admission is not None:
         raise NativeError(
             409, "native clients cannot enforce caller authority across processes yet"
         )
-    if decision not in {"approve", "reject", "cancel"}:
-        raise NativeError(422, "decision must be approve, reject or cancel")
+    if decision not in {"approve", "reject", "cancel", "always"}:
+        raise NativeError(422, "decision must be approve, always, reject or cancel")
+    if (decision == "always") != (grant is not None):
+        raise NativeError(422, "a standing grant goes with an always decision, and only with one")
+    if grant is not None and not native_grants.valid_grant_id(grant):
+        raise NativeError(422, "grant must be one of the offered grant ids")
     if not isinstance(user, str) or not user or len(user) > 128:
         raise NativeError(422, "a decision needs its authenticated operator")
     prov, _ = await asyncio.to_thread(_session, engine_id, session_id)
@@ -1459,7 +1505,8 @@ async def decide(
             params["decision"],
             params["turn_id"],
             recorded_actor,
-        ) != (request_id, decision, turn_id, user):
+            params.get("grant"),
+        ) != (request_id, decision, turn_id, user, grant):
             raise NativeError(409, "decision id already used for a different decision")
         return {
             "turn_id": turn_id,
@@ -1480,7 +1527,12 @@ async def decide(
     )
     if approval is None:
         raise NativeError(409, "that approval is no longer pending")
-    if decision not in approval["choices"]:
+    if decision == "always":
+        # Only a grant this snapshot itself offers (#1339): client-proposed, never invented or
+        # altered. The worker re-derives it before writing anything.
+        if grant not in {c["id"] for c in approval["always"]}:
+            raise NativeError(409, "that standing grant is not offered for this request")
+    elif decision not in approval["choices"]:
         raise NativeError(
             409,
             "this request could not be presented completely; it can only be declined"
@@ -1504,6 +1556,7 @@ async def decide(
         "approval_worker_id": event["worker_id"],
         "approval_connection_id": event["connection_id"],
         "actor": user,  # who decided is part of the decision's durable identity
+        **({"grant": grant} if grant is not None else {}),
     }
     immutable = native_ipc.normalize_immutable_request({"action": "decide", "params": params})
 

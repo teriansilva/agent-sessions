@@ -644,7 +644,14 @@ export const api = {
     }),
   structuredDecide: (
     key: string,
-    body: { decision_id: string; turn_id: string; request_id: string; decision: string },
+    body: {
+      decision_id: string;
+      turn_id: string;
+      request_id: string;
+      decision: string;
+      /** Only with `decision: "always"` (#1339): one offered grant id. */
+      grant?: string;
+    },
   ) => mutateJson<unknown>("POST", `${structuredPath(key)}/decisions`, body),
   structuredInterrupt: (key: string, operation_id: string, turn_id: string) =>
     mutateJson<unknown>("POST", `${structuredPath(key)}/interrupt`, { operation_id, turn_id }),

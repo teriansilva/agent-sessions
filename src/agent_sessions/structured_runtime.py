@@ -490,6 +490,7 @@ async def decide(
     decision: str,
     user: str,
     expected_revision: int | None = None,
+    grant: str | None = None,
     execution_admission: ExecutionGuard | None = None,
 ) -> dict:
     engine, native = _key(session_key)
@@ -503,6 +504,8 @@ async def decide(
         user,
         decision_id=_operation_id(decision_id),
         expected_revision=expected_revision,
+        # A standing grant (#1339) only ever travels with an `always` decision.
+        **({"grant": grant} if grant is not None else {}),
         execution_admission=execution_admission,
     )
     return {"session_key": f"{engine}:{native}", "decision_id": decision_id, **result}

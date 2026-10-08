@@ -46,7 +46,7 @@ test("a file change's patch renders as files; it is review-only when the server 
   expect(r.choices.map((c) => choiceLabel(c, r))).toEqual(["Decline", "Reject and stop the turn"]);
 });
 
-test("a Claude permission prompt shows its whole context, suggestions marked, never an 'always' choice", () => {
+test("a Claude permission prompt shows its whole context, suggestions marked; standing grants come only from the server's bounded `always` list", () => {
   const r = req({
     kind: "Bash",
     payload: {

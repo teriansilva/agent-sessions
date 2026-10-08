@@ -48,6 +48,7 @@ import type {
   Containment,
   Template,
   StructuredRequest,
+  StructuredRisk,
   StructuredSnapshot,
   StructuredTurn,
 } from "../../types/api";
@@ -92,6 +93,8 @@ interface Deciding {
   key: string;
   request_id: string;
   decision: string;
+  /** With `decision: "always"` (#1339): the one offered grant it sends. */
+  grant?: string;
   decision_id: string;
   /** `sending` — awaiting the server; `sent` — accepted, awaiting the agent (the next snapshot
    *  settles it); `unknown` — no answer came back, so it may or may not have landed. */
@@ -128,6 +131,25 @@ function Patch({ files }: { files: { path: string; diff: string }[] }) {
   );
 }
 
+/** The advisory risk of one command (#1339), on a card or a tool row. `RISKY` + reasons in the
+ *  warning status colour; "not classified" stays quiet. Nothing is ever labelled safe. */
+export function RiskMark({ risk }: { risk?: StructuredRisk | null }) {
+  if (!risk || risk.level === "none") return null;
+  if (risk.level === "risky") {
+    return (
+      <span className={styles.risky} data-testid="structured-risk" data-level="risky">
+        <b>Risky</b>
+        {risk.reasons.length > 0 && <span> — {risk.reasons.join("; ")}</span>}
+      </span>
+    );
+  }
+  return (
+    <span className={styles.unclassified} data-testid="structured-risk" data-level={risk.level}>
+      not classified
+    </span>
+  );
+}
+
 function RequestCard({
   req,
   agent,
@@ -139,9 +161,23 @@ function RequestCard({
   agent: string;
   deciding: Deciding | null;
   readOnly: boolean;
-  onDecide: (req: StructuredRequest, choice: string) => void;
+  onDecide: (req: StructuredRequest, choice: string, grant?: string) => void;
 }) {
   const mine = deciding?.key === requestKey(req) ? deciding : null;
+  const always = req.choices.includes("approve") ? (req.always ?? []) : [];
+  const [alwaysOpen, setAlwaysOpen] = useState(false);
+  // Focus moves INTO the grants when they open and back to the toggle on Escape (#1339).
+  const alwaysToggle = useRef<HTMLButtonElement>(null);
+  const alwaysList = useRef<HTMLUListElement>(null);
+  useEffect(() => {
+    if (alwaysOpen) alwaysList.current?.querySelector<HTMLButtonElement>("button")?.focus();
+  }, [alwaysOpen]);
+  const decidedGrant = mine?.grant ? always.find((g) => g.id === mine.grant) : undefined;
+  const mineLabel = mine
+    ? mine.decision === "always" && decidedGrant
+      ? `${choiceLabel("always", req)}: ${decidedGrant.label}`
+      : choiceLabel(mine.decision, req)
+    : "";
   const rows = requestRows(req);
   const ids = requestIds(req);
   const declineOnly = reviewOnly(req);
@@ -156,6 +192,11 @@ function RequestCard({
         <span className={styles.ledAsk} aria-hidden="true" />
         {requestTitle(req, agent)}
       </div>
+      {req.risk && req.risk.level !== "none" && (
+        <p className={styles.riskLine}>
+          <RiskMark risk={req.risk} />
+        </p>
+      )}
       <dl className={styles.kv}>
         {rows.map((row) => (
           <div className={styles.kvRow} key={row.key} data-testid="structured-field" data-field={row.key}>
@@ -171,7 +212,9 @@ function RequestCard({
                 <>
                   <pre className={styles.json}>{row.text}</pre>
                   <span className={styles.aside}>
-                    Not offered: an API session approves one request at a time.
+                    {always.length > 0
+                      ? "Offered under Approve always, as proposed — read each option's scope and where it is saved."
+                      : "None of these can be approved always here (BattleLab offers only rules it can describe, never a mode switch)."}
                   </span>
                 </>
               ) : (
@@ -196,31 +239,89 @@ function RequestCard({
       {mine && (
         <p className={styles.pendingDecision} role="status" data-testid="structured-deciding">
           {mine.phase === "sending"
-            ? `Sending “${choiceLabel(mine.decision, req)}”…`
+            ? `Sending “${mineLabel}”…`
             : mine.phase === "sent"
-              ? `“${choiceLabel(mine.decision, req)}” sent — waiting for ${agent} to take it.`
-              : `“${choiceLabel(mine.decision, req)}” may not have reached BattleLab. Retrying sends the same decision.`}
+              ? `“${mineLabel}” sent — waiting for ${agent} to take it.`
+              : `“${mineLabel}” may not have reached BattleLab. Retrying sends the same decision.`}
         </p>
       )}
       <div className={styles.actions}>
         {mine?.phase === "unknown" ? (
-          <button type="button" className={chat.ghost} onClick={() => onDecide(req, mine.decision)}>
-            Retry “{choiceLabel(mine.decision, req)}”
+          <button
+            type="button"
+            className={chat.ghost}
+            onClick={() => onDecide(req, mine.decision, mine.grant)}
+          >
+            Retry “{mineLabel}”
           </button>
         ) : (
-          req.choices.map((choice) => (
-            <button
-              key={choice}
-              type="button"
-              className={choice === "approve" ? chat.send : chat.ghost}
-              disabled={readOnly || !!mine}
-              onClick={() => onDecide(req, choice)}
-            >
-              {choiceLabel(choice, req)}
-            </button>
-          ))
+          req.choices.flatMap((choice) => {
+            const button = (
+              <button
+                key={choice}
+                type="button"
+                className={choice === "approve" ? chat.send : chat.ghost}
+                disabled={readOnly || !!mine}
+                onClick={() => onDecide(req, choice)}
+              >
+                {choiceLabel(choice, req)}
+              </button>
+            );
+            if (choice !== "approve" || always.length === 0) return [button];
+            return [
+              button,
+              <button
+                key="always"
+                ref={alwaysToggle}
+                type="button"
+                className={chat.ghost}
+                aria-expanded={alwaysOpen}
+                aria-controls={`always-${req.request_id}`}
+                data-testid="structured-always"
+                disabled={readOnly || !!mine}
+                onClick={() => setAlwaysOpen((v) => !v)}
+              >
+                {choiceLabel("always", req)} {alwaysOpen ? "▴" : "▾"}
+              </button>,
+            ];
+          })
         )}
       </div>
+      {alwaysOpen && !mine && always.length > 0 && (
+        <ul
+          ref={alwaysList}
+          className={styles.alwaysList}
+          id={`always-${req.request_id}`}
+          aria-label="Standing grants this request proposed"
+          onKeyDown={(e) => {
+            if (e.key !== "Escape") return;
+            e.preventDefault();
+            setAlwaysOpen(false);
+            alwaysToggle.current?.focus();
+          }}
+        >
+          {always.map((g) => (
+            <li key={g.id}>
+              <button
+                type="button"
+                className={styles.alwaysOption}
+                data-testid="structured-always-option"
+                data-scope={g.scope}
+                disabled={readOnly}
+                onClick={() => {
+                  setAlwaysOpen(false);
+                  onDecide(req, "always", g.id);
+                }}
+              >
+                {g.label}
+              </button>
+            </li>
+          ))}
+          <li className={styles.aside}>
+            Only the grants {agent} proposed for this request. BattleLab never adds or widens one.
+          </li>
+        </ul>
+      )}
     </section>
   );
 }
@@ -240,7 +341,7 @@ function TurnView({
   requests: StructuredRequest[];
   deciding: Deciding | null;
   readOnly: boolean;
-  onDecide: (req: StructuredRequest, choice: string) => void;
+  onDecide: (req: StructuredRequest, choice: string, grant?: string) => void;
   onInterrupt: (turnId: string) => void;
   interrupting: boolean;
 }) {
@@ -279,6 +380,7 @@ function TurnView({
               <span className={chat.toolVerb}>{t.name}</span>
               {t.summary && <code className={chat.toolPath}>{t.summary}</code>}
               {t.outcome && <span className={chat.toolDetail}>{t.outcome}</span>}
+              <RiskMark risk={t.risk} />
             </li>
           ))}
         </ul>
@@ -623,18 +725,20 @@ export function StructuredPane({
     }
   };
 
-  const decide = async (req: StructuredRequest, choice: string) => {
+  const decide = async (req: StructuredRequest, choice: string, grant?: string) => {
     if (readOnly) return;
     const reqKey = requestKey(req);
     if (decidingNow && (decidingNow.key !== reqKey || decidingNow.phase === "sending")) return;
+    // A retry reuses the id only for the SAME decision and grant (#1339): the server binds both.
     const decision_id =
-      decidingNow?.key === reqKey && decidingNow.decision === choice
+      decidingNow?.key === reqKey && decidingNow.decision === choice && decidingNow.grant === grant
         ? decidingNow.decision_id
         : uuid();
     const next: Deciding = {
       key: reqKey,
       request_id: req.request_id,
       decision: choice,
+      ...(grant ? { grant } : {}),
       decision_id,
       phase: "sending",
     };
@@ -646,6 +750,7 @@ export function StructuredPane({
         turn_id: req.turn_id,
         request_id: req.request_id,
         decision: choice,
+        ...(grant ? { grant } : {}),
       });
       setDeciding({ ...next, phase: "sent" }); // settled by the next snapshot, not by this answer
       await load();
@@ -1268,7 +1373,7 @@ export function StructuredPane({
             requests={pending.filter((r) => r.turn_id === t.turn_id)}
             deciding={decidingNow}
             readOnly={readOnly}
-            onDecide={(r, c) => void decide(r, c)}
+            onDecide={(r, c, g) => void decide(r, c, g)}
             onInterrupt={(tid) => void interrupt(tid)}
             interrupting={interrupting}
           />

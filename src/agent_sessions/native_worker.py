@@ -627,7 +627,25 @@ class Worker:
                 pending = self._pending(params)
                 if pending is None:
                     return self.error(request, "stale", "that approval is no longer pending")
-                if params["decision"] == "approve" and pending.get("complete") is not True:
+                if params["decision"] == "always" and isinstance(
+                    self.codec, native_protocol.OpencodeAcpCodec
+                ):
+                    # opencode maps no standing grant yet (#1339 Phase 4): refused, never guessed.
+                    return self.error(request, "unsupported", "no standing grant for this client")
+                if params["decision"] == "always":
+                    # A standing grant (#1339) is re-derived HERE from the request this
+                    # connection holds — only what the client itself proposed — independently of
+                    # the server that offered it.
+                    try:
+                        self.codec._always(
+                            params["request_id"], params.get("grant"), self.config["cwd"]
+                        )
+                    except native_protocol.ProtocolError as exc:
+                        return self.error(request, "unsupported", str(exc))
+                if (
+                    params["decision"] in {"approve", "always"}
+                    and pending.get("complete") is not True
+                ):
                     # Defence in depth for the web gate: only a request presented in full
                     # (its patch / permission context included) can be approved.
                     return self.error(
@@ -697,7 +715,16 @@ class Worker:
                     raise native_protocol.ProtocolError(str(exc)) from None
             return self.codec.submit(params["text"], params["operation_id"], images)
         if action == "decide":
-            return self.codec.decide(params["request_id"], params["decision"])
+            if isinstance(self.codec, native_protocol.OpencodeAcpCodec):
+                # opencode maps no standing grant yet (#1339 Phase 4): its codec takes the one-shot
+                # decision only, and an `always` never reaches it (the server offers none).
+                return self.codec.decide(params["request_id"], params["decision"])
+            return self.codec.decide(
+                params["request_id"],
+                params["decision"],
+                grant=params.get("grant"),
+                cwd=self.config["cwd"],
+            )
         if action == "interrupt":
             frame = self.codec.interrupt()
             if isinstance(self.codec, native_protocol.OpencodeAcpCodec):

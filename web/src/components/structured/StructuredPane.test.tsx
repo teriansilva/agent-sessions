@@ -7,7 +7,13 @@ import { ApiError, api } from "../../lib/api";
 import { imageFilesFromAsyncClipboard } from "../../lib/clipboardImages";
 import { appendSent, clearSent, readSent } from "../../lib/sentHistory";
 import fixture from "../../test/roster.fixture.json";
-import type { EngineInfo, StructuredSnapshot, StructuredTurn, Template } from "../../types/api";
+import type {
+  EngineInfo,
+  StructuredRequest,
+  StructuredSnapshot,
+  StructuredTurn,
+  Template,
+} from "../../types/api";
 import { RuntimeGate } from "../terminal/RuntimeGate";
 import { StructuredPane } from "./StructuredPane";
 
@@ -944,4 +950,127 @@ test.each([
   if (shown) {
     expect(screen.getByTestId("structured-bypass-banner")).toHaveTextContent(/skip permissions/i);
   }
+});
+
+// ---- #1339: approve always + risk marks -----------------------------------------------------------
+
+function pendingWith(over: Partial<StructuredRequest>) {
+  const t = turn({ state: "awaiting_approval", reply: "" });
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(
+    snap({
+      state: "awaiting_approval",
+      active_turn: t.turn_id,
+      turns: [t],
+      pending_requests: [
+        {
+          request_id: "7",
+          turn_id: t.turn_id,
+          kind: "command",
+          choices: ["approve", "reject", "cancel"],
+          payload: { command: "cat shared/agent-workflow.md" },
+          payload_digest: "abcdef0123",
+          complete: true,
+          ...over,
+        },
+      ],
+    }),
+  );
+  return t;
+}
+
+const PERSIST = {
+  id: "g0123456789abcdef",
+  scope: "persistent",
+  label:
+    "Always allow `cat shared/agent-workflow.md` and any command starting with it · saved to Codex's exec policy (persists)",
+};
+const SESSION = { id: "gfedcba9876543210", scope: "session", label: "Allow `cat x` for the rest of this session" };
+
+test("Approve always lists only the snapshot's grants, with breadth, and sends the chosen id (#1339)", async () => {
+  const t = pendingWith({ always: [PERSIST, SESSION], risk: { level: "none", reasons: [] } });
+  vi.mocked(api.structuredDecide).mockResolvedValue({});
+  const user = userEvent.setup();
+  renderPane();
+  const card = await screen.findByTestId("structured-request");
+  expect(within(card).queryByTestId("structured-risk")).toBeNull(); // "none" is never labelled safe
+  const toggle = within(card).getByTestId("structured-always");
+  expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await user.click(toggle);
+  const options = within(card).getAllByTestId("structured-always-option");
+  expect(options.map((o) => o.textContent)).toEqual([PERSIST.label, SESSION.label]);
+  expect(options[0]).toHaveTextContent("and any command starting with it");
+  await user.click(options[0]);
+  await vi.waitFor(() => expect(api.structuredDecide).toHaveBeenCalledTimes(1));
+  const [, body] = vi.mocked(api.structuredDecide).mock.calls[0];
+  expect(body).toMatchObject({ turn_id: t.turn_id, request_id: "7", decision: "always", grant: PERSIST.id });
+});
+
+test("no always grants: no Approve always control at all (#1339)", async () => {
+  pendingWith({ always: [] });
+  renderPane();
+  const card = await screen.findByTestId("structured-request");
+  expect(within(card).queryByTestId("structured-always")).toBeNull();
+  expect(within(card).getAllByRole("button").map((b) => b.textContent)).toEqual([
+    "Approve once",
+    "Reject",
+    "Reject and stop the turn",
+  ]);
+});
+
+test("a risky command without a proposed grant shows its reasons and no Approve always (#1339)", async () => {
+  pendingWith({
+    payload: { command: "git push --force origin main" },
+    always: [],
+    risk: { level: "risky", reasons: ["force-pushes over remote history"] },
+  });
+  renderPane();
+  const card = await screen.findByTestId("structured-request");
+  const mark = within(card).getByTestId("structured-risk");
+  expect(mark).toHaveAttribute("data-level", "risky");
+  expect(mark).toHaveTextContent(/risky/i);
+  expect(mark).toHaveTextContent("force-pushes over remote history");
+  expect(within(card).queryByTestId("structured-always")).toBeNull();
+});
+
+test("an unreadable command is 'not classified', never safe; tool rows carry the same mark (#1339)", async () => {
+  const t = turn({
+    state: "completed",
+    tools: [
+      { id: "a", name: "commandExecution", outcome: "completed", summary: "rm -rf dist", risk: { level: "risky", reasons: ["deletes files recursively or forcibly"] } },
+      { id: "b", name: "Bash", outcome: "completed", summary: "{}", risk: { level: "unknown", reasons: [] } },
+      { id: "c", name: "commandExecution", outcome: "completed", summary: "npm test", risk: { level: "none", reasons: [] } },
+    ],
+  });
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(snap({ turns: [t] }));
+  renderPane();
+  const rows = await screen.findAllByTestId("structured-tool");
+  expect(within(rows[0]).getByTestId("structured-risk")).toHaveTextContent("deletes files recursively");
+  expect(within(rows[1]).getByTestId("structured-risk")).toHaveTextContent("not classified");
+  expect(within(rows[2]).queryByTestId("structured-risk")).toBeNull();
+  expect(document.body).not.toHaveTextContent(/\bsafe\b/i);
+});
+
+test("the suggestions hint matches a broad offered rule — it never claims only bounded ones (Hermes 5919)", async () => {
+  pendingWith({
+    kind: "tool",
+    payload: {
+      tool_name: "Bash",
+      input: { command: "echo hi" },
+      permission_suggestions: [
+        { type: "addRules", rules: [{ toolName: "Bash" }], behavior: "allow", destination: "userSettings" },
+      ],
+    },
+    always: [
+      {
+        id: "g0123456789abcdef",
+        label: "Always allow every `Bash` call · saved to your user settings — every project",
+        scope: "persistent",
+        rules: ["Bash"],
+      },
+    ],
+  });
+  renderPane();
+  const card = await screen.findByTestId("structured-request");
+  expect(card).toHaveTextContent("as proposed — read each option's scope");
+  expect(card).not.toHaveTextContent(/only the bounded/i);
 });

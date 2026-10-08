@@ -15,7 +15,8 @@ mission correlation is ever read from a browser (mission callers use the facade 
 * ``GET  /api/structured/sessions/{key}/events?after=&limit=`` — durable journal cursor page.
 * ``POST /api/structured/sessions/{key}/turns {operation_id, text, expected_revision?}``
 * ``POST /api/structured/sessions/{key}/decisions {decision_id, turn_id, request_id, decision,
-  expected_revision?}`` — one exact pending request, allow/deny only.
+  grant?, expected_revision?}`` — one exact pending request: approve / reject / cancel, or
+  ``always`` with the id of one proposed standing grant the snapshot offers (#1339).
 * ``POST /api/structured/sessions/{key}/interrupt {operation_id, turn_id}``
 * ``POST /api/structured/sessions/{key}/stop`` — close the worker; reports proved containment.
 * ``GET  /api/structured/sessions/{key}/containment`` — live / gone / unknown.
@@ -159,10 +160,12 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         _csrf: None = Depends(csrf_guard),
     ) -> JSONResponse:
         fields = {"decision_id", "turn_id", "request_id", "decision"}
-        body = await _json(request, fields | {"expected_revision"}, fields)
+        body = await _json(request, fields | {"expected_revision", "grant"}, fields)
         for name in ("turn_id", "request_id", "decision"):
             if not isinstance(body[name], str):
                 raise HTTPException(status_code=422, detail=f"{name} must be a string")
+        if "grant" in body and not isinstance(body["grant"], str):
+            raise HTTPException(status_code=422, detail="grant must be a string")
         return JSONResponse(
             await _run(
                 structured_runtime.decide(
@@ -173,6 +176,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
                     decision=body["decision"],
                     user=_user,
                     expected_revision=_revision(body.get("expected_revision")),
+                    grant=body.get("grant"),
                 )
             )
         )

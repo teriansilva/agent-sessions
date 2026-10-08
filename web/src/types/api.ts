@@ -1311,11 +1311,28 @@ export type StructuredTurnState =
   | "uncertain"
   | "unavailable";
 
+/** Advisory risk of a command (#1339): a fixed list of risky shapes, `unknown` when the command
+ *  could not be read. Never an assurance of safety. */
+export interface StructuredRisk {
+  level: "risky" | "none" | "unknown" | string;
+  reasons: string[];
+}
+
+/** One standing grant the request itself proposed (#1339). `label` states its breadth
+ *  and where it persists; the server and the worker accept only these ids. */
+export interface StructuredGrant {
+  id: string;
+  label: string;
+  scope: "persistent" | "session" | string;
+  rules?: string[];
+}
+
 export interface StructuredTool {
   id: string;
   name: string;
   outcome: string;
   summary: string;
+  risk?: StructuredRisk;
 }
 
 export interface StructuredTurn {
@@ -1345,6 +1362,10 @@ export interface StructuredRequest {
   payload_digest?: string;
   choices: string[];
   complete?: boolean;
+  /** "Approve always" choices (#1339): every grant the client proposed, labelled with what it
+   *  covers, where it is saved and the request's risk; empty when it proposed none. */
+  always?: StructuredGrant[];
+  risk?: StructuredRisk | null;
 }
 
 /** One model a native API client's own CLI reports (#1313). */

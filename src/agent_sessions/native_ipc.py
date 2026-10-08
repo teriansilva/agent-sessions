@@ -286,10 +286,16 @@ def _params(action, value, *, immutable=False):
     )
     # Pictures are optional on a submit, and a text-only turn's identity has no such key, so a
     # turn journaled before #1332 Phase 3 still reads (and replays) exactly as it was written.
-    optional = (keys[action] & {"actor"} if immutable else set()) | (
-        {"attachments"} if action == "submit" else set()
+    # `grant` (#1339) is present only on an `always` decision: the id of one proposed standing
+    # grant the request itself proposed. Older records never carry it.
+    optional = (
+        (keys[action] & {"actor"} if immutable else set())
+        | ({"attachments"} if action == "submit" else set())
+        | ({"grant"} if action == "decide" else set())
     )
     _object(value, required, optional)
+    if action == "decide" and (value.get("decision") == "always") != ("grant" in value):
+        raise IPCError("a standing grant goes with an always decision, and only with one")
     out = {}
     for key, item in value.items():
         if key.endswith("worker_id") or key in {
@@ -320,7 +326,13 @@ def _params(action, value, *, immutable=False):
         elif key == "payload_digest":
             out[key] = _digest(item)
         elif key == "decision":
-            out[key] = _choice(item, {"approve", "reject", "cancel"})
+            out[key] = _choice(item, {"approve", "reject", "cancel", "always"})
+        elif key == "grant":
+            from .native_grants import valid_grant_id
+
+            if not valid_grant_id(item):
+                raise IPCError("invalid private IPC grant id")
+            out[key] = item
         elif key == "actor":
             # The authenticated operator, bound into the decision's durable identity (#1278).
             out[key] = _text(item, 128)

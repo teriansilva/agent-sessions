@@ -242,9 +242,36 @@ class _Codec:
         self._approvals[key] = payload
         return key
 
+    #: The adapter kind ``native_grants`` derives standing grants for (#1339).
+    ADAPTER = ""
+
+    def _always(self, request_id: str, grant: Any, cwd: str | None) -> Any:
+        """The exact native grant for an ``always`` decision, re-derived from the request THIS
+        connection holds (#1339): never trusted from the caller, refused unless the request itself
+        proposed it."""
+        from . import native_grants
+
+        item = self._approvals.get(request_id)
+        if (
+            item is None
+            or item.get("complete") is not True
+            or not native_grants.valid_grant_id(grant)
+        ):
+            raise ProtocolError("that standing grant is not offered for this request")
+        derived = native_grants.derive(self.ADAPTER, item.get("kind"), item.get("presented"), cwd)
+        match = next((c for c in derived["always"] if c["id"] == grant), None)
+        if match is None:
+            raise ProtocolError("that standing grant is not offered for this request")
+        return match["grant"]
+
     def _decision(self, request_id: str, decision: str) -> dict[str, Any]:
-        if not isinstance(decision, str) or decision not in {"approve", "reject", "cancel"}:
-            raise ProtocolError("only one-operation permission decisions are supported")
+        if not isinstance(decision, str) or decision not in {
+            "approve",
+            "reject",
+            "cancel",
+            "always",
+        }:
+            raise ProtocolError("unsupported permission decision")
         item = self._approvals.get(request_id)
         if (
             item is None
@@ -272,6 +299,8 @@ class _Codec:
 
 
 class CodexCodec(_Codec):
+    ADAPTER = "codex-app-server"
+
     def __init__(self) -> None:
         super().__init__()
         self._early_frames: list[dict[str, Any]] = []
@@ -364,12 +393,19 @@ class CodexCodec(_Codec):
             "turn/interrupt", {"threadId": self.native_id, "turnId": self.native_turn_id}
         )
 
-    def decide(self, request_id: str, decision: str) -> dict:
+    def decide(
+        self, request_id: str, decision: str, *, grant: str | None = None, cwd: str | None = None
+    ) -> dict:
+        # `always` (#1339): the exact `acceptWithExecpolicyAmendment` object / `acceptForSession`
+        # the request itself listed, re-derived before anything is consumed.
+        native = self._always(request_id, grant, cwd) if decision == "always" else None
         pending = self._decision(request_id, decision)
         return {
             "id": pending["id"],
             "result": {
-                "decision": {"approve": "accept", "reject": "decline", "cancel": "cancel"}[decision]
+                "decision": native
+                if decision == "always"
+                else {"approve": "accept", "reject": "decline", "cancel": "cancel"}[decision]
             },
         }
 
@@ -543,6 +579,10 @@ class CodexCodec(_Codec):
                 "frame": frame,
                 "digest": digest,
                 "complete": complete,
+                "presented": presented,
+                "kind": "command"
+                if method == "item/commandExecution/requestApproval"
+                else "file_change",
             },
         )
         return [
@@ -732,6 +772,8 @@ class ClaudeCodec(_Codec):
     cannot support this guarantee even though the SDK's compatibility type permits its absence.
     """
 
+    ADAPTER = "claude-stream-json"
+
     def __init__(self, session_id: str) -> None:
         super().__init__()
         self.native_id = _uuid(session_id)
@@ -820,11 +862,22 @@ class ClaudeCodec(_Codec):
             "response": {"subtype": "success", "request_id": request_id, "response": response},
         }
 
-    def decide(self, request_id: str, decision: str) -> dict:
+    def decide(
+        self, request_id: str, decision: str, *, grant: str | None = None, cwd: str | None = None
+    ) -> dict:
+        # `always` (#1339): allow with the ORIGINAL input plus exactly the one proposed
+        # suggestion the prompt itself carried, re-derived before anything is consumed.
+        suggestion = self._always(request_id, grant, cwd) if decision == "always" else None
         pending = self._decision(request_id, decision)
         data = (
             {"behavior": "allow", "updatedInput": pending["input"]}
             if decision == "approve"
+            else {
+                "behavior": "allow",
+                "updatedInput": pending["input"],
+                "updatedPermissions": [suggestion],
+            }
+            if decision == "always"
             else {
                 "behavior": "deny",
                 "message": "Declined by BattleLab operator",
@@ -881,6 +934,8 @@ class ClaudeCodec(_Codec):
                 "frame": frame,
                 "digest": digest,
                 "complete": True,
+                "presented": presented,
+                "kind": tool_name,
             },
         )
         return [

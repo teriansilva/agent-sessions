@@ -154,7 +154,7 @@ contained worker; New session lists these under **API — structured, no termina
 The session view shows your messages, what the agent did, and every request it makes. A request
 card lists the **whole** request — command, folder, network access, proposed rule changes, or a
 Claude prompt's title, path and reason — and offers only the choices the agent accepts right
-now, one request at a time: there is never an "always allow" button. Codex **file changes** are
+now, one request at a time. A standing rule is offered only under *Approve always* (below). Codex **file changes** are
 shown with their patch but can only be declined, because nothing guarantees Codex writes exactly
 the patch shown. **opencode — API** runs BattleLab's own opencode agent, which asks before
 **every** tool call — commands, edits, file reads, web fetches, subagents, MCP tools — whatever
@@ -177,6 +177,21 @@ for the session (a resume keeps it) and the session header shows SKIP PERMISSION
 is launched only once BattleLab has confirmed your start: if the connection drops mid-start,
 the session waits with **Start (skips prompts)** and **Discard**, and an unconfirmed one expires
 after 10 minutes without ever running.
+
+**Approve always.** When Codex or Claude proposes a standing rule for a request, the card offers
+it under *Approve always*, worded with what it covers ("… and any command starting with it",
+"every `Bash` call") and where it is saved (Codex's exec policy, your project's or your user
+Claude settings, or this session only). Broad rules are offered too — it is your instance — and a
+risky command's options carry its RISKY reason. BattleLab never invents or widens a rule, and a
+rule can never switch the session's permission mode (that is chosen at New session).
+
+**Risk marks.** A command that matches a short, fixed list of risky shapes (recursive or forced
+deletes, `sudo`, force-push and other destructive git, recursive `chmod`/`chown`, `dd`/`mkfs`,
+killing processes, a download piped into a shell, writes outside the session folder) is marked
+RISKY with the reason, on its approval card and on the turn's list of what the agent did; one
+BattleLab could not read is "not classified". The mark only informs — it removes no choice, and
+an Approve always option for such a command carries the same mark. An unmarked command is not
+promised to be safe.
 
 **Model.** New session offers the models the client's own CLI reports — Codex's app-server model
 list, Claude Code's model picker list — so a model your CLI gained after a BattleLab release shows

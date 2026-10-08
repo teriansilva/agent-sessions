@@ -4,6 +4,11 @@
 Behaviour is selected by the turn text, so a test drives it purely through the public API:
 
 * ``APPROVE`` — ask one exact permission request, finish with ``approved:<answer>``.
+* ``ASKJSON:{...}`` — ask one permission request whose params / request carry the given fields
+  (#1339: a command, ``availableDecisions``, ``permission_suggestions`` …); the frame BattleLab
+  answers with is logged like every other frame.
+* ``RUN:<command>`` — run one command tool call without asking (a skip-permissions session's
+  tool row, #1339), then reply ``ran``.
 * ``HANG``    — start the turn and never finish it (for interrupt / worker death).
 * ``DIE``     — exit right after accepting the turn (native crash mid-turn).
 * anything else — stream a reply ``echo:<text>`` and complete.
@@ -171,6 +176,20 @@ def codex():
                     }
                 )
                 continue
+            if text.startswith("RUN:"):
+                item = {
+                    "id": "cmd-run",
+                    "type": "commandExecution",
+                    "status": "completed",
+                    "command": text[len("RUN:") :],
+                    "aggregatedOutput": "",
+                }
+                send(
+                    {
+                        "method": "item/completed",
+                        "params": {"threadId": thread, "turnId": turn, "item": item},
+                    }
+                )
             if text == "BIG":
                 item = {
                     "id": "cmd-1",
@@ -203,6 +222,21 @@ def codex():
                 )
                 reply = next(stream)
                 answer = "approved:" + reply["result"]["decision"]
+            if text.startswith("ASKJSON:"):
+                send(
+                    {
+                        "id": 78,
+                        "method": "item/commandExecution/requestApproval",
+                        "params": {
+                            "threadId": thread,
+                            "turnId": turn,
+                            "itemId": "item-2",
+                            **json.loads(text[len("ASKJSON:") :]),
+                        },
+                    }
+                )
+                reply = next(stream)
+                answer = "decided:" + json.dumps(reply["result"]["decision"], sort_keys=True)
             send(
                 {
                     "method": "item/agentMessage/delta",
@@ -335,6 +369,40 @@ def claude():
                 )
                 reply = next(stream)
                 answer = "approved:" + reply["response"]["response"]["behavior"]
+            if text.startswith("ASKJSON:"):
+                send(
+                    {
+                        "type": "control_request",
+                        "request_id": "perm-2",
+                        "request": {
+                            "subtype": "can_use_tool",
+                            "tool_use_id": "toolu_2",
+                            **json.loads(text[len("ASKJSON:") :]),
+                        },
+                        "session_id": session,
+                    }
+                )
+                reply = next(stream)
+                answer = "decided:" + json.dumps(reply["response"]["response"], sort_keys=True)
+            if text.startswith("RUN:"):
+                send(
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "id": "msg_run",
+                            "model": "fake-claude-1",
+                            "content": [
+                                {
+                                    "type": "tool_use",
+                                    "id": "toolu_run",
+                                    "name": "Bash",
+                                    "input": {"command": text[len("RUN:") :]},
+                                }
+                            ],
+                        },
+                        "session_id": session,
+                    }
+                )
             if text == "SUBAGENT":
                 request = {
                     "subtype": "can_use_tool",
