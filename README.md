@@ -36,6 +36,13 @@ whole fleet from a laptop or your phone.
   exact file changes before applying an eligible fleet update. Interrupted updates retain their
   retry identity in the current browser tab. Flow editing and the new-project wizard are still
   separate, unfinished slices of the playbook rollout.
+- **Playbook authoring.** Open **Library → Playbooks → New playbook**, name the playbook,
+  then add steps and choose each step's actor and model. Dependencies determine execution order;
+  checklist evidence, bounded rework and independent-review constraints describe completion.
+  **Save playbook** adds it to your local library; **Edit playbook** opens a saved local bundle.
+  Duplicate bundled/catalog playbooks to local before editing. A conflicting save keeps the draft
+  for comparison, saving as a new playbook, or explicit discard. Drafts live in this tab; cancel
+  the leave/reload prompt to keep them. Saved projects retain their pinned playbook revision.
 - **Mission control.** A chat-first console over your work: a rail of *missions*, a thread per
   mission, and an objective list that says what "done" means before the work starts. It adopts
   sessions you started yourself, checks the objectives it can check, and follows through — nudging

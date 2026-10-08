@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import { ApiError, api } from "../../lib/api";
-import { PLAYBOOKS_PATH, playbookPath } from "../../lib/routes";
+import { PLAYBOOKS_PATH, playbookPath, playbookEditPath } from "../../lib/routes";
 import type {
   PlaybookDetail,
   PlaybookWriteResult,
@@ -133,6 +133,7 @@ export function PlaybookDetailPage({ id }: { id: string }) {
               <PlaybookSource card={pb} />
             </div>
             <div className={styles.actions}>
+              {pb.ok && pb.editable && <Link className={buttons.primary} to={playbookEditPath(id)}>Edit playbook</Link>}
               {pb.ok && (
                 <button
                   className={buttons.ghost}

@@ -39,6 +39,8 @@ export const PLAYBOOKS_PATH = "/library/playbooks";
 export function playbookPath(id: string): string {
   return `${PLAYBOOKS_PATH}/${encodeURIComponent(id)}`;
 }
+export const PLAYBOOK_NEW_PATH = `${PLAYBOOKS_PATH}/create/new`;
+export const playbookEditPath = (id: string) => `${playbookPath(id)}/edit`;
 
 /** The mission checklists editor, under Library in the nav (#1294; it was under Missions). It used to be a Settings
  *  tab (Settings → AI → Checklists); `/settings/ai-playbooks` still redirects here. */

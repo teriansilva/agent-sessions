@@ -76,6 +76,7 @@ import {
   MISSION_PATH,
   NEW_PROJECT_PATH,
   PLAYBOOKS_PATH,
+  PLAYBOOK_NEW_PATH,
   TEMPLATES_PATH,
 } from "../lib/routes";
 import { SETTINGS_PATH } from "../routes/settingsTabs";
@@ -124,6 +125,7 @@ const Dashboard = lazyWithReload(
   () => import("../routes/Dashboard"),
   "dashboard",
 );
+const PlaybookEditor = lazyWithReload(() => import("../routes/PlaybookEditor"), "playbook-editor");
 const Playbooks = lazyWithReload(() => import("../routes/Playbooks"), "playbooks");
 // The New project wizard (#1187). Lazy like the others.
 const NewProject = lazyWithReload(
@@ -764,6 +766,8 @@ function Layout() {
                   <Route path={DASHBOARD_PATH} element={<Dashboard />} />
                   {/* Ask's old page (#1171): now the dashboard with the sidebar open (#1294). */}
                   <Route path={ASK_PATH} element={<AskRedirect />} />
+                  <Route path={PLAYBOOK_NEW_PATH} element={<PlaybookEditor />} />
+                  <Route path={`${PLAYBOOKS_PATH}/:playbookId/edit`} element={<PlaybookEditor />} />
                   <Route path={PLAYBOOKS_PATH} element={<Playbooks />} />
                   <Route path={`${PLAYBOOKS_PATH}/:playbookId`} element={<Playbooks />} />
                   <Route path={NEW_PROJECT_PATH} element={<NewProject />} />

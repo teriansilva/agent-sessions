@@ -1,6 +1,7 @@
 /** Library's bundle gallery and detail. Mutations retain the revision the operator saw. */
+import { PLAYBOOK_NEW_PATH } from "../lib/routes";
 import { useCallback, useState } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { HudFrame } from "../components/hud/HudFrame";
 import { PlaybookCard } from "../components/playbooks/PlaybookCard";
 import { PlaybookDetailPage } from "../components/playbooks/PlaybookDetail";
@@ -58,7 +59,7 @@ function Gallery() {
       <div className={styles.kicker}>
         Library // playbooks{data ? ` // ${rows.length}` : ""}
       </div>
-      <h1>Playbooks</h1>
+      <div className={styles.header}><h1>Playbooks</h1><Link className={buttons.primary} to={PLAYBOOK_NEW_PATH}>New playbook</Link></div>
       <p className={styles.intro}>
         How a repository works: its flow of agents, the checklist that ends each
         step, and the files, templates and variables a project is given.

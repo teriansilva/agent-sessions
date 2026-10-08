@@ -710,7 +710,7 @@ def test_no_playbook_route_exposes_a_parameter_as_request_input(auth_cfg):
     # authoring + review/confirm + the deployment lifecycle + git (#1196: clone, seed, remote
     # plan/create, publish plan/publish, operation status); recovery has no purge endpoint and
     # no route deletes a remote repository
-    assert len(seen) == 28, seen
+    assert len(seen) == 30, seen
 
 
 def test_the_routes_need_a_session_csrf_and_the_origin_and_are_never_cached(auth_cfg, tmp_home):
@@ -2146,3 +2146,105 @@ def test_sweep_rollback_preserves_an_editors_replacement(
     store.create_playbook(_files(new_id="sweeps-after-owner-race"))
     assert live.stat().st_ino == editor_inode
     assert (live / "README.md").read_text() == expected
+
+
+# ---- form editor (#1359) ------------------------------------------------------------------------
+
+
+def test_copy_draft_uses_unsaved_bytes_and_remaps_all_references(tmp_home):
+    import tomllib
+
+    original = store.create_playbook(_files(new_id="editor-source"))
+    files = dict(original["files"])
+    flow = original["documents"]["flows/dev.toml"]
+    flow["steps"][0]["title"] = "An unsaved plan"
+    files["flows/dev.toml"] = {"toml": flow}
+    files["README.md"] = "Unsaved README"
+    copied = store.copy_draft(files)
+    assert copied["id"] != original["id"]
+    assert copied["readme"] == "Unsaved README"
+    new_flow = next(d for p, d in copied["documents"].items() if p.startswith("flows/"))
+    steps = new_flow["steps"]
+    assert steps[0]["title"] == "An unsaved plan"
+    assert not {s["id"] for s in steps} & {s["id"] for s in flow["steps"]}
+    assert steps[1]["after"] == [steps[0]["id"]]
+    assert steps[2]["rework"]["to"] == steps[1]["id"]
+    assert steps[2]["distinct_from"][0]["step"] == steps[1]["id"]
+    assert steps[2]["checklist"][0]["probe_args"]["branch"] == (
+        "{{steps." + steps[1]["id"] + ".head_branch}}"
+    )
+    old = store.get_playbook(original["id"])
+    assert old["revision"] == original["revision"]
+    assert tomllib.loads(old["files"]["flows/dev.toml"])["steps"][0]["title"] != "An unsaved plan"
+    assert not set(copied["documents"]) & {"flows/dev.toml"}
+
+
+def test_copy_draft_preserves_binary_and_untouched_text(tmp_home):
+    import base64
+    import tomllib
+
+    files = _files(new_id="binary-draft")
+    doc = tomllib.loads(files["playbook.toml"])
+    doc["materials"].append({"path": "asset.bin", "disposition": "reference"})
+    files["playbook.toml"] = {"toml": doc}
+    data = bytes(range(256))
+    files["template/asset.bin"] = {"base64": base64.b64encode(data).decode()}
+    copied = store.copy_draft(files)
+    assert base64.b64decode(copied["files"]["template/asset.bin"]["base64"]) == data
+    for path, raw in files.items():
+        if path != "playbook.toml" and not path.startswith("flows/"):
+            assert copied["files"][path] == raw
+
+
+def test_copy_draft_rejects_invalid_bundle_before_publication(tmp_home):
+    files = _files(new_id="invalid-draft")
+    files["flows/dev.toml"] = files["flows/dev.toml"].replace(
+        'after = ["plan"]', 'after = ["missing"]'
+    )
+    with pytest.raises(store.StoreError) as exc:
+        store.copy_draft(files)
+    assert exc.value.extra.get("field")
+    assert _local_names() == []
+
+
+def test_editor_routes_require_auth_csrf_and_strict_body(auth_cfg, tmp_home):
+    c = _client(auth_cfg)
+    for method, path in [("get", "/authoring/schema"), ("post", "/authoring/copy")]:
+        assert getattr(c, method)(routes.PREFIX + path).status_code in (401, 303)
+    hdr = _login(c, auth_cfg)
+    schema_response = c.get(routes.PREFIX + "/authoring/schema")
+    assert schema_response.status_code == 200
+    assert schema_response.headers["cache-control"] == "no-store"
+    assert c.post(routes.PREFIX + "/authoring/copy", json={"files": {}}).status_code == 403
+    for body in ({}, {"files": {}, "force": True}, {"files": []}):
+        assert c.post(routes.PREFIX + "/authoring/copy", json=body, headers=hdr).status_code == 422
+    r = c.post(routes.PREFIX + "/authoring/copy", json={"files": _files()}, headers=hdr)
+    assert r.status_code == 201, r.text
+    assert r.json()["id"] != "forge-workflow"
+    assert r.headers["cache-control"] == "no-store"
+
+
+def test_editor_vocabulary_reuses_admission_and_probe_contracts(monkeypatch):
+    from agent_sessions import missions
+    from agent_sessions.playbooks import authoring, review
+
+    admitted = []
+
+    def predicate(provider):
+        admitted.append(provider.engine_id)
+        return len(admitted) == 1
+
+    monkeypatch.setattr(review, "assignment_available", predicate)
+    out = authoring.vocabulary()
+    assert out["agents"] == admitted[:1]
+    assert len(admitted) > 1
+    assert set(out["probes"]) == set(missions.PROBE_ARG_SCHEMA)
+    assert out["probes"]["http_status"]["args"]["url"] == {
+        "required": True,
+        "type": "url",
+        "literal": False,
+        "variable_types": ["url"],
+        "slots": [],
+    }
+    assert out["probes"]["forge_review"]["args"]["branch"]["slots"] == ["branch", "head_branch"]
+    assert out["probes"]["http_revision"]["args"]["expect"]["slots"] == ["head_sha"]

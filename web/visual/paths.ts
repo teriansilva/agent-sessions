@@ -58,6 +58,22 @@ const SPA_MOUNTED = {
 export const VISUAL_PATHS: VisualPath[] = [
   {
     group: "authed",
+    path: "/library/playbooks/create/new",
+    name: "playbook-new",
+    description: "New local playbook — identity and accessible flow editor",
+    requireAuth: "admin",
+    waitFor: { selector: '[data-testid="playbook-editor"] input[data-field="identity.name"]', timeoutMs: 12000 },
+  },
+  {
+    group: "authed",
+    path: "/library/playbooks/forge-workflow/edit",
+    name: "playbook-editor",
+    description: "Playbook editor — preserved bundle and step inspector",
+    requireAuth: "admin",
+    waitFor: { selector: '[aria-label="Step inspector"]', timeoutMs: 12000 },
+  },
+  {
+    group: "authed",
     path: "/library/playbooks",
     name: "playbooks",
     description: "Playbook gallery — flow previews, source and domain filters",

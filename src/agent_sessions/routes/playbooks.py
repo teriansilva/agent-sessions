@@ -3,6 +3,8 @@
 * ``GET    /api/playbooks``                    — every source's cards (fail-soft per bundle) +
   ``default``
 * ``POST   /api/playbooks``                    — create a ``local`` playbook ``{files}`` → 201
+* ``GET    /api/playbooks/authoring/schema``   — editor choices; no execution
+* ``POST   /api/playbooks/authoring/copy``     — save supplied draft with fresh identities
 * ``GET    /api/playbooks/{pid}``              — detail: card, ``files``, ``documents``, README
 * ``PUT    /api/playbooks/{pid}``              — replace a local playbook ``{revision, files}``
 * ``DELETE /api/playbooks/{pid}?revision=…``   — delete a local playbook (refused while projects
@@ -58,6 +60,7 @@ from fastapi.responses import JSONResponse
 from .. import template_vars
 from ..playbooks import (
     apply,
+    authoring,
     fleet,
     lifecycle,
     publication,
@@ -123,6 +126,11 @@ def _only(body: dict, allowed: set[str], required: set[str], what: str) -> None:
 def _create(body: dict) -> dict:
     _only(body, {"files"}, {"files"}, "create")
     return store.create_playbook(body["files"])
+
+
+def _copy_draft(body: dict) -> dict:
+    _only(body, {"files"}, {"files"}, "copy draft")
+    return store.copy_draft(body["files"])
 
 
 def _update(pid: str, body: dict) -> dict:
@@ -196,6 +204,21 @@ def register(app: FastAPI, *, logged_in, csrf_guard, signing_key: str) -> None:
         if isinstance(body, JSONResponse):
             return body
         out = await _run(_create, body)
+        return out if isinstance(out, JSONResponse) else _json(out, 201)
+
+    @app.get(PREFIX + "/authoring/schema")
+    async def authoring_schema(_user: str = Depends(logged_in)) -> JSONResponse:
+        out = await _run(authoring.vocabulary)
+        return out if isinstance(out, JSONResponse) else _json(out)
+
+    @app.post(PREFIX + "/authoring/copy")
+    async def copy_draft(
+        request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        body = await _read_body(request)
+        if isinstance(body, JSONResponse):
+            return body
+        out = await _run(_copy_draft, body)
         return out if isinstance(out, JSONResponse) else _json(out, 201)
 
     @app.get(PREFIX + "/{pid}")

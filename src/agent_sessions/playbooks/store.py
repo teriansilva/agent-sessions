@@ -1544,3 +1544,25 @@ def duplicate_playbook(pid: str, body: dict) -> dict:
     if not_durable:
         out.update(durable=False, durable_reason=not_durable)
     return out
+
+
+def copy_draft(files: object) -> dict:
+    """Save the supplied, validated draft with fresh identities, never a stored substitute.
+
+    Read-only sources are untouched. Publication uses the ordinary create boundary, including
+    its strict source inventory, full validation, read-back and NOREPLACE rename.
+    """
+    tree = tree_from_files(files)
+    pid = _identity_id(tree)
+    pb = _validate(tree, pid)
+    with root_lock(exclusive=False) as root_fd:
+        taken = {e.id for e in _all_entries(root_fd, strict=True)} | {pid}
+    new_id = _fresh(pid, schema.PLAYBOOK_ID_RE, 48, taken)
+    name = (pb["identity"]["name"] + COPY_SUFFIX)[: schema.NAME_MAX]
+    try:
+        copied = _duplicate_tree(Entry(pid, "local", tree=tree, pb=pb), new_id, name)
+    except tomlw.TomlWriteError as err:
+        raise StoreError(f"this draft cannot be copied: {err}") from None
+    # The read lock above is only an id hint; create's own exclusive NOREPLACE check wins races.
+    raw, _documents = _files_of(copied)
+    return create_playbook(raw)

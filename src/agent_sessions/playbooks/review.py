@@ -59,6 +59,19 @@ class Plan:
     resolved: binding.Resolved | None = field(default=None, repr=False)
 
 
+def assignment_available(provider) -> bool:
+    """The same admission rule for deployment assignments and the authoring picker.
+
+    Native API clients cannot dispatch terminal flow steps until P5 admits them.
+    """
+    return bool(
+        provider
+        and engines.is_agent(provider)
+        and provider.manifest.runtime != "api"
+        and engines.registry.can_start(provider)
+    )
+
+
 def _assignments(bundle: dict, raw: object) -> tuple[list[dict], dict]:
     if not isinstance(raw, dict) or len(raw) > schema.MAX_FLOWS * schema.MAX_STEPS:
         raise store.StoreError("assignments must be a bounded object")
@@ -92,12 +105,7 @@ def _assignments(bundle: dict, raw: object) -> tuple[list[dict], dict]:
         provider = roster.by_id.get(engine)
         # A native API client (#1311) can start a structured session, but flow steps dispatch to
         # a terminal agent (headless_dispatch.require_pty): it is not an assignment target yet.
-        available = bool(
-            provider
-            and engines.is_agent(provider)
-            and provider.manifest.runtime != "api"
-            and engines.registry.can_start(provider)
-        )
+        available = assignment_available(provider)
         facts["engines"][engine] = {
             "present": available,
             "manifest": provider.manifest.digest if provider is not None else None,

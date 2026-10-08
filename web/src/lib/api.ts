@@ -1,5 +1,6 @@
 // Typed client for the FastAPI `/api/*` surface. Same-origin; cookie session auth.
 // Mutations (later) attach the CSRF token + are origin-checked server-side.
+import type { AuthoringSchema, Files } from "../components/playbooks/playbookDraft";
 import type { PluginCatalog, PluginReview, PluginOperation, PluginAction } from "../types/plugins";
 import type { PlaybookDetail, PlaybookFleet, PlaybookFleetResult, PlaybookFleetReview, PlaybookList, PlaybookVerify, PlaybookWriteResult } from "../types/playbooks";
 import {
@@ -1933,6 +1934,10 @@ export const api = {
     ),
 
   // Bundles (#1192). Every mutation uses the loaded revision and the shared CSRF transport.
+  playbookAuthoring: () => getJsonWithDetail<AuthoringSchema>("/api/playbooks/authoring/schema"),
+  createPlaybook: (files: Files) => mutateJson<PlaybookDetail & PlaybookWriteResult>("POST", "/api/playbooks", { files }),
+  savePlaybook: (id: string, revision: string, files: Files) => mutateJson<PlaybookDetail & PlaybookWriteResult>("PUT", `/api/playbooks/${encodeURIComponent(id)}`, { revision, files }),
+  copyPlaybookDraft: (files: Files) => mutateJson<PlaybookDetail & PlaybookWriteResult>("POST", "/api/playbooks/authoring/copy", { files }),
   playbooks: () => getJsonWithDetail<PlaybookList>("/api/playbooks"),
   playbook: (id: string) => getJsonWithDetail<PlaybookDetail>(`/api/playbooks/${encodeURIComponent(id)}`),
   duplicatePlaybook: (id: string, revision: string) =>
