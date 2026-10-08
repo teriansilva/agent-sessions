@@ -519,13 +519,15 @@ def _binding_worker_guard():
 
 
 @contextlib.contextmanager
-def _console_binding_guard(source: SourceIdentity, native_id: str):
+def _console_binding_guard(source: SourceIdentity, native_id: str, *, fresh_create: bool = False):
     """Under launch admission, refuse existing or unidentified source console writers.
 
     A new console master can hold a ``new-*`` writer lock before its socket or first transcript
-    appears. Inspect lock names AND sockets, independent of transcript scans. Only a durable
-    same-source alias to another native history can exempt such a master. Every matching provider
-    alias counts, including retiring providers. No probe result other than DEAD admits binding.
+    appears. Inspect lock names AND sockets, independent of transcript scans. Ordinary binding
+    needs a durable same-source alias to another history to exempt such a master. Every matching
+    provider alias counts, including retiring providers. A correlated native fresh-create response
+    proves an unresolved console belongs to a different history; only that internal path exempts its
+    writer lock and known-live socket. Unknown probes still refuse, as do all same-history writers.
     """
     from . import metadata, ptybridge, sessionlock
     from .engines import base, registry
@@ -591,6 +593,16 @@ def _console_binding_guard(source: SourceIdentity, native_id: str):
             keys.add(physical)
         with contextlib.ExitStack() as stack:
             for key in sorted(keys):
+                if fresh_create and key in unresolved:
+                    engine, native = key.split(":", 1)
+                    if ptybridge.probe_master(ptybridge.socket_path(engine, native)) not in (
+                        ptybridge.ALIVE,
+                        ptybridge.DEAD,
+                    ):
+                        raise OwnershipError(
+                            "busy", "native binding refused: unresolved console state is unknown"
+                        )
+                    continue
                 guard = sessionlock.acquire(key)
                 if guard is None:
                     reason = (
@@ -611,7 +623,14 @@ def _console_binding_guard(source: SourceIdentity, native_id: str):
         raise OwnershipError("unavailable", _UNAVAILABLE) from None
 
 
-def bind(app_session_key: str, *, operation_id: str, owner_token: str, native_id: str) -> Intent:
+def bind(
+    app_session_key: str,
+    *,
+    operation_id: str,
+    owner_token: str,
+    native_id: str,
+    fresh_create: bool = False,
+) -> Intent:
     """Bind under caller-held launch admission, holding console guards through the commit.
 
     The caller must NOT already hold the plugin worker fence or a console writer lock: this
@@ -619,6 +638,12 @@ def bind(app_session_key: str, *, operation_id: str, owner_token: str, native_id
     worker acquires its lifetime writer lock after this permanent exclusion has committed and
     before submitting any turn. Exact bound repeats only observe metadata and remain readable
     after source removal.
+
+    ``fresh_create`` is internal to the worker's correlated thread/start or session/new reply:
+    never a guessed/pre-created id, load/resume, or caller-supplied HTTP/IPC field. The reservation
+    precedes that request and excludes console adoption until binding; permanent ownership then
+    excludes it afterwards. An already running unresolved console cannot own that new history.
+    Ordinary binding stays conservative when an alias is missing.
     """
     _app_key(app_session_key)
     _uuid(operation_id, "operation id")
@@ -628,7 +653,7 @@ def bind(app_session_key: str, *, operation_id: str, owner_token: str, native_id
         return current
     with (
         _binding_worker_guard(),
-        _console_binding_guard(current.source, native_id),
+        _console_binding_guard(current.source, native_id, fresh_create=fresh_create),
         _ledger() as con,
     ):
         if con is None:

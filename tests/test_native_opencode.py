@@ -1066,13 +1066,15 @@ async def test_a_console_writer_fences_the_api_on_the_same_session(host, project
 
 
 @pytest.mark.anyio
-async def test_an_unresolved_console_creation_refuses_api_binding(host, project):
+async def test_a_fresh_api_session_coexists_with_an_unresolved_console(host, project):
     placeholder = sessionlock.acquire(f"opencode:new-{ident()}")
     assert placeholder is not None
     try:
-        with pytest.raises(runtime.StructuredError) as refused:
-            await _create(project)
-        assert "console creation" in refused.value.detail
+        key = await _create(project)
+        assert native_ownership.lookup(key).state == "bound"
+        assert (await runtime.probe(key))["containment"] == "live"
+        assert sessionlock.acquire(placeholder.key) is None  # the console stays running
+        await runtime.stop(key)
     finally:
         placeholder.release()
 

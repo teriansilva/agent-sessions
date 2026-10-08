@@ -12,9 +12,10 @@ Lifecycle, in order (each step refuses rather than guesses):
    path environment so locks, ownership and roster resolve to the SAME shared directories.
 2. Under the session lifecycle lock: refuse unless this generation is the current, open one,
    then take the per-app-session writer lock for the worker's lifetime.
-3. Bound histories take the source writer lock BEFORE the native child exists. A new Codex
-   thread is bound (``native_ownership.bind`` under launch admission) from the thread/start
-   response, and its writer lock taken, before any turn can be accepted.
+3. Bound histories take the source writer lock BEFORE the native child exists. New Codex and
+   opencode histories bind under launch admission from a correlated thread/start or session/new
+   response. Only those fresh histories may coexist with unresolved console placeholders; their
+   own writer locks are taken before any turn can be accepted.
 4. Serve the private socket: peer UID, capability handshake, then closed IPC frames. Every
    effect is claimed durably in the journal (fsync) before its stdin write; exact replays
    observe the recorded receipt and write nothing.
@@ -516,9 +517,10 @@ class Worker:
         if self.native_id is not None:
             await self.request(self.codec.resume(self.native_id, cwd, model, bypass=bypass))
             return
-        event = await self.request(self.codec.create(cwd, model, bypass=bypass))
+        request = self.codec.create(cwd, model, bypass=bypass)
+        event = await self.request(request)
         native_id = event.data["native_id"]
-        await asyncio.to_thread(self.bind, native_id)
+        await asyncio.to_thread(self.bind_created, request["id"], event)
         self.native_id = native_id
 
     async def initialize_opencode(self) -> None:
@@ -532,19 +534,39 @@ class Worker:
             # replayed tool call can become a live approval.
             await self.request(codec.load(self.native_id, cwd))
         else:
-            event = await self.request(codec.create(cwd))
+            request = codec.create(cwd)
+            event = await self.request(request)
             native_id = event.data["native_id"]
-            await asyncio.to_thread(self.bind, native_id)
+            await asyncio.to_thread(self.bind_created, request["id"], event)
             self.native_id = native_id
         await self.request(codec.pin_mode())
         if model is not None:
             await self.request(codec.set_model(model))
 
-    def bind(self, native_id: str) -> None:
-        """Permanent ownership commits before the source lock and before any turn."""
+    def bind_created(self, request_id: str, event: native_protocol.NativeEvent) -> None:
+        """Bind only this connection's fresh-create reply, before the writer lock and any turn.
+
+        Neither a supplied native id nor a resume/load reply is fresh-creation evidence. The
+        codec correlates responses before releasing the waiter; verify that evidence again at
+        the only call site that selects the ownership guard's fresh-create exception.
+        """
         from . import native_ownership
         from .plugins import storage
 
+        action = {"codex-app-server": "thread/start", OPENCODE: "session/new"}.get(self.adapter)
+        native_id = event.data.get("native_id")
+        if (
+            action is None
+            or self.config["mode"] != "create"
+            or self.config.get("native_id") is not None
+            or self.native_id is not None
+            or event.kind != "session"
+            or event.data.get("action") != action
+            or event.data.get("request_id") != request_id
+            or not native_id
+            or self.codec.native_id != native_id
+        ):
+            raise WorkerError("native binding requires this connection's fresh create response")
         creation = self.config["creation"]
         with storage.locked("launch", wait=30):
             native_ownership.bind(
@@ -552,6 +574,7 @@ class Worker:
                 operation_id=creation["operation_id"],
                 owner_token=creation["owner_token"],
                 native_id=native_id,
+                fresh_create=True,
             )
         self.lock_source(native_id)
         with native_state.session_lock(self.session_id):

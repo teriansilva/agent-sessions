@@ -621,8 +621,9 @@ def test_routes_require_login_and_csrf_and_drive_a_native_session(host, project,
         client = c.get(f"/api/structured/clients/{engine}").json()
         assert client["ready"] and client["authentication"] == "vendor_native"
         assert client["mission_ready"] is False
-        bad = c.post("/api/structured/sessions", json={**body, "capability": "x"})
-        assert bad.status_code == 422  # no field beyond operator input is accepted
+        for field, value in (("capability", "x"), ("fresh_create", True), ("native_id", ident())):
+            bad = c.post("/api/structured/sessions", json={**body, field: value})
+            assert bad.status_code == 422  # no internal binding selector or supplied native id
         created = c.post("/api/structured/sessions", json=body)
         assert created.status_code == 201, created.text
         key = created.json()["session_key"]

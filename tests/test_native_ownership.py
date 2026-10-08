@@ -76,13 +76,14 @@ def reservation(source, **overrides):
     return args
 
 
-def bind(args, native):
+def bind(args, native, *, fresh_create=False):
     with storage.locked(admission.LOCK):
         return ownership.bind(
             args["app_session_key"],
             operation_id=args["operation_id"],
             owner_token=args["owner_token"],
             native_id=native,
+            fresh_create=fresh_create,
         )
 
 
@@ -249,13 +250,14 @@ def test_binding_requires_original_owner_and_captured_native_shape(state, source
     assert ownership.lookup(original.app_session_key) == bound
 
 
-def test_same_native_history_cannot_bind_to_two_app_sessions(state, source):
+@pytest.mark.parametrize("fresh_create", [False, True])
+def test_same_native_history_cannot_bind_to_two_app_sessions(state, source, fresh_create):
     one, two = reservation(source), reservation(source)
     ownership.reserve(**one)
     ownership.reserve(**two)
     native = uid()
-    bind(one, native)
-    rejected("conflict", bind, two, native)
+    bind(one, native, fresh_create=fresh_create)
+    rejected("conflict", bind, two, native, fresh_create=fresh_create)
     assert ownership.lookup(two["app_session_key"]).state == "pending"
     assert ownership.source_snapshot(source) == ownership.SourceOwnership(frozenset({native}), True)
 
@@ -299,6 +301,59 @@ def test_binding_refuses_fresh_console_before_socket_or_transcript_exists(state,
         assert error.value.code == "busy"
         assert ownership.lookup(args["app_session_key"]).state == "pending"
     assert bind(args, native).native_id == native
+
+
+@pytest.mark.parametrize("retiring", [False, True])
+@pytest.mark.parametrize("probe", [ptybridge.ALIVE, ptybridge.DEAD, ptybridge.UNKNOWN])
+def test_fresh_create_can_coexist_with_unresolved_console_but_unknown_probe_refuses(
+    state, source, monkeypatch, retiring, probe
+):
+    alias = provider(source.canonical_path, alias="alternate")
+    roster(
+        monkeypatch,
+        provider(source.canonical_path),
+        *((alias,) if not retiring else ()),
+        retiring=(alias,) if retiring else (),
+    )
+    args = reservation(source)
+    ownership.reserve(**args)
+    native = uid()
+    physical = f"alternate:new-{uid()}"
+    sock = ptybridge.socket_path(*physical.split(":"))
+    sock.touch()
+    monkeypatch.setattr(
+        ptybridge, "probe_master", lambda path: probe if path == sock else ptybridge.DEAD
+    )
+    with sessionlock.acquire(physical):
+        if probe == ptybridge.UNKNOWN:
+            rejected("busy", bind, args, native, fresh_create=True)
+            assert ownership.lookup(args["app_session_key"]).state == "pending"
+        else:
+            assert bind(args, native, fresh_create=True).native_id == native
+
+
+@pytest.mark.parametrize("physical", ["native", "alias"])
+@pytest.mark.parametrize("holder", ["lock", ptybridge.ALIVE, ptybridge.UNKNOWN])
+def test_fresh_create_still_refuses_same_history_console(
+    state, source, monkeypatch, physical, holder
+):
+    args = reservation(source)
+    ownership.reserve(**args)
+    native = uid()
+    key = f"codex:{native}" if physical == "native" else f"codex:new-{uid()}"
+    if physical == "alias":
+        metadata.set_alias(key, f"codex:{native}")
+    if holder == "lock":
+        with sessionlock.acquire(key):
+            rejected("busy", bind, args, native, fresh_create=True)
+    else:
+        sock = ptybridge.socket_path(*key.split(":"))
+        sock.touch()
+        monkeypatch.setattr(
+            ptybridge, "probe_master", lambda path: holder if path == sock else ptybridge.DEAD
+        )
+        rejected("busy", bind, args, native, fresh_create=True)
+    assert ownership.lookup(args["app_session_key"]).state == "pending"
 
 
 @pytest.mark.parametrize("physical", ["native", "placeholder"])
@@ -348,7 +403,10 @@ def _hold_plugin_worker(ready, release):
         assert release.wait(10)
 
 
-def test_candidate_worker_in_another_process_blocks_binding_until_cleanup(state, source):
+@pytest.mark.parametrize("fresh_create", [False, True])
+def test_candidate_worker_in_another_process_blocks_binding_until_cleanup(
+    state, source, fresh_create
+):
     args = reservation(source)
     pending = ownership.reserve(**args)
     native = uid()
@@ -359,7 +417,7 @@ def test_candidate_worker_in_another_process_blocks_binding_until_cleanup(state,
     try:
         assert ready.wait(10)
         with pytest.raises(ownership.OwnershipError, match="plugin worker admission") as error:
-            bind(args, native)
+            bind(args, native, fresh_create=fresh_create)
         assert error.value.code == "busy"
         assert ownership.lookup(args["app_session_key"]) == pending
         assert ownership.source_snapshot(source) == ownership.SourceOwnership(pending=True)
@@ -370,12 +428,13 @@ def test_candidate_worker_in_another_process_blocks_binding_until_cleanup(state,
             worker.kill()
             worker.join(10)
     assert worker.exitcode == 0
-    assert bind(args, native).native_id == native
+    assert bind(args, native, fresh_create=fresh_create).native_id == native
 
 
 @pytest.mark.parametrize("damage", ["source-absent", "retirement", "roster", "metadata", "runtime"])
+@pytest.mark.parametrize("fresh_create", [False, True])
 def test_unreadable_console_ownership_cannot_complete_a_pending_binding(
-    state, source, monkeypatch, damage
+    state, source, monkeypatch, damage, fresh_create
 ):
     args = reservation(source)
     pending = ownership.reserve(**args)
@@ -395,7 +454,7 @@ def test_unreadable_console_ownership_cannot_complete_a_pending_binding(
             raise OSError("cannot enumerate console runtime")
 
         monkeypatch.setattr(ptybridge, "runtime_dir", unavailable)
-    rejected("unavailable", bind, args, uid())
+    rejected("unavailable", bind, args, uid(), fresh_create=fresh_create)
     assert ownership.lookup(args["app_session_key"]) == pending
 
 
