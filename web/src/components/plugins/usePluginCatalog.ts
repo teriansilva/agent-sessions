@@ -19,10 +19,16 @@ export function usePluginCatalog() {
   }, []);
   const refresh = async () => {
     setBusy(true); setError("");
-    try { setData(await api.pluginRefresh()); } catch (e) { setError(pluginError(e)); }
+    try { setData(await api.pluginRefresh()); } catch (e) { await load(); setError(pluginError(e)); }
     finally { setBusy(false); }
   };
-  return { data, error, busy, load, refresh };
+  const configure = async (automatic: boolean) => {
+    setBusy(true); setError("");
+    try { setData(await api.agentCatalogPreferences(automatic)); }
+    catch (e) { setError(pluginError(e)); }
+    finally { setBusy(false); }
+  };
+  return { data, error, busy, load, refresh, configure };
 }
 export type GalleryFilter = "All" | "Ready" | "Needs setup" | "Updates" | "Disabled";
 export function galleryMatch(id: string, label: string, engine: EngineInfo | undefined, data: PluginCatalog | null, query: string, filter: GalleryFilter) {

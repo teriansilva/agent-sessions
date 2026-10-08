@@ -99,6 +99,10 @@ resume command** under the app's `dtach` PTY. What differs per engine:
 | **Shell** (`shell`) | `bash` · `AGENT_SESSIONS_BASH_BIN` | `~/.claude/shell-sessions` · `AGENT_SESSIONS_SHELL_DIR` | a fresh process — nothing to resume | `bash -l` — pinned id | — |
 <!-- END generated:engine-table -->
 
+The [public agent catalog](docs/site/guide/agent-catalog.md) ships with BattleLab and checks
+GitHub for signed metadata updates daily, with an opt-out. Definitions and contribution history
+are public; installing an agent update remains a separate action.
+
 The table is generated from the engines' manifests (`src/agent_sessions/plugins/first_party/`) by
 `scripts/gen-engine-docs`. Archive is a flag in BattleLab's own sidecar for every engine except
 Claude Code, whose archive also moves the JSONL to `projects-archive/`; every other engine's

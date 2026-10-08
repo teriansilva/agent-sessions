@@ -1,4 +1,4 @@
-"""Relay transport cannot redirect, replace trust, roll back or repair accepted evidence."""
+"""Public GitHub reads cannot redirect outside release assets or replace local trust."""
 
 import asyncio
 
@@ -16,9 +16,9 @@ def selected(data):
     return {"sequence": parsed.sequence, "digest": parsed.digest}
 
 
-def transport(monkeypatch, data, signature, *, descriptor=None, fault=None):
+def transport(monkeypatch, data, signature, *, metadata=None, fault=None):
     urls = []
-    value = selected(data) if descriptor is None else descriptor
+    value = {"tag_name": "v0.19.3"} if metadata is None else metadata
 
     def respond(request):
         assert "authorization" not in request.headers and "cookie" not in request.headers
@@ -46,8 +46,8 @@ def test_fresh_and_legacy_cache_accept_same_verified_cut(signer, monkeypatch, pr
     urls = transport(monkeypatch, data, sig)
     assert asyncio.run(feed_client.refresh()).sequence == 1
     value = selected(data)
-    base = f"{feed_client.BASE}/releases/1-{value['digest']}/plugin-feed.json"
-    assert urls == [feed_client.CURRENT, base, base + ".sig"]
+    base = f"https://github.com/{feed_client.REPOSITORY}/releases/download/v0.19.3/plugin-feed.json"
+    assert urls == [feed_client.LATEST, base, base + ".sig"]
     assert feed.current().digest == value["digest"]
 
 
@@ -70,7 +70,7 @@ def test_transport_failure_at_each_stage_retains_all_evidence(signer, monkeypatc
             return httpx.Response(500)
         if failure == "timeout":
             raise httpx.ReadTimeout("test", request=request)
-        limit = [feed_client.MAX_DESCRIPTOR, feed.MAX_BYTES, 16384][index]
+        limit = [feed_client.MAX_METADATA, feed.MAX_BYTES, 16384][index]
         return httpx.Response(200, content=b"x" * (limit + 1))
 
     urls = transport(monkeypatch, new, signer(new), fault=fault)
@@ -83,33 +83,24 @@ def test_transport_failure_at_each_stage_retains_all_evidence(signer, monkeypatc
 @pytest.mark.parametrize(
     "value",
     [
-        {"sequence": True, "digest": "a" * 64},
-        {"sequence": 0, "digest": "a" * 64},
-        {"sequence": 10**16, "digest": "a" * 64},
-        {"sequence": 1, "digest": "A" * 64},
-        {"sequence": 1, "digest": "../feed"},
-        {"sequence": 1, "digest": "a" * 64, "url": "https://evil.test"},
-        {"sequence": 1},
+        {"tag_name": "../../evil"},
+        {"tag_name": "v1.2.3?bad"},
+        {"tag_name": True},
+        {"tag_name": "https://evil.test/feed"},
+        {},
+        [],
     ],
 )
-def test_descriptor_shape_refused_before_fetching_assets(signer, monkeypatch, value):
+def test_invalid_release_tag_refused_before_fetching_assets(signer, monkeypatch, value):
     monkeypatch.setattr(feed.time, "time", lambda: test_plugin_feed.NOW)
     data = feed.canonical(test_plugin_feed.document())
-    urls = transport(monkeypatch, data, signer(data), descriptor=value)
-    with pytest.raises(feed.FeedError, match="descriptor is invalid"):
+    urls = transport(monkeypatch, data, signer(data), metadata=value)
+    with pytest.raises(feed.FeedError, match="invalid version"):
         asyncio.run(feed_client.refresh())
-    assert urls == [feed_client.CURRENT]
+    assert urls == [feed_client.LATEST]
 
 
-@pytest.mark.parametrize("raw", [b'{"sequence":1,"sequence":2}', b"{}\n", b"[]", b"NaN"])
-def test_descriptor_ambiguous_json_refused(raw):
-    with pytest.raises(feed.FeedError, match="descriptor is invalid"):
-        feed_client.descriptor(raw)
-
-
-@pytest.mark.parametrize(
-    "fault", ["signature", "digest", "sequence", "rollback", "equivocation", "expired", "corrupt"]
-)
+@pytest.mark.parametrize("fault", ["signature", "rollback", "equivocation", "expired", "corrupt"])
 def test_signed_identity_and_existing_acceptance_stay_authoritative(signer, monkeypatch, fault):
     monkeypatch.setattr(feed.time, "time", lambda: test_plugin_feed.NOW)
     old = feed.canonical(test_plugin_feed.document(2))
@@ -123,13 +114,8 @@ def test_signed_identity_and_existing_acceptance_stay_authoritative(signer, monk
     if fault == "equivocation":
         doc["expires_at"] -= 1
     data = feed.canonical(doc)
-    value = selected(data)
-    if fault == "digest":
-        value["digest"] = "a" * 64
-    if fault == "sequence":
-        value["sequence"] += 1
     sig = b"invalid" if fault == "signature" else signer(data)
-    transport(monkeypatch, data, sig, descriptor=value)
+    transport(monkeypatch, data, sig)
     if fault == "expired":
         monkeypatch.setattr(feed.time, "time", lambda: doc["expires_at"] + 1)
     with pytest.raises(feed.FeedError):
@@ -147,3 +133,33 @@ def test_total_deadline_includes_headers_and_empty_responses(monkeypatch):
     monkeypatch.setattr(feed_client, "_TRANSPORT", httpx.MockTransport(slow))
     with pytest.raises(feed.FeedError, match="timed out"):
         asyncio.run(feed_client.refresh())
+
+
+def test_github_asset_redirect_is_bounded_and_anonymous(signer, monkeypatch):
+    monkeypatch.setattr(feed.time, "time", lambda: test_plugin_feed.NOW)
+    data = feed.canonical(test_plugin_feed.document())
+    sig = signer(data)
+    urls = []
+
+    def respond(request):
+        assert "authorization" not in request.headers and "cookie" not in request.headers
+        url = str(request.url)
+        urls.append(url)
+        if url == feed_client.LATEST:
+            # Metadata-supplied asset URLs are ignored; coordinates come from the fixed repo.
+            payload = (
+                b'{"tag_name":"v0.19.3","assets":[{"browser_download_url":"https://evil.test"}]}'
+            )
+            return httpx.Response(200, content=payload)
+        if request.url.host == "github.com":
+            target = "https://release-assets.githubusercontent.com/file"
+            if url.endswith(".sig"):
+                target += ".sig"
+            return httpx.Response(302, headers={"location": target, "set-cookie": "leak=1"})
+        return httpx.Response(
+            200, content=sig if url.endswith(".sig") else data, headers={"set-cookie": "leak=2"}
+        )
+
+    monkeypatch.setattr(feed_client, "_TRANSPORT", httpx.MockTransport(respond))
+    assert asyncio.run(feed_client.refresh()).sequence == 1
+    assert len(urls) == 5 and not any("evil" in url for url in urls)

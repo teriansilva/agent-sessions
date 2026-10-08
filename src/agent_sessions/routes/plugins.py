@@ -1,4 +1,4 @@
-"""Authenticated plugin review/install/sign-in/verify/activation APIs (#1259).
+"""Authenticated agent catalog/review/install/sign-in/verify/activation APIs (#1259).
 
 All mutations require the existing CSRF + origin guard. Requests select fixed operations, never
 commands, probe results, download URLs or signing keys. The separate sign-in socket has no
@@ -14,10 +14,10 @@ import json
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse
 
-from .. import chat_config, prefs
+from .. import __version__, agent_catalog, agent_catalog_refresh, chat_config, prefs
 from ..auth import origin_matches, session_uid
 from ..engines import registry
-from ..plugins import feed, feed_client, jobs, manager, provenance, signin, storage
+from ..plugins import feed, jobs, manager, provenance, signin, storage
 from .chat import test_endpoint_draft
 
 MAX_BODY = feed.MAX_BYTES
@@ -93,29 +93,39 @@ def _generation(gen: dict) -> dict:
 
 
 def _list() -> dict:
+    catalog = agent_catalog.current()
+    feed_view = {
+        "state": "unavailable" if catalog.error else "ready",
+        "sequence": catalog.sequence,
+        "expires_at": catalog.expires_at,
+        "digest": catalog.digest,
+        "bundled_digest": catalog.bundled_digest,
+        "source": catalog.source,
+        "release_version": __version__,
+        "stale": catalog.stale,
+        "error": catalog.error,
+        "definitions_url": agent_catalog.SOURCE_URL,
+        "history_url": agent_catalog.HISTORY_URL,
+        "updates_url": "https://github.com/teriansilva/agent-sessions/releases",
+    }
     try:
-        catalog = feed.current()
-        feed_view = {
-            "state": "ready" if catalog else "missing",
-            "sequence": catalog.sequence if catalog else None,
-            "expires_at": catalog.expires_at if catalog else None,
-            "digest": catalog.digest if catalog else None,
-            "error": None,
-        }
-        entries = (
-            [
-                {"manifest": feed.decode(e.manifest_bytes), "digest": e.digest}
-                for e in catalog.entries
-            ]
-            if catalog
-            else []
-        )
+        feed_view["refresh"] = agent_catalog_refresh.status()
     except (ValueError, OSError):
-        feed_view = {
-            "state": "unavailable",
-            "error": "The catalog is expired or unverified. Refresh it before installing.",
+        feed_view["refresh"] = None
+        feed_view["error"] = (
+            "Catalog refresh settings are unavailable; restore them to check for updates."
+        )
+    entries = [
+        {
+            "manifest": feed.decode(c.entry.manifest_bytes),
+            "digest": c.entry.digest,
+            "source": c.source,
+            "installable": c.source is not None,
+            "reason": c.reason,
+            "included": c.included,
         }
-        entries = []
+        for c in catalog.choices
+    ]
     doc = manager.snapshot()
     rows = []
     for plugin_id, row in doc["plugins"].items():
@@ -154,14 +164,24 @@ def register(app: FastAPI, *, logged_in, csrf_guard, cfg, must_change) -> None:
     read = [Depends(logged_in)]
     write = [Depends(logged_in), Depends(csrf_guard)]
 
+    @app.get("/api/agents/catalog", dependencies=read)
     @app.get("/api/plugins", dependencies=read)
     async def plugin_list():
         return await _call(_list)
 
+    @app.post("/api/agents/catalog/refresh", dependencies=write)
     @app.post("/api/plugins/feed/refresh", dependencies=write)
     async def plugin_refresh(request: Request):
         await _body(request, required=set())
-        await _job(feed_client.refresh)
+        await _job(agent_catalog_refresh.refresh)
+        return await _call(_list)
+
+    @app.patch("/api/agents/catalog/preferences", dependencies=write)
+    async def catalog_preferences(request: Request):
+        body = await _body(request, required={"automatic"})
+        if type(body["automatic"]) is not bool:
+            raise HTTPException(422, "automatic must be true or false")
+        await _call(agent_catalog_refresh.configure, body["automatic"])
         return await _call(_list)
 
     @app.post("/api/plugins/review", dependencies=write)

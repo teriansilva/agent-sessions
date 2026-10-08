@@ -2,14 +2,14 @@
 
 BattleLab does not implement agents. It **organizes** them: six AI coding CLIs, a plain shell,
 API clients that drive Codex, Claude and opencode without a terminal, and an API agent that talks to a model
-endpoint you configure, all presented through one session list. Each one is a **plugin**, described by a
+endpoint you configure, all presented through one session list. Each agent or terminal is described by a
 single declarative manifest (`plugin.toml`) that tells BattleLab everything it needs: the binary,
 the shape of a session id, where the engine keeps its sessions, how to resume and start one, what
 the app may do with it, and how to show it.
 
 The roster is the set of manifests. Nothing else in the app keeps a list of engines, so the
 sidebar, the map, the new-session picker, handoff, missions, usage and Settings → **Agents** all
-show the same engines in the same order. [Write a manifest](./plugins) documents the format.
+show the same engines in the same order. [Agent definitions](./plugins) documents the format.
 
 ## The rule that shapes everything
 
@@ -135,7 +135,7 @@ Three consequences worth knowing:
   restores the conversation from their own store. A shell has no saved conversation, so it
   reattaches only while its PTY lives. Scroll-up is the scrollback ring alone, with no transcript
   renderer behind it.
-- **Nothing types into it for you.** A `terminal` plugin may not declare seeding, orchestrator
+- **Nothing types into it for you.** A `terminal` definition may not declare seeding, orchestrator
   input or raw-TTY repair — text the app typed into a bare shell would run as a command — so it is
   never a handoff target and never driven by a mission.
 - **AI review still works.** The reviewer builds its input from the transcript *and* the live

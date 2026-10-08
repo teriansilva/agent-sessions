@@ -10,7 +10,7 @@ export const verifiedGeneration = (gen: PluginGeneration | null | undefined) =>
   !!gen?.verification && gen.verification.digest === gen.review.digest &&
   gen.required_checks.every(check => gen.verification?.results.some(r => r.check === check && r.passed));
 export function sourceLabel(review: PluginReview): string {
-  return `${review.adopted_path ? "Adopted · " : ""}${review.source === "signed" ? "Signed source" : "Local · Untrusted"}`;
+  return `${review.adopted_path ? "Adopted · " : ""}${review.source === "signed" ? "Signed source" : review.source === "bundled" ? "Bundled with BattleLab" : "Local · Untrusted"}`;
 }
 export const pluginError = (error: unknown) => error instanceof Error ? error.message : "The operation could not complete.";
 

@@ -2,7 +2,7 @@
  *
  *  Everything here is read from the manifests — `/api/engines` (the roster store) and
  *  `/api/engines/{id}` (one agent's detail). Nothing names an agent in code. The only things the
- *  operator also manages reviewed plugin installations through the separate installer catalog.
+ *  operator also manages reviewed agent installations through the separate installer catalog.
  *  Live engine identity still comes exclusively from engineRoster.ts. */
 import { CatalogCard, GalleryToolbar, PluginActions, PluginInstallationDetail } from "../components/plugins/PluginGallery";
 import { galleryMatch, usePluginCatalog, type GalleryFilter } from "../components/plugins/usePluginCatalog";
@@ -651,7 +651,7 @@ function RosterCard({ e, b, catalog }: { e: EngineInfo; b: Budgets; catalog: Ret
   );
 }
 
-/** The plugin's directory name, from the manifest path the loader reported. */
+/** The agent definition’s directory name, from the manifest path the loader reported. */
 function problemName(source: string): string {
   const parts = source.split("/").filter(Boolean);
   const i = parts.lastIndexOf("plugin.toml");
@@ -678,7 +678,7 @@ function ProblemCard({ p }: { p: EngineProblem }) {
         {p.error}
       </p>
       <p className={a.plain}>
-        Not loaded. Nothing from this plugin runs until the manifest is fixed.
+        Not loaded. Nothing from this agent runs until the manifest is fixed.
       </p>
     </li>
   );
@@ -732,9 +732,8 @@ export function AgentsRoster() {
             <b>{problems.length}</b> invalid
           </p>
           <p className={styles.hint}>
-            Read from each plugin's manifest; nothing here is typed in by hand.
-            Plan percentages come from the agent itself; the rest are counted
-            against a limit you set.
+            Each agent’s definition describes its capabilities. Plan percentages come
+            from the agent; token budgets use the limit you set.
           </p>
         </div>
         <Link

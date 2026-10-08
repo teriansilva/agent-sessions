@@ -1,4 +1,4 @@
-# First-party plugin release evidence (#1266)
+# First-party agent release evidence (#1266)
 
 This Linux x64 matrix pins release inputs and records the actual vendor smoke results below.
 No package lifecycle script is executed. Exact artifact SHA-256 digests, destinations and
@@ -57,6 +57,13 @@ conversation check; both candidates remain disabled. Kimi and Gemini require a c
 the host; this cut was exercised with Node 22.23.2.
 
 ## Acceptance and signed cut
+
+For the bundled catalog and public contribution/publication flow, see
+[The public agent catalog](site/guide/agent-catalog.md). Rebuild the bundled file with
+`.venv/bin/python scripts/build-agent-catalog` whenever its source definitions change.
+Preserve each signed cut as versioned public assets and record its source commit, digest and
+expiry in release notes before replacing the compatibility pair.
+
 
 - Record each recipe/executable digest, host, actual version, sign-in behavior and every required
   check. Use isolated homes/workspaces, never seed or rewrite the operator's real stores. Record

@@ -584,6 +584,7 @@ function pluginPost<T>(path: string, body: unknown): Promise<T> {
 
 export const api = {
   plugins: () => pluginCatalog("/api/plugins"),
+  agentCatalogPreferences: (automatic: boolean) => mutateJson<PluginCatalog>("PATCH", "/api/agents/catalog/preferences", { automatic }),
   pluginRefresh: () => pluginCatalog("/api/plugins/feed/refresh", true),
   pluginReview: (body: { plugin_id?: string; local?: unknown; adopted_path?: string }) =>
     pluginPost<PluginReview>("/api/plugins/review", body),

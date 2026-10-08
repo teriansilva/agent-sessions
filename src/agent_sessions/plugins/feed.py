@@ -1,4 +1,4 @@
-"""Canonical signed plugin feeds and their immutable artifact recipes (#1259).
+"""Canonical signed agent catalogs and their immutable artifact recipes (#1259).
 
 Signatures use the INSTALLED package's trust root, never keys supplied by the downloaded feed.
 Parsing and signature verification are separate from acceptance: acceptance also serializes the
@@ -277,6 +277,9 @@ def accept(data: bytes, signature: bytes, *, now: int | None = None) -> Feed:
     snapshot = parse(data, now=now)
     with storage.locked("feed.json") as path:
         old = storage.read(path)
+        floor = _floor(path)
+        if old is None and floor is not None:
+            raise FeedError("the accepted catalog is missing; restore its trust records")
         if old is not None:
             # An expired but intact old feed may advance. Corruption may not be repaired by
             # replacing the evidence with a newer feed, even if that new feed is valid.
@@ -285,6 +288,11 @@ def accept(data: bytes, signature: bytes, *, now: int | None = None) -> Feed:
                 raise FeedError("the feed sequence would go backwards")
             if snapshot.sequence == old["sequence"] and snapshot.digest != old["digest"]:
                 raise FeedError("this sequence already identifies different feed bytes")
+        if floor is not None:
+            _above(snapshot, floor)
+        # Persist the independent floor first. An interrupted second write cannot make an older
+        # catalog authoritative again; retrying this cut (or a newer one) completes acceptance.
+        storage.write(path.with_name("feed-floor.json"), _mark(snapshot))
         storage.write(
             path,
             {
@@ -315,8 +323,56 @@ def _stored(record: dict, *, now: int | None = None, historical: bool = False) -
 
 
 def current(*, now: int | None = None) -> Feed | None:
+    snapshot = historical()
+    if snapshot is not None:
+        now = int(time.time()) if now is None else now
+        if snapshot.issued_at > now + CLOCK_SKEW or snapshot.expires_at <= now:
+            raise FeedError("the feed is expired or its validity interval is invalid")
+    return snapshot
+
+
+def _mark(snapshot: Feed) -> dict:
+    return {"sequence": snapshot.sequence, "digest": snapshot.digest}
+
+
+def _floor(path: Path) -> dict | None:
+    from . import storage
+
+    mark = storage.read(path.with_name("feed-floor.json"), max_bytes=1024)
+    if mark is not None and (
+        set(mark) != {"sequence", "digest"}
+        or type(mark["sequence"]) is not int
+        or mark["sequence"] <= 0
+        or not isinstance(mark["digest"], str)
+        or not _SHA.fullmatch(mark["digest"])
+    ):
+        raise FeedError("the catalog trust record is malformed; left untouched")
+    return mark
+
+
+def _above(snapshot: Feed, floor: dict) -> None:
+    if snapshot.sequence < floor["sequence"]:
+        raise FeedError("the feed sequence would go backwards")
+    if snapshot.sequence == floor["sequence"] and snapshot.digest != floor["digest"]:
+        raise FeedError("this sequence already identifies different feed bytes")
+
+
+def historical() -> Feed | None:
+    """Read verified accepted evidence, including expired cuts, without resetting its floor."""
     from . import storage
 
     with storage.locked("feed.json") as path:
         record = storage.read(path)
-        return None if record is None else _stored(record, now=now)
+        floor = _floor(path)
+        if record is None:
+            if floor is not None:
+                raise FeedError("the accepted catalog is missing; restore its trust records")
+            return None
+        snapshot = _stored(record, historical=True)
+        if floor is not None:
+            _above(snapshot, floor)
+        # Legacy clients may have accepted a newer signed cut without knowing the floor file.
+        # Only intact signed evidence can backfill or advance that marker.
+        if floor != _mark(snapshot):
+            storage.write(path.with_name("feed-floor.json"), _mark(snapshot))
+        return snapshot

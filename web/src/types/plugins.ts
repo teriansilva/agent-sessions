@@ -14,7 +14,7 @@ export interface PluginEntry {
 export interface PluginReview {
   id: string;
   plugin_id: string;
-  source: "signed" | "local";
+  source: "signed" | "bundled" | "local";
   sequence: number | null;
   digest: string;
   recipe_digest: string;
@@ -54,8 +54,12 @@ export interface PluginOperation {
   error: string | null;
 }
 export interface PluginCatalog {
-  feed: { state: "ready" | "missing" | "unavailable"; sequence?: number | null; expires_at?: number | null; digest?: string | null; error: string | null };
-  catalog: { manifest: PluginManifest; digest: string }[];
+  feed: { state: "ready" | "missing" | "unavailable"; sequence?: number | null; expires_at?: number | null; digest?: string | null; error: string | null;
+    source?: "bundled" | "remote" | "unavailable"; stale?: boolean; bundled_digest?: string; release_version?: string;
+    definitions_url?: string; history_url?: string; updates_url?: string;
+    refresh?: { automatic: boolean; last_attempt: number | null; last_success: number | null; error: string | null } | null;
+  };
+  catalog: { manifest: PluginManifest; digest: string; source?: string | null; installable?: boolean; included?: boolean; reason?: string | null }[];
   plugins: PluginInstallation[];
   operations: PluginOperation[];
   roster_generation: number;

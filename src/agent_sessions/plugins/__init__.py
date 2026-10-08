@@ -1,4 +1,4 @@
-"""Agents as plugins (#853): one declarative manifest per agent instead of a provider class.
+"""Agent definitions (#853): one declarative manifest per agent instead of a provider class.
 
 P1 ships the contract — schema, validator, executable provenance and `PluginProvider` — and a
 loader that reads manifests from two places:

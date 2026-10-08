@@ -67,7 +67,11 @@ MUTATIONS = [
         "reload",
         "operations/none/cancel",
     )
-] + [("PATCH", "/api/plugins/fixture/generations/none/endpoint")]
+] + [
+    ("PATCH", "/api/plugins/fixture/generations/none/endpoint"),
+    ("POST", "/api/agents/catalog/refresh"),
+    ("PATCH", "/api/agents/catalog/preferences"),
+]
 
 
 @pytest.mark.parametrize("method,path", MUTATIONS)
@@ -631,3 +635,27 @@ def test_signin_expiration_waits_for_exclusive_worker_admission(api, recipe, mon
         assert manager.snapshot() == before
     assert client.post("/api/plugins/disable", json=fresh, headers=headers).status_code == 200
     assert manager.operation(body["request_id"])["state"] == "interrupted"
+
+
+def test_public_agent_catalog_api_names_and_preferences(api):
+    client, headers, _ = api
+    assert client.get("/api/agents/catalog").status_code == 401
+    response = client.get("/api/agents/catalog", headers=headers)
+    assert response.status_code == 200
+    value = response.json()
+    assert value["feed"]["source"] == "bundled" and len(value["catalog"]) >= 9
+    assert all(c["reason"] and not c["installable"] for c in value["catalog"] if c["included"])
+    for bad in ("true", 1, None):
+        assert (
+            client.patch(
+                "/api/agents/catalog/preferences", json={"automatic": bad}, headers=headers
+            ).status_code
+            == 422
+        )
+    changed = client.patch(
+        "/api/agents/catalog/preferences", json={"automatic": False}, headers=headers
+    )
+    assert changed.status_code == 200 and changed.json()["feed"]["refresh"]["automatic"] is False
+    assert (
+        client.get("/api/plugins", headers=headers).json()["feed"]["refresh"]["automatic"] is False
+    )

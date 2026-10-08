@@ -187,6 +187,8 @@ os.environ.setdefault("AGENT_SESSIONS_NEEDS_YOU_LOOP", "0")
 # enters the lifespan may start one; its tests drive `automation_loop.Scheduler.tick` directly and
 # opt back in with `monkeypatch.setenv("AGENT_SESSIONS_AUTOMATION_LOOP", "1")`.
 os.environ.setdefault("AGENT_SESSIONS_AUTOMATION_LOOP", "0")
+# Catalog loop tests opt in explicitly; ordinary app lifespans never access GitHub.
+os.environ.setdefault("AGENT_SESSIONS_CATALOG_LOOP", "0")
 _install_tripwire()
 
 

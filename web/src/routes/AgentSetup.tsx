@@ -1,3 +1,4 @@
+import { AgentCatalogStatus } from "../components/agents/AgentCatalogStatus";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useConfigRefresh } from "../app/config";
@@ -224,7 +225,7 @@ export default function AgentSetup() {
     onBack={step === 1 && !operation && !unknownOperation ? () => { setStep(0); setReview(null); setLocalConfirmed(false); setAdoptConfirmed(false); } : undefined}
     onNext={step === 0 ? prepare : step === 1 && !operation && !unknownOperation ? install : undefined}
     nextLabel={step === 0 ? "Review installation" : "Install"}
-    nextDisabled={step === 0 ? busy || unresolved || !catalog || (mode === "catalog" ? !selected : !local.trim()) : !canInstall}
+    nextDisabled={step === 0 ? busy || unresolved || !catalog || (mode === "catalog" ? !selected || catalog.catalog.find(c => c.manifest.identity.id === selected)?.installable === false : !local.trim()) : !canInstall}
     secondary={<Link className={button.ghost} to={AGENTS_PATH}>{isEnabled ? "Back to agents" : "Cancel"}</Link>}
     leaveGuard={dirty} leaveTitle={connected ? "Leave sign-in?" : unresolved ? "Leave this operation?" : "Leave setup?"}
     leaveMessage={connected ? "Leaving closes this temporary terminal and interrupts sign-in. You can start another attempt from the gallery."
@@ -236,16 +237,23 @@ export default function AgentSetup() {
       {unknownOperation && <div className={s.note}><p>The request outcome has not been read. Reloading this page will only check the same operation.</p>
         <button className={button.ghost} onClick={() => void readOperation()} disabled={busy}>Check operation status</button></div>}
       {step === 0 && <>
-        <p>Choose a signed catalog entry or review a local manifest and its pinned artifact recipe.</p>
+        <p>Choose an agent catalog entry or review a local manifest and its pinned artifact recipe.</p>
         <div className={s.row}>
-          {(["catalog", "local"] as const).map(value => <button key={value} className={`${button.ghost} ${s.filter}`} aria-pressed={mode === value} onClick={() => setMode(value)}>{value === "catalog" ? "Signed catalog" : "Local manifest"}</button>)}
+          {(["catalog", "local"] as const).map(value => <button key={value} className={`${button.ghost} ${s.filter}`} aria-pressed={mode === value} onClick={() => setMode(value)}>{value === "catalog" ? "Agent catalog" : "Local manifest"}</button>)}
         </div>
         {mode === "catalog" ? <>
           <label className={s.field}><span>Agent</span><select className={s.input} value={selected} onChange={e => setSelected(e.target.value)}>
-            <option value="">Select an agent</option>{catalog?.catalog.map(c => <option key={c.manifest.identity.id} value={c.manifest.identity.id}>{c.manifest.identity.label} · {c.manifest.identity.version}</option>)}
+            <option value="">Select an agent</option>{catalog?.catalog.map(c => <option key={c.manifest.identity.id} value={c.manifest.identity.id} disabled={c.installable === false}>{c.manifest.identity.label} · {c.manifest.identity.version}{c.included ? " · Included with BattleLab" : c.installable === false ? " · Unavailable" : ""}</option>)}
           </select></label>
-          {catalog?.feed.state !== "ready" && <p className={s.note}>No verified catalog is available. Refresh the catalog to load signed entries.</p>}
-          <button className={button.ghost} disabled={busy} onClick={() => void run(async current => setCatalog(await current(api.pluginRefresh())))}>Refresh catalog</button>
+          {catalog?.feed.error && <p className={s.note} role="alert">{catalog.feed.error}</p>}
+          {catalog?.catalog.find(c => c.manifest.identity.id === selected)?.reason && <p className={s.note}>{catalog.catalog.find(c => c.manifest.identity.id === selected)?.reason}</p>}
+          <AgentCatalogStatus feed={catalog?.feed} busy={busy}
+            refresh={() => void run(async current => {
+              try { setCatalog(await current(api.pluginRefresh())); }
+              catch (error) { setCatalog(await current(api.plugins())); throw error; }
+            })}
+            configure={value => void run(async current => setCatalog(await current(api.agentCatalogPreferences(value))))} />
+          {!!catalog?.catalog.some(c => c.included) && <p>API agents are included with BattleLab and use their source agent’s installation. Configure them in <Link to={AGENTS_PATH}>Agents</Link>.</p>}
         </> : <>
           <p className={s.note}>Local manifests are untrusted. Verification does not make their publisher trusted.</p>
           <label className={s.field}><span>Manifest and recipe JSON</span><textarea className={s.input} value={local} onChange={e => setLocal(e.target.value)} spellCheck={false} autoComplete="off" /></label>

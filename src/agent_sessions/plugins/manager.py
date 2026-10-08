@@ -143,17 +143,11 @@ def snapshot() -> dict:
 
 
 def _entry(review: dict, *, fresh: bool) -> feed.Entry:
-    if review["source"] == "signed":
+    if review["source"] in ("signed", "bundled"):
         if fresh:
-            catalog = feed.current()
-            found = (
-                next((e for e in catalog.entries if e.digest == review["recipe_digest"]), None)
-                if catalog is not None
-                else None
-            )
-            if found is None:
-                raise ManagerError("the catalog changed; review this installation again")
-            entry = found
+            from .. import agent_catalog
+
+            entry = agent_catalog.reviewed(review["recipe_digest"], review["source"])
         else:
             entry = feed.entry(review["entry"], signed=True)
     elif review["source"] == "local":
@@ -206,19 +200,14 @@ def review(
         raw = copy.deepcopy(local)
         source = "local"
     else:
-        catalog = feed.current()
-        entry = (
-            next((e for e in catalog.entries if e.manifest.id == _id(plugin_id)), None)
-            if catalog is not None
-            else None
-        )
-        if entry is None:
-            raise ManagerError("the catalog does not offer this agent")
+        from .. import agent_catalog
+
+        choice, sequence = agent_catalog.select(_id(plugin_id))
+        entry, source = choice.entry, choice.source
         raw = {
             "manifest": feed.decode(entry.manifest_bytes),
             "recipe": {"artifacts": [asdict(a) for a in entry.artifacts]},
         }
-        sequence, source = catalog.sequence, "signed"
     adopted, adopted_digest = (
         _adopted_file(adopted_path) if adopted_path is not None else (None, None)
     )

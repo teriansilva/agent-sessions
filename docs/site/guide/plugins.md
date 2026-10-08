@@ -1,7 +1,9 @@
-# Write a manifest
+# Agent definitions
 
-Every engine BattleLab runs is a **plugin**: one `plugin.toml` (or `plugin.json`) that declares
-everything the app needs to integrate the agent. This page is the reference for that file.
+Each agent has a definition, stored in a `plugin.toml` (or `plugin.json`) manifest for
+compatibility with existing installations. It declares the capabilities BattleLab uses to
+integrate that agent. See [The public agent catalog](./agent-catalog) for how definitions ship,
+update and accept contributions.
 
 A manifest is **data, not code**. Every block selects a *built-in kind* — reviewed code inside
 BattleLab — and supplies parameters that kind validates. A manifest can never carry an adapter, a
@@ -16,7 +18,7 @@ with the app. Additional agents enter through a reviewed installation, verificat
 activation. Dropping a file into a directory grants no execution. An agent whose store,
 transcript or launch shape has no built-in kind still needs a reviewed code change first.
 
-The installer accepts entries from an authenticated signed catalog, or a local manifest and
+The installer accepts entries from the release-bundled catalog, a verified signed update, or a local manifest and
 pinned recipe that you confirm for each install/update. A local source stays **untrusted** after
 its functional checks pass. Local entries cannot claim a first-party identity. Existing binaries
 can be adopted only with separate confirmation of their absolute path and SHA-256.
@@ -28,12 +30,12 @@ saved budgets and defaults are retained when an agent is disabled or removed.
 
 ### Add or update an agent
 
-Open **Settings → Agents** to search the installed roster and signed catalog. The filters show
+Open **Settings → Agents** to search the installed roster and agent catalog. The filters show
 agents that are ready, need setup, have an update, or are disabled. Existing usage meters and
 saved defaults stay on the same page. **Refresh catalog** checks the signed release feed; a
 failed refresh shows its error and keeps the installed roster visible.
 
-Choose **Add agent** or a card's **Set up agent** / **Review update** action. Select a signed
+Choose **Add agent** or a card's **Set up agent** / **Review update** action. Select a catalog
 entry, or paste a local manifest-and-recipe JSON object. The review shows its publisher, source,
 host access, pinned artifact URLs and digests. Local entries require a fresh confirmation;
 adopting an existing executable requires a separate path-and-digest confirmation.
@@ -61,13 +63,13 @@ CSRF token and matching origin. Operation IDs are caller-minted UUIDs: repeating
 payload reads its durable outcome, while changing the payload is refused. Reloading or returning
 to setup reads status; it never resubmits a job automatically.
 
-The catalog is hosted on the BattleLab relay at
-`https://relay.battlelab.superstatus.io/catalogs/agents/v1/current.json`. Its descriptor selects
-an immutable signed feed. BattleLab verifies it against the signer bundled with this installed
-release; the server cannot supply a replacement trust key. Older clients continue to use the
-GitHub release mirror. Expired, replayed or altered feeds are refused, preserving the previous
-accepted evidence. Recipes pin every artifact and dependency. Extraction is inert: no package
-lifecycle scripts or network-resolving package installer runs.
+The catalog ships with BattleLab and receives signed updates from the public GitHub release.
+Daily metadata checks are optional; installing or enabling an agent remains explicit. The
+installed trust root verifies remote updates. Expired and damaged saved evidence cannot reset
+trust or restore a recipe removed by a previously accepted cut. See the
+[public catalog guide](./agent-catalog) for the precise offline behavior and contribution flow.
+Recipes pin every artifact and dependency. Extraction is inert: no package lifecycle scripts
+or network-resolving package installer runs.
 
 Sign-in uses a separate temporary terminal with no BattleLab session registration, scrollback
 capture, AI review or retained terminal bytes. The vendor may save its own credentials. Closing
@@ -104,22 +106,22 @@ be a restriction, and a reader that skipped it would grant what the author meant
 
 | Block | Required | What it declares |
 |---|---|---|
-| `contract` | yes | The manifest format version (an integer). A higher contract than this build reads is refused as "needs a newer BattleLab", and rolling the app back disables such a plugin instead of misreading it. |
-| `[identity]` | yes | `id` (lowercase, 2–24 characters: the `<engine>` in every session id), `label`, `publisher`, `version`, and `kind`: `agent`, or `terminal` for a plugin with no agent behind it. |
+| `contract` | yes | The manifest format version (an integer). A higher contract than this build reads is refused as "needs a newer BattleLab", and rolling the app back disables such an agent instead of misreading it. |
+| `[identity]` | yes | `id` (lowercase, 2–24 characters: the `<engine>` in every session id), `label`, `publisher`, `version`, and `kind`: `agent`, or `terminal` for a plain terminal. |
 | `[runtime]` | no | `kind`. Absent means `pty`: a binary under `dtach`, shown in the terminal. `chat` means no process at all: BattleLab sends the conversation to an HTTP model endpoint **you** configure and keeps the transcript itself. A `chat` manifest may not declare `binary`, `launch`, `terminal`, `unattended`, `install`, `signin`, `probe`, `verify` or `instructions`, nor any capability that presumes a terminal (`seed_start`, `orchestrator_input`, `raw_tty`, `handoff_target`, `owns_transcript`). |
 | `[endpoint]` | for `chat` only | `kind`: the wire format (`openai-chat`). **Nothing else**: the URL, API key and model are your configuration, never the manifest's, so a manifest cannot point BattleLab at a server. By default a `chat` agent can only talk. The operator can opt into folder-scoped reads and per-file edit proposals; each proposed replacement needs a separate authenticated approval before saving ([Tools](./engines#tools-reading-files-in-the-conversation-s-folder)). |
 | `[api]` | for `api` only | `kind` selects a reviewed native protocol; `source` names a compatible active console provider. The API entry owns a pinned UUID and BattleLab conversation store, with no binary, launch flags, endpoint, model list or setup instructions of its own. This release validates the declaration but does not implement or offer native API clients yet; feed installation refuses them. Source resolution does not inherit console bypass flags or grant execution. |
-| `[binary]` | for `pty` | `name` (the plugin id or one of `aliases`), `env_var` (its `AGENT_SESSIONS_*_BIN` override), `search_paths` (absolute or `~/` directories, no globs, no `..`), `version_flag`, and `search_npm_global` for CLIs installed with `npm i -g`. |
+| `[binary]` | for `pty` | `name` (the agent id or one of `aliases`), `env_var` (its `AGENT_SESSIONS_*_BIN` override), `search_paths` (absolute or `~/` directories, no globs, no `..`), `version_flag`, and `search_npm_global` for CLIs installed with `npm i -g`. |
 | `[session_id]` | yes | `pattern`, the native-id shape (grammar below); `mint` (`pinned` or `adopt`, see [Engines](./engines#two-ways-a-new-session-gets-its-id)); `legacy_bare_id` (claimed by at most one in-tree manifest). |
 | `[store]` | no | Where the engine keeps its sessions: `root`, `env_override`, `layout` (the built-in reader), and named auxiliary `paths` (`db`, `log`, …) relative to the root, each with an optional override in `path_env`. |
 | `[launch]` | for `pty` | `resume` and `new`, each a kind plus the flag or subcommand it takes; `base_args`; `bypass` (the permission-bypass flags) and `bypass_on`; `admission`; and `model` (`{ kind = "flag", flag, on_resume }`): the flag that takes a model id, and whether the engine honours it on a resume. The kind assembles the argv — the manifest never writes one, and never names the model value: that is a model the launch resolved against `[models]` and your added ids. |
-| `[capabilities]` | no | Booleans, **all off unless declared**: `resume`, `new`, `archive`, `handoff_target`, `seed_start`, `orchestrator_input`, `raw_tty`, `owns_transcript`. A `terminal` plugin may not declare `seed_start`, `orchestrator_input`, `raw_tty` or `owns_transcript`. |
+| `[capabilities]` | no | Booleans, **all off unless declared**: `resume`, `new`, `archive`, `handoff_target`, `seed_start`, `orchestrator_input`, `raw_tty`, `owns_transcript`. A `terminal` definition may not declare `seed_start`, `orchestrator_input`, `raw_tty` or `owns_transcript`. |
 | `[transcript]` | no | `kind`, the built-in adapter that renders the conversation for scroll-up and AI review; `strict`. Absent means none. |
 | `[usage]` | no | `source`: `plan` (a subscription window), `tokens`, `manual` (you enter it), or `none`. `plan` and `tokens` need a `kind` naming the built-in reporter; a CLI probe also names its `probe_token`. `access` names the check that notices when the vendor refuses the account. |
 | `[terminal]` | no | `repaint` (`wipe` for a TUI that redraws its scrollback), `ready` (the first-paint rule), `menu` (the numbered-menu parser) and `menu_digit_submits`. |
 | `[unattended]` | no | `start_evidence`: the artifact that proves an agent started. Absent means missions will not dispatch to it unattended. |
-| `maintenance` | no | Store maintenance the plugin admits, e.g. `sqlite-vacuum`. |
-| `[models]` | no | `list` of `{ id, context_window, aliases }`, and `configured_elsewhere` (the engine's model is set in its own configuration, so pickers offer `default` only). Every id and alias names exactly one model, and none may be `default`. A `chat` plugin's list must be empty: its model is your endpoint configuration. |
+| `maintenance` | no | Store maintenance the agent admits, e.g. `sqlite-vacuum`. |
+| `[models]` | no | `list` of `{ id, context_window, aliases }`, and `configured_elsewhere` (the engine's model is set in its own configuration, so pickers offer `default` only). Every id and alias names exactly one model, and none may be `default`. A `chat` agent’s list must be empty: its model is your endpoint configuration. |
 | `[instructions]` | no | `files`: the workspace-root instruction files the engine reads (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`) — bare names from a fixed set, never a path. Forbidden for `chat`. |
 | `[display]` | yes | `name`, `badge` (2–3 lowercase letters), `accent` (a colour **token**, never a hex), `id_prefix` (stripped when an id is shown), and `order` in the roster. |
 | `[install]` | no | `kind`, `authority`, `package`, `version`, `digest` (`sha256:…`), `entrypoint`, and optional `platform`. A declared platform must match this host. The installer consumes only a pinned reviewed recipe matching these coordinates. Scoped npm entrypoints admit `@scope` only immediately below `node_modules`. |
@@ -151,18 +153,18 @@ never backtracks. Native ids are capped at 128 characters and may never start wi
 Launch argv is built from a closed vocabulary, but that only helps if `argv[0]` is the right file.
 The app records every binary in one of two states:
 
-- **managed**: installed by BattleLab into the plugin's own directory, bound to the digest it was
+- **managed**: installed by BattleLab into the agent’s own directory, bound to the digest it was
   verified against.
 - **adopted**: a CLI you installed yourself, found through the `*_BIN` override or
   `binary.search_paths`. An in-tree manifest's adopted binary runs on the manifest's own authority.
-  A plugin you supplied yourself runs only after you confirm that exact file by path and
+  An agent definition you supplied yourself runs only after you confirm that exact file by path and
   sha256.
 
 In both states, BattleLab never looks the binary up on `PATH` at launch, and the file and every
 directory above it must be writable by nobody but you or root. What happens before each launch
 depends on who vouches for the file:
 
-- **Bound to a digest** (a managed binary, or an adopted one you confirmed for a plugin you
+- **Bound to a digest** (a managed binary, or an adopted one you confirmed for an agent you
   supplied): the file's identity (device, inode, size, mtime, ctime) is re-checked before
   **every** launch. Whenever that identity changed, the file is re-hashed and must still match
   the recorded digest, or the launch is refused.
@@ -170,7 +172,7 @@ depends on who vouches for the file:
   before every launch, applying the same location and ownership rules, so a vendor's own
   auto-update is picked up rather than refused. It is never hashed.
 
-A plugin you supplied may not name, alias or resolve to a shell, interpreter or privilege
+An agent definition you supplied may not name, alias or resolve to a shell, interpreter or privilege
 tool (`bash`, `env`, `sudo`, `python`, `node`, …). The check covers the entrypoint **file**: when
 it is a script, the interpreter on its `#!` line and anything it imports are outside it.
 

@@ -1,3 +1,4 @@
+import { AgentCatalogStatus } from "../agents/AgentCatalogStatus";
 import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { reloadRoster } from "../../app/reloadRoster";
@@ -16,10 +17,10 @@ export function GalleryToolbar({ catalog, query, setQuery, filter, setFilter }: 
   catalog: ReturnType<typeof usePluginCatalog>; query: string; setQuery: (s: string) => void;
   filter: GalleryFilter; setFilter: (f: GalleryFilter) => void;
 }) {
-  const { data, error, busy, load, refresh } = catalog;
+  const { data, error, busy, load, refresh, configure } = catalog;
   return <div className={s.catalogBar}>
-    <div className={s.row}><span>{data?.feed.state === "ready" ? `Signed catalog · sequence ${data.feed.sequence}` : "Catalog unavailable"}</span>
-      <button className={button.ghost} disabled={busy} onClick={() => void refresh()}>{busy ? "Refreshing…" : "Refresh catalog"}</button>
+    <AgentCatalogStatus feed={data?.feed} busy={busy} refresh={() => void refresh()} configure={value => void configure(value)} />
+    <div className={s.row}>
       <Link className={button.primary} to={setupPath()}>Add agent</Link>
     </div>
     {(error || data?.feed.error) && <div className={s.note} role="alert">{error || data?.feed.error}<button className={button.ghost} onClick={() => void load()}>Retry loading</button></div>}
@@ -95,16 +96,17 @@ export function PluginActions({ id, label, data, onChange, children }: {
     } catch (e) { setError(pluginError(e)); } finally { setBusy(false); }
   };
   const active = row?.generations?.find(g => g.id === row.active);
-  const update = !!entry && !!active && entry.digest !== active.review.recipe_digest;
+  const update = !!entry && entry.installable !== false && !!active && entry.digest !== active.review.recipe_digest;
   return <>
     {candidate && <p className={a.note}>{sourceLabel(candidate.review)} · {candidate.id === row?.active && row.enabled ? "Enabled" : "Disabled"}</p>}
+    {entry?.reason && <p className={a.note}>{entry.reason}{entry.manifest.api && <> Source: <Link to={agentPath(entry.manifest.api.source)}>{entry.manifest.api.source}</Link>.</>}</p>}
     {row?.error && <p role="alert" className={s.note}>{row.error}</p>}
     <div className={`${a.acts} ${s.actions}`}>
       {children}
       {attempt && <button className={button.ghost} onClick={e => setConfirm({ kind: attempt.kind, trigger: e.currentTarget, active: row?.active ?? null, revision: data?.roster_revision ?? null })}>Check previous {attempt.kind}</button>}
       {operation ? <Link className={button.primary} to={setupPath({ operation: operation.id })}>View operation</Link>
         : candidate && (!row?.enabled || row.candidate !== row.active) ? <Link className={button.primary} to={setupPath({ plugin: id, generation: candidate.id })}>Continue setup</Link>
-        : entry && !row?.enabled ? <Link className={button.primary} to={setupPath({ plugin: id })}>Set up agent</Link> : null}
+        : entry && entry.installable !== false && !row?.enabled ? <Link className={button.primary} to={setupPath({ plugin: id })}>Set up agent</Link> : null}
       {update && <Link className={button.ghost} to={setupPath({ plugin: id })}>Review update</Link>}
       {row?.enabled && <button className={button.ghost} onClick={e => setConfirm({ kind: attempt?.kind ?? "disable", trigger: e.currentTarget, active: row.active ?? null, revision: data?.roster_revision ?? null })}>Disable</button>}
       {row && <button className={button.ghost} onClick={e => setConfirm({ kind: attempt?.kind ?? "remove", trigger: e.currentTarget, active: row.active ?? null, revision: data?.roster_revision ?? null })}>Remove</button>}
@@ -127,7 +129,7 @@ export function CatalogCard({ manifest, row, data, onChange }: {
   const { id, label, version, publisher } = manifest.identity;
   return <li className={a.card} data-plugin-id={id}>
     <h3>{label}</h3><p>{version} · {publisher}</p>
-    <p className={a.note}>{row ? "Installation saved; not in the live roster." : "Available in the signed catalog."}</p>
+    <p className={a.note}>{row ? "Installation saved; not in the live roster." : "Available in the agent catalog."}</p>
     <PluginActions id={id} label={label} data={data} onChange={onChange}>
       <Link className={button.ghost} to={agentPath(id)} aria-label={`Details for ${label}`}>Details</Link>
     </PluginActions>
@@ -139,7 +141,7 @@ export function CatalogCard({ manifest, row, data, onChange }: {
 export function PluginInstallationDetail({ id, label, catalog, onChange }: {
   id: string; label: string; catalog: ReturnType<typeof usePluginCatalog>; onChange: () => Promise<void>;
 }) {
-  const { data, error, busy, refresh } = catalog;
+  const { data, error, busy, refresh, configure } = catalog;
   const row = data?.plugins.find(p => p.id === id);
   const [reloading, setReloading] = useState(false);
   const [reloadError, setReloadError] = useState("");
@@ -153,10 +155,8 @@ export function PluginInstallationDetail({ id, label, catalog, onChange }: {
   return <section className={`${s.panel} ${s.stack}`} aria-label="Installation management">
     <h2>Installation</h2>
     {!data && !error && <p role="status">Loading installation…</p>}
+    <AgentCatalogStatus feed={data?.feed} busy={busy} refresh={() => void refresh()} configure={value => void configure(value)} />
     <div className={s.row}>
-      <span>{data?.feed.state === "ready" ? `Signed catalog · sequence ${data.feed.sequence}` : "Catalog unavailable"}</span>
-      {data?.feed.expires_at && <span>Valid until {new Date(data.feed.expires_at * 1000).toLocaleString()}</span>}
-      <button className={button.ghost} disabled={busy} onClick={() => void refresh()}>{busy ? "Refreshing…" : "Refresh catalog"}</button>
       <button className={button.ghost} disabled={reloading} onClick={() => void reload()}>{reloading ? "Reloading…" : "Reload agent roster"}</button>
     </div>
     {(error || data?.feed.error || reloadError) && <p role="alert">{error || data?.feed.error || reloadError}</p>}

@@ -3,7 +3,7 @@
 
 Run with this checkout's venv. Never reads/writes the operator's plugin state, starts vendor
 processes, imports private signing keys or enables agents. Local install/verify/enable must
-also pass its existing isolated regression suite before cutover; record live acceptance in #1283.
+also pass its existing isolated regression suite before cutover; record live acceptance in #1370.
 """
 
 from __future__ import annotations
@@ -15,62 +15,48 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 
-async def legacy():
+async def relay():
     import httpx
 
     from agent_sessions.plugins import feed
 
-    async def get(client, initial, limit, asset=False):
-        url = initial
-        for _ in range(4):
-            p = urlsplit(url)
-            if url != initial and (
-                not asset
-                or p.scheme != "https"
-                or p.hostname != "release-assets.githubusercontent.com"
-                or p.port not in (None, 443)
-                or p.username
-                or p.password
-                or p.fragment
-                or "\\" in url
-            ):
-                raise ValueError("Legacy redirect refused")
-            async with client.stream("GET", url) as response:
-                if response.status_code in (301, 302, 303, 307, 308):
-                    url = str(response.url.join(response.headers.get("Location", "")))
-                    continue
-                response.raise_for_status()
-                data = bytearray()
-                async for chunk in response.aiter_bytes():
-                    data.extend(chunk)
-                    if len(data) > limit:
-                        raise ValueError("Legacy response too large")
-                client.cookies.clear()
-                return bytes(data)
-        raise ValueError("Legacy redirect limit")
+    base = "https://relay.battlelab.superstatus.io/catalogs/agents/v1"
 
-    import json
+    async def get(client, url, limit):
+        client.cookies.clear()
+        async with client.stream("GET", url) as response:
+            if response.status_code != 200:
+                raise ValueError("Relay read refused (including redirects)")
+            data = bytearray()
+            async for chunk in response.aiter_bytes():
+                data.extend(chunk)
+                if len(data) > limit:
+                    raise ValueError("Relay response too large")
+            return bytes(data)
 
     async with asyncio.timeout(30):
         async with httpx.AsyncClient(trust_env=False, follow_redirects=False, timeout=10) as client:
-            latest = "https://api.github.com/repos/teriansilva/agent-sessions/releases/latest"
-            metadata = json.loads(await get(client, latest, 262144))
-            tag = metadata.get("tag_name")
-            if not isinstance(tag, str) or not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
-                raise ValueError("Legacy release selector refused")
-            base = f"https://github.com/teriansilva/agent-sessions/releases/download/{tag}/plugin-feed.json"
-            data = await get(client, base, feed.MAX_BYTES, True)
-            signature = await get(client, base + ".sig", 16384, True)
-            if json.loads(await get(client, latest, 262144)).get("tag_name") != tag:
-                raise ValueError("Legacy latest release moved")
+            selected = feed.decode(await get(client, base + "/current.json", 1024))
+            if (
+                set(selected) != {"sequence", "digest"}
+                or type(selected["sequence"]) is not int
+                or not 0 < selected["sequence"] <= 9999999999999999
+                or not isinstance(selected["digest"], str)
+                or not re.fullmatch(r"[0-9a-f]{64}", selected["digest"])
+            ):
+                raise ValueError("Relay descriptor invalid")
+            cut = f"{base}/releases/{selected['sequence']}-{selected['digest']}/plugin-feed.json"
+            data = await get(client, cut, feed.MAX_BYTES)
+            signature = await get(client, cut + ".sig", 16384)
     feed.verify(data, signature)
-    feed.parse(data)
+    snapshot = feed.parse(data)
+    if selected != {"sequence": snapshot.sequence, "digest": snapshot.digest}:
+        raise ValueError("Relay cut does not match descriptor")
     return data, signature
 
 
@@ -102,7 +88,7 @@ def main():
                 f"digest {accepted.digest}"
             )
             return
-        data, signature = asyncio.run(legacy())
+        data, signature = asyncio.run(relay())
         pair = Path(directory)
         (pair / "plugin-feed.json").write_bytes(data)
         (pair / "plugin-feed.json.sig").write_bytes(signature)

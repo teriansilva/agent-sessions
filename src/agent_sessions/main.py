@@ -28,6 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import (
+    agent_catalog_refresh,
     ai_review_loop,
     automation_loop,
     autosort_loop,
@@ -316,6 +317,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # per pass on the env-file AGENT_SESSIONS_AUTOUPDATE key, so the Settings → System
         # toggle governs it live without a restart.
         update_task = asyncio.create_task(update_loop.run())
+        catalog_task = asyncio.create_task(agent_catalog_refresh.run())
         # Buffer-cap sweeper (#678): enforces the scrollback ring cap OFF the event loop
         # (periodic + kick-coalesced), so the byte pump never probes dtach sockets.
         cap_sweep_task = asyncio.create_task(scrollback.run_cap_sweeper())
@@ -413,6 +415,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 orchestrator_task,
                 supervisor_task,
                 update_task,
+                catalog_task,
                 cap_sweep_task,
                 mission_task,
                 usage_task,

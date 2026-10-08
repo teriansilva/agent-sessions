@@ -826,9 +826,11 @@ def test_signed_update_preserves_valid_legacy_binding_until_activation(
     assert path.read_bytes() == legacy_bytes and vendor.read_bytes() == b"#!/bin/false\n"
 
 
-def test_missing_feed_is_reported_without_creating_a_review(recipe):
-    with pytest.raises(manager.ManagerError, match="catalog"):
-        manager.review(plugin_id="gemini")
+def test_unknown_agent_is_reported_without_creating_a_review(recipe):
+    from agent_sessions.plugins import feed
+
+    with pytest.raises(feed.FeedError, match="catalog"):
+        manager.review(plugin_id="unknown-agent")
     assert manager.snapshot()["reviews"] == {}
 
 
@@ -1009,3 +1011,24 @@ assert 'claude' in loaded.providers and 'manager' not in loaded.problems
         text=True,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_bundled_review_installs_exact_artifacts_without_remote_catalog(
+    recipe, tmp_path, monkeypatch
+):
+    from agent_sessions import agent_catalog
+    from agent_sessions.plugins import feed
+
+    bundle = tmp_path / "bundled.json"
+    bundle.write_bytes(feed.canonical({"format": 1, "agents": [recipe]}))
+    monkeypatch.setattr(agent_catalog, "BUNDLED_FILE", bundle)
+    review = manager.review(plugin_id="fixture")
+    assert review["source"] == "bundled"
+    operation = manager.begin_install(request_id(), review["id"], review["digest"])
+    result = manager.run_install(operation["id"])
+    assert result["state"] == "installed", result
+    row = manager.snapshot()["plugins"]["fixture"]
+    assert row["active"] is None and not row["enabled"]
+    prov = manager.provider("fixture", row["generations"][result["id"]])
+    assert Path(prov.entrypoint_path()).read_bytes() == b"#!/bin/true\n"
+    assert not (storage.root() / "feed.json").exists()
