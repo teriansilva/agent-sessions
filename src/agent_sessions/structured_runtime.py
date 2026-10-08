@@ -164,6 +164,7 @@ _ADAPTERS = MappingProxyType(
         ("chat", "openai-chat"): _ChatAdapter(),
         ("api", "codex-app-server"): _NativeAdapter(),
         ("api", "claude-stream-json"): _NativeAdapter(),
+        ("api", "opencode-acp"): _NativeAdapter(),
     }
 )
 

@@ -29,6 +29,7 @@ import asyncio
 import contextlib
 import json
 import os
+import secrets
 import signal
 import socket
 import stat
@@ -49,6 +50,11 @@ STDERR_TAIL = 4096
 _URGENT = frozenset(
     {"approval", "approval_cancelled", "turn_started", "turn_completed", "disconnected", "session"}
 )
+
+
+OPENCODE = "opencode-acp"
+PROBE_TIMEOUT = 30.0
+PROBE_LIMIT = 4 * 1024 * 1024
 
 
 class WorkerError(RuntimeError):
@@ -99,6 +105,38 @@ def native_environment(config: dict) -> dict[str, str]:
     return env
 
 
+def child_environment(
+    config: dict,
+    server_password: str | None = None,
+    agent: str | None = None,
+    mcp: dict | None = None,
+) -> dict[str, str]:
+    """`native_environment` plus what one adapter's child needs and nothing else.
+
+    `opencode acp` also opens an HTTP server on loopback that answers without authentication
+    (provider configuration included) unless `OPENCODE_SERVER_PASSWORD` is set (#1312 spike).
+    The password is minted by THIS process for this child only: it is never in the worker
+    config, a journal record, the lifecycle state or any argv, so it reaches nothing but the
+    child's environment (readable only by this same user, like every vendor credential).
+    `OPENCODE_CONFIG_CONTENT` defines BattleLab's own ask-everything agent (``agent``, minted per
+    generation, the same construction as the unattended launch's) that the session is pinned to.
+    The operator's own config and console opencode are untouched, and the app's own
+    `OPENCODE_CONFIG_CONTENT` is not passed on (the environment is sanitized).
+    """
+    env = native_environment(config)
+    if config["adapter"] == OPENCODE:
+        if not isinstance(server_password, str) or len(server_password) < 32:
+            raise WorkerError("the opencode listener password is missing")
+        from .engines import opencode
+
+        env["OPENCODE_SERVER_PASSWORD"] = server_password
+        try:
+            env["OPENCODE_CONFIG_CONTENT"] = opencode.api_config_content(agent, mcp)
+        except ValueError as exc:
+            raise WorkerError(str(exc)) from None
+    return env
+
+
 class Worker:
     def __init__(self, config: dict, state_dir: Path):
         self.config = config
@@ -113,11 +151,23 @@ class Worker:
             self.session_key, self.worker_id, config["connection_id"], self.adapter
         )
         self.native_id: str | None = config.get("native_id")
-        self.codec: native_protocol.CodexCodec | native_protocol.ClaudeCodec
+        self.codec: (
+            native_protocol.CodexCodec
+            | native_protocol.ClaudeCodec
+            | native_protocol.OpencodeAcpCodec
+        )
+        self.agent: str | None = None
         if self.adapter == "codex-app-server":
             self.codec = native_protocol.CodexCodec()
+        elif self.adapter == OPENCODE:
+            from .engines import opencode
+
+            self.agent = opencode.mint_api_agent()  # this generation's own ask-everything agent
+            self.codec = native_protocol.OpencodeAcpCodec(self.native_id, agent=self.agent)
         else:
             self.codec = native_protocol.ClaudeCodec(self.native_id)
+        # Minted by this process for this generation only; see `child_environment`.
+        self._server_password = secrets.token_urlsafe(32) if self.adapter == OPENCODE else None
         self.locks: list = []
         self.proc: asyncio.subprocess.Process | None = None
         self.server: asyncio.AbstractServer | None = None
@@ -127,6 +177,7 @@ class Worker:
         self.ready = asyncio.Event()
         self.done = asyncio.Event()
         self.waiters: dict[str, asyncio.Future] = {}
+        self.after_write: list[native_protocol.NativeEvent] = []
         self.stderr_tail = b""
         self.reason = ""
         self.closing = False
@@ -165,6 +216,8 @@ class Worker:
         binary = self.config["binary"]
         if self.adapter == "codex-app-server":
             return native_protocol.CodexCodec.argv(binary)
+        if self.adapter == OPENCODE:
+            return native_protocol.OpencodeAcpCodec.argv(binary)
         return native_protocol.ClaudeCodec.argv(
             binary,
             self.native_id,
@@ -175,16 +228,85 @@ class Worker:
     async def spawn(self) -> None:
         if self.terminated:
             raise WorkerError("stopped before the native agent started")
-        self.proc = await asyncio.create_subprocess_exec(
-            *self.argv(),
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=self.config["cwd"],
-            env=native_environment(self.config),
-            limit=native_protocol.MAX_FRAME_BYTES + 1,
-        )
+        guard = self.store_admission()
+        try:
+            # The probe runs under the same admission as the launch it configures. Its result
+            # (operator MCP command lines) lives only in this child's environment: never in a
+            # journal record, lifecycle state, the worker config or a log.
+            mcp = await self.mcp_overrides() if self.adapter == OPENCODE else None
+            self.proc = await asyncio.create_subprocess_exec(
+                *self.argv(),
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=self.config["cwd"],
+                env=child_environment(self.config, self._server_password, self.agent, mcp),
+                limit=native_protocol.MAX_FRAME_BYTES + 1,
+            )
+        finally:
+            # Held through process creation only: from here the child is visible to the
+            # compactor's process scan, which refuses to run while it holds the database.
+            if guard is not None:
+                guard.release()
         self.report(phase="native_started", native_pid=self.proc.pid)
+
+    async def mcp_overrides(self) -> dict:
+        """`opencode debug config` in the session's directory, with the sanitized environment and
+        a fresh password of its own, bounded in time and size; then the per-server overrides
+        that keep the listener password out of local MCP servers (Hermes on #1336). Any failure
+        refuses the launch: never an opencode child without the blanking."""
+        from .engines import opencode
+
+        env = native_environment(self.config)
+        env["OPENCODE_SERVER_PASSWORD"] = secrets.token_urlsafe(32)
+        try:
+            probe = await asyncio.create_subprocess_exec(
+                *native_protocol.OpencodeAcpCodec.config_probe_argv(self.config["binary"]),
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                cwd=self.config["cwd"],
+                env=env,
+            )
+        except (OSError, native_protocol.ProtocolError) as exc:
+            raise WorkerError(f"the opencode configuration probe could not start: {exc}") from None
+        try:
+            out = await asyncio.wait_for(probe.stdout.read(PROBE_LIMIT + 1), PROBE_TIMEOUT)
+            code = await asyncio.wait_for(probe.wait(), PROBE_TIMEOUT)
+        except TimeoutError:
+            raise WorkerError("the opencode configuration probe timed out") from None
+        finally:
+            if probe.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    probe.kill()
+                await probe.wait()
+        if code != 0 or len(out) > PROBE_LIMIT:
+            raise WorkerError("the opencode configuration probe failed")
+        try:
+            return opencode.mcp_password_overrides(json.loads(out))
+        except (ValueError, UnicodeError) as exc:
+            raise WorkerError(f"the opencode configuration could not be used: {exc}") from None
+
+    def store_admission(self):
+        """opencode's shared SQLite store: take the SAME shared admission a console launch takes
+        (`opencode_admission`, #993), keyed by the database the web process resolved for the
+        source (`store_database`), so compaction through ANY engine on that file and this launch
+        can never interleave — a source alias included (Hermes on #1336)."""
+        if self.adapter != OPENCODE:
+            return None
+        from . import opencode_admission
+
+        try:
+            guard = opencode_admission.acquire(
+                self.config["source_engine"],
+                exclusive=False,
+                database=self.config["store_database"],
+            )
+        except (OSError, KeyError, TypeError) as exc:
+            raise WorkerError(opencode_admission.REFUSAL) from exc
+        if guard is None:
+            raise WorkerError(opencode_admission.REFUSAL)
+        return guard
 
     # --- native protocol -------------------------------------------------------------------
 
@@ -350,6 +472,12 @@ class Worker:
             self.stop_child()
             self.done.set()
 
+    def stderr_text(self) -> str:
+        text = self.stderr_tail.decode("utf-8", "replace")
+        if self._server_password:
+            text = text.replace(self._server_password, "[redacted]")
+        return text
+
     async def stderr_reader(self) -> None:
         assert self.proc is not None and self.proc.stderr is not None
         while chunk := await self.proc.stderr.read(4096):
@@ -368,6 +496,9 @@ class Worker:
         await self.request(self.codec.initialize())
         if isinstance(self.codec, native_protocol.ClaudeCodec):
             return
+        if isinstance(self.codec, native_protocol.OpencodeAcpCodec):
+            await self.initialize_opencode()
+            return
         await self.write(self.codec.initialized())
         cwd, model = self.config["cwd"], self.config.get("model")
         if self.native_id is not None:
@@ -377,6 +508,25 @@ class Worker:
         native_id = event.data["native_id"]
         await asyncio.to_thread(self.bind, native_id)
         self.native_id = native_id
+
+    async def initialize_opencode(self) -> None:
+        """new → bind (or load), then pin our own agent, then the requested model — before any
+        turn."""
+        codec = self.codec
+        assert isinstance(codec, native_protocol.OpencodeAcpCodec)
+        cwd, model = self.config["cwd"], self.config.get("model")
+        if self.native_id is not None:
+            # `session/load` replays history; the codec attributes none of it to a turn and no
+            # replayed tool call can become a live approval.
+            await self.request(codec.load(self.native_id, cwd))
+        else:
+            event = await self.request(codec.create(cwd))
+            native_id = event.data["native_id"]
+            await asyncio.to_thread(self.bind, native_id)
+            self.native_id = native_id
+        await self.request(codec.pin_mode())
+        if model is not None:
+            await self.request(codec.set_model(model))
 
     def bind(self, native_id: str) -> None:
         """Permanent ownership commits before the source lock and before any turn."""
@@ -516,6 +666,7 @@ class Worker:
             try:
                 await self.write(frame)
             except (OSError, ConnectionError, AssertionError, TimeoutError):
+                self.after_write = []
                 self.stop_child()  # a half-written frame leaves the protocol unusable
                 return self.receipt(request, receipt)  # stays "uncertain": never resent
             receipt = await asyncio.to_thread(
@@ -525,6 +676,12 @@ class Worker:
                 params["operation_id"],
                 "sent",
             )
+            after, self.after_write = self.after_write, []
+            if after:
+                try:
+                    await self.handle_events(after)
+                except (OSError, ConnectionError, AssertionError, TimeoutError):
+                    self.stop_child()
             return self.receipt(request, receipt)
 
     def frame(self, action: str, params: dict) -> dict | None:
@@ -540,7 +697,12 @@ class Worker:
         if action == "decide":
             return self.codec.decide(params["request_id"], params["decision"])
         if action == "interrupt":
-            return self.codec.interrupt()
+            frame = self.codec.interrupt()
+            if isinstance(self.codec, native_protocol.OpencodeAcpCodec):
+                # ACP: a cancelled turn's pending permission requests are answered `cancelled`.
+                # Taken in the same step as the cancel, before the turn's end can clear them.
+                self.after_write = self.codec.cancel_pending()
+            return frame
         return None  # stop: nothing is written to the agent; the child is terminated
 
     async def read_only(self, request: dict) -> dict:
@@ -664,7 +826,7 @@ class Worker:
             exited_at=time.time(),
             reason=self.reason[:2000],
             native_returncode=None if self.proc is None else self.proc.returncode,
-            native_stderr=self.stderr_tail.decode("utf-8", "replace"),
+            native_stderr=self.stderr_text(),
         )
         return 0 if not self.reason else EXIT_FAILED
 

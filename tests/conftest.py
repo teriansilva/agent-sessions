@@ -69,6 +69,7 @@ STORE_ENV_PATHS: dict[str, str] = {
     "AGENT_SESSIONS_CHAT_DIR": ".local/share/agent-sessions/chat",  # the API agent's store (#1209)
     "AGENT_SESSIONS_CODEX_API_DIR": ".local/share/agent-sessions/native/codex-api",  # #1311
     "AGENT_SESSIONS_CLAUDE_API_DIR": ".local/share/agent-sessions/native/claude-api",  # #1311
+    "AGENT_SESSIONS_OPENCODE_API_DIR": ".local/share/agent-sessions/native/opencode-api",  # #1312
     "AGENT_SESSIONS_RUNTIME_DIR": "rt",  # short: AF_UNIX sockets live here (see below)
     "AGENT_SESSIONS_LOCK_DIR": ".agent-sessions/locks",
     "AGENT_SESSIONS_EDIT_RECOVERY": ".agent-sessions/edit-recovery",

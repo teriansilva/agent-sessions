@@ -1,0 +1,48 @@
+contract = 1
+
+# A native API client (#1312): BattleLab drives the installed opencode CLI through its structured
+# protocol (opencode-acp: the Agent Client Protocol over stdio) instead of a terminal. Everything
+# executable comes from the console agent named by `api.source`: binary, login, config, providers,
+# MCP servers, instruction files. This manifest names no binary, argv, endpoint, model list or
+# permission flag; the validator refuses them for runtime "api". The session runs only in
+# BattleLab's own ask-everything opencode agent (see docs/invariants/native-runtime.md).
+
+[identity]
+id = "opencode-api"
+label = "opencode — API"
+publisher = "battlelab"
+version = "1"
+
+[runtime]
+kind = "api"
+
+[api]
+kind = "opencode-acp"
+source = "opencode"
+
+[session_id]
+pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+mint = "pinned"
+
+# BattleLab's journal of each conversation (#1278). The native history stays in opencode's own
+# SQLite store, which BattleLab only reads; the ownership ledger (#1277) keeps the console and
+# API clients off one `ses_*` session.
+[store]
+root = "~/.local/share/agent-sessions/native/opencode-api"
+env_override = "AGENT_SESSIONS_OPENCODE_API_DIR"
+layout = "battlelab-chat"
+read_only = false
+
+[capabilities]
+resume = true
+new = true
+archive = true
+
+[transcript]
+kind = "battlelab-chat"
+
+[display]
+order = 25
+name = "opencode-api"
+badge = "oca"
+accent = "teal"

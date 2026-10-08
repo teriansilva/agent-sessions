@@ -23,6 +23,7 @@ does not remove, so the two cannot drift apart.
 - **Claude Code** — `~/.claude`
 - **Claude — API** — `~/.local/share/agent-sessions/native/claude-api`
 - **opencode** — `~/.local/share/opencode`
+- **opencode — API** — `~/.local/share/agent-sessions/native/opencode-api`
 - **Codex** — `~/.codex/sessions`
 - **Codex — API** — `~/.local/share/agent-sessions/native/codex-api`
 - **Gemini CLI** — `~/.gemini/tmp`

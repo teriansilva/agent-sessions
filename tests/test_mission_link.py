@@ -296,6 +296,18 @@ def test_INVARIANT_4_an_UNAMBIGUOUS_reconcile_binds_the_key_it_was_GIVEN(store):
 
             return _registry._BY_ID[self.engine_id].manifest  # the REAL roster: tests patch `get`
 
+        # #1312: opencode is a native API source; publishing the alias asks the ownership
+        # ledger about this provider's store, which the stub answers with its real provider's.
+        def store_root(self):
+            from agent_sessions.engines import registry as _registry
+
+            return _registry._BY_ID[self.engine_id].store_root()
+
+        def store_path(self, name):
+            from agent_sessions.engines import registry as _registry
+
+            return _registry._BY_ID[self.engine_id].store_path(name)
+
         def reconcile_new_session(self, cwd, snapshot):
             return "ses_real"
 

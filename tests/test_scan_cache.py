@@ -215,6 +215,14 @@ def test_reconcile_new_session_invalidates_scan_cache(monkeypatch, tmp_home):
 
             return _registry._BY_ID[self.engine_id].manifest  # the REAL roster: tests patch `get`
 
+        # #1312: opencode is a native API source; publishing the alias asks the ownership
+        # ledger about this provider's store, which the stub answers with its real provider's.
+        def store_root(self):
+            return engines.get("opencode").store_root()
+
+        def store_path(self, name):
+            return engines.get("opencode").store_path(name)
+
         def reconcile_new_session(self, cwd, snapshot):
             return "ses_real123"  # a real id appears on the first poll
 

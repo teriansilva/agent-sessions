@@ -240,6 +240,60 @@
       "status_reason": null
     },
     {
+      "id": "opencode-api",
+      "present": false,
+      "supports_new": false,
+      "supports_seed_start": false,
+      "seed_reason": "no seed-capable start yet",
+      "bin": null,
+      "label": "opencode — API",
+      "kind": "agent",
+      "runtime": "api",
+      "api": {
+        "kind": "opencode-acp",
+        "source": "opencode",
+        "unavailable_reason": "opencode 1.18.35 or later is required for native mode"
+      },
+      "display": {
+        "name": "opencode-api",
+        "badge": "oca",
+        "accent": "teal",
+        "id_prefix": null,
+        "order": 25
+      },
+      "capabilities": {
+        "resume": true,
+        "new": true,
+        "archive": true,
+        "handoff_target": false,
+        "seed_start": false,
+        "orchestrator_input": false,
+        "raw_tty": false,
+        "owns_transcript": false
+      },
+      "session_id": {
+        "mint": "pinned"
+      },
+      "models": [],
+      "model_select": {
+        "supported": false,
+        "on_resume": false,
+        "configured_elsewhere": false,
+        "offered": []
+      },
+      "instructions": {
+        "files": []
+      },
+      "usage": {
+        "source": "none"
+      },
+      "terminal": {
+        "repaint": "none"
+      },
+      "status": "active",
+      "status_reason": null
+    },
+    {
       "id": "codex",
       "present": true,
       "supports_new": true,

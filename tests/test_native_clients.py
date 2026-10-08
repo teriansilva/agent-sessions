@@ -1,4 +1,4 @@
-"""#1311: the first-party Codex/Claude API clients — roster, readiness, listing, retirement."""
+"""#1311/#1312: the first-party API clients — roster, readiness, listing, retirement."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from test_native_runtime import ENGINES, host, ident, project, settle  # noqa: F
 CLIENTS = {
     "codex-api": ("codex", "codex-app-server"),
     "claude-api": ("claude", "claude-stream-json"),
+    "opencode-api": ("opencode", "opencode-acp"),  # #1312
 }
 
 
@@ -34,7 +35,7 @@ def test_first_party_clients_load_with_a_source_and_their_own_store():
         assert m.store.root == f"~/.local/share/agent-sessions/native/{eid}"
         assert eid in kinds.RESERVED_IDS
     roots = {loaded.providers[e].manifest.store.root for e in CLIENTS}
-    assert len(roots) == 2 and "~/.local/share/agent-sessions/chat" not in roots
+    assert len(roots) == len(CLIENTS) and "~/.local/share/agent-sessions/chat" not in roots
 
 
 def test_a_local_manifest_cannot_take_a_client_id():

@@ -17,6 +17,7 @@ Two independent guarantees, each with a negative control that proves it can fail
 from __future__ import annotations
 
 import ast
+import re
 import shutil
 from pathlib import Path
 
@@ -642,7 +643,10 @@ def test_the_opencode_admission_lock_keeps_its_PRE_P3_name(tmp_path, monkeypatch
     try:
         assert (tmp_path / "maintenance-opencode.lock").is_file()
         assert sessionlock.lock_dir() == tmp_path
-        assert sorted(p.name for p in tmp_path.iterdir()) == ["maintenance-opencode.lock"]
+        # …and, since #1336, the lock keyed by the database every alias of the store shares.
+        names = sorted(p.name for p in tmp_path.iterdir())
+        assert names[1] == "maintenance-opencode.lock" and len(names) == 2
+        assert re.fullmatch(r"maintenance-db-[0-9a-f]{32}\.lock", names[0])
     finally:
         gate.release()
 

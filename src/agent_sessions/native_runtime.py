@@ -55,10 +55,20 @@ _VERSION = re.compile(rb"(\d+)\.(\d+)\.(\d+)")
 _FLOORS = {
     "codex-app-server": native_protocol.CODEX_MIN_VERSION,
     "claude-stream-json": native_protocol.CLAUDE_MIN_VERSION,
+    "opencode-acp": native_protocol.OPENCODE_MIN_VERSION,
 }
 # The vendor CLI writes where ITS defaults point. A BattleLab store override that the vendor
 # would not also use cannot be honoured without silently reading one history and writing another.
-_VENDOR_STORES = {"codex-app-server": ".codex/sessions", "claude-stream-json": ".claude"}
+# (store path name or None for the root, the vendor's default under HOME). opencode's history is
+# one SQLite file, which its console provider resolves through `store.path_env` (#1312).
+_VENDOR_STORES = {
+    "codex-app-server": (None, ".codex/sessions"),
+    "claude-stream-json": (None, ".claude"),
+    "opencode-acp": ("db", ".local/share/opencode/opencode.db"),
+}
+#: Adapters whose native history id is minted by the agent and bound by the worker from its
+#: creation response (Codex `thread/start`, opencode `session/new`); Claude's is ours.
+_ADOPTED = frozenset({"codex-app-server", "opencode-acp"})
 _LEASES = "native-leases"
 _LEASE_TOKEN = "native-leases"  # noqa: S105 — a marker the installer must contain, not a secret
 _ERRORS = {
@@ -221,8 +231,9 @@ def _installer_honours_leases(release: Path) -> bool:
 
 def _vendor_store_matches(adapter: str, source) -> bool:
     try:
-        root = source.store_root()
-        expected = Path.home() / _VENDOR_STORES[adapter]
+        name, default = _VENDOR_STORES[adapter]
+        root = source.store_root() if name is None else source.store_path(name)
+        expected = Path.home() / default
         return root is not None and Path(root).resolve() == expected.resolve()
     except (OSError, RuntimeError, ValueError):
         return False
@@ -414,7 +425,14 @@ def _launch_locked(session_id: str, record: dict, prov, binding, *, mode: str) -
         "server_env": _server_env(),
         "idle_timeout": WORKER_IDLE_TIMEOUT,
     }
-    if adapter == "codex-app-server" and mode == "create":
+    if adapter == "opencode-acp":
+        # The store the source resolves (`store.path_env` first): the worker's maintenance
+        # admission is keyed by this database, like compaction's (Hermes on #1336).
+        database = binding.source.store_path("db")
+        if database is None:
+            raise NativeError(409, "the agent's history store has no database")
+        config["store_database"] = str(Path(database).resolve(strict=False))
+    if adapter in _ADOPTED and mode == "create":
         config["creation"] = {
             "operation_id": session_id,
             "owner_token": record["owner_token"],

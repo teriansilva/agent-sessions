@@ -1,7 +1,7 @@
 # Engines
 
 BattleLab does not implement agents. It **organizes** them: six AI coding CLIs, a plain shell,
-API clients that drive Codex and Claude without a terminal, and an API agent that talks to a model
+API clients that drive Codex, Claude and opencode without a terminal, and an API agent that talks to a model
 endpoint you configure, all presented through one session list. Each one is a **plugin**, described by a
 single declarative manifest (`plugin.toml`) that tells BattleLab everything it needs: the binary,
 the shape of a session id, where the engine keeps its sessions, how to resume and start one, what
@@ -38,6 +38,7 @@ directory), shown with the binary's name instead of its resolved path.
 | **Claude Code** (`claude`) | `claude` · `AGENT_SESSIONS_CLAUDE_BIN` | `~/.claude` | `claude --resume <id>` | `claude --session-id <id>` — pinned id | `--dangerously-skip-permissions` |
 | **Claude — API** (`claude-api`) | Claude Code's | `~/.local/share/agent-sessions/native/claude-api` · `AGENT_SESSIONS_CLAUDE_API_DIR` | contained worker — runtime `api`, protocol `claude-stream-json` | new conversation | — |
 | **opencode** (`opencode`) | `opencode` · `AGENT_SESSIONS_OPENCODE_BIN` | `~/.local/share/opencode` · `AGENT_SESSIONS_OPENCODE_DB`, `AGENT_SESSIONS_OPENCODE_LOG` | `opencode <dir> --session <id>` | `opencode <dir>`, then adopt the id it mints | — |
+| **opencode — API** (`opencode-api`) | opencode's | `~/.local/share/agent-sessions/native/opencode-api` · `AGENT_SESSIONS_OPENCODE_API_DIR` | contained worker — runtime `api`, protocol `opencode-acp` | new conversation | — |
 | **Codex** (`codex`) | `codex` · `AGENT_SESSIONS_CODEX_BIN` | `~/.codex/sessions` · `AGENT_SESSIONS_CODEX_SESSIONS_DIR` | `codex resume <id>` | `codex --cd <dir>`, then adopt the id it mints | `--dangerously-bypass-approvals-and-sandbox` (new sessions only) |
 | **Codex — API** (`codex-api`) | Codex's | `~/.local/share/agent-sessions/native/codex-api` · `AGENT_SESSIONS_CODEX_API_DIR` | contained worker — runtime `api`, protocol `codex-app-server` | new conversation | — |
 | **Gemini CLI** (`gemini`) | `gemini` · `AGENT_SESSIONS_GEMINI_BIN` | `~/.gemini/tmp` · `AGENT_SESSIONS_GEMINI_TMP_DIR` | `gemini --resume <id>` | `gemini --session-id <id>` — pinned id | `--yolo` `--skip-trust` |
@@ -58,6 +59,7 @@ and the scroll-up transcript, so pointing one at a different location moves both
 | `AGENT_SESSIONS_OPENCODE_BIN` | opencode | the binary |
 | `AGENT_SESSIONS_OPENCODE_DB` | opencode | the store's `db` (`~/.local/share/opencode/opencode.db`) |
 | `AGENT_SESSIONS_OPENCODE_LOG` | opencode | the store's `log` (`~/.local/share/opencode/log/opencode.log`) |
+| `AGENT_SESSIONS_OPENCODE_API_DIR` | opencode — API | the store root (`~/.local/share/agent-sessions/native/opencode-api`) |
 | `AGENT_SESSIONS_CODEX_BIN` | Codex | the binary |
 | `AGENT_SESSIONS_CODEX_SESSIONS_DIR` | Codex | the store root (`~/.codex/sessions`) |
 | `AGENT_SESSIONS_CODEX_API_DIR` | Codex — API | the store root (`~/.local/share/agent-sessions/native/codex-api`) |
@@ -111,6 +113,7 @@ added under **Settings → Agents → *engine***, for a model released after thi
 | **Claude Code** (`claude`) | `--model <id>` on new sessions and on resume | `claude-opus-5` (`opus`), `claude-sonnet-5` (`sonnet`), `claude-haiku-4-5` (`haiku`), `claude-fable-5-1`, `claude-opus-4-8`, `claude-sonnet-4-6` | `CLAUDE.md` |
 | **Claude — API** (`claude-api`) | — | — | — |
 | **opencode** (`opencode`) | set in the agent's own configuration | `default` only | `AGENTS.md` |
+| **opencode — API** (`opencode-api`) | — | — | — |
 | **Codex** (`codex`) | `--model <id>` on new sessions (a resume keeps its model) | `gpt-5-codex`, `gpt-5` | `AGENTS.md` |
 | **Codex — API** (`codex-api`) | — | — | — |
 | **Gemini CLI** (`gemini`) | `--model <id>` on new sessions (a resume keeps its model) | `gemini-2.5-pro`, `gemini-2.5-flash` | `GEMINI.md` |
@@ -139,11 +142,12 @@ Three consequences worth knowing:
   screen, and errors only when both are empty — so a shell is reviewed on its terminal screen
   alone, with no special-casing anywhere in the review code.
 
-## API clients: Codex and Claude without a terminal
+## API clients: Codex, Claude and opencode without a terminal
 
-**Codex — API** (`codex-api`) and **Claude — API** (`claude-api`) run the CLI you already have
-installed, but through its structured protocol instead of a terminal: Codex's app-server and
-Claude Code's stream-JSON mode. Its login, configuration, MCP servers, skills and instruction
+**Codex — API** (`codex-api`), **Claude — API** (`claude-api`) and **opencode — API**
+(`opencode-api`) run the CLI you already have installed, but through its structured protocol
+instead of a terminal: Codex's app-server, Claude Code's stream-JSON mode and opencode's Agent
+Client Protocol (`opencode acp`). Its login, configuration, MCP servers, skills and instruction
 files all apply — BattleLab adds no tools and no keys of its own. Each session runs in its own
 contained worker; New session lists these under **API — structured, no terminal**.
 
@@ -152,7 +156,13 @@ card lists the **whole** request — command, folder, network access, proposed r
 Claude prompt's title, path and reason — and offers only the choices the agent accepts right
 now, one request at a time: there is never an "always allow" button. Codex **file changes** are
 shown with their patch but can only be declined, because nothing guarantees Codex writes exactly
-the patch shown. Interrupt stops the current turn; Stop ends the worker and reports whether it is
+the patch shown. **opencode — API** runs BattleLab's own opencode agent, which asks before
+**every** tool call — commands, edits, file reads, web fetches, subagents, MCP tools — whatever
+your own opencode config allows; it uses your default model and prompt, like `build`. An edit's
+card shows the full diff, and **Approve once** applies exactly that request (opencode's "always
+allow" is never offered). It needs opencode 1.18.35 or later; your console opencode and its config are unchanged,
+and a conversation started here does not show up in the console's session list (nor can the
+console resume it). Interrupt stops the current turn; Stop ends the worker and reports whether it is
 confirmed gone. Closing the tab never cancels a turn: the view picks up where it left off.
 
 A client that cannot start is listed with the reason — the CLI is missing or older than the

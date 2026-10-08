@@ -105,7 +105,8 @@ with acquire(exclusive=True):
 
 def test_admission_is_not_inherited_even_with_close_fds_false():
     guard = admission.acquire(exclusive=True)
-    st = os.fstat(guard.fd)
+    assert len(guard.fds) == 2  # the engine's historic lock and the database's (#1336)
+    st = os.fstat(guard.fds[-1])
     code = """
 import os, sys
 from pathlib import Path
@@ -117,7 +118,7 @@ for p in Path('/proc/self/fd').iterdir():
 print('clean')
 """
     try:
-        assert not os.get_inheritable(guard.fd)
+        assert not any(os.get_inheritable(fd) for fd in guard.fds)
         out = subprocess.run(
             [sys.executable, "-c", code, str(st.st_dev), str(st.st_ino)],
             close_fds=False,
@@ -574,7 +575,7 @@ def test_launch_site_inventory_requires_review_when_another_route_can_spawn():
     import ast
     from collections import Counter
 
-    from agent_sessions import engines, headless_dispatch, plugins, webterm
+    from agent_sessions import engines, headless_dispatch, native_worker, plugins, webterm
 
     root = Path(compact.__file__).parent
     consumers = Counter()
@@ -608,26 +609,60 @@ def test_launch_site_inventory_requires_review_when_another_route_can_spawn():
         # argv[0] off a throwaway `new_launch_argv` (#853 §2b) — the same consumer, renamed.
         ("headless_dispatch.py", "entrypoint_path"): 1,
         # #1278: native readiness probes the admitted source's `--version`, and a worker launch
-        # records that same provenance-checked path for its contained native child. Native API
-        # sources are only codex-app-server / claude-stream-json — never opencode, whose
-        # maintenance admission this inventory guards.
+        # records that same provenance-checked path for its contained native child. Since #1312
+        # an opencode source is one of them (`opencode-acp`): its `--version` opens no store
+        # (measured on 1.18.35: no database is created under an empty HOME), and the contained
+        # `opencode acp` child is spawned by `native_worker` under the SAME shared admission a
+        # console launch takes (`Worker.store_admission`, asserted below and in
+        # test_native_opencode), held through process creation.
         ("native_runtime.py", "entrypoint_path"): 2,
         # …and builds the fixed systemd worker command (`native_containment.launch_argv`),
         # which starts BattleLab's own worker, never a provider's console argv.
         ("native_runtime.py", "launch_argv"): 1,
         # #1313: the model probe asks the admitted source's own CLI which models it offers
         # (Codex `app-server` model/list, Claude stream-JSON initialize). It starts no session and
-        # writes no history; its adapter kinds (`native_models._DISCOVER`) are never opencode.
+        # writes no history. For opencode (`opencode models`) it runs under the store's SHARED
+        # admission for its whole life, so it never overlaps a compaction (#1312).
         ("native_models.py", "entrypoint_path"): 1,
     }
-    for module, name in ((webterm, "create_subprocess_exec"), (headless_dispatch, "_popen")):
+    # The native worker creates two processes (#1312): the `opencode acp` child, and before it
+    # the `opencode debug config` probe whose MCP overrides that child needs (#1336). Both run
+    # inside `spawn`'s store admission, asserted below.
+    for module, name, count in (
+        (webterm, "create_subprocess_exec", 1),
+        (headless_dispatch, "_popen", 1),
+        (native_worker, "create_subprocess_exec", 2),
+    ):
         tree = ast.parse(Path(module.__file__).read_text())
         names = [
             call.func.attr if isinstance(call.func, ast.Attribute) else call.func.id
             for call in ast.walk(tree)
             if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute | ast.Name)
         ]
-        assert names.count(name) == 1
+        assert names.count(name) == count, module.__name__
+    probe = next(
+        node
+        for node in ast.walk(ast.parse(Path(native_worker.__file__).read_text()))
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "mcp_overrides"
+    )
+    assert any(
+        isinstance(c, ast.Call)
+        and isinstance(c.func, ast.Attribute)
+        and c.func.attr == "create_subprocess_exec"
+        for c in ast.walk(probe)
+    )
+    # The native worker's spawn — the probe, then the child — is under the store admission.
+    spawn = next(
+        node
+        for node in ast.walk(ast.parse(Path(native_worker.__file__).read_text()))
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "spawn"
+    )
+    line = {
+        c.func.attr: c.lineno
+        for c in ast.walk(spawn)
+        if isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
+    }
+    assert line["store_admission"] < line["mcp_overrides"] < line["create_subprocess_exec"]
     # OpenCode's provider is argv-only; no hidden subprocess import bypasses those consumers.
     provider_tree = ast.parse(
         Path(sys.modules[engines.OpenCodeProvider.__module__].__file__).read_text()

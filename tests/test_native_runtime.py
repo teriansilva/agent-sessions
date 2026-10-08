@@ -33,7 +33,8 @@ from agent_sessions import structured_runtime as runtime
 from agent_sessions.engines import registry
 
 FAKE = Path(__file__).with_name("fake_native.py")
-ENGINES = {"codex": "codex-api", "claude": "claude-api"}
+ENGINES = {"codex": "codex-api", "claude": "claude-api", "opencode": "opencode-api"}
+KINDS = {"codex": "codex-app-server", "claude": "claude-stream-json", "opencode": "opencode-acp"}
 
 
 @pytest.fixture
@@ -128,20 +129,20 @@ def host(tmp_home, tmp_path, monkeypatch):
     bindir = tmp_path / "engine-bin"
     bindir.mkdir()
     bindir.chmod(0o755)
-    for name in ("codex", "claude"):
+    for name in ENGINES:
         script = bindir / name
         script.write_text(f"#!{sys.executable}\n" + FAKE.read_text())
         script.chmod(0o755)
     monkeypatch.setenv("AGENT_SESSIONS_CODEX_BIN", str(bindir / "codex"))
     monkeypatch.setenv("AGENT_SESSIONS_CLAUDE_BIN", str(bindir / "claude"))
+    monkeypatch.setenv("AGENT_SESSIONS_OPENCODE_BIN", str(bindir / "opencode"))
     monkeypatch.delenv("AGENT_SESSIONS_CODEX_SESSIONS_DIR", raising=False)
     monkeypatch.delenv("AGENT_SESSIONS_CLAUDE_PROJECTS_DIR", raising=False)
     monkeypatch.setenv("AGENT_SESSIONS_PLUGIN_STATE_DIR", str(tmp_path / "plugin-state"))
     # The in-tree clients (#1311) are replaced by fixtures whose store is this test's own.
     providers = [p for p in registry._PROVIDERS if p.engine_id not in ENGINES.values()]
     for source, name in ENGINES.items():
-        kind = "codex-app-server" if source == "codex" else "claude-stream-json"
-        doc = test_manifest_api._api(name=name, source=source, kind=kind)
+        doc = test_manifest_api._api(name=name, source=source, kind=KINDS[source])
         providers.append(test_manifest_api._provider(doc, tmp_path))
     monkeypatch.setattr(registry, "_PROVIDERS", providers)
     monkeypatch.setattr(registry, "_BY_ID", {p.engine_id: p for p in providers})
@@ -191,7 +192,7 @@ async def pending(key: str):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("source", ["codex", "claude"])
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
 async def test_create_submit_replay_and_reconnect_observe_one_native_write(host, project, source):
     engine = ENGINES[source]
     described = runtime.describe(engine)
@@ -229,7 +230,8 @@ async def test_create_submit_replay_and_reconnect_observe_one_native_write(host,
     users = [
         f
         for f in frames(project)
-        if f["frame"].get("method") == "turn/start" or f["frame"].get("type") == "user"
+        if f["frame"].get("method") in {"turn/start", "session/prompt"}
+        or f["frame"].get("type") == "user"
     ]
     assert len(users) == 1
     with pytest.raises(runtime.StructuredError) as changed:
@@ -244,7 +246,7 @@ async def test_create_submit_replay_and_reconnect_observe_one_native_write(host,
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("source", ["codex", "claude"])
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
 async def test_native_crash_is_uncertain_never_resent_and_the_next_turn_resumes(
     host, project, source
 ):
@@ -275,7 +277,7 @@ async def test_native_crash_is_uncertain_never_resent_and_the_next_turn_resumes(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("source", ["codex", "claude"])
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
 async def test_interrupt_is_requested_and_stop_proves_containment_gone(host, project, source):
     engine = ENGINES[source]
     key = (await runtime.create_session(engine, str(project), operation_id=ident()))["session_key"]

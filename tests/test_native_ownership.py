@@ -128,7 +128,7 @@ def test_identity_is_canonical_store_shape_and_not_alias(state, tmp_path, monkey
     rejected("conflict", bind, second, native)
 
 
-@pytest.mark.parametrize("engine", ["shell", "opencode", "gemini"])
+@pytest.mark.parametrize("engine", ["shell", "kimi", "gemini"])  # opencode is a source (#1312)
 def test_unrelated_provider_does_not_open_ledger(state, tmp_path, monkeypatch, engine):
     def unexpected(*args, **kwargs):
         pytest.fail("unsupported providers must not open the ownership ledger")

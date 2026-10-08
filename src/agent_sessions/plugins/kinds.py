@@ -46,6 +46,9 @@ RUNTIME_KINDS = frozenset({"pty", "chat", "api"})
 API_SOURCE_KINDS = {
     "codex-app-server": ("codex-rollouts", "codex-rollout"),
     "claude-stream-json": ("claude-projects", "claude-jsonl"),
+    # opencode's Agent Client Protocol over stdio (`opencode acp`, #1312). Its histories live in
+    # the operator's shared SQLite store, which stays read-only to BattleLab itself.
+    "opencode-acp": ("opencode-sqlite", "opencode-sqlite"),
 }
 API_KINDS = frozenset(API_SOURCE_KINDS)
 #: Whether a native protocol takes pictures in a turn (#1332 Phase 3). Every kind decides —
@@ -53,6 +56,8 @@ API_KINDS = frozenset(API_SOURCE_KINDS)
 API_IMAGE_INPUT = {
     "codex-app-server": True,  # turn/start input: {"type": "image", "url": "data:…"}
     "claude-stream-json": True,  # user message content: base64 image blocks
+    # Not yet: ACP image blocks must be gated by the agent's `promptCapabilities.image` (#1332).
+    "opencode-acp": False,
 }
 #: The BattleLab conversation store owns UUIDs independently of a native agent's session id.
 API_SESSION_PATTERN = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
@@ -385,6 +390,7 @@ RESERVED_IDS = frozenset(
         "apichat",
         "codex-api",
         "claude-api",
+        "opencode-api",
     }
 )
 

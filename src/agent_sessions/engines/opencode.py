@@ -208,6 +208,129 @@ UNATTENDED_PERMISSION: dict = {
 }
 
 
+#: The primary agent of an `opencode-api` worker generation (#1312): BattleLab's own
+#: ask-everything agent, minted per generation for the same reason as the unattended one — a fixed
+#: name could already be declared (project or operator config) and a key-by-key merge would keep
+#: that declaration's ``allow`` rules after ours.
+API_AGENT_PREFIX = "battlelab-api-"
+_API_AGENT_RE = re.compile(r"\Abattlelab-api-[0-9a-f]{16}\Z")
+
+#: That agent's permission block. NOTHING is allowed: the catch-all comes first, then every
+#: permission key opencode 1.18.35 knows (`opencode debug agent build`: its tools plus doom_loop,
+#: external_directory, plan_enter/plan_exit, question) is restated as ``ask``, so no rule merged
+#: from anywhere else — and none of opencode's own defaults, such as its ``external_directory``
+#: allows for tool output and skills — can come after ours and allow it. MCP tools and any tool a
+#: later opencode adds match only the catch-all, which asks. No prompt and no model: the agent
+#: inherits opencode's defaults, like ``build``.
+API_PERMISSION: dict = {
+    "*": "ask",
+    **{
+        key: "ask"
+        for key in (
+            "bash",
+            "edit",
+            "read",
+            "glob",
+            "grep",
+            "list",
+            "task",
+            "webfetch",
+            "websearch",
+            "codesearch",
+            "skill",
+            "todowrite",
+            "todoread",
+            "lsp",
+            "question",
+            "external_directory",
+            "doom_loop",
+            "plan_enter",
+            "plan_exit",
+        )
+    },
+}
+
+
+def mint_api_agent() -> str:
+    """A fresh, unguessable agent name for ONE `opencode-api` worker generation."""
+    return f"{API_AGENT_PREFIX}{secrets.token_hex(8)}"
+
+
+def mcp_password_overrides(resolved: object) -> dict:
+    """Per local MCP server of a resolved config (`opencode debug config`), the override that
+    blanks `OPENCODE_SERVER_PASSWORD` in its environment (Hermes on #1336).
+
+    opencode starts a local MCP server with ``{...process.env, ...mcp.environment}``, so the
+    listener password would reach third-party MCP code. Measured on 1.18.35, an override only
+    merges if it restates the entry: ``{environment}`` alone fails validation and
+    ``{type, enabled, environment}`` validates but its environment is dropped. So ``type``,
+    ``command`` and (when reported) ``enabled`` are restated exactly as reported; the operator's
+    own environment values are left to opencode's deep merge and never copied (the probe masks
+    them as ``***``). Remote servers are untouched. Anything unexpected — a malformed entry, a
+    command the probe masked — raises `ValueError`, and the launch is refused.
+
+    Restating command lines widens nothing across a privilege boundary (decision on #1336):
+    every process that inherits them (opencode, its bash and MCP children) runs as the operator
+    and can already read the config files that hold them. The password guards the HTTP API
+    against OTHER users and must not reach MCP code.
+    """
+    if not isinstance(resolved, dict):
+        raise ValueError("the resolved opencode configuration is not an object")
+    servers = resolved.get("mcp")
+    servers = {} if servers is None else servers
+    if not isinstance(servers, dict):
+        raise ValueError("the resolved opencode MCP configuration is not an object")
+    out: dict = {}
+    for name, entry in servers.items():
+        if not isinstance(name, str) or not isinstance(entry, dict):
+            raise ValueError("a resolved opencode MCP server is malformed")
+        if entry.get("type") == "remote":
+            continue
+        if entry.get("type") != "local":
+            raise ValueError(f"MCP server {name!r} has an unknown type")
+        command = entry.get("command")
+        if (
+            not isinstance(command, list)
+            or not command
+            or not all(isinstance(part, str) for part in command)
+        ):
+            raise ValueError(f"MCP server {name!r} has no command to restate")
+        if any("***" in part for part in command):
+            raise ValueError(f"MCP server {name!r} has a masked command; it cannot be restated")
+        override: dict = {"type": "local", "command": list(command)}
+        if "enabled" in entry:
+            if not isinstance(entry["enabled"], bool):
+                raise ValueError(f"MCP server {name!r} has a malformed enabled flag")
+            override["enabled"] = entry["enabled"]
+        override["environment"] = {"OPENCODE_SERVER_PASSWORD": ""}
+        out[name] = override
+    return out
+
+
+def api_config_content(agent: str, mcp: dict | None = None) -> str:
+    """`OPENCODE_CONFIG_CONTENT` for an `opencode-api` child: BattleLab's own ask-everything agent,
+    built exactly like the unattended one (`_agent_config_content`), plus the per-server MCP
+    overrides of `mcp_password_overrides`. The app's own `OPENCODE_CONFIG_CONTENT` is NOT merged
+    in: the worker's environment is sanitized (#1312)."""
+    if not isinstance(agent, str) or not _API_AGENT_RE.match(agent):
+        raise ValueError("malformed API agent name")
+    config = json.loads(
+        _agent_config_content(
+            None,
+            agent,
+            API_PERMISSION,
+            "BattleLab API client: every tool call asks the operator",
+        )
+    )
+    # Belt and braces for the listener (the argv flags are what binds it to loopback): measured
+    # on 1.18.35, this block alone does NOT override an operator's global `server.*` for `acp`,
+    # and `port` is omitted because the config schema refuses 0 (the flag allows it).
+    config["server"] = {"hostname": "127.0.0.1", "mdns": False}
+    if mcp:
+        config["mcp"] = mcp
+    return json.dumps(config)
+
+
 def _ask_config_content(existing: str | None, agent: str) -> str:
     """The `OPENCODE_CONFIG_CONTENT` that holds this launch to `UNATTENDED_PERMISSION`: reads
     inside the project go through, everything else asks.
@@ -241,6 +364,19 @@ def _ask_config_content(existing: str | None, agent: str) -> str:
     """
     if not isinstance(agent, str) or not _UNATTENDED_AGENT_RE.match(agent):
         raise ValueError("malformed unattended agent name")
+    return _agent_config_content(
+        existing,
+        agent,
+        UNATTENDED_PERMISSION,
+        "BattleLab unattended mission: reads go through, everything else asks",
+    )
+
+
+def _agent_config_content(
+    existing: str | None, agent: str, permission: dict, description: str
+) -> str:
+    """One freshly named primary agent holding ``permission``, made the default agent, with the
+    config-level block replaced by ``{"*": "ask"}`` (see `_ask_config_content`)."""
     base_cfg: dict = {}
     if existing is not None and existing.strip():
         try:
@@ -258,9 +394,9 @@ def _ask_config_content(existing: str | None, agent: str) -> str:
     agents = base_cfg.get("agent")
     agents = dict(agents) if isinstance(agents, dict) else {}
     agents[agent] = {
-        "description": "BattleLab unattended mission: reads go through, everything else asks",
+        "description": description,
         "mode": "primary",
-        "permission": json.loads(json.dumps(UNATTENDED_PERMISSION)),
+        "permission": json.loads(json.dumps(permission)),
     }
     return json.dumps(
         {

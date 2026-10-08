@@ -317,7 +317,12 @@ async def spawn(
         # per-engine maintenance lock that live launches and compaction use.
         if prov.manifest.launch and prov.manifest.launch.admission == "sqlite-store-shared":
             acquiring = asyncio.create_task(
-                asyncio.to_thread(opencode_admission.acquire, prov.engine_id, exclusive=False)
+                asyncio.to_thread(
+                    opencode_admission.acquire,
+                    prov.engine_id,
+                    exclusive=False,
+                    database=prov.store_path("db"),
+                )
             )
             try:
                 guard = await asyncio.shield(acquiring)

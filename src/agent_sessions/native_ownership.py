@@ -39,6 +39,7 @@ MAX_REQUEST_BYTES = 16 * 1024
 MAX_RUNTIME_ENTRIES = 50_000
 _APP_KEY = re.compile(r"[a-z][a-z0-9-]{1,23}:[0-9a-f-]{36}")
 _SOURCE_LAYOUTS = frozenset(value[0] for value in kinds.API_SOURCE_KINDS.values())
+_DATABASE_LAYOUTS = frozenset({"opencode-sqlite"})
 _UNAVAILABLE = "native history ownership is unavailable; console access was refused"
 
 
@@ -100,7 +101,14 @@ def source_identity(prov) -> SourceIdentity | None:
     ):
         return None
     try:
-        root = prov.store_root()
+        # A history store that is ONE database (opencode) is identified by that database, as
+        # its console provider resolves it (`store.path_env` first): two providers reading one
+        # file fence each other on its `ses_*` ids, whatever root each declares (#1312).
+        root = (
+            prov.store_path("db")
+            if manifest.store.layout in _DATABASE_LAYOUTS
+            else prov.store_root()
+        )
         if root is None or not Path(root).is_absolute():
             raise ValueError
         path = str(Path(root).resolve(strict=False))

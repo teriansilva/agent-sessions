@@ -109,6 +109,7 @@ ORDER = [
     "claude",
     "claude-api",
     "opencode",
+    "opencode-api",
     "codex",
     "codex-api",
     "gemini",
@@ -119,7 +120,7 @@ ORDER = [
 ]
 #: The seven terminal engines P2 converted — what "shipped" means in the equivalence tables below.
 #: The API agent (#1209) and the native API clients (#1311) run no terminal argv of their own.
-SEVEN = [e for e in ORDER if e not in ("apichat", "codex-api", "claude-api")]
+SEVEN = [e for e in ORDER if e not in ("apichat", "codex-api", "claude-api", "opencode-api")]
 
 
 def test_roster_is_the_seven_in_their_historic_order():

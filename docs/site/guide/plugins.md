@@ -185,7 +185,7 @@ Every value a manifest may choose, generated from the kinds this build ships:
 | `identity.kind` | `agent`, `terminal` |
 | `runtime.kind` | `api`, `chat`, `pty` |
 | `endpoint.kind` (runtime `chat` only) | `openai-chat` |
-| `api.kind` (runtime `api` only) | `claude-stream-json`, `codex-app-server` |
+| `api.kind` (runtime `api` only) | `claude-stream-json`, `codex-app-server`, `opencode-acp` |
 | `binary.version_flag` | `--version`, `-V`, `-v`, `version` |
 | `session_id.mint` | `adopt`, `pinned` |
 | `store.layout` | `antigravity-cli`, `battlelab-chat`, `claude-projects`, `codex-rollouts`, `gemini-tmp`, `kimi-code`, `opencode-sqlite`, `shell-records` |

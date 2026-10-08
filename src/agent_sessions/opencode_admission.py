@@ -11,9 +11,11 @@ import asyncio
 import contextlib
 import errno
 import fcntl
+import hashlib
 import os
 import stat
 from functools import partial
+from pathlib import Path
 
 from . import sessionlock
 
@@ -25,14 +27,17 @@ class Unavailable(RuntimeError):
 
 
 class Admission:
-    def __init__(self, fd: int):
-        self.fd: int | None = fd
+    def __init__(self, *fds: int):
+        self.fds: list[int] = list(fds)
+
+    @property
+    def fd(self) -> int | None:
+        return self.fds[0] if self.fds else None
 
     def release(self) -> None:
-        if self.fd is not None:
-            # Nothing inherits this open file description, so closing its sole fd releases it.
-            fd, self.fd = self.fd, None
-            os.close(fd)
+        # Nothing inherits these open file descriptions, so closing each sole fd releases it.
+        while self.fds:
+            os.close(self.fds.pop())
 
     def __enter__(self) -> Admission:
         return self
@@ -66,14 +71,27 @@ def admits(engine: str) -> bool:
     return m is not None and m.launch is not None and m.launch.admission == "sqlite-store-shared"
 
 
-def acquire(engine: str | None = None, *, exclusive: bool) -> Admission | None:
-    """Take ``engine``'s admission lock (default: the maintained engine). One lock file per engine,
-    `maintenance-<id>.lock` — which for opencode is the name it has always had, so an instance
-    running the previous build and this one still fence each other."""
-    engine = engine or maintained_engine()
-    if engine is None:
-        raise OSError("no engine selects store maintenance")
-    path = sessionlock.lock_dir() / f"maintenance-{engine}.lock"
+def database_identity(database: str | os.PathLike) -> str:
+    """The admission key of one SQLite store: its resolved path, the way `native_ownership`
+    resolves a database source (`Path.resolve(strict=False)`), hashed into a lock-file name."""
+    path = str(Path(database).expanduser().resolve(strict=False))
+    if not os.path.isabs(path) or "\x00" in path:
+        raise OSError("invalid OpenCode database identity")
+    return hashlib.sha256(path.encode()).hexdigest()[:32]
+
+
+def _database(engine: str) -> Path:
+    from . import engines
+
+    prov = engines.get_any(engine)
+    db = prov.store_path("db") if prov is not None else None
+    if db is None:
+        raise OSError(f"{engine} has no database to admit launches against")
+    return Path(db)
+
+
+def _lock(name: str, *, exclusive: bool) -> int | None:
+    path = sessionlock.lock_dir() / name
     fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
     try:
         st = os.fstat(fd)
@@ -85,7 +103,39 @@ def acquire(engine: str | None = None, *, exclusive: bool) -> Admission | None:
         if e.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
             return None
         raise
-    return Admission(fd)
+    return fd
+
+
+def acquire(
+    engine: str | None = None, *, exclusive: bool, database: str | os.PathLike | None = None
+) -> Admission | None:
+    """Take the admission of ``engine``'s store (default: the maintained engine).
+
+    Keyed by the DATABASE, not the engine id (Hermes on #1336): every engine whose store resolves
+    to one file — the canonical `opencode`, a compatible alias, a native API client's source —
+    takes `maintenance-db-<identity>.lock`, so a launch through any of them and a compaction
+    through any other exclude each other. ``database`` names the store directly (a worker or a
+    not-yet-live candidate that cannot ask the roster); otherwise the engine's own provider
+    resolves it (`store.path_env` first). The historic per-engine `maintenance-<id>.lock` is
+    taken first as well, so an instance still running the previous build stays fenced.
+    Both are non-blocking: either busy means None, and nothing is held.
+    """
+    engine = engine or maintained_engine()
+    if engine is None:
+        raise OSError("no engine selects store maintenance")
+    identity = database_identity(database if database is not None else _database(engine))
+    held = Admission()
+    try:
+        for name in (f"maintenance-{engine}.lock", f"maintenance-db-{identity}.lock"):
+            fd = _lock(name, exclusive=exclusive)
+            if fd is None:
+                held.release()
+                return None
+            held.fds.append(fd)
+    except BaseException:
+        held.release()
+        raise
+    return held
 
 
 async def for_launch(engine: str) -> Admission | None:

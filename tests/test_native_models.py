@@ -175,3 +175,28 @@ def test_an_unforeseen_reply_shape_is_unavailable_through_the_route_and_create(
     with pytest.raises(model_choice.ModelRefused) as refused:
         model_choice.select_api(registry.get(ENGINES["codex"]), "fake-small")
     assert refused.value.code == "unavailable"
+
+
+def test_opencode_lists_its_models_under_shared_store_admission(host, tmp_home, monkeypatch):
+    """`opencode models` is an opencode process on the operator's database: it runs only while it
+    holds the store's SHARED admission, so it can never overlap a compaction (#1312)."""
+    from agent_sessions import opencode_admission
+
+    prov = registry.get("opencode-api")
+    listing = native_models.models(prov)
+    assert listing.status == "ok", listing.reason
+    assert [m["id"] for m in listing.models] == ["local/fake-coder", "openai/fake-gpt"]
+    frames = [json.loads(x) for x in (tmp_home / "native-frames.jsonl").read_text().splitlines()]
+    assert {"models": True, "password": True} in [f["frame"] for f in frames]
+
+    monkeypatch.setattr(native_models, "_CACHE", {})
+    source = registry.get("opencode")
+    held = opencode_admission.acquire(
+        source.engine_id, exclusive=True, database=source.store_path("db")
+    )
+    assert held is not None
+    try:
+        busy = native_models.models(prov)
+    finally:
+        held.release()
+    assert busy.status == "unavailable" and "maintenance" in busy.reason

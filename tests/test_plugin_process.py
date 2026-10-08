@@ -34,6 +34,8 @@ def vendor(tmp_path, monkeypatch):
             probe_kind="terminal",
         ),
         entrypoint_path=lambda: str(binary),
+        # Its store's database: a shared-store candidate's admission is keyed by it (#1336).
+        store_path=lambda name: tmp_path / "fixture.db" if name == "db" else None,
     )
     # These tests exercise the real transient-service lifecycle with a synthetic executable.
     # Durable candidate validation has separate admission tests; keep the real launch lock.

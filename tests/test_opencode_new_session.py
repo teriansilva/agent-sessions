@@ -187,6 +187,18 @@ class _FakeProv:
 
         return _registry._BY_ID[self.engine_id].manifest  # the REAL roster: tests patch `get`
 
+    # #1312: opencode is a native API source, so publishing an alias asks the ownership ledger
+    # about this provider's store; a stub answers with its real provider's (the test's tmp DB).
+    def store_root(self):
+        from agent_sessions.engines import registry as _registry
+
+        return _registry._BY_ID[self.engine_id].store_root()
+
+    def store_path(self, name):
+        from agent_sessions.engines import registry as _registry
+
+        return _registry._BY_ID[self.engine_id].store_path(name)
+
     def __init__(self, real: str) -> None:
         self._real = real
         self.calls = 0

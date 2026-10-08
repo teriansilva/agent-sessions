@@ -7,6 +7,8 @@ the one that CLI reports through its own protocol:
   efforts and its default flag.
 * ``claude-stream-json`` — the ``models`` array of the stream-JSON ``initialize`` control
   response (the list Claude Code's own model picker shows).
+* ``opencode-acp`` — ``opencode models`` (``provider/model`` per line), the ids its ACP
+  ``session/new`` offers as the ``model`` config option; run under the store's shared admission.
 
 Every adapter kind in `kinds.API_KINDS` has an entry in `_DISCOVER` (a test pins it), so a new
 adapter cannot ship without deciding where its list comes from.
@@ -25,6 +27,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import selectors
 import subprocess
 import threading
@@ -258,7 +261,56 @@ def _claude(binary: str) -> list[dict]:
         conv.close()
 
 
+def _opencode(binary: str, *, source) -> list[dict]:
+    """opencode's `models` command: one `provider/model` per line — the same ids its ACP
+    `session/new` offers as the `model` config option, which the worker selects (#1312). Run under
+    SHARED store admission for its whole life, like a launch: it is an opencode process on the
+    operator's database, so it must never overlap a compaction (`opencode_admission`)."""
+    from . import opencode_admission
+
+    try:
+        guard = opencode_admission.acquire(
+            source.engine_id, exclusive=False, database=source.store_path("db")
+        )
+    except OSError as exc:
+        raise ProbeError("the agent's store could not be admitted") from exc
+    if guard is None:
+        raise ProbeError("the agent's store is under maintenance; try again shortly")
+    with guard:
+        try:
+            done = subprocess.run(  # noqa: S603 — admitted binary, literal argv, no shell
+                [binary, "models"],
+                check=False,
+                capture_output=True,
+                timeout=TIMEOUT_S,
+                stdin=subprocess.DEVNULL,
+                cwd=str(Path.home()),
+                env={
+                    "HOME": str(Path.home()),
+                    "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                    "LANG": "C.UTF-8",
+                    # Should the command open opencode's internal listener, it is not left open.
+                    "OPENCODE_SERVER_PASSWORD": secrets.token_urlsafe(32),
+                },
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ProbeError("the agent did not answer in time") from exc
+    if done.returncode != 0:
+        raise ProbeError("the agent refused to list its models")
+    if len(done.stdout) > MAX_BYTES:
+        raise ProbeError("the agent's answer was too large")
+    out = []
+    for line in done.stdout.decode("utf-8", "replace").splitlines():
+        m = _model(line.strip(), label=None, description=None, efforts=None, is_default=False)
+        if m is not None:
+            out.append(m)
+    return out
+
+
+_opencode.needs_source = True  # type: ignore[attr-defined]
+
 _DISCOVER = {
+    "opencode-acp": _opencode,
     "codex-app-server": _codex,
     "claude-stream-json": _claude,
 }
@@ -298,7 +350,11 @@ def models(prov) -> ModelList:
         if _fresh(cached):
             return cached
         try:
-            found = discover(binary)[:MAX_MODELS]
+            found = (
+                discover(binary, source=binding.source)
+                if getattr(discover, "needs_source", False)
+                else discover(binary)
+            )[:MAX_MODELS]
             seen: set[str] = set()
             unique = tuple(m for m in found if not (m["id"] in seen or seen.add(m["id"])))
             entry = (
