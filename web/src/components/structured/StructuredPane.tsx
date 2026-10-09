@@ -335,6 +335,10 @@ function TurnView({
   onDecide,
   onInterrupt,
   interrupting,
+  onSendNow,
+  sendNowMode,
+  sendingNow,
+  sendNowDisabled,
 }: {
   turn: StructuredTurn;
   agent: string;
@@ -344,9 +348,14 @@ function TurnView({
   onDecide: (req: StructuredRequest, choice: string, grant?: string) => void;
   onInterrupt: (turnId: string) => void;
   interrupting: boolean;
+  onSendNow: (turnId: string) => void;
+  sendNowMode?: "steer" | "interrupt";
+  sendingNow: boolean;
+  sendNowDisabled: boolean;
 }) {
   const active = turn.state === "running" || turn.state === "awaiting_approval";
   const failed = ["failed", "interrupted", "uncertain", "unavailable"].includes(turn.state);
+  const canSendNow = !turn.delivery || turn.delivery === "interrupt_failed";
   return (
     <div className={chat.exchange} data-testid="structured-turn" data-state={turn.state}>
       <div className={`${chat.turn} ${chat.user}`}>
@@ -374,16 +383,24 @@ function TurnView({
         )}
       </div>
       {turn.tools.length > 0 && (
-        <ul className={chat.tools} aria-label="What the agent did">
-          {turn.tools.map((t) => (
-            <li key={t.id} className={chat.tool} data-testid="structured-tool">
-              <span className={chat.toolVerb}>{t.name}</span>
-              {t.summary && <code className={chat.toolPath}>{t.summary}</code>}
-              {t.outcome && <span className={chat.toolDetail}>{t.outcome}</span>}
-              <RiskMark risk={t.risk} />
-            </li>
-          ))}
-        </ul>
+        <details className={styles.activity} data-testid="structured-activity">
+          <summary>
+            {turn.tools_truncated ? "Latest " : ""}{turn.tools.length} commands & tools
+            {active && " · Working"}
+            {turn.tools.some((t) => /failed|error/i.test(t.outcome)) && <span className={styles.activityFailed}> · Failed activity</span>}
+            {turn.tools.some((t) => t.risk?.level === "risky") && <span className={styles.activityRisk}> · Risky activity</span>}
+          </summary>
+          <ul className={chat.tools} aria-label="What the agent did">
+            {turn.tools.map((t) => (
+              <li key={t.id} className={chat.tool} data-testid="structured-tool">
+                <span className={chat.toolVerb}>{t.name}</span>
+                {t.summary && <code className={chat.toolPath}>{t.summary}</code>}
+                {t.outcome && <span className={chat.toolDetail}>{t.outcome}</span>}
+                <RiskMark risk={t.risk} />
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
       {requests.map((r) => (
         <RequestCard
@@ -396,7 +413,7 @@ function TurnView({
         />
       ))}
       {turn.reply && (
-        <div className={`${chat.turn} ${chat.asst}`}>
+        <div className={`${chat.turn} ${chat.asst} ${styles.reply}`} data-testid="structured-reply">
           <div className={chat.who}>{agent}</div>
           <div className={chat.txt}>
             <Markdown text={turn.reply_truncated ? `${turn.reply}…` : turn.reply} />
@@ -404,10 +421,34 @@ function TurnView({
         </div>
       )}
       {turn.state === "queued" && (
-        <div className={chat.wait} data-testid="structured-queued" role="status">
-          Queued · sends after earlier turns
+        <div className={styles.queued} data-testid="structured-queued">
+          <div className={styles.queueRow}>
+            <span role="status">{turn.delivery === "interrupting"
+              ? "Waiting for the current response to stop · sends next"
+              : turn.delivery === "steering"
+                ? "Awaiting agent acknowledgement"
+                : "Queued · sends after earlier turns"}</span>
+            {!readOnly && sendNowMode && canSendNow && (
+              <button type="button" className={styles.sendNow} disabled={sendNowDisabled}
+                onClick={() => onSendNow(turn.turn_id)}>
+                {sendingNow ? "Sending…" : "Send now"}
+              </button>
+            )}
+          </div>
+          {turn.delivery === "interrupt_failed" && (
+            <p className={styles.activityFailed} role="alert">
+              Couldn’t interrupt: {turn.delivery_reason}. This message is still queued.
+            </p>
+          )}
+          {!readOnly && sendNowMode && canSendNow && (
+            <p className={styles.queueHint}>{sendNowMode === "steer"
+              ? "Adds this message to the current turn."
+              : "Interrupts the current response and sends this message next."}</p>
+          )}
         </div>
       )}
+      {turn.state === "delivering" && <div className={chat.wait} role="status">Awaiting agent acknowledgement</div>}
+      {turn.state === "delivered" && <div className={chat.wait} role="status">Added to the active turn</div>}
       {active && (
         <div className={chat.wait} data-testid="structured-working">
           <span className={chat.bars} aria-hidden="true">
@@ -530,6 +571,11 @@ export function StructuredPane({
   const [deciding, setDeciding] = useState<Deciding | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [interrupting, setInterrupting] = useState(false);
+  const [sendingNow, setSendingNow] = useState<string | null>(null);
+  const [sendNowUnknown, setSendNowUnknown] = useState<{ key: string; queuedTurnId: string } | null>(null);
+  const recoveringSendNow = sendNowUnknown?.key === key ? sendNowUnknown : null;
+  const sendNowIds = useRef(new Map<string, { id: string; turnId: string }>());
+  const sendNowBusy = useRef(false);
   const [stopping, setStopping] = useState(false);
   const [containment, setContainment] = useState<Containment | null>(null);
   const [recap, setRecap] = useState<{ open: boolean; trigger: HTMLElement | null }>({
@@ -815,6 +861,44 @@ export function StructuredPane({
     } finally {
       setInterrupting(false);
       await load();
+    }
+  };
+
+  const sendNow = async (queuedTurnId: string) => {
+    if (sendNowBusy.current) return;
+    const target = `${key}:${queuedTurnId}`;
+    let operation = sendNowIds.current.get(target);
+    if (recoveringSendNow?.queuedTurnId === queuedTurnId) {
+      // Observe the original receipt even after delivery, worker exit, or journal truncation.
+      // Current capability/turn state cannot authorize a replacement request on this path.
+      if (!operation) return;
+    } else {
+      if (recoveringSendNow || readOnly || !snap?.active_turn || !snap?.native?.send_now) return;
+      const queued = snap.turns.find((t) => t.turn_id === queuedTurnId);
+      if (queued?.state !== "queued" || (queued.delivery && queued.delivery !== "interrupt_failed")) return;
+      if (queued.delivery === "interrupt_failed") operation = undefined;
+      operation ??= { id: uuid(), turnId: snap.active_turn };
+    }
+    sendNowIds.current.set(target, operation);
+    sendNowBusy.current = true;
+    setSendingNow(queuedTurnId);
+    setActionError(null);
+    try {
+      await api.structuredSendNow(key, operation.id, operation.turnId, queuedTurnId);
+      setSendNowUnknown(null);
+    } catch (e) {
+      // Refusing a recovery request says nothing about the original unknown handoff.
+      if (definite(e) && !recoveringSendNow) {
+        sendNowIds.current.delete(target);
+        setSendNowUnknown(null);
+        setActionError(`Send now not applied: ${detail(e, "refused")}`);
+      } else {
+        setSendNowUnknown({ key, queuedTurnId });
+      }
+    } finally {
+      await load();
+      setSendingNow(null);
+      sendNowBusy.current = false;
     }
   };
 
@@ -1416,8 +1500,24 @@ export function StructuredPane({
             onDecide={(r, c, g) => void decide(r, c, g)}
             onInterrupt={(tid) => void interrupt(tid)}
             interrupting={interrupting}
+            onSendNow={(tid) => void sendNow(tid)}
+            sendNowMode={snap?.active_turn ? snap.native?.send_now : undefined}
+            sendingNow={sendingNow === t.turn_id}
+            sendNowDisabled={!!sendingNow || !!recoveringSendNow || turns.some((q) => q.state === "queued" && q.delivery === "interrupting")}
           />
         ))}
+        {recoveringSendNow && (
+          <div className={styles.queued} data-testid="structured-send-now-recovery">
+            <div className={styles.queueRow}>
+              <span role="alert">Send now status is unknown.</span>
+              <button type="button" className={styles.sendNow} disabled={!!sendingNow}
+                onClick={() => void sendNow(recoveringSendNow.queuedTurnId)}>
+                {sendingNow ? "Checking…" : "Retry Send now"}
+              </button>
+            </div>
+            <p className={styles.queueHint}>Checks the original request without sending it twice.</p>
+          </div>
+        )}
         {reconnecting && snap && (
           <p className={chat.notice} data-testid="structured-reconnecting">
             Connection to BattleLab lost. The turn keeps running on the server; this view resumes

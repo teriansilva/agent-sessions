@@ -18,6 +18,8 @@ mission correlation is ever read from a browser (mission callers use the facade 
   grant?, expected_revision?}`` — one exact pending request: approve / reject / cancel, or
   ``always`` with the id of one proposed standing grant the snapshot offers (#1339).
 * ``POST /api/structured/sessions/{key}/interrupt {operation_id, turn_id}``
+* ``POST /api/structured/sessions/{key}/send-now {operation_id, turn_id, queued_turn_id}`` —
+  steer or explicitly cancel the observed response and send the selected queued input next.
 * ``POST /api/structured/sessions/{key}/stop`` — close the worker; reports proved containment.
 * ``GET  /api/structured/sessions/{key}/containment`` — live / gone / unknown.
 """
@@ -180,6 +182,17 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
                 )
             )
         )
+
+    @app.post("/api/structured/sessions/{key}/send-now")
+    async def structured_send_now(
+        key: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        fields = {"operation_id", "turn_id", "queued_turn_id"}
+        body = await _json(request, fields, fields)
+        return JSONResponse(await _run(structured_runtime.send_now(key, **body)), status_code=202)
 
     @app.post("/api/structured/sessions/{key}/interrupt")
     async def structured_interrupt(

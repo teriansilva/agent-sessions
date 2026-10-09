@@ -49,6 +49,13 @@ def wait_release(text):
             time.sleep(0.01)
 
 
+def wait_cancel():
+    if os.path.exists("hold-cancel-completion"):
+        deadline = time.monotonic() + 10
+        while not os.path.exists("release-cancel-completion") and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+
 def frames():
     for line in sys.stdin:
         if line.strip():
@@ -274,6 +281,24 @@ def codex():
                     "params": {"threadId": thread, "turn": {"id": turn, "status": "completed"}},
                 }
             )
+        elif method == "turn/steer":
+            text = "".join(i["text"] for i in params["input"] if i["type"] == "text")
+            if text == "STEER_UNKNOWN":
+                continue
+            if text == "STEER_REFUSE" or params["expectedTurnId"] != turn:
+                send({"id": rid, "error": {"code": -32000, "message": "steering refused"}})
+                continue
+            if text == "STEER_FINISH_FIRST":
+                send(
+                    {
+                        "method": "turn/completed",
+                        "params": {
+                            "threadId": thread,
+                            "turn": {"id": turn, "status": "completed"},
+                        },
+                    }
+                )
+            send({"id": rid, "result": {"turnId": turn}})
         elif method == "turn/interrupt":
             send({"id": rid, "result": {}})
             send(
@@ -319,6 +344,31 @@ def claude():
                 }
             )
         elif kind == "control_request" and frame["request"]["subtype"] == "interrupt":
+            if os.path.exists("refuse-interrupt"):
+                completed = {
+                    "type": "result",
+                    "subtype": "success",
+                    "uuid": str(uuid.uuid4()),
+                    "is_error": False,
+                    "result": "finished naturally",
+                    "session_id": session,
+                }
+                if os.path.exists("finish-before-refusal"):
+                    send(completed)
+                    wait_release("WAIT_RELEASE")
+                send(
+                    {
+                        "type": "control_response",
+                        "response": {
+                            "subtype": "error",
+                            "request_id": frame["request_id"],
+                            "error": "interruption refused",
+                        },
+                    }
+                )
+                if os.path.exists("finish-after-refusal"):
+                    send(completed)
+                continue
             send(
                 {
                     "type": "control_response",
@@ -329,6 +379,7 @@ def claude():
                     },
                 }
             )
+            wait_cancel()
             send(
                 {
                     "type": "result",
@@ -692,6 +743,7 @@ def opencode():
                 mode = mode if _control("stuck") else params["value"]
             reply(rid, {"configOptions": _acp_config(model, mode, _modes(config))})
         elif method == "session/cancel":
+            wait_cancel()
             if prompt is not None:
                 reply(prompt, {"stopReason": "cancelled", "usage": {"totalTokens": 0}})
                 prompt = None

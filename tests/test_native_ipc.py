@@ -40,6 +40,7 @@ def params(action):
             "actor": "operator",
         },
         "interrupt": {**effect, "turn_id": uid()},
+        "send_now": {**effect, "turn_id": uid(), "queued_turn_id": uid(), "mode": "steer"},
         "stop": {**effect, "target_worker_id": uid()},
         "probe": {"target_worker_id": uid()},
         "snapshot": {},

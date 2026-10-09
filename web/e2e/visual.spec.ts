@@ -25,6 +25,7 @@ import {
   type ManifestEntry,
 } from "../visual/manifest";
 import { openLinksFullScreen } from "./linkMode";
+import { mockStructuredGuidance } from "./structuredGuidanceFixture";
 
 const OUT = process.env.VISUAL_OUT ?? "visual-out";
 const USER = process.env.VISUAL_USER ?? "admin";
@@ -211,6 +212,10 @@ test("visual capture", async ({ browser }, info) => {
       const page = await ctx.newPage();
       try {
         await page.setViewportSize(VIEWPORTS[vp]);
+        if (p.fixture === "structured-guidance") {
+          const engine = p.path.split("/")[2];
+          await mockStructuredGuidance(page, engine, engine === "codex-api" ? "steer" : "interrupt");
+        }
         await page.goto(p.path, {
           waitUntil: "domcontentloaded",
           timeout: 20000,

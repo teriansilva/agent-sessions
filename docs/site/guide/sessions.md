@@ -1,7 +1,27 @@
 # Sessions
 
-A BattleLab session is a real process on your host, running under a `dtach` PTY that BattleLab
-owns. That single design decision is where most of the product's behaviour comes from.
+A BattleLab session runs an agent on your host. Terminal sessions use a `dtach` PTY that
+BattleLab owns; API sessions use the installed agent's native protocol.
+
+## Messages in API sessions
+
+Codex, Claude and opencode API sessions share the same conversation controls. You can keep
+typing while the agent works: **Send** queues your message without interrupting its response.
+
+For urgent guidance, choose **Send now** beside a queued message. Codex adds it to the current
+turn; Claude and opencode interrupt the current response and send that message next once the
+agent has stopped. The hint beside the button explains which behavior applies. Remaining
+messages keep their order. Guidance takes effect when the agent processes it; it cannot undo
+work already performed.
+
+The message shows whether it is queued, awaiting acknowledgement, delivered, or failed. If a
+connection fails during Send now, **Retry Send now** checks the same request without duplicating
+it. Messages still queued when a worker stops remain visibly not sent. After an application
+update, an already-running session may need a new worker before Send now becomes available.
+
+Commands and tools start collapsed under an activity summary; expand it to inspect the details.
+Agent replies have their own panel, and permission requests stay visible. The view follows new
+content while you are at the bottom; scrolling up keeps your reading position.
 
 ## Close the tab, keep the work
 

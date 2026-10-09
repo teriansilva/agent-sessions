@@ -16,6 +16,8 @@ Lifecycle facts this module relies on (see ``docs/invariants/native-runtime.md``
 * Creation reserves ownership first. Claude's history id is chosen here and bound before any
   process exists; a Codex thread is bound by its worker before it can accept a turn. An
   unresolved creation is discharged only after its containment is proved gone with no turn.
+* IPC failures after a request write begins are uncertain (503), never definite non-application.
+  Callers retain the original operation identity and recover its durable receipt.
 """
 
 from __future__ import annotations
@@ -559,8 +561,10 @@ async def _call(gen: Generation, action: str, params: dict, *, timeout: float = 
         }
     )
     capability = native_ipc.Capability(gen.config["capability"])
+    request_started = False
 
     async def exchange():
+        nonlocal request_started
         reader, writer = await asyncio.open_unix_connection(
             gen.config["socket"], limit=native_ipc.MAX_FRAME_BYTES + 1
         )
@@ -568,7 +572,9 @@ async def _call(gen: Generation, action: str, params: dict, *, timeout: float = 
             writer.write(native_ipc.encode_handshake(binding, capability).data)
             await writer.drain()
             native_ipc.decode_welcome(await reader.readline(), expected=binding)
-            writer.write(native_ipc.encode_request(binding, request["request_id"], action, params))
+            frame = native_ipc.encode_request(binding, request["request_id"], action, params)
+            request_started = True  # Even a failed/partial write may reach the worker.
+            writer.write(frame)
             await writer.drain()
             return native_ipc.decode_response(await reader.readline(), request=request)
         finally:
@@ -579,6 +585,10 @@ async def _call(gen: Generation, action: str, params: dict, *, timeout: float = 
     try:
         response = await asyncio.wait_for(exchange(), timeout)
     except (OSError, ConnectionError) as exc:
+        if request_started:
+            raise NativeError(
+                503, "the native worker connection was lost; the request may still be applied"
+            ) from None
         raise _Unreachable(str(exc)) from None
     except native_ipc.IPCError:
         raise NativeError(503, "the native worker answered with an invalid frame") from None
@@ -1182,6 +1192,12 @@ def project(
         elif op.request["action"] == "decide":
             # Native request ids repeat (per turn / per connection): key by the exact callback.
             decided.add((params["approval_worker_id"], params["turn_id"], params["request_id"]))
+        elif op.request["action"] == "send_now" and op.handoff != "not_sent":
+            queued = turns.get(params["queued_turn_id"])
+            if queued is not None:
+                queued["delivery"] = "steering" if params["mode"] == "steer" else "interrupting"
+                queued["delivery_turn_id"] = params["turn_id"]
+                queued["delivery_operation_id"] = op.operation_id
     observations = journal.events if max_turns is None else journal.events.for_operations(selected)
     for item in observations:
         kind, data = item["event"]["kind"], item["event"]["data"]
@@ -1228,6 +1244,11 @@ def project(
                 risk = _tool_risk(row["name"], data["summary"], cwd)
                 if risk is not None:
                     row["risk"] = risk
+        elif kind == "input_accepted":
+            turn["completed"] = True
+            turn["status"], turn["delivery"] = "delivered", "steered"
+        elif kind == "delivery_failed" and data["control_id"] == turn.get("delivery_operation_id"):
+            turn["delivery"], turn["delivery_reason"] = "interrupt_failed", data["message"]
         elif kind == "turn_completed":
             turn["completed"] = True
             turn["status"] = "done" if data["state"] == "completed" else "failed"
@@ -1241,7 +1262,7 @@ def project(
             for key, value in list(pending.items()):
                 if value.get("operation_id") == turn["turn_id"]:
                     pending.pop(key)
-        elif kind == "error" and data.get("action") == "turn/start":
+        elif kind == "error" and data.get("action") in {"turn/start", "turn/steer"}:
             if not turn["completed"]:  # the agent refused the turn: it definitely did not run
                 turn["completed"] = True
                 turn["status"] = "failed"
@@ -1275,7 +1296,16 @@ def project(
                 turn["status"], turn["code"] = "failed", "uncertain"
                 turn["reason"] = "the native worker ended before this turn settled"
             else:
-                in_flight = turn["turn_id"]
+                if turn.get("delivery") == "steering":
+                    turn["status"] = "delivering"
+                else:
+                    in_flight = turn["turn_id"]
+        if (
+            turn.get("delivery") in {"interrupting", "interrupt_failed"}
+            and turn["status"] != "queued"
+        ):
+            turn.pop("delivery", None)
+            turn.pop("delivery_reason", None)
     for exact, approval in pending.items():
         request_id = exact[2]
         if exact in decided or approval["worker_id"] != live_worker:
@@ -1313,7 +1343,7 @@ def project(
             }
         )
     for turn in turns.values():
-        for key in ("partial", "handoff", "worker_id", "completed"):
+        for key in ("partial", "handoff", "worker_id", "completed", "delivery_operation_id"):
             turn.pop(key, None)
     return {
         "turns": list(turns.values()),
@@ -1387,9 +1417,14 @@ def _snapshot_sync(engine_id: str, session_id: str) -> dict:
     prov, record = _session(engine_id, session_id, retiring_ok=True)
     from .structured_runtime import SNAPSHOT_TURNS
 
-    return project(
-        _journal(prov, session_id), record, _live_worker(session_id), max_turns=SNAPSHOT_TURNS
-    )
+    live = _live_worker(session_id)
+    view = project(_journal(prov, session_id), record, live, max_turns=SNAPSHOT_TURNS)
+    # The running worker advertises its own implementation. A web update cannot teach an
+    # already-running, release-pinned worker a new effect (#1389).
+    mode = native_state.read_lifecycle(live).get("send_now") if live else None
+    if mode in {"steer", "interrupt"}:
+        view["native"]["send_now"] = mode
+    return view
 
 
 # --- adapter operations ------------------------------------------------------------------------
@@ -1476,8 +1511,8 @@ async def submit(
 
 
 async def _existing_generation_call(session_id: str, action: str, params: dict) -> dict:
-    """Decisions and interrupts target the RUNNING generation only: a successor could never
-    answer the old callback or interrupt the old turn, so nothing is relaunched for them."""
+    """Controls target the RUNNING generation only: a successor could never answer the old
+    callback, interrupt, or steer the old turn, so nothing is relaunched for them."""
     gen = await asyncio.to_thread(_generation, session_id)
     if gen is None:
         raise NativeError(409, "no native worker is running this session")
@@ -1627,6 +1662,37 @@ async def interrupt(engine_id: str, session_id: str, *, operation_id: str, turn_
     receipt = await _revisioned(prov, session_id, operation_id, immutable, None, send)
     if receipt["handoff"] == "not_sent":
         raise NativeError(409, "that turn could not be interrupted yet; retry with a new id")
+    return receipt
+
+
+async def send_now(
+    engine_id: str, session_id: str, *, operation_id: str, turn_id: str, queued_turn_id: str
+) -> dict:
+    """One deliberate selection of an existing message; no relaunch or duplicate submit."""
+    prov, _ = await asyncio.to_thread(_session, engine_id, session_id)
+    journal = await asyncio.to_thread(_journal, prov, session_id)
+    previous = journal.operations.get(operation_id)
+    if previous is not None and previous.request["action"] == "send_now":
+        mode = previous.request["params"]["mode"]
+    else:
+        live = await asyncio.to_thread(_live_worker, session_id)
+        life = await asyncio.to_thread(native_state.read_lifecycle, live) if live else {}
+        mode = life.get("send_now")
+        if mode not in {"steer", "interrupt"}:
+            raise NativeError(409, "Send now is available in newly started sessions")
+    params = {"turn_id": turn_id, "queued_turn_id": queued_turn_id, "mode": mode}
+    immutable = native_ipc.normalize_immutable_request({"action": "send_now", "params": params})
+
+    async def send(_journal_now, revision):
+        return await _existing_generation_call(
+            session_id,
+            "send_now",
+            {**params, "operation_id": operation_id, "expected_revision": revision},
+        )
+
+    receipt = await _revisioned(prov, session_id, operation_id, immutable, None, send)
+    if receipt["handoff"] == "not_sent":
+        raise NativeError(409, "Send now was not applied; check the current message state")
     return receipt
 
 

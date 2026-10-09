@@ -1304,6 +1304,8 @@ export interface UnavailableClient {
 
 export type StructuredTurnState =
   | "queued"
+  | "delivering"
+  | "delivered"
   | "running"
   | "awaiting_approval"
   | "completed"
@@ -1345,6 +1347,10 @@ export interface StructuredTurn {
   text_truncated: boolean;
   reply_truncated: boolean;
   reason: string | null;
+  /** Input delivery is distinct from completing the agent's active response (#1389). */
+  delivery?: "steering" | "steered" | "interrupting" | "interrupt_failed";
+  delivery_turn_id?: string;
+  delivery_reason?: string;
   tools: StructuredTool[];
   tools_truncated: boolean;
   /** The pictures the turn carried (#1332 Phase 3): upload names, shown via the read-back route. */
@@ -1406,7 +1412,13 @@ export interface StructuredSnapshot {
   turns: StructuredTurn[];
   omitted_turns: number;
   pending_requests: StructuredRequest[];
-  native?: { native_id: string | null; worker: string | null; background_active: boolean };
+  native?: {
+    native_id: string | null;
+    worker: string | null;
+    background_active: boolean;
+    /** Advertised by this running worker, absent on older workers. */
+    send_now?: "steer" | "interrupt";
+  };
   /** Why this conversation takes no new work (its client is retiring), or null. */
   read_only?: string | null;
   /** The client's protocol takes pictures in a turn (#1332 Phase 3). */

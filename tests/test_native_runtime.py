@@ -205,6 +205,7 @@ async def test_create_submit_replay_and_reconnect_observe_one_native_write(host,
         "decide",
         "events",
         "interrupt",
+        "send_now",
         "stop",
         "probe",
     )

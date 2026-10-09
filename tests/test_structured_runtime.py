@@ -30,7 +30,7 @@ def test_capabilities_are_implementation_support_not_console_launch_flags(endpoi
             with pytest.raises(runtime.StructuredError, match="console"):
                 runtime.require(prov.engine_id, "submit")
     assert not runtime.describe("unknown-client").ready
-    for unsupported in ("interrupt", "events", "probe", "stop"):
+    for unsupported in ("interrupt", "send_now", "events", "probe", "stop"):
         with pytest.raises(runtime.StructuredError):
             runtime.require(chat_api.ENGINE, unsupported)
 

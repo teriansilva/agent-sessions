@@ -37,8 +37,10 @@ MAX_EVENT_TEXT = 20_000
 MAX_EVENTS = 100
 MAX_INTEGER = 2**53 - 1
 ADAPTERS = frozenset({"codex-app-server", "claude-stream-json", "opencode-acp"})
-ACTIONS = frozenset({"submit", "decide", "interrupt", "snapshot", "events", "stop", "probe"})
-EFFECT_ACTIONS = frozenset({"submit", "decide", "interrupt", "stop"})
+ACTIONS = frozenset(
+    {"submit", "decide", "interrupt", "send_now", "snapshot", "events", "stop", "probe"}
+)
+EFFECT_ACTIONS = frozenset({"submit", "decide", "interrupt", "send_now", "stop"})
 _ENGINE = re.compile(r"[a-z][a-z0-9-]{1,23}\Z", re.ASCII)
 _NATIVE = re.compile(r"[A-Za-z0-9_.:-]{1,258}\Z", re.ASCII)
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
@@ -274,6 +276,7 @@ def _params(action, value, *, immutable=False):
             "actor",
         },
         "interrupt": {"operation_id", "expected_revision", "turn_id"},
+        "send_now": {"operation_id", "expected_revision", "turn_id", "queued_turn_id", "mode"},
         "stop": {"operation_id", "expected_revision", "target_worker_id"},
         "probe": {"target_worker_id"},
         "events": {"after", "limit"},
@@ -301,6 +304,7 @@ def _params(action, value, *, immutable=False):
         if key.endswith("worker_id") or key in {
             "operation_id",
             "turn_id",
+            "queued_turn_id",
             "approval_connection_id",
         }:
             out[key] = _uuid(item)
@@ -327,6 +331,8 @@ def _params(action, value, *, immutable=False):
             out[key] = _digest(item)
         elif key == "decision":
             out[key] = _choice(item, {"approve", "reject", "cancel", "always"})
+        elif key == "mode":
+            out[key] = _choice(item, {"steer", "interrupt"})
         elif key == "grant":
             from .native_grants import valid_grant_id
 
@@ -424,6 +430,8 @@ _EVENT_FIELDS = {
         _RPC | {"turns", "omitted_turns"},
     ),
     "turn_started": (_COMMON, _RPC),
+    "input_accepted": (_COMMON, _RPC),
+    "delivery_failed": (_COMMON | {"message", "control_id"}, set()),
     "text": (_COMMON | {"text", "partial", "truncated"}, {"item_id"}),
     "tool": (_COMMON | {"item_id"}, {"tool", "state", "summary", "output", "completed"}),
     "approval": (
@@ -470,7 +478,7 @@ def _event(value):
             "native_state",
         }:
             out[key] = None
-        elif key in {"operation_id", "worker_id", "connection_id"}:
+        elif key in {"operation_id", "worker_id", "connection_id", "control_id"}:
             out[key] = _uuid(item)
         elif key in {"native_id", "native_turn_id", "item_id", "request_id", "task_id", "tool"}:
             out[key] = _native(item, 258 if key == "request_id" else 256)

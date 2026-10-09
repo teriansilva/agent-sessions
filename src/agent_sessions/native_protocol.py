@@ -203,6 +203,9 @@ def _approval_bound(frame: dict[str, Any]) -> None:
 
 
 class _Codec:
+    # The worker owns selection/queueing; codecs only map native effects (#1389).
+    send_now_mode = "interrupt"
+
     def __init__(self) -> None:
         self._serial = 0
         self._requests: dict[str, tuple[str, str | None]] = {}
@@ -299,10 +302,12 @@ class _Codec:
 
 
 class CodexCodec(_Codec):
+    send_now_mode = "steer"
     ADAPTER = "codex-app-server"
 
     def __init__(self) -> None:
         super().__init__()
+        self._steers: dict[str, str] = {}
         self._early_frames: list[dict[str, Any]] = []
         self._early_size = 0
         # The latest proposed changes per file-change item of the active turn. A file-change
@@ -371,20 +376,42 @@ class CodexCodec(_Codec):
         if self.native_id is None:
             raise ProtocolError("native thread is not bound")
         self._submit(text, operation_id, images)
+        return self._request(
+            "turn/start",
+            {
+                "threadId": self.native_id,
+                "input": self._input(text, images),
+                "clientUserMessageId": self.operation_id,
+            },
+            self.operation_id,
+        )
+
+    @staticmethod
+    def _input(text: str, images) -> list[dict]:
         items: list[dict] = [
             {"type": "image", "url": f"data:{mime};base64,{data}"} for mime, data in images
         ]
         if text.strip():
             items.append({"type": "text", "text": text})
-        return self._request(
-            "turn/start",
+        return items
+
+    def steer(self, text: str, operation_id: str, images=()) -> dict:
+        """Append input to the exact native turn, keeping its output correlation unchanged."""
+        if self.native_id is None or self.native_turn_id is None or self.operation_id is None:
+            raise ProtocolError("no correlated native turn to steer")
+        validate_text(text, allow_empty=bool(images))
+        frame = self._request(
+            "turn/steer",
             {
                 "threadId": self.native_id,
-                "input": items,
-                "clientUserMessageId": self.operation_id,
+                "expectedTurnId": self.native_turn_id,
+                "input": self._input(text, images),
+                "clientUserMessageId": _uuid(operation_id),
             },
-            self.operation_id,
+            operation_id,
         )
+        self._steers[frame["id"]] = self.native_turn_id
+        return frame
 
     def interrupt(self) -> dict:
         if self.native_id is None or self.native_turn_id is None or self.operation_id is None:
@@ -447,6 +474,7 @@ class CodexCodec(_Codec):
         if pending is None:
             return []
         action, op = pending
+        steered_turn = self._steers.pop(request_id, None)
         expected_session = self._expected_sessions.pop(request_id, None)
         if "error" in frame:
             error = frame["error"]
@@ -470,6 +498,10 @@ class CodexCodec(_Codec):
         result = frame.get("result")
         if not isinstance(result, dict):
             raise ProtocolError("native response has no result object")
+        if action == "turn/steer":
+            if steered_turn is None or result.get("turnId") != steered_turn:
+                raise ProtocolError("native steering response does not match its turn")
+            return [_event("input_accepted", operation_id=op, native_turn_id=steered_turn)]
         if action == "initialize":
             return [_event("initialized", request_id=request_id)]
         if action in {"thread/start", "thread/read", "thread/resume"}:

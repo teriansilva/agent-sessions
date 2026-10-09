@@ -104,6 +104,7 @@ class _NativeAdapter:
             "decide",
             "events",
             "interrupt",
+            "send_now",
             "stop",
             "probe",
         )
@@ -144,6 +145,9 @@ class _NativeAdapter:
 
     async def interrupt(self, engine, native, **kwargs):
         return await _native(native_runtime.interrupt, engine, native, **kwargs)
+
+    async def send_now(self, engine, native, **kwargs):
+        return await _native(native_runtime.send_now, engine, native, **kwargs)
 
     async def stop(self, engine, native):
         return await _native(native_runtime.stop, engine, native)
@@ -308,6 +312,8 @@ def _outcome(turn: dict) -> str:
         return "running"
     if status == "queued":
         return "queued"
+    if status in {"delivering", "delivered"}:
+        return status
     if status == "awaiting_approval":
         return "awaiting_approval"
     if status == "failed":
@@ -341,6 +347,9 @@ def _turn(turn: dict, text_budget: list[int] | None = None) -> dict:
         ],
         "reply_truncated": reply_cut or bool(turn.get("truncated")),
         "reason": turn.get("reason"),
+        **({"delivery": turn["delivery"]} if turn.get("delivery") else {}),
+        **({"delivery_turn_id": turn["delivery_turn_id"]} if turn.get("delivery_turn_id") else {}),
+        **({"delivery_reason": turn["delivery_reason"]} if turn.get("delivery_reason") else {}),
         "context": dict(turn.get("context") or {}),
         "requires_authority": bool(turn.get("execution_binding")),
         "tools": list(turn.get("tools") or [])[-64:],
@@ -535,6 +544,21 @@ async def interrupt(session_key: str, *, operation_id: str, turn_id: str) -> dic
     engine, native = _key(session_key)
     result = await _adapter(engine, "interrupt").interrupt(
         engine, native, operation_id=_operation_id(operation_id), turn_id=_operation_id(turn_id)
+    )
+    return {"session_key": f"{engine}:{native}", **result}
+
+
+async def send_now(
+    session_key: str, *, operation_id: str, turn_id: str, queued_turn_id: str
+) -> dict:
+    """Deliver queued guidance sooner using the live adapter's declared native behavior."""
+    engine, native = _key(session_key)
+    result = await _adapter(engine, "send_now").send_now(
+        engine,
+        native,
+        operation_id=_operation_id(operation_id),
+        turn_id=_operation_id(turn_id),
+        queued_turn_id=_operation_id(queued_turn_id),
     )
     return {"session_key": f"{engine}:{native}", **result}
 

@@ -26,6 +26,8 @@ export type VisualPath = {
   waitFor: WaitFor;
   /** Needs the seeded `must_change` account / fixtures (Phase 2). Skipped until seeded. */
   seeded?: boolean;
+  /** Synthetic native activity in the real shared pane; no agent is launched. */
+  fixture?: "structured-guidance";
   /** An interaction to run after `goto`, before `waitFor` (#1109): the consolidated window
    *  chrome only exists on an OPEN window, and a capture that only visits a route cannot show
    *  it. The one shipped step opens the first session chip as a window. */
@@ -60,6 +62,33 @@ const SPA_MOUNTED = {
 } as const;
 
 export const VISUAL_PATHS: VisualPath[] = [
+  {
+    group: "authed",
+    path: "/s/codex-api/5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f",
+    name: "api-guidance-codex",
+    description: "Codex API — collapsed activity, distinct reply and queued Send now (synthetic activity)",
+    requireAuth: "admin",
+    fixture: "structured-guidance",
+    waitFor: { selector: '[data-testid="structured-queued"] button', timeoutMs: 12000 },
+  },
+  {
+    group: "authed",
+    path: "/s/claude-api/5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f",
+    name: "api-guidance-claude",
+    description: "Claude API — collapsed activity, distinct reply and queued Send now (synthetic activity)",
+    requireAuth: "admin",
+    fixture: "structured-guidance",
+    waitFor: { selector: '[data-testid="structured-queued"] button', timeoutMs: 12000 },
+  },
+  {
+    group: "authed",
+    path: "/s/opencode-api/5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f",
+    name: "api-guidance-opencode",
+    description: "Opencode API — collapsed activity, distinct reply and queued Send now (synthetic activity)",
+    requireAuth: "admin",
+    fixture: "structured-guidance",
+    waitFor: { selector: '[data-testid="structured-queued"] button', timeoutMs: 12000 },
+  },
   {
     group: "authed",
     path: "/settings/resources",

@@ -3,7 +3,8 @@
 Started only by ``native_runtime`` as ``python -I -m agent_sessions.native_worker`` inside a
 fresh transient systemd user service (``native_containment.launch_argv``). It is a protocol
 adapter: it owns the native CLI's stdin/stdout, the session writer locks and the durable
-journal records for its generation. It serializes queued operator messages, judges nothing
+journal records for its generation. It serializes queued operator messages and explicit
+Send now selection (native steering or cancel-then-dispatch), judges nothing
 and stores no credentials of its own.
 
 Lifecycle, in order (each step refuses rather than guesses):
@@ -49,7 +50,16 @@ SHUTTING_DOWN = "the native worker is shutting down; retry"
 FLUSH_INTERVAL = 0.2
 STDERR_TAIL = 4096
 _URGENT = frozenset(
-    {"approval", "approval_cancelled", "turn_started", "turn_completed", "disconnected", "session"}
+    {
+        "approval",
+        "approval_cancelled",
+        "turn_started",
+        "turn_completed",
+        "input_accepted",
+        "delivery_failed",
+        "disconnected",
+        "session",
+    }
 )
 
 
@@ -186,6 +196,8 @@ class Worker:
         self.flush_now = asyncio.Event()
         self.effects = asyncio.Lock()
         self.queued: list[dict] = []
+        self.priority_turn: str | None = None
+        self.priority_requests: dict[str, tuple[str, str, str, str]] = {}
         self.queue_wake = asyncio.Event()
         self.ready = asyncio.Event()
         self.done = asyncio.Event()
@@ -381,6 +393,8 @@ class Worker:
         codec = self.codec
         return (
             codec.operation_id is not None
+            or bool(self.priority_requests)
+            or bool(getattr(codec, "_steers", None))
             or bool(codec._approvals)
             or bool(getattr(codec, "_background", None))
             or getattr(codec, "_session_state", None) in {"running", "requires_action"}
@@ -406,9 +420,36 @@ class Worker:
                 self.stop_child()
                 return
 
+    def promote_queued(self, operation_id: str) -> None:
+        selected = next((p for p in self.queued if p["operation_id"] == operation_id), None)
+        if selected is not None:
+            self.queued.remove(selected)
+            self.queued.insert(0, selected)
+
     async def handle_events(self, events) -> None:
         self.last_activity = time.monotonic()
+        delivery_events = []
         for event in events:
+            if event.kind in {"response", "error"}:
+                target = self.priority_requests.pop(event.data.get("request_id"), None)
+                if target is not None and event.kind == "error":
+                    # A reply from a finished turn cannot release a newer selection.
+                    if self.priority_turn == target[3]:
+                        self.priority_turn = None
+                    delivery_events.append(
+                        native_protocol.NativeEvent(
+                            "delivery_failed",
+                            {
+                                "operation_id": target[0],
+                                "native_turn_id": target[1],
+                                "control_id": target[2],
+                                "message": event.data.get("message")
+                                or "the agent refused interruption",
+                            },
+                        )
+                    )
+                elif target is not None and self.priority_turn == target[3]:
+                    self.promote_queued(target[0])
             if event.kind == "send":
                 await self.write(event.data["frame"])
             elif event.kind in {"initialized", "session", "error"}:
@@ -416,7 +457,7 @@ class Worker:
                 waiter = self.waiters.pop(request_id, None) if request_id else None
                 if waiter is not None and not waiter.done():
                     waiter.set_result(event)
-        self.record(events)
+        self.record([*events, *delivery_events])
         self.queue_wake.set()
 
     @contextlib.contextmanager
@@ -738,6 +779,8 @@ class Worker:
                 return self.error(request, "unavailable", "the native connection is not ready")
             if action == "stop" and params["target_worker_id"] != self.worker_id:
                 return self.error(request, "conflict", "stop targets another worker generation")
+            if action == "send_now":
+                return await self.send_now(request)
             # Validate what can be validated BEFORE a durable claim; a refused request that
             # never claimed can be retried with the same operation id.
             if action == "decide":
@@ -791,6 +834,97 @@ class Worker:
                 return self.receipt(request, receipt)
             return self.receipt(request, await self.handoff(action, params, receipt=receipt))
 
+    async def send_now(self, request: dict) -> dict:
+        """Promote one queued input under the SAME effect/admission fences as FIFO dispatch.
+
+        The control claim binds selection, not a second copy of the user message. Codex steers
+        the original submit; serial protocols cancel and let the existing dispatcher deliver it
+        after terminal evidence. Neither a receipt nor a cancellation ack means completion.
+        """
+        from .plugins import api_source, storage
+
+        params = request["params"]
+        try:
+            journal = await asyncio.to_thread(
+                native_journal.read, self.journal_root, self.session_id
+            )
+            previous = journal.operations.get(params["operation_id"])
+            if previous is not None:
+                if previous.request != native_ipc.immutable_request(request):
+                    return self.error(
+                        request, "conflict", "native operation UUID binds another request"
+                    )
+                return self.receipt(request, previous.receipt())
+            queued = next(
+                (p for p in self.queued if p["operation_id"] == params["queued_turn_id"]), None
+            )
+            if queued is None or self.codec.operation_id != params["turn_id"]:
+                return self.error(
+                    request, "stale", "the message is no longer queued behind that turn"
+                )
+            if self.codec.native_turn_id is None:
+                return self.error(
+                    request, "busy", "the agent has not acknowledged the active turn yet"
+                )
+            if params["mode"] != self.codec.send_now_mode:
+                return self.error(request, "unsupported", "this worker uses another delivery mode")
+            if self.priority_turn == params["turn_id"]:
+                return self.error(
+                    request, "busy", "a message is already waiting for this response to stop"
+                )
+            with self.queued_admission():
+                fresh, receipt = await asyncio.to_thread(
+                    native_journal.claim, self.journal_root, request
+                )
+                if not fresh:
+                    return self.receipt(request, receipt)
+                # Native output is read independently while the claim fsyncs. Never cancel a
+                # newer response, or consume a queued message when its observed turn ended.
+                if self.codec.operation_id != params["turn_id"]:
+                    receipt = await asyncio.to_thread(
+                        native_journal.record_handoff,
+                        self.journal_root,
+                        self.binding,
+                        params["operation_id"],
+                        "not_sent",
+                    )
+                elif params["mode"] == "steer":
+                    self.queued.remove(queued)
+                    delivered = await self.handoff("steer", queued, queued=True)
+                    receipt = await asyncio.to_thread(
+                        native_journal.record_handoff,
+                        self.journal_root,
+                        self.binding,
+                        params["operation_id"],
+                        delivered["handoff"],
+                    )
+                else:
+                    self.priority_turn = params["turn_id"]
+                    receipt = await self.handoff("interrupt", params, receipt=receipt)
+                    if receipt["handoff"] != "sent":
+                        self.priority_turn = None
+                    elif self.priority_turn == params["turn_id"] and not any(
+                        target[2] == params["operation_id"]
+                        for target in self.priority_requests.values()
+                    ):
+                        # Notification-only cancellation has no ack. RPC cancellation promotes
+                        # from its correlated success response; a refusal leaves FIFO intact.
+                        self.promote_queued(params["queued_turn_id"])
+                self.queue_wake.set()
+                return self.receipt(request, receipt)
+        except (native_state.LockBusy, storage.LockBusy):
+            return self.error(request, "busy", "another launch is in progress; try Send now again")
+        except native_journal.JournalError as exc:
+            if exc.code not in {"conflict", "invalid", "busy"}:
+                self.stop_child()  # no further write without durable evidence
+            return self.error(
+                request,
+                exc.code if exc.code in {"conflict", "invalid", "busy"} else "unavailable",
+                exc.detail,
+            )
+        except (WorkerError, api_source.SourceError) as exc:
+            return self.error(request, "unavailable", str(exc))
+
     async def handoff(self, action: str, params: dict, *, receipt=None, queued=False) -> dict:
         try:
             frame = self.frame(action, params)
@@ -839,7 +973,7 @@ class Worker:
         return receipt
 
     def frame(self, action: str, params: dict) -> dict | None:
-        if action == "submit":
+        if action in {"submit", "steer"}:
             images = ()
             if params.get("attachments"):
                 try:
@@ -847,7 +981,8 @@ class Worker:
                     images = native_images.inline(params["attachments"])
                 except native_images.ImageError as exc:
                     raise native_protocol.ProtocolError(str(exc)) from None
-            return self.codec.submit(params["text"], params["operation_id"], images)
+            method = self.codec.steer if action == "steer" else self.codec.submit
+            return method(params["text"], params["operation_id"], images)
         if action == "decide":
             if isinstance(self.codec, native_protocol.OpencodeAcpCodec):
                 # opencode maps no standing grant yet (#1339 Phase 4): its codec takes the one-shot
@@ -861,6 +996,14 @@ class Worker:
             )
         if action == "interrupt":
             frame = self.codec.interrupt()
+            rid = frame.get("id", frame.get("request_id"))
+            if rid is not None and params.get("queued_turn_id"):
+                self.priority_requests[rid] = (
+                    params["queued_turn_id"],
+                    self.codec.native_turn_id,
+                    params["operation_id"],
+                    params["turn_id"],
+                )
             if isinstance(self.codec, native_protocol.OpencodeAcpCodec):
                 # ACP: a cancelled turn's pending permission requests are answered `cancelled`.
                 # Taken in the same step as the cancel, before the turn's end can clear them.
@@ -967,7 +1110,12 @@ class Worker:
             self.flush()
             await self.listen()
             self.ready.set()
-            self.report(phase="ready", native_id=self.native_id, ready_at=time.time())
+            self.report(
+                phase="ready",
+                native_id=self.native_id,
+                ready_at=time.time(),
+                send_now=self.codec.send_now_mode,
+            )
             tasks.append(asyncio.create_task(self.idle_watch()))
             tasks.append(asyncio.create_task(self.dispatch_queue()))
         await self.done.wait()
