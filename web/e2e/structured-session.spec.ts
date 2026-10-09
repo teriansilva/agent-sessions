@@ -1265,3 +1265,75 @@ for (const theme of ["dark", "light"] as const) {
     });
   }
 }
+
+test("API transcript follows streaming growth only while at the bottom (#1379)", async ({ page }) => {
+  await setup(page, "dark");
+  const paragraphs = (count: number) => Array.from({ length: count }, (_, i) => `Progress paragraph ${i + 1}.`).join("\n\n");
+  let revision = 4;
+  let reply = paragraphs(90);
+  const turns = () => [turn({ state: "running", tools: [], reply })];
+  let extra: Json[] = [];
+  await serveSession(page, () => snapshot({ state: "running", active_turn: TURN, revision,
+    event_cursor: revision, turns: [...turns(), ...extra] }));
+  await page.goto(URL_PATH);
+  await expect(page.getByText("Progress paragraph 90.", { exact: true })).toBeVisible();
+  const log = page.getByTestId("structured-turn").first().locator("..");
+  const gap = () => log.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop);
+  await expect.poll(gap).toBeLessThanOrEqual(3);
+  reply = paragraphs(110); revision++;
+  await expect(page.getByText("Progress paragraph 110.", { exact: true })).toBeAttached();
+  await expect.poll(gap).toBeLessThanOrEqual(3);
+  await log.evaluate((el) => { el.scrollTop -= 400; });
+  await expect.poll(gap).toBeGreaterThan(390);
+  const reading = await log.evaluate((el) => el.scrollTop);
+  reply = paragraphs(120); revision++;
+  extra = [turn({ turn_id: "22222222-2222-4333-8444-555555555555", state: "queued", text: "Follow-up", reply: "", tools: [] })];
+  await expect(page.getByText("Follow-up", { exact: true })).toBeAttached();
+  await expect.poll(() => log.evaluate((el) => el.scrollTop)).toBe(reading);
+  await log.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+  await expect.poll(gap).toBeLessThanOrEqual(3);
+  reply = paragraphs(135); revision++;
+  await expect(page.getByText("Progress paragraph 135.", { exact: true })).toBeAttached();
+  await expect.poll(gap).toBeLessThanOrEqual(3);
+  // A slow upward drag can arrive as separate one-pixel scroll events.
+  await log.evaluate(async (el) => {
+    for (let i = 0; i < 6; i++) {
+      el.scrollTop -= 1;
+      await new Promise(requestAnimationFrame);
+      await new Promise(requestAnimationFrame);
+    }
+  });
+  await expect.poll(gap).toBeGreaterThan(5);
+  const slowReading = await log.evaluate((el) => el.scrollTop);
+  reply = paragraphs(136); revision++;
+  await expect(page.getByText("Progress paragraph 136.", { exact: true })).toBeAttached();
+  await expect.poll(() => log.evaluate((el) => el.scrollTop)).toBe(slowReading);
+  await log.evaluate((el) => new Promise<void>((resolve) => {
+    el.addEventListener("scroll", () => resolve(), { once: true });
+    el.scrollTop = el.scrollHeight;
+  }));
+  await expect.poll(gap).toBeLessThanOrEqual(3);
+  const viewport = page.viewportSize()!;
+  await page.setViewportSize({ width: viewport.width, height: viewport.height - 100 });
+  await expect.poll(gap).toBeLessThanOrEqual(3);
+  // Late layout growth (like a decoded image) changes height without a text/count mutation.
+  await page.getByTestId("structured-turn").first().evaluate((el) => { el.style.paddingBottom = "240px"; });
+  await expect.poll(gap).toBeLessThanOrEqual(3);
+  await log.evaluate((el) => { el.scrollTop -= 300; });
+  await expect.poll(gap).toBeGreaterThan(290);
+  const beforeResize = await log.evaluate((el) => el.scrollTop);
+  await page.getByTestId("structured-turn").first().evaluate((el) => { el.style.paddingBottom = "480px"; });
+  await expect.poll(() => log.evaluate((el) => el.scrollTop)).toBe(beforeResize);
+  // A new session starts pinned even when this one was left reading older content.
+  const nextId = "6b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f";
+  await page.route(new RegExp(`/api/structured/sessions/codex-api(?::|%3A)${nextId}`), (r) =>
+    r.fulfill({ json: snapshot({ session_key: `codex-api:${nextId}`, state: "running", active_turn: TURN,
+      turns: [turn({ state: "running", reply: paragraphs(100), tools: [] })] }) }),
+  );
+  await page.evaluate((path) => {
+    history.pushState({}, "", path);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  }, `/s/codex-api/${nextId}`);
+  await expect(page.getByText("Progress paragraph 100.", { exact: true })).toBeAttached();
+  await expect.poll(gap).toBeLessThanOrEqual(3);
+});

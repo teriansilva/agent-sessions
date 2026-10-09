@@ -11,7 +11,7 @@ import {
   Square,
   SquareDashedBottom,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ClipboardEvent as ReactClipboardEvent, KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 import { engineInfo, engineLabel, isAgent, useEngineRoster } from "../../app/engineRoster";
@@ -628,10 +628,43 @@ export function StructuredPane({
       ? deciding
       : null;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = logRef.current;
-    if (el && typeof el.scrollTo === "function") el.scrollTo({ top: el.scrollHeight });
-  }, [snap?.turns.length, snap?.pending_requests.length]);
+    if (!el) return;
+    let following = true;
+    let lastTop = el.scrollTop;
+    const follow = () => {
+      if (following) {
+        el.scrollTop = el.scrollHeight;
+        lastTop = el.scrollTop;
+      }
+    };
+    const onScroll = () => {
+      if (el.scrollHeight - el.clientHeight - el.scrollTop <= 4) following = true;
+      else if (el.scrollTop < lastTop) following = false;
+      // A delayed event from our own scroll can arrive after content grows again. An unchanged
+      // position is not the operator scrolling up, so it must not turn following off.
+      lastTop = el.scrollTop;
+    };
+    // Observe the transcript's children too: the scroll box keeps its height while a streamed
+    // reply or a delayed image grows. Browser anchoring preserves reading above the bottom.
+    const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(follow);
+    const observe = () => {
+      resize?.disconnect();
+      resize?.observe(el, { box: "border-box" });
+      for (const child of el.children) resize?.observe(child, { box: "border-box" });
+      follow();
+    };
+    const changes = new MutationObserver(observe);
+    changes.observe(el, { childList: true, characterData: true, subtree: true });
+    el.addEventListener("scroll", onScroll, { passive: true });
+    observe();
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      changes.disconnect();
+      resize?.disconnect();
+    };
+  }, [key, loadError]);
 
   const readOnly = !!snap?.read_only;
   // An unstarted (or expired) skip creation takes no message: nothing runs until Start (#1339).
