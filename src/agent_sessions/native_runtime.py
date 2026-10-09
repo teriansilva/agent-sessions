@@ -475,6 +475,7 @@ def _launch_locked(session_id: str, record: dict, prov, binding, *, mode: str) -
         home=str(Path.home()),
         runtime_dir=runtime if re.fullmatch(r"/run/user/[0-9]{1,10}", runtime) else None,
         tasks_max=policy["api_tasks"],
+        memory_gib=policy["api_memory_gib"],
     )
     launched = HOST.launch(argv)
     observation = HOST.show(worker)
@@ -1138,8 +1139,14 @@ def _journal(prov, session_id: str) -> native_journal.Journal:
         raise NativeError(404 if exc.code == "unavailable" else 503, exc.detail) from None
 
 
-def project(journal: native_journal.Journal, record: dict, live_worker: str | None) -> dict:
-    """The chat-shaped raw view the facade's ``_snapshot`` bounds and presents."""
+def project(
+    journal: native_journal.Journal,
+    record: dict,
+    live_worker: str | None,
+    *,
+    max_turns: int | None = None,
+) -> dict:
+    """Project only displayed turn payloads; transcript consumers may request every turn."""
     turns: dict[str, dict] = {}
     pending: dict[str, dict] = {}
     decided: set[str] = set()
@@ -1147,9 +1154,15 @@ def project(journal: native_journal.Journal, record: dict, live_worker: str | No
     model_effective = None
     background = False
     cwd = journal.header.get("cwd")
+    submits = [
+        op.operation_id for op in journal.operations.values() if op.request["action"] == "submit"
+    ]
+    selected = set(submits if max_turns is None else submits[-max_turns:])
     for op in journal.operations.values():
         params = op.request["params"]
         if op.request["action"] == "submit":
+            if op.operation_id not in selected:
+                continue
             turns[op.operation_id] = {
                 "turn_id": op.operation_id,
                 "status": "pending",
@@ -1169,7 +1182,8 @@ def project(journal: native_journal.Journal, record: dict, live_worker: str | No
         elif op.request["action"] == "decide":
             # Native request ids repeat (per turn / per connection): key by the exact callback.
             decided.add((params["approval_worker_id"], params["turn_id"], params["request_id"]))
-    for item in journal.events:
+    observations = journal.events if max_turns is None else journal.events.for_operations(selected)
+    for item in observations:
         kind, data = item["event"]["kind"], item["event"]["data"]
         turn = turns.get(data.get("operation_id") or "")
         if kind == "session" and data.get("native_id"):
@@ -1187,6 +1201,8 @@ def project(journal: native_journal.Journal, record: dict, live_worker: str | No
             ]:
                 pending.pop(exact)
         elif turn is None:
+            if kind == "turn_completed":
+                background = bool(data.get("background_active"))
             continue
         elif kind == "text":
             if data["partial"]:
@@ -1301,6 +1317,7 @@ def project(journal: native_journal.Journal, record: dict, live_worker: str | No
             turn.pop(key, None)
     return {
         "turns": list(turns.values()),
+        "omitted_turns": len(submits) - len(turns),
         "revision": journal.revision,
         "cwd": journal.header["cwd"],
         "in_flight": in_flight,
@@ -1368,7 +1385,11 @@ def _live_worker(session_id: str) -> str | None:
 def _snapshot_sync(engine_id: str, session_id: str) -> dict:
     # A read: it reaches a retiring client's history too (#1311). New work never does.
     prov, record = _session(engine_id, session_id, retiring_ok=True)
-    return project(_journal(prov, session_id), record, _live_worker(session_id))
+    from .structured_runtime import SNAPSHOT_TURNS
+
+    return project(
+        _journal(prov, session_id), record, _live_worker(session_id), max_turns=SNAPSHOT_TURNS
+    )
 
 
 # --- adapter operations ------------------------------------------------------------------------

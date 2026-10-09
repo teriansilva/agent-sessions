@@ -32,7 +32,7 @@ export type VisualPath = {
   prepare?:
     | "open-first-window"
     | "resource-controls"
-    | "resource-usage"
+    | "resource-advanced"
     | "playbook-flow";
 };
 
@@ -62,23 +62,22 @@ const SPA_MOUNTED = {
 export const VISUAL_PATHS: VisualPath[] = [
   {
     group: "authed",
-    path: "/settings/system",
+    path: "/settings/resources",
     name: "settings-resources",
-    description:
-      "Settings — finite next-launch resource budgets and environment overrides",
+    description: "Resources — next-launch API session memory allowance",
     requireAuth: "admin",
     prepare: "resource-controls",
     waitFor: { selector: "#resources-heading", timeoutMs: 12000 },
   },
   {
     group: "authed",
-    path: "/settings/system",
-    name: "settings-resource-usage",
+    path: "/settings/resources",
+    name: "settings-resources-advanced",
     description:
-      "Settings — observed running task budgets and inherited pressure",
+      "Resources — advanced process/thread budgets and environment overrides",
     requireAuth: "admin",
-    prepare: "resource-usage",
-    waitFor: { selector: "#resource-usage-heading", timeoutMs: 12000 },
+    prepare: "resource-advanced",
+    waitFor: { selector: "#resources-heading", timeoutMs: 12000 },
   },
   {
     group: "authed",

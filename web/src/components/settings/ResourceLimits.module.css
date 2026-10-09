@@ -22,13 +22,15 @@
   gap: 20px;
   margin: 20px 0;
 }
-.fields label {
+.fields label,
+.memory label {
   display: flex;
   flex-direction: column;
   gap: 8px;
   min-width: 0;
 }
-.fields input {
+.fields input,
+.memory input {
   min-height: 44px;
   min-width: 0;
   width: 100%;
@@ -38,7 +40,8 @@
   padding: 10px 12px;
   font: 15px var(--font-mono);
 }
-.fields small {
+.fields small,
+.memory small {
   color: var(--text-muted);
   line-height: 1.6;
 }
@@ -64,16 +67,12 @@
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
-.actions,
-.heading {
+.actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   flex-wrap: wrap;
   gap: 12px;
-}
-.actions {
-  justify-content: flex-start;
   margin: 20px 0;
 }
 .notice {
@@ -84,24 +83,6 @@
   font-size: 13px;
   line-height: 1.6;
   overflow-wrap: anywhere;
-}
-.group {
-  border-top: 1px solid var(--line-strong);
-  margin-top: 16px;
-  padding-top: 16px;
-  font-size: 13px;
-  line-height: 1.6;
-}
-.group[data-severity="critical"],
-.group[data-severity="warning"] {
-  border-left: 3px solid var(--status-degraded);
-  padding-left: 12px;
-}
-.unit {
-  display: block;
-  margin-top: 8px;
-  overflow-wrap: anywhere;
-  color: var(--text-muted);
 }
 .card summary {
   min-height: 44px;
@@ -125,4 +106,17 @@
   .actions button {
     flex: 1;
   }
+}
+
+.memory {
+  margin: 20px 0;
+  max-width: 32rem;
+}
+.advanced {
+  margin: 20px 0;
+}
+.advanced > summary {
+  min-height: 44px;
+  padding: 12px 0;
+  cursor: pointer;
 }

@@ -233,6 +233,8 @@ for (const width of [320, 412]) {
 
 /** Tab until `testId` has focus. Keyboard only: nothing here clicks. */
 async function tabTo(page: Page, testId: string, max = 200) {
+  // Lazy route loading can outlast the entire Tab loop on a busy runner.
+  await expect(page.getByTestId(testId)).toBeVisible();
   for (let i = 0; i < max; i++) {
     const at = await page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? "");
     if (at === testId) return;

@@ -335,10 +335,12 @@ systemd-run --user --scope --collect --quiet \
 | `AGENT_SESSIONS_SCOPE_PROPERTIES` | `TasksMax=4096` | Legacy space-separated systemd properties. Valid non-task properties are retained; missing/invalid TasksMax gets the finite default. A saved console task limit wins over the legacy task property. |
 | `AGENT_SESSIONS_SYSTEMD_RUN_BIN` | `systemd-run` | Override for tests/unusual installs. |
 
-Settings → System exposes console tasks (recommended **4096**), API worker tasks (**4096**),
-and background library threads (**8**). Task values accept 256–16384; library threads accept
-1–64. **Saving affects new launches only**, never attaches or running worker generations.
-The screen distinguishes next-launch settings from current cgroup limits and inherited pressure.
+Settings → Resources exposes the API session memory limit (default **8 GiB**, range **1–1024**),
+shared by the agent and its tools. Reaching it stops the whole worker generation. Advanced
+controls expose console tasks (**4096**), API worker tasks (**4096**), and background library
+threads (**8**). Task values accept 256–16384; library threads accept 1–64.
+**Saving affects new launches only**, never attaches or running worker generations.
+Usage observations remain available through the diagnostic API, rather than in Settings.
 
 Before a console task value is saved, a valid legacy `TasksMax` remains effective, including
 percentages and `infinity`; the UI labels it as an environment override. Saving explicitly

@@ -429,8 +429,8 @@ test.each([
 
 test("the registry and the pages agree: every section id renders something", () => {
   // A registry entry with no body in Settings.tsx would be a nav link to a blank page.
-  // 17 since the mission checklists moved out of Settings to Missions → Checklists.
-  expect(SETTINGS_SECTIONS).toHaveLength(17);
+  // Resources has its own submenu, separate from Host (#1386).
+  expect(SETTINGS_SECTIONS).toHaveLength(18);
 });
 
 // ---- Usage analytics (#1009) ----------------------------------------------------------------

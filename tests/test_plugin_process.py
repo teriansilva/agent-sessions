@@ -165,13 +165,15 @@ async def test_timeout_and_output_excess_stop_the_service(
     vendor, tmp_path, monkeypatch, user_manager
 ):
     prov, binary = vendor
-    monkeypatch.setattr(process, "PROBE_SECONDS", 1)
     binary.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(60)\n")
     start = time.monotonic()
-    with pytest.raises(TimeoutError):
-        async with process.spawn(prov, "version", cwd=tmp_path) as terminal:
-            await terminal.read()
+    with monkeypatch.context() as timeout:
+        timeout.setattr(process, "PROBE_SECONDS", 1)
+        with pytest.raises(TimeoutError):
+            async with process.spawn(prov, "version", cwd=tmp_path) as terminal:
+                await terminal.read()
     assert time.monotonic() - start < 8
+    # The next assertion tests output containment, independently of the short deadline.
     monkeypatch.setattr(process, "MAX_OUTPUT", 100)
     binary.write_text(f"#!{sys.executable}\nprint('x'*1000,flush=True)\n")
     with pytest.raises(process.ProcessError, match="output limit"):

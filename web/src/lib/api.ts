@@ -766,7 +766,7 @@ export const api = {
     ),
   /** Host/system info for the Settings → System card (fail-soft fields). */
   system: () => getJson<SystemInfo>("/api/system"),
-  resources: () => getJson<Resources>("/api/system/resources"),
+  resources: () => getJson<Pick<Resources, "settings">>("/api/system/resources?usage=false"),
   setResources: (body: Partial<ResourceValues>) => mutateJson<{ settings: ResourceSettings }>("POST", "/api/system/resources", body),
   /** Self-update: compare the running version to the channel's latest. */
   updateCheck: () => getJson<UpdateInfo>("/api/update/check"),

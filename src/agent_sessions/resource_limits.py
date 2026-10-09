@@ -13,8 +13,13 @@ from collections.abc import Mapping
 
 from . import prefs
 
-DEFAULTS = {"console_tasks": 4096, "api_tasks": 4096, "library_threads": 8}
-BOUNDS = {"console_tasks": (256, 16384), "api_tasks": (256, 16384), "library_threads": (1, 64)}
+DEFAULTS = {"console_tasks": 4096, "api_tasks": 4096, "library_threads": 8, "api_memory_gib": 8}
+BOUNDS = {
+    "console_tasks": (256, 16384),
+    "api_tasks": (256, 16384),
+    "library_threads": (1, 64),
+    "api_memory_gib": (1, 1024),
+}
 THREAD_VARIABLES = (
     "OPENBLAS_NUM_THREADS",
     "OMP_NUM_THREADS",
@@ -44,7 +49,7 @@ def values() -> dict[str, int]:
 
 def save(patch: object) -> None:
     if not isinstance(patch, dict) or not patch or patch.keys() - DEFAULTS.keys():
-        raise ValueError("expected console_tasks, api_tasks or library_threads")
+        raise ValueError("expected console_tasks, api_tasks, library_threads or api_memory_gib")
     for key, value in patch.items():
         if not valid(key, value):
             low, high = BOUNDS[key]

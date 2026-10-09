@@ -95,15 +95,24 @@ async function prepareOpenFirstWindow(page: Page): Promise<void> {
 async function runPrepare(page: Page, p: VisualPath): Promise<void> {
   if (p.prepare === "open-first-window") await prepareOpenFirstWindow(page);
   if (p.prepare === "playbook-flow") {
-    const section = page.getByRole("region", { name: "Flow steps", exact: true });
+    const section = page.getByRole("region", {
+      name: "Flow steps",
+      exact: true,
+    });
     await section.waitFor();
     await section.evaluate((el) => el.scrollIntoView({ block: "start" }));
   }
-  if (p.prepare === "resource-controls" || p.prepare === "resource-usage") {
-    await page.locator('#resources-heading + p').waitFor();
-    await page.getByLabel("Console session task limit").waitFor();
-    const heading = p.prepare === "resource-controls" ? "#resources-heading" : "#resource-usage-heading";
-    await page.locator(heading).evaluate((el) => el.scrollIntoView({ block: "start" }));
+  if (p.prepare === "resource-controls" || p.prepare === "resource-advanced") {
+    await page.getByLabel("API session memory limit (GiB)").waitFor();
+    if (p.prepare === "resource-advanced") {
+      await page
+        .getByText("Advanced process and thread limits", { exact: true })
+        .click();
+      await page.getByLabel("Console session task limit").waitFor();
+    }
+    await page
+      .locator("#resources-heading")
+      .evaluate((el) => el.scrollIntoView({ block: "start" }));
   }
 }
 

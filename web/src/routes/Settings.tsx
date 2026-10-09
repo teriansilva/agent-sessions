@@ -2548,7 +2548,8 @@ export function Settings() {
         {section === "security" && <SecurityPanel />}
         {section === "updates" && <UpdatesCard />}
         {section === "analytics" && <AnalyticsCard />}
-        {section === "system" && <><SystemCard /><ResourceLimits /></>}
+        {section === "system" && <SystemCard />}
+        {section === "resources" && <ResourceLimits />}
         {section === "maintenance" && (
           <>
             <CleanupCard />

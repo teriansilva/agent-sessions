@@ -401,7 +401,7 @@ def _snapshot(session_key: str, raw: dict) -> dict:
         # Configuration is a request, never proof of the model the endpoint actually executed.
         "model_effective": raw.get("model_effective"),
         "turns": turns,
-        "omitted_turns": max(0, len(all_turns) - len(turns)),
+        "omitted_turns": max(0, raw.get("omitted_turns", 0)) + max(0, len(all_turns) - len(turns)),
         "pending_requests": requests,
         **({"native": dict(raw["native"])} if "native" in raw else {}),
     }

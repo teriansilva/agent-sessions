@@ -481,9 +481,12 @@ def register(
         return JSONResponse({"sessions": await asyncio.to_thread(_collect)})
 
     @app.get("/api/system/resources")
-    async def resources_get(_: str = Depends(logged_in)) -> JSONResponse:
+    async def resources_get(usage: bool = True, _: str = Depends(logged_in)) -> JSONResponse:
         def collect():
-            return {"settings": resource_limits.settings(), "usage": resource_usage.collect()}
+            result = {"settings": resource_limits.settings()}
+            if usage:
+                result["usage"] = resource_usage.collect()
+            return result
 
         return JSONResponse(await asyncio.to_thread(collect))
 

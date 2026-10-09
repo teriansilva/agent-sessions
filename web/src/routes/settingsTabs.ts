@@ -37,6 +37,7 @@ export const SETTINGS_SECTIONS = [
   { id: "updates", label: "Updates", group: "system" },
   { id: "analytics", label: "Usage analytics", group: "system" },
   { id: "system", label: "Host", group: "system" },
+  { id: "resources", label: "Resources", group: "system" },
   { id: "maintenance", label: "Maintenance", group: "system" },
   { id: "about", label: "About", group: "about" },
 ] as const satisfies readonly {

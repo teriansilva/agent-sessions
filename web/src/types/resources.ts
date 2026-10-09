@@ -2,6 +2,7 @@ export type ResourceValues = {
   console_tasks: number;
   api_tasks: number;
   library_threads: number;
+  api_memory_gib: number;
 };
 export type ResourceSettings = {
   values: ResourceValues;

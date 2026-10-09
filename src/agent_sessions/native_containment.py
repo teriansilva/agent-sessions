@@ -145,6 +145,7 @@ def launch_argv(
     home: str,
     runtime_dir: str | None = None,
     tasks_max: int = resource_limits.DEFAULTS["api_tasks"],
+    memory_gib: int = resource_limits.DEFAULTS["api_memory_gib"],
 ) -> list[str]:
     """Build the one contained service command; no scope/passthrough fallback exists.
 
@@ -156,6 +157,8 @@ def launch_argv(
         raise ContainmentError("a reserved worker identity is required")
     if not resource_limits.valid("api_tasks", tasks_max):
         raise ContainmentError("invalid API worker task limit")
+    if not resource_limits.valid("api_memory_gib", memory_gib):
+        raise ContainmentError("invalid API session memory limit")
     environment = [
         f"HOME={_path(home)}",
         "PATH=/usr/local/bin:/usr/bin:/bin",
@@ -190,7 +193,7 @@ def launch_argv(
         "--property=TimeoutStopSec=15",
         "--property=RuntimeMaxSec=86400",
         f"--property=TasksMax={tasks_max}",
-        "--property=MemoryMax=8G",
+        f"--property=MemoryMax={memory_gib}G",
         "--property=OOMPolicy=kill",
         "--property=Delegate=no",
         "--property=NoNewPrivileges=yes",

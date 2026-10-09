@@ -227,6 +227,16 @@ def _append_fd(fd: int, data: bytes, *, repair_tail: bool = True) -> None:
 
 
 def read_shared(root: Path, session_id: str, *, max_bytes: int) -> bytes:
+    def read(fd, st):
+        raw = os.pread(fd, max_bytes + 1, 0)
+        if len(raw) != st.st_size:
+            raise ValueError("conversation changed while reading")
+        return raw
+
+    return observe_shared(root, session_id, read, max_bytes=max_bytes)
+
+
+def observe_shared(root: Path, session_id: str, read: Callable, *, max_bytes: int):
     """A consistent snapshot of a private bounded journal under a SHARED flock (#1278).
 
     Appends hold the exclusive lock, so this never observes a partial transaction. It applies
@@ -246,11 +256,16 @@ def read_shared(root: Path, session_id: str, *, max_bytes: int) -> bytes:
             or st.st_size > max_bytes
         ):
             raise ValueError("conversation is not a private bounded journal")
-        raw = os.pread(fd, max_bytes + 1, 0)
-        if len(raw) != st.st_size:
-            raise ValueError("conversation changed while reading")
         os.fsync(fd)
-        return raw
+        result = read(fd, st)
+        after = os.fstat(fd)
+        if (st.st_size, st.st_mtime_ns, st.st_ctime_ns) != (
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        ):
+            raise ValueError("conversation changed while reading")
+        return result
     finally:
         os.close(fd)
 

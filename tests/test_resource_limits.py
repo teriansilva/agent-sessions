@@ -32,6 +32,7 @@ def test_bad_settings_are_atomic(value):
         "console_tasks": 4096,
         "api_tasks": 4096,
         "library_threads": 4,
+        "api_memory_gib": 8,
     }
 
 
@@ -41,6 +42,41 @@ def test_bad_settings_are_atomic(value):
 def test_closed_schema(patch):
     with pytest.raises(ValueError):
         resource_limits.save(patch)
+
+
+@pytest.mark.parametrize("value", [True, "32", 0, -1, 1025, None, 8.5])
+def test_memory_limit_rejects_invalid_patch_atomically(value):
+    resource_limits.save({"api_memory_gib": 32})
+    with pytest.raises(ValueError):
+        resource_limits.save({"api_memory_gib": value, "library_threads": 4})
+    assert resource_limits.values()["api_memory_gib"] == 32
+    assert resource_limits.values()["library_threads"] == 8
+
+
+@pytest.mark.parametrize("value", [1, 32, 1024])
+def test_saved_memory_limit_becomes_one_fixed_launch_property(value):
+    resource_limits.save({"api_memory_gib": value})
+    command = native_containment.launch_argv(
+        native_containment.WorkerIdentity.mint(),
+        python="/bin/python",
+        home="/tmp",
+        state_dir="/tmp",
+        memory_gib=resource_limits.values()["api_memory_gib"],
+    )
+    assert [a for a in command if "MemoryMax=" in a] == [f"--property=MemoryMax={value}G"]
+    assert "--property=OOMPolicy=kill" in command
+
+
+def test_memory_launch_boundary_validates_independently():
+    for value in [True, "8G", 0, 1025]:
+        with pytest.raises(native_containment.ContainmentError):
+            native_containment.launch_argv(
+                native_containment.WorkerIdentity.mint(),
+                python="/bin/python",
+                home="/tmp",
+                state_dir="/tmp",
+                memory_gib=value,
+            )
 
 
 @pytest.mark.parametrize("legacy", ["512", "50%", "0.5%", "infinity", "18446744073709551614"])
@@ -204,6 +240,16 @@ def test_resource_routes_auth_validation_and_persistence(auth_cfg, monkeypatch):
         == 422
     )
     assert resource_limits.values()["console_tasks"] == 3072
+    assert (
+        c.post("/api/system/resources", headers=headers, json={"api_memory_gib": 32}).status_code
+        == 200
+    )
+    monkeypatch.setattr(
+        resource_usage, "collect", lambda: pytest.fail("settings read collected usage")
+    )
+    response = c.get("/api/system/resources?usage=false")
+    assert response.json()["settings"]["values"]["api_memory_gib"] == 32
+    assert "usage" not in response.json()
 
 
 @pytest.mark.parametrize("launch", [False, True])

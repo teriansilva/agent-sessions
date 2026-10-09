@@ -470,7 +470,7 @@ async def test_real_systemd_contains_and_stops_a_worker(tmp_home, tmp_path, proj
     """The production Host: a transient unit, a pinned invocation, cgroup-proved teardown."""
     from agent_sessions import resource_limits, resource_usage
 
-    resource_limits.save({"api_tasks": 512, "library_threads": 3})
+    resource_limits.save({"api_tasks": 512, "library_threads": 3, "api_memory_gib": 2})
     for name in resource_limits.THREAD_VARIABLES:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(native_runtime, "HOST", native_runtime.Host())
@@ -494,6 +494,7 @@ if 'app-server' in sys.argv:
         for peer in peers: peer.wait(timeout=5)
     evidence = {'before': before, 'after': (cg / 'pids.events').read_text(),
                 'maximum': (cg / 'pids.max').read_text().strip(), 'loaded': loaded,
+                'memory_maximum': (cg / 'memory.max').read_text().strip(),
                 'threads': os.environ.get('RAYON_NUM_THREADS')}
     pathlib.Path('resource-probe.json').write_text(json.dumps(evidence))
 """
@@ -521,8 +522,17 @@ if 'app-server' in sys.argv:
         assert observed["own"]["maximum"] == 512
         evidence = json.loads((project / "resource-probe.json").read_text())
         assert evidence["maximum"] == "512" and evidence["threads"] == "3"
+        assert evidence["memory_maximum"] == str(2 * 1024**3)
         assert evidence["before"] == evidence["after"] and evidence["loaded"] >= 10
-        resource_limits.save({"api_tasks": 2048})
+        resource_limits.save({"api_tasks": 2048, "api_memory_gib": 16})
+        assert (
+            int(
+                (
+                    Path("/sys/fs/cgroup") / life["control_group"].lstrip("/") / "memory.max"
+                ).read_text()
+            )
+            == 2 * 1024**3
+        )
         assert (
             resource_usage.observe(Path("/sys/fs/cgroup") / life["control_group"].lstrip("/"))[
                 "own"
@@ -894,7 +904,13 @@ async def test_an_unfinished_final_frame_is_discarded_not_completed(host, projec
     """Hermes on #1278: EOF synthesized a newline and completed a frame never finished."""
     key = await _codex(project)
     turn = ident()
-    await runtime.submit_turn(key, operation_id=turn, text="PARTIAL")
+    try:
+        await runtime.submit_turn(key, operation_id=turn, text="PARTIAL")
+    except runtime.StructuredError as exc:
+        # The injected EOF can end the worker before it flushes the RPC acknowledgement.
+        # Either acknowledgement outcome must leave the durable turn uncertain below;
+        # never turn a transport race into a test of whether the partial frame completed.
+        assert exc.status == 503 and "invalid frame" in exc.detail
     _, settled = await settle(key, turn, state=("uncertain",))
     assert settled["state"] == "uncertain"
     page = await runtime.events(key, after=0)
@@ -1226,12 +1242,13 @@ async def test_a_client_that_takes_no_pictures_refuses_them_before_anything_is_s
 async def test_resource_policy_is_frozen_per_generation(host, project, monkeypatch):
     from agent_sessions import resource_limits
 
-    resource_limits.save({"api_tasks": 1024, "library_threads": 3})
+    resource_limits.save({"api_tasks": 1024, "library_threads": 3, "api_memory_gib": 32})
     for name in resource_limits.THREAD_VARIABLES:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("OPENBLAS_NUM_THREADS", "1")
     created = await runtime.create_session("codex-api", str(project), operation_id=ident())
     assert "--property=TasksMax=1024" in host.launches[-1]
+    assert "--property=MemoryMax=32G" in host.launches[-1]
     key = created["session_key"]
     record = native_state.read_session(key.split(":", 1)[1])
     worker = record["current_worker"]
@@ -1239,8 +1256,15 @@ async def test_resource_policy_is_frozen_per_generation(host, project, monkeypat
     config = json.loads(path.read_text())
     assert config["thread_environment"]["RAYON_NUM_THREADS"] == "3"
     assert config["thread_environment"]["OPENBLAS_NUM_THREADS"] == "1"
-    resource_limits.save({"api_tasks": 2048, "library_threads": 12})
+    resource_limits.save({"api_tasks": 2048, "library_threads": 12, "api_memory_gib": 16})
     await runtime.probe(key)
     assert len(host.launches) == 1
     assert json.loads(path.read_text()) == config
     assert native_state.read_session(key.split(":", 1)[1])["current_worker"] == worker
+    host.kill(worker)
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="hello")
+    await settle(key, turn)
+    assert len(host.launches) == 2
+    assert "--property=MemoryMax=32G" in host.launches[0]
+    assert "--property=MemoryMax=16G" in host.launches[1]

@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 
@@ -785,6 +786,318 @@ def test_a_same_length_interior_rewrite_is_never_served_from_the_fold_cache(conv
     assert len(path.read_bytes()) == len(raw)
     folded = journal.read(root, session_id)
     assert folded.operations[operation_id].request["params"]["text"] == changed
+
+
+def test_unchanged_observation_skips_bytes_but_still_checks_privacy_and_fsync(
+    conversation, monkeypatch
+):
+    root, sid, binding = conversation
+    journal.claim(root, request(binding))
+    journal.read(root, sid)
+    inode = path_of(conversation).stat().st_ino
+    pread, fsync = os.pread, os.fsync
+    synced = []
+
+    def read(fd, *args):
+        assert os.fstat(fd).st_ino != inode, "unchanged observation reread the journal"
+        return pread(fd, *args)
+
+    def sync(fd):
+        synced.append(os.fstat(fd).st_ino)
+        return fsync(fd)
+
+    monkeypatch.setattr(os, "pread", read)
+    monkeypatch.setattr(os, "fsync", sync)
+    assert journal.read(root, sid).revision == 2
+    assert inode in synced
+    path_of(conversation).chmod(0o644)
+    with pytest.raises(journal.JournalError):
+        journal.read(root, sid)
+
+
+def test_restored_mtime_cannot_hide_rewritten_claim_from_read_or_replay(conversation):
+    root, sid, binding = conversation
+    claim = request(binding)
+    journal.claim(root, claim)
+    journal.read(root, sid)
+    path = path_of(conversation)
+    st = path.stat()
+    old = claim["params"]["text"]
+    path.write_bytes(path.read_bytes().replace(old.encode(), b"x" * len(old)))
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+    assert (
+        journal.read(root, sid)
+        .operations[claim["params"]["operation_id"]]
+        .request["params"]["text"]
+        != old
+    )
+    with pytest.raises(journal.JournalError, match="already binds"):
+        journal.claim(root, claim)
+
+
+def test_cached_observation_never_skips_effect_time_content_verification(conversation, monkeypatch):
+    root, sid, binding = conversation
+    claim = request(binding)
+    journal.claim(root, claim)
+    journal.read(root, sid)
+    inode = path_of(conversation).stat().st_ino
+    original = os.pread
+    reads = []
+
+    def read(fd, size, offset):
+        if os.fstat(fd).st_ino == inode:
+            reads.append((size, offset))
+        return original(fd, size, offset)
+
+    monkeypatch.setattr(os, "pread", read)
+    assert journal.claim(root, claim)[0] is False
+    assert reads and reads[0][1] == 0
+
+
+def test_event_payloads_spill_privately_and_old_snapshot_remains_immutable(conversation):
+    root, sid, binding = conversation
+    claim = request(binding)
+    journal.claim(root, claim)
+    operation = claim["params"]["operation_id"]
+    journal.append_events(root, binding, [event(operation, "large " * 1000)] * 100)
+    old = journal.read(root, sid)
+    assert old.events.memory_bytes < path_of(conversation).stat().st_size // 10
+    st = os.fstat(old.events._spool.file.fileno())
+    assert st.st_mode & 0o777 == 0o600 and st.st_nlink == 0
+    assert st.st_dev == root.stat().st_dev
+    page = old.page(0, 1)
+    journal.append_events(root, binding, [event(operation, "new")])
+    new = journal.read(root, sid)
+    assert len(old.events) == 100 and len(new.events) == 101
+    assert old.page(0, 1) == page
+    assert new.page(old.revision, 1)["events"][0]["data"]["text"] == "new"
+
+
+@pytest.mark.parametrize("budget", ["_CACHE_BYTES", "_CACHE_DISK_BYTES"])
+def test_byte_budget_eviction_preserves_old_event_pages_and_exact_replay(
+    conversation, monkeypatch, budget
+):
+    root, sid, binding = conversation
+    claim = request(binding)
+    _, receipt = journal.claim(root, claim)
+    journal.append_events(root, binding, [event(claim["params"]["operation_id"])])
+    expected = journal.read(root, sid).page(0)
+    monkeypatch.setattr(journal, budget, 1)
+    assert journal.read(root, sid).page(0) == expected
+    assert sid not in journal._CACHE
+    assert journal.claim(root, claim) == (False, receipt)
+
+
+def test_failed_preview_does_not_publish_events_to_cached_snapshot(conversation):
+    root, sid, binding = conversation
+    claim = request(binding)
+    journal.claim(root, claim)
+    before = journal.read(root, sid)
+    with pytest.raises(journal.JournalError):
+        journal.append_events(
+            root, binding, [event(claim["params"]["operation_id"]), event(str(uuid.uuid4()))]
+        )
+    assert len(before.events) == 0 and len(journal.read(root, sid).events) == 0
+
+
+def test_spilling_unicode_does_not_amplify_the_journals_byte_bound(conversation):
+    from agent_sessions import native_events
+
+    root, sid, binding = conversation
+    claim = request(binding)
+    journal.claim(root, claim)
+    operation = claim["params"]["operation_id"]
+    text = "é漢🙂" * 6000
+    journal.append_events(root, binding, [event(operation, text)] * 20)
+    view = journal.read(root, sid)
+    assert view.events.disk_bytes < path_of(conversation).stat().st_size
+    assert view.page(0, 1)["events"][0]["data"]["text"] == text
+    # A legacy JSON escape may decode to an unpaired surrogate; the derived cache
+    # preserves even that value rather than replacing it or failing a valid fold.
+    events = native_events.Events(root)
+    item = {"cursor": 1, "event": event(operation, "escaped \ud800")}
+    events.append(item)
+    assert events[0] == item
+
+
+def test_cached_read_observes_replacement_and_refuses_truncation(conversation):
+    root, sid, binding = conversation
+    claim = request(binding)
+    journal.claim(root, claim)
+    journal.read(root, sid)
+    path = path_of(conversation)
+    replacement = path.with_suffix(".replacement")
+    replacement.write_bytes(
+        path.read_bytes().replace(b"Inspect the project", b"Inspect new project")
+    )
+    replacement.chmod(0o600)
+    replacement.replace(path)
+    operation = claim["params"]["operation_id"]
+    assert journal.read(root, sid).operations[operation].request["params"]["text"] == (
+        "Inspect new project"
+    )
+    with pytest.raises(journal.JournalError):
+        journal.claim(root, claim)
+    path.write_bytes(path.read_bytes()[:-8])
+    with pytest.raises(journal.JournalError):
+        journal.read(root, sid)
+
+
+def test_concurrent_observers_and_appends_keep_complete_immutable_pages(conversation):
+    root, sid, binding = conversation
+    claim = request(binding)
+    journal.claim(root, claim)
+    operation = claim["params"]["operation_id"]
+    old = journal.read(root, sid)
+
+    def append():
+        for i in range(30):
+            journal.append_events(root, binding, [event(operation, str(i))])
+
+    def observe():
+        revision = 0
+        for _ in range(30):
+            view = journal.read(root, sid)
+            assert view.revision >= revision
+            revision = view.revision
+            rows = view.page(0)["events"]
+            assert [row["data"]["text"] for row in rows] == [str(i) for i in range(len(rows))]
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(append), *(pool.submit(observe) for _ in range(3))]
+        for future in futures:
+            future.result(timeout=30)
+    assert not old.page(0)["events"]
+    assert len(journal.read(root, sid).page(0)["events"]) == 30
+
+
+def test_spill_failure_never_commits_a_claim_and_recovery_preserves_history(
+    conversation, monkeypatch
+):
+    from agent_sessions import native_events
+
+    root, sid, binding = conversation
+    claim = request(binding)
+    journal.claim(root, claim)
+    journal.append_events(root, binding, [event(claim["params"]["operation_id"])])
+    before = path_of(conversation).read_bytes()
+    expected = journal.read(root, sid).page(0)
+    journal._CACHE.clear()
+
+    def fail(*args, **kwargs):
+        raise OSError("disk unavailable")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(native_events.tempfile, "TemporaryFile", fail)
+        with pytest.raises(journal.JournalError):
+            journal.read(root, sid)
+        with pytest.raises(journal.JournalError):
+            journal.claim(root, request(binding, revision=expected["revision"]))
+    assert path_of(conversation).read_bytes() == before
+    assert journal.read(root, sid).page(0) == expected
+    assert journal.claim(root, claim)[0] is False
+
+
+def test_full_derived_spool_rebuilds_without_losing_history(conversation):
+    root, sid, binding = conversation
+    claim = request(binding)
+    journal.claim(root, claim)
+    operation = claim["params"]["operation_id"]
+    journal.append_events(root, binding, [event(operation, "old")])
+    old = journal.read(root, sid)
+    old.events._spool.size = 128 * 1024 * 1024
+    journal.append_events(root, binding, [event(operation, "new")])
+    assert [row["data"]["text"] for row in journal.read(root, sid).page(0)["events"]] == [
+        "old",
+        "new",
+    ]
+    assert old.page(0)["events"][0]["data"]["text"] == "old"
+
+
+def test_bounded_projection_reads_recent_payloads_and_preserves_global_facts(
+    conversation, monkeypatch
+):
+    from agent_sessions import native_events, native_runtime, structured_runtime
+
+    root, sid, binding = conversation
+    turns = []
+    for i in range(55):
+        claim = request(binding, revision=journal.read(root, sid).revision)
+        journal.claim(root, claim)
+        turns.append(claim["params"]["operation_id"])
+        journal.append_events(root, binding, [event(turns[-1], f"answer {i}")])
+    journal.append_events(
+        root,
+        binding,
+        [
+            {
+                "kind": "session",
+                "data": {
+                    "native_id": "native-history",
+                    "model_configured": None,
+                    "model_effective": None,
+                },
+            },
+            {
+                "kind": "model",
+                "data": {
+                    "operation_id": turns[0],
+                    "native_turn_id": "old-turn",
+                    "model_effective": "effective-model",
+                },
+            },
+            {
+                "kind": "turn_completed",
+                "data": {
+                    "operation_id": turns[0],
+                    "native_turn_id": "old-turn",
+                    "state": "completed",
+                    "error": "",
+                    "background_active": True,
+                },
+            },
+            {
+                "kind": "approval",
+                "data": {
+                    "operation_id": turns[-1],
+                    "native_turn_id": "current-turn",
+                    "request_id": "s:current",
+                    "item_id": "current-item",
+                    "tool": "Read",
+                    "summary": "Read file",
+                    "choices": ["approve", "reject"],
+                    "payload_digest": "a" * 64,
+                    "worker_id": binding.worker_id,
+                    "connection_id": binding.connection_id,
+                    "complete": True,
+                },
+            },
+        ],
+    )
+    record = {"request": {"model": None}, "adapter": binding.adapter}
+    folded = journal.read(root, sid)
+    full = native_runtime.project(folded, record, binding.worker_id)
+    read_item = native_events.Events.__getitem__
+    read_turns = []
+
+    def counted(self, index):
+        item = read_item(self, index)
+        if item["event"]["kind"] == "text":
+            read_turns.append(item["event"]["data"].get("operation_id"))
+        return item
+
+    monkeypatch.setattr(native_events.Events, "__getitem__", counted)
+    limited = native_runtime.project(folded, record, binding.worker_id, max_turns=50)
+    assert limited["turns"] == full["turns"][-50:]
+    assert limited["omitted_turns"] == 5
+    assert limited["native"] == full["native"]
+    assert limited["native"]["background_active"] is True
+    assert limited["model_effective"] == full["model_effective"] == "effective-model"
+    assert limited["pending_requests"] == full["pending_requests"]
+    assert limited["pending_requests"][0]["request_id"] == "s:current"
+    assert limited["in_flight"] == full["in_flight"] == turns[-1]
+    assert not set(turns[:5]) & set(read_turns)
+    assert structured_runtime._snapshot(binding.session_key, limited)["omitted_turns"] == 5
 
 
 def test_a_decision_written_before_actor_binding_still_folds(conversation):

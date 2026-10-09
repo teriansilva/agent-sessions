@@ -165,6 +165,18 @@ the toggle is then disabled and says why.
 
 The host's OS, platform, CPU and load, memory, disk, uptime and Python version.
 
+### Resources · `resources`
+
+**API session memory limit** sets the combined memory allowance for an agent and its tools,
+in GiB (default **8**, range **1–1024**). Reaching the limit stops that session and its tools.
+Choose an allowance that fits your workload and server. A lower host limit still takes precedence.
+
+**Advanced process and thread limits** contains the console/API task budgets and background
+library thread default. Explicit host overrides are shown there.
+
+**Save limits** applies to new launches. Running sessions keep their existing limits and are
+not restarted. **Restore recommended** fills in defaults; save to apply them.
+
 ### Maintenance · `maintenance`
 
 - **Archive old sessions** — archive every session untouched for longer than a number of hours.
