@@ -11,6 +11,10 @@ link a playbook can ask for — an instruction alias such as `AGENTS.md` — is 
 
 Every open is `O_NOFOLLOW` relative to its parent's descriptor, so a component swapped for a link
 after it was listed fails the open instead of being followed.
+
+The installed-source reader alone may supply a code-pinned complete file inventory. Those
+release bytes can come from package-manager cache hard links; all other node and size rules
+still apply, and a hash/inventory mismatch refuses before validation or disclosure.
 """
 
 from __future__ import annotations
@@ -90,10 +94,19 @@ def check_segment(seg: str, where: str) -> None:
 
 
 class _Walk:
-    def __init__(self) -> None:
+    def __init__(self, installed_files: dict[str, str] | None = None) -> None:
         self.tree = Tree()
         self.entries = 0
         self.total = 0
+        self.installed_files = installed_files
+
+    def node_problem(self, st: os.stat_result, rel: str) -> str | None:
+        # uv may hard-link package data to its cache. Only an exact release inventory supplied
+        # by the installed-source reader can admit those files; their bytes are checked below.
+        nlink = (
+            1 if self.installed_files is not None and rel in self.installed_files else st.st_nlink
+        )
+        return node_problem(st.st_mode, nlink)
 
     def read_file(self, dir_fd: int, name: str, rel: str) -> None:
         try:
@@ -102,7 +115,7 @@ class _Walk:
             raise PlaybookFormatError(rel, f"cannot be opened ({e.strerror})") from None
         try:
             st = os.fstat(fd)
-            problem = node_problem(st.st_mode, st.st_nlink)
+            problem = self.node_problem(st, rel)
             if problem:
                 raise PlaybookFormatError(rel, problem)
             if not stat.S_ISREG(st.st_mode):
@@ -129,7 +142,11 @@ class _Walk:
         self.total += size
         if self.total > schema.MAX_TOTAL_BYTES:
             raise PlaybookFormatError("", f"bundle is larger than {schema.MAX_TOTAL_BYTES} bytes")
-        self.tree.files[rel] = b"".join(chunks)
+        data = b"".join(chunks)
+        if self.installed_files is not None:
+            if hashlib.sha256(data).hexdigest() != self.installed_files.get(rel):
+                raise PlaybookFormatError(rel, "does not match the installed release resource")
+        self.tree.files[rel] = data
 
     def walk(self, dir_fd: int, rel: str, depth: int) -> None:
         if depth > schema.MAX_TREE_DEPTH:
@@ -147,7 +164,7 @@ class _Walk:
                     "", f"bundle has more than {schema.MAX_TREE_ENTRIES} entries"
                 )
             st = _lstat_at(name, dir_fd)
-            problem = node_problem(st.st_mode, st.st_nlink)
+            problem = self.node_problem(st, child)
             if problem:
                 raise PlaybookFormatError(child, problem)
             if stat.S_ISDIR(st.st_mode):
@@ -179,16 +196,26 @@ def read_tree(root: str | os.PathLike) -> Tree:
         os.close(fd)
 
 
-def read_tree_at(dir_fd: int, name: str) -> Tree:
+def read_tree_at(dir_fd: int, name: str, *, installed_files: dict[str, str] | None = None) -> Tree:
     """``read_tree`` of the bundle directory ``name`` RELATIVE to ``dir_fd`` (``O_NOFOLLOW``): the
-    local playbook store reads its own root through the descriptor it holds, never a path string."""
+    local playbook store reads its own root through the descriptor it holds, never a path string.
+
+    Only the installed-source reader supplies `installed_files`: code-pinned hashes of every
+    file. Local/catalog callers omit it and always retain the single-link node policy."""
     try:
         fd = os.open(name, _DIR_FLAGS, dir_fd=dir_fd)
     except OSError as e:
         raise PlaybookFormatError("", f"bundle root cannot be opened ({e.strerror})") from None
     try:
-        w = _Walk()
+        w = _Walk(installed_files)
         w.walk(fd, "", 0)
+        if installed_files is not None:
+            dirs = {p.rpartition("/")[0] for p in installed_files if "/" in p}
+            dirs = {
+                "/".join(p.split("/")[:i]) for p in dirs for i in range(1, len(p.split("/")) + 1)
+            }
+            if set(w.tree.files) != set(installed_files) or w.tree.dirs != dirs:
+                raise PlaybookFormatError("", "does not match the installed release inventory")
         return w.tree
     finally:
         os.close(fd)

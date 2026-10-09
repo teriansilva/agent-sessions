@@ -829,7 +829,12 @@ def _entry_at(dir_fd: int, name: str, source: str) -> Entry:
     if not schema.PLAYBOOK_ID_RE.fullmatch(name):
         return Entry(name, source, error="the folder name is not a playbook id", addressable=False)
     try:
-        tree = read_tree_at(dir_fd, name)
+        pins = loader.installed_files_at(dir_fd, name) if source == SOURCE_BUNDLED else None
+        tree = (
+            read_tree_at(dir_fd, name, installed_files=pins)
+            if pins is not None
+            else read_tree_at(dir_fd, name)
+        )
     except PlaybookFormatError as e:
         return Entry(name, source, error=str(e))
     except (OSError, RecursionError, ValueError) as e:

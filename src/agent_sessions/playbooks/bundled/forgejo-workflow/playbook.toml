@@ -1,0 +1,83 @@
+format = 1
+verify = ["variables", "connections", "binaries"]
+
+[identity]
+id = "forgejo-workflow"
+name = "Forgejo workflow"
+publisher = "BattleLab"
+version = "1.0.0"
+domain = "development"
+summary = "Plan, implement, review with up to four fix rounds, merge, deploy and verify. Duplicate to customize; saving does not execute the flow."
+
+[[variables]]
+name = "forge_url"
+type = "url"
+label = "Forgejo address"
+required = true
+example = "https://forge.example.com"
+
+[[variables]]
+name = "repo"
+label = "Repository (owner/name)"
+required = true
+example = "example-org/example-project"
+
+[[variables]]
+name = "work_branch"
+label = "Implementation branch"
+required = true
+example = "feature/example-change"
+
+[[variables]]
+name = "reviewer_account"
+label = "Requested reviewer account"
+help = "For example, your Hermes account. This describes the reviewer; the merge step separately requires operator confirmation of that account's approval."
+required = true
+example = "reviewer-bot"
+
+[[variables]]
+name = "ci_trigger"
+label = "Review trigger"
+help = "Describe the existing CI/webhook trigger. This text does not install a webhook or execute a command."
+required = true
+example = "Request the reviewer after required validation succeeds"
+
+[[variables]]
+name = "deploy_workflow"
+label = "Deployment workflow filename"
+required = true
+example = "deploy.yml"
+
+[[variables]]
+name = "deploy_branch"
+label = "Deployment branch"
+required = true
+example = "main"
+
+[[variables]]
+name = "health_url"
+type = "url"
+label = "Live health endpoint"
+required = true
+example = "https://app.example.com/healthz"
+
+[[variables]]
+name = "revision_url"
+type = "url"
+label = "Live revision endpoint"
+help = "An endpoint reporting the deployed merge revision, not only a healthy status."
+required = true
+example = "https://app.example.com/api/version"
+
+[[connections]]
+name = "forge"
+kind = "forge"
+url = "{{forge_url}}"
+verify = "api"
+
+[requires]
+binaries = ["git"]
+connections = ["forge"]
+
+[flows]
+default = "issue-to-live"

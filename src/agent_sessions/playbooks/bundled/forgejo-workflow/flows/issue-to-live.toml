@@ -1,0 +1,115 @@
+format = 1
+title = "Issue to live"
+description = "A reusable Forgejo process with external review and bounded fixes. This is an authoring template; automatic flow execution is not available yet."
+
+[[steps]]
+id = "plan"
+title = "Plan the change"
+actor = { kind = "agent", engine = "codex", model = "default" }
+brief = "Write a scoped issue for {{repo}} on {{forge_url}}. Include the outcome, acceptance checks, architecture where needed, risks and exclusions. Resolve scope questions before implementation."
+
+[[steps.checklist]]
+key = "issue_ready"
+title = "The issue states the accepted scope and verifiable outcomes"
+probe = "supervisor_judged"
+
+[[steps]]
+id = "implement"
+title = "Implement and validate"
+actor = { kind = "agent", engine = "codex", model = "default" }
+after = ["plan"]
+brief = "Use an isolated checkout and branch {{work_branch}}. Implement the accepted issue, run relevant tests, document behavior and security impact, and open a pull request. Address review findings here and push a new head for fresh checks and review."
+outputs = ["pr_number", "head_branch", "head_sha"]
+
+[[steps.checklist]]
+key = "branch_ready"
+title = "The implementation is on its intended branch"
+probe = "git_local"
+probe_args = { branch = "{{work_branch}}" }
+
+[[steps.checklist]]
+key = "pr_open"
+title = "The branch has a pull request"
+probe = "forge_pr"
+probe_args = { repo = "{{repo}}", branch = "{{work_branch}}" }
+
+[[steps.checklist]]
+key = "checks_green"
+title = "All reported checks are green at the current head"
+probe = "forge_checks"
+probe_args = { repo = "{{repo}}", branch = "{{work_branch}}" }
+
+[[steps]]
+id = "review"
+title = "Independent review"
+actor = { kind = "external", label = "{{reviewer_account}}" }
+after = ["implement"]
+brief = "Request {{reviewer_account}} through the configured trigger: {{ci_trigger}}. Read the review and inline findings at the current head. Changes requested return to implementation, at most four times; after the cap ask the operator. Pending or missing review is not approval."
+distinct_from = [{ step = "implement", constraint = "session" }]
+rework = { to = "implement", when = "review_approved", max_rounds = 4 }
+
+[[steps.checklist]]
+key = "review_approved"
+title = "Authorized review approves the current head with no outstanding changes"
+probe = "forge_review"
+probe_args = { repo = "{{repo}}", branch = "{{steps.implement.head_branch}}" }
+
+[[steps]]
+id = "merge"
+title = "Confirm and merge"
+actor = { kind = "operator" }
+after = ["review"]
+brief = "Confirm that {{reviewer_account}} approved this exact head, every required check exists and passes, no hold or unresolved human review remains, and the repository permits this merge. The review probe does not filter by reviewer username. Merge only after those checks, then verify the forge reports it merged."
+
+[[steps.checklist]]
+key = "merge_authorized"
+title = "Operator confirms the requested reviewer's approval and all merge guards"
+probe = "none"
+
+[[steps.checklist]]
+key = "pr_merged"
+title = "The pull request is merged"
+probe = "forge_merged"
+probe_args = { repo = "{{repo}}", branch = "{{steps.implement.head_branch}}" }
+
+[[steps]]
+id = "deploy"
+title = "Approve and deploy"
+actor = { kind = "operator" }
+after = ["merge"]
+brief = "Obtain the required deployment approval, then use the existing {{deploy_workflow}} workflow on {{deploy_branch}}. Preserve rollback and report a failed or stalled rollout. No deployment is authorized merely by saving this playbook."
+
+[[steps.checklist]]
+key = "deployment_authorized"
+title = "Operator approves deployment to the intended environment"
+probe = "none"
+
+[[steps.checklist]]
+key = "deployment_succeeded"
+title = "The deployment workflow succeeds for the merged change"
+probe = "forge_run"
+probe_args = { repo = "{{repo}}", workflow = "{{deploy_workflow}}", branch = "{{deploy_branch}}" }
+
+[[steps]]
+id = "verify"
+title = "Verify the live change"
+actor = { kind = "none" }
+after = ["deploy"]
+brief = "Check both service health and the deployed revision. Record evidence of the requested behavior and any remaining limitation. A healthy response alone does not prove this change is live."
+
+[[steps.checklist]]
+key = "service_healthy"
+title = "The live service answers healthy"
+probe = "http_status"
+probe_args = { url = "{{health_url}}", expect_status = 200 }
+
+[[steps.checklist]]
+key = "merge_revision_live"
+title = "The observed merge revision is live"
+probe = "http_revision"
+probe_args = { url = "{{revision_url}}" }
+
+[[steps.checklist]]
+key = "behavior_verified"
+title = "Live evidence demonstrates the issue's accepted outcome"
+probe = "supervisor_judged"

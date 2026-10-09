@@ -1,0 +1,23 @@
+format = 1
+connections = []
+
+[identity]
+id = "research-brief"
+name = "Research brief"
+publisher = "BattleLab"
+version = "1.0.0"
+domain = "documents"
+summary = "Scope a question, draft with cited evidence, review independently with up to three revisions, and accept the result. Saving does not execute the flow."
+
+[[variables]]
+name = "research_question"
+label = "Research question"
+required = true
+
+[[variables]]
+name = "audience"
+label = "Intended audience"
+required = true
+
+[flows]
+default = "research"

@@ -46,6 +46,9 @@ whole fleet from a laptop or your phone.
   Duplicate bundled/catalog playbooks to local before editing. A conflicting save keeps the draft
   for comparison, saving as a new playbook, or explicit discard. Drafts live in this tab; cancel
   the leave/reload prompt to keep them. Saved projects retain their pinned playbook revision.
+- **Bundled playbooks.** The **Forgejo workflow** and **Research brief** offer starting points:
+  duplicate one to local to customize it. They describe bounded review/fix loops; saving does not
+  execute a flow. See the [playbooks guide](https://docs.battlelab.superstatus.io/guide/playbooks).
 - **Mission control.** A chat-first console over your work: a rail of *missions*, a thread per
   mission, and an objective list that says what "done" means before the work starts. It adopts
   sessions you started yourself, checks the objectives it can check, and follows through — nudging

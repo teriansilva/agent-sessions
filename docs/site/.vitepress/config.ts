@@ -144,6 +144,7 @@ export default defineConfig({
           { text: "Sessions", link: "/guide/sessions" },
           { text: "Terminal", link: "/guide/terminal" },
           { text: "Projects", link: "/guide/projects" },
+          { text: "Playbooks", link: "/guide/playbooks" },
           { text: "Files & git", link: "/guide/files-and-git" },
           { text: "Mission control", link: "/guide/missions" },
           { text: "Prompt Templates", link: "/guide/templates" },

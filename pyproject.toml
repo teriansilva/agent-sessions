@@ -58,7 +58,10 @@ where = ["src"]
 # The in-tree engine manifests (#853 P2) are package data for the same reason: the live roster is
 # built from them, so a wheel without them starts with no engines at all.
 [tool.setuptools.package-data]
-agent_sessions = ["agent_catalog.json", "templates/*.html", "plugins/first_party/*/plugin.toml", "plugins/feed-signers"]
+agent_sessions = [
+    "agent_catalog.json", "templates/*.html", "plugins/first_party/*/plugin.toml", "plugins/feed-signers",
+    "playbooks/bundled/*/*.toml", "playbooks/bundled/*/*.md", "playbooks/bundled/*/flows/*.toml",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

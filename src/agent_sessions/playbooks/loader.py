@@ -16,19 +16,54 @@ from pathlib import Path
 
 from . import schema
 from .errors import PlaybookFormatError
-from .tree import Tree, read_tree
+from .release_resources import FILES as RELEASE_FILES
+from .tree import Tree, read_tree, read_tree_at
 from .validate import is_note, validate_tree
 
 log = logging.getLogger(__name__)
 
-#: The in-tree source that ships with the release (#1096 §8's `bundled` source). Empty until the
-#: bundled playbooks land (P11, #1200); an absent directory lists as no playbooks.
+#: Read-only examples shipped with the release (#1376, #1200). An absent directory lists as no
+#: playbooks; installed-package tests pin that release bundles are present and valid.
 BUNDLED_ROOT = Path(__file__).resolve().parent / "bundled"
+_INSTALLED_ROOT = BUNDLED_ROOT
+
+
+def installed_files_at(dir_fd: int, name: str) -> dict[str, str] | None:
+    """Release pins only for a descriptor naming this installed package's resource directory.
+
+    A configured fixture/source path cannot opt in by calling itself bundled. The held source
+    descriptor must name the installed resource directory, and the inventory lives in code,
+    never in the bundle being read. No symlinks or other special nodes are admitted.
+    """
+    pinned = None
+    try:
+        installed = os.stat(_INSTALLED_ROOT, follow_symlinks=False)
+        held = os.fstat(dir_fd)
+        if (installed.st_dev, installed.st_ino) == (held.st_dev, held.st_ino):
+            pinned = RELEASE_FILES.get(name)
+    except FileNotFoundError:
+        pass
+    return pinned
+
+
+def read_bundled_tree_at(dir_fd: int, name: str) -> Tree:
+    """Read release-pinned cache links, or use the ordinary strict node policy."""
+    return read_tree_at(dir_fd, name, installed_files=installed_files_at(dir_fd, name))
 
 
 def load_bundle(path: str | os.PathLike) -> dict:
     """The normalized playbook at `path`, or `PlaybookFormatError`."""
-    return validate_named(read_tree(path), Path(path).name)
+    path = Path(path)
+    if path.parent != BUNDLED_ROOT:
+        return validate_named(read_tree(path), path.name)
+    try:
+        fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError as e:
+        raise PlaybookFormatError("", f"bundle source cannot be opened ({e.strerror})") from None
+    try:
+        return validate_named(read_bundled_tree_at(fd, path.name), path.name)
+    finally:
+        os.close(fd)
 
 
 def validate_named(tree: Tree, name: str) -> dict:
