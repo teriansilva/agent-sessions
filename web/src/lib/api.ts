@@ -636,7 +636,7 @@ export const api = {
     key: string,
     operation_id: string,
     text: string,
-    expected_revision: number,
+    expected_revision: number | undefined,
     attachments: string[] = [],
   ) =>
     mutateJson<{ state?: string }>("POST", `${structuredPath(key)}/turns`, {

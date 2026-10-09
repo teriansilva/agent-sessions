@@ -37,6 +37,10 @@ class StateError(RuntimeError):
     pass
 
 
+class LockBusy(StateError):
+    """Transient lifecycle contention; no admission decision has been made yet."""
+
+
 def _uuid(value: object, name: str = "identity") -> str:
     try:
         parsed = uuid.UUID(str(value))
@@ -99,7 +103,7 @@ def session_lock(session_id: str, *, wait: float = _LOCK_WAIT) -> Iterator[None]
                 break
             except BlockingIOError:
                 if time.monotonic() >= deadline:
-                    raise StateError("another native lifecycle operation is busy") from None
+                    raise LockBusy("another native lifecycle operation is busy") from None
                 time.sleep(0.02)
         yield
     finally:

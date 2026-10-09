@@ -4,7 +4,7 @@ import type { StructuredRequest, StructuredSnapshot } from "../../types/api";
 
 /** Turn states during which the agent is still working and the view keeps reading. */
 export function isActive(snap: StructuredSnapshot | null): boolean {
-  return !!snap && (snap.state === "running" || snap.state === "awaiting_approval");
+  return !!snap && (snap.state === "running" || snap.state === "awaiting_approval" || snap.state === "queued");
 }
 
 /** One row of a request card. EVERY top-level field of the payload becomes a row: the operator

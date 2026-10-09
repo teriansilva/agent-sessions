@@ -3,8 +3,8 @@
 Started only by ``native_runtime`` as ``python -I -m agent_sessions.native_worker`` inside a
 fresh transient systemd user service (``native_containment.launch_argv``). It is a protocol
 adapter: it owns the native CLI's stdin/stdout, the session writer locks and the durable
-journal records for its generation. It schedules nothing, judges nothing and stores no
-credentials of its own.
+journal records for its generation. It serializes queued operator messages, judges nothing
+and stores no credentials of its own.
 
 Lifecycle, in order (each step refuses rather than guesses):
 
@@ -185,6 +185,8 @@ class Worker:
         self.pending: list[dict] = []
         self.flush_now = asyncio.Event()
         self.effects = asyncio.Lock()
+        self.queued: list[dict] = []
+        self.queue_wake = asyncio.Event()
         self.ready = asyncio.Event()
         self.done = asyncio.Event()
         self.waiters: dict[str, asyncio.Future] = {}
@@ -375,7 +377,7 @@ class Worker:
             self.flush_now.clear()
             self.flush()
 
-    def busy(self) -> bool:
+    def native_busy(self) -> bool:
         codec = self.codec
         return (
             codec.operation_id is not None
@@ -383,6 +385,9 @@ class Worker:
             or bool(getattr(codec, "_background", None))
             or getattr(codec, "_session_state", None) in {"running", "requires_action"}
         )
+
+    def busy(self) -> bool:
+        return bool(self.queued) or self.native_busy()
 
     async def idle_watch(self) -> None:
         """Exit when nothing is running; a later turn resumes the history in a new generation."""
@@ -412,6 +417,85 @@ class Worker:
                 if waiter is not None and not waiter.done():
                     waiter.set_result(event)
         self.record(events)
+        self.queue_wake.set()
+
+    @contextlib.contextmanager
+    def queued_admission(self):
+        """Recheck the current generation and source at delayed stdin handoff (#1378)."""
+        from . import native_ownership
+        from .engines import registry
+        from .plugins import api_source, storage
+
+        with native_state.session_lock(self.session_id, wait=0), storage.locked("launch", wait=0):
+            if not self.gate_open() or self.terminated or self.closing:
+                raise WorkerError("this worker generation is closed")
+            with registry.snapshot_scope(fresh=True, require_current=True) as roster:
+                prov = roster.by_id.get(self.session_key.partition(":")[0])
+                if prov is None:
+                    raise WorkerError("the queued message's agent was removed")
+                binding = api_source.resolve(prov, roster=roster)
+                if (
+                    prov.manifest.api.kind != self.adapter
+                    or binding.source.engine_id != self.config["source_engine"]
+                    or binding.source.entrypoint_path() != self.config["binary"]
+                ):
+                    raise WorkerError("the queued message's agent changed")
+                owner = native_ownership.lookup(self.session_key)
+                if owner is None or owner.source != native_ownership.source_identity(
+                    binding.source
+                ):
+                    raise WorkerError("the queued message's source store changed")
+                yield
+
+    async def dispatch_queue(self) -> None:
+        """Only this live connection may drain its FIFO; a successor never replays it."""
+        from .plugins import storage
+
+        try:
+            while not self.done.is_set():
+                await self.queue_wake.wait()
+                self.queue_wake.clear()
+                retry = False
+                async with self.effects:
+                    while self.queued and not self.native_busy():
+                        if self.terminated or self.closing or self.done.is_set():
+                            return
+                        # Completion must be durable before the following turn can start.
+                        self.flush()
+                        if self.terminated:
+                            return
+                        params = self.queued[0]
+                        admitted = False
+                        try:
+                            with self.queued_admission():
+                                admitted = True
+                                self.queued.pop(0)
+                                await self.handoff("submit", params, queued=True)
+                        except (native_state.LockBusy, storage.LockBusy):
+                            if admitted:
+                                raise
+                            # Another session's launch is not a refusal. Keep the FIFO head
+                            # queued, then retry outside all locks so Stop stays responsive.
+                            retry = True
+                            break
+                        except Exception:
+                            # Admission failure proves non-send only BEFORE handoff.
+                            if admitted:
+                                raise
+                            self.queued.pop(0)
+                            await asyncio.to_thread(
+                                native_journal.record_handoff,
+                                self.journal_root,
+                                self.binding,
+                                params["operation_id"],
+                                "not_sent",
+                            )
+                if retry:
+                    await asyncio.sleep(0.1)
+                    self.queue_wake.set()
+        except Exception as exc:  # a queue/journal failure cannot permit further native writes
+            self.reason = f"queued message dispatch failed: {exc}"
+            self.stop_child()
 
     async def lines(self):
         """Complete native lines, bounded. An oversized line is DROPPED, not fatal.
@@ -646,7 +730,7 @@ class Worker:
         action, params = request["action"], request["params"]
         async with self.effects:
             self.last_activity = time.monotonic()
-            if self.closing and action != "stop":
+            if (self.closing or self.terminated) and action != "stop":
                 return self.error(request, "unavailable", SHUTTING_DOWN)
             if action != "stop" and not self.gate_open():
                 return self.error(request, "stale", "this worker generation is closed")
@@ -688,54 +772,71 @@ class Worker:
                     )
             if action == "interrupt" and self.codec.operation_id != params["turn_id"]:
                 return self.error(request, "stale", "that turn is not active")
+            queued = action == "submit" and self.busy()
             try:
                 fresh, receipt = await asyncio.to_thread(
-                    native_journal.claim, self.journal_root, request
+                    native_journal.claim, self.journal_root, request, queued=queued
                 )
             except native_journal.JournalError as exc:
                 return self.error(
                     request,
-                    exc.code if exc.code in {"conflict", "invalid"} else "unavailable",
+                    exc.code if exc.code in {"conflict", "invalid", "busy"} else "unavailable",
                     exc.detail,
                 )
             if not fresh:
                 return self.receipt(request, receipt)
-            try:
-                frame = self.frame(action, params)
-            except native_protocol.ProtocolError:
-                frame = None
-            if frame is None:
-                receipt = await asyncio.to_thread(
-                    native_journal.record_handoff,
-                    self.journal_root,
-                    self.binding,
-                    params["operation_id"],
-                    "not_sent",
-                )
-                if action == "stop":
-                    receipt = {**receipt, "containment": "unknown"}
-                    self.stop_child()
+            if queued:
+                self.queued.append(params)
+                self.queue_wake.set()
                 return self.receipt(request, receipt)
-            try:
-                await self.write(frame)
-            except (OSError, ConnectionError, AssertionError, TimeoutError):
-                self.after_write = []
-                self.stop_child()  # a half-written frame leaves the protocol unusable
-                return self.receipt(request, receipt)  # stays "uncertain": never resent
+            return self.receipt(request, await self.handoff(action, params, receipt=receipt))
+
+    async def handoff(self, action: str, params: dict, *, receipt=None, queued=False) -> dict:
+        try:
+            frame = self.frame(action, params)
+        except native_protocol.ProtocolError:
+            frame = None
+        if frame is None:
             receipt = await asyncio.to_thread(
                 native_journal.record_handoff,
                 self.journal_root,
                 self.binding,
                 params["operation_id"],
-                "sent",
+                "not_sent",
             )
-            after, self.after_write = self.after_write, []
-            if after:
-                try:
-                    await self.handle_events(after)
-                except (OSError, ConnectionError, AssertionError, TimeoutError):
-                    self.stop_child()
-            return self.receipt(request, receipt)
+            if action == "stop":
+                receipt = {**receipt, "containment": "unknown"}
+                self.stop_child()
+            return receipt
+        if queued:
+            # The durable boundary: after this fsync, a crash can NEVER imply safe replay.
+            receipt = await asyncio.to_thread(
+                native_journal.record_handoff,
+                self.journal_root,
+                self.binding,
+                params["operation_id"],
+                "uncertain",
+            )
+        try:
+            await self.write(frame)
+        except (OSError, ConnectionError, AssertionError, TimeoutError):
+            self.after_write = []
+            self.stop_child()
+            return receipt  # remains uncertain: a half-written frame is never resent
+        receipt = await asyncio.to_thread(
+            native_journal.record_handoff,
+            self.journal_root,
+            self.binding,
+            params["operation_id"],
+            "sent",
+        )
+        after, self.after_write = self.after_write, []
+        if after:
+            try:
+                await self.handle_events(after)
+            except (OSError, ConnectionError, AssertionError, TimeoutError):
+                self.stop_child()
+        return receipt
 
     def frame(self, action: str, params: dict) -> dict | None:
         if action == "submit":
@@ -868,6 +969,7 @@ class Worker:
             self.ready.set()
             self.report(phase="ready", native_id=self.native_id, ready_at=time.time())
             tasks.append(asyncio.create_task(self.idle_watch()))
+            tasks.append(asyncio.create_task(self.dispatch_queue()))
         await self.done.wait()
         if self.proc is not None:
             with contextlib.suppress(asyncio.TimeoutError):

@@ -82,10 +82,10 @@ function snap(over: Partial<StructuredSnapshot> = {}): StructuredSnapshot {
   };
 }
 
-function renderPane() {
+function renderPane(engine = "codex-api") {
   return render(
     <MemoryRouter>
-      <StructuredPane engine="codex-api" id={ID} />
+      <StructuredPane engine={engine} id={ID} />
     </MemoryRouter>,
   );
 }
@@ -290,6 +290,49 @@ test("a send with an unknown outcome reuses its operation id on retry", async ()
   const [a, b] = vi.mocked(api.structuredSubmit).mock.calls;
   expect(b[1]).toBe(a[1]);
   expect(b[2]).toBe("hello");
+});
+
+test.each(["codex-api", "claude-api", "opencode-api"])("%s queues two follow-ups without interrupting its active turn (#1378)", async (engine) => {
+  const running = turn({ state: "running", reply: "Working" });
+  let current = snap({ session_key: `${engine}:${ID}`, state: "running", active_turn: running.turn_id, turns: [running] });
+  vi.mocked(api.structuredSnapshot).mockImplementation(async () => current);
+  vi.mocked(api.structuredSubmit).mockImplementation(async (_key, id, text) => {
+    current = { ...current, revision: current.revision + 1, turns: [...current.turns,
+      turn({ turn_id: id, operation_id: id, text, reply: "", state: "queued" })] };
+    return { state: "queued" };
+  });
+  renderPane(engine);
+  const box = await screen.findByRole("textbox");
+  for (const text of ["next task", "then report"]) {
+    await userEvent.type(box, text);
+    expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(box).toHaveValue(""));
+  }
+  expect(screen.getAllByTestId("structured-queued")).toHaveLength(2);
+  expect(screen.getAllByRole("button", { name: "Interrupt" })).toHaveLength(1);
+  expect(api.structuredInterrupt).not.toHaveBeenCalled();
+  const calls = vi.mocked(api.structuredSubmit).mock.calls;
+  expect(calls.map((args) => args[3])).toEqual([undefined, undefined]);
+  expect(calls[0][1]).not.toBe(calls[1][1]);
+});
+
+test("a lost queued response clears input only when the snapshot proves acceptance (#1378)", async () => {
+  const running = turn({ state: "awaiting_approval", reply: "" });
+  let current = snap({ state: "awaiting_approval", active_turn: running.turn_id, turns: [running] });
+  vi.mocked(api.structuredSnapshot).mockImplementation(async () => current);
+  vi.mocked(api.structuredSubmit).mockImplementation(async (_key, id, text) => {
+    current = { ...current, revision: 5, turns: [...current.turns,
+      turn({ turn_id: id, operation_id: id, text, reply: "", state: "queued" })] };
+    throw new TypeError("response lost");
+  });
+  renderPane();
+  const box = await screen.findByRole("textbox");
+  await userEvent.type(box, "after approval{enter}");
+  await screen.findByTestId("structured-queued");
+  expect(box).toHaveValue("");
+  expect(api.structuredSubmit).toHaveBeenCalledTimes(1);
+  expect(api.structuredInterrupt).not.toHaveBeenCalled();
 });
 
 test("a lost connection says the turn keeps running and resumes from the cursor", async () => {

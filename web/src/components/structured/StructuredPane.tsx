@@ -403,6 +403,11 @@ function TurnView({
           </div>
         </div>
       )}
+      {turn.state === "queued" && (
+        <div className={chat.wait} data-testid="structured-queued" role="status">
+          Queued · sends after earlier turns
+        </div>
+      )}
       {active && (
         <div className={chat.wait} data-testid="structured-working">
           <span className={chat.bars} aria-hidden="true">
@@ -670,7 +675,7 @@ export function StructuredPane({
     }
     const text = draft.trim();
     const names = attachments.map((a) => a.stored);
-    if ((!text && !names.length) || busy || active || readOnly || !snap) return;
+    if ((!text && !names.length) || busy || readOnly || !snap) return;
     if (slots.current.inFlight > 0 || sending.current) return; // a picture is still on its way
     const attempt = operationFor(op.current, sendIdentity(text, names), uuid);
     op.current = attempt;
@@ -693,7 +698,9 @@ export function StructuredPane({
     setBusy(true);
     setSendError(null);
     try {
-      await api.structuredSubmit(key, attempt.id, text, snap.revision, names);
+      // Streaming observations advance revision continuously; a queued operator message binds
+      // its immutable operation ID, not a snapshot of the turn that is still running.
+      await api.structuredSubmit(key, attempt.id, text, active ? undefined : snap.revision, names);
       sent();
       op.current = null;
       setDraft("");
@@ -1434,7 +1441,7 @@ export function StructuredPane({
                 : notStarted
                   ? "Start this session first"
                   : active
-                    ? `${agent} is working — your next message waits for this turn`
+                    ? `Message ${agent} — sends after earlier turns.`
                     : `Message ${agent} — Enter sends, Shift+Enter = newline.`
             }
             value={draft}
@@ -1494,7 +1501,6 @@ export function StructuredPane({
               notStarted ||
               busy ||
               uploading ||
-              active ||
               !snap ||
               (!draft.trim() && attachments.length === 0)
             }

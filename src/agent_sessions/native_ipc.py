@@ -550,7 +550,7 @@ def _result(action, value):
         out = {
             "operation_id": _uuid(value["operation_id"]),
             "recorded_revision": _integer(value["recorded_revision"], minimum=1),
-            "handoff": _choice(value["handoff"], {"not_sent", "sent", "uncertain"}),
+            "handoff": _choice(value["handoff"], {"queued", "not_sent", "sent", "uncertain"}),
         }
         if "containment" in value:
             out["containment"] = _choice(value["containment"], {"live", "gone", "unknown"})

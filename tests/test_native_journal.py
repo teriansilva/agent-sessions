@@ -130,6 +130,46 @@ def test_claim_is_private_and_fsynced_before_caller_can_handoff(conversation, mo
     assert journal.read(root, session_id).revision == 2
 
 
+def test_queue_is_durable_and_requires_prewrite_transition(conversation):
+    root, sid, binding = conversation
+    claim = request(binding)
+    fresh, receipt = journal.claim(root, claim, queued=True)
+    assert fresh and receipt["handoff"] == "queued"
+    journal._CACHE.clear()  # a reload must preserve the explicit non-handoff state
+    assert journal.read(root, sid).operations[receipt["operation_id"]].handoff == "queued"
+    assert journal.claim(root, claim, queued=True) == (False, receipt)
+    with pytest.raises(journal.JournalError):
+        journal.record_handoff(root, binding, receipt["operation_id"], "sent")
+    uncertain = journal.record_handoff(root, binding, receipt["operation_id"], "uncertain")
+    journal._CACHE.clear()
+    assert journal.claim(root, claim, queued=True) == (False, uncertain)
+    with pytest.raises(journal.JournalError):
+        journal.record_handoff(root, binding, receipt["operation_id"], "queued")
+    with pytest.raises(journal.JournalError):
+        journal.record_handoff(
+            root, replace(binding, worker_id=str(uuid.uuid4())), receipt["operation_id"], "sent"
+        )
+
+
+@pytest.mark.parametrize("bound", ["MAX_QUEUED", "MAX_QUEUE_BYTES"])
+def test_full_queue_refuses_without_claim_and_still_replays(conversation, monkeypatch, bound):
+    root, sid, binding = conversation
+    first = request(binding)
+    _, receipt = journal.claim(root, first, queued=True)
+    monkeypatch.setattr(journal, bound, 1)
+    next_request = request(binding, revision=2)
+    with pytest.raises(journal.JournalError, match="queue is full"):
+        journal.claim(root, next_request, queued=True)
+    assert next_request["params"]["operation_id"] not in journal.read(root, sid).operations
+    assert journal.claim(root, first, queued=True) == (False, receipt)
+
+
+def test_only_submits_can_wait_in_queue(conversation):
+    root, _, binding = conversation
+    with pytest.raises(journal.JournalError, match="only operator"):
+        journal.claim(root, request(binding, action="interrupt"), queued=True)
+
+
 def test_exact_replay_precedes_stale_revision_and_new_current_envelope(conversation):
     root, session_id, binding = conversation
     claim = request(binding)

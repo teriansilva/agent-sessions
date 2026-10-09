@@ -1242,7 +1242,18 @@ def project(journal: native_journal.Journal, record: dict, live_worker: str | No
         if not turn["reply"]:
             turn["reply"] = turn["partial"]
         if turn["handoff"] == "not_sent":
-            turn["status"], turn["reason"] = "failed", "the agent did not accept this turn"
+            turn["status"], turn["reason"] = (
+                "failed",
+                "not sent: the agent did not accept this turn",
+            )
+        elif turn["handoff"] == "queued":
+            if turn["worker_id"] == live_worker:
+                turn["status"] = "queued"
+            else:
+                turn["status"] = "failed"
+                turn["reason"] = (
+                    "not sent: the native worker stopped before this queued message ran"
+                )
         elif not turn["completed"] and turn["status"] == "pending":
             if turn["worker_id"] != live_worker:
                 turn["status"], turn["code"] = "failed", "uncertain"

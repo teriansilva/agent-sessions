@@ -616,6 +616,11 @@ def test_launch_site_inventory_requires_review_when_another_route_can_spawn():
         # console launch takes (`Worker.store_admission`, asserted below and in
         # test_native_opencode), held through process creation.
         ("native_runtime.py", "entrypoint_path"): 2,
+        # #1378: delayed queue dispatch re-resolves the admitted source and COMPARES its binary
+        # path to this worker's pinned config. It executes nothing and cannot spawn a successor.
+        # The two process-creation sites below stay unchanged; provider revocation before queue
+        # dispatch is exercised for all three protocols in test_native_queue.
+        ("native_worker.py", "entrypoint_path"): 1,
         # …and builds the fixed systemd worker command (`native_containment.launch_argv`),
         # which starts BattleLab's own worker, never a provider's console argv.
         ("native_runtime.py", "launch_argv"): 1,

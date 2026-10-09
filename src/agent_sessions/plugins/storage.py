@@ -27,6 +27,10 @@ class StateError(ValueError):
     pass
 
 
+class LockBusy(StateError):
+    """Transient lock contention, distinct from an invalid or unreadable state."""
+
+
 @contextlib.contextmanager
 def directory(path: Path) -> Iterator[int]:
     path = path.absolute()
@@ -87,7 +91,7 @@ def locked(name: str, *, wait: float = 2) -> Iterator[Path]:
                     break
                 except BlockingIOError:
                     if time.monotonic() >= deadline:
-                        raise StateError("another plugin operation is busy") from None
+                        raise LockBusy("another plugin operation is busy") from None
                     time.sleep(0.02)
             yield path
         finally:

@@ -10,6 +10,7 @@ Behaviour is selected by the turn text, so a test drives it purely through the p
 * ``RUN:<command>`` — run one command tool call without asking (a skip-permissions session's
   tool row, #1339), then reply ``ran``.
 * ``HANG``    — start the turn and never finish it (for interrupt / worker death).
+* ``WAIT_RELEASE`` — finish normally after the test creates ``release-queued-turn``.
 * ``DIE``     — exit right after accepting the turn (native crash mid-turn).
 * anything else — stream a reply ``echo:<text>`` and complete.
 
@@ -38,6 +39,14 @@ def log(frame):
 def send(frame):
     sys.stdout.write(json.dumps(frame) + "\n")
     sys.stdout.flush()
+
+
+def wait_release(text):
+    if text == "WAIT_RELEASE":
+        # A failed assertion may kill the test worker first; never leave its fake child waiting.
+        deadline = time.monotonic() + 10
+        while not os.path.exists("release-queued-turn") and time.monotonic() < deadline:
+            time.sleep(0.01)
 
 
 def frames():
@@ -120,6 +129,7 @@ def codex():
                 sys.exit(9)
             if text == "HANG":
                 continue
+            wait_release(text)
             if text == "PARTIAL":
                 done = {"threadId": thread, "turn": {"id": turn, "status": "completed"}}
                 sys.stdout.write(json.dumps({"method": "turn/completed", "params": done}))
@@ -349,6 +359,7 @@ def claude():
                 sys.exit(9)
             if text == "HANG":
                 continue
+            wait_release(text)
             answer = "echo:" + text
             if text == "APPROVE":
                 send(
@@ -693,6 +704,7 @@ def opencode():
                 if text == "HANG_APPROVE":
                     ask({"toolCallId": "call-h", "kind": "execute", "title": "sleep"}, [ONCE])
                 continue
+            wait_release(text)
             if text == "FAIL":
                 send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32603, "message": "boom"}})
                 prompt = None

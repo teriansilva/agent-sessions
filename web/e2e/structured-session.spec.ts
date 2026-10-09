@@ -116,6 +116,48 @@ async function noOverflow(page: Page) {
   expect(overflow).toBeLessThanOrEqual(0);
 }
 
+for (const engine of ["codex-api", "claude-api", "opencode-api"]) {
+  test(`${engine}: sends follow-ups while working without interrupting (#1378)`, async ({ page }) => {
+    await setup(page, "dark", [engine]);
+    await mockRoster(page, { overrides: { [engine]: { present: true, supports_new: true } } });
+    const session = new RegExp(`/api/structured/sessions/${engine}(?::|%3A)${ID}(/[a-z]+)?(\\?.*)?$`);
+    const running = turn({ state: "running", reply: "Checking…" });
+    const turns: Json[] = [running];
+    let revision = 4;
+    const mutations: string[] = [];
+    await page.route(session, async (r) => {
+      const sub = r.request().url().match(session)?.[1] ?? "";
+      if (r.request().method() === "POST") mutations.push(sub);
+      if (sub === "/turns") {
+        const body = r.request().postDataJSON() as Json;
+        const queued = turn({ turn_id: body.operation_id, operation_id: body.operation_id,
+          text: body.text, state: "queued", reply: "", tools: [] });
+        turns.push(queued); revision++;
+        return r.fulfill({ json: queued });
+      }
+      if (sub === "/events") return r.fulfill({ json: { revision, next_cursor: revision, events: [] } });
+      return r.fulfill({ json: snapshot({ session_key: `${engine}:${ID}`, revision, event_cursor: revision,
+        state: "running", active_turn: TURN, turns }) });
+    });
+    await page.goto(`/s/${engine}/${ID}`);
+    const box = page.getByRole("textbox", { name: /^Message / });
+    await box.fill("Check parallel sessions too");
+    await expect(page.getByRole("button", { name: "Send", exact: true })).toBeEnabled();
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await expect(page.getByTestId("structured-queued")).toHaveCount(1);
+    await expect(box).toHaveValue("");
+    await box.fill("Include all API agents");
+    await box.press("Enter");
+    await expect(page.getByTestId("structured-queued")).toHaveCount(2);
+    await page.reload();
+    await expect(page.getByTestId("structured-queued")).toHaveCount(2);
+    expect(mutations).toEqual(["/turns", "/turns"]);
+    await expect(page.getByRole("button", { name: "Interrupt", exact: true })).toHaveCount(1);
+    await noOverflow(page);
+  });
+}
+
+
 async function targets(page: Page, scope: ReturnType<Page["getByTestId"]>) {
   for (const b of await scope.getByRole("button").all()) {
     const box = (await b.boundingBox())!;

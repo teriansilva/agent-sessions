@@ -1303,6 +1303,7 @@ export interface UnavailableClient {
 // ---- Structured sessions (#1275 / #1278 / #1311) ------------------------------------------------
 
 export type StructuredTurnState =
+  | "queued"
   | "running"
   | "awaiting_approval"
   | "completed"

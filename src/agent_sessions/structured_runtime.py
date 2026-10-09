@@ -306,6 +306,8 @@ def _outcome(turn: dict) -> str:
         return "completed"
     if status == "pending":
         return "running"
+    if status == "queued":
+        return "queued"
     if status == "awaiting_approval":
         return "awaiting_approval"
     if status == "failed":

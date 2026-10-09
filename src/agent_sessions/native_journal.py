@@ -1,8 +1,9 @@
 """Durable native operation claims in the existing conversation JSONL (#1278).
 
 This is a strict projection of chat_store, not another message store or executor. The worker
-claims an immutable request before writing native stdin. A claim alone means uncertain: a
-crash between stdin and its journal receipt cannot prove whether the agent received it.
+claims an immutable request before writing native stdin. An immediate claim means uncertain:
+a crash between stdin and its journal receipt cannot prove whether the agent received it.
+Queued operator turns explicitly remain unsent until a durable transition to uncertain.
 Replays only observe; even a proved not-sent operation needs a new UUID for another attempt.
 
 Callbacks are never reconstructed from these events. Worker ownership, current source/API
@@ -28,7 +29,9 @@ from . import chat_store, native_ipc
 MAX_BYTES = 64 * 1024 * 1024
 MAX_RECORDS = 100_000
 MAX_LINE_BYTES = native_ipc.MAX_FRAME_BYTES
-HANDOFFS = frozenset({"uncertain", "sent", "not_sent"})
+HANDOFFS = frozenset({"queued", "uncertain", "sent", "not_sent"})
+MAX_QUEUED = 32
+MAX_QUEUE_BYTES = 4 * 1024 * 1024
 
 
 class JournalError(ValueError):
@@ -235,16 +238,23 @@ def _fold_lines(journal: Journal, lines: list[bytes], first_cursor: int) -> None
         _timestamp(record.get("ts"))
         kind = record.get("type")
         try:
-            if kind == "native_operation":
+            if kind in {"native_operation", "native_queued"}:
                 _fields(
                     record, {"type", "operation_id", "request", "worker_id", "connection_id", "ts"}
                 )
                 operation_id = _uuid(record["operation_id"])
                 request = native_ipc.normalize_immutable_request(record["request"])
+                if kind == "native_queued" and request["action"] != "submit":
+                    raise JournalError("unavailable", "only operator turns can be queued")
                 if operation_id in journal.operations:
                     raise JournalError("unavailable", "duplicate native operation claim")
                 journal.operations[operation_id] = Operation(
-                    operation_id, request, record["worker_id"], record["connection_id"], cursor
+                    operation_id,
+                    request,
+                    record["worker_id"],
+                    record["connection_id"],
+                    cursor,
+                    handoff="queued" if kind == "native_queued" else "uncertain",
                 )
             elif kind == "native_handoff":
                 _fields(
@@ -298,7 +308,11 @@ def _transition(operation, current):
         raise JournalError("invalid", "invalid native handoff state")
     # A proved non-send is final. Once sent, uncertainty never becomes a claim of non-send.
     if (
-        operation.handoff == "not_sent"
+        current == "queued"
+        and operation.handoff != "queued"
+        or operation.handoff == "queued"
+        and current == "sent"
+        or operation.handoff == "not_sent"
         and current != "not_sent"
         or operation.ever_sent
         and current == "not_sent"
@@ -329,7 +343,7 @@ def _target(journal, session_key):
         raise JournalError("conflict", "native journal belongs to another client")
 
 
-def claim(root: Path, request: dict) -> tuple[bool, dict]:
+def claim(root: Path, request: dict, *, queued: bool = False) -> tuple[bool, dict]:
     """Return (newly_claimed, receipt), fsynced before a caller may write native stdin.
 
     An exact replay precedes revision comparison and does not authorize another effect.
@@ -341,6 +355,8 @@ def claim(root: Path, request: dict) -> tuple[bool, dict]:
     session_id = checked["session_key"].partition(":")[2]
     params = checked["params"]
     operation_id = params["operation_id"]
+    if queued and checked["action"] != "submit":
+        raise JournalError("invalid", "only operator turns can be queued")
 
     def update(raw):
         journal = fold(raw, session_id)
@@ -354,8 +370,21 @@ def claim(root: Path, request: dict) -> tuple[bool, dict]:
             return [], (False, previous.receipt())
         if params["expected_revision"] != journal.revision:
             raise JournalError("conflict", "native conversation revision changed")
+        if queued:
+            waiting = [
+                op.request
+                for op in journal.operations.values()
+                if op.handoff == "queued" and op.worker_id == checked["worker_id"]
+            ]
+            size = sum(
+                len(json.dumps(item, ensure_ascii=True).encode()) for item in [*waiting, immutable]
+            )
+            if len(waiting) >= MAX_QUEUED or size > MAX_QUEUE_BYTES:
+                raise JournalError(
+                    "busy", f"message queue is full (up to {MAX_QUEUED} messages / 4 MiB)"
+                )
         record = {
-            "type": "native_operation",
+            "type": "native_queued" if queued else "native_operation",
             "operation_id": operation_id,
             "request": immutable,
             "worker_id": checked["worker_id"],
