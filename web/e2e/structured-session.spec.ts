@@ -116,6 +116,118 @@ async function noOverflow(page: Page) {
   expect(overflow).toBeLessThanOrEqual(0);
 }
 
+/** A guarded opencode API attempt from an earlier visit; choosing an agent is read-only. */
+async function recoverOpencode(page: Page, theme: "dark" | "light") {
+  await setup(page, theme, ["opencode", "opencode-api", "codex-api", "claude-api", "apichat"]);
+  await mockRoster(page, {
+    overrides: {
+      "opencode-api": {
+        present: true,
+        supports_new: true,
+        api: { kind: "opencode-acp", source: "opencode", unavailable_reason: null },
+      },
+    },
+  });
+  const mutations: { method: string; url: string }[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/api/structured/sessions") && request.method() !== "GET") {
+      mutations.push({ method: request.method(), url: request.url() });
+    }
+  });
+  await page.route(/\/api\/structured\/sessions\/opencode-api(?::|%3A)[0-9a-f-]+(\/[a-z]+)?(\?.*)?$/, (r) =>
+    r.fulfill({ json: snapshot({ session_key: `opencode-api:${ID}`, native: null }) }),
+  );
+  await page.goto("/");
+  await page.evaluate((id) => sessionStorage.setItem("battlelab.pendingStructuredCreate", JSON.stringify({
+    engine: "opencode-api", cwd: "/home/u/proj", model: "default", id,
+  })), ID);
+  await page.reload();
+  await page.getByRole("combobox", { name: "Agent", exact: true }).selectOption("opencode-api");
+  await expect(page.getByTestId("api-recovered-create")).toBeVisible();
+  return mutations;
+}
+
+for (const theme of ["dark", "light"] as const) {
+  test(`New session: API recovery stays with its client; dismiss keeps history and permits a fresh start (${theme})`, async ({ page }) => {
+    const mutations = await recoverOpencode(page, theme);
+    const agent = page.getByRole("combobox", { name: "Agent", exact: true });
+    const notice = page.getByTestId("api-recovered-create");
+    // #1373: the saved API attempt leaked into the ordinary terminal and every other client.
+    for (const engine of ["opencode", "codex-api", "claude-api", "apichat"]) {
+      await agent.selectOption(engine);
+      await expect(notice).toHaveCount(0);
+    }
+    expect(JSON.parse((await page.evaluate(() => sessionStorage.getItem("battlelab.pendingStructuredCreate")))!).id).toBe(ID);
+    await agent.selectOption("opencode-api");
+    await expect(notice).toContainText("A previous opencode — API session is saved");
+    await expect(notice).toContainText("Open it to check its status");
+    await noOverflow(page);
+    const dismiss = notice.getByRole("button", { name: "Dismiss reminder" });
+    const open = notice.getByRole("link", { name: "Open previous session" });
+    for (const action of [dismiss, open]) {
+      expect((await action.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    }
+    await open.focus();
+    await page.keyboard.press("Tab");
+    await expect(dismiss).toBeFocused();
+    await expect(dismiss).toHaveCSS("outline-style", "solid");
+    await expect(dismiss).toHaveCSS("outline-width", "2px");
+    await page.keyboard.press("Shift+Tab");
+    await expect(open).toBeFocused();
+    await expect(open).toHaveCSS("outline-width", "2px");
+    expect(mutations).toEqual([]);
+    await dismiss.click();
+    await expect(notice).toHaveCount(0);
+    expect(await page.evaluate(() => sessionStorage.getItem("battlelab.pendingStructuredCreate"))).toBeNull();
+    expect(mutations).toEqual([]); // no stop, delete, create, or start
+    await page.reload();
+    await agent.selectOption("opencode-api");
+    await expect(notice).toHaveCount(0);
+    expect(mutations).toEqual([]);
+    const bodies: Json[] = [];
+    await page.route("**/api/structured/sessions", (r) => {
+      const body = r.request().postDataJSON() as Json;
+      bodies.push(body);
+      return r.fulfill({ status: 201, json: snapshot({ session_key: `opencode-api:${String(body.operation_id)}` }) });
+    });
+    await page.getByRole("button", { name: /start session/i }).click();
+    await expect.poll(() => bodies.length).toBe(1);
+    expect(bodies[0].operation_id).not.toBe(ID);
+    expect(bodies[0]).not.toHaveProperty("bypass"); // guarded requests omit the permission override
+    await expect(page).toHaveURL(new RegExp(`/s/opencode-api/${String(bodies[0].operation_id)}$`));
+    expect(mutations).toHaveLength(1);
+  });
+}
+
+test("New session: opening recovery during a retry keeps its identity after a lost response (#1373)", async ({ page }) => {
+  await recoverOpencode(page, "dark");
+  const bodies: Json[] = [];
+  let release!: () => void;
+  await page.route("**/api/structured/sessions", async (r) => {
+    bodies.push(r.request().postDataJSON() as Json);
+    if (bodies.length === 1) {
+      await new Promise<void>((resolve) => { release = resolve; });
+      return r.abort("connectionreset");
+    }
+    return r.fulfill({ status: 201, json: snapshot({ session_key: `opencode-api:${ID}` }) });
+  });
+  await page.getByRole("button", { name: /start session/i }).click();
+  await expect.poll(() => bodies.length).toBe(1);
+  const lost = page.waitForEvent("requestfailed", (r) => r.method() === "POST" && r.url().endsWith("/api/structured/sessions"));
+  await page.getByRole("link", { name: "Open previous session" }).click();
+  await expect(page).toHaveURL(new RegExp(`/s/opencode-api/${ID}$`));
+  const stored = await page.evaluate(() => sessionStorage.getItem("battlelab.pendingStructuredCreate"));
+  release();
+  await lost;
+  expect(stored).not.toBeNull();
+  expect(JSON.parse(stored!).id).toBe(ID);
+  await page.goto("/");
+  await page.getByRole("combobox", { name: "Agent", exact: true }).selectOption("opencode-api");
+  await expect(page.getByTestId("api-recovered-create")).toBeVisible();
+  await page.getByRole("button", { name: /start session/i }).click();
+  await expect.poll(() => bodies.length).toBe(2);
+  expect(bodies.map((body) => body.operation_id)).toEqual([ID, ID]);
+});
 for (const engine of ["codex-api", "claude-api", "opencode-api"]) {
   test(`${engine}: sends follow-ups while working without interrupting (#1378)`, async ({ page }) => {
     await setup(page, "dark", [engine]);
@@ -524,7 +636,9 @@ test("New session: a later skip create never erases a lost guarded create — re
   const slot = await page.evaluate(() => sessionStorage.getItem("battlelab.pendingStructuredCreate"));
   expect(JSON.parse(slot!).id).toBe(bodies[0].operation_id);
   await page.goto("/");
-  await expect(page.getByTestId("api-recovered-create")).toContainText("did create a session");
+  await expect(page.getByTestId("api-recovered-create")).toHaveCount(0); // ordinary Claude selected
+  await page.getByRole("combobox", { name: "Agent" }).selectOption("codex-api");
+  await expect(page.getByTestId("api-recovered-create")).toContainText("previous Codex — API session is saved");
 });
 
 test("New session: a skip tick never survives an agent change (Hermes 5913)", async ({ page }) => {

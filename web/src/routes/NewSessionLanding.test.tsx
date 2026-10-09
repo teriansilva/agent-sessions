@@ -825,10 +825,166 @@ test("a found create stays recoverable until it is OPENED — a late or unmounte
   expect(JSON.parse(sessionStorage.getItem("battlelab.pendingStructuredCreate")!).id).toBe("made-id");
   const user = userEvent.setup();
   renderLanding(["codex-api"], { default_project: "/d" }); // back to the form: offered again
-  const link = await screen.findByRole("link", { name: "Open it" });
+  const link = await screen.findByRole("link", { name: "Open previous session" });
   expect(sessionStorage.getItem("battlelab.pendingStructuredCreate")).not.toBeNull();
   await user.click(link);
   expect(sessionStorage.getItem("battlelab.pendingStructuredCreate")).toBeNull();
+});
+
+test.each(["opencode-api", "codex-api", "claude-api"])("a recovered %s attempt appears only for its selected API client (#1373)", async (engine) => {
+  setRoster(FIXTURE);
+  const user = userEvent.setup();
+  const saved = JSON.stringify({ engine, cwd: "/d", id: "previous-id" });
+  sessionStorage.setItem("battlelab.pendingStructuredCreate", saved);
+  vi.mocked(api.structuredSnapshot).mockResolvedValue({ native: null } as never);
+  vi.mocked(api.structuredCreate).mockReset();
+  renderLanding([engine, "opencode", "apichat", engine === "codex-api" ? "claude-api" : "codex-api"]);
+  const agent = await screen.findByRole("combobox", { name: "Agent" });
+  await user.selectOptions(agent, engine);
+  await screen.findByTestId("api-recovered-create");
+  for (const choice of ["opencode", "apichat", engine === "codex-api" ? "claude-api" : "codex-api"]) {
+    await user.selectOptions(agent, choice);
+    expect(screen.queryByTestId("api-recovered-create")).toBeNull();
+    expect(sessionStorage.getItem("battlelab.pendingStructuredCreate")).toBe(saved);
+  }
+  await user.selectOptions(agent, engine);
+  expect(await screen.findByTestId("api-recovered-create")).toHaveTextContent("Open it to check its status");
+  expect(api.structuredCreate).not.toHaveBeenCalled();
+  expect(api.structuredStart).not.toHaveBeenCalled();
+  sessionStorage.clear();
+});
+
+test("dismissing a found attempt permits a fresh guarded create after reload (#1373)", async () => {
+  setRoster(FIXTURE);
+  const user = userEvent.setup();
+  sessionStorage.setItem("battlelab.pendingStructuredCreate", JSON.stringify({ engine: "opencode-api", cwd: "/d", id: "previous-id" }));
+  vi.mocked(api.structuredSnapshot).mockResolvedValue({ native: null } as never);
+  vi.mocked(api.structuredCreate).mockReset().mockRejectedValue(new TypeError("response lost"));
+  const first = renderLanding(["opencode-api"], { default_project: "/d" });
+  await user.click(await screen.findByRole("button", { name: "Dismiss reminder" }));
+  expect(screen.queryByTestId("api-recovered-create")).toBeNull();
+  expect(sessionStorage.getItem("battlelab.pendingStructuredCreate")).toBeNull();
+  expect(api.structuredCreate).not.toHaveBeenCalled();
+  expect(api.structuredStart).not.toHaveBeenCalled();
+  first.unmount();
+  renderLanding(["opencode-api"], { default_project: "/d" });
+  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  expect(screen.queryByTestId("api-recovered-create")).toBeNull();
+  expect(api.structuredSnapshot).toHaveBeenCalledTimes(1);
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await screen.findByTestId("start-error");
+  const args = vi.mocked(api.structuredCreate).mock.calls[0];
+  expect(args[2]).not.toBe("previous-id");
+  expect(args[4]).toBe(false);
+  // A lost response for the NEW request must still retain its own retry identity.
+  expect(JSON.parse(sessionStorage.getItem("battlelab.pendingStructuredCreate")!).id).toBe(args[2]);
+  sessionStorage.clear();
+});
+
+test("dismissing an older notice never clears a newer stored attempt (#1373)", async () => {
+  setRoster(FIXTURE);
+  const user = userEvent.setup();
+  sessionStorage.setItem("battlelab.pendingStructuredCreate", JSON.stringify({ engine: "codex-api", cwd: "/d", id: "older-id" }));
+  vi.mocked(api.structuredSnapshot).mockResolvedValue({} as never);
+  renderLanding(["codex-api"]);
+  const dismiss = await screen.findByRole("button", { name: "Dismiss reminder" });
+  const newer = JSON.stringify({ engine: "opencode-api", cwd: "/new", id: "newer-id" });
+  sessionStorage.setItem("battlelab.pendingStructuredCreate", newer);
+  await user.click(dismiss);
+  expect(sessionStorage.getItem("battlelab.pendingStructuredCreate")).toBe(newer);
+  expect(screen.queryByTestId("api-recovered-create")).toBeNull();
+  sessionStorage.clear();
+});
+
+test("a recovered attempt cannot be dismissed while its guarded retry is in flight (#1373)", async () => {
+  setRoster(FIXTURE);
+  const user = userEvent.setup();
+  const saved = JSON.stringify({ engine: "codex-api", cwd: "/d", id: "previous-id" });
+  sessionStorage.setItem("battlelab.pendingStructuredCreate", saved);
+  vi.mocked(api.structuredSnapshot).mockResolvedValue({} as never);
+  let reject!: (reason: unknown) => void;
+  vi.mocked(api.structuredCreate).mockReset().mockImplementation(() => new Promise((_, r) => { reject = r; }));
+  renderLanding(["codex-api"], { default_project: "/d" });
+  const dismiss = await screen.findByRole("button", { name: "Dismiss reminder" });
+  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  expect(dismiss).toBeDisabled();
+  await user.click(dismiss);
+  expect(sessionStorage.getItem("battlelab.pendingStructuredCreate")).toBe(saved);
+  expect(vi.mocked(api.structuredCreate).mock.calls[0][2]).toBe("previous-id");
+  reject(new TypeError("response lost"));
+  await screen.findByTestId("start-error");
+  expect(dismiss).toBeEnabled();
+  expect(sessionStorage.getItem("battlelab.pendingStructuredCreate")).toBe(saved);
+  sessionStorage.clear();
+});
+
+test("a newer create hides the older reminder while the form stays mounted (#1373)", async () => {
+  setRoster(FIXTURE);
+  const user = userEvent.setup();
+  sessionStorage.setItem("battlelab.pendingStructuredCreate", JSON.stringify({ engine: "codex-api", cwd: "/old", id: "previous-id" }));
+  vi.mocked(api.structuredSnapshot).mockResolvedValue({} as never);
+  let reject!: (reason: unknown) => void;
+  vi.mocked(api.structuredCreate).mockReset().mockImplementation(() => new Promise((_, r) => { reject = r; }));
+  renderLanding(["codex-api"], { default_project: "/new" });
+  await screen.findByTestId("api-recovered-create");
+  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  expect(screen.queryByTestId("api-recovered-create")).toBeNull();
+  const nextId = vi.mocked(api.structuredCreate).mock.calls[0][2];
+  expect(nextId).not.toBe("previous-id");
+  reject(new TypeError("response lost"));
+  await screen.findByTestId("start-error");
+  expect(screen.queryByTestId("api-recovered-create")).toBeNull();
+  expect(JSON.parse(sessionStorage.getItem("battlelab.pendingStructuredCreate")!).id).toBe(nextId);
+  sessionStorage.clear();
+});
+
+test("opening a recovered session during its retry preserves the identity if the response is lost (#1373)", async () => {
+  setRoster(FIXTURE);
+  const user = userEvent.setup();
+  const saved = JSON.stringify({ engine: "opencode-api", cwd: "/d", id: "previous-id" });
+  sessionStorage.setItem("battlelab.pendingStructuredCreate", saved);
+  vi.mocked(api.structuredSnapshot).mockResolvedValue({} as never);
+  let reject!: (reason: unknown) => void;
+  vi.mocked(api.structuredCreate).mockReset()
+    .mockImplementationOnce(() => new Promise((_, r) => { reject = r; }))
+    .mockRejectedValue(new TypeError("response lost again"));
+  const first = renderLanding(["opencode-api"], { default_project: "/d" });
+  const open = await screen.findByRole("link", { name: "Open previous session" });
+  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await user.click(open);
+  expect(sessionStorage.getItem("battlelab.pendingStructuredCreate")).toBe(saved);
+  reject(new TypeError("response lost"));
+  await new Promise((r) => setTimeout(r, 0));
+  first.unmount();
+  renderLanding(["opencode-api"], { default_project: "/d" });
+  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await screen.findByTestId("start-error");
+  expect(vi.mocked(api.structuredCreate).mock.calls.map((args) => args[2])).toEqual(["previous-id", "previous-id"]);
+  expect(sessionStorage.getItem("battlelab.pendingStructuredCreate")).toBe(saved);
+  sessionStorage.clear();
+});
+
+test.each([
+  ["engine", "opencode-api"], ["id", "new-id"], ["cwd", "/new"], ["model", "other"], ["bypass", true],
+] as const)("a late lookup cannot offer a stored attempt whose %s changed (#1373)", async (field, value) => {
+  setRoster(FIXTURE);
+  const saved = { engine: "codex-api", cwd: "/d", id: "previous-id", model: "default", bypass: false };
+  sessionStorage.setItem("battlelab.pendingStructuredCreate", JSON.stringify(saved));
+  let release!: () => void;
+  vi.mocked(api.structuredSnapshot).mockImplementationOnce(() => new Promise((r) => { release = () => r({} as never); }));
+  renderLanding(["codex-api"]);
+  await screen.findByRole("combobox", { name: "Project" });
+  const changed = JSON.stringify({ ...saved, [field]: value });
+  sessionStorage.setItem("battlelab.pendingStructuredCreate", changed);
+  release();
+  await new Promise((r) => setTimeout(r, 0));
+  expect(screen.queryByTestId("api-recovered-create")).toBeNull();
+  expect(sessionStorage.getItem("battlelab.pendingStructuredCreate")).toBe(changed);
+  sessionStorage.clear();
 });
 
 test("a skip create is launched only after its response arrived: create, THEN start (#1339)", async () => {
@@ -917,6 +1073,7 @@ test.each([
   await new Promise((r) => setTimeout(r, 0));
   await new Promise((r) => setTimeout(r, 0));
   expect(JSON.parse(sessionStorage.getItem("battlelab.pendingStructuredCreate")!).id).toBe(newer.id);
+  expect(screen.queryByTestId("api-recovered-create")).toBeNull();
   sessionStorage.clear();
 });
 

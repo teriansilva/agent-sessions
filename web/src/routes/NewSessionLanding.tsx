@@ -64,6 +64,16 @@ function writePendingCreate(v: PendingCreate | null): void {
   }
 }
 
+/** A late lookup/action must not offer or clear a different attempt's recovery pointer. */
+function isStoredAttempt(attempt: PendingCreate): boolean {
+  const current = readPendingCreate();
+  return current?.id === attempt.id &&
+    current.engine === attempt.engine &&
+    current.cwd === attempt.cwd &&
+    (current.model ?? "default") === (attempt.model ?? "default") &&
+    Boolean(current.bypass) === Boolean(attempt.bypass);
+}
+
 export function NewSessionLanding() {
   const config = useConfig();
   const navigate = useNavigate();
@@ -105,12 +115,13 @@ export function NewSessionLanding() {
       return;
     }
     let live = true;
-    // The lookup only OFFERS it; the slot is discharged when the operator opens it (below), never
-    // from here — an unmounted or late callback must not erase the only pointer (Hermes 5920).
+    // A lookup proves only that the record exists, not that its worker started. Offer it only
+    // while its pointer is current; opening or explicitly dismissing it discharges that pointer.
+    // A lookup callback itself never clears storage (Hermes 5920, #1373).
     api
       .structuredSnapshot(`${p.engine}:${p.id}`)
       .then(() => {
-        if (live) setRecovered(p);
+        if (live && isStoredAttempt(p)) setRecovered(p);
       })
       .catch(() => {
         // Never made (or not yet): the guarded attempt keeps its id for a harmless same-form retry.
@@ -288,6 +299,12 @@ export function NewSessionLanding() {
   // has left the form.
   const chatStarting = useRef(false);
   const [startingChat, setStartingChat] = useState(false);
+  const forgetRecovered = () => {
+    // Opening may navigate during a retry, but its identity must survive a lost response.
+    if (!recovered || chatStarting.current) return;
+    if (isStoredAttempt(recovered)) writePendingCreate(null);
+    setRecovered(null);
+  };
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -360,7 +377,7 @@ export function NewSessionLanding() {
       writePendingCreate(attempt);
     }
     const clearAttempt = () => {
-      if (readPendingCreate()?.id === attempt.id) writePendingCreate(null);
+      if (isStoredAttempt(attempt)) writePendingCreate(null);
     };
     try {
       const { session_key: key } = await api.structuredCreate(
@@ -662,20 +679,26 @@ export function NewSessionLanding() {
             runs without its sandbox. Fixed for this session.
           </p>
         )}
-        {recovered && (
-          <p className={styles.hint} role="status" data-testid="api-recovered-create">
-            An earlier start of {engineLabel(recovered.engine)}
-            {recovered.bypass ? " with Skip permission prompts" : ""} did create a session.{" "}
-            <Link
-              to={`/s/${recovered.engine}/${recovered.id}`}
-              onClick={() => {
-                // Discharged only now, and only if the slot still points at THIS session.
-                if (readPendingCreate()?.id === recovered.id) writePendingCreate(null);
-              }}
-            >
-              Open it
-            </Link>
-          </p>
+        {isApi && recovered?.engine === engine && isStoredAttempt(recovered) && (
+          <div className={styles.recovery} role="status" data-testid="api-recovered-create">
+            <p>A previous {engineLabel(recovered.engine)} session is saved. Open it to check its status.</p>
+            <div className={styles.recoveryActions}>
+              <Link
+                to={`/s/${recovered.engine}/${recovered.id}`}
+                onClick={forgetRecovered}
+              >
+                Open previous session
+              </Link>
+              <button
+                type="button"
+                disabled={startingChat}
+                onClick={forgetRecovered}
+              >
+                Dismiss reminder
+              </button>
+            </div>
+            <p>Dismissing keeps it in your session list.</p>
+          </div>
         )}
 
         <button
