@@ -7,6 +7,7 @@ before networking rate-limits failures and restarts too. This module never insta
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import time
@@ -96,7 +97,10 @@ async def refresh(*, automatic: bool = False) -> feed.Feed | None:
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:
-        await process.drain(task)
+        # A failed worker must finish writing its error and release the fence, but its
+        # exception must not replace cancellation: run() would catch it and keep looping.
+        with contextlib.suppress(Exception):
+            await process.drain(task)
         raise
 
 

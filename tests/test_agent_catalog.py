@@ -220,3 +220,44 @@ def test_corrupt_refresh_settings_refuse_network_and_remain_untouched(bundle, mo
     with pytest.raises(ValueError):
         refresh.configure(True)
     assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("failure", [None, feed.FeedError("offline"), OSError("unavailable")])
+def test_refresh_cancellation_drains_worker_and_preserves_cancellation(
+    bundle, monkeypatch, failure
+):
+    entered, release = threading.Event(), threading.Event()
+
+    async def fetch():
+        entered.set()
+        assert await asyncio.to_thread(release.wait, 5)
+        if failure is not None:
+            raise failure
+        return "verified"
+
+    monkeypatch.setattr(refresh.feed_client, "refresh", fetch)
+
+    async def cancel():
+        task = asyncio.create_task(refresh.refresh())
+        assert await asyncio.to_thread(entered.wait, 5)
+        try:
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+            with pytest.raises(storage.StateError, match="busy"):
+                await refresh.refresh()
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(cancel())
+    value = refresh.status()
+    assert value["last_attempt"] == NOW
+    assert bool(value["error"]) == (failure is not None)
+    assert value["last_success"] == (NOW if failure is None else None)
+    with storage.locked("agent-catalog-refresh", wait=0):
+        pass  # ownership only releases once the cancelled worker has finished writing
