@@ -597,6 +597,36 @@ function uploaded(n: number) {
   });
 }
 
+test("a document-only message uploads and sends for a file-capable client without native images", async () => {
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(snap({ files: true, images: false }));
+  vi.mocked(api.structuredSubmit).mockResolvedValue({});
+  vi.mocked(api.upload).mockResolvedValue({
+    name: "brief.pdf", stored: "20261010-010000-brief.pdf", path: "/h/.agent-sessions/uploads/20261010-010000-brief.pdf",
+  });
+  renderPane();
+  await screen.findByRole("button", { name: "Attach files" });
+  const file = new File(["%PDF-1.4 contents"], "brief.pdf", { type: "application/pdf" });
+  await userEvent.upload(screen.getByTestId("structured-file-input"), file);
+  await screen.findByTestId("structured-attachment");
+  await userEvent.click(screen.getByRole("button", { name: "Send" }));
+  expect(api.upload).toHaveBeenCalledWith(file);
+  expect(vi.mocked(api.structuredSubmit).mock.calls[0].slice(2)).toEqual(["", 4, ["20261010-010000-brief.pdf"]]);
+});
+
+test("pasted documents with an empty browser MIME type become attachments", async () => {
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(snap({ files: true, images: false }));
+  vi.mocked(api.upload).mockResolvedValue({
+    name: "LICENSE", stored: "20261010-010000-LICENSE", path: "/h/.agent-sessions/uploads/20261010-010000-LICENSE",
+  });
+  renderPane();
+  const box = await screen.findByRole("textbox");
+  const file = new File(["license text"], "LICENSE");
+  box.focus();
+  await userEvent.paste({ files: [file], items: [{ kind: "file", type: "", getAsFile: () => file }], getData: () => "" } as unknown as DataTransfer);
+  expect(await screen.findByTestId("structured-attachment")).toHaveTextContent("LICENSE");
+  expect(api.upload).toHaveBeenCalledWith(file);
+});
+
 test("a client that takes no pictures offers no attach", async () => {
   renderPane();
   await screen.findByRole("textbox");

@@ -29,10 +29,12 @@ export async function mockStructuredGuidance(page: Page, engine: string, mode: s
   const state = {
     session_key: `${engine}:${ID}`, revision: 4, get event_cursor(): number { return this.revision; }, cwd: "/home/u/demo",
     state: "running", active_turn: ACTIVE, model_requested: null,
+    files: true,
     omitted_turns: 0, pending_requests: [] as Json[], read_only: null as string | null,
     native: { native_id: "native", worker: "worker", background_active: false, send_now: mode },
     turns: [
       { ...common, turn_id: ACTIVE, operation_id: ACTIVE, state: "running", text: "Check startup.",
+        attachments: [{ stored: "20261010-010000-startup-notes.pdf", name: "startup-notes.pdf", mime: "application/octet-stream" }],
         reply: "I’m checking parallel session startup.",
         tools: Array.from({ length: 12 }, (_, i) => ({ id: `tool-${i}`, name: "command",
           summary: i === 0 ? COMMAND : `rg -n 'session' src/file-${i}.py`, outcome: "completed" })) },

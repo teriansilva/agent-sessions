@@ -38,6 +38,7 @@ from pathlib import Path
 from . import (
     chat_store,
     model_choice,
+    native_attachments,
     native_containment,
     native_grants,
     native_ipc,
@@ -1104,6 +1105,15 @@ async def _effect(engine_id: str, session_id: str, action: str, params: dict) ->
     for attempt in range(3):
         gen = await _live_generation(engine_id, session_id)
         try:
+            if action == "submit" and any(
+                a["mime"] == native_attachments.FILE_MIME for a in params.get("attachments") or ()
+            ):
+                life = await asyncio.to_thread(native_state.read_lifecycle, gen.worker_id)
+                if life.get("files") is not True:
+                    worker = native_containment.WorkerIdentity(gen.worker_id)
+                    if not await asyncio.to_thread(HOST.worker_running, worker, life.get("pid")):
+                        raise _Unreachable("the old worker exited")
+                    raise NativeError(409, "to attach documents, stop and resume this session")
             return await _call(gen, action, params)
         except _Unreachable:
             # The socket is gone. Nothing was claimed by THIS call (no connection), and the
@@ -1178,8 +1188,7 @@ def project(
                 "status": "pending",
                 "text": params["text"],
                 "attachments": [
-                    {"stored": a["stored"], "mime": a["mime"]}
-                    for a in params.get("attachments") or ()
+                    native_attachments.public(a) for a in params.get("attachments") or ()
                 ],
                 "reply": "",
                 "partial": "",
@@ -1421,9 +1430,11 @@ def _snapshot_sync(engine_id: str, session_id: str) -> dict:
     view = project(_journal(prov, session_id), record, live, max_turns=SNAPSHOT_TURNS)
     # The running worker advertises its own implementation. A web update cannot teach an
     # already-running, release-pinned worker a new effect (#1389).
-    mode = native_state.read_lifecycle(live).get("send_now") if live else None
+    life = native_state.read_lifecycle(live) if live else {}
+    mode = life.get("send_now")
     if mode in {"steer", "interrupt"}:
         view["native"]["send_now"] = mode
+    view["native"]["files"] = not live or life.get("files") is True
     return view
 
 
@@ -1464,7 +1475,7 @@ async def submit(
     execution_admission=None,
     idempotent: bool = True,
 ) -> dict:
-    """``attachments``: pictures ALREADY admitted by ``native_images.admit`` (#1332 Phase 3)."""
+    """``attachments``: files/pictures already admitted by ``native_attachments.admit``."""
     if execution_admission is not None:
         raise NativeError(
             409, "native clients cannot enforce caller authority across processes yet"
@@ -1476,10 +1487,20 @@ async def submit(
     prov, _ = await asyncio.to_thread(_session, engine_id, session_id)
     params = {"text": text, "context": context or {}}
     if attachments:
-        if not kinds.API_IMAGE_INPUT.get(prov.manifest.api.kind, False):
-            raise NativeError(422, "this client takes no images")
         params["attachments"] = attachments
     immutable = native_ipc.normalize_immutable_request({"action": "submit", "params": params})
+    try:
+        native_protocol.validate_text(
+            native_attachments.text_with_files(text, immutable["params"].get("attachments") or []),
+            allow_empty=bool(attachments),
+        )
+    except native_protocol.ProtocolError as exc:
+        raise NativeError(422, str(exc)) from None
+    if any(
+        a["mime"] != native_attachments.FILE_MIME
+        for a in immutable["params"].get("attachments") or ()
+    ) and not kinds.API_IMAGE_INPUT.get(prov.manifest.api.kind, False):
+        raise NativeError(422, "this client takes no images")
     for _ in range(3):
         journal = await asyncio.to_thread(_journal, prov, session_id)
         receipt = _replay(journal, turn_id, immutable)
@@ -1505,7 +1526,7 @@ async def submit(
         raise NativeError(
             409,
             "this turn was not sent: the agent is busy with another turn"
-            + (", or an attached image changed" if attachments else ""),
+            + (", or an attached file changed" if attachments else ""),
         )
     return receipt
 

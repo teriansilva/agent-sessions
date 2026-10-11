@@ -31,6 +31,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 #: Mode of the uploads directory and of every file in it. Owner-only, both.
 DIR_MODE = 0o700
 FILE_MODE = 0o600
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 #: Bound on the same-second filename-collision retry. Each attempt is a distinct ``O_EXCL``
 #: create, so this can only be reached by something pathological; it exists so the loop has a
 #: terminating case that isn't "spin forever holding a request".
@@ -196,7 +197,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         # it by path (the web terminal can't carry image paste itself). Lands in a
         # shared ~/.agent-sessions/uploads/ — never in a project working tree.
         # Stream-read with a hard cap so a huge upload can't exhaust memory.
-        max_bytes = 25 * 1024 * 1024
+        max_bytes = MAX_UPLOAD_BYTES
         size, chunks = 0, []
         while True:
             chunk = await file.read(1024 * 1024)

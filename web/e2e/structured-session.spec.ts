@@ -269,6 +269,48 @@ for (const engine of ["codex-api", "claude-api", "opencode-api"]) {
   });
 }
 
+test("API documents: a failed upload preserves a mixed image/document draft", async ({ page }) => {
+  await setup(page, "dark");
+  let posted: Json | null = null;
+  const document = "20261010-010000-brief.pdf";
+  let uploaded = 0;
+  await page.route("**/api/upload", (r) => {
+    uploaded++;
+    if (uploaded === 3) return r.fulfill({ status: 413, json: { detail: "file too large (max 25 MB)" } });
+    const stored = uploaded === 1 ? document : STORED;
+    return r.fulfill({ json: { name: uploaded === 1 ? "brief.pdf" : "shot.png", stored, path: `/home/u/.agent-sessions/uploads/${stored}` } });
+  });
+  await page.route(`**/api/uploads/${STORED}`, (r) => r.fulfill({ body: Buffer.from(PNG_B64, "base64"), contentType: "image/png" }));
+  await serveSession(page, () => snapshot({ files: true, images: true, revision: posted ? 5 : 4,
+    turns: posted ? [turn({ turn_id: posted.operation_id, operation_id: posted.operation_id, state: "completed", text: posted.text, tools: [],
+      attachments: [{ stored: document, mime: "application/octet-stream" }, { stored: STORED, mime: "image/png" }],
+    })] : [],
+  }));
+  await page.route(new RegExp(`/api/structured/sessions/codex-api(?::|%3A)${ID}/turns$`), (r) => {
+    posted = r.request().postDataJSON() as Json;
+    return r.fulfill({ status: 202, json: {} });
+  });
+  await page.goto(URL_PATH);
+  const box = page.getByRole("textbox", { name: /Message/ });
+  await box.fill("Compare these two attachments.");
+  await page.getByTestId("structured-file-input").setInputFiles([
+    { name: "brief.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4") },
+    { name: "shot.png", mimeType: "image/png", buffer: Buffer.from(PNG_B64, "base64") },
+    { name: "too-large.zip", mimeType: "application/zip", buffer: Buffer.from("oversize fixture") },
+  ]);
+  await expect(page.getByTestId("structured-error")).toContainText("file too large");
+  await expect(page.getByTestId("structured-attachment")).toHaveCount(2);
+  await expect(box).toHaveValue("Compare these two attachments.");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect.poll(() => posted).not.toBeNull();
+  expect(posted).toMatchObject({ text: "Compare these two attachments.", attachments: [document, STORED] });
+  const sent = page.getByTestId("structured-turn");
+  await expect(sent.getByText("brief.pdf", { exact: true })).toBeVisible();
+  await expect(sent.getByRole("img", { name: "Attached image" })).toBeVisible();
+  expect((await sent.getByText("brief.pdf", { exact: true }).locator("..").boundingBox())!.height).toBeLessThan(44);
+  await noOverflow(page);
+});
+
 
 async function targets(page: Page, scope: ReturnType<Page["getByTestId"]>) {
   for (const b of await scope.getByRole("button").all()) {
@@ -1006,6 +1048,79 @@ const PNG_B64 = [
   "ECBAgAABAgQIECBAgAB1A3Kg8jADBAgQIECAAAECBAgQIECAAI0C+gHzA/HhyUVm9wAAAABJRU5ErkJggg==",
 ].join("");
 const STORED = "20261008-010000-shot.png";
+
+for (const engine of ["codex-api", "claude-api", "opencode-api"]) {
+  for (const theme of ["dark", "light"] as const) {
+    test(`API documents: pick, send and restore files (${engine}, ${theme})`, async ({ page }, testInfo) => {
+      await setup(page, theme, [engine]);
+      const sessionKey = `${engine}:${ID}`;
+      const pattern = new RegExp(`/api/structured/sessions/${engine}(?::|%3A)${ID}(/[a-z]+)?(\\?.*)?$`);
+      const documents = [
+        { name: "requirements.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4\nrequirements") },
+        { name: "proposal.docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", buffer: Buffer.from("PK document") },
+        { name: "measurements.csv", mimeType: "text/csv", buffer: Buffer.from("name,value\nsize,42") },
+      ];
+      const stored = documents.map((d) => `20261010-010000-${d.name}`);
+      let posted: Json | null = null;
+      let uploads = 0;
+      let documentReads = 0;
+      await page.route("**/api/uploads/**", (r) => {
+        documentReads++;
+        return r.fulfill({ status: 404 });
+      });
+      await page.route("**/api/upload", (r) => {
+        const index = uploads++;
+        return r.fulfill({ json: { name: documents[index].name, stored: stored[index], path: `/home/u/.agent-sessions/uploads/${stored[index]}` } });
+      });
+      await page.route(pattern, (r) => {
+        const sub = r.request().url().match(pattern)?.[1] ?? "";
+        if (sub === "/turns") {
+          posted = r.request().postDataJSON() as Json;
+          return r.fulfill({ status: 202, json: { state: "running" } });
+        }
+        if (sub === "/events") return r.fulfill({ json: { events: [], next_cursor: posted ? 5 : 4 } });
+        return r.fulfill({ json: snapshot({
+          session_key: sessionKey, files: true, images: engine !== "opencode-api", revision: posted ? 5 : 4,
+          turns: posted ? [turn({ turn_id: posted.operation_id, operation_id: posted.operation_id,
+            state: "completed", text: posted.text, reply: "Received the files.", tools: [],
+            attachments: stored.map((s) => ({ stored: s, mime: "application/octet-stream" })),
+          })] : [],
+        }) });
+      });
+      await page.goto(`/s/${engine}/${ID}`);
+      await expect(page.getByRole("textbox", { name: /Message/ })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Attach files" })).toBeVisible();
+      const picker = page.getByTestId("structured-file-input");
+      expect(await picker.getAttribute("accept")).toBeNull();
+      if (theme === "dark") {
+        await picker.setInputFiles(documents);
+      } else {
+        // Actual browser paste dispatch, including a file whose clipboard MIME is absent.
+        await page.getByRole("textbox", { name: /Message/ }).evaluate((el, docs) => {
+          const data = new DataTransfer();
+          for (const doc of docs) data.items.add(new File([doc.text], doc.name, { type: doc.type }));
+          el.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+        }, documents.map((d, index) => ({ name: d.name, type: index === 2 ? "" : d.mimeType, text: d.buffer.toString() })));
+      }
+      await expect(page.getByTestId("structured-attachment")).toHaveCount(3);
+      await noOverflow(page);
+      await page.getByRole("button", { name: "Send" }).click();
+      await expect.poll(() => posted).not.toBeNull();
+      expect(posted).toMatchObject({ text: "", attachments: stored });
+      const sent = page.getByTestId("structured-turn");
+      for (const d of documents) await expect(sent.getByText(d.name, { exact: true })).toBeVisible();
+      await expect(sent).not.toContainText("20261010-010000-");
+      await expect(sent.getByRole("img")).toHaveCount(0);
+      expect(documentReads).toBe(0);
+      await expect(page.getByTestId("structured-attachment")).toHaveCount(0);
+      await page.getByRole("button", { name: "Sent messages" }).click();
+      await page.getByRole("button", { name: "Restore" }).first().click();
+      await expect(page.getByTestId("structured-attachment")).toHaveCount(3);
+      await noOverflow(page);
+      await page.screenshot({ path: testInfo.outputPath("documents.png"), fullPage: true });
+    });
+  }
+}
 
 for (const theme of ["dark", "light"] as const) {
   test(`paste an image → it shows as a chip → send carries it → the turn shows the thumbnail (#1332, ${theme})`, async ({

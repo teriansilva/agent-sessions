@@ -18,7 +18,11 @@ import { engineInfo, engineLabel, isAgent, useEngineRoster } from "../../app/eng
 import { isNewSessionPlaceholder } from "../../app/sessionsStore";
 import { useSessionRow } from "../../app/useSessionRow";
 import { ApiError, api } from "../../lib/api";
-import { imageFilesFromAsyncClipboard, imageFilesFromData } from "../../lib/clipboardImages";
+import {
+  filesFromData,
+  imageFilesFromAsyncClipboard,
+  imageFilesFromData,
+} from "../../lib/clipboardImages";
 import {
   appendSent,
   confirmOperation,
@@ -73,8 +77,11 @@ export const STRUCTURED_ACTIVE_POLL_MS = 1_000;
 export const STRUCTURED_IDLE_POLL_MS = 10_000;
 /** Reconnect back-off ceiling after failed reads. */
 const MAX_BACKOFF_MS = 15_000;
-/** Pictures per message — the server's cap (`native_images.MAX_IMAGES`), checked again there. */
-const MAX_IMAGES = 4;
+/** Files/pictures per message — the server checks the same shared four-attachment cap. */
+const MAX_ATTACHMENTS = 4;
+
+/** Match the server's safe display name. Keep collision/leading numeric prefixes intact. */
+const attachmentName = (path: string) => uploadStoredName(path).replace(/^\d{8}-\d{6}-/, "");
 
 const uuid = () => crypto.randomUUID();
 
@@ -362,7 +369,7 @@ function TurnView({
         <div className={chat.who}>you</div>
         {!!turn.attachments?.length && (
           <div className={styles.turnImages}>
-            {turn.attachments.map((a) => (
+            {turn.attachments.map((a) => a.mime.startsWith("image/") ? (
               // UploadImage's slot fills its parent: this box bounds it to one thumbnail.
               <span key={a.stored} className={styles.turnImageBox}>
                 <UploadImage
@@ -371,6 +378,15 @@ function TurnView({
                   className={styles.turnImage}
                   fallback={<span className={styles.turnImageGone}>image no longer available</span>}
                 />
+              </span>
+            ) : (
+              <span
+                key={a.stored}
+                className={`${compose.pill} ${styles.turnFile}`}
+                title={a.name ?? attachmentName(a.stored)}
+              >
+                <Paperclip size={14} aria-hidden />
+                <span className={compose.pn}>{a.name ?? attachmentName(a.stored)}</span>
               </span>
             ))}
           </div>
@@ -514,7 +530,7 @@ export function StructuredPane({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reconnecting, setReconnecting] = useState(false);
   const [draft, setDraft] = useState("");
-  // #1332 Phase 3: the pictures this send carries, by the upload they landed in.
+  // Files and pictures this send carries, by their server-owned upload identities.
   const [attachments, setAttachments] = useState<{ name: string; stored: string }[]>([]);
   // Uploads in flight, counted (Hermes on #1345): overlapping pastes each hold a slot, a send
   // waits for ALL of them, and the cap counts reserved slots — never a stale render's length.
@@ -964,17 +980,18 @@ export function StructuredPane({
     }
   }, [snap, draft, attachments]);
 
-  /** Restore / Insert (#1332 Phase 3b): replace the draft with `text` and these uploads. Only
-   *  pictures this client takes come along, up to the cap; what is left behind is said. */
+  /** Restore / Insert: replace the draft with supported uploads, up to the shared cap. */
   const fill = (text: string, uploads: string[]): string[] | null => {
     // Tools are disabled then too. A live dictation would overwrite a replaced draft with its
     // next result, so it counts as in flight.
     if (sending.current || slots.current.inFlight > 0 || !dict.settled()) return null;
     clearAttachments();
-    const pictures = snap?.images ? uploads.filter((p) => /\.(png|jpe?g|gif|webp)$/i.test(p)) : [];
-    const kept = pictures.slice(0, MAX_IMAGES).map((p) => {
+    const supported = snap?.files
+      ? uploads
+      : snap?.images ? uploads.filter((p) => /\.(png|jpe?g|gif|webp)$/i.test(p)) : [];
+    const kept = supported.slice(0, MAX_ATTACHMENTS).map((p) => {
       const stored = uploadStoredName(p);
-      return { name: stored, stored };
+      return { name: attachmentName(stored), stored };
     });
     slots.current.held = kept.length;
     setAttachments(kept);
@@ -984,7 +1001,9 @@ export function StructuredPane({
     setSendError(
       dropped > 0
         ? `${dropped} attachment${dropped === 1 ? " was" : "s were"} left out: ${
-            snap?.images ? `only up to ${MAX_IMAGES} images can be sent here` : `${agent} takes no images`
+            snap?.files || snap?.images
+              ? `only up to ${MAX_ATTACHMENTS} ${snap.files ? "files" : "images"} can be sent here`
+              : `${agent} takes no images`
           }.`
         : null,
     );
@@ -1024,24 +1043,25 @@ export function StructuredPane({
 
   const attach = async (files: File[]) => {
     if (sending.current) {
-      setSendError("Wait until this message is sent before attaching another image.");
+      setSendError("Wait until this message is sent before attaching another file.");
       return;
     }
-    const images = files.filter((f) => f.type.startsWith("image/"));
-    if (!images.length) {
+    const supported = snap?.files ? files : files.filter((f) => f.type.startsWith("image/"));
+    if (!supported.length) {
       if (files.length) setSendError("Only images can be attached here.");
       return;
     }
     // Reserve slots NOW, before any await: a second paste racing this one sees them taken.
-    const room = MAX_IMAGES - slots.current.held - slots.current.inFlight;
-    const taken = images.slice(0, Math.max(0, room));
-    if (taken.length < images.length) setSendError(`A message carries at most ${MAX_IMAGES} images.`);
-    else setSendError(null);
+    const room = MAX_ATTACHMENTS - slots.current.held - slots.current.inFlight;
+    const taken = supported.slice(0, Math.max(0, room));
+    if (taken.length < supported.length) {
+      setSendError(`A message carries at most ${MAX_ATTACHMENTS} ${snap?.files ? "files" : "images"}.`);
+    } else setSendError(null);
     if (!taken.length) return;
     slots.current.inFlight += taken.length;
     setInFlight(slots.current.inFlight);
     const gen = generation.current;
-    let failed = false;
+    let failure: string | null = null;
     try {
       for (const file of taken) {
         try {
@@ -1050,8 +1070,10 @@ export function StructuredPane({
           const stored = up.stored ?? uploadStoredName(up.path);
           slots.current.held += 1;
           setAttachments((prev) => [...prev, { name: up.name, stored }]);
-        } catch {
-          failed = true;
+        } catch (e) {
+          failure = e instanceof ApiError && e.status === 413
+            ? `${file.name}: file too large (max 25 MB).`
+            : detail(e, "A file could not be uploaded.");
         } finally {
           // An abandoned draft's slot was already released by `clearAttachments`.
           if (gen === generation.current) {
@@ -1062,25 +1084,25 @@ export function StructuredPane({
       }
     } finally {
       if (gen === generation.current) {
-        if (failed) setSendError("An image could not be uploaded.");
+        if (failure) setSendError(failure);
         if (fileRef.current) fileRef.current.value = "";
       }
     }
   };
 
-  // An image paste becomes an attachment; plain text is left to the textarea. A deferred
+  // A file paste becomes an attachment; plain text is left to the textarea. A deferred
   // clipboard that delivers neither falls back to the async clipboard (#530), as Compose does.
   const onPaste = (e: ReactClipboardEvent<HTMLTextAreaElement>) => {
-    if (!snap?.images) return;
+    if (!snap?.files && !snap?.images) return;
     if (sending.current) {
       // A read-only textarea still receives paste: nothing joins a message already sending.
       e.preventDefault();
       return;
     }
-    const images = imageFilesFromData(e.clipboardData);
-    if (images.length) {
+    const files = snap.files ? filesFromData(e.clipboardData) : imageFilesFromData(e.clipboardData);
+    if (files.length) {
       e.preventDefault();
-      void attach(images);
+      void attach(files);
       return;
     }
     if (e.clipboardData?.getData("text/plain")) return;
@@ -1256,14 +1278,14 @@ export function StructuredPane({
     readOnly || !snap
       ? []
       : [
-          ...(snap.images
+          ...(snap.files || snap.images
             ? [
                 {
                   id: "attach",
-                  aria: "Attach images",
-                  title: "Attach images",
+                  aria: snap.files ? "Attach files" : "Attach images",
+                  title: snap.files ? "Attach files" : "Attach images",
                   icon: <Paperclip size={16} />,
-                  disabled: busy || attachments.length + inFlight >= MAX_IMAGES,
+                  disabled: busy || attachments.length + inFlight >= MAX_ATTACHMENTS,
                   run: () => fileRef.current?.click(),
                 },
               ]
@@ -1542,7 +1564,7 @@ export function StructuredPane({
       >
         <div className={compose.fields}>
           {attachments.length > 0 && (
-            <div className={compose.pills} aria-label="Attached images" role="list">
+            <div className={compose.pills} aria-label="Attachments" role="list">
               {attachments.map((a) => (
                 <span
                   key={a.stored}
@@ -1642,11 +1664,16 @@ export function StructuredPane({
             {uploading ? "Uploading" : "Send"}
           </button>
         </div>
-        {snap?.images && !readOnly && (
+        {snap?.native?.worker && snap.files === false && !readOnly && (
+          <div className={chat.note}>
+            To attach documents, stop this session, then send a message to resume it.
+          </div>
+        )}
+        {(snap?.files || snap?.images) && !readOnly && (
           <input
             ref={fileRef}
             type="file"
-            accept="image/png,image/jpeg,image/gif,image/webp"
+            accept={snap.files ? undefined : "image/png,image/jpeg,image/gif,image/webp"}
             multiple
             hidden
             data-testid="structured-file-input"

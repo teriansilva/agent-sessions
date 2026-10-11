@@ -25,7 +25,7 @@ import secrets
 import uuid
 from dataclasses import dataclass
 
-from . import native_images
+from . import native_attachments
 from .native_protocol import ProtocolError, validate_text
 from .structured_types import normalize_context
 
@@ -317,8 +317,8 @@ def _params(action, value, *, immutable=False):
             out[key] = _text(item, MAX_TEXT)
         elif key == "attachments":
             try:
-                out[key] = native_images.normalize(item)
-            except native_images.ImageError:
+                out[key] = native_attachments.normalize(item)
+            except native_attachments.AttachmentError:
                 raise IPCError("invalid private IPC attachments") from None
             if not out[key]:
                 raise IPCError("invalid private IPC attachments")

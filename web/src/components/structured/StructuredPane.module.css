@@ -311,6 +311,9 @@
   gap: 6px;
   margin: 4px 0;
 }
+.turnFile {
+  align-self: flex-start;
+}
 .turnImageBox {
   display: block;
   flex: none;

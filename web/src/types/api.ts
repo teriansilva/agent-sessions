@@ -1354,7 +1354,7 @@ export interface StructuredTurn {
   tools: StructuredTool[];
   tools_truncated: boolean;
   /** The pictures the turn carried (#1332 Phase 3): upload names, shown via the read-back route. */
-  attachments?: { stored: string; mime: string }[];
+  attachments?: { stored: string; name?: string; mime: string }[];
 }
 
 /** One exact pending request. `payload` is the COMPLETE request the decision answers; `choices`
@@ -1423,6 +1423,8 @@ export interface StructuredSnapshot {
   read_only?: string | null;
   /** The client's protocol takes pictures in a turn (#1332 Phase 3). */
   images?: boolean;
+  /** Upload references supported by the running native worker (or its next generation). */
+  files?: boolean;
 }
 
 export interface StructuredEventPage {

@@ -1176,6 +1176,111 @@ _PNG = b"\x89PNG\r\n\x1a\n" + bytes(range(64))
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+async def test_documents_reach_all_native_agents_and_bind_replay_identity(
+    host, project, source, tmp_path
+):
+    uploads = tmp_path / ".agent-sessions" / "uploads"
+    uploads.mkdir(parents=True, mode=0o700, exist_ok=True)
+    stored = "20261010-010000-brief.pdf"
+    path = uploads / stored
+    path.write_bytes(b"%PDF-1.4 document body")
+    engine = ENGINES[source]
+    created = await runtime.create_session(engine, str(project), operation_id=ident())
+    assert created["files"] is True
+    key, operation = created["session_key"], ident()
+    await runtime.submit_turn(key, operation_id=operation, text="", attachments=[stored])
+    _, settled = await settle(key, operation)
+    assert settled["state"] == "completed"
+    assert str(path) in settled["reply"]
+    assert settled["text"] == ""  # reference belongs to delivery, not the user's journaled words
+    assert settled["attachments"] == [
+        {"stored": stored, "name": "brief.pdf", "mime": "application/octet-stream"}
+    ]
+    before = frames(project)
+    await runtime.submit_turn(key, operation_id=operation, text="", attachments=[stored])
+    assert frames(project) == before
+    path.write_bytes(b"%PDF-1.4 changed document")
+    with pytest.raises(runtime.StructuredError) as changed:
+        await runtime.submit_turn(key, operation_id=operation, text="", attachments=[stored])
+    assert changed.value.status == 409
+    assert frames(project) == before
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+@pytest.mark.parametrize("mixed", [False, True])
+async def test_document_text_budget_refuses_before_claim_and_accepts_exact_boundary(
+    host, project, source, tmp_path, mixed
+):
+    from agent_sessions import native_attachments, native_protocol
+
+    uploads = tmp_path / ".agent-sessions" / "uploads"
+    uploads.mkdir(parents=True, mode=0o700, exist_ok=True)
+    names = ["20261010-010000-brief.pdf"]
+    (uploads / names[0]).write_bytes(b"%PDF-1.4 document body")
+    if mixed:
+        names.append("20261010-010000-shot.png")
+        (uploads / names[-1]).write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
+    admitted = native_attachments.admit(
+        names, images=runtime.describe(ENGINES[source], check_ready=False).images
+    )
+    expanded, _ = native_attachments.prepare("x", admitted)
+    limit = native_protocol.MAX_INPUT_TEXT - len(expanded) + 1
+    created = await runtime.create_session(ENGINES[source], str(project), operation_id=ident())
+    key, operation = created["session_key"], ident()
+    before = await runtime.snapshot(key)
+    wire_before = frames(project)
+    for size in (native_protocol.MAX_INPUT_TEXT, limit + 1):
+        with pytest.raises(runtime.StructuredError) as rejected:
+            await runtime.submit_turn(
+                key, operation_id=operation, text="x" * size, attachments=names
+            )
+        assert rejected.value.status == 422
+        assert "size limit" in rejected.value.detail
+        assert (await runtime.snapshot(key))["turns"] == before["turns"]
+        assert frames(project) == wire_before
+    # The rejected operation was never claimed: its corrected payload can use the same id.
+    text, _ = native_attachments.prepare("x" * limit, admitted)
+    assert len(text) == native_protocol.MAX_INPUT_TEXT
+    await runtime.submit_turn(key, operation_id=operation, text="x" * limit, attachments=names)
+    _, settled = await settle(key, operation)
+    assert settled["state"] == "completed"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("ending", ["stop", "crash"])
+async def test_document_support_tracks_retained_worker_before_any_claim(
+    host, project, tmp_path, ending
+):
+    uploads = tmp_path / ".agent-sessions" / "uploads"
+    uploads.mkdir(parents=True, mode=0o700, exist_ok=True)
+    stored = "20261010-010000-brief.pdf"
+    (uploads / stored).write_bytes(b"%PDF-1.4 document")
+    key = (await runtime.create_session(ENGINES["codex"], str(project), operation_id=ident()))[
+        "session_key"
+    ]
+    snapshot = await runtime.snapshot(key)
+    native_state.update_lifecycle(snapshot["native"]["worker"], files=False)
+    assert not (await runtime.snapshot(key))["files"]
+    before = frames(project)
+    operation = ident()
+    with pytest.raises(runtime.StructuredError, match="stop and resume") as old:
+        await runtime.submit_turn(key, operation_id=operation, text="read", attachments=[stored])
+    assert old.value.status == 409
+    assert not (await runtime.snapshot(key))["turns"]
+    assert frames(project) == before
+    if ending == "stop":
+        await runtime.stop(key)
+    else:
+        host.kill(snapshot["native"]["worker"])
+    assert (await runtime.snapshot(key))["files"]
+    await runtime.submit_turn(key, operation_id=operation, text="read", attachments=[stored])
+    _, settled = await settle(key, operation)
+    assert settled["state"] == "completed"
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("source", ["codex", "claude"])
 async def test_a_turn_carries_pictures_to_the_agent_but_never_into_the_journal(
     host, project, source, tmp_path
@@ -1195,7 +1300,7 @@ async def test_a_turn_carries_pictures_to_the_agent_but_never_into_the_journal(
     snap, settled = await settle(key, turn)
     assert settled["reply"].startswith("echo:IMAGES:1:") and settled["reply"].endswith(":look")
     assert "image/png" in settled["reply"]
-    assert settled["attachments"] == [{"stored": stored, "mime": "image/png"}]
+    assert settled["attachments"] == [{"stored": stored, "name": "shot.png", "mime": "image/png"}]
     # The same id naming a different picture is a different request.
     (uploads / "20261008-010001-other.png").write_bytes(_PNG + b"!")
     with pytest.raises(runtime.StructuredError) as changed:
@@ -1216,7 +1321,7 @@ async def test_a_turn_carries_pictures_to_the_agent_but_never_into_the_journal(
 
 
 @pytest.mark.anyio
-async def test_a_client_that_takes_no_pictures_refuses_them_before_anything_is_sent(
+async def test_a_client_without_native_images_receives_uploaded_image_as_file(
     host, project, tmp_path, monkeypatch
 ):
     from agent_sessions.plugins import kinds
@@ -1228,15 +1333,18 @@ async def test_a_client_that_takes_no_pictures_refuses_them_before_anything_is_s
     key = (await runtime.create_session(engine, str(project), operation_id=ident()))["session_key"]
     monkeypatch.setitem(kinds.API_IMAGE_INPUT, "codex-app-server", False)
     assert not runtime.describe(engine).images
-    with pytest.raises(runtime.StructuredError) as refused:
-        await runtime.submit_turn(
-            key, operation_id=ident(), text="look", attachments=["20261008-010000-shot.png"]
-        )
-    assert refused.value.status == 422
+    operation = ident()
+    await runtime.submit_turn(
+        key, operation_id=operation, text="look", attachments=["20261008-010000-shot.png"]
+    )
+    _, settled = await settle(key, operation)
+    assert str(uploads / "20261008-010000-shot.png") in settled["reply"]
+    assert "IMAGES:" not in settled["reply"]
+    before = frames(project)
     with pytest.raises(runtime.StructuredError) as bogus:
         await runtime.submit_turn(key, operation_id=ident(), text="x", attachments=["../x.png"])
     assert bogus.value.status == 422
-    assert not [f for f in frames(project) if f["frame"].get("method") == "turn/start"]
+    assert frames(project) == before
 
 
 @pytest.mark.anyio

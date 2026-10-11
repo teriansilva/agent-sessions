@@ -1,7 +1,5 @@
-// Extract image files from a clipboard/drag DataTransfer so they can be uploaded via
-// /api/upload (#135). Terminals are text-only, so a pasted screenshot is otherwise
-// dropped; we lift the image bytes out here and the caller turns the upload's server
-// path into something the agent can read.
+// Extract files from clipboard/drag DataTransfer for /api/upload. The terminal's screenshot
+// path keeps its image filter; the API composer also accepts documents and other files.
 
 /** A materialized File counts as an image when it says so — or when the clipboard backend
  *  dropped the MIME type but the filename still carries an image extension (#530). */
@@ -12,18 +10,17 @@ function isImageFile(f: File): boolean {
   );
 }
 
-/** The image `File`s carried by a DataTransfer (clipboard or drop), or `[]` if none.
+/** The `File`s carried by a DataTransfer (clipboard or drop), or `[]` if none.
  *  Reads `items` first (the clipboard shape) and falls back to `files` (some browsers /
- *  drops populate only that). Non-image entries are ignored — plain-text paste is left
- *  for the terminal/textarea to handle normally. */
-export function imageFilesFromData(
+ *  drops populate only that). Plain text is left for the terminal/textarea normally. */
+export function filesFromData(
   dt: DataTransfer | null | undefined,
 ): File[] {
   if (!dt) return [];
   const out: File[] = [];
   const seen = new Set<string>();
   const add = (f: File | null) => {
-    if (!f || !isImageFile(f)) return;
+    if (!f) return;
     const sig = `${f.name}:${f.size}:${f.type}`;
     if (seen.has(sig)) return;
     seen.add(sig);
@@ -38,6 +35,11 @@ export function imageFilesFromData(
   }
   for (const f of Array.from(dt.files ?? [])) add(f);
   return out;
+}
+
+/** Terminal image paste keeps its existing filter; API file paste takes every materialized file. */
+export function imageFilesFromData(dt: DataTransfer | null | undefined): File[] {
+  return filesFromData(dt).filter(isImageFile);
 }
 
 /** Image files read straight off the async clipboard (`navigator.clipboard.read()`) —

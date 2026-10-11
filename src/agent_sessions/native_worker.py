@@ -40,7 +40,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import native_images, native_ipc, native_journal, native_protocol, native_state
+from . import native_attachments, native_ipc, native_journal, native_protocol, native_state
 
 EXIT_REFUSED = 3
 EXIT_FAILED = 4
@@ -975,14 +975,15 @@ class Worker:
     def frame(self, action: str, params: dict) -> dict | None:
         if action in {"submit", "steer"}:
             images = ()
+            text = params["text"]
             if params.get("attachments"):
                 try:
-                    # Re-read and re-verified against the journaled digest (#1332 Phase 3).
-                    images = native_images.inline(params["attachments"])
-                except native_images.ImageError as exc:
+                    # Reverify before constructing either images or file references (#1396).
+                    text, images = native_attachments.prepare(text, params["attachments"])
+                except native_attachments.AttachmentError as exc:
                     raise native_protocol.ProtocolError(str(exc)) from None
             method = self.codec.steer if action == "steer" else self.codec.submit
-            return method(params["text"], params["operation_id"], images)
+            return method(text, params["operation_id"], images)
         if action == "decide":
             if isinstance(self.codec, native_protocol.OpencodeAcpCodec):
                 # opencode maps no standing grant yet (#1339 Phase 4): its codec takes the one-shot
@@ -1115,6 +1116,7 @@ class Worker:
                 native_id=self.native_id,
                 ready_at=time.time(),
                 send_now=self.codec.send_now_mode,
+                files=True,
             )
             tasks.append(asyncio.create_task(self.idle_watch()))
             tasks.append(asyncio.create_task(self.dispatch_queue()))

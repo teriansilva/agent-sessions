@@ -13,7 +13,7 @@ import subprocess
 from dataclasses import asdict, dataclass
 from types import MappingProxyType
 
-from . import chat_config, chat_runtime, chat_store, engines, native_images, native_runtime
+from . import chat_config, chat_runtime, chat_store, engines, native_attachments, native_runtime
 from .engine_errors import EngineError
 from .plugins import api_source, kinds
 from .structured_types import ExecutionGuard, normalize_context
@@ -46,6 +46,7 @@ class ClientDescriptor:
     mission_ready: bool = False
     # The client's protocol takes pictures in a turn (`kinds.API_IMAGE_INPUT`, #1332 Phase 3).
     images: bool = False
+    files: bool = False
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -252,6 +253,7 @@ def describe(engine_id: str, *, check_ready: bool = True) -> ClientDescriptor:
             reason,
             adapter.authentication,
             images=m.runtime == "api" and kinds.API_IMAGE_INPUT.get(kind or "", False),
+            files=m.runtime == "api",
         )
 
 
@@ -341,10 +343,8 @@ def _turn(turn: dict, text_budget: list[int] | None = None) -> dict:
         "text": text,
         "reply": reply,
         "text_truncated": text_cut,
-        # Names only: the browser shows each through the upload read-back route (#1332).
-        "attachments": [
-            {"stored": a["stored"], "mime": a["mime"]} for a in turn.get("attachments") or ()
-        ],
+        # Images use read-back thumbnails; files expose only an inert display name (#1396).
+        "attachments": [native_attachments.public(a) for a in turn.get("attachments") or ()],
         "reply_truncated": reply_cut or bool(turn.get("truncated")),
         "reason": turn.get("reason"),
         **({"delivery": turn["delivery"]} if turn.get("delivery") else {}),
@@ -426,6 +426,7 @@ async def snapshot(session_key: str) -> dict:
         "read_only": read_only,
         # Whether the composer offers pictures (#1332 Phase 3); submit re-checks it.
         "images": describe(engine, check_ready=False).images,
+        "files": bool(raw.get("native", {}).get("files")),
     }
 
 
@@ -468,13 +469,17 @@ async def submit_turn(
     except ValueError as exc:
         raise StructuredError(422, str(exc)) from None
     tid = _operation_id(operation_id)
-    images = {}
+    uploaded = {}
     if attachments:
         if not isinstance(adapter, _NativeAdapter):
-            raise StructuredError(422, "this client takes no images")
+            raise StructuredError(422, "this client takes no attachments")
         try:
-            images["attachments"] = await asyncio.to_thread(native_images.admit, attachments)
-        except native_images.ImageError as exc:
+            uploaded["attachments"] = await asyncio.to_thread(
+                native_attachments.admit,
+                attachments,
+                images=describe(engine, check_ready=False).images,
+            )
+        except native_attachments.AttachmentError as exc:
             raise StructuredError(422, str(exc)) from None
     await adapter.submit(
         engine,
@@ -483,7 +488,7 @@ async def submit_turn(
         text,
         expected_revision=expected_revision,
         context=context,
-        **images,
+        **uploaded,
         execution_admission=execution_admission,
         idempotent=True,
     )

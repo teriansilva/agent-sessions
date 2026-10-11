@@ -170,6 +170,15 @@ protocol needs, there is no systemd user session, or its console agent is disabl
 console agent is later disabled, existing API conversations stay readable but take no new
 messages until it is back.
 
+**Attachments.** The paperclip accepts documents and other files, including PDFs, Office
+documents, text, spreadsheets, archives and files without an extension. You can send files
+without a message, paste files into the composer, or mix them with images, up to four
+attachments per message. Files use the existing 25 MB upload limit; native image inputs retain
+their 5 MiB limit. The agent reads documents using its normal tools and permissions, just as
+in a terminal session. Sent turns show document filenames and image thumbnails; **Sent** can
+restore the attachments. After an update, an older running API session may need **Stop** and
+a new message to resume before document attachments become available.
+
 **Skip permission prompts.** New session offers the same toggle for the Codex and Claude API
 clients, unticked by default. A session started with it ticked never asks: Codex
 runs with no approvals and no sandbox, Claude in its `bypassPermissions` mode. The choice is fixed
