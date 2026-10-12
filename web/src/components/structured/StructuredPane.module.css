@@ -1,7 +1,7 @@
 /* A native API client's session (#1311). Extends the chat pane's grammar (ChatPane.module.css):
    no radius, 1px lines, mono uppercase labels, amber only for your turns and the primary action.
    A request waiting for you is a STATE, so its rule and LED take --status-degraded.
-   Activity is compact by default; replies and approvals stay visible for every API client. */
+   Activity is compact by default; timestamped replies and approvals stay visible for every API client. */
 .activity {
   border: 1px solid var(--line-strong);
   background: var(--bg-1);
@@ -30,6 +30,19 @@
 .reply > div:last-child {
   border-left: 0;
   padding-left: 0;
+}
+.replyHeader {
+  flex-wrap: wrap;
+  align-items: baseline;
+  row-gap: 4px;
+  overflow-wrap: anywhere;
+}
+.replyTimestamp {
+  color: var(--text-muted);
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
 }
 .queued { font-size: 12px; color: var(--text-muted); }
 .queueRow { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; justify-content: space-between; }

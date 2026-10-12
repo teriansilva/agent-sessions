@@ -4,6 +4,7 @@ The web process never speaks a native protocol itself. It reserves ownership, wr
 private worker config, launches the fixed systemd service, pins its invocation, and then talks to
 the worker over the private socket. Reads (snapshot/events) come straight from the durable
 journal, so a browser or web restart observes everything without the worker's help.
+Response start times come from the first recorded non-empty text, never observation time.
 
 Lifecycle facts this module relies on (see ``docs/invariants/native-runtime.md``):
 
@@ -1191,6 +1192,7 @@ def project(
                     native_attachments.public(a) for a in params.get("attachments") or ()
                 ],
                 "reply": "",
+                "reply_ts": None,
                 "partial": "",
                 "context": params.get("context") or {},
                 "tools": [],
@@ -1230,6 +1232,8 @@ def project(
                 background = bool(data.get("background_active"))
             continue
         elif kind == "text":
+            if data["text"] and turn["reply_ts"] is None:
+                turn["reply_ts"] = item.get("ts")
             if data["partial"]:
                 turn["partial"] = (turn["partial"] + data["text"])[-SNAPSHOT_TEXT:]
             else:
@@ -1267,6 +1271,8 @@ def project(
                 turn["reason"] = data["error"][:2000]
             if data.get("text") and not turn["reply"]:
                 turn["reply"] = data["text"]
+                if turn["reply_ts"] is None:
+                    turn["reply_ts"] = item.get("ts")
             background = bool(data.get("background_active"))
             for key, value in list(pending.items()):
                 if value.get("operation_id") == turn["turn_id"]:

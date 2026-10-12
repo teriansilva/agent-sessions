@@ -9,6 +9,7 @@ Replays only observe; even a proved not-sent operation needs a new UUID for anot
 Callbacks are never reconstructed from these events. Worker ownership, current source/API
 admission, original authority and exact live approval checks remain effect-boundary duties.
 All transactions are short read/compare/appends and must never include a native RPC.
+Folded events retain recorded timestamps for response display; public cursors stay record-based.
 """
 
 from __future__ import annotations
@@ -345,6 +346,7 @@ def _fold_lines(journal: Journal, lines: list[bytes], first_cursor: int) -> None
                         "cursor": cursor,
                         "worker_id": record["worker_id"],
                         "connection_id": record["connection_id"],
+                        "ts": record["ts"],
                         "event": event,
                     }
                 )

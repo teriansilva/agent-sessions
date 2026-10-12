@@ -3,7 +3,8 @@
 This facade is transport-neutral. Reviewed implementations, selected by manifest shape, own
 execution; console launch/seed capabilities never count as structured support. The first adapter
 delegates to the existing chat runtime, including its durable store, tools and approval fences.
-Native manifests can be validated before their adapters ship, but cannot execute in this build.
+Native adapters delegate through the same admission and observation boundary.
+Snapshots preserve adapter-recorded reply times; absent evidence remains unknown.
 """
 
 from __future__ import annotations
@@ -342,6 +343,7 @@ def _turn(turn: dict, text_budget: list[int] | None = None) -> dict:
         "state": _outcome(turn),
         "text": text,
         "reply": reply,
+        "reply_ts": turn.get("reply_ts"),
         "text_truncated": text_cut,
         # Images use read-back thumbnails; files expose only an inert display name (#1396).
         "attachments": [native_attachments.public(a) for a in turn.get("attachments") or ()],
