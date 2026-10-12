@@ -1,3 +1,4 @@
+import { VARIABLES_PATH } from "../../lib/routes";
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { Search, Send, X } from "lucide-react";
@@ -240,7 +241,7 @@ export function TemplatePickerModal({
     }
     if (!onOpenGallery) return;
     e.preventDefault();
-    onOpenGallery("/templates?tab=variables");
+    onOpenGallery(VARIABLES_PATH);
   };
 
   const select = (t: Template) => {
@@ -411,7 +412,7 @@ export function TemplatePickerModal({
                             .map((n) => `{{${n}}}`)
                             .join(", ")}{" "}
                           can no longer be decrypted — enter it again under{" "}
-                          <a href="/templates?tab=variables" onClick={variablesLink}>
+                          <a href={VARIABLES_PATH} onClick={variablesLink}>
                             Variables
                           </a>
                           . Nothing will be sent until then.
@@ -435,7 +436,7 @@ export function TemplatePickerModal({
                                 .join(", ")}{" "}
                               — add{" "}
                               {unset.length === 1 ? "it" : "them"} under{" "}
-                              <a href="/templates?tab=variables" onClick={variablesLink}>
+                              <a href={VARIABLES_PATH} onClick={variablesLink}>
                                 Variables
                               </a>{" "}
                               first.

@@ -1,3 +1,4 @@
+import type { CollectionInput, SharedVariable, SharedVariableInput, SharedVariableUpdate, SharedVariablesResponse, VariableCollection } from "../types/variables";
 import type { Resources, ResourceSettings, ResourceValues } from "../types/resources";
 // Typed client for the FastAPI `/api/*` surface. Same-origin; cookie session auth.
 // Mutations (later) attach the CSRF token + are origin-checked server-side.
@@ -897,6 +898,20 @@ export const api = {
   dismissSuggestion: (id: string) => postVoid(`/api/templates/suggestions/${enc(id)}/dismiss`),
   writeTemplate: (request: string, signal?: AbortSignal) =>
     mutateJson<{ template: TemplateDraft }>("POST", "/api/templates/write", { request }, signal),
+  /** Shared Library (#1390): metadata and scoped values remain in the existing store. */
+  variables: () => getJsonWithDetail<SharedVariablesResponse>("/api/variables"),
+  enableSharedVariables: () => mutateJson<Pick<SharedVariablesResponse, "variables" | "collections">>("POST", "/api/variables/migrate", {}),
+  createVariable: (input: SharedVariableInput) => mutateJson<SharedVariable>("POST", "/api/variables", input),
+  updateVariable: (id: string, input: SharedVariableUpdate, expected: number) =>
+    mutateJson<SharedVariable>("PATCH", `/api/variables/${enc(id)}`, { ...input, expected_updated_at: expected }),
+  deleteVariable: (id: string, expected: number) =>
+    deleteVoid(`/api/variables/${enc(id)}?expected_updated_at=${enc(String(expected))}`),
+  createVariableCollection: (input: CollectionInput) =>
+    mutateJson<VariableCollection>("POST", "/api/variable-collections", input),
+  updateVariableCollection: (id: string, input: CollectionInput, expected: number) =>
+    mutateJson<VariableCollection>("PATCH", `/api/variable-collections/${enc(id)}`, { ...input, expected_updated_at: expected }),
+  deleteVariableCollection: (id: string, expected: number) =>
+    deleteVoid(`/api/variable-collections/${enc(id)}?expected_updated_at=${enc(String(expected))}`),
   /** The template variables library (#1090): values a `source: "library"` field takes by name.
    *  Same fencing as a template; the name is the identity (no rename). A DELETE refused because
    *  templates still use the variable is a 409 whose `record.dependants` lists them. */

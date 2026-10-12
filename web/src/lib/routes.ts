@@ -34,6 +34,9 @@ export const MAP_PATH = "/overview";
 /** The instruction-template gallery (#905). */
 export const TEMPLATES_PATH = "/templates";
 
+/** Library → shared variable definitions, values and collections (#1390). */
+export const VARIABLES_PATH = "/library/variables";
+
 /** Library → Playbooks: bundle gallery and detail (#1192). */
 export const PLAYBOOKS_PATH = "/library/playbooks";
 export function playbookPath(id: string): string {

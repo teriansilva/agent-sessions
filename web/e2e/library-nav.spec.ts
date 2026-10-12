@@ -1,7 +1,7 @@
-/** Library (#1294): Templates, Automations, Checklists and Playbooks, under one section.
+/** Library (#1294, #1390): Templates, Variables, Automations, Checklists and Playbooks.
  *
  *  Library is a split control like Sessions: the label goes to Templates (its first child), and
- *  its chevron opens a menu naming all four. Checklists and Automations moved here from Missions
+ *  its chevron opens a menu naming all five. Checklists and Automations moved here from Missions
  *  but kept their `/mission/...` URLs, so on their routes LIBRARY is the section that lights up,
  *  not Missions. The old Settings address for checklists still redirects. A real browser, because
  *  the menu is a portalled popover in the top bar and "where am I" is `aria-current` on laid-out
@@ -15,6 +15,7 @@ import {
   MISSION_PATH,
   PLAYBOOKS_PATH,
   TEMPLATES_PATH,
+  VARIABLES_PATH,
 } from "../src/lib/routes";
 import { settingsPath } from "../src/routes/settingsTabs";
 import { commonMocks } from "./mission-directions";
@@ -38,7 +39,7 @@ test.beforeEach(async ({ page }) => {
   );
 });
 
-test("Library names Templates, Automations, Checklists and Playbooks; Missions has no menu", async ({
+test("Library names all five destinations; Missions has no menu", async ({
   page,
 }) => {
   await page.goto(MISSION_PATH);
@@ -48,6 +49,7 @@ test("Library names Templates, Automations, Checklists and Playbooks; Missions h
   const menu = await libraryMenu(page);
   await expect(menu.locator("a[data-subsection]")).toHaveText([
     "Prompt Templates",
+    "Variables",
     "Automations",
     "Checklists",
     "Playbooks",
@@ -77,6 +79,22 @@ test("Library names Templates, Automations, Checklists and Playbooks; Missions h
   await third.locator('a[data-subsection="templates"]').click();
   await expect(page).toHaveURL(new RegExp(`${TEMPLATES_PATH}$`));
   await expect(bar.locator('[data-section="library"]')).toHaveAttribute("aria-current", "page");
+});
+
+test("Variables has a Library entry and its own screen", async ({ page }) => {
+  await page.route("**/api/variables", (r) => r.fulfill({ json: {
+    variables: [], collections: [], migration_required: false,
+    limits: { variables_max: 200, collections_max: 100, secret_min: 8, value_max: 10000, name_max: 64 },
+  } }));
+  await page.goto(MISSION_PATH);
+  const menu = await libraryMenu(page);
+  await menu.locator('a[data-subsection="variables"]').click();
+  await expect(page).toHaveURL(new RegExp(`${VARIABLES_PATH}$`));
+  await expect(page.getByRole("heading", { level: 1, name: "Variables & collections" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "New variable", exact: true })).toBeEnabled();
+  await expect(page.locator('.hud-topbar [data-section="library"]')).toHaveAttribute("aria-current", "true");
+  const again = await libraryMenu(page);
+  await expect(again.locator('a[data-subsection="variables"]')).toHaveAttribute("aria-current", "page");
 });
 
 test("Playbooks has a Library entry and its gallery", async ({ page }) => {

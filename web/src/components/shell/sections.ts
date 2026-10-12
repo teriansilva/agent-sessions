@@ -21,6 +21,7 @@
  */
 import {
   BookMarked,
+  Braces,
   CalendarClock,
   Crosshair,
   LayoutDashboard,
@@ -42,6 +43,7 @@ import {
   PLAYBOOKS_PATH,
   SESSIONS_PATH,
   TEMPLATES_PATH,
+  VARIABLES_PATH,
 } from "../../lib/routes";
 
 export type SectionId = "ask" | "sessions" | "mission" | "library";
@@ -53,6 +55,7 @@ export type SubsectionId =
   | "sessions"
   | "map"
   | "templates"
+  | "variables"
   | "automations"
   | "checklists"
   | "playbooks";
@@ -102,6 +105,7 @@ export const SECTIONS: Section[] = [
     to: TEMPLATES_PATH,
     children: [
       { id: "templates", label: "Prompt Templates", Icon: BookMarked, to: TEMPLATES_PATH },
+      { id: "variables", label: "Variables", Icon: Braces, to: VARIABLES_PATH },
       { id: "automations", label: "Automations", Icon: CalendarClock, to: AUTOMATIONS_PATH },
       { id: "checklists", label: "Checklists", Icon: ListChecks, to: CHECKLISTS_PATH },
       { id: "playbooks", label: "Playbooks", Icon: Workflow, to: PLAYBOOKS_PATH },
@@ -137,6 +141,7 @@ export function activeSubsection(pathname: string): SubsectionId | null {
   // Automations OWNS its subtree: one automation's run history and editor live under it.
   if (pathname === AUTOMATIONS_PATH || pathname.startsWith(`${AUTOMATIONS_PATH}/`))
     return "automations";
+  if (pathname === VARIABLES_PATH) return "variables";
   if (pathname === CHECKLISTS_PATH) return "checklists";
   if (pathname === PLAYBOOKS_PATH || pathname.startsWith(`${PLAYBOOKS_PATH}/`)) return "playbooks";
   return null;

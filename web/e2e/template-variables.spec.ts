@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 // Real-browser checks for the templates' variables library (#1090, Phase 1). One variable is
-// defined in the VARIABLES tab, two templates use it as a library field, and a send of EACH
+// defined in Library → Variables, two templates use it as a library field, and a send of EACH
 // carries its value; then the variable is edited once and a send of each carries the new value —
 // asserted on the exact bracketed-paste frames the composer writes, not on a DOM proxy. The API
 // is an in-page stateful stub (POST/PATCH/DELETE really change what the next GET returns). Also:
@@ -20,7 +20,7 @@ const LIMITS = {
   images_max: 8,
   image_suffixes: [".png"],
 };
-const VAR_LIMITS = { variables_max: 100, value_max: 2000, name_max: 32 };
+const VAR_LIMITS = { variables_max: 100, value_max: 2000, name_max: 32, secret_min: 8, collections_max: 50 };
 
 const libField = { name: "host", label: "Host", default: "", required: false, source: "library" };
 const TEMPLATES = [
@@ -85,7 +85,7 @@ declare global {
 
 const ID = "11111111-2222-4333-8444-555555555555";
 
-type Var = { name: string; value: string; created_at: number; updated_at: number };
+type Var = { id: string; name: string; kind: "text"; definition: { value_type: "text" }; set: boolean; value: string; created_at: number; updated_at: number };
 
 /** The shell every page needs, plus a STATEFUL variables library. */
 async function boot(page: Page) {
@@ -119,23 +119,24 @@ async function boot(page: Page) {
     TEMPLATES.filter((t) => t.fields.some((f) => f.source === "library" && f.name === name)).map(
       (t) => ({ id: t.id, name: t.name }),
     );
-  await page.route(/\/api\/template-variables(\/[^?]*)?(\?.*)?$/, async (r) => {
+  await page.route(/\/api\/template-variables(\?.*)?$/, r => r.fulfill({ json: { variables: vars.map(v => ({ ...v, used_by: usedBy(v.name) })), limits: VAR_LIMITS } }));
+  await page.route(/\/api\/variables(\/[^?]*)?(\?.*)?$/, async (r) => {
     const req = r.request();
     const url = new URL(req.url());
-    const name = decodeURIComponent(url.pathname.split("/api/template-variables/")[1] ?? "");
+    const name = decodeURIComponent(url.pathname.split("/api/variables/")[1] ?? "");
     const method = req.method();
     if (method === "GET") {
       return r.fulfill({
-        json: { variables: vars.map((v) => ({ ...v, used_by: usedBy(v.name) })), limits: VAR_LIMITS },
+        json: { variables: vars, collections: [], migration_required: false, limits: VAR_LIMITS },
       });
     }
     if (method === "POST") {
-      const body = req.postDataJSON() as { name: string; value: string };
-      const rec = { ...body, created_at: ++clock, updated_at: clock };
+      const body = req.postDataJSON() as Pick<Var, "name" | "value" | "kind" | "definition">;
+      const rec = { ...body, id: `id-${body.name}`, set: true, created_at: ++clock, updated_at: clock };
       vars.push(rec);
       return r.fulfill({ status: 201, json: rec });
     }
-    const v = vars.find((x) => x.name === name);
+    const v = vars.find((x) => x.id === name);
     if (!v) return r.fulfill({ status: 404, json: { detail: "unknown variable" } });
     if (method === "PATCH") {
       const body = req.postDataJSON() as { value: string; expected_updated_at: number };
@@ -147,7 +148,7 @@ async function boot(page: Page) {
       return r.fulfill({ json: v });
     }
     // DELETE: refused while any template uses it — the server's rule.
-    const deps = usedBy(name);
+    const deps = usedBy(v.name);
     if (deps.length) {
       return r.fulfill({
         status: 409,
@@ -213,15 +214,14 @@ test("one variable feeds two templates, and one edit changes both sends", async 
 
   // Define it in the VARIABLES tab.
   await page.goto("/templates?tab=variables");
-  await expect(page.getByText(/no variables yet/i)).toBeVisible();
+  await expect(page.getByText(/No variables here yet/i)).toBeVisible();
   await page.getByRole("button", { name: /new variable/i }).first().click();
   const form = page.getByRole("form", { name: /new variable/i });
-  await form.getByPlaceholder("staging_host").fill("host");
-  await form.getByPlaceholder("staging.acme.test").fill("a.test");
-  await form.getByRole("button", { name: /^add$/i }).click();
-  const row = page.locator('[data-variable="host"]');
+  await form.getByLabel("Name", { exact: true }).fill("host");
+  await form.getByLabel("Global value", { exact: true }).fill("a.test");
+  await form.getByRole("button", { name: /^save$/i }).click();
+  const row = page.getByRole("article", { name: "host", exact: true });
   await expect(row).toContainText("a.test");
-  await expect(row).toContainText("2 templates");
 
   expect(await sendTemplate(page, "Smoke test")).toBe("\x1b[200~Smoke test a.test now.\x1b[201~");
   expect(await sendTemplate(page, "Tail logs")).toBe(
@@ -231,9 +231,9 @@ test("one variable feeds two templates, and one edit changes both sends", async 
   // One edit…
   await page.goto("/templates?tab=variables");
   await page.getByRole("button", { name: /^edit host$/i }).click();
-  await page.getByLabel(/value of host/i).fill("b.test");
-  await page.getByRole("button", { name: /^save host$/i }).click();
-  await expect(page.locator('[data-variable="host"]')).toContainText("b.test");
+  await page.getByLabel("Global value", { exact: true }).fill("b.test");
+  await page.getByRole("button", { name: /^save$/i }).click();
+  await expect(page.getByRole("article", { name: "host", exact: true })).toContainText("b.test");
 
   // …reaches both templates at their next send.
   expect(await sendTemplate(page, "Smoke test")).toBe("\x1b[200~Smoke test b.test now.\x1b[201~");
@@ -266,21 +266,22 @@ test("a delete is refused while templates use the variable, naming them", async 
   await page.goto("/templates?tab=variables");
   await page.getByRole("button", { name: /new variable/i }).first().click();
   const form = page.getByRole("form", { name: /new variable/i });
-  await form.getByPlaceholder("staging_host").fill("host");
-  await form.getByPlaceholder("staging.acme.test").fill("a.test");
-  await form.getByRole("button", { name: /^add$/i }).click();
-  await page.getByRole("button", { name: /^delete host$/i }).click();
-  await page.getByRole("dialog").getByRole("button", { name: /^delete$/i }).click();
+  await form.getByLabel("Name", { exact: true }).fill("host");
+  await form.getByLabel("Global value", { exact: true }).fill("a.test");
+  await form.getByRole("button", { name: /^save$/i }).click();
+  await page.getByRole("button", { name: /^edit host$/i }).click();
+  await page.getByRole("button", { name: "Delete variable", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Delete variable", exact: true }).click();
   const alert = page.getByRole("alert");
-  await expect(alert).toContainText(/2 templates still use it/i);
+  await expect(alert).toContainText(/still used by 2 templates/i);
   await expect(alert.getByRole("link", { name: "Tail logs" })).toHaveAttribute(
     "href",
     "/templates/tail-logs",
   );
-  await expect(page.locator('[data-variable="host"]')).toBeVisible();
+  await expect(page.getByRole("dialog")).toBeVisible();
 });
 
-test("the tabs and a variable's actions are 44px touch targets on a phone", async ({
+test("library and variable actions are 44px touch targets on a phone", async ({
   page,
 }, info) => {
   test.skip(info.project.name !== "mobile", "touch-target sizes are the phone's contract");
@@ -288,14 +289,14 @@ test("the tabs and a variable's actions are 44px touch targets on a phone", asyn
   await page.goto("/templates?tab=variables");
   await page.getByRole("button", { name: /new variable/i }).first().click();
   const form = page.getByRole("form", { name: /new variable/i });
-  await form.getByPlaceholder("staging_host").fill("host");
-  await form.getByPlaceholder("staging.acme.test").fill("a.test");
-  await form.getByRole("button", { name: /^add$/i }).click();
+  await form.getByLabel("Name", { exact: true }).fill("host");
+  await form.getByLabel("Global value", { exact: true }).fill("a.test");
+  await form.getByRole("button", { name: /^save$/i }).click();
   for (const el of [
-    page.getByRole("tab", { name: /templates/i }),
-    page.getByRole("tab", { name: /variables/i }),
+    page.getByRole("button", { name: /all variables/i }),
+    page.getByRole("button", { name: /new collection/i }),
     page.getByRole("button", { name: /^edit host$/i }),
-    page.getByRole("button", { name: /^delete host$/i }),
+    page.getByRole("button", { name: /^new secret$/i }),
   ]) {
     const box = await el.boundingBox();
     expect(box!.height).toBeGreaterThanOrEqual(44);

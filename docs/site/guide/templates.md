@@ -49,7 +49,8 @@ is missing.
 
 Some values appear in many templates: a staging host, a repository URL, the command that runs your
 tests. Instead of copying them into each template's field defaults, define them once under the
-**Variables** tab of `/templates` (`/templates?tab=variables`) and use them from any template.
+**Library → Variables** (`/library/variables`) and use them from any template. Old
+`/templates?tab=variables` links redirect here.
 
 To use a variable, add a field with the **same name** and set its **Source** to **Library**. A
 library field has no default of its own: the editor shows the variable's value instead, and the
@@ -58,7 +59,8 @@ next send. The picker reads the library when it opens, so a picker that is alrea
 values it opened with; close and reopen it to pick up an edit made meanwhile.
 
 A value may span several lines, for example `cd repo` and `npm test` on separate lines. Enter adds a
-line; **Ctrl+Enter** (**⌘+Enter** on a Mac) saves, and Escape cancels an edit.
+line; **Ctrl+Enter** (**⌘+Enter** on a Mac) or **Save** commits the change. **Escape** or **Cancel**
+leaves the editor, asking before discarding unsaved changes. Navigating away also protects the draft.
 
 - **In the picker**, a library field starts at the variable's value, marked **from library**. You
   can change it for that one send; the variable itself does not change.
@@ -82,6 +84,23 @@ instructions. The library holds up to 100 variables, in its own file
 `AGENT_SESSIONS_TEMPLATE_VARS`), written atomically at mode `0600`, with the same damaged-file and
 newer-version protections as the template library below.
 
+### Typed definitions and collections
+
+Choose **New variable** for text, URL, path, choice, integer or boolean values. A definition can
+include a label, help, required flag, validation, default and example. Turn off **Store a global
+value** to create a definition awaiting a value. An unset definition is not an empty stored value;
+existing consumers still need a usable value before they can send it.
+
+Choose **New collection**, name it, and select existing variables. Variables can belong to several
+collections. **Edit collection** changes its name or membership; deleting the collection keeps all
+its variables and values. Collections organize the library and do not grant access to secrets.
+Variable reference names stay fixed; labels and collection names can change without changing IDs.
+
+Existing installations may show **Enable shared variables**. This explicitly upgrades the library,
+keeps the values and retains a private backup. Opening the page does not migrate the store. If an
+item changes in another tab, your draft stays open and saving is refused. **Discard draft & reload
+current** loads the saved version; it does not overwrite someone else's edit.
+
 ### Secret fields: passwords and tokens
 
 A field whose **Kind** is **Secret** holds a password, token or other credential. The value is
@@ -90,8 +109,10 @@ stored secret to your browser. The one exception is what the agent itself prints
 the value can appear on the session's screen and in its history.
 
 - **Stored secret.** Under **Variables**, **New secret** stores a value encrypted. A secret is at
-  least 8 characters, and cannot start or end with a space. It appears as `••••••••` with **Replace**, which starts empty: you type a new value,
-  since the old one is never shown. Use it from a field with **Source: Library** and **Kind:
+  least 8 characters, and cannot start or end with a space. The library shows **Stored · hidden**.
+  **Edit** starts with an empty **Replacement secret** field: leave it blank to keep the current
+  value, or enter a new value. Turn off **Store a global value** to remove the stored value while
+  keeping the definition. Use it from a field with **Source: Library** and **Kind:
   Secret** of the same name.
 - **Typed once.** A secret field with **Source: This template** is asked for in the picker, in a
   password box, each time you send. It is not stored anywhere.
@@ -310,4 +331,5 @@ read or write a v4 file. Do not change only the version number, discard v4 metad
 backup, or regenerate the secret key. Restoring the backup restores its old values as well as
 its format; it does not merge later work. No automatic downgrade or destructive cleanup runs.
 
-The shared Library screen and additional consumer bindings are being delivered separately.
+The Library screen manages definitions, values and collections. Shared selectors and additional
+consumer bindings are being added separately; collection membership alone does not bind a consumer.

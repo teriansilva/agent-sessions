@@ -1,0 +1,58 @@
+.page { width: min(1200px, 100%); margin: 0 auto; padding: 28px; color: var(--text-1); overflow-wrap: anywhere; }
+.head, .toolbar, .actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.head { margin-bottom: 20px; }
+.head h1 { margin: 4px 0; font-size: 26px; font-weight: 600; }
+.eyebrow, .count { color: var(--text-2); font: 11px var(--font-mono); letter-spacing: .08em; text-transform: uppercase; }
+.actions { justify-content: flex-start; }
+.notice { padding: 12px 0; margin: 0 0 24px; border-block: 1px solid var(--border); color: var(--text-2); line-height: 1.6; }
+.layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 28px; }
+.collections { min-width: 0; }
+.collections h2 { font: 12px var(--font-mono); color: var(--text-2); text-transform: uppercase; margin: 0 0 12px; }
+.collection { display: flex; width: 100%; min-height: 44px; padding: 10px 12px; gap: 8px; justify-content: space-between; align-items: center; text-align: left; color: var(--text-2); background: transparent; border: 1px solid transparent; cursor: pointer; }
+.collection span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.collection[aria-pressed="true"] { border-color: var(--border); color: var(--text-1); background: var(--panel); border-left: 2px solid var(--accent); }
+.collection:hover:not(:disabled) { color: var(--text-1); background: var(--panel); }
+.newCollection { margin-top: 12px; width: 100%; }
+.content { min-width: 0; }
+.toolbar { padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+.toolbar h2 { font-size: 18px; margin: 0; }
+.search { display: flex; align-items: center; gap: 8px; min-width: 0; width: 100%; padding: 8px 0; }
+.search input { flex: 1; min-width: 0; }
+.row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; align-items: center; gap: 16px; padding: 16px 0; border-bottom: 1px solid var(--border); }
+.name { display: flex; align-items: center; gap: 8px; font: 13px var(--font-mono); }
+.name span { min-width: 0; }
+.kind, .help { color: var(--text-2); font-size: 13px; line-height: 1.6; }
+.kind { margin-top: 6px; }
+.value { color: var(--text-2); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.empty { padding: 28px 0; color: var(--text-2); line-height: 1.6; }
+.fields { padding: 0; border: 0; min-width: 0; margin: 20px 0; }
+.field { display: flex; flex-direction: column; min-width: 0; gap: 8px; margin: 0 0 16px; font-size: 13px; }
+.field small { color: var(--text-2); line-height: 1.5; }
+.field input, .field textarea, .field select, .search input { width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 0; color: var(--text-1); background: var(--bg); font: inherit; box-sizing: border-box; }
+.field textarea { resize: vertical; }
+.twoColumns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+.check { display: flex; align-items: center; min-height: 44px; gap: 10px; font-size: 13px; line-height: 1.5; }
+.check input { width: 18px; height: 18px; flex-shrink: 0; accent-color: var(--accent); }
+.valueSection { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+.advanced { margin: 20px 0; border-block: 1px solid var(--border); }
+.advanced summary { min-height: 44px; align-content: center; cursor: pointer; font-size: 13px; }
+.advanced[open] summary { margin-bottom: 12px; }
+.error, .status { padding: 12px 0; line-height: 1.6; font-size: 13px; }
+.error { color: var(--danger-text); }
+.error:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.status { color: var(--text-2); }
+.page :is(button, input, select, textarea, summary):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.page button:disabled { opacity: .55; cursor: default; }
+@media (max-width: 800px) {
+  .page { padding: 18px 14px; }
+  .head h1 { font-size: 22px; }
+  .layout { grid-template-columns: minmax(0, 1fr); gap: 24px; }
+  .collections { border-bottom: 1px solid var(--border); padding-bottom: 16px; }
+  .collectionList { display: flex; flex-wrap: wrap; gap: 4px; }
+  .collection { width: auto; max-width: 100%; border-color: var(--border); }
+  .newCollection { width: auto; }
+  .twoColumns { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .row { grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
+  .value { grid-column: 1; grid-row: 2; }
+  .row > button { grid-column: 2; grid-row: 1 / 3; }
+}

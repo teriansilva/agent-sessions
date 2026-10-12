@@ -32,6 +32,7 @@ describe("activeSection", () => {
     ["/mission/automations/abc123", "library"],
     ["/mission/checklists", "library"],
     ["/library/playbooks", "library"],
+    ["/library/variables", "library"],
   ])("%s → %s", (path, expected) => {
     expect(activeSection(path)).toBe(expected);
   });
@@ -57,6 +58,8 @@ describe("activeSection", () => {
     ["/templates/tpl_1", "templates"],
     ["/mission/checklists", "checklists"],
     ["/library/playbooks", "playbooks"],
+    ["/library/variables", "variables"],
+    ["/library/variablesx", null],
     ["/mission", null],
     ["/overviewer", null],
     // #1201: Automations owns its subtree (one automation's runs and editor live under it).
@@ -136,11 +139,12 @@ describe("SectionNav", () => {
     const items = within(menu).getAllByRole("menuitem");
     expect(items.map((i) => [i.textContent, i.getAttribute("href")])).toEqual([
       ["Prompt Templates", "/templates"],
+      ["Variables", "/library/variables"],
       ["Automations", "/mission/automations"],
       ["Checklists", "/mission/checklists"],
       ["Playbooks", "/library/playbooks"],
     ]);
-    expect(items[2]).toHaveAttribute("aria-current", "page");
+    expect(items[3]).toHaveAttribute("aria-current", "page");
   });
 
   test("Sessions points at the last session route, not always at the landing", () => {

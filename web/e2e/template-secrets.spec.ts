@@ -93,6 +93,8 @@ const STORED = "stored-db-password-1";
 const TYPED = "typed-deploy-token-1";
 
 type Secret = {
+  id: string;
+  definition: { value_type: "text" };
   name: string;
   kind: "secret";
   set: true;
@@ -137,12 +139,14 @@ async function boot(page: Page) {
       },
     });
   });
-  await page.route(/\/api\/template-variables(\/[^?]*)?(\?.*)?$/, (r) => {
+  await page.route(/\/api\/(?:template-variables|variables)(\/[^?]*)?(\?.*)?$/, (r) => {
     const req = r.request();
     if (req.method() === "POST") {
       const body = req.postDataJSON() as { name: string; kind: string; value: string };
       created.push(body);
       const rec: Secret = {
+        id: `id-${body.name}`,
+        definition: { value_type: "text" },
         name: body.name,
         kind: "secret",
         set: true,
@@ -156,7 +160,8 @@ async function boot(page: Page) {
     return r.fulfill({
       json: {
         variables: vars.map((v) => ({ ...v, used_by: [{ id: "migrate", name: "Run migration" }] })),
-        limits: { variables_max: 100, value_max: 2000, name_max: 32, secret_min: 8 },
+        collections: [], migration_required: false,
+        limits: { variables_max: 100, value_max: 2000, name_max: 32, secret_min: 8, collections_max: 50 },
       },
     });
   });
@@ -204,15 +209,15 @@ test("a secret is stored write-only, and a template using it is sent by the serv
     .first()
     .click();
   const form = page.getByRole("form", { name: /new secret/i });
-  await form.getByPlaceholder("staging_host").fill("db_pass");
-  const value = form.getByPlaceholder("stored encrypted");
+  await form.getByLabel("Name", { exact: true }).fill("db_pass");
+  const value = form.getByLabel("Global value", { exact: true });
   await expect(value).toHaveAttribute("type", "password");
   await value.fill(STORED);
-  await form.getByRole("button", { name: /^add$/i }).click();
-  const row = page.locator('[data-variable="db_pass"]');
-  await expect(row).toContainText("never shown again");
+  await form.getByRole("button", { name: /^save$/i }).click();
+  const row = page.getByRole("article", { name: "db_pass", exact: true });
+  await expect(row).toContainText("Stored · hidden");
   await expect(row).not.toContainText(STORED);
-  expect(created).toEqual([{ name: "db_pass", value: STORED, kind: "secret" }]);
+  expect(created).toEqual([{ name: "db_pass", value: STORED, kind: "secret", definition: { value_type: "text", label: "db_pass", help: "", required: false } }]);
 
   // Send the template from a session.
   await page.goto(`/s/claude/${ID}`);

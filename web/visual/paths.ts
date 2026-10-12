@@ -65,6 +65,14 @@ const SPA_MOUNTED = {
 export const VISUAL_PATHS: VisualPath[] = [
   {
     group: "authed",
+    path: "/library/variables",
+    name: "variables",
+    description: "Shared variables and collections — definitions and optional global values",
+    requireAuth: "admin",
+    waitFor: { selector: '[aria-label="Search variables"]', timeoutMs: 12000 },
+  },
+  {
+    group: "authed",
     path: "/s/codex-api/5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f",
     name: "api-guidance-codex",
     description: "Codex API — collapsed activity, distinct reply and queued Send now (synthetic activity)",

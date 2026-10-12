@@ -80,11 +80,11 @@ async function boot(page: Page) {
     }
     return r.fulfill({ json: { templates: [], limits: LIMITS } });
   });
-  await page.route(/\/api\/template-variables(\?.*)?$/, (r) =>
+  await page.route(/\/api\/(?:template-variables|variables)(\?.*)?$/, (r) =>
     r.fulfill({
       json: {
-        variables: [],
-        limits: { variables_max: 100, value_max: 2000, name_max: 32, secret_min: 8 },
+        variables: [], collections: [], migration_required: false,
+        limits: { variables_max: 100, value_max: 2000, name_max: 32, secret_min: 8, collections_max: 50 },
       },
     }),
   );
@@ -145,15 +145,21 @@ test("nothing is analysed until ANALYSE; the drafts open in the editor and the l
   await page.goto("/templates?tab=suggested");
   await page.getByRole("button", { name: /add staging_host to the library/i }).click();
   const form = page.getByRole("form", { name: /new variable/i });
-  await expect(form.getByPlaceholder("staging_host")).toHaveValue("staging_host");
-  await expect(form.getByPlaceholder("staging.acme.test")).toHaveValue("staging.acme.test");
+  await expect(form.getByLabel("Name", { exact: true })).toHaveValue("staging_host");
+  await expect(form.getByLabel("Global value", { exact: true })).toHaveValue("staging.acme.test");
+
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByRole("button", { name: "Discard changes", exact: true }).click();
 
   // A credential-like suggestion: NEW SECRET, the value empty — never echoed back.
   await page.goto("/templates?tab=suggested");
   await page.getByRole("button", { name: /add deploy_token to the library/i }).click();
   const secret = page.getByRole("form", { name: /new secret/i });
-  await expect(secret.getByPlaceholder("staging_host")).toHaveValue("deploy_token");
-  await expect(secret.getByPlaceholder("stored encrypted")).toHaveValue("");
+  await expect(secret.getByLabel("Name", { exact: true })).toHaveValue("deploy_token");
+  await expect(secret.getByLabel("Global value", { exact: true })).toHaveValue("");
+
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByRole("button", { name: "Discard changes", exact: true }).click();
 
   // DISMISS.
   await page.goto("/templates?tab=suggested");
@@ -193,7 +199,7 @@ test("every Templates tab fits a 320px phone — measured against the tab row, n
   await boot(page);
   await page.goto("/templates?tab=suggested");
   const row = page.getByRole("tablist", { name: /templates sections/i });
-  await expect(row.getByRole("tab")).toHaveCount(3);
+  await expect(row.getByRole("tab")).toHaveCount(2);
   // The page hides horizontal overflow, so the document never widens: a clipped tab only shows
   // as a tab box running past the row that holds it.
   const box = (await row.boundingBox())!;

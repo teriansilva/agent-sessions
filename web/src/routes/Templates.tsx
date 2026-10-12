@@ -1,17 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, Navigate, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Copy, Pencil, Plus, Search, Send, Trash2 } from "lucide-react";
 import { ConfirmDialog } from "../components/templates/ConfirmDialog";
 import { SessionChooserModal } from "../components/templates/SessionChooserModal";
 import { UploadImage } from "../components/templates/UploadImage";
 import { SuggestionsPanel } from "../components/templates/SuggestionsPanel";
-import { VariablesPanel, type CreatingKind } from "../components/templates/VariablesPanel";
+import { VARIABLES_PATH } from "../lib/routes";
 import { api, ApiError } from "../lib/api";
 import type {
   Template,
   TemplateLimits,
-  TemplateVariable,
-  TemplateVariableLimits,
 } from "../types/api";
 import styles from "./Templates.module.css";
 import { errMessage, metaLine } from "./templatesLib";
@@ -27,9 +25,7 @@ import { errMessage, metaLine } from "./templatesLib";
  *  not cheap metadata. It sends the card's `updated_at` as the fence, so a delete against a
  *  record another tab just edited is a 409 the gallery folds back in by reloading.
  *
- *  Two tabs (#1090): TEMPLATES and VARIABLES — the variables library, `?tab=variables`, so the
- *  picker and the editor can link straight to it. The library is loaded beside the templates so
- *  both tab counts are real; a failure to load it never blocks the gallery. */
+ *  Variables now have their own Library destination (#1390); old tab links redirect there. */
 
 function matches(t: Template, q: string): boolean {
   if (!q) return true;
@@ -37,27 +33,12 @@ function matches(t: Template, q: string): boolean {
   return hay.includes(q);
 }
 
-const VARIABLE_LIMITS_FALLBACK: TemplateVariableLimits = {
-  variables_max: 100,
-  value_max: 2000,
-  name_max: 32,
-  secret_min: 8,
-};
-
 export default function Templates() {
   const navigate = useNavigate();
   const location = useLocation();
   const [params, setParams] = useSearchParams();
   const tabParam = params.get("tab");
-  const tab: "templates" | "variables" | "suggested" =
-    tabParam === "variables" || tabParam === "suggested" ? tabParam : "templates";
-  const [variables, setVariables] = useState<TemplateVariable[] | null>(null);
-  const [varLimits, setVarLimits] = useState<TemplateVariableLimits>(VARIABLE_LIMITS_FALLBACK);
-  const [varError, setVarError] = useState("");
-  const [creatingVar, setCreatingVar] = useState<CreatingKind>(null);
-  // ADD TO LIBRARY from a suggestion (#1090 Phase 3): the new-variable form opens prefilled. The
-  // panel reads it once when it mounts on the Variables tab.
-  const [varPrefill, setVarPrefill] = useState<{ name: string; value: string } | null>(null);
+  const tab = tabParam === "suggested" ? "suggested" : "templates";
   const [suggestedCount, setSuggestedCount] = useState<number | null>(null);
   const [templates, setTemplates] = useState<Template[] | null>(null);
   const [limits, setLimits] = useState<TemplateLimits | null>(null);
@@ -106,30 +87,7 @@ export default function Templates() {
     void load();
   }, [load]);
 
-  const loadVariables = useCallback(
-    (): Promise<boolean> =>
-      Promise.resolve()
-        .then(() => api.templateVariables())
-        .then((r) => {
-          setVariables(r.variables);
-          setVarLimits(r.limits);
-          setVarError("");
-          return true;
-        })
-        .catch((e: unknown) => {
-          setVarError(errMessage(e, "Could not load the variables library"));
-          return false;
-        }),
-    [],
-  );
-  useEffect(() => {
-    void loadVariables();
-  }, [loadVariables]);
-
-  const showTab = (next: "templates" | "variables" | "suggested") => {
-    // A suggestion's draft belongs to the ONE visit it opened the form for: leaving the tab drops
-    // it, so coming back never resurrects an old suggestion (independent review of #1110).
-    if (next !== "variables") setVarPrefill(null);
+  const showTab = (next: "templates" | "suggested") => {
     setParams(next === "templates" ? {} : { tab: next }, { replace: true });
   };
 
@@ -218,6 +176,8 @@ export default function Templates() {
 
   const total = templates?.length ?? 0;
 
+  if (tabParam === "variables") return <Navigate to={VARIABLES_PATH} replace />;
+
   return (
     <div className={styles.page}>
       <header className={styles.head}>
@@ -227,17 +187,7 @@ export default function Templates() {
             //
           </span>
           <span className={styles.meta}>
-            {tab === "variables"
-              ? variables === null
-                ? varError
-                  ? "not loaded"
-                  : "loading"
-                : `${variables.length} ${variables.length === 1 ? "variable" : "variables"}`
-              : templates === null
-                ? error
-                  ? "not loaded"
-                  : "loading"
-                : `${total} saved`}
+            {templates === null ? error ? "not loaded" : "loading" : `${total} saved`}
           </span>
           {tab === "templates" && total > 0 && (
             <>
@@ -249,40 +199,10 @@ export default function Templates() {
           )}
         </div>
         <div className={styles.headRight}>
-          {tab === "variables" ? (
-            <>
-              <button
-                type="button"
-                className={styles.ghost}
-                disabled={
-                  creatingVar !== null ||
-                  variables === null ||
-                  variables.length >= varLimits.variables_max
-                }
-                onClick={() => setCreatingVar("secret")}
-              >
-                🔒 New secret
-              </button>
-              <button
-                type="button"
-                className={styles.cta}
-                disabled={
-                  creatingVar !== null ||
-                  variables === null ||
-                  variables.length >= varLimits.variables_max
-                }
-                onClick={() => setCreatingVar("text")}
-              >
-                <Plus size={14} aria-hidden="true" />
-                New variable
-              </button>
-            </>
-          ) : (
-            <Link to="/templates/new" className={styles.cta}>
-              <Plus size={14} aria-hidden="true" />
-              New template
-            </Link>
-          )}
+          <Link to="/templates/new" className={styles.cta}>
+            <Plus size={14} aria-hidden="true" />
+            New template
+          </Link>
         </div>
       </header>
 
@@ -297,17 +217,6 @@ export default function Templates() {
           onClick={() => showTab("templates")}
         >
           Templates <span className={styles.chipN}>{templates?.length ?? "–"}</span>
-        </button>
-        <button
-          type="button"
-          role="tab"
-          id="tpl-tab-variables"
-          aria-selected={tab === "variables"}
-          aria-controls="tpl-tabpanel"
-          className={`${styles.tabBtn} ${tab === "variables" ? styles.tabOn : ""}`}
-          onClick={() => showTab("variables")}
-        >
-          Variables <span className={styles.chipN}>{variables?.length ?? "–"}</span>
         </button>
         <button
           type="button"
@@ -339,41 +248,10 @@ export default function Templates() {
                 },
               })
             }
-            onAddVariable={(sug) => {
-              setVarPrefill({ name: sug.name, value: sug.secret ? "" : sug.value });
-              setCreatingVar(sug.secret ? "secret" : "text");
-              showTab("variables");
-            }}
+            onAddVariable={(sug) => navigate(VARIABLES_PATH, {
+              state: { variablePrefill: { name: sug.name, value: sug.secret ? "" : sug.value, secret: !!sug.secret } },
+            })}
           />
-        ) : tab === "variables" ? (
-          <>
-            {varError && (
-              <p className={styles.err} role="alert">
-                {varError}
-                <button
-                  type="button"
-                  className={styles.retry}
-                  onClick={() => {
-                    setVarError("");
-                    void loadVariables();
-                  }}
-                >
-                  Retry
-                </button>
-              </p>
-            )}
-            {variables === null && !varError && <p className={styles.state}>Loading…</p>}
-            {variables !== null && (
-              <VariablesPanel
-                prefill={varPrefill}
-                variables={variables}
-                limits={varLimits}
-                creating={creatingVar}
-                onCreatingChange={setCreatingVar}
-                reload={loadVariables}
-              />
-            )}
-          </>
         ) : (
           <>
             {note && <p className={styles.note}>{note}</p>}

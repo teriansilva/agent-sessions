@@ -251,7 +251,7 @@ test("a missing library variable disables Send AND Insert and names the variable
   expect(alert).toHaveTextContent("{{test_cmd}}");
   expect(within(alert).getByRole("link", { name: /variables/i })).toHaveAttribute(
     "href",
-    "/templates?tab=variables",
+    "/library/variables",
   );
   // Typing a value into the empty slot does not unblock it: the library is the owner.
   await userEvent.type(screen.getByLabelText(/^test command$/i), "pytest");
