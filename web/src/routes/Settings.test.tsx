@@ -1,5 +1,6 @@
 import {
   act,
+  cleanup,
   fireEvent,
   render,
   screen,
@@ -31,6 +32,7 @@ vi.mock("../lib/api", async () => {
       setTheme: vi.fn(),
       setAccent: vi.fn(),
       engines: vi.fn(),
+      engineDetail: vi.fn(),
       plugins: vi.fn().mockResolvedValue({ feed: { state: "missing", error: null }, catalog: [], plugins: [], operations: [], roster_generation: 1 }),
       agentUsage: vi.fn(),
       agentUsageRefresh: vi.fn(),
@@ -176,6 +178,33 @@ const flushFetches = () =>
     await Promise.resolve();
   });
 
+/** The agent page's detail, built from the roster fixture: enough for its usage meter (#1408 moved
+ *  per-agent limits there from the roster). */
+function detailFor(id: string) {
+  const e = (fixture.engines as EngineInfo[]).find((x) => x.id === id)!;
+  return {
+    id, label: e.label, publisher: "battlelab", version: "1", contract: 1, source: "in-tree",
+    kind: e.kind, runtime: e.runtime, status: "active",
+    binary: { name: id, env_var: null, search_paths: [] },
+    provenance: { state: "absent", via: null, path: null, note: null },
+    store: null, launch: null, transcript: { kind: null, strict: false },
+    usage: { source: e.usage.source, kind: null }, capabilities: e.capabilities,
+    models: [], maintenance: [], model_select: e.model_select,
+  };
+}
+
+/** Agents › Defaults: the global alert threshold + notify (#1408). */
+async function openDefaults() {
+  renderSettings("dark", "#ffb000", "/settings/agents/defaults");
+  await screen.findByRole("spinbutton", { name: /alert threshold/i });
+}
+
+/** One agent's own page: its usage meter and per-agent limits (#1408). */
+async function openAgent(id: string) {
+  renderSettings("dark", "#ffb000", `/settings/agents/${id}`);
+  await screen.findByRole("meter", { name: new RegExp(`${id} usage`, "i") });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   sessionStorage.clear();
@@ -188,6 +217,7 @@ beforeEach(() => {
     job: null, runner: null,
   });
   vi.mocked(api.version).mockResolvedValue({ version: "1.2.3" });
+  vi.mocked(api.engineDetail).mockImplementation(async (id: string) => detailFor(id) as never);
   vi.mocked(api.config).mockResolvedValue({
     csrf: "t",
     new_session_engines: [],
@@ -719,70 +749,76 @@ test("an invalid custom hex is rejected (no setAccent) and the field resets", as
 
 // ---- System tab ----
 
-test("the roster renders a card per engine: its state, its path and its capabilities (#1128)", async () => {
+test("the roster is one row per CLI: its status, its modes, and a link to its page (#1408)", async () => {
+  // API clients ready here, so a row's status is its console agent's; a not-ready API mode would
+  // (rightly) make the whole row read Unavailable — the presenter's tests pin that.
+  vi.mocked(api.engines).mockResolvedValue({
+    engines: (fixture.engines as EngineInfo[]).map((e) =>
+      e.runtime === "api" ? { ...e, present: true } : e.id === "codex" ? { ...e, present: false, bin: null } : e,
+    ),
+    problems: [],
+  });
   renderSettings("dark", "#ffb000", "/settings/agents");
   expect(screen.getByRole("heading", { name: "Agents" })).toBeInTheDocument();
-  await waitFor(() =>
-    expect(screen.getByText("/usr/local/bin/claude")).toBeInTheDocument(),
+  const list = await screen.findByRole("list", { name: "All agents" });
+  const row = (id: string) => list.querySelector(`[data-engine="${id}"]`) as HTMLElement;
+  await waitFor(() => expect(row("claude")).not.toBeNull());
+  expect(within(row("claude")).getByText("Ready")).toBeInTheDocument();
+  // An absent console agent says so in a word, never a blank.
+  expect(within(row("codex")).getByText("Not installed")).toBeInTheDocument();
+  // Each API client is a MODE of its source's row (grouped on api.source), not a row of its own.
+  const apiClients = (fixture.engines as EngineInfo[]).filter((e) => e.runtime === "api" && e.api?.source === "claude");
+  for (const c of apiClients) {
+    expect(list.querySelector(`[data-engine="${c.id}"]`)).toBeNull();
+    expect(within(row("claude")).getByRole("link", { name: new RegExp(`^${c.label}: API`) })).toHaveAttribute(
+      "href",
+      `/settings/agents/${c.id}`,
+    );
+  }
+  expect(within(row("claude")).getByRole("link", { name: /details for claude code/i })).toHaveAttribute(
+    "href",
+    "/settings/agents/claude",
   );
-  const claude = screen.getByRole("heading", { name: "Claude Code" })
-    .closest("li")!;
-  expect(within(claude).getByText("Present")).toBeInTheDocument();
-  expect(within(claude).getByText(/Runtime \/\/ terminal/i)).toBeInTheDocument();
-  const codex = screen.getByRole("heading", { name: "Codex" }).closest("li")!;
-  // An absent engine says so, and shows no path it does not have.
-  expect(within(codex).getByText("Absent")).toBeInTheDocument();
-  expect(within(codex).getByText(/not installed on this host/i)).toBeInTheDocument();
-  // Undeclared capabilities are shown OFF, not hidden: gemini is no handoff target.
-  const gemini = screen.getByRole("heading", { name: "Gemini CLI" })
-    .closest("li")!;
-  const caps = within(gemini).getByRole("list", { name: /capabilities/ });
-  expect(within(caps).getByText(/handoff target/)).toHaveTextContent("(off)");
-  expect(within(caps).getByText(/^resume$/)).toBeInTheDocument();
-  // Each card links to the agent's own page.
-  expect(
-    within(claude).getByRole("link", { name: /details for claude code/i }),
-  ).toHaveAttribute("href", "/settings/agents/claude");
+  // Capabilities, binary paths and budgets moved off the roster (#1408): the agent page has them.
+  expect(within(list).queryByRole("list", { name: /capabilities/ })).toBeNull();
 });
 
-test("shows what an agent has spent on the row that already names it (#839)", async () => {
+test("shows what an agent has spent: a glance on its row, the whole caption on its page (#839, #1408)", async () => {
   renderSettings("dark", "#ffb000", "/settings/agents");
-  await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
+  const list = await screen.findByRole("list", { name: "All agents" });
+  await waitFor(() => expect(within(list).getByText(/93%/)).toBeInTheDocument());
+  cleanup();
+  await openAgent("claude");
+  expect(screen.getByText("93%")).toBeInTheDocument();
   // The window nearest its limit, not the first one the agent listed.
   expect(screen.getByText(/week \(all models\)/)).toBeInTheDocument();
   expect(screen.queryByText("4%")).not.toBeInTheDocument();
   const meter = screen.getByRole("meter", { name: /claude usage/i });
   expect(meter).toHaveAttribute("aria-valuenow", "93");
-  // The SOURCE is on the row itself — scoped, because the section hint also says "plan".
-  // A plan percentage and a counter the operator typed are different claims, and a panel
-  // that renders them identically is lying by omission.
+  // The SOURCE is on the meter's own row: a plan percentage and a counter the operator typed
+  // are different claims, and a panel that renders them identically is lying by omission.
   expect(within(meter.parentElement!).getByText("plan")).toBeInTheDocument();
 });
 
 test("an agent that reports nothing shows no percentage, not a zero (#839)", async () => {
-  renderSettings("dark", "#ffb000", "/settings/agents");
-  await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
+  await openAgent("codex");
   // codex reports nothing and has no limit set: an em dash, never "0%" — which would read
   // as "this agent has used nothing".
   const meter = screen.getByRole("meter", { name: /codex usage/i });
   expect(meter).not.toHaveAttribute("aria-valuenow");
-  // Scoped to the meter row: the absent-binary placeholder is also an em dash.
   expect(within(meter.parentElement!).getByText("—")).toBeInTheDocument();
   expect(screen.getByText(/reports no usage/)).toBeInTheDocument();
 });
 
 test("a plan agent is offered no limit box to set (#839)", async () => {
-  renderSettings("dark", "#ffb000", "/settings/agents");
-  await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
   // claude reports a real quota against a real plan; a "limit" input there would invite the
   // operator to configure a number the agent already knows better.
-  expect(
-    screen.queryByRole("spinbutton", { name: /claude token limit/i }),
-  ).not.toBeInTheDocument();
+  await openAgent("claude");
+  expect(screen.queryByRole("spinbutton", { name: /claude token limit/i })).not.toBeInTheDocument();
+  cleanup();
   // codex has no engine-reported figure, so its counter IS the operator's to set.
-  expect(
-    screen.getByRole("spinbutton", { name: /codex token limit/i }),
-  ).toBeInTheDocument();
+  await openAgent("codex");
+  expect(screen.getByRole("spinbutton", { name: /codex token limit/i })).toBeInTheDocument();
 });
 
 test("saving a limit sends only that agent's field (#839)", async () => {
@@ -794,8 +830,7 @@ test("saving a limit sends only that agent's field (#839)", async () => {
     },
     agents: [],
   });
-  renderSettings("dark", "#ffb000", "/settings/agents");
-  await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
+  await openAgent("codex");
   const input = screen.getByRole("spinbutton", { name: /codex token limit/i });
   fireEvent.change(input, { target: { value: "5000" } });
   fireEvent.blur(input);
@@ -818,8 +853,7 @@ test("saves are serialized, so the last response is the newest state (#839)", as
   vi.mocked(api.setAgentBudgets).mockImplementation(
     () => new Promise<AgentUsageResponse>((res) => deferred.push(res)),
   );
-  renderSettings("dark", "#ffb000", "/settings/agents");
-  await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
+  await openDefaults();
 
   const snapshot = (notifyValue: boolean): AgentUsageResponse => ({
     budgets: { threshold_pct: 90, notify: notifyValue, engines: {} },
@@ -827,9 +861,9 @@ test("saves are serialized, so the last response is the newest state (#839)", as
   });
 
   fireEvent.click(screen.getByRole("checkbox", { name: /notify me/i })); // save #1
-  const limit = screen.getByRole("spinbutton", { name: /codex token limit/i });
-  fireEvent.change(limit, { target: { value: "7000" } });
-  fireEvent.blur(limit); // save #2
+  const threshold = screen.getByRole("spinbutton", { name: /alert threshold/i });
+  fireEvent.change(threshold, { target: { value: "70" } });
+  fireEvent.blur(threshold); // save #2
   await waitFor(() => expect(deferred.length).toBe(1));
   // Still one: the second is queued behind it, not racing it.
   expect(deferred.length).toBe(1);
@@ -857,8 +891,7 @@ test("two quick notify toggles send off then on, not off twice (#839)", async ()
   vi.mocked(api.setAgentBudgets).mockImplementation(
     () => new Promise<AgentUsageResponse>((res) => deferred.push(res)),
   );
-  renderSettings("dark", "#ffb000", "/settings/agents");
-  await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
+  await openDefaults();
 
   const box = screen.getByRole("checkbox", {
     name: /notify me/i,
@@ -900,8 +933,7 @@ test.each([
     vi.mocked(api.setAgentBudgets).mockImplementation(
       () => new Promise<AgentUsageResponse>((res) => deferred.push(res)),
     );
-    renderSettings("dark", "#ffb000", "/settings/agents");
-    await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
+    await (/codex/i.test(label) ? openAgent("codex") : openDefaults());
 
     const input = screen.getByRole("spinbutton", {
       name: new RegExp(label, "i"),
@@ -935,8 +967,7 @@ test("a change-away-then-back on a per-agent limit still reaches the server (#83
   vi.mocked(api.setAgentBudgets).mockImplementation(
     () => new Promise<AgentUsageResponse>((res) => deferred.push(res)),
   );
-  renderSettings("dark", "#ffb000", "/settings/agents");
-  await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
+  await openAgent("codex");
 
   const limit = screen.getByRole("spinbutton", {
     name: /codex token limit/i,
@@ -971,8 +1002,7 @@ test("a rejected save can be retried with the same value (#839)", async () => {
   vi.mocked(api.setAgentBudgets).mockRejectedValueOnce(
     new Error("boom, try again"),
   );
-  renderSettings("dark", "#ffb000", "/settings/agents");
-  await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
+  await openDefaults();
 
   const input = screen.getByRole("spinbutton", {
     name: /alert threshold/i,
@@ -1011,8 +1041,7 @@ test("a failed older save does not erase a newer queued intent (#839)", async ()
         deferred.push({ resolve, reject }),
       ),
   );
-  renderSettings("dark", "#ffb000", "/settings/agents");
-  await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
+  await openDefaults();
 
   const input = screen.getByRole("spinbutton", {
     name: /alert threshold/i,
@@ -1088,8 +1117,7 @@ test.each([
           deferred.push({ resolve, reject }),
         ),
     );
-    renderSettings("dark", "#ffb000", "/settings/agents");
-    await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
+    await (/codex/i.test(label) ? openAgent("codex") : openDefaults());
 
     const input = screen.getByRole("spinbutton", {
       name: new RegExp(label, "i"),
@@ -1159,8 +1187,7 @@ test.each([
           deferred.push({ resolve, reject }),
         ),
     );
-    renderSettings("dark", "#ffb000", "/settings/agents");
-    await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
+    await (/codex/i.test(label) ? openAgent("codex") : openDefaults());
 
     const input = screen.getByRole("spinbutton", {
       name: new RegExp(label, "i"),
@@ -1200,8 +1227,7 @@ test("an older queued save does not clear a newer edit to the same field (#839)"
   vi.mocked(api.setAgentBudgets).mockImplementation(
     () => new Promise<AgentUsageResponse>((res) => deferred.push(res)),
   );
-  renderSettings("dark", "#ffb000", "/settings/agents");
-  await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
+  await openAgent("codex");
 
   const limit = screen.getByRole("spinbutton", {
     name: /codex token limit/i,
@@ -1237,8 +1263,7 @@ test("a save the server REJECTS stops masking the stored value (#839)", async ()
       "agent_budgets.engines.codex.limit_tokens must be a whole number",
     ),
   );
-  renderSettings("dark", "#ffb000", "/settings/agents");
-  await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
+  await openAgent("codex");
 
   const limit = screen.getByRole("spinbutton", {
     name: /codex token limit/i,
@@ -1259,8 +1284,7 @@ test("a numeric field is reconciled by the server, not left as typed (#839)", as
   vi.mocked(api.setAgentBudgets).mockRejectedValue(
     new Error("agent_budgets rejected"),
   );
-  renderSettings("dark", "#ffb000", "/settings/agents");
-  await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
+  await openDefaults();
 
   const input = screen.getByRole("spinbutton", {
     name: /alert threshold/i,
@@ -1278,8 +1302,7 @@ test("a rejected budget save says why, in the server's words (#839)", async () =
       "agent_budgets.threshold_pct must be an integer between 1 and 100",
     ),
   );
-  renderSettings("dark", "#ffb000", "/settings/agents");
-  await waitFor(() => expect(screen.getByText("93%")).toBeInTheDocument());
+  await openDefaults();
   const input = screen.getByRole("spinbutton", { name: /alert threshold/i });
   fireEvent.change(input, { target: { value: "55" } });
   fireEvent.blur(input);

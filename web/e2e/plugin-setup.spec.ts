@@ -111,16 +111,29 @@ async function localReview(page: Page) {
 async function noOverflow(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 }
+/** The sample agent's own page (#1408: disable/remove live in its ⋯ menu). Saved but not in the
+ *  live roster, so its detail is a 404 and the page shows the saved installation. */
+async function gotoAgent(page: Page) {
+  await page.route("**/api/engines/sample-agent", r => r.fulfill({ status: 404, json: { detail: "unknown engine" } }));
+  await page.goto("/settings/agents/sample-agent");
+  await expect(page.getByTestId("agent-menu")).toBeVisible();
+}
+const menuItem = (page: Page, name: string) => page.getByRole("menuitem", { name, exact: true });
+/** Open the ⋯ menu and pick `name` ("Remove…", "Disable…", "Check previous remove", …). */
+async function menu(page: Page, name: string) {
+  await page.getByTestId("agent-menu").click();
+  await menuItem(page, name).click();
+}
 
 test("gallery adds an agent without changing the live roster or defaults", async ({ page }) => {
   const m = await fixture(page);
   await page.goto("/settings/agents");
+  // A catalog agent that is not installed is a name on the catalog line, never a roster row.
+  const line = page.getByTestId("catalog-only");
+  await expect(line.getByRole("link", { name: "Set up Sample agent" })).toBeVisible();
   await page.getByLabel("Search agents").fill("sample");
-  await expect(page.getByRole("heading", { name: "Sample agent" })).toBeVisible();
-  await page.getByRole("button", { name: "Ready", exact: true }).click();
   await expect(page.getByText("No agents match these filters.")).toBeVisible();
-  await page.getByRole("button", { name: "All", exact: true }).click();
-  await page.getByRole("link", { name: "Set up agent" }).click();
+  await line.getByRole("link", { name: "Set up Sample agent" }).click();
   await expect(page.getByRole("combobox", { name: "Agent", exact: true })).toHaveValue("sample-agent");
   expect(m.writes).toEqual([]);
   await noOverflow(page);
@@ -218,15 +231,14 @@ test("the sign-in terminal forwards a pasted vendor code as terminal input", asy
 
 test("remove confirmation preserves data and Escape returns focus", async ({ page }) => {
   const m = await fixture(page, true);
-  await page.goto("/settings/agents");
-  await page.getByLabel("Search agents").fill("sample");
-  const remove = page.getByRole("button", { name: "Remove", exact: true });
-  await remove.click();
+  await gotoAgent(page);
+  await menu(page, "Remove…");
   await expect(page.getByRole("dialog")).toContainText("Vendor transcripts, credentials and installed copies stay");
   await page.keyboard.press("Escape");
-  await expect(remove).toBeFocused();
+  // Focus returns to the ⋯ trigger: the menu item that opened the dialog is gone with the menu.
+  await expect(page.getByTestId("agent-menu")).toBeFocused();
   expect(posts(m, "/remove")).toHaveLength(0);
-  await remove.click();
+  await menu(page, "Remove…");
   await page.getByRole("button", { name: "Remove agent", exact: true }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   expect(posts(m, "/remove")).toHaveLength(1);
@@ -244,12 +256,14 @@ for (const theme of ["dark", "light"]) {
     };
     await page.goto("/settings/agents");
     await page.getByLabel("Search agents").fill("sample");
-    await expect(page.getByRole("heading", { name: "Sample agent" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Details for Sample agent" })).toBeVisible();
     await shot("gallery");
-    await page.getByRole("button", { name: "Remove", exact: true }).click();
+    await gotoAgent(page);
+    await menu(page, "Remove…");
     await expect(page.getByRole("dialog")).toBeVisible();
     await shot("remove");
     await page.keyboard.press("Escape");
+    await page.goto("/settings/agents");
     await page.getByLabel("Search agents").fill("nothing-matches");
     await expect(page.getByText("No agents match these filters.")).toBeVisible();
     await shot("empty");
@@ -287,11 +301,13 @@ test("updates compare the signed recipe, not the operator confirmation digest", 
   m.data.catalog[0].digest = m.gen.review.recipe_digest;
   await page.goto("/settings/agents");
   await page.getByLabel("Search agents").fill("sample");
-  await page.getByRole("button", { name: "Updates", exact: true }).click();
-  await expect(page.getByText("No agents match these filters.")).toBeVisible();
+  const row = page.locator('[data-plugin-id="sample-agent"]');
+  await expect(row).toBeVisible();
+  await expect(row.getByRole("link", { name: "Review update" })).toHaveCount(0);
   m.data.catalog[0].digest = "d".repeat(64);
-  await page.getByRole("button", { name: "Refresh catalog" }).click();
-  await expect(page.getByRole("link", { name: "Review update" })).toBeVisible();
+  await page.getByTestId("catalog-line").getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(row.getByRole("link", { name: "Review update" })).toBeVisible();
+  await expect(row.getByText("Update available", { exact: true })).toBeVisible();
 });
 
 test("setup controls retain touch size, keyboard order and wrapped sources at 320px", async ({ page }) => {
@@ -299,8 +315,8 @@ test("setup controls retain touch size, keyboard order and wrapped sources at 32
   await page.setViewportSize({ width: 320, height: 740 });
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/settings/agents");
-  const targets = [page.getByLabel("Search agents"), page.getByRole("button", { name: "Refresh catalog" }),
-    page.getByRole("link", { name: "Add agent" }), page.getByRole("button", { name: "All", exact: true })];
+  const targets = [page.getByLabel("Search agents"), page.getByRole("button", { name: "Refresh", exact: true }),
+    page.getByRole("link", { name: "Add agent", exact: true }), page.getByRole("button", { name: "All", exact: true })];
   for (const target of targets) {
     const box = await target.boundingBox();
     expect(box).not.toBeNull();
@@ -308,7 +324,7 @@ test("setup controls retain touch size, keyboard order and wrapped sources at 32
     expect(box!.width).toBeGreaterThanOrEqual(44);
   }
   await page.getByLabel("Search agents").focus();
-  for (const name of ["All", "Ready", "Needs setup", "Updates", "Disabled"]) {
+  for (const name of ["All", "Ready", "Needs attention"]) {
     await page.keyboard.press("Tab");
     await expect(page.getByRole("button", { name, exact: true })).toBeFocused();
   }
@@ -378,15 +394,14 @@ test("a lost remove response survives reload and cannot remove an intervening ac
   const m = await fixture(page, true);
   m.data.plugins[0].enabled = true; m.data.plugins[0].active = GEN;
   m.loseNext("remove");
-  await page.goto("/settings/agents");
-  const card = page.locator('[data-plugin-id="sample-agent"]');
-  await card.getByRole("button", { name: "Remove", exact: true }).click();
+  await gotoAgent(page);
+  await menu(page, "Remove…");
   await page.getByRole("button", { name: "Remove agent", exact: true }).click();
   await expect(page.getByRole("alert")).toBeVisible();
   m.data.plugins[0].enabled = true;
   m.data.plugins[0].active = "another-activation";
   await page.reload();
-  await card.getByRole("button", { name: "Check previous remove" }).click();
+  await menu(page, "Check previous remove");
   await page.getByRole("button", { name: "Remove agent", exact: true }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   expect(posts(m, "/remove")).toHaveLength(1);
@@ -397,10 +412,9 @@ test("a lost remove response survives reload and cannot remove an intervening ac
 for (const kind of ["disable", "remove"] as const) test(`a delayed ${kind} cannot undo re-enabling the same installation`, async ({ page }) => {
   const m = await fixture(page, true);
   m.data.plugins[0].enabled = true; m.data.plugins[0].active = GEN;
-  await page.goto("/settings/agents");
-  const card = page.locator('[data-plugin-id="sample-agent"]');
+  await gotoAgent(page);
   const label = kind === "remove" ? "Remove" : "Disable";
-  await card.getByRole("button", { name: label, exact: true }).click();
+  await menu(page, `${label}…`);
   // Another operator disables and re-enables G1 while this confirmation stays open.
   const revision = "d6ba9ee1-9eec-4cc2-9133-d125fe4576a2";
   m.data.roster_revision = revision;
@@ -412,7 +426,7 @@ for (const kind of ["disable", "remove"] as const) test(`a delayed ${kind} canno
   const previous = posts(m, `/${kind}`)[0].body;
   expect(previous.expected_active).toBe(GEN);
   expect(previous.expected_revision).toBeNull();
-  await card.getByRole("button", { name: label, exact: true }).click();
+  await menu(page, `${label}…`);
   await page.getByRole("button", { name: `${label} agent`, exact: true }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   expect(m.data.plugins[0].enabled).toBe(false);
@@ -426,10 +440,9 @@ for (const kind of ["disable", "remove"] as const) test(`a missing ${kind} requi
   const m = await fixture(page, true);
   m.data.plugins[0].enabled = true; m.data.plugins[0].active = GEN;
   m.dropNext(kind);
-  await page.goto("/settings/agents");
-  const card = page.locator('[data-plugin-id="sample-agent"]');
+  await gotoAgent(page);
   const label = kind === "remove" ? "Remove" : "Disable";
-  await card.getByRole("button", { name: label, exact: true }).click();
+  await menu(page, `${label}…`);
   await page.getByRole("button", { name: `${label} agent`, exact: true }).click();
   await expect(page.getByRole("alert")).toBeVisible();
   const previous = posts(m, `/${kind}`)[0].body;
@@ -437,14 +450,16 @@ for (const kind of ["disable", "remove"] as const) test(`a missing ${kind} requi
   expect(m.data.operations).toHaveLength(0);
   m.data.plugins[0].active = "another-activation";
   await page.reload();
-  await card.getByRole("button", { name: `Check previous ${kind}` }).click();
+  await menu(page, `Check previous ${kind}`);
   await page.getByRole("button", { name: `${label} agent`, exact: true }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.getByRole("alert")).toContainText("confirm a new decision");
-  await expect(card.getByRole("button", { name: `Check previous ${kind}` })).toHaveCount(0);
+  await page.getByTestId("agent-menu").click();
+  await expect(menuItem(page, `Check previous ${kind}`)).toHaveCount(0);
+  await page.keyboard.press("Escape");
   expect(posts(m, `/${kind}`)).toHaveLength(1);
   expect(m.data.plugins[0].enabled).toBe(true);
-  await card.getByRole("button", { name: label, exact: true }).click();
+  await menu(page, `${label}…`);
   await page.getByRole("button", { name: `${label} agent`, exact: true }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   const fresh = posts(m, `/${kind}`)[1].body;
@@ -564,41 +579,42 @@ for (const theme of ["dark", "light"]) {
       capabilities: {}, models: [], maintenance: [],
     } }));
     await page.goto("/settings/agents/sample-agent");
-    const management = page.getByRole("region", { name: "Installation management" });
-    await expect(management.getByRole("region", { name: "Active installation" })).toContainText("1.0.0");
-    const activePanel = management.getByRole("region", { name: "Active installation" });
+    // Installation is one summary line per generation, its evidence behind a disclosure (#1408).
+    const activePanel = page.getByLabel("Active installation");
+    await expect(activePanel.getByTestId("installation-summary")).toContainText("Active · 1.0.0");
+    await expect(activePanel.getByTestId("installation-summary")).toContainText("6/6 checks passed");
     await activePanel.locator("summary").click();
     await expect(activePanel.getByText("Existing installation passed.").first()).toBeVisible();
     await activePanel.locator("summary").click();
-    await expect(management.getByRole("region", { name: "Candidate installation" })).toContainText("1.2.3");
-    const candidatePanel = management.getByRole("region", { name: "Candidate installation" });
+    const candidatePanel = page.getByLabel("Candidate installation");
+    await expect(candidatePanel.getByTestId("installation-summary")).toContainText("Candidate · 1.2.3");
     await candidatePanel.locator("summary").click();
     await expect(candidatePanel.getByText("Pending", { exact: true }).first()).toBeVisible();
     await candidatePanel.locator("summary").click();
-    await expect(management).toContainText("Signed catalog · sequence 9");
-    await expect(management.getByRole("link", { name: "Review update" })).toBeVisible();
+    // ONE primary action in the header — the worst state's (#1408): the pending candidate.
+    const header = page.locator("section", { has: page.getByRole("heading", { name: "Sample agent" }) }).first();
+    await expect(header.getByRole("link", { name: "Continue setup" })).toBeVisible();
+    // The catalog is the roster's business now, not repeated on every agent.
+    await expect(page.getByRole("region", { name: "Public agent catalog" })).toHaveCount(0);
     expect(m.writes).toHaveLength(0);
-    for (const control of await management.locator("button, a").all()) {
+    for (const control of [header.getByRole("link", { name: "Continue setup" }), page.getByTestId("agent-menu"), activePanel.locator("summary"), candidatePanel.locator("summary")]) {
       expect((await control.boundingBox())!.height).toBeGreaterThanOrEqual(44);
       expect((await control.boundingBox())!.height).toBeLessThanOrEqual(60);
     }
     await noOverflow(page);
     await activePanel.screenshot({ path: `../design-review/853-detail-active-${info.project.name}-${theme}.png` });
     await candidatePanel.screenshot({ path: `../design-review/853-detail-candidate-${info.project.name}-${theme}.png` });
-    await management.getByRole("link", { name: "Continue setup" }).scrollIntoViewIfNeeded();
     await page.screenshot({ path: `../design-review/853-detail-${info.project.name}-${theme}.png` });
-    await management.getByRole("button", { name: "Refresh catalog" }).click();
-    await expect.poll(() => posts(m, "/refresh").length).toBe(1);
-    await management.getByRole("button", { name: "Reload agent roster" }).click();
+    await menu(page, "Reload agent roster");
     await expect.poll(() => posts(m, "/reload").length).toBe(1);
-    await management.getByRole("button", { name: "Disable", exact: true }).click();
+    await menu(page, "Disable…");
     await page.getByRole("button", { name: "Disable agent", exact: true }).click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
     expect(posts(m, "/disable")).toHaveLength(1);
-    await management.getByRole("button", { name: "Remove", exact: true }).click();
+    await menu(page, "Remove…");
     await page.keyboard.press("Escape");
     expect(posts(m, "/remove")).toHaveLength(0);
-    await management.getByRole("link", { name: "Continue setup" }).click();
+    await header.getByRole("link", { name: "Continue setup" }).click();
     await expect(page.getByRole("button", { name: "Continue to verification" })).toBeVisible();
     expect(new URL(page.url()).searchParams.get("generation")).toBe(GEN);
   });
@@ -609,10 +625,10 @@ test("agent detail retains a saved candidate when no live engine exists", async 
   await page.route("**/api/engines/sample-agent", r => r.fulfill({ status: 404, json: { detail: "unknown engine" } }));
   await page.goto("/settings/agents");
   await page.getByRole("link", { name: "Details for Sample agent" }).click();
-  const management = page.getByRole("region", { name: "Installation management" });
-  await expect(management.getByRole("region", { name: "Candidate installation" })).toContainText("1.2.3");
-  await expect(management.getByRole("button", { name: "Remove", exact: true })).toBeVisible();
-  await expect(management.getByRole("link", { name: "Continue setup" })).toBeVisible();
+  await expect(page.getByLabel("Candidate installation").getByTestId("installation-summary")).toContainText("1.2.3");
+  await expect(page.getByRole("link", { name: "Continue setup" })).toBeVisible();
+  await page.getByTestId("agent-menu").click();
+  await expect(menuItem(page, "Remove…")).toBeVisible();
 });
 
 test("an activated API endpoint stays read-only after disabling", async ({ page }) => {
@@ -721,4 +737,19 @@ for (const field of ["Base URL", "API key"]) test(`candidate endpoint discards a
   await page.getByLabel(field, { exact: true }).fill(field === "Base URL" ? "https://three.test/v1" : "newer-test-key");
   await expect(page.getByTestId("endpoint-status")).toHaveCount(0);
   await expect(page.locator("datalist option")).toHaveCount(0);
+});
+
+
+test("a disabled agent's page leads back to Enable for that generation (#1416 review)", async ({ page }) => {
+  const m = await fixture(page, true);
+  m.gen.verification = { digest: m.gen.review.digest, checked_at: 1790852400,
+    results: m.gen.required_checks.map(check => ({ check, passed: true, detail: "ok" })) };
+  Object.assign(m.data.plugins[0], { active: GEN, candidate: GEN, enabled: false, generations: [m.gen] });
+  await gotoAgent(page);
+  await expect(page.getByText("Disabled", { exact: true }).first()).toBeVisible();
+  const enable = page.getByRole("link", { name: "Enable", exact: true });
+  await expect(enable).toBeVisible();
+  await enable.click();
+  expect(new URL(page.url()).searchParams.get("generation")).toBe(GEN);
+  await expect(page.getByRole("button", { name: "Enable agent" })).toBeVisible();
 });

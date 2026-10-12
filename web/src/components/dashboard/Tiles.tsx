@@ -619,7 +619,7 @@ export function QuotaTile({
         rows.length === 0 ? (
           <p className={s.note}>
             No agent’s quota can be read right now. An agent without a plan
-            quota shows here once it has a limit in Settings → Agents & usage.
+            quota shows here once a limit is set on its page in Settings → Agents.
           </p>
         ) : (
           rows.map((r) => <QuotaRow key={r.engine} row={r} />)

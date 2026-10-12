@@ -1,45 +1,31 @@
-import { AgentCatalogStatus } from "../agents/AgentCatalogStatus";
-import { useState, type ReactNode } from "react";
-import { Link } from "react-router-dom";
+/** Installer surfaces of Settings → Agents (#853, #1408): the agent page's ⋯ menu (disable /
+ *  remove / reload), its one-line installation summary, and the roster's one-line catalog strip.
+ *
+ *  #1408 moved WHERE these render, not what they do: the disable/remove request-id flow below —
+ *  persist before POST, recover a previous attempt, settle against the operation record — is the
+ *  one `PluginActions` had, unchanged, and the confirmation copy is the same. */
+import { Ellipsis } from "lucide-react";
+import { useState, type MouseEvent, type ReactNode } from "react";
 import { reloadRoster } from "../../app/reloadRoster";
-import { agentPath } from "../../routes/settingsTabs";
 import { api } from "../../lib/api";
-import type { PluginCatalog, PluginInstallation, PluginManifest } from "../../types/plugins";
+import type { PluginCatalog, PluginGeneration } from "../../types/plugins";
+import { AgentCatalogStatus } from "../agents/AgentCatalogStatus";
+import r from "../agents/Roster.module.css";
 import { ConfirmDialog } from "../templates/ConfirmDialog";
-import { usePluginCatalog, type GalleryFilter } from "./usePluginCatalog";
-import { pendingOperation, pluginError, missingOperation, rejectedOperation, setupPath, sourceLabel } from "./model";
+import { AnchoredMenu } from "../ui/AnchoredMenu";
 import button from "../ui/actionButton.module.css";
-import s from "./PluginSetup.module.css";
-import a from "../../routes/AgentsSettings.module.css";
+import { missingOperation, pluginError, rejectedOperation, sourceLabel, verifiedGeneration } from "./model";
+import type { usePluginCatalog } from "./usePluginCatalog";
 
+type Catalog = ReturnType<typeof usePluginCatalog>;
+type Kind = "disable" | "remove";
+type Attempt = { request_id: string; plugin_id: string; kind: Kind; expected_active?: string | null; expected_revision?: string | null };
 
-export function GalleryToolbar({ catalog, query, setQuery, filter, setFilter }: {
-  catalog: ReturnType<typeof usePluginCatalog>; query: string; setQuery: (s: string) => void;
-  filter: GalleryFilter; setFilter: (f: GalleryFilter) => void;
-}) {
-  const { data, error, busy, load, refresh, configure } = catalog;
-  return <div className={s.catalogBar}>
-    <AgentCatalogStatus feed={data?.feed} busy={busy} refresh={() => void refresh()} configure={value => void configure(value)} />
-    <div className={s.row}>
-      <Link className={button.primary} to={setupPath()}>Add agent</Link>
-    </div>
-    {(error || data?.feed.error) && <div className={s.note} role="alert">{error || data?.feed.error}<button className={button.ghost} onClick={() => void load()}>Retry loading</button></div>}
-    <label className={s.field}><span>Search agents</span><input className={s.input} type="search" value={query} onChange={e => setQuery(e.target.value)} placeholder="Name or ID" /></label>
-    <div className={s.row} aria-label="Agent filters">{(["All", "Ready", "Needs setup", "Updates", "Disabled"] as const).map(value =>
-      <button key={value} className={`${button.ghost} ${s.filter}`} aria-pressed={filter === value} onClick={() => setFilter(value)}>{value}</button>)}</div>
-  </div>;
-}
-
-export function PluginActions({ id, label, data, onChange, children }: {
-  id: string; label: string; data: PluginCatalog | null; onChange: () => Promise<void>; children?: ReactNode;
-}) {
+/** Disable / remove with a durable request id (unchanged from `PluginActions`). */
+function useDeactivate(id: string, label: string, data: PluginCatalog | null, onChange: () => Promise<void>) {
   const row = data?.plugins.find(p => p.id === id);
-  const candidate = row?.generations?.find(g => g.id === (row.candidate ?? row.active));
-  const entry = data?.catalog.find(c => c.manifest.identity.id === id);
-  const operation = data?.operations.filter(o => o.plugin_id === id && pendingOperation(o)).sort((a, b) => b.created_at - a.created_at)[0];
-  const [confirm, setConfirm] = useState<{ kind: "disable" | "remove"; trigger: HTMLElement; active: string | null; revision: string | null } | null>(null);
+  const [confirm, setConfirm] = useState<{ kind: Kind; trigger: HTMLElement; active: string | null; revision: string | null } | null>(null);
   const attemptKey = `plugin-deactivate:${id}`;
-  type Attempt = { request_id: string; plugin_id: string; kind: "disable" | "remove"; expected_active?: string | null; expected_revision?: string | null };
   const [attempt, setAttempt] = useState<Attempt | null>(() => {
     try {
       const saved = JSON.parse(sessionStorage.getItem(attemptKey) ?? "null") as Attempt | null;
@@ -95,85 +81,144 @@ export function PluginActions({ id, label, data, onChange, children }: {
       await reloadRoster(); await onChange(); remember(null); setConfirm(null);
     } catch (e) { setError(pluginError(e)); } finally { setBusy(false); }
   };
-  const active = row?.generations?.find(g => g.id === row.active);
-  const update = !!entry && entry.installable !== false && !!active && entry.digest !== active.review.recipe_digest;
-  return <>
-    {candidate && <p className={a.note}>{sourceLabel(candidate.review)} · {candidate.id === row?.active && row.enabled ? "Enabled" : "Disabled"}</p>}
-    {entry?.reason && <p className={a.note}>{entry.reason}{entry.manifest.api && <> Source: <Link to={agentPath(entry.manifest.api.source)}>{entry.manifest.api.source}</Link>.</>}</p>}
-    {row?.error && <p role="alert" className={s.note}>{row.error}</p>}
-    <div className={`${a.acts} ${s.actions}`}>
-      {children}
-      {attempt && <button className={button.ghost} onClick={e => setConfirm({ kind: attempt.kind, trigger: e.currentTarget, active: row?.active ?? null, revision: data?.roster_revision ?? null })}>Check previous {attempt.kind}</button>}
-      {operation ? <Link className={button.primary} to={setupPath({ operation: operation.id })}>View operation</Link>
-        : candidate && (!row?.enabled || row.candidate !== row.active) ? <Link className={button.primary} to={setupPath({ plugin: id, generation: candidate.id })}>Continue setup</Link>
-        : entry && entry.installable !== false && !row?.enabled ? <Link className={button.primary} to={setupPath({ plugin: id })}>Set up agent</Link> : null}
-      {update && <Link className={button.ghost} to={setupPath({ plugin: id })}>Review update</Link>}
-      {row?.enabled && <button className={button.ghost} onClick={e => setConfirm({ kind: attempt?.kind ?? "disable", trigger: e.currentTarget, active: row.active ?? null, revision: data?.roster_revision ?? null })}>Disable</button>}
-      {row && <button className={button.ghost} onClick={e => setConfirm({ kind: attempt?.kind ?? "remove", trigger: e.currentTarget, active: row.active ?? null, revision: data?.roster_revision ?? null })}>Remove</button>}
-    </div>
-    {error && !confirm && <p role="alert">{error}</p>}
-    {confirm && <ConfirmDialog tag="AGENT INSTALLATION" title={`${confirm.kind === "remove" ? "Remove" : "Disable"} ${label}?`}
-      confirmLabel={confirm.kind === "remove" ? "Remove agent" : "Disable agent"} busy={busy}
-      returnFocusTo={confirm.trigger} onCancel={() => { setConfirm(null); setError(""); }} onConfirm={() => void deactivate()}>
-      <p>New sessions will be unavailable. Running sessions stay attachable until they exit.</p>
-      <p>Vendor transcripts, credentials and installed copies stay on this host. Saved defaults and budgets are retained.</p>
-      {error && <p role="alert">{error}</p>}
-    </ConfirmDialog>}
-  </>;
+  const open = (kind: Kind, trigger: HTMLElement) =>
+    setConfirm({ kind: attempt?.kind ?? kind, trigger, active: row?.active ?? null, revision: data?.roster_revision ?? null });
+  const dialog = confirm && <ConfirmDialog tag="AGENT INSTALLATION" title={`${confirm.kind === "remove" ? "Remove" : "Disable"} ${label}?`}
+    confirmLabel={confirm.kind === "remove" ? "Remove agent" : "Disable agent"} busy={busy}
+    returnFocusTo={confirm.trigger} onCancel={() => { setConfirm(null); setError(""); }} onConfirm={() => void deactivate()}>
+    <p>New sessions will be unavailable. Running sessions stay attachable until they exit.</p>
+    <p>Vendor transcripts, credentials and installed copies stay on this host. Saved defaults and budgets are retained.</p>
+    {error && <p role="alert">{error}</p>}
+  </ConfirmDialog>;
+  return { row, attempt, open, dialog, error: confirm ? "" : error };
 }
 
-/** Catalog/candidate cards are installer data, never fabricated members of the live roster. */
-export function CatalogCard({ manifest, row, data, onChange }: {
-  manifest: PluginManifest; row?: PluginInstallation; data: PluginCatalog; onChange: () => Promise<void>;
+/** The agent page's ⋯ (#1408): everything rare or destructive, behind one trigger. */
+export function AgentMenu({ id, label, data, onChange }: {
+  id: string; label: string; data: PluginCatalog | null; onChange: () => Promise<void>;
 }) {
-  const { id, label, version, publisher } = manifest.identity;
-  return <li className={a.card} data-plugin-id={id}>
-    <h3>{label}</h3><p>{version} · {publisher}</p>
-    <p className={a.note}>{row ? "Installation saved; not in the live roster." : "Available in the agent catalog."}</p>
-    <PluginActions id={id} label={label} data={data} onChange={onChange}>
-      <Link className={button.ghost} to={agentPath(id)} aria-label={`Details for ${label}`}>Details</Link>
-    </PluginActions>
-  </li>;
-}
-
-
-/** Installation state is separate from live engine identity, including disabled candidates. */
-export function PluginInstallationDetail({ id, label, catalog, onChange }: {
-  id: string; label: string; catalog: ReturnType<typeof usePluginCatalog>; onChange: () => Promise<void>;
-}) {
-  const { data, error, busy, refresh, configure } = catalog;
-  const row = data?.plugins.find(p => p.id === id);
+  const { row, attempt, open, dialog, error } = useDeactivate(id, label, data, onChange);
   const [reloading, setReloading] = useState(false);
   const [reloadError, setReloadError] = useState("");
   const reload = async () => {
     setReloading(true); setReloadError("");
     try { await api.pluginReload(); await reloadRoster(); await onChange(); }
-    catch (error) { setReloadError(pluginError(error)); }
+    catch (e) { setReloadError(pluginError(e)); }
     finally { setReloading(false); }
   };
+  return <>
+    <AnchoredMenu
+      label={`More actions for ${label}`}
+      trigger={<Ellipsis size={18} aria-hidden="true" />}
+      triggerClassName={button.icon}
+      triggerTestId="agent-menu"
+      menuTestId="agent-menu-items"
+      focus="first-item"
+      classes={{ wrap: r.menuWrap, panel: r.menuPanel, items: r.menuItems }}
+    >
+      {(close) => {
+        // The dialog returns focus to the ⋯ TRIGGER: the item that opened it is gone once the menu
+        // closes, and focus returned to a removed node is focus lost.
+        const act = (fn: (trigger: HTMLElement) => void) => (e: MouseEvent<HTMLButtonElement>) => {
+          const trigger = e.currentTarget.closest(`.${r.menuWrap}`)?.querySelector<HTMLElement>('[data-testid="agent-menu"]') ?? e.currentTarget;
+          close();
+          fn(trigger);
+        };
+        return <>
+          <button type="button" role="menuitem" className={r.menuItem} disabled={reloading} onClick={act(() => void reload())}>
+            {reloading ? "Reloading…" : "Reload agent roster"}
+          </button>
+          {attempt && <button type="button" role="menuitem" className={r.menuItem} onClick={act(t => open(attempt.kind, t))}>
+            Check previous {attempt.kind}
+          </button>}
+          {row?.enabled && <button type="button" role="menuitem" className={`${r.menuItem} ${r.menuDanger}`} onClick={act(t => open("disable", t))}>
+            Disable…
+          </button>}
+          {row && <button type="button" role="menuitem" className={`${r.menuItem} ${r.menuDanger}`} onClick={act(t => open("remove", t))}>
+            Remove…
+          </button>}
+        </>;
+      }}
+    </AnchoredMenu>
+    {(error || reloadError) && <p role="alert" className={r.inlineError}>{error || reloadError}</p>}
+    {dialog}
+  </>;
+}
+
+function checksLine(gen: PluginGeneration): string {
+  const passed = gen.required_checks.filter(check => gen.verification?.results.some(x => x.check === check && x.passed)).length;
+  return `${passed}/${gen.required_checks.length} checks passed`;
+}
+
+/** Installation as ONE summary line plus an evidence disclosure (#1408). */
+export function InstallationSummary({ id, data, error, fallback }: {
+  id: string; data: PluginCatalog | null; error?: string;
+  /** What to say when the installer manages nothing for this agent. */
+  fallback: ReactNode;
+}) {
+  const row = data?.plugins.find(p => p.id === id);
   const generations = row?.generations?.filter(g => g.id === row.active || g.id === row.candidate) ?? [];
-  return <section className={`${s.panel} ${s.stack}`} aria-label="Installation management">
-    <h2>Installation</h2>
-    {!data && !error && <p role="status">Loading installation…</p>}
-    <AgentCatalogStatus feed={data?.feed} busy={busy} refresh={() => void refresh()} configure={value => void configure(value)} />
-    <div className={s.row}>
-      <button className={button.ghost} disabled={reloading} onClick={() => void reload()}>{reloading ? "Reloading…" : "Reload agent roster"}</button>
+  if (error) return <p role="alert">{error}</p>;
+  if (!data) return <p role="status" className={r.muted}>Loading installation…</p>;
+  if (!row) return <p className={r.muted} data-testid="installation-summary">{fallback}</p>;
+  return <div className={r.install}>
+    {row.error && <p role="alert">{row.error}</p>}
+    {generations.map(gen => {
+      const isActive = gen.id === row.active;
+      const ok = verifiedGeneration(gen);
+      return <div key={gen.id} aria-label={isActive ? "Active installation" : "Candidate installation"}>
+        <p className={r.summary} data-testid="installation-summary">
+          <b>{isActive ? "Active" : "Candidate"} · {gen.review.entry.manifest.identity.version}</b>
+          <span>·</span><span>{sourceLabel(gen.review)}</span>
+          <span>·</span><span>{isActive && row.enabled ? "Enabled" : "Disabled"}</span>
+          <span>·</span>
+          <span className={r.state}><span className={`hud-led ${ok ? "up" : "attention"}`} aria-hidden="true" />{checksLine(gen)}</span>
+          {gen.verification && <><span>·</span><span>checked {new Date(gen.verification.checked_at * 1000).toLocaleString()}</span></>}
+        </p>
+        <details className={r.disclosure}>
+          <summary>Verification evidence</summary>
+          <ul className={r.checks} aria-label="Verification evidence">{gen.required_checks.map(check => {
+            const result = gen.verification?.results.find(x => x.check === check);
+            return <li key={check}><span>{check}<small>{result?.detail ?? "Not run for this installation."}</small></span><b>{result ? result.passed ? "Passed" : "Failed" : "Pending"}</b></li>;
+          })}</ul>
+        </details>
+      </div>;
+    })}
+  </div>;
+}
+
+const rel = (seconds: number | null | undefined) => {
+  if (!seconds) return "not checked yet";
+  const mins = Math.max(0, Math.round((Date.now() / 1000 - seconds) / 60));
+  return mins < 1 ? "checked just now" : mins < 60 ? `checked ${mins} min ago` : mins < 48 * 60 ? `checked ${Math.round(mins / 60)} h ago` : `checked ${Math.round(mins / 1440)} d ago`;
+};
+
+/** The catalog as ONE line under the roster (#1408); the full panel is behind Details. */
+export function CatalogLine({ catalog }: { catalog: Catalog }) {
+  const { data, error, busy, load, refresh, configure } = catalog;
+  const feed = data?.feed;
+  const failed = !!(feed?.refresh?.error || feed?.error);
+  // The catalog's own diagnostic (e.g. unavailable trust records) is shown, never just "failed".
+  const why = feed?.error ?? null;
+  const source = feed?.state === "unavailable" ? "Trust records unavailable"
+    : feed?.source === "bundled" ? `Bundled with ${feed.release_version ?? "this release"}`
+      : feed?.sequence ? `Signed catalog · sequence ${feed.sequence}` : "Loading catalog…";
+  return <div className={r.catalogLine} data-testid="catalog-line">
+    {error && <p className={r.lineAlert} role="alert">{error}<button type="button" className={button.ghost} onClick={() => void load()}>Retry loading</button></p>}
+    <div className={r.lineRow}>
+      <span className={r.lineLabel}>Catalog</span>
+      {why
+        ? <span className={r.state} role="alert" data-testid="catalog-error"><span className="hud-led attention" aria-hidden="true" />{why}</span>
+        : failed
+        ? <span className={r.state} role="status"><span className="hud-led attention" aria-hidden="true" />Last check failed — previous catalog kept</span>
+        : <span>{source} · {rel(feed?.refresh?.last_success)}{feed?.refresh?.automatic ? " · checks daily" : ""}</span>}
+      <button type="button" className={button.ghost} disabled={busy} onClick={() => void refresh()}>
+        {busy ? "Refreshing…" : failed ? "Retry" : "Refresh"}
+      </button>
     </div>
-    {(error || data?.feed.error || reloadError) && <p role="alert">{error || data?.feed.error || reloadError}</p>}
-    {data && !row && <p>No managed installation is saved for this agent.</p>}
-    {generations.map(gen => <section className={s.panel} key={gen.id} aria-label={gen.id === row?.active ? "Active installation" : "Candidate installation"}>
-      <h3>{gen.id === row?.active ? "Active installation" : "Candidate installation"} · {gen.review.entry.manifest.identity.version}</h3>
-      <p>{sourceLabel(gen.review)} · {gen.review.entry.manifest.identity.publisher}</p>
-      <p>{gen.id === row?.active && row.enabled ? "Enabled" : "Disabled"}</p>
-      <p>{gen.verification ? `Checked ${new Date(gen.verification.checked_at * 1000).toLocaleString()}` : "Verification has not run for this installation."}</p>
-      <details className={s.details}>
-      <summary>Verification evidence · {gen.required_checks.filter(check => gen.verification?.results.some(r => r.check === check && r.passed)).length}/{gen.required_checks.length} checks passed</summary>
-      <ul className={s.checks} aria-label="Verification evidence">{gen.required_checks.map(check => {
-        const result = gen.verification?.results.find(r => r.check === check);
-        return <li key={check}><span>{check}<small>{result?.detail ?? "Not run for this installation."}</small></span><b>{result ? result.passed ? "Passed" : "Failed" : "Pending"}</b></li>;
-      })}</ul>
-      </details>
-    </section>)}
-    <PluginActions key={id} id={id} label={label} data={data} onChange={onChange} />
-  </section>;
+    <details className={r.disclosure}>
+      <summary>Catalog details</summary>
+      <AgentCatalogStatus feed={feed} busy={busy} refresh={() => void refresh()} configure={value => void configure(value)} />
+    </details>
+  </div>;
 }

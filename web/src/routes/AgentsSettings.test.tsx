@@ -18,6 +18,7 @@ import {
   AgentDetail,
   AgentsRoster,
 } from "./AgentsSettings";
+import { buildRows } from "../components/agents/agentStatus";
 
 vi.mock("../lib/api", async () => {
   const actual =
@@ -35,6 +36,7 @@ vi.mock("../lib/api", async () => {
       agentEndpoint: vi.fn(),
       setAgentEndpoint: vi.fn(),
       testAgentEndpoint: vi.fn(),
+      pluginReload: vi.fn(),
     },
   };
 });
@@ -133,8 +135,10 @@ function renderPage(
   );
 }
 
+/** One roster row (#1408), found by its link — or its label, for a row without a page. */
 const card = (label: string) =>
-  screen.getByRole("heading", { name: label }).closest("li")!;
+  (screen.queryByRole("link", { name: `Details for ${label}` }) ?? screen.getByText(label)).closest("li")!;
+const rosterList = () => screen.getByRole("list", { name: "All agents" });
 
 // ---- roster -------------------------------------------------------------------------------------
 
@@ -152,13 +156,10 @@ test("roster: a failed refresh KEEPS the last good list, says so, and retries", 
   expect(await screen.findByRole("alert")).toHaveTextContent(
     "Couldn’t refresh the agent list — showing the last one loaded.",
   );
-  // Stale, not blank: every card of the last roster is still on screen.
-  expect(
-    within(screen.getByRole("list", { name: "Agents" })).getAllByRole(
-      "heading",
-      { level: 3 },
-    ),
-  ).toHaveLength(FIXTURE.length);
+  // Stale, not blank: every row of the last roster is still on screen (one per CLI, #1408).
+  expect(within(rosterList()).getAllByRole("listitem")).toHaveLength(
+    buildRows(FIXTURE, [], null).length,
+  );
   await userEvent.click(screen.getByRole("button", { name: "Retry" }));
   await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
   expect(api.engines).toHaveBeenCalledTimes(2);
@@ -181,49 +182,45 @@ test("roster: an EMPTY roster is a success, distinct from a failure", async () =
   expect(getRoster().status).toBe("ready");
 });
 
-test("roster: an invalid manifest is a card with its source and exact error, and no actions", async () => {
+test("roster: an invalid manifest is an Invalid row whose Details show its source and exact error", async () => {
   vi.mocked(api.engines).mockResolvedValue({
     engines: FIXTURE,
     problems: [PROBLEM],
   });
   renderPage(<AgentsRoster />);
-  await waitFor(() =>
-    expect(screen.getByRole("heading", { name: "acme-agent" })).toBeInTheDocument(),
-  );
+  await waitFor(() => expect(screen.getByText("acme-agent")).toBeInTheDocument());
   const bad = card("acme-agent");
-  expect(within(bad).getByText("Invalid manifest")).toBeInTheDocument();
-  expect(within(bad).getByText(/must be the plugin id/)).toHaveTextContent(
-    PROBLEM.source,
-  );
+  expect(within(bad).getByText("Invalid")).toBeInTheDocument();
+  // No page of its own: nothing to link to.
   expect(within(bad).queryByRole("link")).toBeNull();
-  expect(within(bad).queryByRole("button")).toBeNull();
-  expect(screen.getByText(/loaded ·/)).toHaveTextContent(
-    `Agents // ${FIXTURE.length} loaded · 0 retiring · 1 invalid`,
+  await userEvent.click(within(bad).getByRole("button", { name: "Details" }));
+  const diag = within(bad).getByRole("region", { name: /manifest error/ });
+  expect(diag).toHaveTextContent(PROBLEM.source);
+  expect(diag).toHaveTextContent(/must be the plugin id/);
+  // Invalid needs attention and is never counted ready.
+  const rows = buildRows(FIXTURE, [PROBLEM], null);
+  const ready = rows.filter((r) => r.status.rank === 8).length;
+  expect(screen.getByTestId("roster-summary")).toHaveTextContent(
+    `${ready} ready · ${rows.length - ready} need attention`,
   );
 });
 
-test("roster: a retiring engine shows why, and offers nothing to start", async () => {
+test("roster: a retiring engine reads Retiring, needs attention, and offers nothing to start", async () => {
   vi.mocked(api.engines).mockResolvedValue({
     engines: [...FIXTURE, RETIRING],
     problems: [],
   });
   renderPage(<AgentsRoster />);
-  await waitFor(() =>
-    expect(screen.getByRole("heading", { name: "legacy-cli" })).toBeInTheDocument(),
-  );
+  await waitFor(() => expect(screen.getByRole("link", { name: "Details for legacy-cli" })).toBeInTheDocument());
   const c = card("legacy-cli");
   expect(within(c).getByText("Retiring")).toBeInTheDocument();
-  expect(within(c).getByText(/agent removed/)).toBeInTheDocument();
-  const caps = within(c).getByRole("list", { name: /capabilities/ });
-  for (const chip of within(caps).getAllByRole("listitem")) {
-    expect(chip).toHaveTextContent("(off)");
+  // The only links are its page and its mode chip — no setup or launch action.
+  for (const link of within(c).getAllByRole("link")) {
+    expect(link.getAttribute("href")).toMatch(/^\/settings\/agents\/legacy-cli$/);
   }
-  expect(screen.getByText(/loaded ·/)).toHaveTextContent(
-    `Agents // ${FIXTURE.length} loaded · 1 retiring · 0 invalid`,
-  );
+  await userEvent.click(screen.getByRole("button", { name: /Needs attention/ }));
+  expect(within(rosterList()).getByRole("link", { name: "Details for legacy-cli" })).toBeInTheDocument();
 });
-
-// ---- an agent's own page ------------------------------------------------------------------------
 
 test("agent page: a chat-runtime agent shows no binary and no launch, not a crash (#1209)", async () => {
   vi.mocked(api.engineDetail).mockResolvedValue({
@@ -238,33 +235,33 @@ test("agent page: a chat-runtime agent shows no binary and no launch, not a cras
   expect(
     await screen.findByRole("heading", { name: "Claude Code" }),
   ).toBeInTheDocument();
-  expect(screen.getByText("No binary")).toBeInTheDocument();
-  expect(screen.getByText(/runs no process: BattleLab talks to its endpoint/)).toHaveTextContent(
-    "(openai-chat)",
-  );
-  expect(screen.getByText("none — runs no process")).toBeInTheDocument();
+  expect(screen.getByText(/BattleLab talks to its endpoint and runs nothing on this host/)).toBeInTheDocument();
+  expect(screen.getByText("No binary of its own")).toBeInTheDocument();
+  expect(screen.getByText(/BattleLab talks to its endpoint \(openai-chat\)/)).toBeInTheDocument();
+  expect(screen.getByText("none — runs no process of its own")).toBeInTheDocument();
 });
 
-test("agent page: identity, provenance, store, capabilities, and an honest empty models list", async () => {
+test("agent page: status and actions first; identity, provenance, store and capabilities folded away (#1408)", async () => {
   renderPage(<AgentDetail id="claude" />);
   expect(
     await screen.findByRole("heading", { name: "Claude Code" }),
   ).toBeInTheDocument();
   expect(api.engineDetail).toHaveBeenCalledWith("claude");
-  expect(screen.getByText("/home/op/.local/bin/claude")).toBeInTheDocument();
-  expect(screen.getByText("AGENT_SESSIONS_CLAUDE_BIN")).toBeInTheDocument();
-  expect(screen.getByText("claude-projects")).toBeInTheDocument();
-  expect(screen.getByText("read-only")).toBeInTheDocument();
-  expect(screen.getByText("None declared")).toBeInTheDocument();
-  const caps = screen
-    .getByRole("heading", { name: "Capabilities" })
-    .closest("section")!;
+  // The header carries the status and the ⋯ menu; the technical sections are in a CLOSED
+  // disclosure (still in the document, so a reader can open them).
+  expect(screen.getByRole("button", { name: /More actions for Claude Code/ })).toBeInTheDocument();
+  const tech = screen.getByTestId("technical-details") as HTMLDetailsElement;
+  expect(tech.open).toBe(false);
+  expect(within(tech).getByText("AGENT_SESSIONS_CLAUDE_BIN")).toBeInTheDocument();
+  expect(within(tech).getByText("claude-projects")).toBeInTheDocument();
+  expect(within(tech).getByText("read-only")).toBeInTheDocument();
+  expect(within(tech).getByText("None declared")).toBeInTheDocument();
+  const caps = within(tech).getByText("Capabilities").closest("section")!;
   expect(within(caps).getAllByRole("listitem")).toHaveLength(8);
-  // No per-agent bypass: the defaults are global and this page points at them.
+  // The resolved path is in the header too, where an operator looks first.
+  expect(screen.getAllByText("/home/op/.local/bin/claude").length).toBeGreaterThan(0);
+  // No per-agent bypass: the defaults are global.
   expect(screen.queryByRole("switch")).toBeNull();
-  expect(
-    screen.getByRole("link", { name: /Agents › Defaults/ }),
-  ).toHaveAttribute("href", "/settings/agents/defaults");
 });
 
 test("agent page: a 404 is 'no such agent', not an error or a blank page", async () => {
@@ -613,7 +610,7 @@ test("agent page: a configured-elsewhere agent offers no add field and says why 
   expect(screen.queryByTestId("added-models")).not.toBeInTheDocument();
 });
 
-test("roster: an API client card says Ready or why it is unavailable — never 'not installed' (#1311)", async () => {
+test("roster: an API client is a mode of its source's row — Ready or Unavailable, never 'not installed' (#1311, #1408)", async () => {
   const ready = { ...FIXTURE.find((e) => e.id === "codex-api")!, present: true, supports_new: true, api: { kind: "codex-app-server", source: "codex", unavailable_reason: null } };
   const down = { ...FIXTURE.find((e) => e.id === "claude-api")!, present: false, supports_new: false, api: { kind: "claude-stream-json", source: "claude", unavailable_reason: "claude 2.1.287 or later is required for native mode" } };
   vi.mocked(api.engines).mockResolvedValue({
@@ -621,13 +618,91 @@ test("roster: an API client card says Ready or why it is unavailable — never '
     problems: [],
   });
   renderPage(<AgentsRoster />);
-  await waitFor(() => expect(screen.getByRole("heading", { name: "Codex — API" })).toBeInTheDocument());
-  const ok = card("Codex — API");
-  expect(within(ok).getByText("Ready")).toBeInTheDocument();
-  expect(within(ok).getByTestId("api-client-status")).toHaveTextContent("Drives the Codex CLI");
-  expect(within(ok).queryByText(/not installed/i)).toBeNull();
-  const no = card("Claude — API");
-  expect(within(no).getByText("Unavailable")).toBeInTheDocument();
-  expect(within(no).getByTestId("api-client-status")).toHaveTextContent("2.1.287 or later");
-  expect(within(no).queryByText(/not installed/i)).toBeNull();
+  await waitFor(() => expect(screen.getByRole("link", { name: "Details for Codex" })).toBeInTheDocument());
+  const codexRow = card("Codex");
+  expect(within(codexRow).getByRole("link", { name: "Codex — API: API, Ready" })).toHaveAttribute(
+    "href",
+    "/settings/agents/codex-api",
+  );
+  const claudeRow = card("Claude Code");
+  expect(within(claudeRow).getByRole("link", { name: "Claude — API: API, Unavailable" })).toBeInTheDocument();
+  // The row reads its WORST mode's word.
+  expect(within(claudeRow).getByText("Unavailable")).toBeInTheDocument();
+  expect(within(claudeRow).queryByText(/not installed/i)).toBeNull();
+});
+
+test("agent page: an unavailable API client says what it uses and why it cannot start (#1408)", async () => {
+  const down = { ...FIXTURE.find((e) => e.id === "claude-api")!, present: false, api: { kind: "claude-stream-json", source: "claude", unavailable_reason: "claude 2.1.287 or later is required for native mode" } };
+  vi.mocked(api.engines).mockResolvedValue({ engines: FIXTURE.map((e) => (e.id === down.id ? down : e)), problems: [] });
+  vi.mocked(api.engineDetail).mockResolvedValue({
+    ...DETAIL, id: "claude-api", label: "Claude — API", runtime: "api", binary: null, launch: null,
+    provenance: { state: "absent", via: null, path: null, note: null },
+  });
+  setRoster(FIXTURE.map((e) => (e.id === down.id ? down : e)), []);
+  renderPage(<AgentDetail id="claude-api" />);
+  expect(await screen.findByTestId("api-client-status")).toHaveTextContent(
+    "API client — uses your Claude Code installation, sign-in, providers and MCP servers",
+  );
+  expect(screen.getByText(/2\.1\.287 or later/)).toBeInTheDocument();
+  // An API client has no binary of its own: no ABSENT chip, no "talks to its endpoint".
+  expect(screen.queryByText(/^absent$/i)).toBeNull();
+  expect(screen.queryByText(/talks to its endpoint/)).toBeNull();
+});
+
+test("agent page: a previous deactivation never follows the operator to another agent (#1416 review)", async () => {
+  // React Router reuses AgentDetail across /settings/agents/<id> changes; the ⋯ menu must not.
+  sessionStorage.setItem(
+    "plugin-deactivate:claude",
+    JSON.stringify({ request_id: "r-1", plugin_id: "claude", kind: "remove" }),
+  );
+  const { rerender } = renderPage(<AgentDetail id="claude" />);
+  await userEvent.click(await screen.findByTestId("agent-menu"));
+  expect(screen.getByRole("menuitem", { name: "Check previous remove" })).toBeInTheDocument();
+  await userEvent.keyboard("{Escape}");
+  rerender(
+    <ConfigCtx.Provider value={{ csrf: "x", new_session_engines: [], terminal_backend: "ws" } as AppConfig}>
+      <ConfigRefreshCtx.Provider value={() => {}}>
+        <MemoryRouter>
+          <AgentDetail id="codex" />
+        </MemoryRouter>
+      </ConfigRefreshCtx.Provider>
+    </ConfigCtx.Provider>,
+  );
+  await waitFor(() => expect(api.engineDetail).toHaveBeenCalledWith("codex"));
+  await userEvent.click(await screen.findByTestId("agent-menu"));
+  expect(screen.queryByRole("menuitem", { name: "Check previous remove" })).toBeNull();
+  sessionStorage.clear();
+});
+
+
+test("roster: with ONLY invalid definitions, the row itself reloads the roster once fixed (#1416 review)", async () => {
+  vi.mocked(api.engines).mockResolvedValue({ engines: [], problems: [PROBLEM] });
+  vi.mocked(api.pluginReload).mockResolvedValue({} as never);
+  renderPage(<AgentsRoster />);
+  await waitFor(() => expect(screen.getByText("acme-agent")).toBeInTheDocument());
+  // No agent page exists to reload from: the invalid row carries the control.
+  expect(screen.queryByRole("link", { name: /^Details for / })).toBeNull();
+  await userEvent.click(within(card("acme-agent")).getByRole("button", { name: "Details" }));
+  // The definition is fixed on disk; the reload brings the agent in and the problem goes.
+  vi.mocked(api.engines).mockResolvedValue({ engines: FIXTURE.slice(0, 1), problems: [] });
+  await userEvent.click(screen.getByRole("button", { name: "Reload agent roster" }));
+  expect(api.pluginReload).toHaveBeenCalledTimes(1);
+  await waitFor(() => expect(screen.queryByText("acme-agent")).toBeNull());
+  expect(screen.getByRole("link", { name: `Details for ${FIXTURE[0].label}` })).toBeInTheDocument();
+});
+
+
+test("roster: an invalid-only reload whose roster read FAILS keeps the rows and says so (#1416 review)", async () => {
+  vi.mocked(api.engines).mockResolvedValue({ engines: [], problems: [PROBLEM] });
+  vi.mocked(api.pluginReload).mockResolvedValue({} as never);
+  renderPage(<AgentsRoster />);
+  await waitFor(() => expect(screen.getByText("acme-agent")).toBeInTheDocument());
+  await userEvent.click(within(card("acme-agent")).getByRole("button", { name: "Details" }));
+  vi.mocked(api.engines).mockRejectedValueOnce(new Error("offline"));
+  await userEvent.click(screen.getByRole("button", { name: "Reload agent roster" }));
+  // The failure is reported on the row AND as the roster's own failure (with its Retry).
+  expect(await within(card("acme-agent")).findByRole("alert")).toHaveTextContent("couldn’t read the agent list");
+  expect(screen.getByText("Couldn’t refresh the agent list — showing the last one loaded.")).toBeInTheDocument();
+  expect(screen.getByText("acme-agent")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Reload agent roster" })).toBeEnabled();
 });

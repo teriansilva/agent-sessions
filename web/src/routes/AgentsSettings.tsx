@@ -4,8 +4,20 @@
  *  `/api/engines/{id}` (one agent's detail). Nothing names an agent in code. The only things the
  *  operator also manages reviewed agent installations through the separate installer catalog.
  *  Live engine identity still comes exclusively from engineRoster.ts. */
-import { CatalogCard, GalleryToolbar, PluginActions, PluginInstallationDetail } from "../components/plugins/PluginGallery";
-import { galleryMatch, usePluginCatalog, type GalleryFilter } from "../components/plugins/usePluginCatalog";
+import { AgentMenu, CatalogLine, InstallationSummary } from "../components/plugins/PluginGallery";
+import { usePluginCatalog } from "../components/plugins/usePluginCatalog";
+import { setupPath } from "../components/plugins/model";
+import {
+  buildRows,
+  catalogOnly,
+  engineStatus,
+  READY_RANK,
+  rowMatches,
+  savedStatus,
+  type RosterFilter,
+} from "../components/agents/agentStatus";
+import { CatalogOnly, RosterList, StatusWord } from "../components/agents/RosterList";
+import rr from "../components/agents/Roster.module.css";
 import { AgentEndpointCard } from "../components/settings/AgentEndpointCard";
 import {
   type CSSProperties,
@@ -25,7 +37,6 @@ import {
   engineColor,
   engineInfo,
   engineLabel,
-  isActive,
   markRosterFailed,
   resolveDefault,
   setRoster,
@@ -40,7 +51,6 @@ import type {
   AgentUsageRow,
   EngineDetail,
   EngineInfo,
-  EngineProblem,
 } from "../types/api";
 import button from "../components/ui/actionButton.module.css";
 import styles from "./Settings.module.css";
@@ -241,7 +251,8 @@ function useAgentBudgets() {
 
 type Budgets = ReturnType<typeof useAgentBudgets>;
 
-/** The alert threshold, the notify switch and "Ask the agents" — global, so on the roster only. */
+/** The alert threshold, the notify switch and "Ask the agents" — global, so on Agents › Defaults
+ *  (#1408), not repeated on every agent. */
 function BudgetBar({ b }: { b: Budgets }) {
   const {
     budgets,
@@ -519,176 +530,20 @@ function runtimeLabel(runtime: string): string {
   return runtime === "pty" ? "terminal" : runtime;
 }
 
-/** The engine's accent as the `--eng` custom property its card, badge and rule read. */
+/** The engine's accent as the `--eng` custom property its badge and rule read. */
 const accent = (id: string) => ({ "--eng": engineColor(id) }) as CSSProperties;
 
-type StateTone = "up" | "idle" | "deg" | "down";
+// ---- /settings/agents — the roster (#1408) -----------------------------------------------------------
 
-/** A state tag: an LED and a word, never colour alone (docs/design.md §8). */
-function StateTag({ tone: t, children }: { tone: StateTone; children: string }) {
-  const led = { up: "up", idle: "idle", deg: "attention", down: "down" }[t];
-  return (
-    <span className={`${a.state} ${a[`state_${t}`]}`}>
-      <span className={`hud-led ${led}`} aria-hidden="true" />
-      {children}
-    </span>
-  );
-}
+const FILTERS: readonly RosterFilter[] = ["All", "Ready", "Needs attention"];
 
-function engineState(e: EngineInfo | undefined): {
-  tone: StateTone;
-  text: string;
-} {
-  if (!e) return { tone: "idle", text: "Unknown" };
-  if (!isActive(e)) return { tone: "deg", text: "Retiring" };
-  // A native API client (#1311) has no binary of its own: it is Ready or Unavailable.
-  if (e.runtime === "api")
-    return e.present ? { tone: "up", text: "Ready" } : { tone: "idle", text: "Unavailable" };
-  return e.present
-    ? { tone: "up", text: "Present" }
-    : { tone: "idle", text: "Absent" };
-}
-
-/** The capabilities a roster card shows: the ones that decide what the operator can START. The
- *  agent's own page lists all of them. */
-const CARD_CAPS: readonly [keyof EngineInfo["capabilities"], string][] = [
-  ["resume", "resume"],
-  ["new", "new"],
-  ["handoff_target", "handoff target"],
-  ["orchestrator_input", "orchestrator input"],
-];
-
-// ---- /settings/agents — the roster -------------------------------------------------------------------
-
-/** One card per live roster engine, with usage and explicit installation actions. */
-function RosterCard({ e, b, catalog }: { e: EngineInfo; b: Budgets; catalog: ReturnType<typeof usePluginCatalog> }) {
-  const location = useLocation();
-  const retiring = !isActive(e);
-  const st = engineState(e);
-  const row = b.byEngine.get(e.id);
-  return (
-    <li
-      className={`${a.card} ${retiring || !e.present ? a.dim : ""}`}
-      style={accent(e.id)}
-      data-engine={e.id}
-    >
-      <div className={a.ctop}>
-        <span className={a.badge} aria-hidden="true">
-          {engineBadge(e.id)}
-        </span>
-        <div className={a.name}>
-          <h3>{e.label}</h3>
-          <span>{e.id}</span>
-        </div>
-        <StateTag tone={st.tone}>{st.text}</StateTag>
-      </div>
-      <div className={a.chips}>
-        <span className={`${a.chip} ${a.chipRt}`}>
-          Runtime // {runtimeLabel(e.runtime)}
-        </span>
-      </div>
-      {e.runtime === "api" && e.api ? (
-        // No binary of its own (#1311): it drives an installed console agent.
-        !retiring && (
-          <p className={e.present ? a.path : a.empty} data-testid="api-client-status">
-            Drives the {engineLabel(e.api.source)} CLI without a terminal
-            {e.present ? "." : ` — unavailable: ${e.api.unavailable_reason ?? "not ready"}`}
-          </p>
-        )
-      ) : e.present && e.bin ? (
-        <p className={a.path}>{e.bin}</p>
-      ) : (
-        !retiring && (
-          <div className={a.empty}>
-            <b>Not installed on this host</b>
-            No binary found for it. Its page lists where BattleLab looked.
-          </div>
-        )
-      )}
-      {retiring && (
-        <p className={a.note}>
-          {e.status_reason ||
-            "This agent is being removed; its running sessions stay attachable until they exit."}{" "}
-          Nothing new starts.
-        </p>
-      )}
-      {e.kind !== "agent" && (
-        <p className={a.plain}>Plain terminal, no agent behind it.</p>
-      )}
-      <ul className={a.chips} aria-label={`${e.label} capabilities`}>
-        {CARD_CAPS.map(([k, label]) => {
-          // A retiring engine starts nothing, whatever its manifest once declared.
-          const on = !retiring && e.capabilities[k];
-          return (
-            <li key={k} className={on ? a.chip : `${a.chip} ${a.chipOff}`}>
-              {label}
-              {!on && <span className="sr-only"> (off)</span>}
-            </li>
-          );
-        })}
-      </ul>
-      {row ? (
-        <EngineMeter b={b} e={e} />
-      ) : (
-        e.kind !== "agent" && (
-          <p className={a.meterNone}>
-            <span>Usage</span>
-            <span>— nothing to meter</span>
-          </p>
-        )
-      )}
-      <PluginActions id={e.id} label={e.label} data={catalog.data} onChange={catalog.load}>
-        <Link
-          to={agentPath(e.id)}
-          state={location.state}
-          className={button.ghost}
-          aria-label={`Details for ${e.label}`}
-        >
-          Details
-        </Link>
-      </PluginActions>
-    </li>
-  );
-}
-
-/** The agent definition’s directory name, from the manifest path the loader reported. */
-function problemName(source: string): string {
-  const parts = source.split("/").filter(Boolean);
-  const i = parts.lastIndexOf("plugin.toml");
-  return i > 0 ? parts[i - 1] : source;
-}
-
-/** A manifest that failed to load: its source and the loader's exact error. It is not an engine,
- *  so it offers nothing — not even a page of its own. */
-function ProblemCard({ p }: { p: EngineProblem }) {
-  return (
-    <li className={`${a.card} ${a.bad}`}>
-      <div className={a.ctop}>
-        <span className={`${a.badge} ${a.badgeNone}`} aria-hidden="true">
-          ??
-        </span>
-        <div className={a.name}>
-          <h3>{problemName(p.source)}</h3>
-        </div>
-        <StateTag tone="down">Invalid manifest</StateTag>
-      </div>
-      <p className={a.err}>
-        {p.source}
-        <br />
-        {p.error}
-      </p>
-      <p className={a.plain}>
-        Not loaded. Nothing from this agent runs until the manifest is fixed.
-      </p>
-    </li>
-  );
-}
-
+/** One compact list: a row per CLI, its status, its modes, at most one action. The status of
+ *  rows, chips, counts and filters is the one `agentStatus` presenter's. */
 export function AgentsRoster() {
   const roster = useEngineRoster();
   const catalog = usePluginCatalog();
   const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<GalleryFilter>("All");
+  const [filter, setFilter] = useState<RosterFilter>("All");
   const location = useLocation();
   const b = useAgentBudgets();
   const [retrying, setRetrying] = useState(false);
@@ -706,47 +561,52 @@ export function AgentsRoster() {
   };
 
   const { engines, problems } = roster;
-  const active = engines.filter(isActive).length;
-  const retiring = engines.length - active;
-
-  const matches = (id: string, label: string, engine?: EngineInfo) => galleryMatch(id, label, engine, catalog.data, query, filter);
-  const visible = engines.filter(e => matches(e.id, e.label, e));
-  const extraIds = new Set([...(catalog.data?.catalog.map(c => c.manifest.identity.id) ?? []), ...(catalog.data?.plugins.map(p => p.id) ?? [])]);
-  const extras = [...extraIds].filter(id => !engines.some(e => e.id === id)).map(id => {
-    const row = catalog.data?.plugins.find(p => p.id === id);
-    const gen = row?.generations?.find(g => g.id === (row.candidate ?? row.active));
-    const manifest = gen?.review.entry.manifest ?? catalog.data?.catalog.find(c => c.manifest.identity.id === id)?.manifest;
-    return { id, row, manifest };
-  }).filter(item => matches(item.id, item.manifest?.identity.label ?? item.id));
+  const rows = buildRows(engines, problems, catalog.data);
+  const visible = rows.filter((row) => rowMatches(row, query, filter));
+  const ready = rows.filter((row) => row.status.rank === READY_RANK).length;
+  const counts: Record<RosterFilter, number> = {
+    All: rows.length,
+    Ready: ready,
+    "Needs attention": rows.length - ready,
+  };
 
   return (
-    <section
-      className={`${styles.section} ${a.wide}`}
-      aria-labelledby="agents-h"
-    >
-      <div className={a.head}>
-        <div className={a.headText}>
+    <section className={`${styles.section} ${a.wide}`} aria-labelledby="agents-h">
+      <div className={rr.head}>
+        <div>
           <h2 id="agents-h">Agents</h2>
-          <p className={a.summary}>
-            Agents // <b>{active}</b> loaded · <b>{retiring}</b> retiring ·{" "}
-            <b>{problems.length}</b> invalid
-          </p>
-          <p className={styles.hint}>
-            Each agent’s definition describes its capabilities. Plan percentages come
-            from the agent; token budgets use the limit you set.
+          <p className={a.summary} data-testid="roster-summary">
+            <b>{ready}</b> ready · <b>{rows.length - ready}</b> need attention
           </p>
         </div>
-        <Link
-          to={settingsPath("agents-defaults")}
-          state={location.state}
-          className={a.headLink}
-        >
-          Defaults →
-        </Link>
+        <div className={rr.headActions}>
+          <Link to={settingsPath("agents-defaults")} state={location.state} className={a.headLink}>
+            Defaults →
+          </Link>
+          <Link className={button.primary} to={setupPath()}>
+            Add agent
+          </Link>
+        </div>
       </div>
 
-      <GalleryToolbar catalog={catalog} query={query} setQuery={setQuery} filter={filter} setFilter={setFilter} />
-      <BudgetBar b={b} />
+      <div className={rr.tools}>
+        <input
+          className={rr.search}
+          type="search"
+          aria-label="Search agents"
+          placeholder="Search agents"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <div className={rr.seg} role="group" aria-label="Agent filters">
+          {FILTERS.map((f) => (
+            <button key={f} type="button" aria-pressed={filter === f} onClick={() => setFilter(f)}>
+              {f}
+              <em aria-hidden="true">{counts[f]}</em>
+            </button>
+          ))}
+        </div>
+      </div>
 
       {roster.status === "failed" && (
         <div className={a.stale} role="alert">
@@ -755,12 +615,7 @@ export function AgentsRoster() {
               ? "Couldn’t refresh the agent list — showing the last one loaded."
               : "Couldn’t load the agent list."}
           </span>
-          <button
-            type="button"
-            className={button.ghost}
-            onClick={() => void retry()}
-            disabled={retrying}
-          >
+          <button type="button" className={button.ghost} onClick={() => void retry()} disabled={retrying}>
             {retrying ? "Retrying…" : "Retry"}
           </button>
         </div>
@@ -773,23 +628,28 @@ export function AgentsRoster() {
       {roster.loaded && engines.length === 0 && problems.length === 0 && (
         <div className={a.empty} role="status">
           <b>No agents loaded</b>
-          The server answered with an empty roster: no agent manifest loaded on
-          this host.
+          The server answered with an empty roster: no agent manifest loaded on this host.
         </div>
       )}
 
-      {(visible.length > 0 || extras.length > 0 || problems.length > 0) && (
-        <ul className={a.grid} aria-label="Agents">
-          {visible.map((e) => (
-            <RosterCard key={e.id} e={e} b={b} catalog={catalog} />
-          ))}
-          {catalog.data && extras.map(item => item.manifest ? <CatalogCard key={item.id} manifest={item.manifest} row={item.row} data={catalog.data!} onChange={catalog.load} /> : <li className={a.card} key={item.id}><h3>{item.id}</h3><p role="alert">{item.row?.error ?? "Installation details unavailable."}</p></li>)}
-          {problems.map((p) => (
-            <ProblemCard key={p.source} p={p} />
-          ))}
-        </ul>
+      {visible.length > 0 && <RosterList rows={visible} usage={b.byEngine} />}
+      {visible.length === 0 && rows.length > 0 && (
+        <p role="status" className={`${rr.list} ${rr.empty}`}>
+          {filter === "Needs attention" && !query ? "No agents need attention. " : "No agents match these filters. "}
+          <button
+            type="button"
+            className={button.ghost}
+            onClick={() => {
+              setFilter("All");
+              setQuery("");
+            }}
+          >
+            Show all
+          </button>
+        </p>
       )}
-      {visible.length === 0 && extras.length === 0 && (query || filter !== "All") && <p role="status" className={a.empty}>No agents match these filters.</p>}
+      <CatalogOnly entries={catalogOnly(engines, catalog.data)} />
+      <CatalogLine catalog={catalog} />
     </section>
   );
 }
@@ -862,7 +722,14 @@ export function AgentDetail({ id }: { id: string }) {
   const savedManifest = saved?.generations?.find(g => g.id === (saved.candidate ?? saved.active))?.review.entry.manifest
     ?? catalog.data?.catalog.find(c => c.manifest.identity.id === id)?.manifest;
   const refreshDetails = async () => { await catalog.load(); setNonce(n => n + 1); };
-  const installation = <PluginInstallationDetail key={id} id={id} label={savedManifest?.identity.label ?? engineLabel(id)} catalog={catalog} onChange={refreshDetails} />;
+  const label = savedManifest?.identity.label ?? engineLabel(id);
+  // Installation, the same in every state: one line, evidence behind a disclosure (#1408).
+  const installation = (fallback: ReactNode) => (
+    <section className={`${styles.section} ${a.wide}`} aria-labelledby="agent-install-h">
+      <h2 id="agent-install-h">Installation</h2>
+      <InstallationSummary id={id} data={catalog.data} error={catalog.error} fallback={fallback} />
+    </section>
+  );
 
   if (!cur) {
     return (
@@ -874,50 +741,78 @@ export function AgentDetail({ id }: { id: string }) {
     );
   }
   if (cur.kind === "missing") {
+    const st = saved ? savedStatus(id, catalog.data) : null;
     return (
-      <section
-        className={`${styles.section} ${a.wide}`}
-        aria-labelledby="agent-missing-h"
-      >
-        <h2 id="agent-missing-h">{savedManifest?.identity.label ?? "No such agent"}</h2>
-        <p className={styles.hint}>
-          {saved ? <>This agent is not in the live roster. Its saved installation is available below.</>
-            : <>No agent called <code>{id}</code> is loaded on this host. It may have been removed, or the link is wrong.</>}
-        </p>
-        {(saved || savedManifest) && installation}
-        <Link to={roster} state={location.state} className={button.ghost}>
-          ← All agents
-        </Link>
-      </section>
+      <div className={a.detail}>
+        <section className={`${styles.section} ${a.wide}`} aria-labelledby="agent-missing-h">
+          <div className={a.head}>
+            <h2 id="agent-missing-h">{savedManifest?.identity.label ?? "No such agent"}</h2>
+            {saved && (
+              <div className={rr.heroActions}>
+                {st?.action && <Link className={button.primary} to={st.action.to}>{st.action.label}</Link>}
+                <AgentMenu key={id} id={id} label={label} data={catalog.data} onChange={refreshDetails} />
+              </div>
+            )}
+          </div>
+          {st && <p className={rr.heroMeta}><StatusWord status={st} /></p>}
+          <p className={styles.hint}>
+            {saved ? <>This agent is not in the live roster. Its saved installation is below.</>
+              : <>No agent called <code>{id}</code> is loaded on this host. It may have been removed, or the link is wrong.</>}
+          </p>
+          <Link to={roster} state={location.state} className={button.ghost}>
+            ← All agents
+          </Link>
+        </section>
+        {(saved || savedManifest) && installation("No managed installation is saved for this agent.")}
+      </div>
     );
   }
   if (cur.kind === "failed") {
     return (
-      <section
-        className={`${styles.section} ${a.wide}`}
-        aria-labelledby="agent-failed-h"
-      >
-        <h2 id="agent-failed-h">{engineLabel(id)}</h2>
-        <div className={a.stale} role="alert">
-          <span>Couldn’t load this agent’s details.</span>
-          <button
-            type="button"
-            className={button.ghost}
-            onClick={() => setNonce((n) => n + 1)}
-          >
-            Retry
-          </button>
-        </div>
-        {installation}
-      </section>
+      <div className={a.detail}>
+        <section className={`${styles.section} ${a.wide}`} aria-labelledby="agent-failed-h">
+          <div className={a.head}>
+            <h2 id="agent-failed-h">{engineLabel(id)}</h2>
+            <AgentMenu key={id} id={id} label={label} data={catalog.data} onChange={refreshDetails} />
+          </div>
+          <div className={a.stale} role="alert">
+            <span>Couldn’t load this agent’s details.</span>
+            <button type="button" className={button.ghost} onClick={() => setNonce((n) => n + 1)}>
+              Retry
+            </button>
+          </div>
+        </section>
+        {installation("No managed installation is saved for this agent.")}
+      </div>
     );
   }
 
   const d = cur.d;
   const info = engineInfo(id);
-  const st = engineState(info);
-  const row = b.byEngine.get(id);
+  const st = info ? engineStatus(info, catalog.data) : savedStatus(id, catalog.data);
+  const usage = b.byEngine.get(id);
   const caps = Object.entries(d.capabilities);
+  const source = info?.api?.source ?? null;
+  const modelsList = d.models.length ? (
+    <ul className={a.models}>
+      {d.models.map((m) => (
+        <li key={m.id}>
+          <b>{m.id}</b>
+          {m.context_window != null && <small>{m.context_window.toLocaleString()} tokens</small>}
+          {m.aliases.length > 0 && <small>aka {m.aliases.join(", ")}</small>}
+        </li>
+      ))}
+    </ul>
+  ) : (
+    <div className={a.empty}>
+      <b>None declared</b>
+      {d.runtime === "api"
+        ? `${d.label} offers the models its source agent lists.`
+        : d.model_select?.configured_elsewhere
+          ? `${d.label} takes its model from its own configuration, so a new session offers “default” only.`
+          : `This manifest lists no models, so no model picker is shown. ${d.label} picks its own.`}
+    </div>
+  );
 
   return (
     <div className={a.detail} style={accent(id)}>
@@ -932,215 +827,202 @@ export function AgentDetail({ id }: { id: string }) {
               <span>{d.id}</span>
             </div>
           </div>
-          <div className={a.chips}>
-            <StateTag tone={st.tone}>{st.text}</StateTag>
-            <span className={`${a.chip} ${a.chipRt}`}>
-              Runtime // {runtimeLabel(d.runtime)}
-            </span>
-            <span className={`${a.chip} ${a.chipRt}`}>{d.provenance.state}</span>
+          <div className={rr.heroActions}>
+            {st.action && (
+              <Link className={button.primary} to={st.action.to}>
+                {st.action.label}
+              </Link>
+            )}
+            <AgentMenu key={id} id={id} label={d.label} data={catalog.data} onChange={refreshDetails} />
           </div>
         </div>
+        <p className={rr.heroMeta}>
+          <StatusWord status={st} />
+          <span aria-hidden="true">·</span>
+          {d.runtime === "api" && source ? (
+            // No binary of its own (#1311): it drives an installed console agent.
+            <span data-testid="api-client-status">
+              API client — uses your{" "}
+              <Link to={agentPath(source)} state={location.state}>
+                {engineLabel(source)}
+              </Link>{" "}
+              installation, sign-in, providers and MCP servers
+            </span>
+          ) : d.runtime === "chat" ? (
+            <span>API agent — BattleLab talks to its endpoint and runs nothing on this host</span>
+          ) : d.kind !== "agent" ? (
+            <span>Plain terminal, no agent behind it.</span>
+          ) : d.provenance.path ? (
+            <code>{d.provenance.path}</code>
+          ) : (
+            <span>Not found on this host — Technical details lists where BattleLab looked.</span>
+          )}
+        </p>
+        {st.reason && st.rank < READY_RANK && <p className={styles.hint}>{st.reason}</p>}
       </section>
 
-      {installation}
-
-      <div className={a.cols}>
-        <section className={styles.section} aria-labelledby="agent-identity-h">
-          <h2 id="agent-identity-h">Identity</h2>
-          <Kv
-            rows={[
-              ["Id", d.id],
-              ["Label", d.label],
-              ["Publisher", d.publisher],
-              ...(d.version ? [["Version", d.version] as [string, string]] : []),
-              ["Manifest contract", String(d.contract)],
-              ["Kind", d.kind],
-              [
-                "Source",
-                <>
-                  {d.source}
-                  {d.source === "in-tree" && <small>Shipped with BattleLab.</small>}
-                </>,
-              ],
-            ]}
-          />
+      {d.runtime === "chat" && (
+        // An API agent (#1209): where its conversations go.
+        <section className={`${styles.section} ${a.wide}`} aria-label="Endpoint">
+          <AgentEndpointCard engine={d.id} readOnly={!!saved?.active} />
         </section>
+      )}
 
-        {d.runtime === "chat" && (
-          // An API agent (#1209): where its conversations go. Before the binary section, which
-          // for this runtime only says there is none.
-          <section className={styles.section} aria-label="Endpoint">
-            <AgentEndpointCard engine={d.id} readOnly={!!saved?.active} />
-          </section>
+      <section className={`${styles.section} ${a.wide}`} aria-labelledby="agent-usage-h">
+        <h2 id="agent-usage-h">Usage</h2>
+        {usage && info ? (
+          <>
+            <EngineMeter b={b} e={info} />
+            {usage.source === "plan" && (
+              <p className={styles.hint}>
+                Plan usage is reported by the agent itself — there is no limit to set here. The
+                alert threshold is in Agents › Defaults.
+              </p>
+            )}
+          </>
+        ) : (
+          <p className={styles.hint}>
+            {d.kind === "agent" ? "No usage reported for this agent yet." : "Nothing to meter — no agent behind it."}
+          </p>
         )}
+        <BudgetError b={b} />
+      </section>
 
-        <section className={styles.section} aria-labelledby="agent-binary-h">
-          <h2 id="agent-binary-h">Binary &amp; provenance</h2>
-          {d.binary ? (
-            <Kv
-              rows={[
-              ["Resolved path", d.provenance.path ?? "— not found"],
-              [
-                "State",
-                <>
-                  {d.provenance.state}
-                  {provenanceNote(d) && <small>{provenanceNote(d)}</small>}
-                </>,
-              ],
-              ["Binary", d.binary.name],
-              ["Env override", d.binary.env_var ?? "none"],
-              [
-                "Search paths",
-                d.binary.search_paths.length
-                  ? d.binary.search_paths.join(", ")
-                  : "none declared",
-              ],
-            ]}
-            />
-          ) : (
-            <div className={a.empty}>
-              <b>No binary</b>
-              This agent runs no process: BattleLab talks to its endpoint
-              {d.endpoint ? ` (${d.endpoint.kind})` : ""} and runs nothing on this
-              host.
-            </div>
-          )}
-        </section>
-
-        <section className={styles.section} aria-labelledby="agent-store-h">
-          <h2 id="agent-store-h">Store</h2>
-          {d.store ? (
-            <Kv
-              rows={[
-                ["Path", d.store.root],
-                ...(d.store.resolved && d.store.resolved !== d.store.root
-                  ? [["Resolved", d.store.resolved] as [string, string]]
-                  : []),
-                ["Layout", d.store.layout],
-                ["Access", d.store.read_only ? "read-only" : "read-write"],
-              ]}
-            />
-          ) : (
-            <div className={a.empty}>
-              <b>No store</b>
-              This agent keeps no session store BattleLab reads.
-            </div>
-          )}
-        </section>
-
-        <section className={styles.section} aria-labelledby="agent-kinds-h">
-          <h2 id="agent-kinds-h">Kinds</h2>
-          <Kv
-            rows={[
-              ...(d.launch
-                ? ([
-                    ["Resume", d.launch.resume],
-                    ["New", d.launch.new ?? "not declared"],
-                    ...(d.launch.admission
-                      ? [["Admission", d.launch.admission] as [string, string]]
-                      : []),
-                  ] as [string, string][])
-                : ([["Launch", "none — runs no process"]] as [string, string][])),
-              [
-                "Transcript",
-                `${d.transcript.kind ?? "none"}${d.transcript.strict ? " · strict" : ""}`,
-              ],
-              [
-                "Usage",
-                `${d.usage.source}${d.usage.kind ? ` · ${d.usage.kind}` : ""}`,
-              ],
-            ]}
+      {d.model_select?.supported && (
+        <section className={`${styles.section} ${a.wide}`} aria-labelledby="agent-models-h">
+          <h2 id="agent-models-h">Models</h2>
+          {modelsList}
+          <AddedModels
+            engine={d.id}
+            ids={d.model_select.offered.filter((m) => m.source === "operator").map((m) => m.id)}
+            onSaved={() => {
+              setNonce((n) => n + 1);
+              void refreshRoster();
+            }}
           />
         </section>
+      )}
 
-        <section className={styles.section} aria-labelledby="agent-caps-h">
-          <h2 id="agent-caps-h">Capabilities</h2>
-          <ul className={a.caps}>
-            {caps.map(([k, on]) => (
-              <li key={k} className={`${a.cap} ${on ? "" : a.capOff}`}>
-                <span>{k}</span>
-                <span className={on ? a.on : a.off}>{on ? "on" : "off"}</span>
-              </li>
-            ))}
-          </ul>
-        </section>
+      {installation(
+        d.runtime === "api"
+          ? "Included with BattleLab — it uses its source agent’s installation."
+          : d.runtime === "chat"
+            ? "Included with BattleLab."
+            : d.provenance.path
+              ? "Not managed by BattleLab’s installer: found on this host."
+              : "Not installed by BattleLab.",
+      )}
 
-        <section className={styles.section} aria-labelledby="agent-models-h">
-          <h2 id="agent-models-h">Models</h2>
-          {d.models.length ? (
-            <ul className={a.models}>
-              {d.models.map((m) => (
-                <li key={m.id}>
-                  <b>{m.id}</b>
-                  {m.context_window != null && (
-                    <small>{m.context_window.toLocaleString()} tokens</small>
-                  )}
-                  {m.aliases.length > 0 && (
-                    <small>aka {m.aliases.join(", ")}</small>
-                  )}
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <div className={a.empty}>
-              <b>None declared</b>
-              {d.model_select?.configured_elsewhere
-                ? `${d.label} takes its model from its own configuration, so a new session offers “default” only.`
-                : `This manifest lists no models, so no model picker is shown. ${d.label} picks its own.`}
-            </div>
-          )}
-          {d.model_select?.supported && (
-            <AddedModels
-              engine={d.id}
-              ids={d.model_select.offered
-                .filter((m) => m.source === "operator")
-                .map((m) => m.id)}
-              onSaved={() => {
-                setNonce((n) => n + 1);
-                void refreshRoster();
-              }}
-            />
-          )}
-        </section>
-
-        <section className={styles.section} aria-labelledby="agent-budget-h">
-          <h2 id="agent-budget-h">Budget</h2>
-          {row && info ? (
-            <>
-              <EngineMeter b={b} e={info} />
-              {row.source === "plan" && (
-                <p className={styles.hint}>
-                  Plan usage is reported by the agent itself — there is no
-                  limit to set here. The alert threshold is on the roster.
-                </p>
+      <section className={`${styles.section} ${a.wide}`}>
+        <details className={rr.disclosure} data-testid="technical-details">
+          <summary className={rr.techSummary}>
+            Technical details <small>identity · binary · store · kinds · capabilities{d.model_select?.supported ? "" : " · models"}</small>
+          </summary>
+          <div className={a.cols}>
+            <section aria-labelledby="agent-identity-h">
+              <h3 id="agent-identity-h">Identity</h3>
+              <Kv
+                rows={[
+                  ["Id", d.id],
+                  ["Label", d.label],
+                  ["Publisher", d.publisher],
+                  ...(d.version ? [["Version", d.version] as [string, string]] : []),
+                  ["Manifest contract", String(d.contract)],
+                  ["Kind", d.kind],
+                  ["Runtime", runtimeLabel(d.runtime)],
+                  [
+                    "Source",
+                    <>
+                      {d.source}
+                      {d.source === "in-tree" && <small>Shipped with BattleLab.</small>}
+                    </>,
+                  ],
+                ]}
+              />
+            </section>
+            <section aria-labelledby="agent-binary-h">
+              <h3 id="agent-binary-h">Binary &amp; provenance</h3>
+              {d.binary ? (
+                <Kv
+                  rows={[
+                    ["Resolved path", d.provenance.path ?? "— not found"],
+                    [
+                      "State",
+                      <>
+                        {d.provenance.state}
+                        {provenanceNote(d) && <small>{provenanceNote(d)}</small>}
+                      </>,
+                    ],
+                    ["Binary", d.binary.name],
+                    ["Env override", d.binary.env_var ?? "none"],
+                    ["Search paths", d.binary.search_paths.length ? d.binary.search_paths.join(", ") : "none declared"],
+                  ]}
+                />
+              ) : (
+                <div className={a.empty}>
+                  <b>No binary of its own</b>
+                  {d.runtime === "api" && source
+                    ? `It drives the ${engineLabel(source)} CLI without a terminal.`
+                    : `BattleLab talks to its endpoint${d.endpoint ? ` (${d.endpoint.kind})` : ""} and runs nothing on this host.`}
+                </div>
               )}
-            </>
-          ) : (
-            <p className={styles.hint}>
-              {d.kind === "agent"
-                ? "No usage reported for this agent yet."
-                : "Nothing to meter — no agent behind it."}
-            </p>
-          )}
-          <BudgetError b={b} />
-        </section>
-
-        <section className={styles.section} aria-labelledby="agent-defaults-h">
-          <h2 id="agent-defaults-h">Defaults</h2>
-          <div className={a.empty}>
-            <b>Set in one place</b>
-            The default agent and the permission-bypass default are global. A
-            new session can still change either for itself.
+            </section>
+            <section aria-labelledby="agent-store-h">
+              <h3 id="agent-store-h">Store</h3>
+              {d.store ? (
+                <Kv
+                  rows={[
+                    ["Path", d.store.root],
+                    ...(d.store.resolved && d.store.resolved !== d.store.root
+                      ? [["Resolved", d.store.resolved] as [string, string]]
+                      : []),
+                    ["Layout", d.store.layout],
+                    ["Access", d.store.read_only ? "read-only" : "read-write"],
+                  ]}
+                />
+              ) : (
+                <div className={a.empty}>
+                  <b>No store</b>
+                  This agent keeps no session store BattleLab reads.
+                </div>
+              )}
+            </section>
+            <section aria-labelledby="agent-kinds-h">
+              <h3 id="agent-kinds-h">Kinds</h3>
+              <Kv
+                rows={[
+                  ...(d.launch
+                    ? ([
+                        ["Resume", d.launch.resume],
+                        ["New", d.launch.new ?? "not declared"],
+                        ...(d.launch.admission ? [["Admission", d.launch.admission] as [string, string]] : []),
+                      ] as [string, string][])
+                    : ([["Launch", "none — runs no process of its own"]] as [string, string][])),
+                  ["Transcript", `${d.transcript.kind ?? "none"}${d.transcript.strict ? " · strict" : ""}`],
+                  ["Usage", `${d.usage.source}${d.usage.kind ? ` · ${d.usage.kind}` : ""}`],
+                ]}
+              />
+            </section>
+            <section aria-labelledby="agent-caps-h">
+              <h3 id="agent-caps-h">Capabilities</h3>
+              <ul className={a.caps}>
+                {caps.map(([k, on]) => (
+                  <li key={k} className={`${a.cap} ${on ? "" : a.capOff}`}>
+                    <span>{k}</span>
+                    <span className={on ? a.on : a.off}>{on ? "on" : "off"}</span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+            {!d.model_select?.supported && (
+              <section aria-labelledby="agent-models-h">
+                <h3 id="agent-models-h">Models</h3>
+                {modelsList}
+              </section>
+            )}
           </div>
-          <Link
-            to={settingsPath("agents-defaults")}
-            state={location.state}
-            className={a.headLink}
-          >
-            Agents › Defaults →
-          </Link>
-        </section>
-      </div>
+        </details>
+      </section>
     </div>
   );
 }
@@ -1268,6 +1150,9 @@ function AddedModels({
 // ---- /settings/agents/defaults ---------------------------------------------------------------------
 
 export function AgentDefaultsPage() {
+  // The global usage alert (threshold, notify, "Ask the agents") lives here since #1408: it is a
+  // default, not a property of any one agent. Each agent's own limit stays on its page.
+  const b = useAgentBudgets();
   const config = useConfig();
   const refreshConfig = useConfigRefresh();
   const location = useLocation();
@@ -1397,6 +1282,7 @@ export function AgentDefaultsPage() {
   );
 
   return (
+    <>
     <section
       className={`${styles.section} ${a.wide}`}
       aria-labelledby="agent-defaults-page-h"
@@ -1414,7 +1300,7 @@ export function AgentDefaultsPage() {
           state={location.state}
           className={a.headLink}
         >
-          ← Roster
+          ← All agents
         </Link>
       </div>
 
@@ -1535,5 +1421,14 @@ export function AgentDefaultsPage() {
         </div>
       </div>
     </section>
+    <section className={`${styles.section} ${a.wide}`} aria-labelledby="usage-alerts-h">
+      <h2 id="usage-alerts-h">Usage alerts</h2>
+      <p className={styles.hint}>
+        When an agent reaches this share of its plan or token limit, BattleLab tells you. Plan
+        percentages come from the agent; token limits are set on each agent’s page.
+      </p>
+      <BudgetBar b={b} />
+    </section>
+    </>
   );
 }

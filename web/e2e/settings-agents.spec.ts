@@ -186,7 +186,7 @@ const WIDTHS = [320, 390, 1440];
 const rosterSection = (page: Page) =>
   page.locator("section", { has: page.getByRole("heading", { name: "Agents", exact: true }) });
 
-test("roster: every state side by side, 44px targets, long paths wrap, no overflow at 320–1440", async ({
+test("roster: every state side by side, 44px targets, no overflow at 320–1440 (#1408)", async ({
   page,
 }) => {
   await mockAgents(page);
@@ -194,47 +194,52 @@ test("roster: every state side by side, 44px targets, long paths wrap, no overfl
     await page.setViewportSize({ width, height: 900 });
     await page.goto(settingsPath("agents"));
     const section = rosterSection(page);
-    await expect(section.getByRole("heading", { name: "Claude Code" })).toBeVisible();
-    await expect(section.getByText("Invalid manifest")).toBeVisible();
-    await expect(section.getByText("Retiring", { exact: true })).toBeVisible();
-    // The fixture roster carries more than one absent engine (the unconfigured API agent, #1209).
-    await expect(section.getByText("Absent", { exact: true }).first()).toBeVisible();
-    const loaded = ENGINES.filter((e) => (e.status ?? "active") === "active").length;
-    await expect(
-      section.getByText(new RegExp(`Agents // ${loaded} loaded · 1 retiring · 1 invalid`, "i")),
-    ).toBeVisible();
-
-    // The long binary path wraps onto several lines inside its card.
-    const path = section.getByText(LONG_BIN, { exact: true });
-    const pb = (await path.boundingBox())!;
-    const card = section.locator("li", { has: page.getByRole("heading", { name: "Codex", exact: true }) });
-    const cb = (await card.boundingBox())!;
-    expect(pb.height, `path wraps at ${width}px`).toBeGreaterThan(30);
-    expect(pb.x + pb.width).toBeLessThanOrEqual(cb.x + cb.width + 1);
-
-    await assertTargets(section.getByRole("link", { name: /^Details for / }));
+    const list = section.getByRole("list", { name: "All agents" });
+    await expect(list.getByRole("link", { name: "Details for Claude Code" })).toBeVisible();
+    // Each state is ONE word beside an LED (design.md §8), from the one presenter.
+    await expect(list.getByText("Invalid", { exact: true })).toBeVisible();
+    await expect(list.getByText("Retiring", { exact: true })).toBeVisible();
+    await expect(list.getByText("Not installed", { exact: true }).first()).toBeVisible();
+    await expect(section.getByTestId("roster-summary")).toContainText(/\d+ ready · \d+ need attention/);
+    // Rows are compact: one per CLI, never the old card wall.
+    for (const row of await list.locator(":scope > li").all()) {
+      const box = (await row.boundingBox())!;
+      expect(box.height, `row height @${width}`).toBeLessThanOrEqual(width < 800 ? 260 : 90);
+    }
+    // Add agent stays on the header at every width.
+    await assertTargets(section.getByRole("link", { name: "Add agent", exact: true }));
+    await assertTargets(list.getByRole("link", { name: /^Details for / }));
+    await assertTargets(list.locator("[data-mode]"));
+    await assertTargets(section.getByRole("group", { name: "Agent filters" }).getByRole("button"));
     await assertTargets(section.getByRole("link", { name: "Defaults →" }));
     await assertNoHorizontalOverflow(section, `roster @${width}`);
   }
 });
 
-test("agent page: identity, provenance and store render, wrap, and a 404 says so", async ({
+test("agent page: status first, the long path wraps, technical detail folded away, and a 404 says so", async ({
   page,
 }) => {
   await mockAgents(page);
   for (const width of WIDTHS) {
     await page.setViewportSize({ width, height: 900 });
     await page.goto(agentPath(CLAUDE.id));
+    // The header: the resolved binary (a long one WRAPS, never widens the page) and the ⋯ menu.
+    const path = page.getByText(LONG_BIN, { exact: true }).first();
+    await expect(path).toBeVisible();
+    expect((await path.boundingBox())!.height, `path wraps at ${width}px`).toBeGreaterThan(18);
+    await assertTargets(page.getByTestId("agent-menu"));
+    // Technical detail is folded away until asked for.
+    const tech = page.getByTestId("technical-details");
+    await expect(page.getByRole("heading", { name: "Binary & provenance" })).toBeHidden();
+    await tech.locator("summary").click();
     await expect(page.getByRole("heading", { name: "Binary & provenance" })).toBeVisible();
-    await expect(page.getByText("None declared")).toBeVisible();
-    const detail = page.locator("section", { has: page.getByRole("heading", { name: "Identity" }) })
-      .locator("xpath=..");
-    await assertNoHorizontalOverflow(detail, `agent page @${width}`);
-    await assertTargets(page.getByRole("link", { name: /Agents › Defaults/ }));
+    await expect(tech.getByText("None declared")).toBeVisible();
+    await assertTargets(tech.locator("summary"));
+    await assertNoHorizontalOverflow(page.locator("main, body").first(), `agent page @${width}`);
   }
   await page.goto(agentPath("not-an-agent"));
   await expect(page.getByRole("heading", { name: "No such agent" })).toBeVisible();
-  await assertTargets(page.getByRole("link", { name: /All agents/ }));
+  await assertTargets(page.getByRole("link", { name: "← All agents" }));
 });
 
 test("defaults: the removed default is named, the keyboard reaches the radios and Save, and a save sends only what changed", async ({
@@ -257,9 +262,9 @@ test("defaults: the removed default is named, the keyboard reaches the radios an
     await assertNoHorizontalOverflow(section, `defaults @${width}`);
   }
 
-  // Keyboard: from the Roster link, Tab reaches the agent radios, then the switch; arrowing to
-  // another agent makes the form dirty and Save becomes the next stop.
-  const roster = page.getByRole("link", { name: "← Roster" });
+  // Keyboard: from the All agents link, Tab reaches the agent radios, then the switch; arrowing
+  // to another agent makes the form dirty and Save becomes the next stop.
+  const roster = page.getByRole("link", { name: "← All agents" });
   await roster.focus();
   const stops: string[] = [];
   for (let i = 0; i < 12; i++) {
@@ -306,4 +311,56 @@ test("defaults: saving the bypass alone never re-sends the uninstalled default",
   await page.getByRole("button", { name: "Save defaults" }).click();
   await expect(page.getByText("Saved.")).toBeVisible();
   expect(posts).toEqual([{ agent_defaults: { bypass: false } }]);
+});
+
+for (const theme of ["dark", "light"] as const) {
+  test(`roster (#1408): one row per CLI links each mode; Needs attention narrows; Add agent at 320px · ${theme}`, async ({
+    page,
+  }, info) => {
+    await mockAgents(page);
+    await page.goto(settingsPath("agents"));
+    await page.evaluate((t) => (document.documentElement.dataset.theme = t), theme);
+    const list = page.getByRole("list", { name: "All agents" });
+    // Codex and its API client are ONE row; each mode chip opens its own agent page.
+    const codex = list.locator('[data-engine="codex"]');
+    const apis = ENGINES.filter((e) => e.runtime === "api" && (e.api as { source?: string } | undefined)?.source === "codex");
+    await expect(codex.locator("[data-mode]")).toHaveCount(1 + apis.length);
+    await expect(codex.locator('[data-mode="codex"]')).toHaveAttribute("href", agentPath("codex"));
+    for (const a of apis) {
+      await expect(list.locator(`[data-engine="${a.id}"]`)).toHaveCount(0);
+      await expect(codex.locator(`[data-mode="${a.id}"]`)).toHaveAttribute("href", agentPath(a.id));
+    }
+    await page.screenshot({ path: info.outputPath(`roster-${theme}.png`), fullPage: true });
+    // Needs attention shows only rows that are not Ready.
+    await page.getByRole("button", { name: "Needs attention" }).click();
+    for (const word of await list.locator("[data-status]").evaluateAll((n) => n.map((x) => x.getAttribute("data-status")))) {
+      expect(word).not.toBe("Ready");
+    }
+    await page.getByRole("button", { name: "All", exact: true }).click();
+    // Add agent stays in the header at the narrowest width.
+    await page.setViewportSize({ width: 320, height: 800 });
+    await assertTargets(page.getByRole("link", { name: "Add agent", exact: true }));
+    await assertNoHorizontalOverflow(rosterSection(page), "roster @320");
+    await page.screenshot({ path: info.outputPath(`roster-320-${theme}.png`), fullPage: true });
+    // The agent page: header, sections, technical details closed.
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto(agentPath(CLAUDE.id));
+    await page.evaluate((t) => (document.documentElement.dataset.theme = t), theme);
+    await expect(page.getByTestId("technical-details")).not.toHaveAttribute("open", "");
+    await page.screenshot({ path: info.outputPath(`agent-${theme}.png`), fullPage: true });
+    await page.getByTestId("agent-menu").click();
+    await page.screenshot({ path: info.outputPath(`agent-menu-${theme}.png`) });
+  });
+}
+
+test("roster (#1408): at 320px every toolbar control stays inside the roster box", async ({ page }) => {
+  await mockAgents(page);
+  await page.setViewportSize({ width: 320, height: 800 });
+  await page.goto(settingsPath("agents"));
+  const box = (await page.getByRole("list", { name: "All agents" }).boundingBox())!;
+  for (const control of [page.getByLabel("Search agents"), ...(await page.getByRole("group", { name: "Agent filters" }).getByRole("button").all())]) {
+    const b = (await control.boundingBox())!;
+    expect(b.x + b.width, "inside the roster's right edge").toBeLessThanOrEqual(box.x + box.width + 1);
+    expect(b.height, "a control stays control-sized when the toolbar stacks").toBeLessThanOrEqual(90);
+  }
 });

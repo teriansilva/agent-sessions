@@ -161,7 +161,7 @@ function SettingsNav({
   agentId = null,
 }: {
   active: SettingsSectionId;
-  /** On an agent's own page (#1128): the agent, listed under Roster as the current page. */
+  /** On an agent's own page (#1128): the agent, listed under All agents as the current page. */
   agentId?: string | null;
 }) {
   const location = useLocation();

@@ -114,12 +114,24 @@ running is refused, not queued (a manual scan answers 409).
 
 ## System
 
-### Agents & usage · `agents`
+### All agents · `agents`
 
-The agent CLIs BattleLab found on this host, and what each one has spent. A percentage marked
-*plan* comes from the agent itself; the rest are counted against a token limit you set, with an
-**Alert at** threshold. Kimi Code reports its plan quota from version 2.1 on, so a counter you
-kept for it by hand is no longer used — update kimi if its row shows an error instead.
+One row per agent CLI: whether it is **Ready** or needs you (**Needs setup**, **Update
+available**, **Not installed**, **Unavailable**, **Disabled**, **Retiring**, **Invalid**), the ways
+it can run (Terminal, API, Chat — each links to that agent's page), and what it has spent. When
+something needs you, the row carries the one button for it. **Needs attention** shows only those
+rows; **Add agent** sets up a new one. The public catalog is the line under the list; open
+**Catalog details** for its links, history and the daily check.
+
+An agent's page starts with its status, the one thing to do if any, and a **⋯** menu for reload,
+disable and remove. Below are its usage (a percentage marked *plan* comes from the agent itself;
+the rest count against a token limit you set here), its models, its installation in one line with
+the verification evidence behind it, and **Technical details** folded away. Kimi Code reports its
+plan quota from version 2.1 on, so a counter you kept for it by hand is no longer used — update
+kimi if its row shows an error instead.
+
+**Agents › Defaults** holds the default agent, the permission-bypass default, and **Usage
+alerts**: the **Alert at** threshold and whether you are notified.
 
 ### Security · `security`
 

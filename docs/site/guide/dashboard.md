@@ -17,7 +17,7 @@ Four numbers, each a link to the tile or section it counts:
 | **Active agents** | Sessions with a live agent, and how many of them are working, broken down per agent. |
 | **Missions** | Missions that are active or waiting for your review. |
 | **Needs you** | Sessions no mission holds that are waiting on you, the same list as [Needs you](#needs-you-and-ask) below. |
-| **Plan quota — lowest left** | The agent plan with the least quota left, and when it resets. Only agents whose plan quota the tile lists count here; see *Agents & usage* in [Settings](/guide/settings). |
+| **Plan quota — lowest left** | The agent plan with the least quota left, and when it resets. Only agents whose plan quota the tile lists count here; see *All agents* in [Settings](/guide/settings). |
 
 A number that could not be read shows **—** and *couldn't read*, never a guess. A count that might be
 wrong is worse than no count.
@@ -34,7 +34,7 @@ wrong is worse than no count.
   the quota, otherwise where it lands at the reset. It needs a few readings (about half an hour)
   before it says anything. Only quotas that were actually read are listed: an agent with no quota
   and no limit set, one whose quota could not be read for over an hour, and one whose vendor refuses
-  the account are left off. They all still appear under *Agents & usage* in
+  the account are left off. They all still appear under *All agents* in
   [Settings](/guide/settings), which is where you set a limit.
 - **Most recent sessions**: your latest sessions, each tagged *Needs you*, *In flight*, *Recently
   active* or *Idle*, with a link to the full list.

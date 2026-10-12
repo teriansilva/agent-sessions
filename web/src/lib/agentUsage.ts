@@ -102,7 +102,7 @@ export function stalenessNote(
 /** Whether the dashboard's quota tile lists this row at all. Only a quota that was READ and is
  *  current: an agent the operator never configured (`none`, or a count with no limit), one the
  *  vendor refuses, and one whose figures have gone stale because reading keeps failing are left
- *  out rather than drawn as a placeholder. Settings → Agents & usage still lists every agent —
+ *  out rather than drawn as a placeholder. Settings → Agents still lists every agent —
  *  that is where one gets configured. */
 export function quotaReadable(row: AgentUsageRow): boolean {
   if (row.access?.state === "denied" || row.stale) return false;

@@ -31,7 +31,7 @@ export const SETTINGS_SECTIONS = [
   { id: "ai-activity", label: "Activity", group: "ai" },
   // AGENTS (#853 P4, #1128): the roster keeps the `/settings/agents` URL it had as "Agents &
   // usage"; each agent's own page is `/settings/agents/<id>` (`agentPath`), not a registry entry.
-  { id: "agents", label: "Roster", group: "agents" },
+  { id: "agents", label: "All agents", group: "agents" },
   { id: "agents-defaults", label: "Defaults", group: "agents" },
   { id: "security", label: "Security", group: "system" },
   { id: "updates", label: "Updates", group: "system" },
