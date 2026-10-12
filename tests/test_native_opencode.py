@@ -519,9 +519,11 @@ def test_the_child_environment_carries_a_fresh_password_and_the_forced_ask(tmp_p
         "LANG",
         "TERM",
         "NO_COLOR",
+        "BATTLELAB_SESSION",
         "OPENCODE_SERVER_PASSWORD",
         "OPENCODE_CONFIG_CONTENT",
     }
+    assert env["BATTLELAB_SESSION"] == config["session_key"]  # #1406, through this branch too
     with pytest.raises(native_worker.WorkerError):
         native_worker.child_environment(config, None, a.agent)  # never an open listener
     with pytest.raises(native_worker.WorkerError):

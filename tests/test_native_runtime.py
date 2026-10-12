@@ -706,6 +706,87 @@ async def test_an_idle_worker_exits_and_the_next_turn_resumes_the_same_history(
     assert snap["native"]["worker"] != worker and len(host.launches) == launched + 1
 
 
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+def test_the_child_environment_names_the_battlelab_session_and_nothing_else(host, source):
+    """#1406: the agent's own id is the app session key, on every adapter, beside the sanitized
+    base and nothing else new. A key that is not the exact canonical shape refuses the spawn."""
+    from agent_sessions import native_worker
+
+    key = f"{ENGINES[source]}:{ident()}"
+    config = {"session_key": key, "adapter": KINDS[source], "home": "/h", "path": "/bin"}
+    extra = {}
+    if source == "opencode":
+        from agent_sessions.engines import opencode
+
+        extra = {"server_password": "p" * 32, "agent": opencode.mint_api_agent()}
+    env = native_worker.child_environment(config, **extra)
+    base = {"HOME", "PATH", "LANG", "TERM", "NO_COLOR", "BATTLELAB_SESSION"}
+    if source == "opencode":
+        base |= {"OPENCODE_SERVER_PASSWORD", "OPENCODE_CONFIG_CONTENT"}
+    assert set(env) == base
+    assert env["BATTLELAB_SESSION"] == key
+    # A later generation of the same session (another worker, a resumed native id) is told the
+    # same app key, never its native id.
+    later = {**config, "worker_id": ident(), "native_id": ident(), "mode": "resume"}
+    assert native_worker.child_environment(later, **extra)["BATTLELAB_SESSION"] == key
+    session = key.partition(":")[2]
+    for bad in (
+        None,
+        7,
+        session,  # bare: no engine
+        f"{ENGINES[source]}:{session.upper()}",
+        f"{ENGINES[source]}:{session}\n",
+        f"{ENGINES[source]}:{session}:x",
+        f"{ENGINES[source].upper()}:{session}",
+        f"{ENGINES[source]}:not-a-uuid",
+        f":{session}",
+    ):
+        with pytest.raises(native_worker.WorkerError, match="not canonical"):
+            native_worker.child_environment({**config, "session_key": bad}, **extra)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+async def test_every_generation_tells_its_agent_the_battlelab_session(
+    host, project, monkeypatch, source
+):
+    """#1406: the creating generation and a successor that resumes after an idle exit both start
+    their native child with BATTLELAB_SESSION = the app key; Codex also gets it as the per-thread
+    shell-policy `set` on start and resume, so a restrictive operator policy cannot strip it."""
+    monkeypatch.setattr(native_runtime, "WORKER_IDLE_TIMEOUT", 0.5)
+    engine = ENGINES[source]
+    key = (await runtime.create_session(engine, str(project), operation_id=ident()))["session_key"]
+    first = ident()
+    await runtime.submit_turn(key, operation_id=first, text="one")
+    snap, _ = await settle(key, first)
+    native, worker = snap["native"]["native_id"], snap["native"]["worker"]
+    assert native != key.partition(":")[2]
+    for _ in range(200):
+        if native_state.read_lifecycle(worker).get("phase") == "exited":
+            break
+        await asyncio.sleep(0.05)
+    assert native_state.read_lifecycle(worker)["phase"] == "exited"
+    monkeypatch.setattr(native_runtime, "WORKER_IDLE_TIMEOUT", 60.0)
+    nxt = ident()
+    await runtime.submit_turn(key, operation_id=nxt, text="two")
+    snap, turn = await settle(key, nxt)
+    assert turn["reply"] == "echo:two" and snap["native"]["native_id"] == native
+    assert snap["native"]["worker"] != worker
+    children = [f for f in frames(project) if "models" not in f["frame"]]
+    told = {(f["pid"], f["battlelab_session"]) for f in children}
+    assert len({pid for pid, _ in told}) >= 2  # two generations' native children
+    assert {value for _, value in told} == {key}
+    if source == "codex":
+        threads = [
+            f["frame"]
+            for f in children
+            if f["frame"].get("method") in {"thread/start", "thread/resume"}
+        ]
+        assert {t["method"] for t in threads} == {"thread/start", "thread/resume"}
+        for t in threads:
+            assert t["params"]["config"] == {"shell_environment_policy.set.BATTLELAB_SESSION": key}
+
+
 def test_lease_sweep_drops_only_gone_generations(host, tmp_path):
     release = tmp_path / "install" / "releases" / "r1"
     release.mkdir(parents=True)

@@ -126,6 +126,20 @@ def native_environment(config: dict) -> dict[str, str]:
     return env
 
 
+def battlelab_session(config: dict) -> str:
+    """The BattleLab session key the agent records as its own id (#1406), never the native id.
+
+    A non-secret identifier (the `/s/<engine>/<id>` link). The web process composed it from the
+    admitted roster; here it must be exactly the canonical API key shape (`native_ipc`'s gate,
+    lowercase engine id and UUID, nothing around them), or the spawn is refused rather than
+    telling the agent a wrong id. The worker does not consult its own roster for it.
+    """
+    try:
+        return native_ipc.validate_session_key(config.get("session_key"))
+    except native_ipc.IPCError:
+        raise WorkerError("the session key is not canonical") from None
+
+
 def child_environment(
     config: dict,
     server_password: str | None = None,
@@ -143,8 +157,10 @@ def child_environment(
     generation, the same construction as the unattended launch's) that the session is pinned to.
     The operator's own config and console opencode are untouched, and the app's own
     `OPENCODE_CONFIG_CONTENT` is not passed on (the environment is sanitized).
+    Every adapter's child also gets `BATTLELAB_SESSION` (`battlelab_session`).
     """
     env = native_environment(config)
+    env["BATTLELAB_SESSION"] = battlelab_session(config)
     if config["adapter"] == OPENCODE:
         if not isinstance(server_password, str) or len(server_password) < 32:
             raise WorkerError("the opencode listener password is missing")
@@ -639,10 +655,13 @@ class Worker:
         await self.write(self.codec.initialized())
         cwd, model = self.config["cwd"], self.config.get("model")
         bypass = self.config.get("bypass") is True
+        session = battlelab_session(self.config)
         if self.native_id is not None:
-            await self.request(self.codec.resume(self.native_id, cwd, model, bypass=bypass))
+            await self.request(
+                self.codec.resume(self.native_id, cwd, model, bypass=bypass, session=session)
+            )
             return
-        request = self.codec.create(cwd, model, bypass=bypass)
+        request = self.codec.create(cwd, model, bypass=bypass, session=session)
         event = await self.request(request)
         native_id = event.data["native_id"]
         await asyncio.to_thread(self.bind_created, request["id"], event)

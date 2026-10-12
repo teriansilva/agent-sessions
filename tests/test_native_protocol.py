@@ -185,6 +185,19 @@ def test_read_is_an_observation_not_resume_or_completion():
     assert "input" not in resume["params"]
 
 
+def test_codex_start_and_resume_carry_the_battlelab_session_as_a_shell_policy_set():
+    """#1406: a restrictive operator `shell_environment_policy` would strip the child's
+    BATTLELAB_SESSION from the agent's tool shell; the dotted per-thread `set` restores it and
+    touches nothing else of the operator's policy."""
+    key = "codex-api:6c51dd58-9155-47b0-aafa-2ccf0de04908"
+    told = {"shell_environment_policy.set.BATTLELAB_SESSION": key}
+    assert CodexCodec().create("/project", "gpt-6", session=key)["params"]["config"] == told
+    resume = CodexCodec().resume(SESSION, "/project", session=key)
+    assert resume["params"]["config"] == told and resume["params"]["threadId"] == SESSION
+    assert "config" not in CodexCodec().create("/project")["params"]
+    assert "config" not in CodexCodec.create_params("/project", None)
+
+
 @pytest.mark.parametrize("action", ["read", "resume"])
 def test_native_response_must_match_requested_history(action):
     codec = CodexCodec()

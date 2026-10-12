@@ -27,7 +27,9 @@ import uuid
 LOG = os.path.join(os.getcwd(), "native-frames.jsonl")
 
 
-EXTRA: dict = {}
+# Every entry records the BattleLab session the child was told (#1406), so a test can prove each
+# generation names the app session, never the native id.
+EXTRA: dict = {"battlelab_session": os.environ.get("BATTLELAB_SESSION")}
 
 
 def log(frame):

@@ -332,10 +332,17 @@ class CodexCodec(_Codec):
     def initialized() -> dict:
         return {"method": "initialized"}
 
-    def create(self, cwd: str, model: str | None = None, *, bypass: bool = False) -> dict:
+    def create(
+        self,
+        cwd: str,
+        model: str | None = None,
+        *,
+        bypass: bool = False,
+        session: str | None = None,
+    ) -> dict:
         if self.native_id is not None:
             raise ProtocolError("native thread is already bound")
-        params = self.create_params(cwd, model, bypass=bypass)
+        params = self.create_params(cwd, model, bypass=bypass, session=session)
         return self._request("thread/start", params)
 
     def read(self, thread_id: str) -> dict:
@@ -346,9 +353,15 @@ class CodexCodec(_Codec):
         return frame
 
     def resume(
-        self, thread_id: str, cwd: str, model: str | None = None, *, bypass: bool = False
+        self,
+        thread_id: str,
+        cwd: str,
+        model: str | None = None,
+        *,
+        bypass: bool = False,
+        session: str | None = None,
     ) -> dict:
-        params = self.create_params(cwd, model, bypass=bypass)
+        params = self.create_params(cwd, model, bypass=bypass, session=session)
         params["threadId"] = _identity(thread_id)
         # Never hydrate the full history into one frame: a long thread exceeds the frame bound
         # and could then never be resumed. BattleLab's own journal already holds what it saw.
@@ -358,7 +371,9 @@ class CodexCodec(_Codec):
         return frame
 
     @staticmethod
-    def create_params(cwd: str, model: str | None, *, bypass: bool = False) -> dict[str, Any]:
+    def create_params(
+        cwd: str, model: str | None, *, bypass: bool = False, session: str | None = None
+    ) -> dict[str, Any]:
         # Skip-permissions (#1339) is the structured twin of the console's
         # `--dangerously-bypass-approvals-and-sandbox`: Codex never asks and runs unsandboxed.
         params: dict[str, Any] = {
@@ -369,6 +384,12 @@ class CodexCodec(_Codec):
         }
         if _model(model) is not None:
             params["model"] = model
+        if session is not None:
+            # #1406: an operator `shell_environment_policy` (`inherit = "core"/"none"`, `exclude`)
+            # would strip the child's BATTLELAB_SESSION from the agent's tool shell. The dotted
+            # key merges into the operator's `set` table and outranks their config (codex 0.162,
+            # start and resume). An `include_only` allowlist still wins; it is not rewritten.
+            params["config"] = {"shell_environment_policy.set.BATTLELAB_SESSION": session}
         return params
 
     def submit(self, text: str, operation_id: str, images=()) -> dict:
