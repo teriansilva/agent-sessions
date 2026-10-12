@@ -1,5 +1,17 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
+import {
+  ArrowLeft,
+  ArrowRight,
+  ChevronRight,
+  Copy,
+  Download,
+  FileText as SkillIcon,
+  GitCompareArrows,
+  RefreshCw,
+  Search,
+  Workflow,
+} from "lucide-react";
 import { api } from "../lib/api";
 import { GALLERY_PATH, PLAYBOOKS_PATH, SKILLS_PATH } from "../lib/routes";
 import type {
@@ -11,6 +23,7 @@ import type {
 import { usePlaybookRead } from "../components/playbooks/usePlaybooks";
 import { HudFrame } from "../components/hud/HudFrame";
 import {
+  FileRow,
   FileText,
   LeaveGuard,
   PendingOperation,
@@ -24,6 +37,25 @@ import {
 } from "../components/gallery/operations";
 import buttons from "../components/ui/actionButton.module.css";
 import styles from "../components/gallery/gallery.module.css";
+
+const KINDS = [
+  ["", "All"],
+  ["playbook", "Playbooks"],
+  ["skill", "Skills"],
+] as const;
+const COPY_ID = /^[a-z][a-z0-9-]{1,47}$/;
+const COPY_ID_HINT =
+  "A copy ID is 2–48 lowercase letters, digits or dashes, starting with a letter.";
+const plural = (n: number, one: string, many = `${one}s`) =>
+  `${n} ${n === 1 ? one : many}`;
+
+function KindIcon({ kind }: { kind: GalleryKind }) {
+  return kind === "playbook" ? (
+    <Workflow size={14} aria-hidden />
+  ) : (
+    <SkillIcon size={14} aria-hidden />
+  );
+}
 
 export default function ContentGallery() {
   const { digest } = useParams();
@@ -52,40 +84,43 @@ export default function ContentGallery() {
           .includes(search.toLowerCase()),
     ) ?? [];
   const entry = read.data?.entries.find((e) => e.digest === digest);
+  const total = read.data?.entries.length ?? 0;
+  const refresh = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      await api.refreshGallery();
+      await read.reload();
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <main className={styles.page}>
       <HudFrame hero />
-      <div className={styles.badge}>Library // Gallery</div>
-      <div className={styles.bar}>
-        <h1>Playbooks & skills</h1>
-        <div className={styles.actions}>
-          <Link className={buttons.ghost} to={PLAYBOOKS_PATH}>
-            Local playbooks
-          </Link>
-          <Link className={buttons.ghost} to={SKILLS_PATH}>
-            Local skills
-          </Link>
-          <button
-            className={buttons.ghost}
-            disabled={busy}
-            onClick={async () => {
-              setBusy(true);
-              setError("");
-              try {
-                await api.refreshGallery();
-                await read.reload();
-              } catch (e) {
-                setError(errorText(e));
-              } finally {
-                setBusy(false);
-              }
-            }}
-          >
-            Check public gallery
-          </button>
-        </div>
+      <div className={styles.kicker}>
+        Library // Gallery{!digest && read.data ? ` // ${total}` : ""}
       </div>
-      <p>Inspect complete content, then import an editable local copy.</p>
+      {!digest && (
+        <>
+          <div className={styles.header}>
+            <h1>{target ? "Choose a version" : "Gallery"}</h1>
+            <button className={buttons.ghost} disabled={busy} onClick={refresh}>
+              <RefreshCw size={14} aria-hidden />
+              Check public gallery
+            </button>
+          </div>
+          <p className={styles.intro}>
+            Signed playbooks and skills to start from. Inspect everything, then
+            import your own editable copy. Copies land in{" "}
+            <Link to={PLAYBOOKS_PATH}>Local playbooks</Link> and{" "}
+            <Link to={SKILLS_PATH}>Local skills</Link>, and nothing runs until
+            you use it.
+          </p>
+        </>
+      )}
       <PendingOperation />
       {(error || read.error || read.data?.error) && (
         <p role="alert" className={styles.error}>
@@ -99,7 +134,7 @@ export default function ContentGallery() {
           imports and updates need a fresh signed publication.
         </p>
       )}
-      {target && (
+      {target && !digest && (
         <p className={styles.notice}>
           Choose a version to compare with{" "}
           <Link to={localPath(target.kind, target.id)}>{target.id}</Link>.
@@ -126,31 +161,40 @@ export default function ContentGallery() {
         )
       ) : (
         <>
-          <div className={styles.filters}>
-            <label>
+          <div className={styles.toolbar}>
+            <label className={styles.search}>
               Search
-              <input
-                type="search"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Title, author, publisher…"
-              />
+              <span className={styles.searchBox}>
+                <Search size={16} aria-hidden />
+                <input
+                  type="search"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Title, author, publisher…"
+                />
+              </span>
             </label>
-            <label>
-              Kind
-              <select
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-              >
-                <option value="">All content</option>
-                <option value="playbook">Playbooks</option>
-                <option value="skill">Skills</option>
-              </select>
-            </label>
+            <div className={styles.segmented} role="group" aria-label="Kind">
+              {KINDS.map(([value, label]) => (
+                <button
+                  key={value}
+                  className={buttons.ghost}
+                  aria-pressed={filter === value}
+                  onClick={() => setFilter(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {!!total && (
+              <span className={`${styles.tag} ${styles.count}`}>
+                {matches.length} of {total}
+              </span>
+            )}
           </div>
           {read.loading && !read.data && <p role="status">Loading gallery…</p>}
           {read.data && !read.data.entries.length && (
-            <section className={styles.panel}>
+            <section className={styles.empty}>
               <h2>No accepted gallery content yet</h2>
               <p>
                 Check the public gallery to load its signed publication. Your
@@ -159,50 +203,74 @@ export default function ContentGallery() {
             </section>
           )}
           {!!read.data?.entries.length && !matches.length && (
-            <p>No gallery content matches this search.</p>
+            <div className={styles.empty}>
+              <p>No gallery content matches this search.</p>
+              <button
+                className={buttons.ghost}
+                onClick={() => {
+                  setSearch("");
+                  setFilter("");
+                }}
+              >
+                Clear search
+              </button>
+            </div>
           )}
           <div className={styles.grid}>
             {matches.map((e) => (
               <article className={styles.card} key={e.digest}>
-                <div className={styles.badge}>
-                  {e.content.kind} · {e.content.version}
+                <div className={styles.tag}>
+                  <KindIcon kind={e.content.kind} />
+                  {e.content.kind} // v{e.content.version}
                 </div>
                 <h2>{e.content.title}</h2>
                 <p>{e.content.summary}</p>
-                <p>
-                  {e.content.author} · {e.content.publisher}
+                <p className={styles.meta}>
+                  By {e.content.author} · {e.content.publisher}
                 </p>
-                {!e.available && <p>Withdrawn · inspect only</p>}
+                {!e.available && (
+                  <span className={`${styles.tag} ${styles.withdrawn}`}>
+                    Withdrawn · inspect only
+                  </span>
+                )}
                 <Link
-                  className={buttons.ghost}
+                  className={`${buttons.ghost} ${styles.cardAction}`}
                   to={`${GALLERY_PATH}/${e.digest}${target ? `?kind=${target.kind}&id=${encodeURIComponent(target.id)}` : ""}`}
                 >
                   {target ? "Compare this version" : "Inspect complete content"}
+                  <ArrowRight size={16} aria-hidden />
                 </Link>
               </article>
             ))}
           </div>
         </>
       )}
-      <details>
-        <summary>Publication evidence</summary>
-        <p>
-          Sequence {read.data?.sequence ?? "none"} ·{" "}
-          {read.data?.expires_at
-            ? `expires ${new Date(read.data.expires_at * 1000).toLocaleString()}`
-            : "not checked"}
-        </p>
-        <code>{read.data?.digest}</code>
-        <p>
-          <a
-            href="https://relay.battlelab.superstatus.io/catalogs/gallery"
-            target="_blank"
-            rel="noreferrer"
-          >
-            Open public gallery
-          </a>
-        </p>
-      </details>
+      {!digest && (
+        <details className={`${styles.file} ${styles.evidence}`}>
+          <summary>
+            <ChevronRight size={16} aria-hidden />
+            <span>Publication evidence</span>
+          </summary>
+          <div className={styles.fileBody}>
+            <p>
+              Sequence {read.data?.sequence ?? "none"} ·{" "}
+              {read.data?.expires_at
+                ? `expires ${new Date(read.data.expires_at * 1000).toLocaleString()}`
+                : "not checked"}
+            </p>
+            <code>{read.data?.digest}</code>
+            <p>
+              <a
+                href="https://relay.battlelab.superstatus.io/catalogs/gallery"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Open public gallery
+              </a>
+            </p>
+          </div>
+        </details>
+      )}
     </main>
   );
 }
@@ -212,143 +280,181 @@ function Inspect({ entry }: { entry: GalleryEntry }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState<string | null>(null);
+  const hint = useId();
   const read = usePlaybookRead(
     useCallback(() => api.inspectGallery(entry.digest, id), [entry.digest, id]),
   );
   const c = entry.content;
+  const why = done
+    ? ""
+    : read.loading
+      ? "Checking this copy ID…"
+      : read.error || !read.data?.importable
+        ? ""
+        : !ack
+          ? "Tick the review box to import."
+          : "";
   return (
-    <section className={styles.panel}>
-      <div className={styles.bar}>
-        <h2>
-          {c.title} · {c.version}
-        </h2>
-        <Link className={buttons.ghost} to={GALLERY_PATH}>
-          Back to gallery
-        </Link>
-      </div>
-      <p>{c.summary}</p>
-      <p>
-        By {c.author} · published by {c.publisher}
-      </p>
-      <a href={c.source} target="_blank" rel="noreferrer">
-        Source
-      </a>
-      <h3>Requirements</h3>
-      {c.requirements.length ? (
-        c.requirements.map((r, i) => <p key={i}>{r}</p>)
-      ) : (
-        <p>No additional requirements declared.</p>
-      )}
-      {read.data?.preview && (
-        <section aria-label="Inputs and workflow">
-          <h3>Inputs & workflow</h3>
-          {read.data.preview.inputs.map((input) => (
-            <p key={input.name}>
-              {input.label ?? input.name} ({input.name}) ·{" "}
-              {input.required ? "required" : "optional"}
+    <>
+      <Link className={`${buttons.ghost} ${styles.back}`} to={GALLERY_PATH}>
+        <ArrowLeft size={16} aria-hidden />
+        Back to gallery
+      </Link>
+      <div className={styles.detail}>
+        <article>
+          <header className={styles.detailHead}>
+            <div className={styles.tag}>
+              <KindIcon kind={c.kind} />
+              {c.kind} // v{c.version}
+            </div>
+            <h1>{c.title}</h1>
+            <p>{c.summary}</p>
+            <p>
+              By {c.author} · published by {c.publisher} ·{" "}
+              <a href={c.source} target="_blank" rel="noreferrer">
+                Source
+              </a>
             </p>
-          ))}
-          {read.data.preview.flows?.map((flow) => (
-            <div key={flow.id}>
-              <h4>{flow.title}</h4>
-              <ol>
-                {flow.steps.map((step) => (
-                  <li key={step.id}>
-                    {step.title} ·{" "}
-                    {step.actor.engine ?? step.actor.label ?? step.actor.kind}
-                    {step.after.length
-                      ? ` · after ${step.after.join(", ")}`
-                      : ""}
+          </header>
+          <section className={styles.section}>
+            <h2>Requirements</h2>
+            {c.requirements.length ? (
+              <ul>
+                {c.requirements.map((r, i) => (
+                  <li key={i}>{r}</li>
+                ))}
+              </ul>
+            ) : (
+              <p>No additional requirements declared.</p>
+            )}
+          </section>
+          {read.data?.preview && (
+            <section className={styles.section} aria-label="Inputs and workflow">
+              <h2>Inputs & workflow</h2>
+              <ul>
+                {read.data.preview.inputs.map((input) => (
+                  <li key={input.name}>
+                    {input.label ?? input.name} ({input.name}) ·{" "}
+                    {input.required ? "required" : "optional"}
                   </li>
                 ))}
-              </ol>
-            </div>
-          ))}
-        </section>
-      )}
-      <h3>Complete files</h3>
-      {Object.entries(c.files).map(([name, value]) => (
-        <details key={name}>
-          <summary>{name}</summary>
-          <FileText value={value} />
-        </details>
-      ))}
-      <p>
-        {c.kind === "playbook"
-          ? "Only the local playbook ID is rewritten. Flows and all other files retain their identities."
-          : "This creates inert files in your BattleLab library. You decide when and how to use the skill."}
-      </p>
-      <LeaveGuard dirty={busy} />
-      <label>
-        Local copy ID
-        <input
-          disabled={busy}
-          value={id}
-          pattern="[a-z][a-z0-9-]{1,47}"
-          onChange={(e) => {
-            setId(e.target.value);
-            setAck(false);
-            setDone(null);
-          }}
-        />
-      </label>
-      <label className={styles.check}>
-        <input
-          type="checkbox"
-          disabled={busy}
-          checked={ack}
-          onChange={(e) => setAck(e.target.checked)}
-        />
-        I reviewed the complete content and requirements.
-      </label>
-      {(read.data?.reason || read.error) && (
-        <p role="alert">{read.data?.reason || read.error}</p>
-      )}
-      {error && (
-        <p className={styles.error} role="alert">
-          {error}
-        </p>
-      )}
-      <button
-        className={buttons.primary}
-        disabled={
-          busy ||
-          read.loading ||
-          !!read.error ||
-          !read.data?.importable ||
-          !ack ||
-          !!done
-        }
-        onClick={async () => {
-          setBusy(true);
-          setError("");
-          try {
-            const op = beginOperation();
-            const value = await api.importGallery(c.kind, id, entry.digest, op);
-            finishOperation(value);
-            if (value.state === "complete")
-              setDone(
-                value.result?.durable === false
-                  ? `Imported. ${value.result.durable_reason}`
-                  : "Imported an editable local copy.",
-              );
-            else
-              setError(value.message ?? "Check the operation before retrying.");
-          } catch (e) {
-            setError(errorText(e));
-          } finally {
-            setBusy(false);
-          }
-        }}
-      >
-        Import editable copy
-      </button>
-      {done && (
-        <p role="status">
-          {done} <Link to={localPath(c.kind, id)}>Open local copy</Link>
-        </p>
-      )}
-    </section>
+              </ul>
+              {read.data.preview.flows?.map((flow) => (
+                <div key={flow.id}>
+                  <h3>{flow.title}</h3>
+                  <ol>
+                    {flow.steps.map((step) => (
+                      <li key={step.id}>
+                        {step.title} ·{" "}
+                        {step.actor.engine ?? step.actor.label ?? step.actor.kind}
+                        {step.after.length
+                          ? ` · after ${step.after.join(", ")}`
+                          : ""}
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              ))}
+            </section>
+          )}
+          <section className={styles.section}>
+            <h2>Complete files</h2>
+            {Object.entries(c.files).map(([name, value]) => (
+              <FileRow key={name} name={name}>
+                <FileText value={value} />
+              </FileRow>
+            ))}
+          </section>
+        </article>
+        <aside className={styles.side} aria-label="Import">
+          <h2>Import a copy</h2>
+          <p>
+            {c.kind === "playbook"
+              ? "Only the local playbook ID is rewritten. Flows and all other files retain their identities."
+              : "This creates inert files in your BattleLab library. You decide when and how to use the skill."}
+          </p>
+          <LeaveGuard dirty={busy} />
+          <label className={styles.field}>
+            Local copy ID
+            <input
+              disabled={busy}
+              value={id}
+              pattern="[a-z][a-z0-9-]{1,47}"
+              onChange={(e) => {
+                setId(e.target.value);
+                setAck(false);
+                setDone(null);
+              }}
+            />
+          </label>
+          <label className={styles.check}>
+            <input
+              type="checkbox"
+              disabled={busy}
+              checked={ack}
+              onChange={(e) => setAck(e.target.checked)}
+            />
+            I reviewed the complete content and requirements.
+          </label>
+          {(read.data?.reason || read.error) && (
+            <p role="alert" className={styles.error}>
+              {read.data?.reason || read.error}
+            </p>
+          )}
+          {error && (
+            <p className={styles.error} role="alert">
+              {error}
+            </p>
+          )}
+          <button
+            className={`${buttons.primary} ${styles.wide}`}
+            aria-describedby={why ? hint : undefined}
+            disabled={
+              busy ||
+              read.loading ||
+              !!read.error ||
+              !read.data?.importable ||
+              !ack ||
+              !!done
+            }
+            onClick={async () => {
+              setBusy(true);
+              setError("");
+              try {
+                const op = beginOperation();
+                const value = await api.importGallery(c.kind, id, entry.digest, op);
+                finishOperation(value);
+                if (value.state === "complete")
+                  setDone(
+                    value.result?.durable === false
+                      ? `Imported. ${value.result.durable_reason}`
+                      : "Imported an editable local copy.",
+                  );
+                else
+                  setError(value.message ?? "Check the operation before retrying.");
+              } catch (e) {
+                setError(errorText(e));
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            <Download size={16} aria-hidden />
+            Import editable copy
+          </button>
+          {why && (
+            <p className={styles.why} id={hint}>
+              {why}
+            </p>
+          )}
+          {done && (
+            <p role="status" className={styles.done}>
+              {done} <Link to={localPath(c.kind, id)}>Open local copy</Link>
+            </p>
+          )}
+        </aside>
+      </div>
+    </>
   );
 }
 function Compare({
@@ -366,12 +472,13 @@ function Compare({
   );
   if (!read.data)
     return (
-      <section className={styles.panel}>
-        <p role={read.error ? "alert" : "status"}>
-          {read.error ??
-            "Comparing imported base, local copy and incoming version…"}
-        </p>
-      </section>
+      <p
+        role={read.error ? "alert" : "status"}
+        className={read.error ? styles.error : styles.notice}
+      >
+        {read.error ??
+          "Comparing imported base, local copy and incoming version…"}
+      </p>
     );
   return <Merge initial={read.data} reload={read.reload} />;
 }
@@ -393,6 +500,7 @@ function Merge({
   const [error, setError] = useState("");
   const [done, setDone] = useState<string | null>(null);
   const [newId, setNewId] = useState(`${initial.id.slice(0, 40)}-updated`);
+  const hint = useId();
   const live = useRef(true);
   useEffect(() => {
     live.current = true;
@@ -425,14 +533,51 @@ function Merge({
     ...view.changed_files,
     ...retainedDifferences(view.proposed),
   ])].sort();
+  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+  const changes = reviewedFiles.length;
+  const why = done
+    ? ""
+    : unresolved.size
+      ? `Choose a result for ${plural(unresolved.size, "file")} first.`
+      : !COPY_ID.test(newId)
+        ? COPY_ID_HINT
+        : newId === view.id
+          ? "Choose an ID different from the original copy."
+          : !ack
+            ? "Tick the review box to create the copy."
+            : "";
   return (
-    <section className={styles.panel}>
+    <>
       <LeaveGuard dirty={dirty || busy} />
-      <h2>Compare update to {view.incoming_version}</h2>
-      <p>
-        Review the imported base, your current copy and the incoming files.
-        Choose the result for each conflicting file.
-      </p>
+      <Link className={`${buttons.ghost} ${styles.back}`} to={GALLERY_PATH}>
+        <ArrowLeft size={16} aria-hidden />
+        Back to gallery
+      </Link>
+      <header className={styles.detailHead}>
+        <div className={styles.tag}>
+          <GitCompareArrows size={14} aria-hidden />
+          Update // {view.kind} // v{view.incoming_version}
+        </div>
+        <h1>Compare update to {view.incoming_version}</h1>
+        <p>
+          Updating your copy{" "}
+          <Link to={localPath(view.kind, view.id)}>{view.id}</Link>. Review the
+          imported base, your current copy and the incoming files. Choose the
+          result for each conflicting file.
+        </p>
+      </header>
+      <div className={styles.summary}>
+        <span className={styles.tag}>{plural(changes, "file")} changed</span>
+        {unresolved.size ? (
+          <span className={styles.tag}>
+            <span className="hud-led attention" aria-hidden />
+            {plural(unresolved.size, "file")}{" "}
+            {unresolved.size === 1 ? "needs" : "need"} a choice
+          </span>
+        ) : changes ? (
+          <span className={styles.tag}>Every file has a result</span>
+        ) : null}
+      </div>
       {error && (
         <p role="alert" className={styles.error}>
           {error} Your draft is retained.
@@ -440,12 +585,33 @@ function Merge({
       )}
       {reviewedFiles.map((name) => {
         const result = ownValue(files, name);
+        const local = ownValue(view.local, name);
+        const incoming = ownValue(view.incoming, name);
+        const using = unresolved.has(name)
+          ? null
+          : same(result, local)
+            ? "local"
+            : same(result, incoming)
+              ? "incoming"
+              : "retained";
         return (
-          <details key={name} open>
-            <summary>
-              {name}
-              {unresolved.has(name) ? " · choose a result" : ""}
-            </summary>
+          <FileRow
+            key={name}
+            name={name}
+            open
+            state={
+              using === null ? (
+                <>
+                  <span className="hud-led attention" aria-hidden />
+                  choose a result
+                </>
+              ) : using === "retained" ? (
+                "using the result below"
+              ) : (
+                `using the ${using} file`
+              )
+            }
+          >
             <div className={styles.compare}>
               {(
                 [
@@ -460,31 +626,44 @@ function Merge({
                 </div>
               ))}
             </div>
-            <div className={styles.actions}>
-              <button
-                className={buttons.ghost}
-                disabled={busy}
-                onClick={() => choose(name, result)}
+            <div className={styles.choice}>
+              <span>Result</span>
+              <div
+                className={styles.segmented}
+                role="group"
+                aria-label={`Versions of ${name}`}
               >
-                Keep retained result
-              </button>
-              <button
-                className={buttons.ghost}
-                disabled={busy}
-                onClick={() => choose(name, ownValue(view.local, name))}
-              >
-                Keep local file
-              </button>
-              <button
-                className={buttons.ghost}
-                disabled={busy}
-                onClick={() => choose(name, ownValue(view.incoming, name))}
-              >
-                Use incoming file
-              </button>
+                <button
+                  className={buttons.ghost}
+                  aria-label="Keep retained result"
+                  aria-pressed={using === "retained"}
+                  disabled={busy}
+                  onClick={() => choose(name, result)}
+                >
+                  Retained result
+                </button>
+                <button
+                  className={buttons.ghost}
+                  aria-label="Keep local file"
+                  aria-pressed={using === "local"}
+                  disabled={busy}
+                  onClick={() => choose(name, local)}
+                >
+                  Local file
+                </button>
+                <button
+                  className={buttons.ghost}
+                  aria-label="Use incoming file"
+                  aria-pressed={using === "incoming"}
+                  disabled={busy}
+                  onClick={() => choose(name, incoming)}
+                >
+                  Incoming file
+                </button>
+              </div>
             </div>
             {typeof result === "string" && (
-              <label>
+              <label className={styles.field}>
                 Result for {name}
                 <textarea
                   disabled={busy}
@@ -496,106 +675,119 @@ function Merge({
             )}
             {result === undefined && <p>This file will be absent.</p>}
             {typeof result === "object" && <FileText value={result} />}
-          </details>
+          </FileRow>
         );
       })}
       {!reviewedFiles.length && (
         <p>The file contents match the imported base.</p>
       )}
-      <p className={styles.notice}>
-        This creates a new local copy. Your original and existing project references stay unchanged.
-        Choose the new copy explicitly when you are ready to use it.
-      </p>
-      <label>
-        New copy ID
-        <input
-          disabled={busy || !!done}
-          value={newId}
-          pattern="[a-z][a-z0-9-]{1,47}"
-          onChange={(e) => { setNewId(e.target.value); setAck(false); setDirty(true); }}
-        />
-      </label>
-      {view.kind === "playbook" && <p>Only the playbook ID is rewritten; workflow identities are preserved.</p>}
-      <label className={styles.check}>
-        <input
-          type="checkbox"
-          disabled={busy || !!done}
-          checked={ack}
-          onChange={(e) => setAck(e.target.checked)}
-        />
-        I reviewed these results and want to create a new copy.
-      </label>
-      <div className={styles.actions}>
-        <button
-          className={buttons.primary}
-          disabled={busy || !ack || unresolved.size > 0 || !!done || newId === view.id || !/^[a-z][a-z0-9-]{1,47}$/.test(newId)}
-          onClick={async () => {
-            setBusy(true);
-            setError("");
-            try {
-              const operation = beginOperation();
-              const result = await api.updateGallery(
-                view.kind,
-                view.id,
-                newId,
-                view.incoming_digest,
-                view.comparison,
-                files,
-                operation,
-              );
-              finishOperation(result);
-              if (live.current) {
-                if (result.state === "complete") {
-                  setDone(result.result?.id ?? newId);
-                  setDirty(false);
-                  if (result.result?.durable === false)
-                    setError(
-                      result.result.durable_reason ??
-                        "Inspect durable storage before further changes.",
-                    );
-                } else setError(result.message ?? "Check operation status.");
-              }
-            } catch (e) {
-              if (live.current) setError(errorText(e));
-            } finally {
-              if (live.current) setBusy(false);
-            }
-          }}
-        >
-          Create updated copy
-        </button>
-        <button
-          className={buttons.ghost}
-          disabled={busy}
-          onClick={async () => {
-            setBusy(true);
-            try {
-              const next = await reload();
-              if (!next && live.current)
-                setError(
-                  "The current revision could not be loaded. Try comparing again.",
-                );
-              if (next && live.current) {
-                setView(next);
-                setUnresolved(new Set([...next.conflicts, ...retainedDifferences(next.proposed)]));
-                setAck(false);
-                setError("");
-                setDone(null);
-              }
-            } finally {
-              if (live.current) setBusy(false);
-            }
-          }}
-        >
-          Compare current revision again
-        </button>
-      </div>
-      {done && (
-        <p role="status">
-          Created an updated copy. Your original is unchanged.{" "}
-          <Link to={localPath(view.kind, done)}>Open new copy</Link>
+      <section className={styles.section} aria-label="Save as a new copy">
+        <h2>Save as a new copy</h2>
+        <p>
+          Creates a new copy. Your original and existing project references stay
+          unchanged. Choose the new copy explicitly when you are ready to use it.
+          {view.kind === "playbook" &&
+            " Only the playbook ID is rewritten; workflow identities are preserved."}
         </p>
-      )}
-    </section>
+        <div className={styles.saveRow}>
+          <label className={styles.field}>
+            New copy ID
+            <input
+              disabled={busy || !!done}
+              value={newId}
+              pattern="[a-z][a-z0-9-]{1,47}"
+              onChange={(e) => { setNewId(e.target.value); setAck(false); setDirty(true); }}
+            />
+          </label>
+          <label className={styles.check}>
+            <input
+              type="checkbox"
+              disabled={busy || !!done}
+              checked={ack}
+              onChange={(e) => setAck(e.target.checked)}
+            />
+            I reviewed these results and want to create a new copy.
+          </label>
+        </div>
+        {done && (
+          <p role="status" className={styles.done}>
+            Created an updated copy. Your original is unchanged.{" "}
+            <Link to={localPath(view.kind, done)}>Open new copy</Link>
+          </p>
+        )}
+      </section>
+      <div className={styles.savebar} data-testid="gallery-savebar">
+        <p className={`${styles.why} ${why ? "" : styles.ready}`} id={hint}>
+          {why || (done ? "" : `Ready to create ${newId}.`)}
+        </p>
+        <div className={styles.actions}>
+          <button
+            className={buttons.ghost}
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true);
+              try {
+                const next = await reload();
+                if (!next && live.current)
+                  setError(
+                    "The current revision could not be loaded. Try comparing again.",
+                  );
+                if (next && live.current) {
+                  setView(next);
+                  setUnresolved(new Set([...next.conflicts, ...retainedDifferences(next.proposed)]));
+                  setAck(false);
+                  setError("");
+                  setDone(null);
+                }
+              } finally {
+                if (live.current) setBusy(false);
+              }
+            }}
+          >
+            Compare current revision again
+          </button>
+          <button
+            className={buttons.primary}
+            aria-describedby={why ? hint : undefined}
+            disabled={busy || !ack || unresolved.size > 0 || !!done || newId === view.id || !COPY_ID.test(newId)}
+            onClick={async () => {
+              setBusy(true);
+              setError("");
+              try {
+                const operation = beginOperation();
+                const result = await api.updateGallery(
+                  view.kind,
+                  view.id,
+                  newId,
+                  view.incoming_digest,
+                  view.comparison,
+                  files,
+                  operation,
+                );
+                finishOperation(result);
+                if (live.current) {
+                  if (result.state === "complete") {
+                    setDone(result.result?.id ?? newId);
+                    setDirty(false);
+                    if (result.result?.durable === false)
+                      setError(
+                        result.result.durable_reason ??
+                          "Inspect durable storage before further changes.",
+                      );
+                  } else setError(result.message ?? "Check operation status.");
+                }
+              } catch (e) {
+                if (live.current) setError(errorText(e));
+              } finally {
+                if (live.current) setBusy(false);
+              }
+            }}
+          >
+            <Copy size={16} aria-hidden />
+            Create updated copy
+          </button>
+        </div>
+      </div>
+    </>
   );
 }

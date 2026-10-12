@@ -363,7 +363,7 @@ for (const theme of ["dark", "light"]) {
         }),
       );
       await page.goto(GALLERY_PATH);
-      await page.getByRole("combobox", { name: "Kind", exact: true }).selectOption("playbook");
+      await page.getByRole("group", { name: "Kind" }).getByRole("button", { name: "Playbooks", exact: true }).click();
       await page
         .getByRole("link", { name: "Inspect complete content" })
         .click();
@@ -425,8 +425,8 @@ for (const theme of ["dark", "light"]) {
       await page.getByRole("button", { name: "Save edited copy" }).click();
       await expect(page.getByRole("alert")).toContainText("This skill changed");
       await page.getByRole("button", { name: "Check operation status" }).click();
-      page.once("dialog", dialog => dialog.accept());
       await page.getByRole("button", { name: "Close checked attempt" }).click();
+      await page.getByRole("dialog").getByRole("button", { name: "Stop tracking", exact: true }).click();
       await expect(page.getByLabel("Your draft: SKILL.md")).toHaveValue(
         "My retained instructions",
       );
@@ -458,8 +458,8 @@ for (const theme of ["dark", "light"]) {
       await page.getByRole("button", { name: "Save edited copy" }).click();
       await expect(page.getByRole("alert")).toContainText("This skill changed");
       await page.getByRole("button", { name: "Check operation status" }).click();
-      page.once("dialog", dialog => dialog.accept());
       await page.getByRole("button", { name: "Close checked attempt" }).click();
+      await page.getByRole("dialog").getByRole("button", { name: "Stop tracking", exact: true }).click();
       await page.getByRole("button", { name: "Compare stored version" }).click();
       await expect(page.getByLabel("Your draft: SKILL.md")).toHaveValue("My instructions");
       await page.getByRole("button", { name: "Save edited copy" }).click();
@@ -549,13 +549,15 @@ for (const theme of ["dark", "light"]) {
       await expect(page.getByRole("alert")).toContainText("already exists");
       await expect(page.getByLabel("Result for SKILL.md")).toHaveValue("Retain this result");
       await page.getByRole("button", { name: "Check operation status" }).click();
-      page.once("dialog", d => d.accept());
       await page.getByRole("button", { name: "Close checked attempt" }).click();
+      await page.getByRole("dialog").getByRole("button", { name: "Stop tracking", exact: true }).click();
       await page.getByRole("textbox", { name: "New copy ID", exact: true }).fill("free-copy");
       await page.getByLabel("I reviewed these results and want to create a new copy.").check();
       await page.getByRole("button", { name: "Create updated copy" }).click();
       await expect(page.getByRole("link", { name: "Open new copy", exact: true })).toHaveAttribute("href", `${SKILLS_PATH}/free-copy`);
       expect(writes.filter(w => w.path.endsWith("/update")).at(-1)?.body.files).toHaveProperty(["SKILL.md"], "Retain this result");
+      // One refused write and one successful retry: the refusal never repeats on its own (#1417).
+      expect(writes.filter(w => w.path.endsWith("/update")).map(w => w.body.new_id)).toEqual(["occupied-copy", "free-copy"]);
     });
     test("gallery comparison supports reserved-property filenames", async ({ page }) => {
       const writes = await setup(page, { reservedFiles: true });
@@ -625,8 +627,8 @@ for (const theme of ["dark", "light"]) {
       await page
         .getByRole("button", { name: "Check operation status" })
         .click();
-      page.once("dialog", (dialog) => dialog.accept());
       await page.getByRole("button", { name: "Close checked attempt" }).click();
+      await page.getByRole("dialog").getByRole("button", { name: "Stop tracking", exact: true }).click();
       await page
         .getByRole("button", { name: "Compare current revision again" })
         .click();
@@ -704,8 +706,8 @@ test("recompare keeps a disappearing retained change visible and requires resolu
   await save.click();
   await expect(page.getByRole("alert")).toContainText("Local content changed");
   await page.getByRole("button", { name: "Check operation status" }).click();
-  page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Close checked attempt" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Stop tracking", exact: true }).click();
   await page.getByRole("button", { name: "Compare current revision again" }).click();
   await expect(page.getByRole("heading", { name: "Local copy", exact: true }).locator("..").getByText("Original", { exact: true })).toBeVisible();
   await expect(page.getByLabel("Result for SKILL.md")).toHaveValue("Reviewed retained draft");
@@ -737,8 +739,8 @@ test("a late completion in another tab preserves the newer recovery handle", asy
   await setup(other, { lost: true });
   await other.goto(`${GALLERY_PATH}/${digest}`);
   await other.getByRole("button", { name: "Check operation status" }).click();
-  other.once("dialog", (dialog) => dialog.accept());
   await other.getByRole("button", { name: "Close checked attempt" }).click();
+  await other.getByRole("dialog").getByRole("button", { name: "Stop tracking", exact: true }).click();
   await other.getByLabel("Local copy ID").fill("second-copy");
   await other.getByLabel("I reviewed the complete content and requirements.").check();
   await other.getByRole("button", { name: "Import editable copy" }).click();
@@ -753,4 +755,79 @@ test("a late completion in another tab preserves the newer recovery handle", asy
   await page.waitForTimeout(1000);
   expect(await other.evaluate((name) => localStorage.getItem(name), key)).toBe(second);
   await expect(other.getByLabel("Pending gallery operation")).toContainText(second!);
+});
+
+test("an unresolved conflict preselects no version, and the save bar says why until a choice is made (#1417)", async ({ page }) => {
+  const writes = await setup(page);
+  await page.goto(`${GALLERY_PATH}/${digest}?kind=skill&id=my-skill`);
+  const versions = page.getByRole("group", { name: "Versions of SKILL.md" });
+  const incoming = versions.getByRole("button", { name: "Use incoming file" });
+  for (const name of ["Keep retained result", "Keep local file", "Use incoming file"])
+    await expect(versions.getByRole("button", { name })).toHaveAttribute("aria-pressed", "false");
+  const save = page.getByRole("button", { name: "Create updated copy" });
+  const ack = page.getByLabel("I reviewed these results and want to create a new copy.");
+  await page.getByRole("textbox", { name: "New copy ID", exact: true }).fill("keyboard-copy");
+  await ack.check();
+  await expect(save).toBeDisabled();
+  await expect(save).toHaveAccessibleDescription("Choose a result for 1 file first.");
+  expect(writes.filter((w) => w.path.endsWith("/update"))).toEqual([]);
+  // A segment is an ordinary button: Space picks it from the keyboard.
+  await incoming.focus();
+  await page.keyboard.press("Space");
+  await expect(incoming).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByLabel("Result for SKILL.md")).toHaveValue("Incoming");
+  // A new choice still clears the review box, so the acknowledgement covers what is saved.
+  await expect(ack).not.toBeChecked();
+  await expect(save).toHaveAccessibleDescription("Tick the review box to create the copy.");
+  await ack.check();
+  await expect(save).toBeEnabled();
+  await expect(page.getByText("Ready to create keyboard-copy.", { exact: true })).toBeVisible();
+  await save.click();
+  await expect(page.getByRole("link", { name: "Open new copy", exact: true })).toBeVisible();
+  await expect(save).toBeDisabled();
+  const updates = writes.filter((w) => w.path.endsWith("/update"));
+  expect(updates).toHaveLength(1);
+  expect(updates[0].body).toMatchObject({ id: "my-skill", new_id: "keyboard-copy", files: { "SKILL.md": "Incoming" } });
+});
+
+test("the compare view and its save bar fit a 320px phone (#1417)", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 640 });
+  await setup(page);
+  await page.goto(`${GALLERY_PATH}/${digest}?kind=skill&id=my-skill`);
+  await expect(page.getByRole("heading", { name: "Imported base" })).toBeVisible();
+  await page.getByRole("group", { name: "Versions of SKILL.md" }).getByRole("button", { name: "Keep local file" }).click();
+  await geometry(page);
+  // Every element of the review stays inside the pane; the HUD frame's corner brackets are
+  // decoration that deliberately sits on the pane's edge.
+  const over = await page.locator("main main").evaluate((el) => {
+    const edge = el.getBoundingClientRect().right;
+    return [...el.querySelectorAll("*")]
+      .filter((c) => !c.closest(".hud-cnr") && c.getBoundingClientRect().right > edge + 0.5)
+      .map((c) => `${c.tagName}.${c.className}`);
+  });
+  expect(over).toEqual([]);
+  // The pinned bar's two actions sit side by side or stacked, never on top of each other.
+  const [a, b] = await Promise.all(
+    ["Compare current revision again", "Create updated copy"].map((name) =>
+      page.getByRole("button", { name }).boundingBox(),
+    ),
+  );
+  expect(a && b).toBeTruthy();
+  const overlap = !(a!.x + a!.width <= b!.x || b!.x + b!.width <= a!.x || a!.y + a!.height <= b!.y || b!.y + b!.height <= a!.y);
+  expect(overlap).toBe(false);
+  expect(Math.max(a!.x + a!.width, b!.x + b!.width)).toBeLessThanOrEqual(320);
+  // The last file's result, the copy ID and the review box each come to rest above the pinned
+  // bar, even when scrolled to the pane's bottom edge (#1417).
+  const bar = page.getByTestId("gallery-savebar");
+  for (const target of [
+    page.getByLabel("Result for SKILL.md"),
+    page.getByRole("textbox", { name: "New copy ID", exact: true }),
+    page.getByLabel("I reviewed these results and want to create a new copy."),
+  ]) {
+    await target.evaluate((el) => el.scrollIntoView({ block: "end" }));
+    const [box, pinned] = [await target.boundingBox(), await bar.boundingBox()];
+    expect(box!.y + box!.height).toBeLessThanOrEqual(pinned!.y + 1);
+  }
+  await page.getByLabel("I reviewed these results and want to create a new copy.").check();
+  await expect(page.getByRole("button", { name: "Create updated copy" })).toBeEnabled();
 });

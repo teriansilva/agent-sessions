@@ -1,5 +1,11 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useBlocker } from "react-router-dom";
+import {
+  ChevronRight,
+  ExternalLink,
+  GalleryHorizontal,
+  GitCompareArrows,
+} from "lucide-react";
 import { ApiError, api } from "../../lib/api";
 import { galleryComparePath } from "../../lib/routes";
 import type {
@@ -34,6 +40,30 @@ export function FileText({
     </pre>
   );
 }
+/** One ruled row per file. The summary's text is the file name alone (plus an optional state), so
+ * a name stays findable on its own; the chevron is the only open/closed cue. */
+export function FileRow({
+  name,
+  state,
+  open,
+  children,
+}: {
+  name: string;
+  state?: ReactNode;
+  open?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <details className={styles.file} open={open}>
+      <summary>
+        <ChevronRight size={16} aria-hidden />
+        <span>{name}</span>
+        {state && <span className={styles.state}>{state}</span>}
+      </summary>
+      <div className={styles.fileBody}>{children}</div>
+    </details>
+  );
+}
 export function Origin({
   value,
   kind,
@@ -53,16 +83,16 @@ export function Origin({
       </p>
     );
   return (
-    <section className={styles.panel} aria-label="Gallery source">
-      <h2>Gallery source</h2>
+    <section className={styles.origin} aria-label="Gallery source">
+      <div className={styles.tag}>
+        <GalleryHorizontal size={14} aria-hidden />
+        From the gallery // v{value.version} // {value.publisher}
+      </div>
       <p>
-        {value.title ?? value.id} · imported version {value.version} ·{" "}
-        {value.publisher}
-      </p>
-      <p>
+        {value.title ?? value.id} ·{" "}
         {revision === value.base_revision
-          ? "Matches the imported base."
-          : "Locally modified. Your edits are independent of upstream content."}
+          ? "unchanged since import."
+          : "edited here. Your edits are independent of the gallery."}
       </p>
       <div className={styles.actions}>
         <a
@@ -71,18 +101,25 @@ export function Origin({
           target="_blank"
           rel="noreferrer"
         >
+          <ExternalLink size={14} aria-hidden />
           Source
         </a>
         <Link className={buttons.ghost} to={galleryComparePath(kind, id)}>
+          <GitCompareArrows size={14} aria-hidden />
           Compare gallery updates
         </Link>
       </div>
-      <details>
-        <summary>Source evidence</summary>
-        <p>Original content SHA-256</p>
-        <code>{value.entry_digest}</code>
-        <p>Imported local base</p>
-        <code>{value.base_revision}</code>
+      <details className={styles.file}>
+        <summary>
+          <ChevronRight size={16} aria-hidden />
+          <span>Source evidence</span>
+        </summary>
+        <div className={styles.fileBody}>
+          <p>Original content SHA-256</p>
+          <code>{value.entry_digest}</code>
+          <p>Imported local base</p>
+          <code>{value.base_revision}</code>
+        </div>
       </details>
     </section>
   );
@@ -121,6 +158,7 @@ export function PendingOperation({ children }: { children?: ReactNode }) {
   const [notice, setNotice] = useState("");
   const [checked, setChecked] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [closing, setClosing] = useState(false);
   const [result, setResult] = useState<GalleryOperation | null>(null);
   useEffect(() => {
     const timer = window.setInterval(() => setId(pendingId()), 700);
@@ -131,7 +169,7 @@ export function PendingOperation({ children }: { children?: ReactNode }) {
       <>
         {children}
         {result?.state === "complete" && result.result && (
-          <p role="status">
+          <p role="status" className={styles.done}>
             The recorded operation completed.{" "}
             <Link to={localPath(result.result.kind, result.result.id)}>
               Open local copy
@@ -145,8 +183,15 @@ export function PendingOperation({ children }: { children?: ReactNode }) {
     );
   return (
     <section className={styles.recovery} aria-label="Pending gallery operation">
-      <h2>Check the previous operation</h2>
-      <p>Reloading does not repeat an import or update.</p>
+      <h2>
+        <span className="hud-led attention" aria-hidden />
+        Check the previous operation
+      </h2>
+      <p>
+        The last import or update has no recorded result in this browser.
+        Check its status before you start another one. Reloading does not
+        repeat an import or update.
+      </p>
       <code>{id}</code>
       <p role="status">{notice}</p>
       <div className={styles.actions}>
@@ -175,23 +220,29 @@ export function PendingOperation({ children }: { children?: ReactNode }) {
           Check operation status
         </button>
         {checked === id && (
-          <button
-            className={buttons.ghost}
-            onClick={() => {
-              if (
-                window.confirm(
-                  "Stop tracking this checked attempt? This does not cancel server work. Inspect your library and retained copies before starting another operation.",
-                )
-              ) {
-                forgetOperation(id);
-                setId(pendingId());
-              }
-            }}
-          >
+          <button className={buttons.ghost} onClick={() => setClosing(true)}>
             Close checked attempt
           </button>
         )}
       </div>
+      {closing && (
+        <PlaybookDialog
+          tag="Gallery // operation"
+          title="Stop tracking this attempt?"
+          confirmLabel="Stop tracking"
+          onCancel={() => setClosing(false)}
+          onConfirm={() => {
+            forgetOperation(id);
+            setClosing(false);
+            setId(pendingId());
+          }}
+        >
+          <p>
+            This does not cancel server work. Inspect your library and retained
+            copies before starting another operation.
+          </p>
+        </PlaybookDialog>
+      )}
     </section>
   );
 }
