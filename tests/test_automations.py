@@ -784,10 +784,19 @@ def test_a_template_edit_marks_needs_reapproval_and_pauses(spawned):
     assert _enable(aid)["state"] == "enabled"
 
 
-def test_a_library_variable_turning_secret_needs_reapproval_and_refuses_the_run(live_target):
-    t = tstore.create_template(
-        {"name": "t", "body": "hi {{team}}", "fields": [{"name": "team", "source": "library"}]}
+def _legacy_missing_team_template():
+    # Old builds admitted a library field before its value existed. Keep that stored
+    # fixture explicit now that creating a new dangling reference is refused.
+    template = tstore.create_template(
+        {"name": "t", "body": "hi {{team}}", "fields": [{"name": "team"}]}
     )
+    template["fields"][0]["source"] = "library"
+    tstore._write(tstore.store_path(), [template])
+    return template
+
+
+def test_a_library_variable_turning_secret_needs_reapproval_and_refuses_the_run(live_target):
+    t = _legacy_missing_team_template()
     aid = _made(
         _send_config(
             action={
@@ -1326,9 +1335,7 @@ def test_a_secret_template_is_refused_for_a_new_session_at_save(session_env):
 
 
 def test_the_render_rechecks_secret_kinds_at_run_time():
-    t = tstore.create_template(
-        {"name": "t", "body": "hi {{team}}", "fields": [{"name": "team", "source": "library"}]}
-    )
+    t = _legacy_missing_team_template()
     cfg = model.validate_config(
         _session_config("/tmp/w", message={"template_id": t["id"], "values": {}})
     )

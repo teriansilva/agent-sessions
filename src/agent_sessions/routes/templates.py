@@ -131,6 +131,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         payload = await _json_object(request)
         try:
             rec = await asyncio.to_thread(store.create_template, payload)
+        except store.TemplateInventoryIncomplete as e:
+            raise _err(503, str(e)) from None
         except store.TemplateError as e:
             raise _err(422, str(e)) from None
         except store.TemplateStoreUnsupported as e:
@@ -149,6 +151,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         fields = {k: v for k, v in payload.items() if k not in _PATCH_EXTRA}
         try:
             rec = await asyncio.to_thread(store.update_template, tid, fields, expected)
+        except store.TemplateInventoryIncomplete as e:
+            raise _err(503, str(e)) from None
         except store.TemplateError as e:
             raise _err(422, str(e)) from None
         except store.TemplateStoreUnsupported as e:

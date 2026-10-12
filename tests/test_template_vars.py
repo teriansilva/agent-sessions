@@ -71,6 +71,8 @@ def _var(c, cfg, csrf, name, value):
 
 
 def test_a_field_carries_its_source_and_defaults_to_template(tmp_home):
+    template_vars.create_variable({"name": "test_cmd", "value": "pytest"})
+    template_vars.create_variable({"name": "staging_host", "value": "staging.test"})
     rec = templates.create_template(_template())
     assert [(f["name"], f["source"]) for f in rec["fields"]] == [
         ("test_cmd", "library"),
@@ -226,6 +228,7 @@ def test_delete_is_refused_while_a_template_references_the_variable(auth_cfg, tm
     c = _client(auth_cfg)
     csrf = _login(c, auth_cfg)
     host = _var(c, auth_cfg, csrf, "staging_host", "staging.acme.test")
+    _var(c, auth_cfg, csrf, "test_cmd", "pytest")
     t = templates.create_template(_template())
     # A template field of the same name that is NOT a library field is not a dependant.
     templates.create_template(
@@ -253,7 +256,7 @@ def test_delete_is_refused_while_a_template_references_the_variable(auth_cfg, tm
         headers=_hdr(auth_cfg, csrf),
     )
     assert r.status_code == 204
-    assert template_vars.values() == {}
+    assert template_vars.values() == {"test_cmd": "pytest"}
 
 
 def test_delete_is_fenced(auth_cfg, tmp_home):

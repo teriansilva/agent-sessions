@@ -65,6 +65,10 @@ line; **Ctrl+Enter** (**⌘+Enter** on a Mac) saves, and Escape cancels an edit.
 - **A missing variable blocks the send.** If a template uses a library field whose variable does
   not exist, the picker says which one, and both **Send** and **Insert** stay disabled until you add
   it. The `{{token}}` is never sent as written, and the slot is never sent empty.
+- **New library fields need an existing variable of the same kind.** Create the text or secret
+  variable first, then save the template. Existing unresolved fields can stay while you repair
+  an older template, but cannot be copied into a new one. An unreadable variable library blocks
+  a save that retains library fields; removing those fields still works.
 - **There is no rename.** A variable's name is what templates match on. To change a name, add the
   new variable, switch the templates to it, and delete the old one.
 - **A variable in use cannot be deleted.** The delete is refused and the templates that still use

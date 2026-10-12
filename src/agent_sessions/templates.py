@@ -610,12 +610,48 @@ def get_template(tid: str) -> dict:
     return _find(_read_leniently(store_path()), tid)
 
 
+def _check_library_fields(fields: dict, previous: dict | None = None) -> None:
+    """Validate new references while the caller holds the outer mutation fence.
+
+    Variable writers take that same fence before their store lock, so a strict read here
+    needs no second store lock. Existing unresolved fields may be retained for repair;
+    creating a template, adding a field or changing its kind cannot mint a dangling ref.
+    Removing all references remains possible even when the variable store is unreadable.
+    """
+    from . import template_vars
+
+    def references(record: dict) -> set[tuple[str, str]]:
+        return {
+            (field["name"], field["kind"])
+            for field in record["fields"]
+            if field["source"] == "library"
+        }
+
+    wanted = references(fields)
+    if not wanted:
+        return
+    try:
+        records = template_vars._read_strictly()
+    except template_vars.ResolutionUnavailable:
+        raise TemplateInventoryIncomplete(
+            "the variable library could not be read in full"
+        ) from None
+    available = {(r["name"], r["kind"]) for r in records if r["scope"] == "global"}
+    retained = references(previous) if previous is not None else set()
+    for name, kind in sorted(wanted - retained):
+        if (name, kind) not in available:
+            raise TemplateError(
+                f"field {name}: choose an existing {kind} variable from the library"
+            )
+
+
 def create_template(payload: object) -> dict:
     fields = validate(payload)
 
     def fn(records: list[dict]) -> dict:
         if len(records) >= TEMPLATES_MAX:
             raise TemplateError(f"too many templates (max {TEMPLATES_MAX})")
+        _check_library_fields(fields)
         now = time.time()
         rec = {
             **fields,
@@ -639,6 +675,7 @@ def update_template(tid: str, payload: object, expected_updated_at: float) -> di
         rec = _find(records, tid)
         if rec["updated_at"] != expected_updated_at:
             raise TemplateConflict(dict(rec))
+        _check_library_fields(fields, rec)
         rec.update(fields)
         rec["updated_at"] = _bumped(rec["updated_at"])
         return dict(rec)

@@ -272,15 +272,22 @@ def test_render_fills_secrets_server_side_and_masks_them_for_the_browser(tmp_hom
     ],
 )
 def test_render_refuses(tmp_home, setup, values, status, message):
-    if setup == "secret-named-host":
-        _secret(name="host", value="looks-like-a-host")
-        _secret()
-    elif setup == "no-secret":
-        template_vars.create_variable({"name": "host", "value": "h"})
-    else:
-        template_vars.create_variable({"name": "host", "value": "h"})
-        _secret()
+    template_vars.create_variable({"name": "host", "value": "h"})
+    _secret()
     t = _migration_template()
+    # New references are validated at save. Exercise legacy/out-of-band damage after
+    # a valid save so the send boundary must still refuse missing or wrong-kind values.
+    doc = json.loads(template_vars.store_path().read_text())
+    if setup == "secret-named-host":
+        host = next(r for r in doc["variables"] if r["name"] == "host")
+        host.pop("value")
+        host["kind"] = "secret"
+        host["secret"] = template_secrets.encrypt_scoped(
+            "global", None, "host", "looks-like-a-host"
+        )
+    elif setup == "no-secret":
+        doc["variables"] = [r for r in doc["variables"] if r["name"] != "db_pass"]
+    template_vars.store_path().write_text(json.dumps(doc))
     with pytest.raises((templates.TemplateError, template_send.SendRefused)) as exc:
         _render(t, values)
     got = exc.value.status if isinstance(exc.value, template_send.SendRefused) else 422

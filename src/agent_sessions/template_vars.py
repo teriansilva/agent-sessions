@@ -46,9 +46,10 @@ lists). The sidecar lock is the one binding/deletion fence: ``bind_project`` che
 refers to and ``delete_variable`` checks its dependants inside the same ``_mutate``, so a bind
 racing a delete ends with exactly one of them refused. The template half is FAIL-CLOSED: if the
 template library cannot be read in full the delete is refused (``VariableRefsUnknown``). It reads
-the template store without holding its lock: a template saved a moment later may name a variable
-that no longer exists, which is already a first-class state (the picker marks it *missing library
-variable* and never sends the token literally). Removing a project's bindings
+the template store without holding its lock, while the outer ``session_input.mutation_fence``
+orders every template/reference writer against deletion. A new template library reference must
+name an existing global of the same kind; an already-unresolved legacy reference may be retained
+for explicit repair but cannot be copied into a new template. Removing a project's bindings
 (``remove_project_bindings``) touches that project's records only — never a global, never another
 project's.
 """
