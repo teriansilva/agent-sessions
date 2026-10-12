@@ -96,6 +96,7 @@ HTTP_MODULES = frozenset(
         "agent_usage",
         "artifacts",
         "feed_client",
+        "gallery_client",
     }
 )
 
@@ -109,6 +110,7 @@ HTTP_MODULES = frozenset(
 # extensible at all.
 HTTP_VERBS = frozenset({"get", "post", "put", "patch", "delete", "request", "stream", "send"})
 POST_SITES = {
+    ("gallery_client", "_get"): 1,  # public signed content; fixed origin, anonymous bounded GET
     ("feed_client", "_get"): 1,  # #1259 fixed public GitHub feed, anonymous bounded GET
     # Plugin artifacts (#1259): one streamed GET, no credentials/prompts, recipe-bound HTTPS
     # authorities checked before every redirect; digest checked before any extraction.

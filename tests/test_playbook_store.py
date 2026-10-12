@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import threading
 from pathlib import Path
 
@@ -336,6 +337,40 @@ def test_the_staged_tree_is_read_back_before_publication(tmp_home, monkeypatch):
         store.create_playbook(_files(new_id="verified"))
     assert "verified" not in _local_names()
     assert not any(n.startswith(".staging-") for n in _local_names())
+
+
+@pytest.mark.parametrize("operation", ["create", "duplicate"])
+@pytest.mark.parametrize("interval", ["before_rename", "after_rename"])
+def test_publication_refuses_changed_new_bytes_and_preserves_both_trees(
+    tmp_home, monkeypatch, operation, interval
+):
+    original = store.create_playbook(_files(new_id="source-copy"))
+    pid = "new-copy"
+    rename = store.renameat.renameat2
+    changed = False
+
+    def race(src_fd, src, dst_fd, dst, flags):
+        nonlocal changed
+        if changed or not src.startswith(".staging-") or dst != pid:
+            return rename(src_fd, src, dst_fd, dst, flags)
+        changed = True
+        if interval == "after_rename":
+            rename(src_fd, src, dst_fd, dst, flags)
+        target = dst if interval == "after_rename" else src
+        (_root() / target / "README.md").write_text("Surprise content")
+        if interval == "before_rename":
+            return rename(src_fd, src, dst_fd, dst, flags)
+
+    monkeypatch.setattr(store.renameat, "renameat2", race)
+    with pytest.raises(store.Conflict) as refusal:
+        if operation == "create":
+            store.create_playbook({**_files(new_id=pid), "README.md": "Reviewed content"})
+        else:
+            store.duplicate_playbook(original["id"], {"id": pid})
+    assert changed
+    assert (_root() / pid / "README.md").read_text() == "Surprise content"
+    assert store.get_playbook(original["id"])["files"] == original["files"]
+    assert refusal.value.extra["kept"] == []
 
 
 def test_a_symlinked_local_root_is_refused(tmp_home, tmp_path):
@@ -2248,3 +2283,47 @@ def test_editor_vocabulary_reuses_admission_and_probe_contracts(monkeypatch):
     }
     assert out["probes"]["forge_review"]["args"]["branch"]["slots"] == ["branch", "head_branch"]
     assert out["probes"]["http_revision"]["args"]["expect"]["slots"] == ["head_sha"]
+
+
+@pytest.mark.parametrize("operation", ["create", "duplicate"])
+def test_failed_publication_leaves_a_later_writers_live_tree(
+    tmp_home, tmp_path, monkeypatch, operation
+):
+    original = store.create_playbook(_files(new_id="source-copy"))
+    pid = "new-copy"
+    rename = store.renameat.renameat2
+    entry = store._entry_at
+    moved = tmp_path / "inspected-copy"
+    raced = False
+
+    def change_before_publish(src_fd, src, dst_fd, dst, flags):
+        if src.startswith(".staging-") and dst == pid:
+            (_root() / src / "README.md").write_text("Unreviewed content")
+        return rename(src_fd, src, dst_fd, dst, flags)
+
+    def replace_after_read(fd, name, source):
+        nonlocal raced
+        out = entry(fd, name, source)
+        if (
+            not raced
+            and name == pid
+            and out.tree
+            and out.tree.files.get("README.md") == b"Unreviewed content"
+        ):
+            raced = True
+            live = _root() / pid
+            live.rename(moved)
+            shutil.copytree(moved, live)
+            (live / "README.md").write_text("Later writer")
+        return out
+
+    monkeypatch.setattr(store.renameat, "renameat2", change_before_publish)
+    monkeypatch.setattr(store, "_entry_at", replace_after_read)
+    with pytest.raises(store.Conflict):
+        if operation == "create":
+            store.create_playbook(_files(new_id=pid))
+        else:
+            store.duplicate_playbook(original["id"], {"id": pid})
+    assert raced
+    assert (_root() / pid / "README.md").read_text() == "Later writer"
+    assert (moved / "README.md").read_text() == "Unreviewed content"

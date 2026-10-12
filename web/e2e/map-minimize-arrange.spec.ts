@@ -85,7 +85,11 @@ async function mockApp(page: Page): Promise<Log> {
     });
     ws.send(JSON.stringify({ t: "role", role: "owner" }));
     ws.send(JSON.stringify({ t: "seq", n: 0 }));
-    ws.send(Buffer.from(`\x1b[2J\x1b[Hhello from ${key}\r\n`));
+    // A replay below 512 bytes deliberately arms Terminal's attach repaint: it sends a
+    // row-down/row-up pair 800/1120 ms later. That unrelated second frame can straddle
+    // the minimize baseline on a loaded runner. Supply a normal, visible replay so
+    // this test measures minimization; repaint-backstop tests cover the short replay.
+    ws.send(Buffer.from(`\x1b[2J\x1b[Hhello from ${key}\r\n${"Ready terminal content\r\n".repeat(30)}`));
   });
   await mockRoster(page);
   return log;

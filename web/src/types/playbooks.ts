@@ -1,3 +1,4 @@
+import type { GalleryOrigin } from "./gallery";
 /** The bundle API (#1191), distinct from mission checklists' historical playbook ids. */
 export interface PlaybookStep {
   id: string;
@@ -12,6 +13,7 @@ export interface PlaybookStep {
   note: boolean;
 }
 export interface PlaybookCardData {
+  gallery_origin?: GalleryOrigin | null;
   id: string;
   ok: boolean;
   error: string | null;

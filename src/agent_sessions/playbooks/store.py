@@ -823,23 +823,47 @@ class Entry:
     #: `chmod 000` — is a format error card: it still owns its id, so a local copy it shadows
     #: stays unaddressable and a write to that id is the read-only 403.)
     unreadable: bool = False
+    origin: dict | None = None
+    origin_error: str | None = None
 
 
 def _entry_at(dir_fd: int, name: str, source: str) -> Entry:
     if not schema.PLAYBOOK_ID_RE.fullmatch(name):
         return Entry(name, source, error="the folder name is not a playbook id", addressable=False)
+    origin = None
+    origin_error = None
     try:
-        pins = loader.installed_files_at(dir_fd, name) if source == SOURCE_BUNDLED else None
-        tree = (
-            read_tree_at(dir_fd, name, installed_files=pins)
-            if pins is not None
-            else read_tree_at(dir_fd, name)
-        )
+        if source != SOURCE_LOCAL:
+            pins = loader.installed_files_at(dir_fd, name) if source == SOURCE_BUNDLED else None
+            tree = (
+                read_tree_at(dir_fd, name, installed_files=pins)
+                if pins is not None
+                else read_tree_at(dir_fd, name)
+            )
+        else:
+            try:
+                fd = os.open(name, _DIR_FLAGS, dir_fd=dir_fd)
+            except OSError as exc:
+                raise PlaybookFormatError(
+                    "", f"bundle root cannot be opened ({exc.strerror})"
+                ) from None
+            try:
+                tree = read_tree_at(fd, ".")
+                from ..gallery import origins
+
+                try:
+                    origin = origins.read(fd, "playbook", name)
+                except (ValueError, OSError) as exc:
+                    origin_error = str(exc)
+            finally:
+                os.close(fd)
     except PlaybookFormatError as e:
         return Entry(name, source, error=str(e))
     except (OSError, RecursionError, ValueError) as e:
         return Entry(name, source, error=f"could not be read ({type(e).__name__})", unreadable=True)
-    entry = Entry(name, source, tree=tree, revision=tree.digest())
+    entry = Entry(
+        name, source, tree=tree, revision=tree.digest(), origin=origin, origin_error=origin_error
+    )
     try:
         entry.pb = loader.validate_named(tree, name)
     except PlaybookFormatError as e:
@@ -935,6 +959,8 @@ def _find(entries: list[Entry], pid: str) -> Entry:
 
 
 def _card(e: Entry, default: str | None) -> dict:
+    from ..gallery import origins
+
     base = loader.card(e.pb) if e.pb is not None else {"id": e.id, "ok": False, "error": e.error}
     return {
         **base,
@@ -942,6 +968,9 @@ def _card(e: Entry, default: str | None) -> dict:
         "editable": e.source == SOURCE_LOCAL and e.addressable,
         "revision": e.revision,
         "default": e.addressable and e.id == default,
+        "gallery_origin": {"state": "unavailable", "error": e.origin_error}
+        if e.origin_error
+        else origins.view(e.origin),
     }
 
 
@@ -1085,7 +1114,7 @@ def get_playbook(pid: str) -> dict:
     return out
 
 
-def _stage(root_fd: int, tree: Tree, pid: str = "unsaved") -> str:
+def _stage(root_fd: int, tree: Tree, pid: str = "unsaved", *, origin: str | None = None) -> str:
     """Write `tree` into a fresh staging directory under the root, descriptor-relative, and prove
     by reading it back that it holds exactly `tree`. Returns the staging name."""
     name = f"{STAGING_PREFIX}{pid}-{secrets.token_hex(8)}"
@@ -1112,6 +1141,9 @@ def _stage(root_fd: int, tree: Tree, pid: str = "unsaved") -> str:
                 os.close(fd)
         for fd in fds.values():  # every directory's entries are durable before publication
             _fsync_dir(fd)
+        from ..gallery import origins
+
+        origins.bind(fds[""], origin)
         back = read_tree_at(root_fd, name)
         if back.files != tree.files or back.dirs != tree.dirs:
             raise Conflict("the playbook changed while it was being written; nothing was saved")
@@ -1132,6 +1164,19 @@ def _digest_at(root_fd: int, name: str) -> str | None:
         return read_tree_at(root_fd, name).digest()
     except (PlaybookFormatError, OSError, RecursionError, ValueError):
         return None
+
+
+def _origin_pointer_at(root_fd: int, name: str) -> str | None:
+    from ..gallery import origins
+
+    try:
+        fd = os.open(name, _DIR_FLAGS, dir_fd=root_fd)
+        try:
+            return origins.pointer(fd)
+        finally:
+            os.close(fd)
+    except (OSError, ValueError):
+        return "unavailable"
 
 
 def _put_back(
@@ -1187,6 +1232,37 @@ def _publish_new(root_fd: int, staging: str, pid: str) -> str | None:
     return _fsync_after(root_fd)
 
 
+def _verified_publication(
+    root_fd: int, pid: str, tree: Tree, origin: str | None, *, displaced: str | None = None
+) -> Entry:
+    """Read content and provenance from one held directory after the rename. Return that exact
+    snapshot, or leave the live name untouched and retain any displaced tree without success."""
+    published = _entry_at(root_fd, pid, SOURCE_LOCAL)
+    pointer = published.origin["pointer"] if published.origin else None
+    if (
+        published.revision == tree.digest()
+        and published.error is None
+        and published.origin_error is None
+        and pointer == origin
+    ):
+        return published
+    _publication_conflict(root_fd, pid, displaced=displaced)
+
+
+def _publication_conflict(root_fd: int, pid: str, *, displaced: str | None = None):
+    # A post-publication read is a snapshot, not ownership of the live name. Another
+    # writer may have replaced it since that read; do not rename it for recovery.
+    kept = _retain(root_fd, displaced, pid) if displaced is not None else None
+    detail = "Content changed during publication; the live copy was left in place."
+    if displaced is not None:
+        detail += f" The displaced copy is retained as {kept or displaced}; inspect both copies."
+    raise Conflict(
+        detail,
+        revision=_digest_at(root_fd, pid),
+        kept=[str(kept or displaced)] if displaced is not None else [],
+    )
+
+
 def _exists_locally(root_fd: int, pid: str) -> bool:
     try:
         os.stat(pid, dir_fd=root_fd, follow_symlinks=False)
@@ -1227,7 +1303,7 @@ def _local_for_write(entries: list[Entry], pid: str, expect: str) -> Entry:
     return e
 
 
-def create_playbook(files: object) -> dict:
+def create_playbook(files: object, *, _publication=None) -> dict:
     """A new `local` playbook from `files`; its id is its `identity.id`."""
     tree = tree_from_files(files)
     pid = _identity_id(tree)
@@ -1236,10 +1312,20 @@ def create_playbook(files: object) -> dict:
         assert root_fd is not None
         entries = _all_entries(root_fd, strict=True)
         _ensure_free(root_fd, entries, pid)
-        not_durable = _publish_new(root_fd, _stage(root_fd, tree, pid), pid)
+        staging = (
+            _stage(root_fd, tree, pid, origin=_publication.origin)
+            if _publication
+            else _stage(root_fd, tree, pid)
+        )
+        if _publication:
+            _publication.prepare(root_fd, staging, pid, tree)
+        not_durable = _publish_new(root_fd, staging, pid)
+        published = _verified_publication(
+            root_fd, pid, tree, _publication.origin if _publication else None
+        )
         entries = _all_entries(root_fd)
         state = _read_state(root_fd)
-    out = _detail(_find(entries, pid), _default_of(entries, state))
+    out = _detail(published, _default_of(entries, state))
     if not_durable:
         out.update(durable=False, durable_reason=not_durable)
     return out
@@ -1255,11 +1341,20 @@ def update_playbook(pid: str, expect: str, files: object) -> dict:
         # Source first: a read-only playbook is a 403 whatever the body says — then the revision,
         # then the body.
         _writable(entries, pid)
-        _local_for_write(entries, pid, revision(expect))
+        local = _local_for_write(entries, pid, revision(expect))
+        if local.origin_error:
+            raise StoreError(
+                "gallery provenance is unavailable; restore its evidence before editing", status=409
+            )
+        previous = local.origin["pointer"] if local.origin else None
         tree = tree_from_files(files)
         _validate(tree, pid)
         if tree.digest() != expect:
-            staging = _stage(root_fd, tree, pid)
+            staging = (
+                _stage(root_fd, tree, pid, origin=previous)
+                if previous
+                else _stage(root_fd, tree, pid)
+            )
             try:
                 renameat.renameat2(root_fd, staging, root_fd, pid, renameat.RENAME_EXCHANGE)
             except OSError as e:
@@ -1270,7 +1365,10 @@ def update_playbook(pid: str, expect: str, files: object) -> dict:
             not_durable = _fsync_after(root_fd)
             # DISPLACE, NEVER DROP: the lock does not stop a hand edit on disk, so the tree the
             # exchange displaced must be the revision that was checked. Anything else is put back.
-            if _digest_at(root_fd, staging) != expect:
+            if (
+                _digest_at(root_fd, staging) != expect
+                or _origin_pointer_at(root_fd, staging) != previous
+            ):
                 _put_back(root_fd, staging, pid, exchange=True, staged=tree.digest())
             kept = _retain(root_fd, staging, pid)  # the OLD tree, proven the checked revision
         else:
@@ -1543,9 +1641,10 @@ def duplicate_playbook(pid: str, body: dict) -> dict:
             raise Conflict(f"this playbook cannot be duplicated: {err}") from None
         _validate(tree, new_id)
         not_durable = _publish_new(root_fd, _stage(root_fd, tree, new_id), new_id)
+        published = _verified_publication(root_fd, new_id, tree, None)
         entries = _all_entries(root_fd)
         state = _read_state(root_fd)
-    out = _detail(_find(entries, new_id), _default_of(entries, state))
+    out = _detail(published, _default_of(entries, state))
     if not_durable:
         out.update(durable=False, durable_reason=not_durable)
     return out

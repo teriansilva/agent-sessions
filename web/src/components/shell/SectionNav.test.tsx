@@ -32,6 +32,10 @@ describe("activeSection", () => {
     ["/mission/automations/abc123", "library"],
     ["/mission/checklists", "library"],
     ["/library/playbooks", "library"],
+    ["/library/gallery", "library"],
+    ["/library/gallery/abc", "library"],
+    ["/library/skills/my-copy", "library"],
+    ["/library/galleryx", null],
     ["/library/variables", "library"],
   ])("%s → %s", (path, expected) => {
     expect(activeSection(path)).toBe(expected);
@@ -58,6 +62,9 @@ describe("activeSection", () => {
     ["/templates/tpl_1", "templates"],
     ["/mission/checklists", "checklists"],
     ["/library/playbooks", "playbooks"],
+    ["/library/gallery/abc", "gallery"],
+    ["/library/skills/my-copy", "skills"],
+    ["/library/skillsx", null],
     ["/library/variables", "variables"],
     ["/library/variablesx", null],
     ["/mission", null],
@@ -114,7 +121,7 @@ describe("SectionNav", () => {
     );
   });
 
-  test("Library holds Templates, Automations, Checklists and Playbooks; Missions and Dashboard have no menu (#1294)", async () => {
+  test("Library holds Gallery, Skills, Templates, Automations, Checklists and Playbooks; Missions and Dashboard have no menu (#1294)", async () => {
     render(
       <MemoryRouter>
         <SectionNav
@@ -142,6 +149,8 @@ describe("SectionNav", () => {
       ["Variables", "/library/variables"],
       ["Automations", "/mission/automations"],
       ["Checklists", "/mission/checklists"],
+      ["Gallery", "/library/gallery"],
+      ["Skills", "/library/skills"],
       ["Playbooks", "/library/playbooks"],
     ]);
     expect(items[3]).toHaveAttribute("aria-current", "page");

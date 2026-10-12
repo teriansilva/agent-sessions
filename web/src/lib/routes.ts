@@ -38,6 +38,10 @@ export const TEMPLATES_PATH = "/templates";
 export const VARIABLES_PATH = "/library/variables";
 
 /** Library → Playbooks: bundle gallery and detail (#1192). */
+export const GALLERY_PATH = "/library/gallery";
+export const SKILLS_PATH = "/library/skills";
+export const galleryComparePath = (kind: "playbook" | "skill", id: string) => `${GALLERY_PATH}?kind=${kind}&id=${encodeURIComponent(id)}`;
+
 export const PLAYBOOKS_PATH = "/library/playbooks";
 export function playbookPath(id: string): string {
   return `${PLAYBOOKS_PATH}/${encodeURIComponent(id)}`;

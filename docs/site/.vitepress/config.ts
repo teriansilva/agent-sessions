@@ -148,6 +148,7 @@ export default defineConfig({
           { text: "Files & git", link: "/guide/files-and-git" },
           { text: "Mission control", link: "/guide/missions" },
           { text: "Prompt Templates", link: "/guide/templates" },
+          { text: "Playbook & skill gallery", link: "/guide/gallery" },
           { text: "AI review", link: "/guide/ai-review" },
           { text: "Handoff", link: "/guide/handoff" },
           { text: "Dictation", link: "/guide/dictation" },

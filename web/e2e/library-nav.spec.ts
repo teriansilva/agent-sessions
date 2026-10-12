@@ -1,7 +1,7 @@
-/** Library (#1294, #1390): Templates, Variables, Automations, Checklists and Playbooks.
+/** Library: Templates, Variables, Automations, Checklists, Gallery, Skills and Playbooks, under one section.
  *
  *  Library is a split control like Sessions: the label goes to Templates (its first child), and
- *  its chevron opens a menu naming all five. Checklists and Automations moved here from Missions
+ *  its chevron opens a menu naming all seven. Checklists and Automations moved here from Missions
  *  but kept their `/mission/...` URLs, so on their routes LIBRARY is the section that lights up,
  *  not Missions. The old Settings address for checklists still redirects. A real browser, because
  *  the menu is a portalled popover in the top bar and "where am I" is `aria-current` on laid-out
@@ -39,7 +39,7 @@ test.beforeEach(async ({ page }) => {
   );
 });
 
-test("Library names all five destinations; Missions has no menu", async ({
+test("Library names Templates, Variables, Automations, Checklists, Gallery, Skills and Playbooks; Missions has no menu", async ({
   page,
 }) => {
   await page.goto(MISSION_PATH);
@@ -52,6 +52,8 @@ test("Library names all five destinations; Missions has no menu", async ({
     "Variables",
     "Automations",
     "Checklists",
+    "Gallery",
+    "Skills",
     "Playbooks",
   ]);
   await menu.locator('a[data-subsection="checklists"]').click();

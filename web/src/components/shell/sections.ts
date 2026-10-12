@@ -30,6 +30,8 @@ import {
   TerminalSquare,
   Network,
   Workflow,
+  GalleryHorizontal,
+  FileText,
   type LucideIcon,
 } from "lucide-react";
 
@@ -41,6 +43,8 @@ import {
   MAP_PATH,
   MISSION_PATH,
   PLAYBOOKS_PATH,
+  GALLERY_PATH,
+  SKILLS_PATH,
   SESSIONS_PATH,
   TEMPLATES_PATH,
   VARIABLES_PATH,
@@ -49,7 +53,7 @@ import {
 export type SectionId = "ask" | "sessions" | "mission" | "library";
 
 /** An entry inside a section's sub-menu: Sessions has the session view and its map; Library has
- *  the templates, automations, checklists and playbooks a session or mission is started from
+ *  the public gallery and local skills, templates, variables, automations, checklists and playbooks
  *  (#1294). */
 export type SubsectionId =
   | "sessions"
@@ -58,7 +62,9 @@ export type SubsectionId =
   | "variables"
   | "automations"
   | "checklists"
-  | "playbooks";
+  | "playbooks"
+  | "gallery"
+  | "skills";
 
 export interface Subsection {
   id: SubsectionId;
@@ -108,6 +114,8 @@ export const SECTIONS: Section[] = [
       { id: "variables", label: "Variables", Icon: Braces, to: VARIABLES_PATH },
       { id: "automations", label: "Automations", Icon: CalendarClock, to: AUTOMATIONS_PATH },
       { id: "checklists", label: "Checklists", Icon: ListChecks, to: CHECKLISTS_PATH },
+      { id: "gallery", label: "Gallery", Icon: GalleryHorizontal, to: GALLERY_PATH },
+      { id: "skills", label: "Skills", Icon: FileText, to: SKILLS_PATH },
       { id: "playbooks", label: "Playbooks", Icon: Workflow, to: PLAYBOOKS_PATH },
     ],
   },
@@ -143,6 +151,8 @@ export function activeSubsection(pathname: string): SubsectionId | null {
     return "automations";
   if (pathname === VARIABLES_PATH) return "variables";
   if (pathname === CHECKLISTS_PATH) return "checklists";
+  if (pathname === GALLERY_PATH || pathname.startsWith(`${GALLERY_PATH}/`)) return "gallery";
+  if (pathname === SKILLS_PATH || pathname.startsWith(`${SKILLS_PATH}/`)) return "skills";
   if (pathname === PLAYBOOKS_PATH || pathname.startsWith(`${PLAYBOOKS_PATH}/`)) return "playbooks";
   return null;
 }

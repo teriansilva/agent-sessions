@@ -76,6 +76,8 @@ import {
   MISSION_PATH,
   NEW_PROJECT_PATH,
   PLAYBOOKS_PATH,
+  GALLERY_PATH,
+  SKILLS_PATH,
   PLAYBOOK_NEW_PATH,
   TEMPLATES_PATH,
   VARIABLES_PATH,
@@ -127,6 +129,8 @@ const Dashboard = lazyWithReload(
   "dashboard",
 );
 const PlaybookEditor = lazyWithReload(() => import("../routes/PlaybookEditor"), "playbook-editor");
+const ContentGallery = lazyWithReload(() => import("../routes/ContentGallery"), "content-gallery");
+const SkillsLibrary = lazyWithReload(() => import("../routes/SkillsLibrary"), "skills-library");
 const Variables = lazyWithReload(() => import("../routes/Variables"), "variables");
 const Playbooks = lazyWithReload(() => import("../routes/Playbooks"), "playbooks");
 // The New project wizard (#1187). Lazy like the others.
@@ -769,6 +773,8 @@ function Layout() {
                   <Route path={DASHBOARD_PATH} element={<Dashboard />} />
                   {/* Ask's old page (#1171): now the dashboard with the sidebar open (#1294). */}
                   <Route path={ASK_PATH} element={<AskRedirect />} />
+                  <Route path={`${GALLERY_PATH}/:digest?`} element={<ContentGallery />} />
+                  <Route path={`${SKILLS_PATH}/:skillId?`} element={<SkillsLibrary />} />
                   <Route path={PLAYBOOK_NEW_PATH} element={<PlaybookEditor />} />
                   <Route path={`${PLAYBOOKS_PATH}/:playbookId/edit`} element={<PlaybookEditor />} />
                   <Route path={PLAYBOOKS_PATH} element={<Playbooks />} />

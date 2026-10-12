@@ -1,3 +1,4 @@
+import type { GalleryIndex, GalleryInspection, GalleryOperation, GalleryKind, GalleryComparison, GalleryFiles, LocalSkill } from "../types/gallery";
 import type { CollectionInput, SharedVariable, SharedVariableInput, SharedVariableUpdate, SharedVariablesResponse, VariableCollection } from "../types/variables";
 import type { Resources, ResourceSettings, ResourceValues } from "../types/resources";
 // Typed client for the FastAPI `/api/*` surface. Same-origin; cookie session auth.
@@ -584,6 +585,16 @@ function pluginPost<T>(path: string, body: unknown): Promise<T> {
 }
 
 export const api = {
+  publicGallery: () => getJsonWithDetail<GalleryIndex>("/api/gallery"),
+  refreshGallery: () => mutateJson<GalleryIndex>("POST", "/api/gallery/refresh"),
+  inspectGallery: (digest: string, localId: string) => getJsonWithDetail<GalleryInspection>(`/api/gallery/content/${encodeURIComponent(digest)}?local_id=${encodeURIComponent(localId)}`),
+  importGallery: (kind: GalleryKind, id: string, digest: string, operation: string) => mutateJson<GalleryOperation>("POST", "/api/gallery/import", { kind, id, digest, operation, acknowledge: true }),
+  galleryOperation: (operation: string) => getJsonWithDetail<GalleryOperation>(`/api/gallery/operations/${encodeURIComponent(operation)}`),
+  compareGallery: (kind: GalleryKind, id: string, digest: string) => mutateJson<GalleryComparison>("POST", "/api/gallery/compare", { kind, id, digest }),
+  updateGallery: (kind: GalleryKind, id: string, newId: string, digest: string, comparison: string, files: GalleryFiles, operation: string) => mutateJson<GalleryOperation>("POST", "/api/gallery/update", { kind, id, new_id: newId, digest, comparison, files, operation, acknowledge: true }),
+  localSkills: () => getJsonWithDetail<{ skills: LocalSkill[] }>("/api/library/skills"),
+  localSkill: (id: string) => getJsonWithDetail<LocalSkill>(`/api/library/skills/${encodeURIComponent(id)}`),
+  saveLocalSkill: (id: string, newId: string, revision: string, origin: string | null, files: Record<string, string>, operation: string) => mutateJson<GalleryOperation>("POST", `/api/library/skills/${encodeURIComponent(id)}/copies`, { new_id: newId, revision, origin, files, operation }),
   plugins: () => pluginCatalog("/api/plugins"),
   agentCatalogPreferences: (automatic: boolean) => mutateJson<PluginCatalog>("PATCH", "/api/agents/catalog/preferences", { automatic }),
   pluginRefresh: () => pluginCatalog("/api/plugins/feed/refresh", true),

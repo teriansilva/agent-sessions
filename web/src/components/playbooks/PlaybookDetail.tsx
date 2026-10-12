@@ -1,3 +1,4 @@
+import { Origin } from "../gallery/Shared";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
@@ -194,6 +195,7 @@ export function PlaybookDetailPage({ id }: { id: string }) {
             </div>
           )}
           <p className={styles.intro}>{pb.summary}</p>
+          <Origin value={pb.gallery_origin} kind="playbook" id={pb.id} revision={pb.revision} />
           {!pb.ok ? (
             <p role="alert" className={styles.error}>
               {pb.error}
