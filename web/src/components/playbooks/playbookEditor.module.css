@@ -106,41 +106,45 @@
   flex-wrap: wrap;
   align-items: center;
 }
+.workflowBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+  margin-top: 20px;
+}
+.workflowBar > :first-child {
+  flex: 1 1 240px;
+}
+.workflowBar > .actions {
+  margin-bottom: 12px;
+}
 .workspace {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(0, 2fr);
-  gap: 28px;
-  margin-top: 24px;
+  grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr);
+  gap: 20px;
+  align-items: start;
 }
-.canvasWorkspace {
-  grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
-}
-.steps {
-  padding: 0;
-  list-style: none;
-}
-.steps li {
-  border-left: 2px solid var(--line-strong);
-  background: var(--bg-1);
-  margin: 8px 0;
-  padding: 10px;
-}
-.steps li[data-selected="true"] {
-  border-left-color: var(--accent);
-}
-.selectStep {
-  text-align: left;
-  width: 100%;
-  white-space: normal;
-}
-.stepMeta {
-  display: block;
-  font: 11px var(--font-mono);
-  padding: 10px 0;
-  color: var(--text-2);
+.graph {
+  position: sticky;
+  top: 0;
 }
 .inspector {
   border-top: 1px solid var(--line-strong);
+  padding: 0 16px 16px;
+  background: var(--bg-1);
+}
+.inspector .fields {
+  grid-template-columns: minmax(0, 1fr);
+}
+.propertyGroup {
+  border-top: 1px solid var(--line-strong);
+  margin-top: 20px;
+  padding-top: 4px;
+}
+.editor .hint {
+  font-size: 12px;
+  margin: 8px 0;
 }
 .warning,
 .editor .warning {
@@ -211,11 +215,20 @@
   border-color: var(--status-down);
 }
 
-.mobileBack {
-  display: none;
-}
 @media (max-width: 800px) {
-  .mobileBack {
-    display: inline-flex;
+  .graph {
+    position: static;
+  }
+  .mobileGraphHidden {
+    display: none;
+  }
+  .workflowBar {
+    align-items: stretch;
+  }
+  .workflowBar .actions {
+    width: 100%;
+  }
+  .workflowBar button {
+    flex: 1 1 auto;
   }
 }

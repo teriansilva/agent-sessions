@@ -66,6 +66,7 @@ async function setup(
   options: {
     stale?: boolean;
     invalid?: boolean;
+    invalidField?: string;
     readonly?: boolean;
     collision?: boolean;
     flow?: Flow;
@@ -165,8 +166,8 @@ async function setup(
       return route.fulfill({
         status: 422,
         json: {
-          detail: "flows/main.toml: steps[0].title is too long",
-          field: "steps[0].title",
+          detail: `flows/main.toml: ${options.invalidField ?? "steps[0].title"} is invalid`,
+          field: options.invalidField ?? "steps[0].title",
         },
       });
     }
@@ -209,6 +210,18 @@ async function setup(
   return { calls };
 }
 
+async function selectStep(page: Page, title: string) {
+  const back = page.getByRole("button", { name: "Back to flowchart" });
+  if (await back.isVisible()) await back.click();
+  const node = page.getByLabel(`Step: ${title}`, { exact: true });
+  await expect(node).toBeVisible();
+  await node.focus();
+  await node.press("Enter");
+  await expect(
+    page.getByRole("region", { name: "Step properties", exact: true }),
+  ).toBeVisible();
+}
+
 test("create, reorder, add rework, save, reload and edit two different agents", async ({
   page,
 }) => {
@@ -221,30 +234,34 @@ test("create, reorder, add rework, save, reload and edit two different agents", 
   await page
     .getByLabel("Playbook name", { exact: true })
     .fill("Release process");
+  await page.getByText("Advanced playbook properties", { exact: true }).click();
   await page.getByLabel("Playbook ID", { exact: true }).fill("release-process");
+  await selectStep(page, "New step");
   await page.getByLabel("Step title", { exact: true }).fill("Implement");
-  await page.getByLabel("Actor", { exact: true }).selectOption("agent");
+  await page
+    .getByLabel("Who does this step?", { exact: true })
+    .selectOption("agent");
   await page.getByLabel("Agent", { exact: true }).selectOption("claude");
   await page.getByRole("button", { name: "Add step", exact: true }).click();
   await page.getByLabel("Step title", { exact: true }).fill("Review");
-  await page.getByLabel("Actor", { exact: true }).selectOption("agent");
+  await page
+    .getByLabel("Who does this step?", { exact: true })
+    .selectOption("agent");
   await page.getByLabel("Agent", { exact: true }).selectOption("codex");
   await page
-    .getByRole("group", { name: "After these steps" })
+    .getByRole("group", { name: "Starts after" })
     .getByLabel("Implement")
     .check();
   await page
     .getByLabel("Rework to", { exact: true })
     .selectOption({ label: "Implement" });
-  await page.getByLabel("Maximum rework rounds").fill("4");
-  if (await page.getByRole("button", { name: "List", exact: true }).isVisible())
-    await page.getByRole("button", { name: "List", exact: true }).click();
+  await page.getByLabel("Maximum revision rounds").fill("4");
   await page
     .getByRole("button", { name: "Move Review up", exact: true })
     .focus();
   await page.keyboard.press("Enter");
   await expect(
-    page.getByRole("button", { name: "1. Review", exact: true }),
+    page.getByRole("status").filter({ hasText: "Step 1 of 2: Review" }),
   ).toBeVisible();
   await page
     .getByRole("button", { name: "Save playbook", exact: true })
@@ -318,7 +335,10 @@ test("canvas connects the shared draft, refuses cycles and round-trips bounded r
   page,
   isMobile,
 }) => {
-  test.skip(isMobile, "Phones use the equivalent list editor");
+  test.skip(
+    isMobile,
+    "Pointer dragging is covered here; mobile uses the non-drag controls below",
+  );
   const { calls } = await setup(page, { flow: structuredClone(twoSteps) });
   await page.goto(playbookEditPath("team-flow"));
   await expect(page.getByTestId("playbook-flowchart")).toBeVisible();
@@ -326,6 +346,7 @@ test("canvas connects the shared draft, refuses cycles and round-trips bounded r
   await expect(
     page.getByRole("status").filter({ hasText: "Dependency added" }),
   ).toBeVisible();
+  await page.getByRole("button", { name: "Fit flow", exact: true }).click();
   await connect(page, "review", "build");
   await expect(
     page.getByRole("status").filter({ hasText: "dependency cycle" }),
@@ -335,7 +356,7 @@ test("canvas connects the shared draft, refuses cycles and round-trips bounded r
     "Independent review",
   );
   await page.getByLabel("Rework to", { exact: true }).selectOption("build");
-  await page.getByLabel("Maximum rework rounds").fill("3");
+  await page.getByLabel("Maximum revision rounds").fill("3");
   await expect(
     page.getByText("Rework: approved · max 3", { exact: true }),
   ).toBeVisible();
@@ -350,15 +371,13 @@ test("canvas connects the shared draft, refuses cycles and round-trips bounded r
   await expect(
     page.getByText("Rework: approved · max 3", { exact: true }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "List", exact: true }).click();
-  await expect(page.getByTestId("playbook-flowchart")).toHaveCount(0);
+  await expect(page.getByTestId("playbook-flowchart")).toBeVisible();
   const prerequisite = page
-    .getByRole("group", { name: "After these steps" })
+    .getByRole("group", { name: "Starts after" })
     .getByLabel("Implement");
   await expect(prerequisite).not.toBeChecked();
   await prerequisite.check();
   await page.getByLabel("Step title", { exact: true }).fill("Final review");
-  await page.getByRole("button", { name: "Canvas", exact: true }).click();
   await expect(
     page.locator('.react-flow__node[data-id="review"]'),
   ).toContainText("Final review");
@@ -386,7 +405,10 @@ test("moving a canvas node is presentation only and does not create an unsaved d
   page,
   isMobile,
 }) => {
-  test.skip(isMobile, "Phones use the equivalent list editor");
+  test.skip(
+    isMobile,
+    "Pointer dragging is covered here; mobile uses the non-drag controls below",
+  );
   const { calls } = await setup(page, { flow: structuredClone(twoSteps) });
   await page.goto(playbookEditPath("team-flow"));
   const node = page.locator('.react-flow__node[data-id="build"]');
@@ -439,7 +461,9 @@ test("a new playbook with an existing ID can change its ID and save the retained
   await page
     .getByLabel("Playbook name", { exact: true })
     .fill("My new process");
+  await page.getByText("Advanced playbook properties", { exact: true }).click();
   await page.getByLabel("Playbook ID", { exact: true }).fill("team-flow");
+  await selectStep(page, "New step");
   await page.getByLabel("Step title", { exact: true }).fill("My retained step");
   await page
     .getByRole("button", { name: "Save playbook", exact: true })
@@ -460,6 +484,7 @@ test("a new playbook with an existing ID can change its ID and save the retained
   await expect(page.getByLabel("Playbook name", { exact: true })).toHaveValue(
     "My new process",
   );
+  await selectStep(page, "My retained step");
   await expect(page.getByLabel("Step title", { exact: true })).toHaveValue(
     "My retained step",
   );
@@ -529,6 +554,7 @@ test("draft copy submits unsaved changes and unavailable actor references", asyn
 }) => {
   const { calls } = await setup(page, { stale: true });
   await page.goto(playbookEditPath("team-flow"));
+  await selectStep(page, "Build");
   await page.getByLabel("Step title", { exact: true }).fill("Unsaved build");
   await page
     .getByRole("button", { name: "Save playbook", exact: true })
@@ -551,6 +577,7 @@ test("validation and navigation cancellation retain a draft, then discard loads 
 }) => {
   await setup(page, { invalid: true, stale: true });
   await page.goto(playbookEditPath("team-flow"));
+  await selectStep(page, "Build");
   await page.getByLabel("Step title", { exact: true }).fill("Keep this draft");
   await page
     .getByRole("button", { name: "Save playbook", exact: true })
@@ -587,6 +614,7 @@ test("validation and navigation cancellation retain a draft, then discard loads 
   await expect(page.getByLabel("Playbook name", { exact: true })).toHaveValue(
     "Changed elsewhere",
   );
+  await selectStep(page, "Build");
   await expect(page.getByLabel("Step title", { exact: true })).toHaveValue(
     "Build",
   );
@@ -610,6 +638,7 @@ test("320px light and dark layout keeps controls in bounds and touch targets usa
   await setup(page);
   await page.setViewportSize({ width: 320, height: 800 });
   await page.goto(playbookEditPath("team-flow"));
+  await selectStep(page, "Build");
   await expect(page.getByLabel("Step title", { exact: true })).toBeVisible();
   for (const theme of ["dark", "light"]) {
     await page.evaluate((theme) => {
@@ -631,4 +660,295 @@ test("320px light and dark layout keeps controls in bounds and touch targets usa
       );
     expect(small).toEqual([]);
   }
+});
+
+test("workflow selection never falls back to its first step", async ({
+  page,
+  isMobile,
+}) => {
+  const { calls } = await setup(page);
+  await page.goto(playbookEditPath("team-flow"));
+  const workflow = page.getByRole("region", {
+    name: "Workflow properties",
+    exact: true,
+  });
+  await expect(workflow).toBeVisible();
+  await expect(page.getByLabel("Step title", { exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "List", exact: true }),
+  ).toHaveCount(0);
+  await selectStep(page, "Build");
+  await page.getByLabel("Step instructions").fill("Keep these instructions");
+  await page.getByLabel("Evidence required").fill("Keep the required evidence");
+  await page.keyboard.press("Escape");
+  await expect(workflow).toBeVisible();
+  await expect(page.getByLabel("Step: Build", { exact: true })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(workflow).toBeVisible();
+  await selectStep(page, "Build");
+  await expect(page.getByLabel("Step instructions")).toHaveValue(
+    "Keep these instructions",
+  );
+  await expect(page.getByLabel("Evidence required")).toHaveValue(
+    "Keep the required evidence",
+  );
+  if (!isMobile) {
+    await page.locator(".react-flow__pane").click({ position: { x: 8, y: 8 } });
+    await expect(workflow).toBeVisible();
+  }
+  expect(calls).toHaveLength(0);
+});
+
+test("320px graph supports connecting, reordering and confirmed removal without dragging", async ({
+  page,
+}) => {
+  const { calls } = await setup(page, { flow: structuredClone(twoSteps) });
+  await page.setViewportSize({ width: 320, height: 800 });
+  await page.goto(playbookEditPath("team-flow"));
+  await expect(page.getByTestId("playbook-flowchart")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "1. Implement", exact: true }),
+  ).toHaveCount(0);
+  await selectStep(page, "Independent review");
+  await page
+    .getByRole("group", { name: "Starts after", exact: true })
+    .getByLabel("Implement", { exact: true })
+    .check();
+  await page.getByLabel("Rework to", { exact: true }).selectOption("build");
+  await page.getByLabel("Maximum revision rounds").fill("4");
+  await page
+    .getByRole("button", { name: "Move Independent review up", exact: true })
+    .press("Enter");
+  await expect(
+    page
+      .getByRole("status")
+      .filter({ hasText: "Step 1 of 2: Independent review" }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Remove step…", exact: true })
+    .press("Enter");
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Cancel", exact: true })
+    .press("Enter");
+  await expect(page.getByLabel("Step title", { exact: true })).toHaveValue(
+    "Independent review",
+  );
+  await page
+    .getByRole("button", { name: "Save playbook", exact: true })
+    .click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Playbook saved" }),
+  ).toBeVisible();
+  const saved = (calls[0].body.files["flows/main.toml"] as { toml: Flow }).toml;
+  expect(saved.steps[0]).toMatchObject({
+    id: "review",
+    after: ["build"],
+    rework: { to: "build", when: "approved", max_rounds: 4 },
+  });
+  expect(saved.steps[1]).toEqual(twoSteps.steps[0]);
+  await selectStep(page, "Independent review");
+  await page
+    .getByRole("button", { name: "Remove step…", exact: true })
+    .press("Enter");
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Confirm", exact: true })
+    .press("Enter");
+  await expect(page.getByTestId("playbook-flowchart")).toBeVisible();
+  await expect(
+    page.getByLabel("Step: Independent review", { exact: true }),
+  ).toHaveCount(0);
+  await expect(page.getByLabel("Step title", { exact: true })).toHaveCount(0);
+});
+
+test("server validation opens the correct step and its collapsed Advanced group", async ({
+  page,
+}) => {
+  await setup(page, {
+    flow: structuredClone(twoSteps),
+    invalid: true,
+    invalidField: "steps[0].memory",
+  });
+  await page.goto(playbookEditPath("team-flow"));
+  await selectStep(page, "Independent review");
+  await page
+    .getByLabel("Step instructions")
+    .fill("Retain my review instructions");
+  await page
+    .getByRole("button", { name: "Save playbook", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Go to field: steps[0].memory", exact: true })
+    .click();
+  await expect(page.getByLabel("Step title", { exact: true })).toHaveValue(
+    "Implement",
+  );
+  await expect(page.getByLabel("Shared memory", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Shared memory", { exact: true })).toBeFocused();
+  await expect(
+    page.getByLabel("Shared memory", { exact: true }),
+  ).toHaveAttribute("aria-invalid", "true");
+  await selectStep(page, "Independent review");
+  await expect(page.getByLabel("Step instructions")).toHaveValue(
+    "Retain my review instructions",
+  );
+});
+
+test("an empty workflow validation error focuses the graph for adding its first step", async ({
+  page,
+}) => {
+  await setup(page, {
+    flow: { format: 1, title: "Empty workflow", steps: [] },
+    invalid: true,
+    invalidField: "steps",
+  });
+  await page.setViewportSize({ width: 320, height: 800 });
+  await page.goto(playbookEditPath("team-flow"));
+  await page
+    .getByRole("button", { name: "Save playbook", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Go to field: steps", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Flowchart", exact: true }),
+  ).toBeFocused();
+  await page.getByRole("button", { name: "Add step", exact: true }).click();
+  await expect(
+    page.getByRole("region", { name: "Step properties", exact: true }),
+  ).toBeVisible();
+});
+
+test("a variable error returns from step Properties and expands workflow inputs", async ({
+  page,
+}) => {
+  await setup(page, { invalid: true, invalidField: "variables[0].name" });
+  await page.setViewportSize({ width: 320, height: 800 });
+  await page.goto(playbookEditPath("team-flow"));
+  await page.getByText("Variables (0)", { exact: true }).click();
+  await page.getByRole("button", { name: "Add variable", exact: true }).click();
+  await page.getByLabel("Variable name", { exact: true }).fill("repository");
+  await selectStep(page, "Build");
+  await page
+    .getByRole("button", { name: "Save playbook", exact: true })
+    .click();
+  await page
+    .getByRole("button", {
+      name: "Go to field: variables[0].name",
+      exact: true,
+    })
+    .click();
+  await expect(
+    page.getByRole("region", { name: "Workflow properties", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Variable name", { exact: true })).toBeFocused();
+  await expect(page.getByLabel("Variable name", { exact: true })).toHaveValue(
+    "repository",
+  );
+});
+
+test("Back preserves graph viewport, workflow switching retains drafts, and empty workflows have no implicit step", async ({
+  page,
+}) => {
+  await setup(page);
+  await page.setViewportSize({ width: 320, height: 800 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto(playbookEditPath("team-flow"));
+  const viewport = page.locator(".react-flow__viewport");
+  const initial = await viewport.getAttribute("style");
+  await page
+    .getByRole("button", { name: "Zoom out flowchart", exact: true })
+    .click();
+  await expect(viewport).not.toHaveAttribute("style", initial!);
+  const zoomed = await viewport.getAttribute("style");
+  await selectStep(page, "Build");
+  await page.getByLabel("Step instructions").fill("Keep this step draft");
+  await page.getByRole("button", { name: "Back to flowchart" }).click();
+  await expect(page.getByLabel("Step: Build", { exact: true })).toBeFocused();
+  await expect(viewport).toHaveAttribute("style", zoomed!);
+  await page.getByRole("button", { name: "Add workflow", exact: true }).click();
+  await expect(page.getByLabel("Step title", { exact: true })).toHaveCount(0);
+  await expect(
+    page.getByText("Add a step to start the flow.", { exact: true }),
+  ).toBeVisible();
+  await page
+    .getByLabel("Workflow title", { exact: true })
+    .fill("Second workflow");
+  await page.getByRole("button", { name: "Add step", exact: true }).click();
+  await page.getByLabel("Step title", { exact: true }).fill("Second step");
+  await page
+    .getByLabel("Workflow", { exact: true })
+    .selectOption("flows/main.toml");
+  await expect(page.getByLabel("Step title", { exact: true })).toHaveCount(0);
+  await selectStep(page, "Build");
+  await expect(page.getByLabel("Step instructions")).toHaveValue(
+    "Keep this step draft",
+  );
+  await page
+    .getByLabel("Workflow", { exact: true })
+    .selectOption({ label: "Second workflow" });
+  await selectStep(page, "Second step");
+  await expect(page.getByLabel("Step title", { exact: true })).toHaveValue(
+    "Second step",
+  );
+});
+
+test("mobile graph keeps nodes readable and offers navigation without panning", async ({
+  page,
+}) => {
+  await setup(page, { flow: structuredClone(twoSteps) });
+  await page.setViewportSize({ width: 320, height: 800 });
+  await page.goto(playbookEditPath("team-flow"));
+  const chart = page.getByTestId("playbook-flowchart");
+  await chart.scrollIntoViewIfNeeded();
+  const first = page.getByLabel("Step: Implement", { exact: true });
+  await expect(first).toBeVisible();
+  await expect
+    .poll(async () => (await first.boundingBox())?.width ?? 0)
+    .toBeGreaterThanOrEqual(168);
+  await page
+    .getByRole("button", { name: "Show next step", exact: true })
+    .click();
+  const next = page.getByLabel("Step: Independent review", { exact: true });
+  await expect(next).toBeInViewport();
+  await next.click();
+  await expect(page.getByLabel("Step title", { exact: true })).toHaveValue(
+    "Independent review",
+  );
+  await page.getByRole("button", { name: "Back to flowchart" }).click();
+  await expect(
+    page.getByRole("button", { name: "Show previous step", exact: true }),
+  ).toBeEnabled();
+});
+
+test("workflow and Escape actions clear edge selection without deleting the dependency", async ({
+  page,
+  isMobile,
+}) => {
+  test.skip(isMobile, "The narrow-screen equivalent uses Starts after");
+  const flow = structuredClone(twoSteps);
+  flow.steps[1].after = ["build"];
+  const { calls } = await setup(page, { flow });
+  await page.goto(playbookEditPath("team-flow"));
+  const edge = page.locator('.react-flow__edge[data-id="after:build:review"]');
+  await edge.focus();
+  await edge.press("Enter");
+  await expect(
+    page.getByRole("button", { name: "Remove dependency", exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Workflow properties", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Remove dependency", exact: true }),
+  ).toHaveCount(0);
+  await edge.focus();
+  await edge.press("Enter");
+  await edge.press("Escape");
+  await expect(
+    page.getByRole("button", { name: "Remove dependency", exact: true }),
+  ).toHaveCount(0);
+  await expect(edge).toHaveCount(1);
+  expect(calls).toHaveLength(0);
 });

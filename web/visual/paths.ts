@@ -35,7 +35,8 @@ export type VisualPath = {
     | "open-first-window"
     | "resource-controls"
     | "resource-advanced"
-    | "playbook-flow";
+    | "playbook-flow"
+    | "playbook-step";
 };
 
 /** Screen formats — every area is captured at each (the operator asked for several). */
@@ -124,10 +125,23 @@ export const VISUAL_PATHS: VisualPath[] = [
     group: "authed",
     path: "/library/playbooks/forge-workflow/edit",
     name: "playbook-editor",
-    description: "Playbook editor — canvas/list flow and shared step inspector",
+    description: "Playbook editor — flowchart and workflow properties",
     prepare: "playbook-flow",
     requireAuth: "admin",
-    waitFor: { selector: '[aria-label="Step inspector"]', timeoutMs: 12000 },
+    waitFor: {
+      selector: '[aria-label="Workflow properties"]',
+      timeoutMs: 12000,
+    },
+  },
+  {
+    group: "authed",
+    path: "/library/playbooks/forge-workflow/edit",
+    name: "playbook-step-properties",
+    description:
+      "Selected step — performer, instructions, completion rules and next steps",
+    prepare: "playbook-step",
+    requireAuth: "admin",
+    waitFor: { selector: '[aria-label="Step properties"]', timeoutMs: 12000 },
   },
   {
     group: "authed",

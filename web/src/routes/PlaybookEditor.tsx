@@ -1,5 +1,11 @@
-/** A complete bundle draft, revision-fenced saves, and explicit stale-draft recovery (#1359). */
-import { useCallback, useEffect, useRef, useState } from "react";
+/** One bundle draft, explicit workflow/step Properties, and revision-fenced recovery (#1392). */
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   Link,
   useBlocker,
@@ -17,7 +23,6 @@ import {
   Choice,
 } from "../components/playbooks/PlaybookStepEditor";
 import { PlaybookVariables } from "../components/playbooks/PlaybookVariables";
-import { PlaybookActor } from "../components/playbooks/PlaybookCard";
 import {
   errorText,
   usePlaybookRead,
@@ -44,7 +49,6 @@ import type { PlaybookDetail, PlaybookWriteResult } from "../types/playbooks";
 import buttons from "../components/ui/actionButton.module.css";
 import styles from "../components/playbooks/playbookEditor.module.css";
 import { PlaybookFlowCanvas } from "../components/playbooks/PlaybookFlowCanvas";
-import { useIsMobile } from "../lib/useIsMobile";
 
 export default function PlaybookEditor() {
   const { playbookId } = useParams();
@@ -110,9 +114,55 @@ function Editor({
       Object.keys(baseline.documents).find((p) => p.startsWith("flows/")) ?? "",
   );
   const [selected, setSelected] = useState("");
-  const [view, setView] = useState<"canvas" | "list">("canvas");
-  const mobile = useIsMobile();
-  const canvas = !mobile && view === "canvas";
+  const workspace = useRef<HTMLDivElement>(null);
+  const lastNode = useRef("");
+  const [selectionEpoch, setSelectionEpoch] = useState(0);
+  const [focusRequest, setFocusRequest] = useState<{
+    target: "graph" | "workflow" | "step";
+  } | null>(null);
+  useLayoutEffect(() => {
+    if (!focusRequest) return;
+    const node =
+      focusRequest.target === "graph" && lastNode.current
+        ? workspace.current?.querySelector<HTMLElement>(
+            `.react-flow__node[data-id="${CSS.escape(lastNode.current)}"]`,
+          )
+        : null;
+    const selector =
+      focusRequest.target === "step"
+        ? '[aria-label="Step properties"] h2'
+        : focusRequest.target === "workflow"
+          ? '[aria-label="Workflow properties"] h2'
+          : '[aria-label="Flow steps"] h2';
+    const heading = workspace.current?.querySelector<HTMLElement>(selector);
+    const visible = (el: HTMLElement) =>
+      el.getClientRects().length > 0 &&
+      getComputedStyle(el).visibility !== "hidden";
+    const focus = (el?: HTMLElement | null) => {
+      el?.focus({ preventScroll: true });
+      el?.scrollIntoView({ block: "nearest" });
+    };
+    if (node && visible(node)) {
+      focus(node);
+      return;
+    }
+    focus(heading);
+    if (!node) return;
+    // A step added while the mobile chart was hidden needs its first measurement.
+    // Keep focus on the chart heading until ready, without stealing a later Tab/click.
+    const observer = new MutationObserver(() => {
+      if (window.document.activeElement !== heading) {
+        observer.disconnect();
+        return;
+      }
+      if (visible(node)) {
+        focus(node);
+        observer.disconnect();
+      }
+    });
+    observer.observe(node, { attributes: true, attributeFilter: ["style"] });
+    return () => observer.disconnect();
+  }, [focusRequest]);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const allowLeave = useRef(false);
@@ -158,31 +208,30 @@ function Editor({
     (p) => p.startsWith("flows/") && p.endsWith(".toml"),
   );
   const flow = draft.documents[path] as Flow | undefined;
-  const selectedStep =
-    flow?.steps.find((s) => s.id === selected) ?? flow?.steps[0];
+  const selectedStep = flow?.steps.find((s) => s.id === selected);
   function edit(next: Draft) {
     setDraft(next);
     setNotice("");
     setError("");
     setErrorField("");
   }
-  function showSteps() {
-    const heading = window.document.querySelector<HTMLElement>(
-      '[aria-label="Flow steps"] h2',
-    );
-    heading?.focus();
-    heading?.scrollIntoView({ block: "start" });
+  function selectWorkflow(restoreNode = true) {
+    setSelected("");
+    setSelectionEpoch((epoch) => epoch + 1);
+    setFocusRequest({ target: restoreNode ? "graph" : "workflow" });
   }
   function selectStep(id: string) {
+    setSelectionEpoch((epoch) => epoch + 1);
+    lastNode.current = id;
     setSelected(id);
-    if (window.matchMedia("(max-width: 800px)").matches)
-      requestAnimationFrame(() => {
-        const heading = window.document.querySelector<HTMLElement>(
-          '[aria-label="Step inspector"] h2',
-        );
-        heading?.focus();
-        heading?.scrollIntoView({ block: "start" });
-      });
+    setFocusRequest({ target: "step" });
+  }
+
+  function addStep() {
+    if (!flow) return;
+    const step = newStep();
+    document(path, { ...flow, steps: [...flow.steps, step] });
+    selectStep(step.id);
   }
   function document(path: string, doc: Draft["documents"][string]) {
     edit({ ...draft, documents: { ...draft.documents, [path]: doc } });
@@ -216,6 +265,8 @@ function Editor({
     setCompared(null);
     setError("");
     setErrorField("");
+    setSelected("");
+    lastNode.current = "";
     setPath((old) =>
       next.documents[old]
         ? old
@@ -292,17 +343,26 @@ function Editor({
     const match = errorField.match(/steps\[(\d+)\]/);
     const errorPath = paths.find((p) => error.includes(p));
     if (errorPath) setPath(errorPath);
+    setSelected("");
     if (match) {
       const f = draft.documents[errorPath ?? path] as Flow;
       const step = f?.steps[Number(match[1])];
-      if (step) setSelected(step.id);
+      if (step) {
+        lastNode.current = step.id;
+        setSelected(step.id);
+      }
     }
     requestAnimationFrame(() => {
       const field = [
         ...window.document.querySelectorAll<HTMLElement>("[data-field]"),
       ].find((el) => errorField.endsWith(el.dataset.field ?? "!"));
       if (field) {
-        field.closest("details")?.setAttribute("open", "");
+        for (
+          let parent = field.parentElement;
+          parent;
+          parent = parent.parentElement
+        )
+          if (parent instanceof HTMLDetailsElement) parent.open = true;
         field.focus();
         field.scrollIntoView({ block: "center" });
       }
@@ -314,9 +374,25 @@ function Editor({
         <div>
           <Link to={PLAYBOOKS_PATH}>← All playbooks</Link>
           <h1>{original ? "Edit playbook" : "New playbook"}</h1>
-          <p>{dirty ? "Unsaved changes" : "Local library"}</p>
+          <p>
+            {dirty ? "Unsaved changes" : "Local library"} · Saving defines the
+            workflow; it does not run it.
+          </p>
         </div>
         <div className={styles.actions}>
+          <div>
+            <button
+              type="button"
+              className={buttons.ghost}
+              disabled
+              aria-describedby="ai-unavailable"
+            >
+              Create workflow with AI
+            </button>
+            <p id="ai-unavailable" className={styles.hint}>
+              AI creation is not available yet.
+            </p>
+          </div>
           <button
             type="button"
             className={buttons.primary}
@@ -424,37 +500,42 @@ function Editor({
               field="identity.name"
             />
             <TextField
-              label="Playbook ID"
-              value={manifest.identity.id}
-              onChange={(v) => identity("id", v)}
-              readOnly={!!original}
-              field="identity.id"
-            />
-            <TextField
-              label="Publisher"
-              value={manifest.identity.publisher}
-              onChange={(v) => identity("publisher", v)}
-              field="identity.publisher"
-            />
-            <TextField
-              label="Version"
-              value={manifest.identity.version}
-              onChange={(v) => identity("version", v)}
-              field="identity.version"
-            />
-            <TextField
-              label="Domain"
-              value={manifest.identity.domain}
-              onChange={(v) => identity("domain", v)}
-              field="identity.domain"
-            />
-            <TextField
               label="Summary"
               value={manifest.identity.summary ?? ""}
               onChange={(v) => identity("summary", v)}
               field="identity.summary"
             />
           </div>
+          <details>
+            <summary>Advanced playbook properties</summary>
+            <div className={styles.fields}>
+              <TextField
+                label="Playbook ID"
+                value={manifest.identity.id}
+                onChange={(v) => identity("id", v)}
+                readOnly={!!original}
+                field="identity.id"
+              />
+              <TextField
+                label="Publisher"
+                value={manifest.identity.publisher}
+                onChange={(v) => identity("publisher", v)}
+                field="identity.publisher"
+              />
+              <TextField
+                label="Version"
+                value={manifest.identity.version}
+                onChange={(v) => identity("version", v)}
+                field="identity.version"
+              />
+              <TextField
+                label="Domain"
+                value={manifest.identity.domain}
+                onChange={(v) => identity("domain", v)}
+                field="identity.domain"
+              />
+            </div>
+          </details>
           <details>
             <summary>README</summary>
             <TextField
@@ -464,222 +545,105 @@ function Editor({
               onChange={(readme) => edit({ ...draft, readme })}
             />
           </details>
-          <PlaybookVariables
-            variables={manifest.variables ?? []}
-            schema={schema}
-            onChange={(variables) =>
-              document(MANIFEST, { ...manifest, variables })
-            }
-          />
-          <div
-            className={`${styles.workspace} ${canvas ? styles.canvasWorkspace : ""}`}
-          >
-            <section aria-label="Flow steps">
-              <h2 tabIndex={-1}>Flow steps</h2>
-              {!mobile && (
-                <div className={styles.actions} aria-label="Flow view">
-                  <button
-                    type="button"
-                    className={
-                      view === "canvas" ? buttons.primary : buttons.ghost
-                    }
-                    aria-pressed={view === "canvas"}
-                    onClick={() => setView("canvas")}
-                  >
-                    Canvas
-                  </button>
-                  <button
-                    type="button"
-                    className={
-                      view === "list" ? buttons.primary : buttons.ghost
-                    }
-                    aria-pressed={view === "list"}
-                    onClick={() => setView("list")}
-                  >
-                    List
-                  </button>
-                </div>
-              )}
-              <Choice
-                label="Flow"
-                value={path}
-                choices={paths.map((p) => ({
-                  value: p,
-                  label: `${(draft.documents[p] as Flow).title} (${flowId(p)})`,
-                }))}
-                onChange={(p) => {
+          <div className={styles.workflowBar}>
+            <Choice
+              label="Workflow"
+              value={path}
+              choices={paths.map((p) => ({
+                value: p,
+                label: (draft.documents[p] as Flow).title,
+              }))}
+              onChange={(p) => {
+                setPath(p);
+                setSelected("");
+                lastNode.current = "";
+              }}
+            />
+            <div className={styles.actions}>
+              <button
+                type="button"
+                className={buttons.ghost}
+                disabled={paths.length >= schema.limits.flows}
+                onClick={() => {
+                  const p = flowPath(freshId("flow"));
+                  document(p, {
+                    format: manifest.format,
+                    title: "New workflow",
+                    steps: [],
+                  });
                   setPath(p);
                   setSelected("");
+                  lastNode.current = "";
                 }}
-              />
-              <details>
-                <summary>Flow settings</summary>
-                <Choice
-                  label="Default flow"
-                  value={manifest.flows?.default ?? ""}
-                  choices={paths.map(flowId)}
-                  optional
-                  onChange={(value) =>
-                    document(MANIFEST, {
-                      ...manifest,
-                      flows: value ? { default: value } : {},
-                    })
+              >
+                Add workflow
+              </button>
+              <button
+                type="button"
+                className={buttons.ghost}
+                disabled={!flow || flow.steps.length >= schema.limits.steps}
+                onClick={addStep}
+              >
+                Add step
+              </button>
+              <button
+                type="button"
+                className={buttons.ghost}
+                onClick={() => selectWorkflow(false)}
+              >
+                Workflow properties
+              </button>
+            </div>
+          </div>
+          <p role="status" className={styles.hint}>
+            {flow ? `Workflow: ${flow.title}` : "No workflow selected"}
+            {flow && selectedStep
+              ? ` · Step ${flow.steps.indexOf(selectedStep) + 1} of ${flow.steps.length}: ${selectedStep.title}`
+              : " · Workflow properties"}
+          </p>
+          <div
+            ref={workspace}
+            className={styles.workspace}
+            onKeyDownCapture={(event) => {
+              if (event.key === "Escape" && !event.defaultPrevented) {
+                event.preventDefault();
+                event.stopPropagation();
+                selectWorkflow();
+              }
+            }}
+          >
+            <section
+              aria-label="Flow steps"
+              className={`${styles.graph} ${selectedStep ? styles.mobileGraphHidden : ""}`}
+            >
+              <h2 tabIndex={-1} data-field="steps">
+                Flowchart
+              </h2>
+              <p className={styles.hint}>
+                Select a step to edit its Properties. Select the background for
+                workflow properties.
+              </p>
+              {flow ? (
+                <PlaybookFlowCanvas
+                  key={path}
+                  steps={flow.steps}
+                  selected={selectedStep?.id}
+                  selectionEpoch={selectionEpoch}
+                  onSelect={selectStep}
+                  onBackground={() => selectWorkflow(false)}
+                  onChange={
+                    busy
+                      ? undefined
+                      : (steps) => document(path, { ...flow, steps })
                   }
                 />
-                <button
-                  type="button"
-                  className={buttons.ghost}
-                  disabled={paths.length >= schema.limits.flows}
-                  onClick={() => {
-                    const p = flowPath(freshId("flow"));
-                    document(p, {
-                      format: manifest.format,
-                      title: "New flow",
-                      steps: [newStep()],
-                    });
-                    setPath(p);
-                    setSelected("");
-                  }}
-                >
-                  Add flow
-                </button>
-                {flow && (
-                  <>
-                    <TextField
-                      label="Flow title"
-                      value={flow.title}
-                      onChange={(title) => document(path, { ...flow, title })}
-                      field="title"
-                    />
-                    <TextField
-                      label="Flow description"
-                      value={flow.description ?? ""}
-                      onChange={(description) =>
-                        document(path, { ...flow, description })
-                      }
-                    />
-                  </>
-                )}
-              </details>
-              {flow && (
-                <>
-                  {canvas && (
-                    <PlaybookFlowCanvas
-                      key={path}
-                      steps={flow.steps}
-                      selected={selectedStep?.id}
-                      onSelect={selectStep}
-                      onChange={
-                        busy
-                          ? undefined
-                          : (steps) => document(path, { ...flow, steps })
-                      }
-                    />
-                  )}
-                  <ol className={styles.steps} hidden={canvas}>
-                    {flow.steps.map((s, index) => (
-                      <li key={s.id} data-selected={selectedStep?.id === s.id}>
-                        <button
-                          type="button"
-                          className={`${buttons.ghost} ${styles.selectStep}`}
-                          aria-pressed={selectedStep?.id === s.id}
-                          onClick={() => selectStep(s.id)}
-                        >
-                          {index + 1}. {s.title}
-                        </button>
-                        <PlaybookActor
-                          step={{
-                            ...s,
-                            actor: s.actor as Parameters<
-                              typeof PlaybookActor
-                            >[0]["step"]["actor"],
-                            after: s.after ?? [],
-                            note:
-                              s.actor.kind === "none" && !s.checklist?.length,
-                          }}
-                        />
-                        <span className={styles.stepMeta}>
-                          After:{" "}
-                          {(s.after ?? [])
-                            .map(
-                              (id) =>
-                                flow.steps.find((p) => p.id === id)?.title ??
-                                id,
-                            )
-                            .join(", ") || "Start"}
-                        </span>
-                        <div className={styles.actions}>
-                          {([-1, 1] as const).map((direction) => (
-                            <button
-                              key={direction}
-                              type="button"
-                              className={buttons.icon}
-                              aria-label={`Move ${s.title} ${direction < 0 ? "up" : "down"}`}
-                              disabled={
-                                index + direction < 0 ||
-                                index + direction >= flow.steps.length
-                              }
-                              onClick={() => {
-                                const steps = [...flow.steps];
-                                [steps[index], steps[index + direction]] = [
-                                  steps[index + direction],
-                                  steps[index],
-                                ];
-                                document(path, { ...flow, steps });
-                              }}
-                            >
-                              {direction < 0 ? "↑" : "↓"}
-                            </button>
-                          ))}
-                        </div>
-                      </li>
-                    ))}
-                  </ol>
-                  <p hidden={canvas}>
-                    Order controls presentation. Dependencies determine when a
-                    step can begin.
-                  </p>
-                  <div className={styles.actions}>
-                    <button
-                      type="button"
-                      className={buttons.ghost}
-                      disabled={flow.steps.length >= schema.limits.steps}
-                      onClick={() => {
-                        const s = newStep();
-                        document(path, { ...flow, steps: [...flow.steps, s] });
-                        selectStep(s.id);
-                      }}
-                    >
-                      Add step
-                    </button>
-                    <button
-                      type="button"
-                      className={buttons.ghost}
-                      onClick={() =>
-                        setRemove({
-                          title: `Remove flow ${flow.title}?`,
-                          apply: () => {
-                            const documents = { ...draft.documents };
-                            delete documents[path];
-                            const files = { ...draft.files };
-                            delete files[path];
-                            if (manifest.flows?.default === flowId(path))
-                              documents[MANIFEST] = { ...manifest, flows: {} };
-                            edit({ ...draft, documents, files });
-                            setPath(paths.find((p) => p !== path) ?? "");
-                          },
-                        })
-                      }
-                    >
-                      Remove flow…
-                    </button>
-                  </div>
-                </>
+              ) : (
+                <p>Add a workflow to start.</p>
               )}
             </section>
-            {flow && selectedStep && (
+            {flow && selectedStep ? (
               <PlaybookStepEditor
-                onBack={showSteps}
+                onBack={() => selectWorkflow()}
                 key={`${path}:${selectedStep.id}`}
                 step={selectedStep}
                 steps={flow.steps}
@@ -692,6 +656,15 @@ function Editor({
                     steps: flow.steps.map((old) => (old.id === s.id ? s : old)),
                   })
                 }
+                onMove={(direction) => {
+                  const steps = [...flow.steps],
+                    index = steps.indexOf(selectedStep);
+                  [steps[index], steps[index + direction]] = [
+                    steps[index + direction],
+                    steps[index],
+                  ];
+                  document(path, { ...flow, steps });
+                }}
                 onRemove={() =>
                   setRemove({
                     title: `Remove step ${selectedStep.title}?`,
@@ -702,11 +675,105 @@ function Editor({
                           (s) => s.id !== selectedStep.id,
                         ),
                       });
-                      setSelected("");
+                      lastNode.current = "";
+                      selectWorkflow();
                     },
                   })
                 }
               />
+            ) : (
+              <section
+                className={styles.inspector}
+                aria-label="Workflow properties"
+              >
+                <h2 tabIndex={-1}>Workflow properties</h2>
+                <p>
+                  Choose a step in the graph to edit its performer,
+                  instructions, completion rules and next steps.
+                </p>
+                {flow && (
+                  <>
+                    <TextField
+                      label="Workflow title"
+                      value={flow.title}
+                      field="title"
+                      onChange={(title) => document(path, { ...flow, title })}
+                    />
+                    <TextField
+                      label="Workflow description"
+                      multiline
+                      value={flow.description ?? ""}
+                      field="description"
+                      onChange={(description) =>
+                        document(path, { ...flow, description })
+                      }
+                    />
+                  </>
+                )}
+                <h3>Inputs</h3>
+                <p className={styles.hint}>
+                  These definitions are shared by this playbook’s workflows.
+                  Values are supplied when assigning the playbook to a project.
+                </p>
+                <PlaybookVariables
+                  variables={manifest.variables ?? []}
+                  schema={schema}
+                  onChange={(variables) =>
+                    document(MANIFEST, { ...manifest, variables })
+                  }
+                />
+                <details>
+                  <summary>Advanced workflow properties</summary>
+                  {flow && (
+                    <TextField
+                      label="Workflow ID"
+                      value={flowId(path)}
+                      readOnly
+                    />
+                  )}
+                  <Choice
+                    label="Default workflow"
+                    value={manifest.flows?.default ?? ""}
+                    choices={paths.map((p) => ({
+                      value: flowId(p),
+                      label: (draft.documents[p] as Flow).title,
+                    }))}
+                    optional
+                    field="flows.default"
+                    onChange={(value) =>
+                      document(MANIFEST, {
+                        ...manifest,
+                        flows: value ? { default: value } : {},
+                      })
+                    }
+                  />
+                </details>
+                {flow && (
+                  <button
+                    type="button"
+                    className={buttons.ghost}
+                    onClick={() =>
+                      setRemove({
+                        title: `Remove workflow ${flow.title}?`,
+                        apply: () => {
+                          const documents = { ...draft.documents };
+                          delete documents[path];
+                          const files = { ...draft.files };
+                          delete files[path];
+                          if (manifest.flows?.default === flowId(path))
+                            documents[MANIFEST] = { ...manifest, flows: {} };
+                          edit({ ...draft, documents, files });
+                          setPath(paths.find((p) => p !== path) ?? "");
+                          lastNode.current = "";
+                          selectWorkflow(false);
+                        },
+                      })
+                    }
+                  >
+                    Remove workflow…
+                  </button>
+                )}
+              </section>
             )}
           </div>
           <details>

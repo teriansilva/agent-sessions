@@ -20,7 +20,7 @@ export function dependencyError(
   while (pending.length) {
     const id = pending.pop()!;
     if (id === target)
-      return "This would create a dependency cycle. Configure a bounded rework path in the step inspector instead.";
+      return "This would create a dependency cycle. Configure a bounded rework path in the step Properties instead.";
     if (seen.has(id)) continue;
     seen.add(id);
     pending.push(...(steps.find((s) => s.id === id)?.after ?? []));

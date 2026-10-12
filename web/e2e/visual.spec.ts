@@ -95,13 +95,21 @@ async function prepareOpenFirstWindow(page: Page): Promise<void> {
 /** Run the entry's declared interaction, if any, between `goto` and `waitFor`. */
 async function runPrepare(page: Page, p: VisualPath): Promise<void> {
   if (p.prepare === "open-first-window") await prepareOpenFirstWindow(page);
-  if (p.prepare === "playbook-flow") {
+  if (p.prepare === "playbook-flow" || p.prepare === "playbook-step") {
     const section = page.getByRole("region", {
       name: "Flow steps",
       exact: true,
     });
     await section.waitFor();
     await section.evaluate((el) => el.scrollIntoView({ block: "start" }));
+    if (p.prepare === "playbook-step") {
+      const node = page.locator(".react-flow__node").first();
+      await node.focus();
+      await node.press("Enter");
+      await page
+        .getByRole("region", { name: "Step properties", exact: true })
+        .evaluate((el) => el.scrollIntoView({ block: "start" }));
+    }
   }
   if (p.prepare === "resource-controls" || p.prepare === "resource-advanced") {
     await page.getByLabel("API session memory limit (GiB)").waitFor();

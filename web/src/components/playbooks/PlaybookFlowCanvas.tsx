@@ -1,4 +1,4 @@
-/** A second view of the editor's draft. Dragging never writes layout into a bundle. */
+/** Accessible workflow graph. Selection/layout stay outside the saved bundle. */
 import { useMemo, useState } from "react";
 import {
   Background,
@@ -18,15 +18,16 @@ import {
   type XYPosition,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import { useIsMobile } from "../../lib/useIsMobile";
 import type { Step } from "./playbookDraft";
 import { PlaybookActor } from "./PlaybookCard";
 import { dependencyError, graphLayout, isNote } from "./playbookGraph";
 import buttons from "../ui/actionButton.module.css";
 import styles from "./playbookCanvas.module.css";
 
-type StepNode = Node<{ step: Step; editable: boolean }, "step">;
+type StepNode = Node<{ step: Step; index: number; editable: boolean }, "step">;
 function FlowStep({ data, selected }: NodeProps<StepNode>) {
-  const { step, editable } = data;
+  const { step, index, editable } = data;
   return (
     <div className={styles.node} data-selected={selected}>
       <Handle
@@ -36,8 +37,8 @@ function FlowStep({ data, selected }: NodeProps<StepNode>) {
         isConnectable={editable}
         aria-label={`Prerequisite input for ${step.title}`}
       />
+      <span className={styles.meta}>Step {index + 1}</span>
       <strong>{step.title}</strong>
-      <span className={styles.id}>{step.id}</span>
       <PlaybookActor
         step={{
           ...step,
@@ -51,7 +52,7 @@ function FlowStep({ data, selected }: NodeProps<StepNode>) {
       <span className={styles.meta}>
         {isNote(step)
           ? "Note · gates nothing"
-          : `${step.checklist?.length ?? 0} evidence checks`}
+          : `${step.checklist?.length ?? 0} completion rules`}
       </span>
       {step.memory && step.memory !== "none" && (
         <span className={styles.meta}>Memory: {step.memory}</span>
@@ -118,7 +119,9 @@ const edgeTypes = { rework: ReworkEdge };
 type Props = {
   steps: Step[];
   selected?: string;
+  selectionEpoch?: number;
   onSelect?: (id: string) => void;
+  onBackground?: () => void;
   onChange?: (steps: Step[]) => void;
 };
 
@@ -130,19 +133,36 @@ export function PlaybookFlowCanvas(props: Props) {
   );
 }
 
-function Canvas({ steps, selected, onSelect, onChange }: Props) {
+function Canvas({
+  steps,
+  selected,
+  selectionEpoch = 0,
+  onSelect,
+  onBackground,
+  onChange,
+}: Props) {
   const rf = useReactFlow<StepNode>();
-  const [positions, setPositions] = useState<Record<string, XYPosition>>(() =>
-    Object.fromEntries(graphLayout(steps).positions),
-  );
+  const mobile = useIsMobile();
+  const [navigationStep, setNavigationStep] = useState(steps[0]?.id ?? "");
+  const [positions, setPositions] = useState<Record<string, XYPosition>>({});
+  const [sizes, setSizes] = useState<
+    Record<string, { width: number; height: number }>
+  >({});
   const [message, setMessage] = useState("");
-  const [edgeId, setEdgeId] = useState("");
+  const [edgeSelection, setEdgeSelection] = useState({
+    id: "",
+    epoch: selectionEpoch,
+  });
+  const edgeId = edgeSelection.epoch === selectionEpoch ? edgeSelection.id : "";
+  const setEdgeId = (id: string) =>
+    setEdgeSelection({ id, epoch: selectionEpoch });
   const layout = useMemo(() => graphLayout(steps), [steps]);
-  const nodes: StepNode[] = steps.map((step) => ({
+  const nodes: StepNode[] = steps.map((step, index) => ({
     id: step.id,
     type: "step",
-    data: { step, editable: !!onChange },
+    data: { step, index, editable: !!onChange },
     position: positions[step.id] ?? layout.positions.get(step.id)!,
+    measured: sizes[step.id],
     selected: selected === step.id,
     ariaLabel: `Step: ${step.title}`,
   }));
@@ -181,15 +201,47 @@ function Canvas({ steps, selected, onSelect, onChange }: Props) {
   const selectedEdge = edges.find(
     (e) => e.id === edgeId && e.type !== "rework",
   );
+  const navigationIndex = Math.max(
+    0,
+    steps.findIndex((s) => s.id === (selected || navigationStep)),
+  );
+  function showNode(index: number) {
+    const step = steps[index];
+    if (!step) return;
+    setNavigationStep(step.id);
+    const node = rf.getNode(step.id);
+    if (!node) return;
+    void rf.setCenter(
+      node.position.x + (node.measured?.width ?? 224) / 2,
+      node.position.y + (node.measured?.height ?? 136) / 2,
+      { zoom: Math.max(0.75, rf.getZoom()) },
+    );
+  }
   return (
-    <div className={styles.root}>
+    <div
+      className={styles.root}
+      onKeyDownCapture={(event) => {
+        if (event.key === "Escape") setEdgeId("");
+        if (
+          event.key === " " &&
+          (event.target as HTMLElement).closest(".react-flow__node")
+        )
+          event.preventDefault();
+      }}
+    >
       <div className={styles.toolbar} aria-label="Flowchart controls">
         <button
           type="button"
           className={buttons.ghost}
           onClick={() => {
-            setPositions(Object.fromEntries(layout.positions));
-            requestAnimationFrame(() => void rf.fitView({ padding: 0.2 }));
+            setPositions({});
+            requestAnimationFrame(
+              () =>
+                void rf.fitView({
+                  padding: 0.2,
+                  minZoom: mobile ? 0.75 : 0.25,
+                }),
+            );
           }}
         >
           Auto-layout
@@ -213,10 +265,32 @@ function Canvas({ steps, selected, onSelect, onChange }: Props) {
         <button
           type="button"
           className={buttons.ghost}
-          onClick={() => void rf.fitView({ padding: 0.2 })}
+          onClick={() =>
+            void rf.fitView({ padding: 0.2, minZoom: mobile ? 0.75 : 0.25 })
+          }
         >
           Fit flow
         </button>
+        {mobile && steps.length > 1 && (
+          <>
+            <button
+              type="button"
+              className={buttons.ghost}
+              disabled={navigationIndex === 0}
+              onClick={() => showNode(navigationIndex - 1)}
+            >
+              Show previous step
+            </button>
+            <button
+              type="button"
+              className={buttons.ghost}
+              disabled={navigationIndex === steps.length - 1}
+              onClick={() => showNode(navigationIndex + 1)}
+            >
+              Show next step
+            </button>
+          </>
+        )}
       </div>
       <div
         className={styles.canvas}
@@ -230,6 +304,7 @@ function Canvas({ steps, selected, onSelect, onChange }: Props) {
             nodeTypes={nodeTypes}
             edgeTypes={edgeTypes}
             onNodeClick={(_, n) => {
+              setNavigationStep(n.id);
               onSelect?.(n.id);
               setEdgeId("");
             }}
@@ -237,10 +312,41 @@ function Canvas({ steps, selected, onSelect, onChange }: Props) {
               if (e.type === "rework") onSelect?.(e.source);
               else setEdgeId(e.id);
             }}
-            onPaneClick={() => setEdgeId("")}
+            onPaneClick={() => {
+              setEdgeId("");
+              onBackground?.();
+            }}
             onNodesChange={(changes) => {
               for (const c of changes)
-                if (c.type === "select" && c.selected) onSelect?.(c.id);
+                if (c.type === "select" && c.selected) {
+                  setNavigationStep(c.id);
+                  onSelect?.(c.id);
+                }
+              // Controlled nodes must retain their measured size across parent renders.
+              // Otherwise React Flow briefly hides them, dropping restored keyboard focus.
+              const dimensions = changes.filter(
+                (c) => c.type === "dimensions" && c.dimensions,
+              );
+              if (dimensions.length)
+                setSizes((old) => {
+                  let next = old;
+                  for (const c of dimensions) {
+                    if (
+                      c.type !== "dimensions" ||
+                      !c.dimensions?.width ||
+                      !c.dimensions.height
+                    )
+                      continue;
+                    if (
+                      old[c.id]?.width === c.dimensions.width &&
+                      old[c.id]?.height === c.dimensions.height
+                    )
+                      continue;
+                    if (next === old) next = { ...old };
+                    next[c.id] = c.dimensions;
+                  }
+                  return next;
+                });
               const moves = changes.filter(
                 (c) => c.type === "position" && c.position,
               );
@@ -276,12 +382,24 @@ function Canvas({ steps, selected, onSelect, onChange }: Props) {
                 );
             }}
             fitView
-            fitViewOptions={{ padding: 0.2 }}
-            minZoom={0.25}
+            fitViewOptions={{
+              padding: 0.2,
+              minZoom: mobile ? 0.75 : 0.25,
+              nodes: mobile ? [{ id: steps[0].id }] : undefined,
+            }}
+            minZoom={mobile ? 0.75 : 0.25}
             maxZoom={1.5}
             deleteKeyCode={null}
+            multiSelectionKeyCode={null}
+            selectionKeyCode={null}
             nodesConnectable={!!onChange}
             nodesDraggable
+            selectNodesOnDrag={false}
+            ariaLabelConfig={{
+              "node.a11yDescription.default": onSelect
+                ? "Press Enter or Space to open step Properties. Escape returns to workflow properties. Dragging changes layout only."
+                : "This is a read-only workflow preview.",
+            }}
             edgesReconnectable={false}
             panOnScroll={false}
             zoomOnScroll={false}
@@ -327,22 +445,24 @@ function Canvas({ steps, selected, onSelect, onChange }: Props) {
       )}
       {layout.cyclic && (
         <p role="alert">
-          The draft has a dependency cycle. Use the step inspector to resolve it
-          before saving.
+          The draft has a dependency cycle. Use the step Properties to resolve
+          it before saving.
         </p>
       )}
       {layout.missing && (
         <p role="alert">
           Some connections refer to removed steps. Their references are
-          retained; correct them in the step inspector before saving.
+          retained; correct them in the step Properties before saving.
         </p>
       )}
       {message && <p role="status">{message}</p>}
       <p className={styles.hint}>
         {onChange
-          ? "Connect a step’s right handle to another step’s left handle to add a dependency. Select a line to remove it. Configure rework in the step inspector, or use List for all controls."
+          ? "Connect a step’s right handle to another step’s left handle to add a dependency. Select a line to remove it. Configure rework in step Properties, or use Starts after and the step actions without dragging."
           : "Arrows show dependencies; dashed return paths show bounded rework."}{" "}
-        Dragging changes the layout only.
+        {onSelect &&
+          "Select a step with Enter or Space; Escape returns to workflow properties. "}
+        Dragging changes layout only.
       </p>
     </div>
   );

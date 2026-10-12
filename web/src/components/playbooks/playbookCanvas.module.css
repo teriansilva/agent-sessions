@@ -82,9 +82,26 @@
   stroke: var(--accent) !important;
   stroke-width: 3;
 }
-@media (pointer: coarse) {
+@media (pointer: coarse), (max-width: 800px) {
   .root :global(.react-flow__handle) {
-    width: 44px;
-    height: 44px;
+    width: 60px;
+    height: 60px;
+    border: 0;
+    background: transparent;
+  }
+  .root :global(.react-flow__handle)::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    width: 18px;
+    height: 28px;
+    margin: auto;
+    border: 1px solid var(--text-2);
+    background: var(--bg-2);
+    pointer-events: none;
+  }
+  .root :global(.react-flow__handle:hover)::after {
+    border-color: var(--accent);
+    background: var(--accent);
   }
 }

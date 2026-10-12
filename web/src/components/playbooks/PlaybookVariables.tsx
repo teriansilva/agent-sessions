@@ -33,11 +33,13 @@ export function PlaybookVariables({
             />
             <TextField
               label="Variable label"
+              field={`variables[${i}].label`}
               value={v.label ?? ""}
               onChange={(label) => update(i, { ...v, label })}
             />
             <Choice
               label="Variable kind"
+              field={`variables[${i}].kind`}
               value={v.kind ?? "text"}
               choices={["text", "secret"]}
               onChange={(kind) => {
@@ -55,6 +57,7 @@ export function PlaybookVariables({
             {v.kind !== "secret" && (
               <Choice
                 label="Variable type"
+                field={`variables[${i}].type`}
                 value={v.type ?? "text"}
                 choices={schema.variable_types}
                 onChange={(type) => {
@@ -70,6 +73,7 @@ export function PlaybookVariables({
           </div>
           <TextField
             label="Variable help"
+            field={`variables[${i}].help`}
             value={v.help ?? ""}
             onChange={(help) => update(i, { ...v, help })}
           />
@@ -84,6 +88,7 @@ export function PlaybookVariables({
           {v.type === "enum" && (
             <TextField
               label="Choices (one per line)"
+              field={`variables[${i}].choices`}
               multiline
               value={(v.choices ?? []).join("\n")}
               onChange={(text) =>
@@ -113,6 +118,7 @@ export function PlaybookVariables({
                   (v.type === "bool" ? (
                     <Choice
                       label={`Variable ${key}`}
+                      field={`variables[${i}].${key}`}
                       choices={["true", "false"]}
                       value={String(v[key])}
                       onChange={(value) =>
@@ -122,6 +128,7 @@ export function PlaybookVariables({
                   ) : (
                     <TextField
                       label={`Variable ${key}`}
+                      field={`variables[${i}].${key}`}
                       value={String(v[key])}
                       onChange={(value) =>
                         update(i, {

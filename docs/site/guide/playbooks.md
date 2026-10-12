@@ -21,7 +21,7 @@ To customize either example:
 
 1. Open its card and choose **Duplicate to local**.
 2. Open **Edit playbook**, rename your copy and select a step.
-3. Choose an available agent/model or an operator/external actor, then edit the brief and evidence.
+3. Choose an available agent/model or an operator/external actor, then edit its instructions and completion rules.
 4. Set dependencies and a bounded rework target. The target must be an earlier dependency, and the
    condition names an evidence check on the reviewing step. The round limit is 1–10.
 5. Save. A validation error names the field to correct. A conflicting save preserves your draft
@@ -46,6 +46,18 @@ reviewer confirmation and deployment approval when adapting it.
 
 ## Create your own
 
-Choose **New playbook**, name it, add steps, and set each step's actor, checklist and dependencies.
-The list editor provides the full step inspector on desktop and phones. Saving writes a local
-bundle; it does not modify a project already using an earlier revision.
+Choose **New playbook** and name it. Workflow properties let you name the workflow and define
+its inputs. Add a step, then select its graph node to open **Properties**:
+
+- **Who performs this step** records its agent, external service or operator assignment.
+- **Instructions** describes the work. Manual instructions are available; template import is pending.
+- **Completion rules** defines the independent evidence required for completion.
+- **What happens next** sets prerequisites and bounded review loops. **Starts after**, Move up/down
+  and Remove all work without dragging; moving a step changes its display order, not its prerequisites.
+
+Use Tab and Enter/Space to select a graph node. **Back to flowchart** or Escape returns to the
+workflow and restores node focus, including on phones. Clicking the background shows workflow
+properties. Advanced groups hold technical IDs, outputs and independence constraints.
+
+Saving writes a local bundle; it does not modify projects pinned to an earlier revision or start
+a workflow. API profile setup and AI creation are not yet available in this editor.

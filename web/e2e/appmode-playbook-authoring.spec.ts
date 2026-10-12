@@ -74,9 +74,10 @@ async function stored(page: Page, id: string) {
 }
 async function selectReview(page: Page) {
   await expect(page.getByRole("region", { name: "Flow steps", exact: true })).toBeVisible();
-  if (await page.getByRole("button", { name: "List", exact: true }).count())
-    await page.getByRole("button", { name: "List", exact: true }).click();
-  await page.getByRole("button", { name: "2. Review", exact: true }).click();
+  const node = page.getByLabel("Step: Review", { exact: true });
+  await expect(node).toBeVisible();
+  await node.focus();
+  await node.press("Enter");
 }
 async function save(page: Page, id: string, status: number) {
   const response = page.waitForResponse(r => r.url().endsWith(`/api/playbooks/${id}`) && r.request().method() === "PUT");
@@ -141,19 +142,17 @@ async function tabTo(page: Page, target: Locator) {
   throw new Error("Control is not reachable by Tab");
 }
 
-test("keyboard-only list editing saves the title and rework bound through the real API", async ({ page }) => {
+test("keyboard-only graph editing saves the title and rework bound through the real API", async ({ page }) => {
   const id = "reference-keyboard";
   seed(id);
   await page.goto(`http://127.0.0.1:${stack.appPort}/library/playbooks/${id}/edit`);
   await expect(page.getByRole("region", { name: "Flow steps", exact: true })).toBeVisible();
-  await tabTo(page, page.getByRole("button", { name: "List", exact: true }));
-  await page.keyboard.press("Enter");
-  await tabTo(page, page.getByRole("button", { name: "2. Review", exact: true }));
+  await tabTo(page, page.getByLabel("Step: Review", { exact: true }));
   await page.keyboard.press("Enter");
   await tabTo(page, page.getByLabel("Step title", { exact: true }));
   await page.keyboard.press("ControlOrMeta+A");
   await page.keyboard.type("Keyboard review");
-  await tabTo(page, page.getByLabel("Maximum rework rounds"));
+  await tabTo(page, page.getByLabel("Maximum revision rounds"));
   await page.keyboard.press("ControlOrMeta+A");
   await page.keyboard.type("2");
   await tabTo(page, page.getByRole("button", { name: "Save playbook", exact: true }));
@@ -190,11 +189,17 @@ for (const state of ["absent", "retiring", "model-unavailable"] as const) {
       await expect(page.getByText(reason, { exact: true })).toBeVisible();
       const original = await stored(page, id);
       await page.goto(`http://127.0.0.1:${stack.appPort}/library/playbooks/${id}/edit`);
+      await expect(page.getByLabel("Step: Implement", { exact: true })).toBeVisible();
+      await page.getByLabel("Step: Implement", { exact: true }).focus();
+      await page.keyboard.press("Enter");
       await expect(page.getByLabel("Agent", { exact: true })).toHaveValue("fixture-agent");
       await expect(page.getByLabel("Model", { exact: true })).toHaveValue(model);
       await page.getByLabel("Playbook name", { exact: true }).fill("Edited reference proof");
       await save(page, id, 200);
       await page.reload();
+      await expect(page.getByLabel("Step: Implement", { exact: true })).toBeVisible();
+      await page.getByLabel("Step: Implement", { exact: true }).focus();
+      await page.keyboard.press("Enter");
       await expect(page.getByLabel("Agent", { exact: true })).toHaveValue("fixture-agent");
       await expect(page.getByLabel("Model", { exact: true })).toHaveValue(model);
       const reloaded = await stored(page, id);
