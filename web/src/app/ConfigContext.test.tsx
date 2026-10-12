@@ -7,14 +7,15 @@
  *  save had just cleared `dirty`, and the next save then persisted the block the operator had
  *  already replaced.
  */
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
+import { useEffect } from "react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
 
 import { api, ApiError } from "../lib/api";
 import type { AppConfig } from "../types/api";
 
-import { useConfig, useConfigRefresh } from "./config";
+import { useConfig, useConfigRefresh, useConfigReload } from "./config";
 import { ConfigProvider } from "./ConfigContext";
 
 vi.mock("../lib/api", async () => {
@@ -217,4 +218,36 @@ test("an auth refusal is not retried", async () => {
   await waitFor(() => expect(api.config).toHaveBeenCalledTimes(1));
   await new Promise((r) => setTimeout(r, 1_500));
   expect(api.config).toHaveBeenCalledTimes(1);
+});
+
+test("refresh resolves true once its read is applied, false when it fails (#1407)", async () => {
+  const got: { refresh?: () => Promise<boolean> } = {};
+  function Grab() {
+    const refresh = useConfigReload();
+    useEffect(() => {
+      got.refresh = refresh;
+    }, [refresh]);
+    return null;
+  }
+  vi.mocked(api.config).mockResolvedValue(cfg("one"));
+  render(
+    <ConfigProvider>
+      <Probe />
+      <Grab />
+    </ConfigProvider>,
+  );
+  await waitFor(() => expect(screen.getByTestId("version")).toHaveTextContent("one"));
+  vi.mocked(api.config).mockResolvedValueOnce(cfg("two"));
+  let applied: boolean | void = undefined;
+  await act(async () => {
+    applied = await got.refresh!();
+  });
+  expect(applied).toBe(true);
+  expect(screen.getByTestId("version")).toHaveTextContent("two");
+  vi.mocked(api.config).mockRejectedValueOnce(new Error("offline"));
+  await act(async () => {
+    applied = await got.refresh!();
+  });
+  expect(applied).toBe(false);
+  expect(screen.getByTestId("version")).toHaveTextContent("two");
 });

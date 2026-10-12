@@ -95,6 +95,11 @@ def _preflight_prefs(payload: dict) -> None:
 
     if "orchestrator" in payload and len(payload) != 1:
         raise bad("save automation policy separately from other preferences")
+    # Session defaults can be refused LATE — the cap is re-checked under the prefs lock (#1407) —
+    # so they are saved on their own: a lock-held refusal then leaves nothing else half-written.
+    ad = payload.get("agent_defaults")
+    if isinstance(ad, dict) and "session_defaults" in ad and (len(payload) != 1 or len(ad) != 1):
+        raise bad("save session defaults separately from other preferences")
     if "theme" in payload and payload["theme"] not in prefs.THEMES:
         raise bad("unknown theme")
     if "agent_defaults" in payload:
@@ -836,8 +841,10 @@ def register(
         if not isinstance(payload, dict):
             raise HTTPException(status_code=422, detail="expected a JSON object")
         # Validate the WHOLE payload before writing any of it (#859 review): a 422 must mean
-        # nothing was persisted, not that the keys before the bad one already landed.
-        _preflight_prefs(payload)
+        # nothing was persisted, not that the keys before the bad one already landed. Off the
+        # loop (#1407): a `session_defaults` model is checked against the client's own list,
+        # which may mean asking its CLI — that must never stall unrelated requests.
+        await asyncio.to_thread(_preflight_prefs, payload)
         out: dict[str, object] = {}
         # The AI block commits FIRST (Hermes on #960). Its key-origin check runs again inside the
         # prefs lock and can refuse a patch the pre-check passed (another save landed in between);
@@ -864,7 +871,11 @@ def register(
             # #853 P4: the default engine + permission-bypass default for NEW sessions — and,
             # since #1215, the bypass grant mission launches take. A bypass change commits inside
             # the launch fence, so it runs OFF THE LOOP like the orchestrator branch below.
-            err = prefs.validate_agent_defaults_patch(payload["agent_defaults"])
+            # Off the loop (#1407): a `session_defaults` model is checked against the client's
+            # own list, which may mean asking its CLI.
+            err = await asyncio.to_thread(
+                prefs.validate_agent_defaults_patch, payload["agent_defaults"]
+            )
             if err is not None:
                 raise HTTPException(status_code=422, detail=err)
             try:
@@ -876,6 +887,8 @@ def register(
                     status_code=503,
                     detail="the authorization fence is busy; retry",
                 ) from None
+            except prefs.AgentDefaultsRefused as e:
+                raise HTTPException(status_code=422, detail=str(e)) from None
         if "accent" in payload:
             if not prefs.is_valid_accent(payload["accent"]):
                 raise HTTPException(status_code=422, detail="invalid accent")

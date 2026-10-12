@@ -76,9 +76,11 @@ class _ChatAdapter:
             return False, "configure this agent's endpoint in Settings → Agents"
         return True, None
 
-    async def create(self, *args, bypass=False, **kwargs):
+    async def create(self, *args, bypass=False, effort=None, **kwargs):
         if bypass:
             raise StructuredError(422, "this agent has no permission prompts to skip")
+        if effort is not None:
+            raise StructuredError(422, "this agent takes no reasoning effort")
         return await _call(chat_runtime.new_session, *args, **kwargs)
 
     async def snapshot(self, *args, **kwargs):
@@ -116,7 +118,15 @@ class _NativeAdapter:
         return native_runtime.readiness(prov)
 
     async def create(
-        self, engine, cwd, *, session_id, model=None, bypass=False, execution_admission=None
+        self,
+        engine,
+        cwd,
+        *,
+        session_id,
+        model=None,
+        effort=None,
+        bypass=False,
+        execution_admission=None,
     ):
         return await _native(
             native_runtime.create,
@@ -124,6 +134,7 @@ class _NativeAdapter:
             cwd,
             session_id=session_id,
             model=model,
+            effort=effort,
             bypass=bypass,
             execution_admission=execution_admission,
         )
@@ -398,6 +409,8 @@ def _snapshot(session_key: str, raw: dict) -> dict:
         "state": state,
         "active_turn": raw.get("in_flight"),
         "model_requested": raw.get("model"),
+        # A requested level (#1407), like the model: configuration, never an observation.
+        "effort_requested": raw.get("effort"),
         # Skip-permissions is fixed at create (#1339): the head shows it, nothing can change it.
         "bypass": bool(raw.get("bypass")),
         # Two-phase skip start (#1339): waiting for `start`, or expired without ever running.
@@ -438,15 +451,19 @@ async def create_session(
     *,
     operation_id: str,
     model: str | None = None,
+    effort: str | None = None,
     bypass: bool = False,
     execution_admission: ExecutionGuard | None = None,
 ) -> dict:
     adapter = _adapter(engine, "create")
+    # `effort` (#1407) is sent only when chosen, so a create without one is the call it always was.
+    extra = {"effort": effort} if effort is not None else {}
     sid = await adapter.create(
         engine,
         cwd,
         session_id=_operation_id(operation_id),
         model=model,
+        **extra,
         bypass=bypass,
         execution_admission=execution_admission,
     )

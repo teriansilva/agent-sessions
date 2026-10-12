@@ -39,6 +39,7 @@ offer `default` only; a non-default request to one is refused.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 
 from . import metadata, prefs
@@ -85,6 +86,10 @@ class Selection:
         return [self.flag, self.model]
 
 
+#: The level grammar `native_models` lists (#1407).
+_EFFORT_RE = re.compile(r"\A[a-z][a-z0-9_-]{0,31}\Z")
+
+
 def takes_model(manifest) -> bool:
     """Can a launch of this engine name a model at all?"""
     return (
@@ -116,6 +121,31 @@ def select_api(prov, requested: object) -> str | None:
         )
     if requested not in listing.ids():
         raise ModelRefused("not_offered", f"{prov.engine_id}: model {requested!r} is not offered")
+    return requested
+
+
+def select_api_effort(prov, model: str | None, requested: object) -> str | None:
+    """Resolve a NEW native API session's reasoning effort (#1407), or None for the model's own.
+
+    A level belongs to a model: none can be asked of the client's default model, whose identity
+    (and so its levels) can change underneath us. The level must be one the client lists for the
+    chosen model — read now, from the same cached list `select_api` used. Raises `ModelRefused`."""
+    if requested is None:
+        return None
+    if not isinstance(requested, str) or not _EFFORT_RE.fullmatch(requested):
+        raise ModelRefused("invalid", "effort is not a valid level")
+    if model is None:
+        raise ModelRefused("needs_model", "an effort needs a model: pick one first")
+    from . import native_models
+
+    listing = native_models.models(prov)
+    if listing.status != "ok":
+        raise ModelRefused("unavailable", f"{prov.engine_id}: its model list is unavailable")
+    offered = {m["id"]: m for m in listing.models}
+    if requested not in offered.get(model, {}).get("efforts", []):
+        raise ModelRefused(
+            "not_offered", f"{prov.engine_id}: {model!r} offers no effort {requested!r}"
+        )
     return requested
 
 

@@ -428,6 +428,9 @@ def _launch_locked(session_id: str, record: dict, prov, binding, *, mode: str) -
         "binary": _entrypoint(binding.source),
         "cwd": record["request"]["cwd"],
         "model": record["request"]["model"],
+        # The requested level (#1407), read from the recorded request on EVERY generation, like
+        # the model: a resume or a relaunch sends the level the session was created with.
+        "effort": record["request"].get("effort"),
         # Read from the recorded request on every generation, so a resume can never flip it.
         "bypass": bool(record["request"].get("bypass")),
         "mode": mode,
@@ -696,13 +699,19 @@ def _validate_create(cwd: object, model: object) -> tuple[str, str | None]:
 
 
 def _create_sync(
-    engine_id: str, session_id: str, cwd: str, model: str | None, bypass: bool = False
+    engine_id: str,
+    session_id: str,
+    cwd: str,
+    model: str | None,
+    bypass: bool = False,
+    effort: str | None = None,
 ) -> bool:
     """Returns True when a generation must be awaited (a new launch happened).
 
     ``bypass`` (#1339) is part of the immutable create request: recorded only when set, so a
     guarded request is byte-identical to one written before the field existed, and a replay of
-    the same operation id with the other mode conflicts instead of flipping it."""
+    the same operation id with the other mode conflicts instead of flipping it. ``effort`` (#1407)
+    follows the same rule: recorded only when chosen, and part of the request a replay compares."""
     prov = _api_provider(engine_id)
     try:
         binding = api_source.resolve(prov)
@@ -718,9 +727,12 @@ def _create_sync(
     refused = None
     try:
         model = model_choice.select_api(prov, model)
+        effort = model_choice.select_api_effort(prov, model, effort)
     except model_choice.ModelRefused as exc:
         refused = exc
     request = {"cwd": cwd, "model": model, "adapter": adapter}
+    if effort is not None:
+        request["effort"] = effort
     if bypass:
         request["bypass"] = True
     root = _journal_root(prov)
@@ -821,18 +833,25 @@ async def create(
     *,
     session_id: str,
     model: str | None = None,
+    effort: str | None = None,
     bypass: bool = False,
     execution_admission=None,
 ) -> str:
     if not isinstance(bypass, bool):
         raise NativeError(422, "bypass must be a boolean")
+    if effort is not None and (
+        not isinstance(effort, str) or native_protocol._EFFORT.fullmatch(effort) is None
+    ):
+        raise NativeError(422, "effort must be a level identifier")
     if execution_admission is not None:
         raise NativeError(
             409, "native clients cannot enforce caller authority across processes yet"
         )
     cwd, model = _validate_create(cwd, model)
     try:
-        launched = await asyncio.to_thread(_create_sync, engine_id, session_id, cwd, model, bypass)
+        launched = await asyncio.to_thread(
+            _create_sync, engine_id, session_id, cwd, model, bypass, effort
+        )
     except (native_state.StateError, native_ownership.OwnershipError, storage.StateError) as exc:
         raise NativeError(503, str(exc)) from None
     except native_journal.JournalError as exc:
@@ -1367,6 +1386,7 @@ def project(
         "cwd": journal.header["cwd"],
         "in_flight": in_flight,
         "model": record["request"]["model"],
+        "effort": record["request"].get("effort"),
         "bypass": bool(record["request"].get("bypass")),
         **pending_start_view(record),
         "model_effective": model_effective,

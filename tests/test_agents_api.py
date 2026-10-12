@@ -103,6 +103,7 @@ def test_defaults_start_as_today(auth_cfg):
         "default_engine": None,
         "bypass": True,
         "models": {},
+        "session_defaults": {},
     }
 
 
@@ -126,6 +127,7 @@ def test_defaults_are_STRICT_on_write(auth_cfg, patch):
         "default_engine": None,
         "bypass": True,
         "models": {},
+        "session_defaults": {},
     }
 
 
@@ -139,7 +141,12 @@ def test_a_422_in_agent_defaults_writes_NOTHING_else_in_the_patch(auth_cfg):
 def test_defaults_are_LENIENT_on_read(tmp_path):
     p = tmp_path / "prefs.json"
     p.write_text('{"agent_defaults": {"default_engine": "../x", "bypass": "yes", "junk": 1}}')
-    assert prefs.get_agent_defaults(p) == {"default_engine": None, "bypass": True, "models": {}}
+    assert prefs.get_agent_defaults(p) == {
+        "default_engine": None,
+        "bypass": True,
+        "models": {},
+        "session_defaults": {},
+    }
 
 
 def test_a_partial_write_keeps_the_other_field(auth_cfg):
@@ -152,6 +159,7 @@ def test_a_partial_write_keeps_the_other_field(auth_cfg):
         "default_engine": "codex",
         "bypass": False,
         "models": {},  # #1189: operator-added model ids, none stored
+        "session_defaults": {},  # #1407: API new-session defaults, none stored
     }
 
 
@@ -194,4 +202,5 @@ def test_an_ABSENT_stored_default_survives_saving_bypass_and_returns_on_re_add(a
         "default_engine": "gemini",
         "bypass": True,
         "models": {},
+        "session_defaults": {},
     }

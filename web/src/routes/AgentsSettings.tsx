@@ -19,6 +19,7 @@ import {
 import { CatalogOnly, RosterList, StatusWord } from "../components/agents/RosterList";
 import rr from "../components/agents/Roster.module.css";
 import { AgentEndpointCard } from "../components/settings/AgentEndpointCard";
+import { SessionDefaults } from "../components/agents/SessionDefaults";
 import {
   type CSSProperties,
   type Dispatch,
@@ -807,7 +808,7 @@ export function AgentDetail({ id }: { id: string }) {
     <div className={a.empty}>
       <b>None declared</b>
       {d.runtime === "api"
-        ? `${d.label} offers the models its source agent lists.`
+        ? `${d.label} offers the models its source agent lists; pick the default under New sessions.`
         : d.model_select?.configured_elsewhere
           ? `${d.label} takes its model from its own configuration, so a new session offers “default” only.`
           : `This manifest lists no models, so no model picker is shown. ${d.label} picks its own.`}
@@ -860,6 +861,19 @@ export function AgentDetail({ id }: { id: string }) {
         </p>
         {st.reason && st.rank < READY_RANK && <p className={styles.hint}>{st.reason}</p>}
       </section>
+
+      {d.runtime === "api" && (
+        // What a new session of this API client starts with (#1407), first after the header.
+        <section className={`${styles.section} ${a.wide}`} aria-labelledby="agent-new-sessions-h">
+          <h2 id="agent-new-sessions-h">New sessions</h2>
+          <SessionDefaults
+            key={d.id}
+            engine={d.id}
+            label={d.label}
+            source={source ? engineLabel(source) : d.label}
+          />
+        </section>
+      )}
 
       {d.runtime === "chat" && (
         // An API agent (#1209): where its conversations go.

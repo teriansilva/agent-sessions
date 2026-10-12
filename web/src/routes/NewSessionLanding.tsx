@@ -21,6 +21,8 @@ import {
   useEngineRoster,
 } from "../app/engineRoster";
 import { unavailableDefaultNotice } from "../lib/agentDefaults";
+import { levelsOf, resolveSessionDefault } from "../lib/sessionDefaults";
+import { agentPath } from "./settingsTabs";
 import { owningProjectId } from "../lib/projectTree";
 import type { ProjectEntity, StructuredModelList } from "../types/api";
 import styles from "./NewSessionLanding.module.css";
@@ -36,9 +38,17 @@ import styles from "./NewSessionLanding.module.css";
  *  room, and a 720×480 window has none to spare. */
 /** The structured create whose outcome is unknown (#1311), per tab. */
 const PENDING_CREATE = "battlelab.pendingStructuredCreate";
-/** `model` (#1313) and `bypass` (#1339) are part of the create's identity: a retry reuses the id
- *  only for the same choices, so a reload can never resend an id with a different one. */
-type PendingCreate = { engine: string; cwd: string; model?: string; id: string; bypass?: boolean };
+/** `model` (#1313), `bypass` (#1339) and `effort` (#1407) are part of the create's identity: a
+ *  retry reuses the id only for the same choices, so a reload can never resend an id with a
+ *  different one. */
+type PendingCreate = {
+  engine: string;
+  cwd: string;
+  model?: string;
+  effort?: string;
+  id: string;
+  bypass?: boolean;
+};
 
 function readPendingCreate(): PendingCreate | null {
   try {
@@ -47,7 +57,8 @@ function readPendingCreate(): PendingCreate | null {
       typeof v.engine === "string" &&
       typeof v.cwd === "string" &&
       typeof v.id === "string" &&
-      (v.bypass === undefined || typeof v.bypass === "boolean")
+      (v.bypass === undefined || typeof v.bypass === "boolean") &&
+      (v.effort === undefined || typeof v.effort === "string")
       ? v
       : null;
   } catch {
@@ -163,7 +174,6 @@ export function NewSessionLanding() {
   const [modelChoice, setModelChoice] = useState<{ engine: string; model: string } | null>(
     restore.draft?.modelChoice ?? null,
   );
-  const model = modelChoice?.engine === engine ? modelChoice.model : "default";
   // A native API client's models come from its own CLI (#1313), asked when it is selected; a
   // console agent's from the roster. Each option is what is sent (`id`) and what is shown.
   const [apiModels, setApiModels] = useState<{ engine: string; list: StructuredModelList } | null>(
@@ -185,6 +195,26 @@ export function NewSessionLanding() {
     };
   }, [engine, isApi]);
   const apiList = isApi && apiModels?.engine === engine ? apiModels.list : null;
+  // The operator's new-session defaults for this API client (#1407) only PRESELECT: what the form
+  // shows is what is sent, and a value the client stopped offering is named, never preselected.
+  const savedDefault = isApi ? config?.agent_defaults?.session_defaults?.[engine] : undefined;
+  const preset = resolveSessionDefault(savedDefault, apiList);
+  const model =
+    modelChoice?.engine === engine ? modelChoice.model : (preset.model ?? "default");
+  // The level (#1407) is bound to the engine AND model it was chosen for: a model change reads as
+  // that model's preselection (or its own level) again, never a level another model offers.
+  const [effortChoice, setEffortChoice] = useState<
+    { engine: string; model: string; effort: string } | null
+  >(restore.draft?.effortChoice ?? null);
+  const levels = isApi ? levelsOf(apiList, model) : [];
+  const presetEffort = model === preset.model ? preset.effort : null;
+  const effort =
+    effortChoice?.engine === engine && effortChoice.model === model
+      ? effortChoice.effort
+      : (presetEffort ?? "default");
+  const changedFromDefaults =
+    preset.model !== null &&
+    (model !== preset.model || effort !== (presetEffort ?? "default"));
   const models: { id: string; text: string }[] = isApi
     ? (apiList?.models ?? []).map((m) => ({
         id: m.id,
@@ -257,6 +287,7 @@ export function NewSessionLanding() {
     projectChoice,
     cwdOverride,
     ...(modelChoice ? { modelChoice } : {}),
+    ...(effortChoice ? { effortChoice } : {}),
   };
   const wizardState: WizardEntryState = { from: "new-session", draft };
   // …and the browser's Back too: before pushing the wizard, the draft is written into THIS entry's
@@ -289,7 +320,11 @@ export function NewSessionLanding() {
   // Nothing launches on a guessed capability (#853 P4): until the roster says whether this engine
   // pins or adopts its id, Start waits. `roster` is read so this re-evaluates when it lands.
   const mintKnown = roster.loaded && mintsOwnId(engine) !== undefined;
-  const canStart = Boolean(engine && cwd && mintKnown);
+  // A saved API default is shown while the client's list is still answering, but nothing starts
+  // on it until that list has vouched for it (#1407 PR review): a quick Start must never send the
+  // value the screen would then have called stale.
+  const awaitingDefaults = isApi && !!savedDefault && preset.pending && modelChoice?.engine !== engine;
+  const canStart = Boolean(engine && cwd && mintKnown && !awaitingDefaults);
 
   const [startError, setStartError] = useState<string | null>(null);
   // Chat creation is single-flight (Hermes on #1219): each `/api/chat/new` mints and persists a
@@ -368,9 +403,18 @@ export function NewSessionLanding() {
       !prev.bypass &&
       prev.engine === engine &&
       prev.cwd === cwd &&
-      (prev.model ?? "default") === model
+      (prev.model ?? "default") === model &&
+      (prev.effort ?? "default") === effort
         ? prev
-        : { engine, cwd, model, id: crypto.randomUUID(), bypass: skip };
+        : {
+            engine,
+            cwd,
+            model,
+            // Recorded only when chosen, so a create without a level is the one it always was.
+            ...(effort !== "default" ? { effort } : {}),
+            id: crypto.randomUUID(),
+            bypass: skip,
+          };
     if (skip) {
       if (prev?.bypass) writePendingCreate(null);
     } else {
@@ -380,13 +424,10 @@ export function NewSessionLanding() {
       if (isStoredAttempt(attempt)) writePendingCreate(null);
     };
     try {
-      const { session_key: key } = await api.structuredCreate(
-        engine,
-        cwd,
-        attempt.id,
-        model,
-        Boolean(attempt.bypass),
-      );
+      const args = [engine, cwd, attempt.id, model, Boolean(attempt.bypass)] as const;
+      const { session_key: key } = await (attempt.effort
+        ? api.structuredCreate(...args, attempt.effort)
+        : api.structuredCreate(...args));
       clearAttempt(); // only THIS attempt's slot — a lost guarded one stays recoverable (5916)
       if (attempt.bypass) {
         // Phase 2 (#1339): only now — the create's response is in hand — does it launch. A lost
@@ -586,6 +627,57 @@ export function NewSessionLanding() {
             Model: set in {engineName(engine)}’s own configuration.
           </p>
         ) : null}
+
+        {isApi && (levels.length > 0 || effort !== "default") && (
+          <label className={styles.field}>
+            <span>Reasoning effort</span>
+            <select
+              aria-label="Reasoning effort"
+              data-testid="new-session-effort"
+              value={effort}
+              onChange={(e) => setEffortChoice({ engine, model, effort: e.target.value })}
+            >
+              <option value="default">model’s default</option>
+              {levels.map((l) => (
+                <option key={l} value={l}>
+                  {l}
+                </option>
+              ))}
+              {effort !== "default" && !levels.includes(effort) && (
+                <option value={effort}>
+                  {effort} {apiList === null ? "(checking…)" : "(no longer offered)"}
+                </option>
+              )}
+            </select>
+          </label>
+        )}
+        {isApi && savedDefault && (
+          <p className={`${styles.hint} ${styles.defaultsHint}`} data-testid="new-session-defaults">
+            {preset.modelStale
+              ? `Your default model ${preset.modelStale} is no longer offered — starting with ${engineLabel(apiSource || engine)}’s default. `
+              : preset.unverified
+                ? `Your default model couldn’t be checked, so only default can start. `
+                : preset.effortStale
+                  ? `Your default effort ${preset.effortStale} is no longer offered for ${model}. `
+                  : changedFromDefaults
+                    ? `Changed for this session — your defaults are ${savedDefault.model}${savedDefault.effort ? ` · ${savedDefault.effort}` : ""}. `
+                    : `From your ${engineLabel(engine)} defaults; change them here for this session only. `}
+            {changedFromDefaults ? (
+              <button
+                type="button"
+                className={styles.linkButton}
+                onClick={() => {
+                  setModelChoice(null);
+                  setEffortChoice(null);
+                }}
+              >
+                Reset to defaults
+              </button>
+            ) : (
+              <Link to={agentPath(engine)}>Edit defaults</Link>
+            )}
+          </p>
+        )}
 
         {roster.loaded && defaultChoice.unavailableDefault && (
           <p className={styles.hint} role="status">

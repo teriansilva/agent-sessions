@@ -1406,6 +1406,8 @@ export interface StructuredSnapshot {
   active_turn: string | null;
   model_requested: string | null;
   model_effective?: string | null;
+  /** The reasoning level requested at create (#1407): configuration, never an observation. */
+  effort_requested?: string | null;
   /** Started with "Skip permission prompts" (#1339). Fixed at create; the client never asks. */
   bypass?: boolean;
   /** A skip creation waits for `start` (#1339): nothing runs until the operator confirms it. */
@@ -1552,7 +1554,24 @@ export interface AgentDefaults {
   /** Operator-added model ids per engine (#1189). A patch REPLACES the named engines' lists;
    *  `[]` clears one. Optional: an older server does not send it. */
   models?: Record<string, string[]>;
+  /** What a NEW API session starts with, per API client (#1407). Only the new-session screen's
+   *  PRESELECTION: the create sends what the operator submits, and the server never substitutes.
+   *  Lenient on read — a value the client stopped offering is still here; the UI, holding the
+   *  client's list, marks it stale. Optional: an older server does not send it. */
+  session_defaults?: Record<string, SessionDefault>;
 }
+
+/** One API client's new-session defaults (#1407). `effort` needs `model`: levels belong to one. */
+export interface SessionDefault {
+  model: string;
+  effort: string | null;
+}
+
+/** A partial `agent_defaults` write. `session_defaults` entries REPLACE that engine's; `null`
+ *  clears it. */
+export type AgentDefaultsPatch = Partial<Omit<AgentDefaults, "session_defaults">> & {
+  session_defaults?: Record<string, { model: string; effort: string | null } | null>;
+};
 
 /** `GET /api/engines/{id}` (#853 P4): one engine as its manifest declares it — the Agents detail
  *  page. Read-only; 404 for an id the loaded roster does not have. */

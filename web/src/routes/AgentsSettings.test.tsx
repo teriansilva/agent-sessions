@@ -37,6 +37,8 @@ vi.mock("../lib/api", async () => {
       setAgentEndpoint: vi.fn(),
       testAgentEndpoint: vi.fn(),
       pluginReload: vi.fn(),
+      // An API client's page asks its client for models (#1407's New sessions section).
+      structuredModels: vi.fn().mockResolvedValue({ status: "ok", models: [], reason: null }),
     },
   };
 });
@@ -644,6 +646,8 @@ test("agent page: an unavailable API client says what it uses and why it cannot 
     "API client — uses your Claude Code installation, sign-in, providers and MCP servers",
   );
   expect(screen.getByText(/2\.1\.287 or later/)).toBeInTheDocument();
+  // …and its page leads with what a new session starts with (#1407), right after the header.
+  expect(screen.getByRole("heading", { name: "New sessions" })).toBeInTheDocument();
   // An API client has no binary of its own: no ABSENT chip, no "talks to its endpoint".
   expect(screen.queryByText(/^absent$/i)).toBeNull();
   expect(screen.queryByText(/talks to its endpoint/)).toBeNull();

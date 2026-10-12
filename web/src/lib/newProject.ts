@@ -44,6 +44,8 @@ export interface NewSessionDraft {
   /** The model chosen for `engine` (#1189); absent ⇒ `default`. Bound to the engine it was chosen
    *  for, so switching engine clears it. */
   modelChoice?: { engine: string; model: string };
+  /** The reasoning level chosen for that engine AND model (#1407); absent ⇒ the preselection. */
+  effortChoice?: { engine: string; model: string; effort: string };
 }
 
 const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
@@ -59,7 +61,17 @@ export function readDraft(v: unknown): NewSessionDraft | null {
     projectChoice: str(d.projectChoice),
     cwdOverride: str(d.cwdOverride),
     ...readModelChoice(d.modelChoice),
+    ...readEffortChoice(d.effortChoice),
   };
+}
+
+function readEffortChoice(v: unknown): Pick<NewSessionDraft, "effortChoice"> {
+  if (!v || typeof v !== "object") return {};
+  const m = v as Record<string, unknown>;
+  const engine = str(m.engine);
+  const model = str(m.model);
+  const effort = str(m.effort);
+  return engine && model && effort ? { effortChoice: { engine, model, effort } } : {};
 }
 
 function readModelChoice(v: unknown): Pick<NewSessionDraft, "modelChoice"> {

@@ -90,19 +90,22 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
     ) -> JSONResponse:
         body = await _json(
             request,
-            {"engine", "cwd", "operation_id", "model", "bypass"},
+            {"engine", "cwd", "operation_id", "model", "effort", "bypass"},
             {"engine", "cwd", "operation_id"},
         )
         if not isinstance(body["engine"], str):
             raise HTTPException(status_code=422, detail="engine must be a string")
         if not isinstance(body.get("bypass", False), bool):
             raise HTTPException(status_code=422, detail="bypass must be a boolean")
+        if body.get("effort") is not None and not isinstance(body["effort"], str):
+            raise HTTPException(status_code=422, detail="effort must be a string")
         out = await _run(
             structured_runtime.create_session(
                 body["engine"],
                 body["cwd"],
                 operation_id=body["operation_id"],
                 model=body.get("model"),
+                effort=body.get("effort"),
                 bypass=body.get("bypass", False),
             )
         )

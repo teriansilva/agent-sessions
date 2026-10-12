@@ -32,6 +32,7 @@ import type {
   DashboardSessions,
   AgentBudgets,
   AgentDefaults,
+  AgentDefaultsPatch,
   AgentUsageResponse,
   AiActivity,
   AnalyticsState,
@@ -629,12 +630,16 @@ export const api = {
     operation_id: string,
     model?: string,
     bypass = false,
+    effort?: string,
   ) =>
     mutateJson<StructuredSnapshot>("POST", "/api/structured/sessions", {
       engine,
       cwd,
       operation_id,
       ...(model && model !== "default" ? { model } : {}),
+      // A level (#1407) only beside a model, and only when chosen: otherwise the request is the
+      // one it always was.
+      ...(model && model !== "default" && effort && effort !== "default" ? { effort } : {}),
       ...(bypass ? { bypass: true } : {}),
     }),
   structuredSnapshot: (key: string) =>
@@ -733,7 +738,7 @@ export const api = {
     getJson<EngineDetail>(`/api/engines/${encodeURIComponent(id)}`),
   /** Save a PARTIAL `agent_defaults` block (#1128). Send only the fields that changed: the
    *  server merges, so a bypass-only save leaves the stored default engine exactly as it is. */
-  setAgentDefaults: (patch: Partial<AgentDefaults>) =>
+  setAgentDefaults: (patch: AgentDefaultsPatch) =>
     mutateJson<{ agent_defaults: AgentDefaults }>("POST", "/api/prefs", {
       agent_defaults: patch,
     }),

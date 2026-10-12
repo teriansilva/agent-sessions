@@ -195,7 +195,7 @@ class Worker:
         )
         self.agent: str | None = None
         if self.adapter == "codex-app-server":
-            self.codec = native_protocol.CodexCodec()
+            self.codec = native_protocol.CodexCodec(effort=config.get("effort"))
         elif self.adapter == OPENCODE:
             from .engines import opencode
 
@@ -265,6 +265,7 @@ class Worker:
             resume=self.config["mode"] == "resume",
             model=self.config.get("model"),
             bypass=self.config.get("bypass") is True,
+            effort=self.config.get("effort"),
         )
 
     async def spawn(self) -> None:
@@ -668,8 +669,8 @@ class Worker:
         self.native_id = native_id
 
     async def initialize_opencode(self) -> None:
-        """new → bind (or load), then pin our own agent, then the requested model — before any
-        turn."""
+        """new → bind (or load), then pin our own agent, then the requested model and level —
+        before any turn."""
         codec = self.codec
         assert isinstance(codec, native_protocol.OpencodeAcpCodec)
         cwd, model = self.config["cwd"], self.config.get("model")
@@ -686,6 +687,12 @@ class Worker:
         await self.request(codec.pin_mode())
         if model is not None:
             await self.request(codec.set_model(model))
+            # A level belongs to a model (#1407): set after it, on every generation (a load too),
+            # and confirmed from the echo like the model. A model without levels never gets one:
+            # the create refused that combination against the same list.
+            effort = self.config.get("effort")
+            if effort is not None:
+                await self.request(codec.set_effort(effort))
 
     def bind_created(self, request_id: str, event: native_protocol.NativeEvent) -> None:
         """Bind only this connection's fresh-create reply, before the writer lock and any turn.

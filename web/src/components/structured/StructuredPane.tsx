@@ -1154,6 +1154,8 @@ export function StructuredPane({
           ? { cls: styles.ledUp, text: "worker live" }
           : { cls: styles.ledIdle, text: "no worker" };
   const model = snap?.model_effective ?? snap?.model_requested ?? null;
+  // The requested level (#1407) rides beside the model it belongs to.
+  const effort = model ? (snap?.effort_requested ?? null) : null;
 
   // A map window's chrome LED reads this pane's connection state (#1109), as it reads the
   // terminal's socket status: the journal read is this pane's connection.
@@ -1499,7 +1501,10 @@ export function StructuredPane({
                 </div>
                 <div>
                   <dt>Model</dt>
-                  <dd data-testid="structured-model">{model ?? "agent default"}</dd>
+                  <dd data-testid="structured-model">
+                    {model ?? "agent default"}
+                    {effort ? ` · ${effort}` : ""}
+                  </dd>
                 </div>
                 <div>
                   <dt>Folder</dt>

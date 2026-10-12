@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api, ApiError, gotoChangePassword, setCsrfToken } from "../lib/api";
 import type { AppConfig } from "../types/api";
-import { ConfigCtx, ConfigRefreshCtx } from "./config";
+import { ConfigCtx, ConfigRefreshCtx, ConfigReloadCtx } from "./config";
 
 /** Fetches /api/config on mount (retrying until the first read lands) and primes the CSRF token used by mutations.
  *  Children render immediately; consumers treat `null` as "not yet loaded".
@@ -46,7 +46,10 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
       retryTimer.current = null;
     }
     const tk = ++issued.current;
-    api
+    // Returned (#1407): `true` once THIS read is applied, `false` when it failed or a newer read
+    // superseded it. Fire-and-forget callers ignore it; a save that must not announce success
+    // while the app still reads the old config awaits it.
+    return api
       .config()
       .then((c) => {
         // ONLY THE LATEST *ISSUED* READ IS APPLIED (#900 review 7, finding 8).
@@ -61,15 +64,16 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
         // A response that a newer request has superseded describes a moment we have already
         // asked to move past, whether or not that newer request succeeded. Keeping what we had
         // is the honest outcome; the next refresh — every save issues one — resolves it.
-        if (tk !== issued.current) return;
+        if (tk !== issued.current) return false;
         if (c.must_change_password) {
           gotoChangePassword();
-          return;
+          return false;
         }
         loaded.current = true;
         retryDelay.current = RETRY_MIN_MS;
         setCsrfToken(c.csrf);
         setConfig(c);
+        return true;
       })
       .catch((e: unknown) => {
         // What this is for is a network error or a 5xx, and the common one is the restart after
@@ -82,11 +86,12 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
         //
         // An auth refusal is not retried: `authGate` has already sent a 401 to /login and a
         // password-change 403 to /change-password, and asking again cannot change the answer.
-        if (e instanceof ApiError && (e.status === 401 || e.status === 403)) return;
-        if (!live.current || loaded.current || tk !== issued.current) return;
+        if (e instanceof ApiError && (e.status === 401 || e.status === 403)) return false;
+        if (!live.current || loaded.current || tk !== issued.current) return false;
         const delay = retryDelay.current;
         retryDelay.current = Math.min(delay * 2, RETRY_MAX_MS);
         retryTimer.current = setTimeout(() => loadRef.current(), delay);
+        return false;
       });
   }, []);
   useEffect(() => {
@@ -116,7 +121,9 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
   }, [load]);
   return (
     <ConfigRefreshCtx.Provider value={load}>
-      <ConfigCtx.Provider value={config}>{children}</ConfigCtx.Provider>
+      <ConfigReloadCtx.Provider value={load}>
+        <ConfigCtx.Provider value={config}>{children}</ConfigCtx.Provider>
+      </ConfigReloadCtx.Provider>
     </ConfigRefreshCtx.Provider>
   );
 }

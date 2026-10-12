@@ -36,6 +36,8 @@ MAX_PENDING = 128
 MAX_RESULTS = 1024
 _ID = re.compile(r"[A-Za-z0-9_.:-]{1,256}\Z", re.ASCII)
 _MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}\Z", re.ASCII)
+#: A reasoning level (#1407): the grammar `native_models` lists and a create admits.
+_EFFORT = re.compile(r"[a-z][a-z0-9_-]{0,31}\Z", re.ASCII)
 
 
 class ProtocolError(ValueError):
@@ -96,6 +98,12 @@ def _path(value: Any) -> str:
 def _model(value: str | None) -> str | None:
     if value is not None and (not isinstance(value, str) or not _MODEL.fullmatch(value)):
         raise ProtocolError("invalid model identity")
+    return value
+
+
+def _effort(value: str | None) -> str | None:
+    if value is not None and (not isinstance(value, str) or not _EFFORT.fullmatch(value)):
+        raise ProtocolError("invalid effort level")
     return value
 
 
@@ -305,8 +313,11 @@ class CodexCodec(_Codec):
     send_now_mode = "steer"
     ADAPTER = "codex-app-server"
 
-    def __init__(self) -> None:
+    def __init__(self, effort: str | None = None) -> None:
         super().__init__()
+        # The session's requested level (#1407). Codex takes it per TURN (`TurnStartParams.effort`,
+        # v2 schema), so it rides on every `turn/start` this connection sends.
+        self.effort = _effort(effort)
         self._steers: dict[str, str] = {}
         self._early_frames: list[dict[str, Any]] = []
         self._early_size = 0
@@ -397,15 +408,14 @@ class CodexCodec(_Codec):
         if self.native_id is None:
             raise ProtocolError("native thread is not bound")
         self._submit(text, operation_id, images)
-        return self._request(
-            "turn/start",
-            {
-                "threadId": self.native_id,
-                "input": self._input(text, images),
-                "clientUserMessageId": self.operation_id,
-            },
-            self.operation_id,
-        )
+        params: dict[str, Any] = {
+            "threadId": self.native_id,
+            "input": self._input(text, images),
+            "clientUserMessageId": self.operation_id,
+        }
+        if self.effort is not None:
+            params["effort"] = self.effort
+        return self._request("turn/start", params, self.operation_id)
 
     @staticmethod
     def _input(text: str, images) -> list[dict]:
@@ -842,6 +852,7 @@ class ClaudeCodec(_Codec):
         resume: bool = False,
         model: str | None = None,
         bypass: bool = False,
+        effort: str | None = None,
     ) -> list[str]:
         native_id = _uuid(session_id)
         argv = [
@@ -865,6 +876,9 @@ class ClaudeCodec(_Codec):
         ]
         if _model(model) is not None:
             argv.extend(["--model", model])
+        # Every generation of the session gets the level it was created with (#1407).
+        if _effort(effort) is not None:
+            argv.extend(["--effort", effort])
         return argv
 
     def _request(self, action: str, **params: Any) -> dict:
@@ -1413,6 +1427,15 @@ class OpencodeAcpCodec(_Codec):
         if _model(model) is None:
             raise ProtocolError("no model to select")
         return self._set("model", model)
+
+    def set_effort(self, effort: str) -> dict:
+        """The model's reasoning level (#1407): ACP's `effort` option (category `thought_level`),
+        offered only once a model with variants is selected — so this follows `set_model` — and,
+        like it, confirmed from the echoed `currentValue`. A `model/variant` id is never used
+        instead: 1.18.35 ignores it without an error (#1407 spike)."""
+        if _effort(effort) is None:
+            raise ProtocolError("no effort to select")
+        return self._set("effort", effort)
 
     def submit(self, text: str, operation_id: str, images=()) -> dict:
         """Text only: this kind declares no image input (`kinds.API_IMAGE_INPUT`), so the runtime

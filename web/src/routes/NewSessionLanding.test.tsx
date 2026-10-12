@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
@@ -1232,4 +1232,117 @@ test("a chosen API model whose list then fails keeps a select: it shows the stal
   // calls[0] is the one-shot restore `replace`; the launch is the second navigation.
   await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(2));
   expect(vi.mocked(api.structuredCreate).mock.calls[0][3]).toBe("default");
+});
+
+// ---- #1407: API new-session defaults preselect; effort is part of the create ----------------------
+
+const LEVELS = {
+  status: "ok" as const,
+  reason: null,
+  models: [
+    { id: "gpt-6.1-sol", label: "GPT-6.1 Sol", description: null, efforts: ["low", "high"], is_default: true },
+    { id: "gpt-6-luna", label: "gpt-6-luna", description: null, efforts: [], is_default: false },
+  ],
+};
+const DEFAULTS = (model: string, effort: string | null) => ({
+  agent_defaults: {
+    default_engine: null,
+    bypass: true,
+    session_defaults: { "codex-api": { model, effort } },
+  },
+  default_project: "/d",
+});
+
+test("the stored defaults preselect model and effort, and the create sends them (#1407)", async () => {
+  setRoster(FIXTURE);
+  sessionStorage.clear();
+  vi.mocked(api.structuredModels).mockResolvedValue(LEVELS);
+  const user = userEvent.setup();
+  vi.mocked(api.structuredCreate)
+    .mockReset()
+    .mockResolvedValue({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
+  renderLanding(["codex-api"], DEFAULTS("gpt-6.1-sol", "high"));
+  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await vi.waitFor(() =>
+    expect(screen.getByRole("combobox", { name: "Model" })).toHaveValue("gpt-6.1-sol"),
+  );
+  expect(screen.getByTestId("new-session-effort")).toHaveValue("high");
+  expect(screen.getByTestId("new-session-defaults")).toHaveTextContent(/From your .* defaults/);
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
+  const [call] = vi.mocked(api.structuredCreate).mock.calls;
+  expect(call).toEqual(["codex-api", "/d", call[2], "gpt-6.1-sol", false, "high"]);
+});
+
+test("changing the level is for this session only, and Reset restores the defaults", async () => {
+  setRoster(FIXTURE);
+  vi.mocked(api.structuredModels).mockResolvedValue(LEVELS);
+  const user = userEvent.setup();
+  renderLanding(["codex-api"], DEFAULTS("gpt-6.1-sol", "high"));
+  const effort = await screen.findByTestId("new-session-effort");
+  await user.selectOptions(effort, "low");
+  expect(screen.getByTestId("new-session-defaults")).toHaveTextContent(
+    "Changed for this session — your defaults are gpt-6.1-sol · high.",
+  );
+  await user.click(screen.getByRole("button", { name: "Reset to defaults" }));
+  expect(screen.getByTestId("new-session-effort")).toHaveValue("high");
+});
+
+test("a model without levels shows no effort select; switching back restores the preset level", async () => {
+  setRoster(FIXTURE);
+  vi.mocked(api.structuredModels).mockResolvedValue(LEVELS);
+  const user = userEvent.setup();
+  renderLanding(["codex-api"], DEFAULTS("gpt-6.1-sol", "high"));
+  const model = await screen.findByRole("combobox", { name: "Model" });
+  await vi.waitFor(() => expect(model).toHaveValue("gpt-6.1-sol"));
+  await user.selectOptions(model, "gpt-6-luna");
+  expect(screen.queryByTestId("new-session-effort")).toBeNull();
+  await user.selectOptions(model, "gpt-6.1-sol");
+  expect(screen.getByTestId("new-session-effort")).toHaveValue("high");
+});
+
+test("a stored model the client dropped is named, not preselected", async () => {
+  setRoster(FIXTURE);
+  vi.mocked(api.structuredModels).mockResolvedValue(LEVELS);
+  renderLanding(["codex-api"], DEFAULTS("gpt-5-gone", "high"));
+  expect(await screen.findByTestId("new-session-defaults")).toHaveTextContent(
+    /Your default model gpt-5-gone is no longer offered/,
+  );
+  expect(screen.getByRole("combobox", { name: "Model" })).toHaveValue("default");
+});
+
+test("choosing another level after a lost create is a new create, never the same operation id", async () => {
+  setRoster(FIXTURE);
+  sessionStorage.clear();
+  vi.mocked(api.structuredModels).mockResolvedValue(LEVELS);
+  const user = userEvent.setup();
+  vi.mocked(api.structuredCreate)
+    .mockReset()
+    .mockRejectedValueOnce(new TypeError("response lost"))
+    .mockResolvedValueOnce({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
+  renderLanding(["codex-api"], DEFAULTS("gpt-6.1-sol", "high"));
+  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  const effort = await screen.findByTestId("new-session-effort");
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await screen.findByTestId("start-error");
+  await user.selectOptions(effort, "low");
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
+  const [a, b] = vi.mocked(api.structuredCreate).mock.calls;
+  expect([a[5], b[5]]).toEqual(["high", "low"]);
+  expect(b[2]).not.toBe(a[2]);
+});
+
+test("a saved default is shown while the list answers, but Start waits for it (#1407 PR review)", async () => {
+  setRoster(FIXTURE);
+  sessionStorage.clear();
+  let answer: (v: typeof LEVELS) => void = () => {};
+  vi.mocked(api.structuredModels).mockReturnValue(new Promise((res) => (answer = res)));
+  const user = userEvent.setup();
+  renderLanding(["codex-api"], DEFAULTS("gpt-6.1-sol", "high"));
+  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  expect(await screen.findByRole("combobox", { name: "Model" })).toHaveValue("gpt-6.1-sol");
+  expect(screen.getByRole("button", { name: /start session/i })).toBeDisabled();
+  await act(async () => answer(LEVELS));
+  await vi.waitFor(() => expect(screen.getByRole("button", { name: /start session/i })).toBeEnabled());
 });

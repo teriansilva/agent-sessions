@@ -589,8 +589,13 @@ def _modes(config):
     return ["build", "plan", "yolo", *config.get("agent", {})]
 
 
-def _acp_config(model, mode, modes=("build", "plan", "yolo")):
-    return [
+#: Models with reasoning variants (#1407): as on 1.18.35, ACP offers an `effort` option
+#: (category `thought_level`) only once such a model is selected, its values the variants + default.
+ACP_VARIANTS = {"local/fake-b": ["low", "high"], "local/fake-coder": ["low", "high"]}
+
+
+def _acp_config(model, mode, modes=("build", "plan", "yolo"), effort=None):
+    options = [
         {
             "id": "model",
             "name": "Model",
@@ -611,6 +616,20 @@ def _acp_config(model, mode, modes=("build", "plan", "yolo")):
             "options": [{"value": m, "name": m} for m in dict.fromkeys(modes)],
         },
     ]
+    if model in ACP_VARIANTS:
+        levels = [*ACP_VARIANTS[model], "default"]
+        options.insert(
+            1,
+            {
+                "id": "effort",
+                "name": "Effort",
+                "category": "thought_level",
+                "type": "select",
+                "currentValue": effort or levels[0],
+                "options": [{"value": v, "name": v} for v in levels],
+            },
+        )
+    return options
 
 
 ONCE = {"optionId": "once", "kind": "allow_once", "name": "Allow once"}
@@ -624,6 +643,7 @@ def opencode():
     forced permission config reached the child (and nothing else)."""
     config = _opencode_config()
     session, model, mode = None, "local/fake-a", config.get("default_agent", "build")
+    effort = None
     prompt = None  # the id of the open session/prompt request
     serial = [100]
 
@@ -702,7 +722,7 @@ def opencode():
             session = "ses_" + uuid.uuid4().hex[:24]
             mode = "plan" if _control("stuck") else mode
             _start_mcp(config)
-            options = _acp_config(model, mode, _modes(config))
+            options = _acp_config(model, mode, _modes(config), effort)
             reply(rid, {"sessionId": session, "configOptions": options})
             update("available_commands_update", availableCommands=[])
         elif method == "session/load":
@@ -719,7 +739,7 @@ def opencode():
                 rawInput={"command": "rm -rf old"},
             )
             ask({"toolCallId": "call-old", "kind": "execute", "title": "rm -rf old"}, [ONCE])
-            reply(rid, {"configOptions": _acp_config(model, mode, _modes(config))})
+            reply(rid, {"configOptions": _acp_config(model, mode, _modes(config), effort)})
         elif method == "session/set_config_option":
             if params["configId"] == "model" and params["value"].startswith("nope"):
                 send(
@@ -732,6 +752,22 @@ def opencode():
                 continue
             if params["configId"] == "model":
                 model = params["value"]
+                effort = None  # a model switch starts on that model's own level
+            elif params["configId"] == "effort":
+                if params["value"] not in [*ACP_VARIANTS.get(model, []), "default"]:
+                    send(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": rid,
+                            "error": {
+                                "code": -32602,
+                                "message": f"Invalid params: effort not found: {params['value']}",
+                            },
+                        }
+                    )
+                    continue
+                if not _control("effort-ignored"):
+                    effort = params["value"]
             elif params["configId"] == "mode":
                 if params["value"] not in _modes(config):
                     send(
@@ -743,7 +779,7 @@ def opencode():
                     )
                     continue
                 mode = mode if _control("stuck") else params["value"]
-            reply(rid, {"configOptions": _acp_config(model, mode, _modes(config))})
+            reply(rid, {"configOptions": _acp_config(model, mode, _modes(config), effort)})
         elif method == "session/cancel":
             wait_cancel()
             if prompt is not None:
@@ -861,9 +897,15 @@ if __name__ == "__main__":
         _debug_config()
     elif sys.argv[1:2] == ["acp"]:
         opencode()
-    elif sys.argv[1:] == ["models"]:
-        # opencode's model list (#1312/#1313): provider/model per line; junk lines are skipped.
+    elif sys.argv[1:] == ["models", "--verbose"]:
+        # opencode's model list (#1312/#1313/#1407), as 1.18.35 prints it: an id line, then that
+        # model's JSON; `variants` keys are its reasoning levels. Junk lines and a malformed
+        # block cost only themselves.
         log({"models": True, "password": bool(os.environ.get("OPENCODE_SERVER_PASSWORD"))})
-        print("local/fake-coder\nopenai/fake-gpt\n-not-a-model\n")
+        coder = {"id": "fake-coder", "name": "Fake Coder", "variants": {"low": {}, "high": {}}}
+        gpt = {"id": "fake-gpt", "name": "Fake GPT"}
+        print("local/fake-coder\n" + json.dumps(coder, indent=2))
+        print("openai/fake-gpt\n" + json.dumps(gpt, indent=2))
+        print('-not-a-model\nlocal/fake-broken\n{\n  "variants": {oops\n}')
     else:
         claude()

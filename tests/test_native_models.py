@@ -7,6 +7,7 @@ real stdio, through the same `host` fixture the native runtime tests use.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 
@@ -19,7 +20,14 @@ from agent_sessions import structured_runtime as runtime
 from agent_sessions.engines import registry
 from agent_sessions.plugins import kinds
 from agent_sessions.routes import structured as structured_routes
-from test_native_runtime import ENGINES, anyio_backend, host, project  # noqa: F401
+from test_native_runtime import (  # noqa: F401
+    ENGINES,
+    anyio_backend,
+    frames,
+    host,
+    project,
+    settle,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -185,7 +193,13 @@ def test_opencode_lists_its_models_under_shared_store_admission(host, tmp_home, 
     prov = registry.get("opencode-api")
     listing = native_models.models(prov)
     assert listing.status == "ok", listing.reason
-    assert [m["id"] for m in listing.models] == ["local/fake-coder", "openai/fake-gpt"]
+    # `--verbose` (#1407): each model's `variants` are its levels; a malformed block costs that
+    # model its label and levels, never its id or the rest of the list.
+    assert [(m["id"], m["label"], m["efforts"]) for m in listing.models] == [
+        ("local/fake-coder", "Fake Coder", ["low", "high"]),
+        ("openai/fake-gpt", "Fake GPT", []),
+        ("local/fake-broken", "local/fake-broken", []),
+    ]
     frames = [json.loads(x) for x in (tmp_home / "native-frames.jsonl").read_text().splitlines()]
     assert {"models": True, "password": True} in [f["frame"] for f in frames]
 
@@ -200,3 +214,208 @@ def test_opencode_lists_its_models_under_shared_store_admission(host, tmp_home, 
     finally:
         held.release()
     assert busy.status == "unavailable" and "maintenance" in busy.reason
+
+
+def test_opencode_verbose_parsing_is_bounded_and_fail_soft():
+    """`opencode models --verbose` as 1.18.35 prints it (#1407): `default` is never a level, a
+    plain id-per-line answer still parses, and an oversized or unterminated block costs only its
+    own model's levels."""
+    big = "  " + "x" * (native_models._OPENCODE_BLOCK_MAX + 10)
+    text = "\n".join(
+        [
+            "a/one",
+            "{",
+            '  "name": "One",',
+            '  "variants": {"default": {}, "low": {}, "Bad Level": {}}',
+            "}",
+            "b/plain",
+            "c/huge",
+            "{",
+            big,
+            "}",
+            "d/after",
+            "{",
+            '  "variants": {"high": {}}',
+            "}",
+            "e/unterminated",
+            "{",
+            '  "variants": {"low": {}}',
+        ]
+    )
+    got = [(m["id"], m["label"], m["efforts"]) for m in native_models._opencode_models(text)]
+    assert got == [
+        ("a/one", "One", ["low"]),
+        ("b/plain", "b/plain", []),
+        ("c/huge", "c/huge", []),
+        ("d/after", "d/after", ["high"]),
+        ("e/unterminated", "e/unterminated", []),
+    ]
+    many = "\n".join(f"p/m{i}" for i in range(native_models.MAX_MODELS + 5))
+    assert len(native_models._opencode_models(many)) == native_models.MAX_MODELS
+
+
+def test_select_api_effort_needs_a_model_and_one_of_its_levels(host):
+    prov = registry.get(ENGINES["codex"])
+    listing = native_models.models(prov)
+    model = next(m for m in listing.models if m["efforts"])
+    level = model["efforts"][0]
+    assert model_choice.select_api_effort(prov, model["id"], None) is None
+    assert model_choice.select_api_effort(prov, model["id"], level) == level
+    for mid, bad, code in (
+        (None, level, "needs_model"),
+        (model["id"], "not-a-level", "not_offered"),
+        (model["id"], "Bad Level", "invalid"),
+    ):
+        with pytest.raises(model_choice.ModelRefused) as refused:
+            model_choice.select_api_effort(prov, mid, bad)
+        assert refused.value.code == code
+
+
+# (source, model, level) — each fake client's own listed model and one of ITS levels (#1407).
+_EFFORT_CASES = [
+    ("codex", "fake-large", "high"),
+    ("claude", "fake-opus", "max"),
+    ("opencode", "local/fake-coder", "high"),
+]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("source, model, level", _EFFORT_CASES)
+async def test_the_requested_effort_reaches_the_client_on_every_generation(
+    host, project, monkeypatch, source, model, level
+):
+    """#1407: the level is part of the immutable create request and every generation sends it —
+    codex on EVERY `turn/start`, claude in every generation's argv, opencode as a confirmed
+    `effort` option after the model — including the successor that resumes after an idle exit."""
+    from agent_sessions import native_runtime, native_state
+
+    monkeypatch.setattr(native_runtime, "WORKER_IDLE_TIMEOUT", 0.5)
+    engine = ENGINES[source]
+    created = await runtime.create_session(
+        engine, str(project), operation_id=str(uuid.uuid4()), model=model, effort=level
+    )
+    key = created["session_key"]
+    assert created["model_requested"] == model and created["effort_requested"] == level
+    first = str(uuid.uuid4())
+    await runtime.submit_turn(key, operation_id=first, text="one")
+    snap, _ = await settle(key, first)
+    worker = snap["native"]["worker"]
+    for _ in range(200):
+        if native_state.read_lifecycle(worker).get("phase") == "exited":
+            break
+        await asyncio.sleep(0.05)
+    monkeypatch.setattr(native_runtime, "WORKER_IDLE_TIMEOUT", 60.0)
+    second = str(uuid.uuid4())
+    await runtime.submit_turn(key, operation_id=second, text="two")
+    snap, turn = await settle(key, second)
+    assert turn["state"] == "completed" and snap["native"]["worker"] != worker
+    assert snap["effort_requested"] == level
+
+    seen = frames(project)
+    if source == "codex":
+        starts = [f["frame"] for f in seen if f["frame"].get("method") == "turn/start"]
+        assert len(starts) == 2 and all(s["params"].get("effort") == level for s in starts)
+    elif source == "claude":
+        launches = {f["pid"]: f["argv"] for f in seen if "--print" in f["argv"]}
+        # At least the creating and the resumed generation; on a loaded runner the creation's own
+        # worker can idle out (0.5 s) before its first turn and add one more (#1337). EVERY
+        # generation must carry the level, however many there are.
+        assert len(launches) >= 2
+        for argv in launches.values():
+            assert argv[argv.index("--effort") + 1] == level
+    else:
+        sets = [
+            f["frame"]["params"]
+            for f in seen
+            if f["frame"].get("method") == "session/set_config_option"
+        ]
+        efforts = [p for p in sets if p["configId"] == "effort"]
+        # Every generation (at least create + resume; an early idle-out adds one, #1337) sets it.
+        assert len(efforts) >= 2 and all(p["value"] == level for p in efforts)
+        for p in efforts:  # always after this generation's model
+            before = sets[: sets.index(p)]
+            assert before and before[-1] == {**p, "configId": "model", "value": model}
+
+
+@pytest.mark.anyio
+async def test_a_create_without_effort_sends_none_and_records_none(host, project):
+    """No level chosen = today's request, byte for byte: nothing recorded, nothing sent."""
+    engine = ENGINES["codex"]
+    created = await runtime.create_session(
+        engine, str(project), operation_id=str(uuid.uuid4()), model="fake-large"
+    )
+    assert created["effort_requested"] is None
+    turn = str(uuid.uuid4())
+    await runtime.submit_turn(created["session_key"], operation_id=turn, text="one")
+    await settle(created["session_key"], turn)
+    start = next(f["frame"] for f in frames(project) if f["frame"].get("method") == "turn/start")
+    assert "effort" not in start["params"]
+
+
+@pytest.mark.anyio
+async def test_an_unlisted_or_modelless_effort_is_refused_before_anything_exists(host, project):
+    engine = ENGINES["codex"]
+    for model, level in (("fake-large", "max"), (None, "high"), ("fake-small", "low")):
+        with pytest.raises(runtime.StructuredError) as refused:
+            await runtime.create_session(
+                engine, str(project), operation_id=str(uuid.uuid4()), model=model, effort=level
+            )
+        assert refused.value.status == 422, (model, level)
+    assert not host.launches
+
+
+@pytest.mark.anyio
+async def test_a_replay_with_another_effort_conflicts_instead_of_flipping_it(host, project):
+    engine = ENGINES["codex"]
+    op = str(uuid.uuid4())
+    await runtime.create_session(
+        engine, str(project), operation_id=op, model="fake-large", effort="low"
+    )
+    with pytest.raises(runtime.StructuredError) as conflict:
+        await runtime.create_session(
+            engine, str(project), operation_id=op, model="fake-large", effort="high"
+        )
+    assert conflict.value.status == 409
+
+
+@pytest.mark.anyio
+async def test_opencode_refuses_a_level_the_agent_does_not_confirm(host, project, tmp_home):
+    """The echo is the proof (`native-runtime.md`): an `effort` the agent does not report back
+    fails the generation's start — never a session silently on another level."""
+    control = tmp_home / ".fake-opencode"
+    control.mkdir(exist_ok=True)
+    (control / "effort-ignored").write_text("1")
+    with pytest.raises(runtime.StructuredError):
+        await runtime.create_session(
+            ENGINES["opencode"],
+            str(project),
+            operation_id=str(uuid.uuid4()),
+            model="local/fake-coder",
+            effort="high",  # the agent starts on `low` and ignores the switch
+        )
+
+
+@pytest.mark.anyio
+async def test_the_chat_runtime_takes_no_effort(host, project):
+    with pytest.raises(runtime.StructuredError) as refused:
+        await runtime.create_session(
+            "apichat", str(project), operation_id=str(uuid.uuid4()), effort="high"
+        )
+    assert refused.value.status in (404, 409, 422)
+
+
+def test_an_unterminated_opencode_block_resumes_at_the_next_model():
+    """#1407 PR review: a malformed block must not swallow the model after it."""
+    text = "\n".join(
+        [
+            "p/broken",
+            "{",
+            '  "variants": {"low": {}',
+            "p/good",
+            "{",
+            '  "variants": {"high": {}}',
+            "}",
+        ]
+    )
+    got = [(m["id"], m["efforts"]) for m in native_models._opencode_models(text)]
+    assert got == [("p/broken", []), ("p/good", ["high"])]

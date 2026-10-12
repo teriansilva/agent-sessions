@@ -2244,7 +2244,7 @@ def _coerce_agent_budgets(raw: object) -> dict:
 # spawn reads it at launch time and re-checks it inside the launch fence. That is why a change to
 # it commits under the same fence — see `set_agent_defaults`.
 
-AGENT_DEFAULTS_KEYS = ("default_engine", "bypass", "models")
+AGENT_DEFAULTS_KEYS = ("default_engine", "bypass", "models", "session_defaults")
 _ENGINE_ID_SHAPE = re.compile(r"\A[a-z][a-z0-9-]{0,23}\Z")
 #: Operator-added model ids (#1189), per engine: vendor churn without a release. Capped per engine
 #: and in engines per patch, so a write is bounded work; each id is matched by the manifest's
@@ -2321,6 +2321,105 @@ def validate_agent_models_patch(models: object, path: Path | None = None) -> str
     return None
 
 
+#: What a NEW API session starts with (#1407), per `runtime = "api"` engine: `{model, effort}`.
+#: The new-session screen PRESELECTS these; the create still sends what the operator submits, so
+#: the server never substitutes a model (`structured-clients.md`). Strict on write — the model
+#: must be in the client's own list and the effort one of that model's levels — lenient on read:
+#: a value the client stopped offering is still returned, and the UI, holding the same list,
+#: marks it stale rather than preselecting it.
+_SESSION_DEFAULT_KEYS = ("model", "effort")
+_EFFORT_SHAPE = re.compile(r"\A[a-z][a-z0-9_-]{0,31}\Z")
+
+
+def _coerce_session_defaults(raw: object) -> dict[str, dict]:
+    """Lenient read: engine-shaped keys, a model-shaped id (never `default`), an effort only
+    beside a model (#1407: levels belong to a model), empty entries dropped, capped."""
+    if not isinstance(raw, dict):
+        return {}
+    rx = _model_id_re()
+    out: dict[str, dict] = {}
+    for eid, entry in raw.items():
+        if len(out) >= _AGENT_MODELS_ENGINES_MAX:
+            break
+        if not (isinstance(eid, str) and _ENGINE_ID_SHAPE.match(eid) and isinstance(entry, dict)):
+            continue
+        model = entry.get("model")
+        model = (
+            model if isinstance(model, str) and rx.fullmatch(model) and model != "default" else None
+        )
+        effort = entry.get("effort")
+        effort = (
+            effort if model and isinstance(effort, str) and _EFFORT_SHAPE.match(effort) else None
+        )
+        if model:
+            out[eid] = {"model": model, "effort": effort}
+    return out
+
+
+def validate_session_defaults_patch(patch: object, path: Path | None = None) -> str | None:
+    """Strict write for `agent_defaults.session_defaults` (#1407): `{engine: {model, effort} |
+    null}`, each entry REPLACING that engine's (null, or both values null, clears it).
+
+    The engine is a loaded API client — or one already stored, so a removed client's entry stays
+    clearable. A model is checked against the client's OWN list, read now (the same probe a create
+    uses, `native_models`); a list that cannot be read admits only clearing. An effort needs a
+    model and must be one of that model's levels. Blocking (it may ask the client): call it off
+    the event loop."""
+    if not isinstance(patch, dict):
+        return "agent_defaults.session_defaults must be an object"
+    if len(patch) > _AGENT_MODELS_ENGINES_MAX:
+        return "agent_defaults.session_defaults names too many engines"
+    from . import engines, native_models
+
+    stored = set(get_agent_defaults(path)["session_defaults"])
+    # The MERGED map is what the read caps, so it is what the write must keep within the cap: a
+    # save that validated but whose engine the read then truncated away would be acknowledged and
+    # never returned (#1407 PR review).
+    after = set(stored)
+    for eid, entry in patch.items():
+        if isinstance(entry, dict) and entry.get("model") is not None:
+            after.add(eid)
+        else:
+            after.discard(eid)
+    if len(after) > _AGENT_MODELS_ENGINES_MAX:
+        return "agent_defaults.session_defaults names too many engines"
+    rx = _model_id_re()
+    for eid, entry in patch.items():
+        if not isinstance(eid, str) or not _ENGINE_ID_SHAPE.match(eid):
+            return "agent_defaults.session_defaults keys must be engine ids"
+        if entry is None:
+            entry = {}
+        if not isinstance(entry, dict) or set(entry) - set(_SESSION_DEFAULT_KEYS):
+            return f"agent_defaults.session_defaults.{eid} must be {{model, effort}}"
+        model, effort = entry.get("model"), entry.get("effort")
+        prov = engines.get(eid)
+        is_api = prov is not None and prov.manifest.runtime == "api"
+        if not is_api and eid not in stored:
+            return f"agent_defaults.session_defaults: {eid!r} is not an API client"
+        if model is None:
+            if effort is not None:
+                return f"agent_defaults.session_defaults.{eid}: an effort needs a model"
+            continue
+        if not isinstance(model, str) or not rx.fullmatch(model) or model == "default":
+            return f"agent_defaults.session_defaults.{eid}: invalid model id"
+        if not is_api:
+            return f"agent_defaults.session_defaults: {eid!r} is not an API client"
+        listing = native_models.models(prov)
+        if listing.status != "ok":
+            return (
+                f"agent_defaults.session_defaults.{eid}: its model list is unavailable "
+                f"({listing.reason}); only clearing the default is possible"
+            )
+        offered = {m["id"]: m for m in listing.models}
+        if model not in offered:
+            return f"agent_defaults.session_defaults.{eid}: model {model!r} is not offered"
+        if effort is not None and (
+            not isinstance(effort, str) or effort not in offered[model]["efforts"]
+        ):
+            return f"agent_defaults.session_defaults.{eid}: {model!r} offers no effort {effort!r}"
+    return None
+
+
 def coerce_agent_defaults(raw: object) -> dict:
     """The stored block with defaults applied. Never raises: an edited file cannot strand the
     form. `bypass` defaults to True — today's `useState(true)` — so storing nothing changes
@@ -2332,6 +2431,7 @@ def coerce_agent_defaults(raw: object) -> dict:
         "default_engine": eid if isinstance(eid, str) and _ENGINE_ID_SHAPE.match(eid) else None,
         "bypass": bypass if isinstance(bypass, bool) else True,
         "models": _coerce_agent_models(raw.get("models")),
+        "session_defaults": _coerce_session_defaults(raw.get("session_defaults")),
     }
 
 
@@ -2383,8 +2483,17 @@ def validate_agent_defaults_patch(patch: object, path: Path | None = None) -> st
             if not isinstance(eid, str) or (eid not in startable and eid != stored):
                 return "agent_defaults.default_engine must be an engine that can start a session"
     if "models" in patch:
-        return validate_agent_models_patch(patch["models"], path)
+        err = validate_agent_models_patch(patch["models"], path)
+        if err is not None:
+            return err
+    if "session_defaults" in patch:
+        return validate_session_defaults_patch(patch["session_defaults"], path)
     return None
+
+
+class AgentDefaultsRefused(ValueError):
+    """A write the lock-held merge refused (a 422, never a 500): a check that a validation
+    snapshot passed but the state under the lock no longer allows."""
 
 
 def set_agent_defaults(patch: dict, path: Path | None = None) -> dict:
@@ -2429,6 +2538,22 @@ def set_agent_defaults(patch: dict, path: Path | None = None) -> dict:
                 else:
                     models.pop(eid, None)
             cur["models"] = models
+        if "session_defaults" in patch:
+            # Per-engine replacement, like `models`: engines the patch does not name keep theirs.
+            chosen = dict(cur["session_defaults"])
+            for eid, entry in patch["session_defaults"].items():
+                if entry and entry.get("model"):
+                    chosen[eid] = {"model": entry["model"], "effort": entry.get("effort")}
+                else:
+                    chosen.pop(eid, None)
+            # The cap is re-checked HERE, under the prefs lock (#1407 PR review 2): validation
+            # read a snapshot, so two concurrent saves could each pass it and land one entry over
+            # — which the read then truncates away. The second writer is refused instead.
+            if len(chosen) > _AGENT_MODELS_ENGINES_MAX and len(chosen) > len(
+                cur["session_defaults"]
+            ):
+                raise AgentDefaultsRefused("agent_defaults.session_defaults names too many engines")
+            cur["session_defaults"] = chosen
         return cur
 
     # The CALLER gets the coerced block, whatever is stored literally (see `merge`).

@@ -133,6 +133,14 @@ kimi if its row shows an error instead.
 **Agents › Defaults** holds the default agent, the permission-bypass default, and **Usage
 alerts**: the **Alert at** threshold and whether you are notified.
 
+An API client's page (Codex — API, Claude — API, opencode — API) has **New sessions**: the
+model and reasoning effort a new session of that client starts with. Both come from the
+client's own model list, and an effort is offered only for a model that has levels. They are
+preselected on the new-session screen, where you can still change them for one session (**Reset
+to defaults** brings them back); a running session keeps what it started with. If the client
+stops offering a saved model or level, the page and the new-session screen say so and start
+with the client's default instead.
+
 ### Security · `security`
 
 **Two-factor authentication** — enrollment, recovery codes, and turning it off, which needs a

@@ -262,10 +262,12 @@ def _claude(binary: str) -> list[dict]:
 
 
 def _opencode(binary: str, *, source) -> list[dict]:
-    """opencode's `models` command: one `provider/model` per line — the same ids its ACP
-    `session/new` offers as the `model` config option, which the worker selects (#1312). Run under
-    SHARED store admission for its whole life, like a launch: it is an opencode process on the
-    operator's database, so it must never overlap a compaction (`opencode_admission`)."""
+    """opencode's `models --verbose`: each `provider/model` line — the same ids its ACP
+    `session/new` offers as the `model` config option, which the worker selects (#1312) — followed
+    by that model's JSON. Its `variants` keys are the levels ACP's `effort` option offers once the
+    model is selected (#1407), so they are this model's `efforts`. Run under SHARED store
+    admission for its whole life, like a launch: it is an opencode process on the operator's
+    database, so it must never overlap a compaction (`opencode_admission`)."""
     from . import opencode_admission
 
     try:
@@ -279,7 +281,7 @@ def _opencode(binary: str, *, source) -> list[dict]:
     with guard:
         try:
             done = subprocess.run(  # noqa: S603 — admitted binary, literal argv, no shell
-                [binary, "models"],
+                [binary, "models", "--verbose"],
                 check=False,
                 capture_output=True,
                 timeout=TIMEOUT_S,
@@ -299,9 +301,50 @@ def _opencode(binary: str, *, source) -> list[dict]:
         raise ProbeError("the agent refused to list its models")
     if len(done.stdout) > MAX_BYTES:
         raise ProbeError("the agent's answer was too large")
-    out = []
-    for line in done.stdout.decode("utf-8", "replace").splitlines():
-        m = _model(line.strip(), label=None, description=None, efforts=None, is_default=False)
+    return _opencode_models(done.stdout.decode("utf-8", "replace"))
+
+
+#: One model's JSON block in `opencode models --verbose`; a larger one is skipped, not parsed.
+_OPENCODE_BLOCK_MAX = 256 * 1024
+
+
+def _opencode_models(text: str) -> list[dict]:
+    """Parse `opencode models --verbose`: an id line at column 0, then optionally that model's
+    pretty-printed JSON from a `{` line to the next `}` line at column 0 (1.18.35). Plain
+    `opencode models` output — ids only — parses the same, with no levels.
+
+    Bounded and per-model fail-soft (#1407): a block that is malformed, oversized or unterminated
+    costs that model its label and levels, never its id or the rest of the list. A level is only
+    a `variants` KEY of the `_EFFORT` grammar; `default` is never a level — "the model's default"
+    is the absence of one, and nothing is sent for it."""
+    lines = text.splitlines()
+    out: list[dict] = []
+    i = 0
+    while i < len(lines) and len(out) < MAX_MODELS:
+        mid = lines[i].strip()
+        i += 1
+        meta: Any = None
+        if i < len(lines) and lines[i] == "{":
+            start, size = i, 0
+            i += 1
+            # The block's body is indented; a line at column 0 that is not its closing brace is
+            # the NEXT model's header, so an unterminated block ends there and parsing resumes at
+            # that model rather than swallowing it (#1407 PR review).
+            while i < len(lines) and lines[i] != "}" and (not lines[i] or lines[i][0] in " \t"):
+                size += len(lines[i]) + 1
+                i += 1
+            closed = i < len(lines) and lines[i] == "}"
+            if closed and size <= _OPENCODE_BLOCK_MAX:
+                try:
+                    meta = json.loads("\n".join(lines[start : i + 1]))
+                except ValueError:
+                    meta = None
+            if closed:
+                i += 1  # past the closing brace; an unterminated block resumes at the header
+        meta = meta if isinstance(meta, dict) else {}
+        variants = meta.get("variants")
+        levels = [k for k in variants if k != "default"] if isinstance(variants, dict) else []
+        m = _model(mid, label=meta.get("name"), description=None, efforts=levels, is_default=False)
         if m is not None:
             out.append(m)
     return out
