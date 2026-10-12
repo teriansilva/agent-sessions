@@ -279,6 +279,61 @@ test("a row for a DIFFERENT session is refused", async () => {
   expect(screen.getByTestId("kind")).toHaveTextContent("none");
 });
 
+test("a DECLARED alias is accepted under the key that was asked for (#1405)", async () => {
+  // An old `/s/codex/<native-id>` link: the server answers with the owning API session's row and
+  // says so (`resolved_from` = the key asked for). That is an answer, not a misroute.
+  const owner = row("codex-api:6c51dd58-9155-47b0-aafa-2ccf0de04908", {
+    resolved_from: "codex:01a1265f",
+    title: "owner-title",
+  });
+  const spy = vi.spyOn(api, "session").mockResolvedValue(owner);
+  render(
+    <SessionsProvider>
+      <Pane k="codex:01a1265f" />
+    </SessionsProvider>,
+  );
+  await waitFor(() => expect(screen.getByTestId("a")).toHaveTextContent("owner-title"));
+  expect(screen.getByTestId("b")).toHaveTextContent("owner-title");
+  expect(spy).toHaveBeenCalledTimes(1);
+  expect(spy).toHaveBeenCalledWith("codex:01a1265f");
+});
+
+test("an alias declared for a DIFFERENT key is still refused (#1405)", async () => {
+  // `resolved_from` must name THIS lookup's key: a row that is an alias for some other link is
+  // just someone else's row, and the identity guard refuses it as before.
+  const spy = vi.spyOn(api, "session").mockResolvedValue(
+    row("codex-api:6c51dd58-9155-47b0-aafa-2ccf0de04908", {
+      resolved_from: "codex:somebody-else",
+    }),
+  );
+  render(
+    <SessionsProvider>
+      <Pane k="codex:01a1265f" />
+    </SessionsProvider>,
+  );
+  await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(screen.getByTestId("kind")).toHaveTextContent("none");
+});
+
+test("an alias whose id is not a session key is refused (#1405)", async () => {
+  const spy = vi.spyOn(api, "session").mockResolvedValue(
+    row("codex-api:6c51dd58", { id: "no-engine-separator", resolved_from: "codex:01a1265f" }),
+  );
+  render(
+    <SessionsProvider>
+      <Pane k="codex:01a1265f" />
+    </SessionsProvider>,
+  );
+  await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(screen.getByTestId("kind")).toHaveTextContent("none");
+});
+
 test("a transient failure is retried, not settled as a permanent 404 (#867 review)", async () => {
   // `api.session` rejects for network errors and every non-2xx alike. Settling those as null
   // left a hidden/archived pane nameless until the whole provider remounted — and the filtered

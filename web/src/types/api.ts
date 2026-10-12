@@ -8,6 +8,10 @@ export type EngineId = string;
 export interface Session {
   /** engine-qualified identity, e.g. "claude:<uuid>" — the URL + socket + lock key */
   id: string;
+  /** Set ONLY on a single-row lookup answered by an alias (#1405): the key that was asked for,
+   *  when it named an API session's native history and `id` is that API session. The client
+   *  accepts a row whose `id` differs from the requested key only when this equals that key. */
+  resolved_from?: string;
   engine: EngineId;
   uuid: string;
   short_uuid: string;

@@ -728,6 +728,30 @@ def lookup(app_session_key: str) -> Intent | None:
         return None if row is None else _intent(row)
 
 
+def owner_of(source: SourceIdentity, native_id: str) -> str | None:
+    """The API session that owns this source's native history, or None (#1405).
+
+    Read-only and bound rows only: a pending reservation has no native id yet, so it can never
+    answer. Used to resolve an old `/s/<source>/<native-id>` deep link to its owner; it never
+    feeds console admission (`check_console` stays the only guard). An unreadable ledger raises
+    `OwnershipError`, which the caller answers as "unknown", never as a guess.
+    """
+    _source(source)
+    if not isinstance(native_id, str) or not native_id:
+        return None
+    with _ledger() as con:
+        if con is None:
+            return None
+        row = con.execute(
+            "SELECT * FROM ownership WHERE source_key=? AND native_id=?",
+            (source.key, native_id),
+        ).fetchone()
+        if row is None:
+            return None
+        # Validated like every other read: a damaged row fails closed instead of naming an owner.
+        return _intent(row).app_session_key
+
+
 def source_snapshot(source: SourceIdentity) -> SourceOwnership:
     _source(source)
     with _ledger() as con:

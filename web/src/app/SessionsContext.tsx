@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api, ApiError } from "../lib/api";
+import { parseSessionKey } from "../lib/format";
 import type { Session } from "../types/api";
 import {
   isNewSessionPlaceholder,
@@ -28,6 +29,16 @@ class IdentityMismatch extends Error {
     super(`lookup for ${key} returned a different row`);
     this.name = "IdentityMismatch";
   }
+}
+
+/** Is `row` the answer to a lookup for `key`? Its own row, or a DECLARED alias (#1405): an old
+ *  `/s/<source>/<native-id>` link to an API session's native history is answered with the owning
+ *  API session's row, which the server marks `resolved_from: <the key asked for>`. Nothing else
+ *  with a different id is accepted — the identity guard below stays as strict as before. */
+function answers(key: string, row: Session | null | undefined): row is Session {
+  if (!row || typeof row.id !== "string") return false;
+  if (row.id === key) return true;
+  return row.resolved_from === key && parseSessionKey(row.id) !== null;
 }
 
 export function SessionsProvider({ children }: { children: ReactNode }) {
@@ -123,7 +134,7 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
       // which is exactly how a broad `**/api/sessions**` route in the existing e2e suite turned
       // one new request into 218 red specs. Cheap, and it closes the same door on the server.
       .then((row) => {
-        if (row?.id !== key) {
+        if (!answers(key, row)) {
           // Not the row we asked for. THROW rather than settle: a mismatch is a failed attempt,
           // not a verdict about the session (#867 review round 5). Settling `null` here left the
           // key in `asked` with all the release/revalidate logic living in the catch, so one

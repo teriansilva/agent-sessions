@@ -9,6 +9,7 @@ import { useIsMobile } from "../lib/useIsMobile";
 import { runsInTerminal, useEngineRoster } from "../app/engineRoster";
 import { isNewSessionPlaceholder } from "../app/sessionsStore";
 import { useSessionRow } from "../app/useSessionRow";
+import { sessionPathFromKey } from "../lib/format";
 import { MAP_PATH, useMapWindows } from "../app/workspaceWindows";
 import {
   loadPanelState,
@@ -130,6 +131,21 @@ export function SessionView() {
   // scope hides — the accessor fetches the single row, so the Files trigger opens on the real
   // cwd instead of sitting disabled behind "this session has not reported a folder yet".
   const row = useSessionRow(sessionKey, liveKey);
+
+  // An old `/s/<source>/<native-id>` link to an API session's native history (#1405). The server
+  // answers that lookup with the OWNING API session's row, marked `resolved_from`; the provider
+  // accepts only that declared alias. Move to the API session's own URL — replaced, so the native
+  // URL leaves no history entry. This is deliberately NOT the #127 converge above: nothing is
+  // added to `converged`, so `shown` re-seeds on the new key, the terminal mounted for the native
+  // key unmounts (console admission refused it anyway — it never launched anything), and
+  // `RuntimeGate` mounts the API session's own pane.
+  const aliasTarget =
+    row && row.id !== liveKey && row.resolved_from === liveKey ? row.id : null;
+  useEffect(() => {
+    if (!aliasTarget) return;
+    const to = sessionPathFromKey(aliasTarget);
+    if (to) navigate(to, { replace: true, state: null });
+  }, [aliasTarget, navigate]);
 
   // "To map" (#936) — put this session on the map as a window and go there, the inverse of a
   // window's ⤢.

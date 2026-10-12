@@ -8,8 +8,19 @@ import {
   useLocation,
   useNavigate,
 } from "react-router-dom";
-import { beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { SessionView } from "./SessionView";
+import { SessionsProvider } from "../app/SessionsContext";
+import { resetRoster, setRoster } from "../app/engineRoster";
+import { api } from "../lib/api";
+import type { EngineInfo, Session } from "../types/api";
+
+// The API session's own pane, as a marker: which identity did RuntimeGate mount it under?
+vi.mock("../components/structured/StructuredPane", () => ({
+  StructuredPane: ({ engine, id }: { engine: string; id: string }) => (
+    <div data-testid="structured">{`${engine}:${id}`}</div>
+  ),
+}));
 
 // Capture the props the real Terminal would receive (engine/id/onReconcileId) without
 // mounting xterm. The mock also renders the id so we can assert it stays frozen.
@@ -179,4 +190,87 @@ test("USE from the gallery opens the picker on the staged template under StrictM
   // Unfixed: the first effect consumed the ref and scheduled the frame, StrictMode's cleanup
   // cancelled it, and the replay found nothing staged — the session opened, the picker never did.
   await waitFor(() => expect(openTemplatesCalls).toEqual(["pr-review"]));
+});
+
+// #1405: an old `/s/<source>/<native-id>` link to an API session's native history. The lookup
+// answers with the OWNING API session's row, marked `resolved_from`. Unlike the #127 converge, the
+// view must NOT keep the terminal identity: the native key's terminal unmounts and the API pane
+// mounts under the API key, through the real provider and the real RuntimeGate.
+const NATIVE = "01a1265f-814b-7301-ab6f-8aaefc65672a";
+const APP = "6c51dd58-9155-47b0-aafa-2ccf0de04908";
+
+afterEach(() => {
+  resetRoster();
+  vi.restoreAllMocks();
+});
+
+function BackButton() {
+  const navigate = useNavigate();
+  return <button onClick={() => navigate(-1)}>back</button>;
+}
+
+test("a declared alias replaces the URL and swaps the native terminal for the API pane (#1405)", async () => {
+  setRoster([
+    { id: "codex", runtime: "pty" },
+    { id: "codex-api", runtime: "api" },
+  ] as unknown as EngineInfo[]);
+  const spy = vi.spyOn(api, "session").mockResolvedValue({
+    id: `codex-api:${APP}`,
+    engine: "codex-api",
+    uuid: APP,
+    short_uuid: APP.slice(0, 8),
+    cwd: "/home/u/proj",
+    project: { kind: "folder", id: "/home/u/proj", name: "proj" },
+    last_mtime: 1,
+    resolved_from: `codex:${NATIVE}`,
+  } as unknown as Session);
+  render(
+    <SessionsProvider>
+      <MemoryRouter initialEntries={["/", `/s/codex/${NATIVE}`]} initialIndex={1}>
+        <Routes>
+          <Route path="/" element={<div data-testid="home" />} />
+          <Route path="/s/:engine/:id" element={<SessionView />} />
+        </Routes>
+        <BackButton />
+        <LocationProbe />
+      </MemoryRouter>
+    </SessionsProvider>,
+  );
+  expect(spy).toHaveBeenCalledWith(`codex:${NATIVE}`);
+  await waitFor(() =>
+    expect(screen.getByTestId("loc").textContent).toBe(`/s/codex-api/${APP}`),
+  );
+  expect(screen.getByTestId("structured").textContent).toBe(`codex-api:${APP}`);
+  expect(screen.queryByTestId("term")).toBeNull();
+  // Replaced, not pushed: back leaves the session instead of returning to the native URL.
+  await userEvent.click(screen.getByText("back"));
+  expect(screen.getByTestId("loc").textContent).toBe("/");
+});
+
+test("a row without a declared alias never moves the URL (#1405)", async () => {
+  setRoster([{ id: "codex", runtime: "pty" }] as unknown as EngineInfo[]);
+  vi.spyOn(api, "session").mockResolvedValue({
+    id: `codex:${NATIVE}`,
+    engine: "codex",
+    uuid: NATIVE,
+    short_uuid: NATIVE.slice(0, 8),
+    cwd: "/home/u/proj",
+    project: { kind: "folder", id: "/home/u/proj", name: "proj" },
+    last_mtime: 1,
+  } as unknown as Session);
+  render(
+    <SessionsProvider>
+      <MemoryRouter initialEntries={[`/s/codex/${NATIVE}`]}>
+        <Routes>
+          <Route path="/s/:engine/:id" element={<SessionView />} />
+        </Routes>
+        <LocationProbe />
+      </MemoryRouter>
+    </SessionsProvider>,
+  );
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(screen.getByTestId("loc").textContent).toBe(`/s/codex/${NATIVE}`);
+  expect(screen.getByTestId("term").textContent).toBe(`codex:${NATIVE}`);
 });

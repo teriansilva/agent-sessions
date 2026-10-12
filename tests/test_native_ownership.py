@@ -524,7 +524,8 @@ def test_interrupted_initialization_never_recreates_empty_ledger(state, source, 
 def test_initialized_damage_fails_closed_and_is_not_repaired(state, source, damage):
     args = reservation(source)
     ownership.reserve(**args)
-    bind(args, uid())
+    native = uid()
+    bind(args, native)
     marker, db = paths(state)
     if damage == "db-missing":
         db.unlink()
@@ -548,6 +549,7 @@ def test_initialized_damage_fails_closed_and_is_not_repaired(state, source, dama
     rejected("unavailable", ownership.source_snapshot, source)
     rejected("unavailable", ownership.check_console, provider(source.canonical_path), uid())
     rejected("unavailable", ownership.reserve, **args)
+    rejected("unavailable", ownership.owner_of, source, native)  # never a guess (#1405)
     assert before == [(p.exists(), p.read_bytes() if p.exists() else None) for p in (marker, db)]
 
 
@@ -745,3 +747,32 @@ def test_discharge_releases_only_an_unbound_creation_for_its_original_owner(stat
             owner_token=bound["owner_token"],
         )
     rejected("owned", ownership.check_console, prov, native)
+
+
+def test_owner_of_answers_bound_rows_only_and_writes_nothing(state, source, tmp_path):
+    """The deep-link lookup (#1405): bound → owner; pending / absent → None; read-only."""
+    native = uid()
+    assert ownership.owner_of(source, native) is None
+    assert all(not p.exists() for p in paths(state)), "a read must not initialize the ledger"
+    pending = reservation(source)
+    ownership.reserve(**pending)
+    # A pending reservation has no native id, so no id can resolve to it.
+    assert ownership.owner_of(source, native) is None
+    bound = reservation(source)
+    ownership.reserve(**bound)
+    bind(bound, native)
+    marker, db = paths(state)
+    before = (marker.read_bytes(), db.read_bytes())
+    assert ownership.owner_of(source, native) == bound["app_session_key"]
+    assert ownership.owner_of(source, uid()) is None
+    assert ownership.owner_of(source, "") is None
+    assert (marker.read_bytes(), db.read_bytes()) == before
+    # The same native id string under a DIFFERENT source is not this owner's history.
+    other = ownership.source_identity(provider(tmp_path / "other-store"))
+    assert other.key != source.key
+    assert ownership.owner_of(other, native) is None
+
+
+def test_owner_of_refuses_an_invalid_source(state, source):
+    forged = dataclasses.replace(source, key="0" * 64)
+    rejected("invalid", ownership.owner_of, forged, uid())

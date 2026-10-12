@@ -24,6 +24,7 @@ from .. import (
     fsbrowse,
     metadata,
     missions,
+    native_ownership,
     needs_you_notify,
     perfstats,
     prefs,
@@ -829,7 +830,38 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                     _note_miss_rewalk()
                 else:
                     row = _lookup_row(key)
+        if row is _NOT_FOUND:
+            # Only a GENUINE miss (after the re-walk) may be an API session's native history
+            # (#1405); a real console row and a scope refusal never get here.
+            row = _owned_row(key)
         return None if row is _NOT_FOUND else row
+
+    def _owned_row(key: str):
+        """The owning API session's row for a native history the ownership ledger binds (#1405).
+
+        An API session (`runtime = "api"`) has its own BattleLab id; the vendor history behind it
+        is hidden from its console engine so one conversation is not listed twice. A
+        `/s/<source>/<native-id>` link to that history therefore missed. The ledger is asked
+        read-only, and only for bound rows: a pending reservation, an unreadable ledger, a
+        provider with no API source or no owner all stay "unknown". The owner's row goes through
+        `_lookup_row`, so the SAME hard scope applies as to a direct request for the owner key —
+        nothing is served here that `GET /api/sessions/<owner>` would refuse.
+
+        `resolved_from` (the requested key) is what lets the client accept a row whose id is not
+        the one it asked for; it is set ONLY here, so an ordinary or misrouted row never carries it.
+        """
+        try:
+            prov, native = engines.parse_key(key)
+            source = native_ownership.source_identity(prov)
+            owner = native_ownership.owner_of(source, native) if source is not None else None
+        except (engines.EngineError, native_ownership.OwnershipError):
+            return _NOT_FOUND
+        if owner is None or owner == key:
+            return _NOT_FOUND
+        row = _lookup_row(owner)
+        if not isinstance(row, dict):
+            return row  # None (scope refusal) or _NOT_FOUND — both answer 404
+        return {**row, "resolved_from": key}
 
     def _assessment_activity(row: dict) -> float | None:
         """The session's own clock, for the assessment's freshness (#1020): its newest
