@@ -568,9 +568,7 @@ def test_saved_global_references_remain_explicit_on_later_reviews(tmp_home, name
         "created_at": 2,
         "updated_at": 2,
     }
-    path.write_text(
-        json.dumps({"version": template_vars.STORE_VERSION, "variables": [global_row, project_row]})
-    )
+    path.write_text(json.dumps({"version": 3, "variables": [global_row, project_row]}))
     saved = binding.resolve(bundle, pid, [])
     row = next(v for v in saved.public if v["name"] == name)
     assert row["source"] == "global" and row["explicit_global"]

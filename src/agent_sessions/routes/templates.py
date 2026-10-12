@@ -311,6 +311,12 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         payload = await _json_object(request)
         try:
             rec = await asyncio.to_thread(vstore.create_variable, payload)
+        except vstore.VariableInUse as e:
+            raise _err(
+                409, f"{e} — repair the existing references before creating this name"
+            ) from None
+        except vstore.VariableRefsUnknown as e:
+            raise _err(503, f"{e} — nothing was written") from None
         except vstore.VariableError as e:
             raise _err(422, str(e)) from None
         except vstore.VariableStoreUnsupported as e:
@@ -353,6 +359,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         expected = _expected(request.query_params.get("expected_updated_at"))
         try:
             await asyncio.to_thread(vstore.delete_variable, name, expected)
+        except vstore.VariableError as e:
+            raise _err(422, str(e)) from None
         except vstore.VariableStoreUnsupported as e:
             raise _err(409, str(e)) from None
         except template_secrets.SecretKeyUnavailable as e:

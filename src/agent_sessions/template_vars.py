@@ -1,57 +1,30 @@
-"""The template variables library (#1090) — values defined once, used by every template — and,
-since store v3 (#1191), the per-project bindings a deployed playbook resolves against.
+"""One scoped value/secret store, with shared definitions and stable IDs (#1090/#1191/#1390).
 
-A variable is a named value (``staging_host``, ``test_cmd``, …) that a template field declared with
-``source: "library"`` takes instead of a default of its own, so one edit reaches every template
-that uses it at its next send. Names share ``templates.FIELD_NAME_RE``: a library field IS the
-variable, by name, and ``{{name}}`` in the body stays the one token syntax.
+Store v4 adds opaque IDs, typed definition metadata, a retained legacy identity ledger
+and explicit collections to the existing template-variables.json. It keeps the same
+AES-GCM key, immutable scope/name encryption identity and legacy/scoped AAD markers.
+The first accepted write retains the exact old file, then atomically publishes all v4
+metadata and values together. Reads never upgrade; damaged/newer inventories refuse
+writes. No consumer file is rewritten or encryption envelope moved during migration.
 
-**Two kinds (store v2, Phase 2).** A ``text`` variable carries its ``value``. A ``secret`` variable
-carries only an AES-GCM envelope (``template_secrets``) — never plaintext, and no response ever
-includes the envelope: a secret row says ``set`` / ``needs_reentry`` and nothing else. Both kinds
-live in this ONE list under ONE lock, which is what makes a name unique across kinds (per scope)
-by construction.
+The legacy public API retains name-based string values and write-only secret status.
+_read_strictly and _mutate adapt the v3 value-record shape used by existing deployment
+journals and keyed review fingerprints; _mutate_document owns the full v4 transaction.
+Old writers preserve IDs/definitions and validate changed values against their types.
+The generic shared API lives in variables.py. New builds refuse unknown metadata;
+old builds refuse version 4 rather than dropping its identities or collections.
 
-**Two scopes (store v3, #1191).** Every record carries ``scope`` (``global`` | ``project``) and
-``project_id`` (the ``projects.py`` entity id, ``null`` for global). Identity is
-``(scope, project_id, name)``: ``global:<name>`` or ``project:<entity_id>:<name>``, so the same
-name in two projects is two independent values. A v1/v2 file reads as all-global, and its secret
-envelopes as ``aad: "legacy"`` (bare-name AAD) — decided by the FILE's version, never guessed per
-envelope; the first accepted write publishes v3 with those markers kept, and a legacy envelope is
-re-encrypted under its scoped AAD on that variable's next write. An older build refuses a v3 file
-(read-empty, no write) by the newer-store rule below. A project record is one of three things: its
-own ``value``, its own secret ``envelope``, or ``ref: "global"`` — the recorded, explicit choice to
-use the global variable of the same name and kind. The global library views (``values``,
-``secret_state``, ``list_variables``, ``revisions``, ``secret_values``) are GLOBAL ONLY; redaction
-(``secret_values_checked``) covers every scope.
+Resolution keeps project → global → default for text; project secrets require their
+own value or an explicit global reference. Wrong-kind/unusable bindings never fall
+through. Every scope's ciphertext participates in fail-closed transport redaction.
+Public responses contain no secret value or envelope, including conflicts.
 
-**Resolution (``resolver``).** Text: project binding → global library → field default; secrets:
-the project's own secret, or its recorded ``ref`` to the global one — a secret NEVER falls back to
-another scope by itself. A project binding that exists but cannot be used (needs re-entry, the other
-kind, a ref whose global is gone or unusable) REFUSES (``BindingUnusable``) and never falls through,
-because a silent swap to another value is worse than a refusal. Resolution reads the store STRICTLY:
-an unreadable, damaged or newer store raises instead of resolving against the part it could read.
-
-**Same store discipline as ``templates.py``, deliberately:** its own file
-(``~/.config/agent-sessions/template-variables.json``, override ``AGENT_SESSIONS_TEMPLATE_VARS``),
-mode 0600, every write through ``atomicjson`` under the sidecar lock; lenient read, strict write; a
-damaged file is hard-linked aside before the first accepted write replaces it; a newer store
-version is refused, never rewritten; edits and deletes are fenced by ``updated_at``. The helpers
-are ``templates``' own, imported rather than restated, so the two stores cannot drift apart.
-
-**No rename, and dependency-aware deletion under ONE fence.** A variable's name is its identity, so
-renaming is delete + recreate. Deleting a GLOBAL variable refuses while any template references the
-name OR any project binding records ``ref: "global"`` to it (``VariableInUse``, carrying both
-lists). The sidecar lock is the one binding/deletion fence: ``bind_project`` checks the global it
-refers to and ``delete_variable`` checks its dependants inside the same ``_mutate``, so a bind
-racing a delete ends with exactly one of them refused. The template half is FAIL-CLOSED: if the
-template library cannot be read in full the delete is refused (``VariableRefsUnknown``). It reads
-the template store without holding its lock, while the outer ``session_input.mutation_fence``
-orders every template/reference writer against deletion. A new template library reference must
-name an existing global of the same kind; an already-unresolved legacy reference may be retained
-for explicit repair but cannot be copied into a new template. Removing a project's bindings
-(``remove_project_bindings``) touches that project's records only — never a global, never another
-project's.
+All writers take session_input.mutation_fence before this store's sidecar lock. Global
+create/delete/retype checks templates, live project references and retained deployment
+binding snapshots under that fence, using strict inventories without nested store locks.
+A new reference cannot race a deletion; a retained legacy reference cannot silently
+adopt a newly created same-name value. Display labels and collection names may change;
+storage names/kinds remain immutable. Removing a collection never removes its values.
 """
 
 from __future__ import annotations
@@ -64,13 +37,15 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from . import template_secrets
+from . import template_secrets, variable_document, variable_types
 from . import templates as tstore
 from .atomicjson import atomic_write_json, json_write_lock
 
 log = logging.getLogger(__name__)
 
-STORE_VERSION = 3
+STORE_VERSION = 4
+# Deployment journals and review fingerprints retain their exact pre-ID record shape.
+BINDING_SNAPSHOT_VERSION = 3
 
 VARIABLES_MAX = 100
 VALUE_MAX = 2_000
@@ -258,8 +233,14 @@ def _coerce_record(raw: object, version: int = STORE_VERSION) -> dict:
     name = _name(raw.get("name"))
     scope, pid = _coerce_scope(raw, version)
     base = _BASE_KEYS | (_SCOPE_KEYS if version >= 3 else frozenset())
+    if version >= 4:
+        base |= {"id", "definition"}
     body: dict = {"name": name, "kind": kind, "scope": scope, "project_id": pid}
-    if "ref" in raw:
+    if version >= 4 and raw.get("unset") is True:
+        if scope != SCOPE_GLOBAL or set(raw) - base - {"unset"}:
+            raise VariableError("only a global definition may have no stored value")
+        body["unset"] = True
+    elif "ref" in raw:
         if version < 3 or scope != SCOPE_PROJECT or raw["ref"] != REF_GLOBAL:
             raise VariableError("only a project binding may refer to the global variable")
         unknown = sorted(set(raw) - base - {"ref"})
@@ -284,6 +265,16 @@ def _coerce_record(raw: object, version: int = STORE_VERSION) -> dict:
         if unknown:
             raise VariableError(f"unknown record keys: {unknown}")
         body["value"] = _value(raw)
+    if version >= 4:
+        try:
+            body["id"] = variable_document.validate_id(raw.get("id"))
+            body["definition"] = variable_types.metadata(name, kind, raw.get("definition"))
+            if kind == "text" and "value" in body:
+                variable_types.stored_value(
+                    name, body["definition"], body["value"], max_len=VALUE_MAX
+                )
+        except (variable_document.IdentityError, variable_types.DefinitionError) as exc:
+            raise VariableError(str(exc)) from None
     return {
         **body,
         "created_at": tstore._number(raw.get("created_at"), "created_at"),
@@ -315,10 +306,12 @@ def public(rec: dict, used_by: list[dict] | None = None) -> dict:
         "updated_at": rec["updated_at"],
     }
     if rec["kind"] == "secret":
-        out["set"] = True
-        out["needs_reentry"] = _decrypt(rec) is None
+        out["set"] = not rec.get("unset", False)
+        out["needs_reentry"] = not rec.get("unset") and _decrypt(rec) is None
     else:
-        out["value"] = rec["value"]
+        # Legacy clients keep their string-shaped response; resolution excludes unset
+        # definitions, so an empty display value can never turn into a stored binding.
+        out["value"] = rec.get("value", "")
     if used_by is not None:
         out["used_by"] = used_by
     return out
@@ -348,7 +341,7 @@ def public_binding(rec: dict) -> dict:
 # ---- store I/O -------------------------------------------------------------------------------
 
 
-def _read(path: Path) -> tuple[list[dict], bool]:
+def _read(path: Path, *, document: dict | None = None) -> tuple[list[dict], bool]:
     """The trustworthy records plus whether the file needs quarantining before the next write."""
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -361,6 +354,8 @@ def _read(path: Path) -> tuple[list[dict], bool]:
         return [], True
     if not isinstance(raw, dict):
         return [], True
+    if document is not None:
+        document.update(raw)
     # Version BEFORE shape, for the reason templates._read gives.
     version = raw.get("version")
     if isinstance(version, int) and not isinstance(version, bool) and version > STORE_VERSION:
@@ -392,27 +387,138 @@ def _read(path: Path) -> tuple[list[dict], bool]:
                 # Keep the reference in the deletion inventory, but never resolve a store
                 # with a dangling or incompatible binding (including via a fallback).
                 damaged = True
+    if version >= 4:
+        try:
+            variable_document.validate(raw, records)
+        except variable_document.IdentityError:
+            damaged = True
     return records, damaged
 
 
-def _mutate(fn: Callable[[list[dict]], dict | list | None]) -> dict | list | None:
-    """Read-modify-write under the sidecar lock; a refused ``fn`` touches nothing (see
-    ``templates._mutate``, whose quarantine-before-publish order this shares). The sidecar lock is
-    also THE binding/deletion fence (#1191): every bind and every delete decides inside it."""
+def legacy_record(rec: dict) -> dict:
+    """The v3 value snapshot used by deployed journals and legacy name-based consumers."""
+    return {key: value for key, value in rec.items() if key not in {"id", "definition"}}
+
+
+def _mutate(
+    fn: Callable[[list[dict]], dict | list | None], *, repair_references: bool = False
+) -> dict | list | None:
+    """Adapt existing v3 record writers without migrating their journals or fingerprints.
+
+    The complete v4 document is still validated under the one authority/store fence.
+    Existing identities/definitions survive each legacy write; a new identity gets a new
+    ID. Validation against retained definitions prevents an old client bypassing types.
+    """
+
+    def adapt(records: list[dict], collections: list[dict]) -> dict | list | None:
+        previous = {_key(rec): rec for rec in records}
+        compatible = [legacy_record(rec) for rec in records]
+        result = fn(compatible)
+        merged = []
+        for rec in compatible:
+            old = previous.get(_key(rec))
+            if old is not None and old["kind"] == rec["kind"]:
+                metadata = {"id": old["id"], "definition": old["definition"]}
+            else:
+                metadata = {"id": variable_document.new_id(), "definition": {"value_type": "text"}}
+            upgraded = {**rec, **metadata}
+            # Plaintext was already validated at legacy entry. Recheck new encrypted
+            # values against the retained secret definition before publishing as well.
+            if (
+                rec["kind"] == "secret"
+                and "secret" in rec
+                and (old is None or rec["secret"] != old.get("secret"))
+            ):
+                value = _decrypt(upgraded)
+                if value is None:
+                    raise VariableError(
+                        "the replacement secret could not be read; nothing was written"
+                    )
+                try:
+                    variable_types.typed_value(
+                        rec["name"], metadata["definition"], value, max_len=VALUE_MAX
+                    )
+                except variable_types.DefinitionError as exc:
+                    raise VariableError(str(exc)) from None
+            merged.append(upgraded)
+        records[:] = merged
+        return result
+
+    return _mutate_document(adapt, repair_references=repair_references)
+
+
+def _repairable_references(original: dict, records: list[dict]) -> bool:
+    """All records/identities parsed; only dangling project targets may be repaired."""
+    version = original.get("version")
+    if type(version) is not int or version not in (1, 2, 3, 4):
+        return False
+    raw = original.get("variables")
+    if not isinstance(raw, list) or len(raw) != len(records):
+        return False
+    if version >= 4:
+        try:
+            variable_document.validate(original, records)
+        except variable_document.IdentityError:
+            return False
+    elif set(original) != {"version", "variables"}:
+        return False
+    globals_ = {r["name"]: r for r in records if _is_global(r)}
+    return any(
+        r.get("ref") == REF_GLOBAL
+        and (r["name"] not in globals_ or globals_[r["name"]]["kind"] != r["kind"])
+        for r in records
+    )
+
+
+def _mutate_document(
+    fn: Callable[[list[dict], list[dict]], dict | list | None],
+    *,
+    repair_references: bool = False,
+) -> dict | list | None:
+    """One v4 transaction under authority → store locks, with a retained upgrade backup.
+
+    Refused callbacks never publish. Corrupt metadata refuses rather than discarding any
+    unreadable record; legacy journal adaptation happens in _mutate, above this boundary.
+    """
     path = store_path()
     # Under the write seam's cross-process fence: a template send's fingerprint re-reads these
     # revisions inside it right before byte one (#1090, Hermes on #1105).
     from . import session_input
 
     with session_input.mutation_fence(), json_write_lock(path):
-        records, damaged = _read(path)
-        result = fn(records)
+        original: dict = {}
+        records, damaged = _read(path, document=original)
+        if damaged and not (repair_references and _repairable_references(original, records)):
+            raise VariableError(
+                "the variables store could not be read in full; repair it before writing "
+                "or upgrading — nothing was written"
+            )
+        try:
+            ledger = variable_document.prepare(records, original)
+        except variable_document.IdentityError as exc:
+            raise VariableError(str(exc)) from None
+        collections = original.get("collections", [])
+        result = fn(records, collections)
         if len(records) > RECORDS_MAX:
             raise VariableError(f"the variables store is full (max {RECORDS_MAX} records)")
-        if damaged and path.exists():
-            tstore._quarantine(path)
+        records[:] = [_coerce_record(rec, STORE_VERSION) for rec in records]
+        globals_ = {r["name"]: r for r in records if _is_global(r)}
+        if any(
+            r.get("ref") == REF_GLOBAL
+            and (r["name"] not in globals_ or globals_[r["name"]]["kind"] != r["kind"])
+            for r in records
+        ):
+            raise VariableError("a project reference is still unresolved; nothing was written")
         records.sort(key=_key)
-        atomic_write_json(path, {"version": STORE_VERSION, "variables": records}, mode=0o600)
+        try:
+            document = variable_document.publish_document(
+                records, ledger, STORE_VERSION, collections
+            )
+            if path.exists() and original.get("version", 0) < 4:
+                variable_document.retain_upgrade_backup(path)
+        except variable_document.IdentityError as exc:
+            raise VariableError(str(exc)) from None
+        atomic_write_json(path, document, mode=0o600)
     return result
 
 
@@ -425,8 +531,9 @@ def _read_leniently() -> list[dict]:
     return records
 
 
-def _globals() -> list[dict]:
-    return [r for r in _read_leniently() if _is_global(r)]
+def _globals(*, for_resolution: bool = False) -> list[dict]:
+    records = _read_strictly() if for_resolution else _read_leniently()
+    return [r for r in records if _is_global(r)]
 
 
 def _read_strictly() -> list[dict]:
@@ -439,7 +546,7 @@ def _read_strictly() -> list[dict]:
         raise ResolutionUnavailable(str(e)) from None
     if damaged:
         raise ResolutionUnavailable("the variables store could not be read in full")
-    return records
+    return [legacy_record(rec) for rec in records]
 
 
 def _find(
@@ -472,8 +579,12 @@ def list_variables() -> list[dict]:
 def values() -> dict[str, str]:
     """``{name: value}`` of the global TEXT variables — what a ``library`` text field resolves
     against. A secret's name is deliberately absent: a text field naming it is a missing
-    variable."""
-    return {r["name"]: r["value"] for r in _globals() if r["kind"] == "text"}
+    variable. Execution readers refuse any incomplete inventory, including its identity ledger."""
+    return {
+        r["name"]: r["value"]
+        for r in _globals(for_resolution=True)
+        if r["kind"] == "text" and not r.get("unset")
+    }
 
 
 def secret_state() -> dict[str, str]:
@@ -481,8 +592,8 @@ def secret_state() -> dict[str, str]:
     resolves against, without its value."""
     return {
         r["name"]: "ok" if _decrypt(r) is not None else "reentry"
-        for r in _globals()
-        if r["kind"] == "secret"
+        for r in _globals(for_resolution=True)
+        if r["kind"] == "secret" and not r.get("unset")
     }
 
 
@@ -522,6 +633,8 @@ def secret_values_checked() -> list[str]:
         raise VariableStoreUnsupported(version)
     if isinstance(version, bool) or not isinstance(version, int) or version < 1:
         raise VariableError("the variables store is not readable as a store")
+    if version >= 4 and set(raw) != variable_document.DOCUMENT_KEYS:
+        raise VariableError("the variables store has unknown or missing metadata")
     # A LIST, not a map keyed by identity: two records that claim the same identity (a damaged or
     # hand-edited file) both carry a plaintext, and keying by identity let the later one hide the
     # earlier from redaction (Hermes 5512). Use is refused for duplicates elsewhere; redaction
@@ -561,15 +674,15 @@ def secret_values_checked() -> list[str]:
 def revisions() -> dict[str, float]:
     """``{name: updated_at}`` of the GLOBAL variables — what a send binds its library values to
     (Hermes on #1105)."""
-    return {r["name"]: r["updated_at"] for r in _globals()}
+    return {r["name"]: r["updated_at"] for r in _globals(for_resolution=True)}
 
 
 def secret_values() -> dict[str, str]:
     """``{name: plaintext}`` for every GLOBAL secret that decrypts. SERVER-ONLY: the send renders
     with it. Nothing that answers the browser may call it."""
     out: dict[str, str] = {}
-    for r in _globals():
-        if r["kind"] == "secret":
+    for r in _globals(for_resolution=True):
+        if r["kind"] == "secret" and not r.get("unset"):
             v = _decrypt(r)
             if v is not None:
                 out[r["name"]] = v
@@ -607,8 +720,9 @@ def create_variable(payload: object) -> dict:
         if any(r["name"] == fields["name"] for r in globals_):
             raise VariableError(f"a variable named {fields['name']} already exists")
         projects = _project_dependants(records, fields["name"])
-        if projects:
-            raise VariableInUse(fields["name"], [], projects)
+        dependants = tstore.library_references_checked(fields["name"])
+        if projects or dependants:
+            raise VariableInUse(fields["name"], dependants, projects)
         if len(globals_) >= VARIABLES_MAX:
             raise VariableError(f"too many variables (max {VARIABLES_MAX})")
         now = time.time()
@@ -639,6 +753,7 @@ def update_variable(name: str, payload: object, expected_updated_at: float) -> d
             rec["secret"] = template_secrets.encrypt_scoped(SCOPE_GLOBAL, None, name, value)
         else:
             rec["value"] = _value(payload)
+        rec.pop("unset", None)
         rec["updated_at"] = _bumped(rec["updated_at"])
         return public(rec)
 
@@ -646,33 +761,40 @@ def update_variable(name: str, payload: object, expected_updated_at: float) -> d
 
 
 def _project_dependants(records: list[dict], name: str) -> list[str]:
-    return sorted(
-        {
-            r["project_id"]
-            for r in records
-            if r["scope"] == SCOPE_PROJECT and r["name"] == name and r.get("ref") == REF_GLOBAL
-        }
-    )
+    from . import variable_references
+
+    active = {
+        r["project_id"]
+        for r in records
+        if r["scope"] == SCOPE_PROJECT and r["name"] == name and r.get("ref") == REF_GLOBAL
+    }
+    return sorted(active | set(variable_references.deployment_projects(name)))
+
+
+def _delete_record(records: list[dict], collections: list[dict], rec: dict) -> None:
+    name = rec["name"]
+    projects = _project_dependants(records, name)
+    dependants = tstore.library_references_checked(name)
+    if dependants or projects:
+        raise VariableInUse(name, dependants, projects)
+    _retire(rec)
+    records.remove(rec)
+    for collection in collections:
+        if rec["id"] in collection["variable_ids"]:
+            collection["variable_ids"].remove(rec["id"])
+            collection["updated_at"] = _bumped(collection["updated_at"])
 
 
 def delete_variable(name: str, expected_updated_at: float) -> None:
-    """Delete a GLOBAL variable — refused while a template references it or a project binding
-    records ``ref: "global"`` to it, both decided under the one sidecar lock."""
+    """Delete a global value only after checking its complete consumer inventory."""
 
-    def fn(records: list[dict]) -> None:
+    def fn(records: list[dict], collections: list[dict]) -> None:
         rec = _find(records, name)
         if rec["updated_at"] != expected_updated_at:
             raise VariableConflict(public(rec))
-        projects = _project_dependants(records, name)
-        # Fail-closed: an inventory that could not be read in full is not "no dependants".
-        dependants = tstore.library_references_checked(name)
-        if dependants or projects:
-            raise VariableInUse(name, dependants, projects)
-        _retire(rec)
-        records.remove(rec)
-        return None
+        _delete_record(records, collections, rec)
 
-    _mutate(fn)
+    _mutate_document(fn)
 
 
 # ---- public API: project bindings (#1191) ------------------------------------------------------
@@ -754,7 +876,7 @@ def bind_project(project: object, bindings: object) -> list[dict]:
             raise VariableError(f"too many bindings (max {PROJECT_VARIABLES_MAX})")
         return [public_binding(r) for r in sorted(mine, key=_key)]
 
-    return _mutate(fn)  # type: ignore[return-value]
+    return _mutate(fn, repair_references=True)  # type: ignore[return-value]
 
 
 def remove_project_bindings(project: object, names: object = None) -> list[str]:
@@ -780,7 +902,7 @@ def remove_project_bindings(project: object, names: object = None) -> list[str]:
             records.remove(r)
         return sorted(r["name"] for r in gone)
 
-    return _mutate(fn)  # type: ignore[return-value]
+    return _mutate(fn, repair_references=True)  # type: ignore[return-value]
 
 
 def project_bindings(project: object) -> list[dict]:
@@ -809,7 +931,7 @@ class Resolver:
 
     def _global_of(self, name: str, kind: str, *, why: str) -> dict:
         rec = self._global.get(name)
-        if rec is None or rec["kind"] != kind:
+        if rec is None or rec["kind"] != kind or rec.get("unset"):
             raise BindingUnusable(name, why)
         return rec
 
@@ -831,7 +953,8 @@ class Resolver:
         if g is not None:
             if g["kind"] != "text":
                 raise BindingUnusable(name, "the global variable of this name is a secret")
-            return {"value": g["value"], "source": "global", "revision": g["updated_at"]}
+            if not g.get("unset"):
+                return {"value": g["value"], "source": "global", "revision": g["updated_at"]}
         if default is not None:
             return {"value": default, "source": "default", "revision": None}
         raise BindingMissing(name)

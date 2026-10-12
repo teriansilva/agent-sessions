@@ -88,6 +88,7 @@ from .routes import templates as templates_routes
 from .routes import terminal as terminal_routes
 from .routes import upload as upload_routes
 from .routes import usage as usage_routes
+from .routes import variables as variables_routes
 
 # Re-export the post-login redirect sanitizer (now owned by routes/auth.py) under its
 # historical name here, so tests that call main._safe_next still resolve it (#265).
@@ -659,6 +660,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     upload_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
     # Instruction templates (#905 P1): its own store off /api/config, images via /api/uploads.
     templates_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
+    variables_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
     # Playbooks (#1191): the gallery across sources + versioned authoring of `local` playbooks.
     playbooks_routes.register(
         app, logged_in=_logged_in, csrf_guard=_csrf_guard, signing_key=cfg.secret_key

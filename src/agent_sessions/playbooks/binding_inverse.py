@@ -30,7 +30,7 @@ def prepare(record: dict, records: list[dict]) -> tuple[list[dict], dict, dict]:
             for name, item in snapshot.items():
                 if item is None and snapshot is prior:
                     continue
-                value = template_vars._coerce_record(item, template_vars.STORE_VERSION)
+                value = template_vars._coerce_record(item, template_vars.BINDING_SNAPSHOT_VERSION)
                 if (
                     value != item
                     or value["scope"] != "project"

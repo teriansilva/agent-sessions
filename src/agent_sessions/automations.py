@@ -610,8 +610,11 @@ def _library_kinds(template: dict) -> dict[str, str]:
     names = sorted({f["name"] for f in template["fields"] if f["source"] == "library"})
     if not names:
         return {}
-    text = template_vars.values()
-    secret = template_vars.secret_state()
+    try:
+        text = template_vars.values()
+        secret = template_vars.secret_state()
+    except template_vars.ResolutionUnavailable as exc:
+        raise PinsUnavailable(str(exc)) from None
     return {n: ("secret" if n in secret else "text" if n in text else "missing") for n in names}
 
 
@@ -1066,7 +1069,11 @@ def message_preview(config: dict | None) -> str | None:
         ).masked
     except tstore.TemplateNotFound:
         return "(the template no longer exists)"
-    except (tstore.TemplateError, template_send.SendRefused) as e:
+    except (
+        tstore.TemplateError,
+        template_send.SendRefused,
+        template_vars.ResolutionUnavailable,
+    ) as e:
         return f"(it can't be rendered right now: {getattr(e, 'detail', None) or e})"
 
 

@@ -229,7 +229,10 @@ def snapshot(template_id: str, library_names: tuple[str, ...]) -> str:
         rev = str(tstore.get_template(template_id)["updated_at"])
     except tstore.TemplateNotFound:
         rev = "deleted"
-    revs = template_vars.revisions()
+    try:
+        revs = template_vars.revisions()
+    except template_vars.ResolutionUnavailable as exc:
+        raise SendRefused(503, str(exc)) from None
     lib = [f"{n}={revs.get(n, 'missing')}" for n in library_names]
     raw = "\0".join(
         [*roots, "|", *exclusions, "|", template_secrets.current_kid(), "|", rev, "|", *lib]
@@ -367,7 +370,11 @@ def deliver(
             return False, f"{_TEMPLATE} the template was deleted"
         if now["updated_at"] != expected_updated_at:
             return False, f"{_TEMPLATE} the template was edited"
-        if current() != bound:
+        try:
+            unchanged = current() == bound
+        except SendRefused as exc:
+            return False, exc.detail
+        if not unchanged:
             return False, f"{_TEMPLATE} the template, its variables or the secret key changed"
         if extra_guard is not None:
             # The caller's own authority (an automation's consent, #1201), re-checked at EVERY
@@ -427,13 +434,16 @@ def send(
     # Bound BEFORE any secret is read, and verified after: the values below were resolved against
     # exactly this key, template revision and variable revisions (Hermes on #1105).
     bound = snapshot(template_id, library_names)
-    rendered = render(
-        template,
-        payload.get("values"),
-        library=template_vars.values(),
-        secrets=template_vars.secret_values(),
-        secret_state=template_vars.secret_state(),
-    )
+    try:
+        rendered = render(
+            template,
+            payload.get("values"),
+            library=template_vars.values(),
+            secrets=template_vars.secret_values(),
+            secret_state=template_vars.secret_state(),
+        )
+    except template_vars.ResolutionUnavailable as exc:
+        raise SendRefused(503, str(exc)) from None
     if snapshot(template_id, library_names) != bound:
         raise SendRefused(409, "The template, its variables or the secret key changed — try again")
     with _reserve(phys):

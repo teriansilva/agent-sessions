@@ -9,7 +9,7 @@ What this pins:
 * **The name is the identity** — no rename through PATCH, and DELETE is a 409 carrying the
   dependants while any template still references the variable.
 * **The variables store keeps the template store's discipline** — owner-only file, fenced
-  edits, a damaged file quarantined rather than overwritten, a newer version never rewritten,
+  edits, a damaged file refused rather than partially upgraded, a newer version never rewritten,
   and every response ``no-store``.
 """
 
@@ -283,15 +283,16 @@ def test_writes_need_csrf_and_reads_need_a_session(auth_cfg, tmp_home):
     assert not template_vars.store_path().exists()
 
 
-def test_a_damaged_store_is_quarantined_before_the_first_write(tmp_home):
+def test_a_damaged_store_is_not_partially_upgraded(tmp_home):
     path = template_vars.store_path()
     path.parent.mkdir(parents=True)
-    path.write_text('{"version": 1, "variables": [{"name": "Bad!"}, ')
+    original = '{"version": 1, "variables": [{"name": "Bad!"}, '
+    path.write_text(original)
     assert template_vars.list_variables() == []
-    template_vars.create_variable({"name": "a", "value": "1"})
-    [kept] = list(path.parent.glob("template-variables.json.corrupt-*"))
-    assert kept.read_text().startswith('{"version": 1')
-    assert template_vars.values() == {"a": "1"}
+    with pytest.raises(template_vars.VariableError, match="repair it"):
+        template_vars.create_variable({"name": "a", "value": "1"})
+    assert path.read_text() == original
+    assert not list(path.parent.glob("template-variables.json.pre-v4-*"))
 
 
 def test_a_refused_write_leaves_a_damaged_store_untouched(tmp_home):

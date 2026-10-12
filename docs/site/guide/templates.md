@@ -284,3 +284,30 @@ Two protections are worth knowing about:
 ::: info Verified against
 Commit `8b1c66b` — `src/agent_sessions/templates.py § TEMPLATES_MAX, NAME_MAX, DESCRIPTION_MAX, TAGS_MAX, TAG_RE, BODY_MAX, FIELDS_MAX, FIELD_NAME_RE, LABEL_MAX, DEFAULT_MAX, IMAGES_MAX, IMAGE_SUFFIXES, store_path, _write, _read, _quarantine, _sorted`; `src/agent_sessions/routes/templates.py`; `src/agent_sessions/routes/upload.py § DIR_MODE, FILE_MODE, IMAGE_TYPES, upload_context`; `web/src/routes/Templates.tsx`, `web/src/routes/TemplateEditor.tsx`, `web/src/components/templates/`, `web/src/components/terminal/Compose.tsx`, `web/src/components/pulse/Composer.tsx`, `web/src/lib/templateMessage.ts`.
 :::
+
+
+### Shared variable store compatibility
+
+The shared Variables backend uses the same encrypted store and key as Prompt Templates. Existing
+template endpoints still return text as strings and secrets as set/missing status. The shared
+API adds typed definitions (`text`, `url`, `path`, `enum`, `int`, `bool`) and named collections with
+stable IDs. Collections group existing variables; removing a collection keeps every value.
+A shared definition may be saved without a global value, ready for a project binding. Clearing
+a global value keeps its definition and collection membership; secret fields remain write-only.
+Changing a definition used by a template or project requires removing/reviewing those references
+first. Display-label changes preserve the storage name and secret ciphertext.
+
+The first accepted write upgrades an older variables file to version 4 and retains an exact,
+private `template-variables.json.pre-v4-<sha256>` backup. Reading alone does not upgrade it. The
+shared API also offers an explicit, idempotent `POST /api/variables/migrate` with an empty object.
+Existing deployment journals, receipts and secret envelopes remain compatible. An unreadable
+store refuses writes until repaired; it is never partially upgraded by an unrelated edit.
+
+For rollback, stop all writers before switching builds, retain the current v4 file and its key,
+and compare post-upgrade changes against the pre-v4 backup. Restore only with operator approval
+and an explicit plan for those later edits, new values, IDs and collections. A v3 build cannot
+read or write a v4 file. Do not change only the version number, discard v4 metadata, delete the
+backup, or regenerate the secret key. Restoring the backup restores its old values as well as
+its format; it does not merge later work. No automatic downgrade or destructive cleanup runs.
+
+The shared Library screen and additional consumer bindings are being delivered separately.

@@ -29,6 +29,7 @@ from agent_sessions import (
     notifications,
     prefs,
     session_input,
+    template_secrets,
     template_send,
     template_vars,
 )
@@ -693,6 +694,41 @@ def test_a_secret_template_is_refused_for_a_mission_action():
         )
 
 
+@pytest.mark.parametrize("kind", ["text", "secret"])
+def test_a_template_automation_refuses_an_incomplete_identity_ledger(live_target, kind):
+    template_vars.create_variable({"name": "host", "kind": kind, "value": SECRET})
+    template = tstore.create_template(
+        {
+            "name": "Use host",
+            "body": "Use {{host}}",
+            "fields": [{"name": "host", "source": "library", "kind": kind}],
+        }
+    )
+    config = _send_config(
+        action={
+            "kind": "send_to_session",
+            "session_key": SESSION,
+            "message": {"template_id": template["id"], "values": {}},
+        }
+    )
+    aid = _made(config)
+    pins = model.compute_pins(config)
+    path = template_vars.store_path()
+    document = json.loads(path.read_text())
+    document["identities"] = []
+    path.write_text(json.dumps(document))
+    result = asyncio.run(automation_runner.execute(_manual_run(aid), registry=None))
+    assert result["run"]["outcome"] == "skipped"
+    assert "could not be read in full" in result["run"]["reason"]
+    assert live_target["writes"] == []
+    assert SECRET not in json.dumps(result)
+    assert "could not be read in full" in model.message_preview(config)
+    # The plain mission/new-session renderer repeats the refusal, even if damage occurs
+    # after the automation's initial authority read and before it composes the message.
+    with pytest.raises(automation_runner.RunRefused, match="could not be read in full"):
+        automation_runner._render_plain(config, pins)
+
+
 def test_a_typed_secret_can_never_be_stored_in_an_automation():
     t = tstore.create_template(
         {"name": "typed", "body": "use {{pw}}", "fields": [{"name": "pw", "kind": "secret"}]}
@@ -795,6 +831,31 @@ def _legacy_missing_team_template():
     return template
 
 
+def _legacy_team_secret_appears():
+    # Current writers refuse same-name adoption of an unresolved template reference.
+    # The runner must still reject a secret introduced by an old/out-of-band writer.
+    with pytest.raises(template_vars.VariableInUse):
+        template_vars.create_variable({"name": "team", "kind": "secret", "value": SECRET})
+    path = template_vars.store_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "variables": [
+                    {
+                        "name": "team",
+                        "kind": "secret",
+                        "secret": template_secrets.encrypt("team", SECRET),
+                        "created_at": 1,
+                        "updated_at": 1,
+                    }
+                ],
+            }
+        )
+    )
+
+
 def test_a_library_variable_turning_secret_needs_reapproval_and_refuses_the_run(live_target):
     t = _legacy_missing_team_template()
     aid = _made(
@@ -807,7 +868,7 @@ def test_a_library_variable_turning_secret_needs_reapproval_and_refuses_the_run(
         )
     )
     run = _manual_run(aid)
-    template_vars.create_variable({"name": "team", "kind": "secret", "value": SECRET})
+    _legacy_team_secret_appears()
     res = asyncio.run(automation_runner.execute(run, registry=None))
     assert res["run"]["outcome"] == "refused"
     assert store.get(aid)["needs_reapproval"] is True
@@ -1340,7 +1401,7 @@ def test_the_render_rechecks_secret_kinds_at_run_time():
         _session_config("/tmp/w", message={"template_id": t["id"], "values": {}})
     )
     pins = model.compute_pins(cfg)  # approved while `team` did not exist
-    template_vars.create_variable({"name": "team", "kind": "secret", "value": SECRET})
+    _legacy_team_secret_appears()
     with pytest.raises(automation_runner.RunRefused, match="secret"):
         automation_runner._render_plain(cfg, pins)
 

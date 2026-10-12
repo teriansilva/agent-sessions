@@ -72,11 +72,11 @@ def test_existing_encrypted_globals_decrypt_after_upgrade(tmp_home):
     assert template_vars.secret_values() == {"db_pass": SECRET}
     assert template_vars.secret_state() == {"db_pass": "ok"}
     assert template_vars.values() == {"host": "a.test"}
-    # The first accepted write publishes v3: every record global, the old envelope KEPT byte for
+    # The first accepted write publishes the current store: every record global, the envelope KEPT
     # byte and marked legacy — and it still decrypts.
     template_vars.create_variable({"name": "other", "value": "x"})
     doc = _doc()
-    assert doc["version"] == 3
+    assert doc["version"] == template_vars.STORE_VERSION
     rec = _by(doc, "db_pass")
     assert rec["scope"] == "global" and rec["project_id"] is None
     assert rec["secret"] == {**env, "aad": "legacy"}
@@ -573,11 +573,11 @@ def test_a_malformed_aad_marker_is_a_damaged_record_never_a_crash(tmp_home, mark
     # redaction: a secret record it cannot read refuses (fail closed), as a VariableError
     with pytest.raises(template_vars.VariableError):
         template_vars.secret_values_checked()
-    # write: the damaged file is quarantined and the next write succeeds
-    template_vars.create_variable({"name": "other", "value": "x"})
-    assert {v["name"] for v in template_vars.list_variables()} == {"host", "other"}
-    kept = list(template_vars.store_path().parent.glob("template-variables.json.*"))
-    assert kept, "the damaged file was not quarantined"
+    # An identity-bearing store must not drop an unreadable record on an unrelated write.
+    before = template_vars.store_path().read_bytes()
+    with pytest.raises(template_vars.VariableError, match="repair it"):
+        template_vars.create_variable({"name": "other", "value": "x"})
+    assert template_vars.store_path().read_bytes() == before
 
 
 def test_duplicate_identities_are_all_redacted(tmp_home):
@@ -629,7 +629,7 @@ def test_malformed_global_reference_blocks_delete_and_recreation(tmp_home):
     before = template_vars.store_path().read_bytes()
     with pytest.raises(template_vars.ResolutionUnavailable):
         template_vars.resolver("p-aaaa0001")
-    with pytest.raises(template_vars.VariableInUse):
+    with pytest.raises(template_vars.VariableError, match="repair it"):
         template_vars.delete_variable("host", global_["updated_at"])
     assert template_vars.store_path().read_bytes() == before
     # Even an out-of-band removal cannot make creating a new secret silently activate the
@@ -637,7 +637,7 @@ def test_malformed_global_reference_blocks_delete_and_recreation(tmp_home):
     doc["variables"] = [r for r in doc["variables"] if r["scope"] != "global"]
     _write(doc)
     before = template_vars.store_path().read_bytes()
-    with pytest.raises(template_vars.VariableInUse):
+    with pytest.raises(template_vars.VariableError, match="repair it"):
         template_vars.create_variable({"name": "host", "kind": "secret", "value": SECRET})
     assert template_vars.store_path().read_bytes() == before
     with pytest.raises(template_vars.ResolutionUnavailable):

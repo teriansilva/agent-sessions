@@ -102,7 +102,16 @@ def test_a_deleted_global_cannot_be_silently_restored_as_a_dangling_reference(se
     plan = review.build("review-demo", body, key=KEY)
     receipt = review.confirm(plan, plan.public["digest"], [], key=KEY)["receipt"]
     bind(entity, body, receipt)
-    template_vars.delete_variable("token", global_record["updated_at"])
+    # A retained prior reference now participates in the shared dependency inventory.
+    with pytest.raises(template_vars.VariableInUse):
+        template_vars.delete_variable("token", global_record["updated_at"])
+    # Out-of-band loss is still refused by the inverse; it never substitutes another value.
+    import json
+
+    path = template_vars.store_path()
+    damaged = json.loads(path.read_text())
+    damaged["variables"] = [r for r in damaged["variables"] if r["scope"] != "global"]
+    path.write_text(json.dumps(damaged))
     with pytest.raises(store.Conflict, match="global reference can no longer be restored"):
         apply_inverse_for_test(entity.id)
     assert template_vars.resolver(entity.id).secret("token") == "own-deployed-secret"

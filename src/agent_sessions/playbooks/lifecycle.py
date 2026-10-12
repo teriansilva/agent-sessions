@@ -105,7 +105,7 @@ def _journal(record: dict | None, pid: str, key: str) -> dict | None:
             for name, value in snapshot.items():
                 if value is None and snapshot is before:
                     continue
-                parsed = template_vars._coerce_record(value, template_vars.STORE_VERSION)
+                parsed = template_vars._coerce_record(value, template_vars.BINDING_SNAPSHOT_VERSION)
                 if (
                     parsed != value
                     or parsed["scope"] != "project"
@@ -279,8 +279,8 @@ def bind(pid: str, playbook_id: str, inputs: dict, receipt: str, op: str, *, key
 
             def mutate(records: list[dict]) -> None:
                 nonlocal record, journal
-                # _mutate's general repair policy is too lenient for a deployment: fail closed
-                # on any damaged store before recording intent, encrypting inputs or writing.
+                # Both reads use the legacy value snapshot shape even after the v4 ID
+                # migration. No ID/definition metadata enters existing recovery journals.
                 if template_vars._read_strictly() != records:
                     raise store.Conflict("the variables store changed")
                 if journal is None:

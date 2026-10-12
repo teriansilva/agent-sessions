@@ -176,7 +176,10 @@ def _render_plain(config: dict, pins: dict) -> tuple[str, dict]:
         raise RunRefused(409, "the template was deleted") from None
     if (pins.get("template") or {}).get("digest") != model.template_digest(t):
         raise RunRefused(409, "the template was edited since you approved this automation")
-    secret_names = set(template_vars.secret_state())
+    try:
+        secret_names = set(template_vars.secret_state())
+    except template_vars.ResolutionUnavailable as exc:
+        raise RunRefused(503, str(exc)) from None
     for f in t["fields"]:
         if f["kind"] == "secret" or (f["source"] == "library" and f["name"] in secret_names):
             raise RunRefused(
@@ -186,6 +189,8 @@ def _render_plain(config: dict, pins: dict) -> tuple[str, dict]:
         rendered = template_send.render(
             t, msg["values"], library=template_vars.values(), secrets={}, secret_state={}
         )
+    except template_vars.ResolutionUnavailable as exc:
+        raise RunRefused(503, str(exc)) from None
     except (tstore.TemplateError, template_send.SendRefused) as e:
         raise RunRefused(409, str(getattr(e, "detail", None) or e)) from None
     return rendered.text, {"message": rendered.masked, "template_id": t["id"]}
@@ -645,7 +650,11 @@ def _send_locked(run: dict, config: dict, pins: dict) -> tuple[str, str]:
         masked = _masked_template(msg["template_id"], msg["values"])
     except tstore.TemplateNotFound:
         return "refused", "the template was deleted"
-    except (tstore.TemplateError, template_send.SendRefused) as e:
+    except (
+        tstore.TemplateError,
+        template_send.SendRefused,
+        template_vars.ResolutionUnavailable,
+    ) as e:
         return "refused", str(getattr(e, "detail", None) or e)
     # MASKED — `[secret: name]` — is all a run record ever holds, and it is recorded BEFORE the
     # delivery so nothing after the bytes can fail the run.

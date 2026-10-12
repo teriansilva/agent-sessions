@@ -114,6 +114,8 @@ def test_a_secret_is_stored_as_ciphertext_under_a_separate_owner_only_key(tmp_ho
     assert doc["version"] == template_vars.STORE_VERSION
     [stored] = doc["variables"]
     assert set(stored) == {
+        "id",
+        "definition",
         "name",
         "kind",
         "scope",
@@ -282,6 +284,7 @@ def test_render_refuses(tmp_home, setup, values, status, message):
         host = next(r for r in doc["variables"] if r["name"] == "host")
         host.pop("value")
         host["kind"] = "secret"
+        next(r for r in doc["identities"] if r["id"] == host["id"])["kind"] = "secret"
         host["secret"] = template_secrets.encrypt_scoped(
             "global", None, "host", "looks-like-a-host"
         )
@@ -385,6 +388,39 @@ def test_send_writes_clear_paste_enter_as_three_writes_and_answers_masked(
     assert r.headers["cache-control"] == "no-store"
     # The typed-once value joined the redaction set.
     assert TYPED in template_secrets.redaction_values()
+
+
+@pytest.mark.parametrize("missing", ["host", "db_pass"])
+def test_send_refuses_incomplete_identity_ledger_before_any_write(
+    auth_cfg, tmp_home, live_session, monkeypatch, missing
+):
+    template_vars.create_variable({"name": "host", "value": "production.test"})
+    _secret()
+    template = _migration_template()
+    path = template_vars.store_path()
+    document = json.loads(path.read_text())
+    document["identities"] = [r for r in document["identities"] if r["name"] != missing]
+    path.write_text(json.dumps(document))
+    writes = []
+    monkeypatch.setattr(session_input, "send_input", lambda *a, **kw: writes.append(a))
+    client = _client(auth_cfg)
+    csrf = _login(client, auth_cfg)
+    response = client.post(
+        f"/api/templates/{template['id']}/send",
+        json={
+            "session": KEY,
+            "values": {"token": TYPED, "ticket": "TEST-1"},
+            "expected_updated_at": template["updated_at"],
+        },
+        headers=_hdr(auth_cfg, csrf),
+    )
+    assert response.status_code == 503
+    assert "could not be read in full" in response.json()["detail"]
+    assert response.headers["cache-control"] == "no-store"
+    assert writes == [] and _drain(live_session) == b""
+    assert SECRET not in response.text and TYPED not in response.text
+    # Redaction still inventories the recoverable ciphertext; it is never an execution reader.
+    assert SECRET in template_vars.secret_values_checked()
 
 
 def test_send_is_refused_at_entry_outside_the_project_folders(
