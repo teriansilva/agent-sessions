@@ -34,6 +34,7 @@ from .. import (
     review,
     runtime_cleanup,
     scanner,
+    shares,
     transcript,
     transcript_owner,
     webterm,
@@ -1162,13 +1163,20 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                                     }
                                 )
                                 continue
-                            prov.archive(native)
+                            # Its public links end with it, or it is not archived (#1404).
+                            async with shares.archiving(f"{prov.engine_id}:{native}"):
+                                prov.archive(native)
                         else:
                             prov.unarchive(native)
                         results.append({"id": key, "result": done})
                 finally:
                     missions.release_session(key, member_hold)
-            except (archive.ArchiveError, engines.EngineError, NotImplementedError) as e:
+            except (
+                archive.ArchiveError,
+                engines.EngineError,
+                NotImplementedError,
+                shares.SharesUnavailable,  # its public links could not be ended (#1404)
+            ) as e:
                 results.append({"id": key, "result": failed, "reason": str(e) or type(e).__name__})
         engines.invalidate_scan_cache()  # members' JSONLs moved → next list must re-walk (#561)
         return JSONResponse(
@@ -1562,8 +1570,13 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             raise HTTPException(
                 status_code=409, detail="session is a running background agent — not archivable"
             )
+        # Its public links end with it, or it is not archived (#1404): `archiving` revokes them
+        # under the session's lock before the move and refuses when it cannot.
         try:
-            prov.archive(native)
+            async with shares.archiving(key):
+                prov.archive(native)
+        except shares.SharesUnavailable as e:
+            raise HTTPException(status_code=503, detail=f"{e} — not archived") from None
         except archive.ArchiveError as e:
             raise HTTPException(status_code=404, detail=str(e)) from None
         except NotImplementedError:
@@ -1666,11 +1679,18 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                         if transcript_owner.owned_elsewhere(prov, native):
                             skipped += 1
                             continue
-                        prov.archive(native)
+                        # Its public links end with it, or it is not archived (#1404).
+                        async with shares.archiving(f"{prov.engine_id}:{native}"):
+                            prov.archive(native)
                         archived += 1
                 finally:
                     missions.release_session(key, hold)
-            except (NotImplementedError, archive.ArchiveError, engines.EngineError):
+            except (
+                NotImplementedError,
+                archive.ArchiveError,
+                engines.EngineError,
+                shares.SharesUnavailable,  # its public links could not be ended (#1404)
+            ):
                 skipped += 1  # provider can't archive / lost the file → leave it, keep going
         if archived:
             engines.invalidate_scan_cache()  # JSONLs moved → next list must re-walk (#561)

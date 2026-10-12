@@ -50,6 +50,7 @@ from . import (
     scrollback,
     security_headers,
     session_stream,
+    shares,
     update_loop,
     usage_loop,
 )
@@ -81,6 +82,7 @@ from .routes import prompts as prompts_routes
 from .routes import pulse as pulse_routes
 from .routes import scrollback as scrollback_routes
 from .routes import sessions as sessions_routes
+from .routes import shares as shares_routes
 from .routes import spa as spa_routes
 from .routes import structured as structured_routes
 from .routes import system as system_routes
@@ -111,7 +113,8 @@ _WEB_DIST = Path(
 )
 # Paths the SPA catch-all must never shadow (handled by their own routes / network-only).
 # ``link`` = the device-link QR sign-in routes (#650), server-rendered / JSON, not the SPA.
-_SPA_RESERVED = ("api", "ws", "login", "logout", "healthz", "static", "assets", "link")
+# ``p`` = the public share viewer (#1404), served by its own route from ``share.html``.
+_SPA_RESERVED = ("api", "ws", "login", "logout", "healthz", "static", "assets", "link", "p")
 
 # New-session reconcile tunables (#127/#315). Engines that mint their own id (opencode →
 # ``ses_…`` in opencode.db; codex → ``rollout-…uuid.jsonl``) may not write that id until the
@@ -241,9 +244,14 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     from . import fileedit
 
     fileedit.install_lease_signal_handler()
+    # Public share tokens (#1404) are masked in uvicorn's access and error logs. A logger filter
+    # survives uvicorn's dictConfig, so installing here (before `uvicorn.run` configures logging)
+    # holds; the lifespan installs again for the root handlers that exist by then.
+    shares.install_log_redaction()
 
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI):
+        shares.install_log_redaction()
         from .plugins import manager as plugin_manager
 
         try:
@@ -562,6 +570,17 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     # upgrades run in the websocket scope, not here, so the terminal socket is untouched.
     _headers = security_headers.base_headers(_WEB_DIST)
 
+    # Public share surface (#1404): the token is in the `/p/<token>` path, so a same-origin
+    # Referer would carry it, and nothing on either prefix may sit in a cache. Registered BEFORE
+    # the containment middleware below (so inner): it assigns, and the outer `setdefault` keeps it.
+    @app.middleware("http")
+    async def _public_share_headers(request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith(shares_routes.PUBLIC_PREFIXES):
+            response.headers["Referrer-Policy"] = "no-referrer"
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
     @app.middleware("http")
     async def _containment_headers(request: Request, call_next):
         response = await call_next(request)
@@ -679,6 +698,12 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     # Per-agent usage + budgets (#839): the read is cheap and always available; probing the
     # agents is behind the explicit POST.
     usage_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
+
+    # Public share links (#1404 P1): operator create/list/revoke, the `/p/<token>` viewer and the
+    # unlock that mints the share cookie. Off (404) in `none` auth mode.
+    shares_routes.register(
+        app, cfg=cfg, logged_in=_logged_in, csrf_guard=_csrf_guard, web_dist=_WEB_DIST
+    )
 
     # SPA shell + history fallback. The ``/{spa_path}`` catch-all is registered LAST so it
     # never shadows the API/ws/auth routes above. ``_WEB_DIST`` / ``_SPA_RESERVED`` stay

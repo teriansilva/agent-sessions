@@ -26,6 +26,10 @@ export const NAVIGATE_FALLBACK_DENYLIST: RegExp[] = [
   /^\/change-password/,
   // Device-link QR sign-in (#650): server-rendered approval page + JSON routes.
   /^\/link/,
+  // Public share viewer (#1404): `/p/<token>` is served by its own route from `share.html`. The
+  // SPA shell answering it would boot the operator app (and bounce a visitor to /login), and a
+  // cached copy keyed by a token-bearing URL must not exist at all.
+  /^\/p\//,
   /^\/healthz/,
   // The standalone Home Free connect page is its own precached shell — the SPA index.html
   // fallback must not shadow it for browsers already controlled by the app's SW (#27/#558).
@@ -47,6 +51,7 @@ export const SERVER_RENDERED_PATHS: string[] = [
   "/logout",
   "/change-password",
   "/link/approve",
+  "/p/k3Jx9aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789_-",
   "/healthz",
   "/connect.html",
 ];

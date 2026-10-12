@@ -48,6 +48,7 @@ _REAL_HOME = pwd.getpwuid(os.getuid()).pw_dir
 STORE_ENV_PATHS: dict[str, str] = {
     "AGENT_SESSIONS_MISSIONS_DB": ".config/agent-sessions/missions.db",
     "AGENT_SESSIONS_AUTOMATIONS_DB": ".config/agent-sessions/automations.db",  # #1201
+    "AGENT_SESSIONS_SHARES_DB": ".config/agent-sessions/shares.db",  # #1404 public links
     "AGENT_SESSIONS_PREFS": ".config/agent-sessions/prefs.json",
     "AGENT_SESSIONS_METADATA": ".config/agent-sessions/metadata.json",
     "AGENT_SESSIONS_PROJECTS": ".config/agent-sessions/projects.json",
@@ -559,6 +560,20 @@ def _isolate_automations_db(tmp_path, monkeypatch) -> None:
     automations_store.reset_schema_cache_for_test()
     yield
     automations_store.reset_schema_cache_for_test()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_shares_db(tmp_path, monkeypatch) -> None:
+    """Point the public-share store (#1404) at a per-test tmp file and drop the process store, so
+    one test's links, fences and revoke listeners never reach the next."""
+    from agent_sessions import shares
+
+    monkeypatch.setenv(
+        "AGENT_SESSIONS_SHARES_DB", str(tmp_path / ".config" / "agent-sessions" / "shares.db")
+    )
+    shares.reset_for_tests()
+    yield
+    shares.reset_for_tests()
 
 
 @pytest.fixture(autouse=True)

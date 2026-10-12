@@ -47,6 +47,7 @@ from . import (
     missions,
     runtime_cleanup,
     session_input,
+    shares,
     transcript_owner,
 )
 
@@ -274,7 +275,12 @@ async def _teardown_effect(mission_id: str, session_key: str, token: str | None)
         )
         return "failed"
 
-    outcome, reason = _archive_idempotent(prov, native)
+    # Its public links end with it, or it is not archived (#1404).
+    try:
+        async with shares.archiving(f"{prov.engine_id}:{native}"):
+            outcome, reason = _archive_idempotent(prov, native)
+    except shares.SharesUnavailable as e:
+        outcome, reason = "failed", str(e)
     await missions.run_admitted(
         lambda: missions.settle_session_archive(
             mission_id, session_key, outcome, reason=reason, token=token
