@@ -26,10 +26,15 @@ mission correlation is ever read from a browser (mission callers use the facade 
 
 from __future__ import annotations
 
+import asyncio
+import logging
+
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from .. import structured_runtime
+from .. import share_api, shares, structured_runtime
+
+log = logging.getLogger("agent_sessions.routes.structured")
 
 
 async def _json(request: Request, allowed: set[str], required: set[str]) -> dict:
@@ -121,7 +126,16 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
 
     @app.get("/api/structured/sessions/{key}")
     async def structured_snapshot(key: str, _user: str = Depends(logged_in)) -> JSONResponse:
-        return JSONResponse(await _run(structured_runtime.snapshot(key)))
+        snap = await _run(structured_runtime.snapshot(key))
+        # A visitor's turns (#1404 P2) carry their self-chosen name in the operator's view too.
+        try:
+            authors = await asyncio.to_thread(
+                shares.store().authors, snap.get("session_key") or key
+            )
+        except Exception:  # the share store must never take the operator's own view down…
+            log.warning("structured snapshot: visitor attribution unavailable", exc_info=True)
+            authors = None  # …but then every turn is UNKNOWN, never labelled the operator's
+        return JSONResponse(share_api.overlay_authors(snap, authors))
 
     @app.get("/api/structured/sessions/{key}/events")
     async def structured_events(

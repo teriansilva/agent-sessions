@@ -41,6 +41,13 @@ NONE_MODE_REASON = (
     "Public links are off while BattleLab runs without a login (AUTH_MODE=none), which is also how"
     " Home Free stream mode runs: anyone reaching it would be signed in as you."
 )
+# A `send` link is created only once the operator has seen this and sent `accept_risk: true`
+# (#1423): redaction hides saved secret values from what visitors read, but a visitor who can
+# instruct the agent can have it echo guesses, or print anything it can read.
+SEND_RISK = (
+    "Anyone with this link can instruct the agent with this session's permissions, including"
+    " reaching saved secret values the agent can see."
+)
 # The public prefixes: the headers middleware in `main` stamps `no-referrer` + `no-store` on
 # both, and the SPA catch-all / service worker leave both alone.
 PUBLIC_PREFIXES = ("/p/", "/api/public/")
@@ -379,6 +386,10 @@ def register(
             raise HTTPException(
                 status_code=422, detail="terminal sessions can only be shared view only"
             )
+        if mode == "send" and body.get("accept_risk") is not True:
+            raise HTTPException(
+                status_code=422, detail=f"{SEND_RISK} Send accept_risk: true to create it."
+            )
         try:
             # PBKDF2 and the engine's scan: off the loop.
             share, token = await asyncio.to_thread(
@@ -393,10 +404,12 @@ def register(
             )
         except shares.ShareError as e:
             raise HTTPException(status_code=422, detail=str(e)) from None
-        # The ONLY response that ever carries the token.
-        return _no_store(
-            JSONResponse({"share": share.public(), "url": f"{cfg.origin}/p/{token}"}, 201)
-        )
+        # The ONLY response that ever carries the token. A send link's also restates the risk the
+        # caller accepted, so the successful path shows it too, not just the refusal.
+        made = {"share": share.public(), "url": f"{cfg.origin}/p/{token}"}
+        if share.mode == "send":
+            made["risk"] = SEND_RISK
+        return _no_store(JSONResponse(made, 201))
 
     @app.delete("/api/shares/{share_id}")
     async def revoke_share(

@@ -41,6 +41,7 @@ import sqlite3
 import threading
 import time
 import unicodedata
+import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -88,6 +89,26 @@ CREATE TABLE IF NOT EXISTS shares (
   key_id          TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS shares_by_session ON shares(session_key);
+-- Turns a visitor sent through a `send` link (#1404 P2): the operation id the SERVER minted for
+-- them, the visitor's self-chosen name, and the client's retry key (so a retried send reuses the
+-- same operation instead of sending twice). Kept after the link ends: attribution is history.
+CREATE TABLE IF NOT EXISTS share_turns (
+  operation_id  TEXT PRIMARY KEY,
+  session_key   TEXT NOT NULL,
+  share_id      TEXT NOT NULL,
+  client_key    TEXT NOT NULL,
+  author        TEXT NOT NULL,
+  created_at    REAL NOT NULL,
+  UNIQUE (share_id, client_key)
+);
+CREATE INDEX IF NOT EXISTS share_turns_by_session ON share_turns(session_key);
+-- Images a visitor uploaded through a link: the only uploads that visitor may attach.
+CREATE TABLE IF NOT EXISTS share_uploads (
+  share_id      TEXT NOT NULL,
+  stored        TEXT NOT NULL,
+  created_at    REAL NOT NULL,
+  PRIMARY KEY (share_id, stored)
+);
 """
 
 
@@ -373,9 +394,11 @@ class ShareStore:
         """The per-share lock that revoke takes. A send path holds it across its re-check AND its
         effect, so a revoke cannot land between the two.
 
-        **Hold it only inside a worker thread, never across an ``await`` on the event loop**:
-        :func:`archiving` calls :meth:`revoke` on the loop, so a coroutine holding this fence while
-        awaiting would deadlock the loop on the next archive."""
+        **Take it only in a worker thread, never on the event loop.** A send holds it in a worker
+        thread while its facade coroutine runs on the loop (``routes/public_api._fenced``), so
+        anything on the loop that blocked on this lock would deadlock both. :meth:`revoke` takes
+        it, so every revoke runs off the loop too (the routes and :func:`archiving` use
+        ``asyncio.to_thread``)."""
         with self._fences_lock:
             lock = self._fences.get(share_id)
             if lock is None:
@@ -420,6 +443,121 @@ class ShareStore:
                 ).fetchall()
             ]
         return sum(1 for sid in ids if self.revoke(sid, reason=reason))
+
+    # -- visitor turns and uploads (P2) ------------------------------------------------
+
+    def record_turn(
+        self, *, share_id: str, session_key: str, client_key: str, author: str
+    ) -> tuple[str, bool]:
+        """The operation id for a visitor's send, minted HERE (never chosen by the visitor, so
+        one can't claim an operator turn by reusing its id). ``client_key`` is the visitor's retry
+        key: the same key on the same link returns the same operation id. Returns
+        ``(operation_id, fresh)``. A retry under a different name keeps the first name."""
+        with self._con() as con:
+            row = con.execute(
+                "SELECT operation_id, session_key FROM share_turns"
+                " WHERE share_id = ? AND client_key = ?",
+                (share_id, client_key),
+            ).fetchone()
+            if row is not None:
+                if row["session_key"] != session_key:
+                    raise ShareError("that retry key belongs to another session")
+                return row["operation_id"], False
+            op = str(uuid.uuid4())
+            con.execute(
+                "INSERT INTO share_turns (operation_id, session_key, share_id, client_key, author,"
+                " created_at) VALUES (?,?,?,?,?,?)",
+                (op, session_key, share_id, client_key, author, self._clock()),
+            )
+            return op, True
+
+    def authors(self, session_key: str) -> dict[str, dict]:
+        """``{operation_id: {"name", "share_id"}}`` for every visitor turn of a session.
+
+        A store that was never initialized has no visitor turns (``{}``, nothing created). A store
+        that was initialized and went missing raises :class:`SharesUnavailable`: "no visitor turns"
+        is a claim this can't make then, and the caller must show attribution as UNKNOWN rather
+        than label every turn the operator's (Hermes on #1423)."""
+        p = self._path or db_path()
+        if not p.exists() and not _store_was_initialized(p):
+            return {}
+        with self._con() as con:
+            rows = con.execute(
+                "SELECT operation_id, author, share_id FROM share_turns WHERE session_key = ?",
+                (session_key,),
+            ).fetchall()
+        return {r["operation_id"]: {"name": r["author"], "share_id": r["share_id"]} for r in rows}
+
+    def reserve_upload(self, share_id: str, cap: int) -> str | None:
+        """Take one of the link's ``cap`` upload slots BEFORE any byte is accepted; return the
+        slot id, or None when the link has used them all. The count and the claim are one
+        ``BEGIN IMMEDIATE`` transaction, so concurrent uploads serialize on the database and can't
+        all see the old count (Hermes on #1423). The slot holds a placeholder name that can never
+        match a stored upload, until :meth:`fill_upload` or :meth:`release_upload`."""
+        slot = f"pending:{uuid.uuid4()}"
+        with self._con() as con:
+            con.execute("BEGIN IMMEDIATE")
+            try:
+                # A slot a crashed upload never filled or released would count forever: an
+                # upload finishes in seconds, so a pending slot this old is abandoned.
+                con.execute(
+                    "DELETE FROM share_uploads WHERE stored LIKE 'pending:%' AND created_at < ?",
+                    (self._clock() - PENDING_UPLOAD_TTL_S,),
+                )
+                (n,) = con.execute(
+                    "SELECT COUNT(*) FROM share_uploads WHERE share_id = ?", (share_id,)
+                ).fetchone()
+                if n >= cap:
+                    con.execute("ROLLBACK")
+                    return None
+                con.execute(
+                    "INSERT INTO share_uploads (share_id, stored, created_at) VALUES (?,?,?)",
+                    (share_id, slot, self._clock()),
+                )
+                con.execute("COMMIT")
+            except BaseException:
+                con.execute("ROLLBACK")
+                raise
+        return slot
+
+    def fill_upload(self, share_id: str, slot: str, stored: str) -> bool:
+        """Record the stored name in the reserved slot. False when the slot is gone — the caller
+        must then remove the file it wrote, or it would sit on disk outside the cap."""
+        with self._con() as con:
+            cur = con.execute(
+                "UPDATE share_uploads SET stored = ? WHERE share_id = ? AND stored = ?",
+                (stored, share_id, slot),
+            )
+            return cur.rowcount > 0
+
+    def count_upload_rows(self, share_id: str) -> int:
+        with self._con() as con:
+            (n,) = con.execute(
+                "SELECT COUNT(*) FROM share_uploads WHERE share_id = ?", (share_id,)
+            ).fetchone()
+        return int(n)
+
+    def release_upload(self, share_id: str, slot: str) -> None:
+        """Hand an unused slot back (the write failed or was refused)."""
+        with self._con() as con:
+            con.execute(
+                "DELETE FROM share_uploads WHERE share_id = ? AND stored = ?", (share_id, slot)
+            )
+
+    def note_upload(self, share_id: str, stored: str) -> None:
+        with self._con() as con:
+            con.execute(
+                "INSERT OR IGNORE INTO share_uploads (share_id, stored, created_at) VALUES (?,?,?)",
+                (share_id, stored, self._clock()),
+            )
+
+    def owns_upload(self, share_id: str, stored: str) -> bool:
+        with self._con() as con:
+            row = con.execute(
+                "SELECT 1 FROM share_uploads WHERE share_id = ? AND stored = ?",
+                (share_id, stored),
+            ).fetchone()
+        return row is not None
 
     # -- end listeners (open streams) --------------------------------------------------
 
@@ -520,7 +658,10 @@ async def archiving(session_key: str):
         raise SharesUnavailable("this session is busy — try again")
     try:
         try:
-            n = st.revoke_for_session(session_key, reason="archived")
+            # Off the loop: `revoke` takes each link's fence, which a send holds in a worker
+            # thread WHILE its facade call runs on the loop — taking it here, on the loop, would
+            # deadlock the two (#1404 P2).
+            n = await asyncio.to_thread(st.revoke_for_session, session_key, reason="archived")
         except Exception as e:
             log.error("public share: could not end links for a session being archived")
             raise SharesUnavailable("could not end this session's public links") from e
@@ -530,6 +671,12 @@ async def archiving(session_key: str):
     finally:
         lock.release()
 
+
+# A reserved-but-unfilled upload slot older than this is abandoned (a crash between reserve and
+# fill/release) and stops counting against the link's cap. It must stay far above the longest an
+# upload request may run (`routes/public_api.UPLOAD_READ_TIMEOUT_S`): expiring a LIVE request's
+# slot would let its file land outside the cap (Hermes on #1423). A test pins the margin.
+PENDING_UPLOAD_TTL_S = 600
 
 # ---- visitor names --------------------------------------------------------------------------
 

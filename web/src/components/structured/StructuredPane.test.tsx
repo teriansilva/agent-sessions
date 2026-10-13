@@ -1147,3 +1147,25 @@ test("the suggestions hint matches a broad offered rule — it never claims only
   expect(card).toHaveTextContent("as proposed — read each option's scope");
   expect(card).not.toHaveTextContent(/only the bounded/i);
 });
+
+test("a turn sent through a public link names the visitor, not 'you' (#1404)", async () => {
+  const mine = turn({ text: "operator turn" });
+  const theirs = turn({ text: "visitor turn", author: { name: "Alex", via: "public_link" } });
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(snap({ turns: [mine, theirs] }));
+  renderPane();
+  const rows = await screen.findAllByTestId("structured-turn");
+  expect(rows).toHaveLength(2);
+  expect(within(rows[0]).getByText("you")).toBeInTheDocument();
+  const label = within(rows[1]).getByText("Alex · via public link");
+  expect(label).toHaveAttribute("title", expect.stringContaining("a name the visitor chose"));
+  expect(within(rows[1]).queryByText("you")).toBeNull();
+});
+
+test("when attribution can't be read, no turn is labelled 'you' (#1404)", async () => {
+  const t = turn({ text: "who sent this", author: { name: null, via: "unknown" } });
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(snap({ turns: [t] }));
+  renderPane();
+  const row = await screen.findByTestId("structured-turn");
+  expect(within(row).getByText("sender unknown")).toBeInTheDocument();
+  expect(within(row).queryByText("you")).toBeNull();
+});

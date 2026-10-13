@@ -169,6 +169,94 @@ def _iter_fd(fh, remaining: int) -> Iterator[bytes]:
             yield chunk
 
 
+def store_upload(chunks: list[bytes], filename: str | None) -> tuple[Path, str]:
+    """Write already-read upload bytes to the shared uploads folder; return ``(dest, safe)``.
+
+    Shared by the operator's ``POST /api/upload`` and the public-link image upload (#1404 P2):
+    one place claims names with ``O_EXCL``, pins the mode before any byte, and cleans a partial
+    file up through the directory that received it. Raises ``HTTPException`` like the route did.
+    """
+    raw_name = Path(filename or "upload").name
+    # Sanitise to a bare, safe basename — no path separators, no traversal.
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", raw_name)[:80] or "upload"
+    dest_dir = ensure_uploads_dir()
+    # Bind the folder the same way the read-back does — by descriptor, never through a
+    # symlink — so what this writes is by construction what that can serve.
+    try:
+        dir_fd = open_uploads_dir()
+    except OSError:
+        raise HTTPException(
+            status_code=500,
+            detail="the uploads folder is not a plain directory (a symlink is refused)",
+        ) from None
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+
+    # `O_CREAT | O_EXCL` is doing two jobs, and the second one is a bug fix rather than
+    # style. The old shape was `while dest.exists(): ...` then `write_bytes`, which is a
+    # TOCTOU: two uploads of the same basename in the same second both saw the name free and
+    # the second silently overwrote the first. `O_EXCL` makes the check and the claim one
+    # atomic operation, so the loser gets `FileExistsError` and takes the next name.
+    #
+    # The mode argument is masked by the umask, so it can only ever produce something
+    # *tighter* than 0600 — never looser. `fchmod` on the descriptor then pins it exactly,
+    # BEFORE any byte of the upload is written. That ordering is the whole point and is the
+    # same one `atomicjson.atomic_write_json` argues at length: a chmod after the write
+    # closes a window that has already passed.
+    fd = None
+    basename = ""
+    # The directory descriptor stays open through the write AND the cleanup. A failed
+    # upload used to be dropped with `dest.unlink()` — a fresh pathname lookup — after the
+    # descriptor was closed, so a same-UID process that renamed the bound folder and left a
+    # symlink at its old name could make the cleanup delete the same basename somewhere else
+    # while the partial file stayed behind in the real folder (Hermes on #906, round 3).
+    # `os.unlink(basename, dir_fd=…)` removes the entry from the directory that RECEIVED the
+    # upload, whatever the pathname points at by then.
+    try:
+        for n in range(MAX_NAME_ATTEMPTS):
+            basename = f"{stamp}-{safe}" if n == 0 else f"{stamp}-{n}-{safe}"
+            try:
+                fd = os.open(
+                    basename,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    FILE_MODE,
+                    dir_fd=dir_fd,
+                )
+                break
+            except FileExistsError:
+                continue
+        if fd is None:
+            raise HTTPException(status_code=500, detail="could not allocate an upload filename")
+
+        def discard() -> None:
+            with contextlib.suppress(OSError):
+                os.unlink(basename, dir_fd=dir_fd)
+
+        # Split in two so the fd is closed exactly once on every path: before `fdopen`
+        # succeeds we own the raw descriptor, after it the file object does.
+        try:
+            os.fchmod(fd, FILE_MODE)
+            fh = os.fdopen(fd, "wb")
+        except BaseException:
+            os.close(fd)
+            discard()
+            raise
+        try:
+            with fh:
+                for chunk in chunks:
+                    fh.write(chunk)
+        except BaseException:
+            # A half-written upload is worse than none: the composer would hand an agent a
+            # path to a truncated file. Drop it and let the error surface.
+            discard()
+            raise
+    finally:
+        os.close(dir_fd)
+    # `name` is the sanitized ORIGINAL filename and names no file on disk; `stored` is the
+    # basename actually written, which is what `GET /api/uploads/{stored}` reads back
+    # (#905 P1 — Hermes caught that a client keying on `name` would 404).
+    return dest_dir / basename, safe
+
+
 def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
     @app.middleware("http")
     async def _uploads_are_never_cached(request: Request, call_next):
@@ -209,85 +297,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
             chunks.append(chunk)
         if not size:
             raise HTTPException(status_code=422, detail="empty upload")
-        # Sanitise to a bare, safe basename — no path separators, no traversal.
-        raw_name = Path(file.filename or "upload").name
-        safe = re.sub(r"[^A-Za-z0-9._-]", "_", raw_name)[:80] or "upload"
-        dest_dir = ensure_uploads_dir()
-        # Bind the folder the same way the read-back does — by descriptor, never through a
-        # symlink — so what this writes is by construction what that can serve.
-        try:
-            dir_fd = open_uploads_dir()
-        except OSError:
-            raise HTTPException(
-                status_code=500,
-                detail="the uploads folder is not a plain directory (a symlink is refused)",
-            ) from None
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-
-        # `O_CREAT | O_EXCL` is doing two jobs, and the second one is a bug fix rather than
-        # style. The old shape was `while dest.exists(): ...` then `write_bytes`, which is a
-        # TOCTOU: two uploads of the same basename in the same second both saw the name free and
-        # the second silently overwrote the first. `O_EXCL` makes the check and the claim one
-        # atomic operation, so the loser gets `FileExistsError` and takes the next name.
-        #
-        # The mode argument is masked by the umask, so it can only ever produce something
-        # *tighter* than 0600 — never looser. `fchmod` on the descriptor then pins it exactly,
-        # BEFORE any byte of the upload is written. That ordering is the whole point and is the
-        # same one `atomicjson.atomic_write_json` argues at length: a chmod after the write
-        # closes a window that has already passed.
-        fd = None
-        basename = ""
-        # The directory descriptor stays open through the write AND the cleanup. A failed
-        # upload used to be dropped with `dest.unlink()` — a fresh pathname lookup — after the
-        # descriptor was closed, so a same-UID process that renamed the bound folder and left a
-        # symlink at its old name could make the cleanup delete the same basename somewhere else
-        # while the partial file stayed behind in the real folder (Hermes on #906, round 3).
-        # `os.unlink(basename, dir_fd=…)` removes the entry from the directory that RECEIVED the
-        # upload, whatever the pathname points at by then.
-        try:
-            for n in range(MAX_NAME_ATTEMPTS):
-                basename = f"{stamp}-{safe}" if n == 0 else f"{stamp}-{n}-{safe}"
-                try:
-                    fd = os.open(
-                        basename,
-                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-                        FILE_MODE,
-                        dir_fd=dir_fd,
-                    )
-                    break
-                except FileExistsError:
-                    continue
-            if fd is None:
-                raise HTTPException(status_code=500, detail="could not allocate an upload filename")
-
-            def discard() -> None:
-                with contextlib.suppress(OSError):
-                    os.unlink(basename, dir_fd=dir_fd)
-
-            # Split in two so the fd is closed exactly once on every path: before `fdopen`
-            # succeeds we own the raw descriptor, after it the file object does.
-            try:
-                os.fchmod(fd, FILE_MODE)
-                fh = os.fdopen(fd, "wb")
-            except BaseException:
-                os.close(fd)
-                discard()
-                raise
-            try:
-                with fh:
-                    for chunk in chunks:
-                        fh.write(chunk)
-            except BaseException:
-                # A half-written upload is worse than none: the composer would hand an agent a
-                # path to a truncated file. Drop it and let the error surface.
-                discard()
-                raise
-        finally:
-            os.close(dir_fd)
-        dest = dest_dir / basename
-        # `name` is the sanitized ORIGINAL filename and names no file on disk; `stored` is the
-        # basename actually written, which is what `GET /api/uploads/{stored}` reads back
-        # (#905 P1 — Hermes caught that a client keying on `name` would 404).
+        dest, safe = store_upload(chunks, file.filename)
         return JSONResponse({"path": str(dest), "name": safe, "stored": dest.name})
 
     @app.get("/api/uploads/{stored}")

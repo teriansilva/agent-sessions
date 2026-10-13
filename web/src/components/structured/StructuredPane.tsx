@@ -350,15 +350,16 @@ function BackgroundWork() {
   );
 }
 
-function MessageHeader({ speaker, kind, ts }: {
+function MessageHeader({ speaker, title, kind, ts }: {
   speaker: string;
+  title?: string;
   kind: "user" | "assistant";
   ts?: number | null;
 }) {
   const timestamp = messageTimestamp(ts, kind);
   return (
     <div className={`${chat.who} ${styles.messageHeader}`}>
-      <span>{speaker}</span>
+      <span title={title}>{speaker}</span>
       {timestamp && (
         <time className={styles.messageTimestamp} dateTime={timestamp.iso}
           title={timestamp.label} aria-label={timestamp.label}>
@@ -402,7 +403,26 @@ function TurnView({
   return (
     <div className={chat.exchange} data-testid="structured-turn" data-state={turn.state}>
       <div className={`${chat.turn} ${chat.user}`}>
-        <MessageHeader speaker="you" kind="user" ts={turn.ts} />
+        {/* A visitor's turn (#1404 P2) names them; the name is their own choice, not proof. When
+            attribution can't be read, no turn claims to be the operator's. */}
+        <MessageHeader
+          speaker={
+            turn.author?.via === "public_link"
+              ? `${turn.author.name} · via public link`
+              : turn.author?.via === "unknown"
+                ? "sender unknown"
+                : "you"
+          }
+          title={
+            turn.author?.via === "public_link"
+              ? "Sent through a public link — a name the visitor chose"
+              : turn.author?.via === "unknown"
+                ? "Who sent this can't be read right now — it may have come through a public link"
+                : undefined
+          }
+          kind="user"
+          ts={turn.ts}
+        />
         {!!turn.attachments?.length && (
           <div className={styles.turnImages}>
             {turn.attachments.map((a) => a.mime.startsWith("image/") ? (

@@ -1363,6 +1363,9 @@ export interface StructuredTurn {
   tools_truncated: boolean;
   /** The pictures the turn carried (#1332 Phase 3): upload names, shown via the read-back route. */
   attachments?: { stored: string; name?: string; mime: string }[];
+  /** Who sent it through a public link (#1404 P2) — a self-chosen name, not a verified identity.
+   *  Absent or null for the operator's own turns. */
+  author?: { name: string; via: "public_link" } | { name: null; via: "unknown" } | null;
 }
 
 /** One exact pending request. `payload` is the COMPLETE request the decision answers; `choices`

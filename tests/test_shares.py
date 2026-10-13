@@ -279,6 +279,8 @@ def _visitor(app, cfg: AuthConfig) -> TestClient:
 
 
 def _create(op: TestClient, **body) -> dict:
+    if body.get("mode") == "send":
+        body.setdefault("accept_risk", True)
     r = op.post("/api/shares", json={"session": TERM, **body})
     assert r.status_code == 201, r.text
     return r.json()
@@ -322,9 +324,28 @@ def test_the_url_is_returned_once_and_never_listed(app, auth_cfg):
 
 def test_an_api_session_may_be_shared_send_but_a_terminal_may_not(app, auth_cfg):
     op = _operator(app, auth_cfg)
-    assert op.post("/api/shares", json={"session": API, "mode": "send"}).status_code == 201
+    sent = {"session": API, "mode": "send", "accept_risk": True}
+    assert op.post("/api/shares", json=sent).status_code == 201
     r = op.post("/api/shares", json={"session": TERM, "mode": "send"})
     assert r.status_code == 422
+
+
+def test_a_send_link_is_created_only_after_the_risk_is_accepted(app, auth_cfg):
+    from agent_sessions.routes.shares import SEND_RISK
+
+    op = _operator(app, auth_cfg)
+    for extra in ({}, {"accept_risk": False}, {"accept_risk": "yes"}, {"accept_risk": 1}):
+        r = op.post("/api/shares", json={"session": API, "mode": "send", **extra})
+        assert r.status_code == 422, extra
+        assert SEND_RISK in r.json()["detail"]
+        assert "saved secret values" in r.json()["detail"]
+    assert op.get(f"/api/shares?session={API}").json()["shares"] == []
+    # Accepted: the link is made, and the response restates the risk.
+    r = op.post("/api/shares", json={"session": API, "mode": "send", "accept_risk": True})
+    assert r.status_code == 201 and r.json()["risk"] == SEND_RISK
+    # A view link needs no acceptance and carries no risk text.
+    r = op.post("/api/shares", json={"session": API, "mode": "view"})
+    assert r.status_code == 201 and "risk" not in r.json()
 
 
 @pytest.mark.parametrize(
