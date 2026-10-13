@@ -19,16 +19,23 @@ import tempfile
 import uuid
 from pathlib import Path
 
+import httpx
 import pytest
 
+import test_ai_review_loop
 import test_manifest_api
 from agent_sessions import (
+    ai_review_loop,
+    chat_store,
+    metadata,
     native_containment,
     native_events,
     native_journal,
     native_ownership,
     native_runtime,
     native_state,
+    prefs,
+    review,
 )
 from agent_sessions import structured_runtime as runtime
 from agent_sessions.engines import registry
@@ -1548,3 +1555,162 @@ async def test_resource_policy_is_frozen_per_generation(host, project, monkeypat
     assert len(host.launches) == 2
     assert "--property=MemoryMax=32G" in host.launches[0]
     assert "--property=MemoryMax=16G" in host.launches[1]
+
+
+class _NoTerminals:
+    """The live-terminal registry with nothing in it: an API session has no dtach master."""
+
+    def snapshot(self):
+        return []
+
+
+async def _reviewable_api_session(monkeypatch, tmp_home, project, source, calls, **transport):
+    """One API session with a settled turn, AI review configured against a mock endpoint."""
+    monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_home / "prefs.json"))
+    prefs.set_ai_review(
+        {"enabled": True, "base_url": "https://ai.test/v1", "api_key": "sk-t", "model": "m"}
+    )
+    monkeypatch.setattr(
+        review, "_TRANSPORT", test_ai_review_loop._chat_transport(calls, **transport)
+    )
+    engine = ENGINES[source]
+    # What the registry attaches to an API client's store. Only this client's: the fixture
+    # clients share one root, and each would otherwise list the other's conversation…
+    prov = registry.get(engine)
+    if prov.kind is None:
+        prov.attach_kind(chat_store.ChatStoreKind())
+    # …and the only API client: the others (the chat agent included) read the same root here.
+    providers = [p for p in registry._PROVIDERS if registry.is_pty(p) or p is prov]
+    monkeypatch.setattr(registry, "_PROVIDERS", providers)
+    monkeypatch.setattr(registry, "_BY_ID", {p.engine_id: p for p in providers})
+    # The fixture client journals under its own root; the transcript reader resolves the store
+    # through the environment, which conftest pins elsewhere. Point both at the same place.
+    monkeypatch.setenv("AGENT_SESSIONS_CHAT_DIR", str(prov.store_root()))
+    key = (await runtime.create_session(engine, str(project), operation_id=ident()))["session_key"]
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="one")
+    await settle(key, turn)
+    return key
+
+
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+@pytest.mark.anyio
+async def test_the_ai_review_loop_reviews_an_api_session_once_per_change(
+    host, project, monkeypatch, tmp_home, source
+):
+    """An API session is no terminal, so the live-terminal registry never lists it: the sweep
+    must still reach it, then leave it alone until it changes again."""
+    calls: list = []
+    key = await _reviewable_api_session(monkeypatch, tmp_home, project, source, calls)
+
+    reviewed, failures = await ai_review_loop.sweep(_NoTerminals())
+    assert (reviewed, failures) == ([key], 0)
+    meta = metadata.get(metadata.resolve_key(key))
+    assert meta.ai_summary == "Editing tests" and meta.reviewed_at is not None
+    assert len(calls) == 2  # the summary and the recap
+
+    # Nothing new happened: not reviewed again, and not even read.
+    gathered = []
+    real = review.gather_review_input
+    monkeypatch.setattr(
+        review, "gather_review_input", lambda k, *a, **kw: gathered.append(k) or real(k, *a, **kw)
+    )
+    assert await ai_review_loop.sweep(_NoTerminals()) == ([], 0)
+    assert gathered == [] and len(calls) == 2
+
+    # A new turn is new work: reviewed again.
+    nxt = ident()
+    await runtime.submit_turn(key, operation_id=nxt, text="two")
+    await settle(key, nxt)
+    assert (await ai_review_loop.sweep(_NoTerminals()))[0] == [key]
+
+
+@pytest.mark.anyio
+async def test_a_failed_api_recap_is_retried_without_new_activity(
+    host, project, monkeypatch, tmp_home
+):
+    """The summary is written before the recap, so `reviewed_at` moves even when the recap call
+    fails: the session must stay a candidate until its recap lands (Hermes on #1425)."""
+    calls: list = []
+    key = await _reviewable_api_session(
+        monkeypatch, tmp_home, project, "codex", calls, recap_ok=False
+    )
+    assert (await ai_review_loop.sweep(_NoTerminals()))[0] == [key]
+    meta = metadata.get(metadata.resolve_key(key))
+    assert meta.reviewed_at is not None and meta.ai_recap == "" and meta.recap_failed_at
+    # The endpoint recovers; the conversation does not change.
+    monkeypatch.setattr(review, "_TRANSPORT", test_ai_review_loop._chat_transport(calls))
+    assert (await ai_review_loop.sweep(_NoTerminals()))[0] == [key]
+    meta = metadata.get(metadata.resolve_key(key))
+    assert meta.ai_recap == "Cloned repo.\nFixed tests." and meta.recap_failed_at is None
+    # Settled: nothing further to do until the session changes.
+    assert await ai_review_loop.sweep(_NoTerminals()) == ([], 0)
+
+
+@pytest.mark.anyio
+async def test_an_api_recap_whose_input_failed_to_read_is_retried_without_new_activity(
+    host, project, monkeypatch, tmp_home
+):
+    """Hermes on #1425 (review 6166): a recap whose INPUT could not be gathered owes a retry too."""
+    calls: list = []
+    key = await _reviewable_api_session(monkeypatch, tmp_home, project, "codex", calls)
+    real = review.gather_recap_input
+    failing = {"on": True}
+
+    def flaky(k, *a, **kw):
+        if failing["on"]:
+            raise review.ReviewError("the transcript could not be read")
+        return real(k, *a, **kw)
+
+    monkeypatch.setattr(review, "gather_recap_input", flaky)
+    assert (await ai_review_loop.sweep(_NoTerminals()))[0] == [key]
+    meta = metadata.get(metadata.resolve_key(key))
+    assert meta.ai_summary and meta.ai_recap == "" and meta.recap_failed_at
+    failing["on"] = False  # the reader recovers; the conversation does not change
+    assert (await ai_review_loop.sweep(_NoTerminals()))[0] == [key]
+    meta = metadata.get(metadata.resolve_key(key))
+    assert meta.ai_recap == "Cloned repo.\nFixed tests." and meta.recap_failed_at is None
+    assert await ai_review_loop.sweep(_NoTerminals()) == ([], 0)
+
+
+@pytest.mark.anyio
+async def test_a_reviewed_api_session_without_a_recap_gets_one_and_no_work_is_asked_once(
+    host, project, monkeypatch, tmp_home
+):
+    """A summary with no recap ever evaluated (an earlier review) is admitted until one is. A
+    model answer of "no work to recap yet" counts as evaluated: the unchanged session is not
+    asked again, so it cannot spend a call every sweep."""
+    calls: list = []
+    key = await _reviewable_api_session(monkeypatch, tmp_home, project, "codex", calls)
+    assert (await ai_review_loop.sweep(_NoTerminals()))[0] == [key]
+    rk = metadata.resolve_key(key)
+    metadata.patch(rk, ai_recap="", recap_fingerprint="")  # as an earlier review left it
+    assert (await ai_review_loop.sweep(_NoTerminals()))[0] == [key]
+    assert metadata.get(rk).ai_recap == "Cloned repo.\nFixed tests."
+
+    # The model now finds nothing to recap for a never-evaluated recap: recorded once, then quiet.
+    metadata.patch(rk, ai_recap="", recap_fingerprint="")
+
+    def insufficient(request):
+        calls.append(request)
+        payload = json.loads(request.content)
+        is_recap = "returning to a coding-agent session" in payload["messages"][0]["content"]
+        body = (
+            {"insufficient": True}
+            if is_recap
+            else {
+                "summary": "Editing tests",
+                "title": "Fix the tests",
+                "intervention_required": False,
+                "reason": "",
+            }
+        )
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(body)}}]})
+
+    monkeypatch.setattr(review, "_TRANSPORT", httpx.MockTransport(insufficient))
+    assert (await ai_review_loop.sweep(_NoTerminals()))[0] == [key]
+    meta = metadata.get(rk)
+    assert meta.recap_fingerprint and meta.ai_recap == "" and meta.recap_failed_at is None
+    before = len(calls)
+    assert await ai_review_loop.sweep(_NoTerminals()) == ([], 0)
+    assert len(calls) == before

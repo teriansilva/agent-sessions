@@ -163,6 +163,11 @@ class SessionMeta:
     # value untouched (never rolls back the summary/intervention write, and vice-versa).
     ai_recap: str = ""
     recap_fingerprint: str = ""
+    # When the last recap could not run: its input could not be read, or the model call or its
+    # reply failed (never a model answer of "no work yet", which is recorded as evaluated).
+    # Cleared once a recap is written or found current. The review stamps `reviewed_at` before
+    # the recap runs, so a review gate keyed on `reviewed_at` alone would never retry it.
+    recap_failed_at: float | None = None
     # Structured assessment (#1020): the bounded, versioned record `assessment.record` builds from
     # the tail review's reply — current state, blocker, decision needed, task, constraints, with
     # the source fingerprint and read time it describes. None = no record (unknown). Validated by
@@ -633,6 +638,7 @@ def _index_from_raw(raw: dict, *, normalized: bool = False) -> dict[str, Session
             orchestrator_excluded=bool(val.get("orchestrator_excluded", False)),
             ai_recap=str(val.get("ai_recap", "") or ""),
             recap_fingerprint=str(val.get("recap_fingerprint", "") or ""),
+            recap_failed_at=assessment.finite_number(val.get("recap_failed_at")),
             ai_assessment=assessment.from_stored(val.get("ai_assessment")),
             review_failed_at=assessment.finite_number(val.get("review_failed_at")),
             draft=(val["draft"] if isinstance(val.get("draft"), dict) else None),
@@ -723,6 +729,7 @@ def patch(
         # Chronological recap (#481) — written by the review pass, never by the rename path.
         "ai_recap",
         "recap_fingerprint",
+        "recap_failed_at",
         # Structured assessment + failed-refresh stamp (#1020) — written by the review pass only.
         "ai_assessment",
         "review_failed_at",
@@ -750,11 +757,12 @@ def patch(
         or assessment.finite_number(failed_review_started_at) is None
     ):
         raise ValueError("failed_review_started_at is only valid for a failed review timestamp")
-    if fields.get("review_failed_at") is not None:
-        stamp = assessment.finite_number(fields["review_failed_at"])
-        if stamp is None:
-            raise ValueError("review_failed_at must be a finite number or null")
-        fields["review_failed_at"] = stamp
+    for name in ("review_failed_at", "recap_failed_at"):
+        if fields.get(name) is not None:
+            stamp = assessment.finite_number(fields[name])
+            if stamp is None:
+                raise ValueError(f"{name} must be a finite number or null")
+            fields[name] = stamp
 
     with _exclusive(path) as fh:
         try:
@@ -800,6 +808,7 @@ def patch(
             "orchestrator_excluded": existing.get("orchestrator_excluded", False),
             "ai_recap": existing.get("ai_recap", ""),
             "recap_fingerprint": existing.get("recap_fingerprint", ""),
+            "recap_failed_at": assessment.finite_number(existing.get("recap_failed_at")),
             "ai_assessment": assessment.from_stored(existing.get("ai_assessment")),
             "review_failed_at": assessment.finite_number(existing.get("review_failed_at")),
             "draft": existing.get("draft"),

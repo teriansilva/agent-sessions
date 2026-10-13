@@ -1015,11 +1015,18 @@ async def run_review(key: str, aliases: dict[str, str] | None = None) -> dict:
     # never rolls back the summary/intervention write just persisted (and a summary failure
     # raises above, before we reach here, so the recap never blocks it). Its own fingerprint
     # skips a redundant call when the whole-session content is unchanged.
+    # A recap that could not run is recorded (`recap_failed_at`), so the sweep retries it although
+    # the summary above is current. A recap the model found nothing for is recorded as evaluated
+    # (its input's fingerprint, no text), so an unchanged session is not asked again.
     try:
         recap_text, recap_fp = await asyncio.to_thread(
             gather_recap_input, key, recap_input_chars(cfg), aliases
         )
-        if recap_fp != meta.recap_fingerprint:
+    except ReviewError:
+        recap_text = None
+        meta = metadata.patch(rk, recap_failed_at=time.time())  # its input could not be read
+    if recap_text is not None and recap_fp != meta.recap_fingerprint:
+        try:
             obj = await complete_json(
                 [
                     {"role": "system", "content": prompts.effective("session_recap")},
@@ -1027,10 +1034,19 @@ async def run_review(key: str, aliases: dict[str, str] | None = None) -> dict:
                 ]
             )
             meta = metadata.patch(
-                rk, ai_recap=_recap_shape_guard(obj, recap_text), recap_fingerprint=recap_fp
+                rk,
+                ai_recap=_recap_shape_guard(obj, recap_text),
+                recap_fingerprint=recap_fp,
+                recap_failed_at=None,
             )
-    except ReviewError:
-        pass  # keep the last good recap; the summary/intervention write above stands
+        except InsufficientInputError:
+            # The model sees no work to recap yet: the same input would answer the same.
+            meta = metadata.patch(rk, recap_fingerprint=recap_fp, recap_failed_at=None)
+        except ReviewError:
+            # Keep the last good recap; the summary/intervention write above stands.
+            meta = metadata.patch(rk, recap_failed_at=time.time())
+    elif recap_text is not None and meta.recap_failed_at is not None:
+        meta = metadata.patch(rk, recap_failed_at=None)  # the stored recap is current
     return {
         "ai_summary": meta.ai_summary,
         "ai_title": meta.ai_title,

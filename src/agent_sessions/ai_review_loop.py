@@ -133,6 +133,29 @@ def _sort_key(key: str, meta) -> tuple[float, float]:
     return (max(reviewed, attempted), attempted)
 
 
+def _api_sessions() -> list[tuple[str, float]]:
+    """``(key, last activity)`` of every unarchived session an API client keeps.
+
+    An API client runs no terminal, so the live-terminal registry never lists its sessions: they
+    are read from the client's own store, chosen by the manifest (no PTY), never by engine name.
+    Fail-soft per client: one unreadable store never costs the others their review."""
+    from . import engines
+
+    out: list[tuple[str, float]] = []
+    for prov in engines.present_providers():
+        if engines.is_pty(prov) or not engines.is_agent(prov):
+            continue
+        try:
+            rows = prov.scan()
+        except Exception:
+            log.debug("ai-review: %s sessions unreadable — skipping", prov.engine_id, exc_info=True)
+            continue
+        out.extend(
+            (engines.session_key(s), float(s.last_mtime or 0)) for s in rows if not s.archived
+        )
+    return out
+
+
 def _candidates(registry) -> list[tuple[str, object]]:
     """The reviewable sessions in the registry, LEAST-RECENTLY-REVIEWED FIRST (#611).
 
@@ -167,6 +190,29 @@ def _candidates(registry) -> list[tuple[str, object]]:
             log.debug("ai-review: metadata read failed for %s — skipping", key, exc_info=True)
             continue
         if meta.review_excluded or meta.archived is True:
+            continue
+        out.append((key, meta))
+    for key, last_activity in _api_sessions():
+        if key in live:
+            continue
+        try:
+            meta = metadata.get(metadata.resolve_key(key))
+        except Exception:
+            log.debug("ai-review: metadata read failed for %s — skipping", key, exc_info=True)
+            continue
+        if meta.review_excluded or meta.archived is True:
+            continue
+        live.add(key)
+        # Activity since its last persisted review, or nothing to read: a failed review moves no
+        # `reviewed_at`, so that session stays a candidate and is retried, as a live one is. The
+        # summary is written before the recap, so a recap that failed or was never evaluated is
+        # admitted on its own until it lands.
+        if (
+            meta.reviewed_at is not None
+            and last_activity <= float(meta.reviewed_at)
+            and meta.recap_failed_at is None
+            and meta.recap_fingerprint
+        ):
             continue
         out.append((key, meta))
     for gone in _LAST_ATTEMPT.keys() - live:  # don't retain state for dead sessions
