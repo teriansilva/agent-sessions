@@ -18,6 +18,7 @@ import pytest
 import test_webterm
 from agent_sessions import engines, native_ownership, prefs, project_dirs, webterm
 from agent_sessions.plugins import admission, storage
+from agent_sessions.routes import sessions as sessions_routes
 from agent_sessions.scanner import Session
 from test_api import _client, _login
 
@@ -111,6 +112,52 @@ def test_an_owned_native_id_answers_with_the_owner_row(auth_cfg, stores, walk, s
     # Still hidden from the console listing: the double-listing filter is unchanged.
     listed = {s["id"] for s in c.get("/api/sessions?limit=100").json()["sessions"]}
     assert f"{source}:{native}" not in listed and owner in listed
+
+
+@pytest.mark.parametrize(("source", "api", "native"), PAIRS)
+def test_an_owned_native_id_resolves_without_a_re_walk(
+    auth_cfg, stores, walk, monkeypatch, source, api, native
+):
+    """The ledger is asked before the miss re-walk: a bound history is hidden from discovery
+    whatever the snapshot's age, so the cold walk could never find it and only delayed the
+    redirect while the pane showed "not found"."""
+    owner = _setup(walk, source, api, native)
+    # The permit is free, so the re-walk WOULD run if the route reached it.
+    monkeypatch.setattr(sessions_routes, "_last_miss_rewalk", 0.0)
+
+    c = _client(auth_cfg)
+    _login(c, auth_cfg)
+    rewalks = []
+    real = engines.invalidate_scan_cache
+    monkeypatch.setattr(engines, "invalidate_scan_cache", lambda: (rewalks.append(1), real()))
+    r = c.get(f"/api/sessions/{source}:{native}")
+    assert r.status_code == 200
+    assert r.json()["id"] == owner and r.json()["resolved_from"] == f"{source}:{native}"
+    assert rewalks == [], "an owned native id paid the miss re-walk"
+
+
+@pytest.mark.parametrize(("source", "api", "native"), PAIRS)
+def test_an_owner_missing_from_a_stale_snapshot_resolves_after_the_re_walk(
+    auth_cfg, stores, walk, monkeypatch, source, api, native
+):
+    """An API session created moments ago is bound in the ledger but absent from a warm
+    snapshot. The early ledger answer finds no owner row, so the route still re-walks and asks
+    again from fresh data instead of answering 404."""
+    owner = _setup(walk, source, api, native)
+    owner_row = walk.pop()  # not on disk when the snapshot below is taken
+    monkeypatch.setattr(sessions_routes, "_last_miss_rewalk", 0.0)
+    engines.set_scan_cache_ttl(60.0)
+    try:
+        engines.invalidate_scan_cache()
+        assert all(engines.session_key(s) != owner for s in engines.scan_all_cached())
+        walk.append(owner_row)
+        c = _client(auth_cfg)
+        _login(c, auth_cfg)
+        r = c.get(f"/api/sessions/{source}:{native}")
+        assert r.status_code == 200
+        assert r.json()["id"] == owner and r.json()["resolved_from"] == f"{source}:{native}"
+    finally:
+        engines.set_scan_cache_ttl(0)
 
 
 @pytest.mark.parametrize(("source", "api", "native"), PAIRS)

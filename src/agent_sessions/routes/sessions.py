@@ -820,6 +820,15 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # not, since a fresh scan cannot change the answer.
         row = _lookup_row(key)
         if row is _NOT_FOUND:
+            # An API session's native history (#1405) is asked about BEFORE the re-walk. Discovery
+            # hides a bound history whatever the snapshot's age, so a re-walk can never find it:
+            # asking after one made every old `/s/<source>/<native-id>` link pay a cold walk of
+            # every store (about a minute on a loaded host) while the pane showed "not found". A
+            # found console row still never gets here. The owner's own row may be missing from a
+            # stale snapshot (an API session created moments ago); that falls through to the
+            # re-walk below and is asked again from fresh data.
+            row = _owned_row(key)
+        if row is _NOT_FOUND:
             # Hold the permit ACROSS the re-walk, not just while claiming it (#867 review r6
             # note). Publishing the timestamp first let a concurrent follower see "someone is
             # re-walking" and answer 404 from the very snapshot the winner was replacing. Holding
@@ -832,8 +841,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 else:
                     row = _lookup_row(key)
         if row is _NOT_FOUND:
-            # Only a GENUINE miss (after the re-walk) may be an API session's native history
-            # (#1405); a real console row and a scope refusal never get here.
+            # The owner row, answered from the fresh walk; a scope refusal never gets here.
             row = _owned_row(key)
         return None if row is _NOT_FOUND else row
 
