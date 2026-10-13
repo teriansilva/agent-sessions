@@ -408,6 +408,11 @@ def test_codex_explicit_completion_clears_pending_permission(native_state):
         ("success", False, "aborted_streaming", "interrupted"),
         ("success", False, "aborted_tools", "interrupted"),
         ("success", False, "max_turns", "failed"),
+        # What Claude Code actually sends for an interrupt (captured from the CLI): an error
+        # result whose terminal reason is the abort — never a failure the operator must read.
+        ("error_during_execution", True, "aborted_streaming", "interrupted"),
+        ("error_during_execution", True, "aborted_tools", "interrupted"),
+        ("error_during_execution", True, None, "failed"),
     ],
 )
 def test_claude_result_semantics(subtype, is_error, reason, state):
@@ -421,11 +426,19 @@ def test_claude_result_semantics(subtype, is_error, reason, state):
             "is_error": is_error,
             "terminal_reason": reason,
             "result": "Answer",
+            "errors": [
+                "[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use"
+            ],
         }
     )[0]
     assert event.kind == "turn_completed"
     assert event.data["state"] == state
     assert event.data["operation_id"] == OPERATION
+    # An interrupt shows as interrupted; Claude's internal diagnostic is no error to show.
+    if state == "interrupted":
+        assert not event.data["error"]
+    if state == "failed":
+        assert "ede_diagnostic" in event.data["error"]
 
 
 def test_claude_background_result_cannot_complete_submitted_turn():

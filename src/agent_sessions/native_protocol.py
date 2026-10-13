@@ -1156,10 +1156,12 @@ class ClaudeCodec(_Codec):
             return []
         common = {"operation_id": self.operation_id, "native_turn_id": self.native_turn_id}
         if kind == "result":
-            if frame["is_error"] or subtype != "success":
-                state = "failed"
-            elif frame.get("terminal_reason") in ("aborted_streaming", "aborted_tools"):
+            # An interrupt is reported as an error result (`error_during_execution`) whose
+            # terminal reason is the abort: it is interrupted, and its diagnostic no failure.
+            if frame.get("terminal_reason") in ("aborted_streaming", "aborted_tools"):
                 state = "interrupted"
+            elif frame["is_error"] or subtype != "success":
+                state = "failed"
             elif frame.get("terminal_reason") not in (None, "completed"):
                 state = "failed"
             else:
@@ -1176,7 +1178,7 @@ class ClaudeCodec(_Codec):
                     background_active=bool(self._background)
                     or self._session_state in {"running", "requires_action", "unknown"},
                     native_state=self._session_state,
-                    error=_summary(frame.get("errors")),
+                    error="" if state == "interrupted" else _summary(frame.get("errors")),
                 )
             ]
         if kind == "assistant":
