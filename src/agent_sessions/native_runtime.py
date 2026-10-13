@@ -24,6 +24,7 @@ Lifecycle facts this module relies on (see ``docs/invariants/native-runtime.md``
 from __future__ import annotations
 
 import asyncio
+import bisect
 import contextlib
 import json
 import os
@@ -1527,6 +1528,9 @@ async def submit(
         for a in immutable["params"].get("attachments") or ()
     ) and not kinds.API_IMAGE_INPUT.get(prov.manifest.api.kind, False):
         raise NativeError(422, "this client takes no images")
+    # An explicit expectation still holds when the only records since are a SUCCESSOR's startup:
+    # this send relaunched an idled-out worker, and a fresh generation journals before any claim.
+    prior = await asyncio.to_thread(_live_worker, session_id)
     for _ in range(3):
         journal = await asyncio.to_thread(_journal, prov, session_id)
         receipt = _replay(journal, turn_id, immutable)
@@ -1542,8 +1546,17 @@ async def submit(
             )
             break
         except NativeError as exc:
+            if "revision changed" not in exc.detail:
+                raise
             # Unsolicited observations move the revision; only an implicit expectation retries.
-            if expected_revision is None and "revision changed" in exc.detail:
+            if expected_revision is None:
+                continue
+            after = await asyncio.to_thread(_journal, prov, session_id)
+            gen = await asyncio.to_thread(_generation, session_id)
+            if gen is not None and _successor_startup_only(
+                after, expected_revision, prior, gen.worker_id
+            ):
+                expected_revision = after.revision
                 continue
             raise
     else:
@@ -1555,6 +1568,29 @@ async def submit(
             + (", or an attached file changed" if attachments else ""),
         )
     return receipt
+
+
+_STARTUP_EVENTS = frozenset({"initialized", "session", "background", "response"})
+
+
+def _successor_startup_only(
+    journal: native_journal.Journal, after: int, prior: str | None, successor: str
+) -> bool:
+    """Every record since ``after`` is a startup observation by ``successor``, the current
+    generation, which was not live when the send began (``prior``).
+
+    Such a generation has run no turn: what it journals before the claim (initialization,
+    session facts, background state) is no activity the operator missed. A claim, a handoff,
+    conversation content, or any record by another generation — the idled-out one's last
+    background reports included — keeps the refusal."""
+    if successor == prior:
+        return False
+    start = bisect.bisect_right(journal.events.cursors, after)
+    newer = journal.events[start:]
+    return len(newer) == journal.revision - after and all(
+        event["worker_id"] == successor and event["event"]["kind"] in _STARTUP_EVENTS
+        for event in newer
+    )
 
 
 async def _existing_generation_call(session_id: str, action: str, params: dict) -> dict:

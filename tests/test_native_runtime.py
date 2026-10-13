@@ -24,6 +24,7 @@ import pytest
 import test_manifest_api
 from agent_sessions import (
     native_containment,
+    native_events,
     native_journal,
     native_ownership,
     native_runtime,
@@ -704,6 +705,95 @@ async def test_an_idle_worker_exits_and_the_next_turn_resumes_the_same_history(
     snap, turn = await settle(key, nxt)
     assert turn["reply"] == "echo:two" and snap["native"]["native_id"] == native
     assert snap["native"]["worker"] != worker and len(host.launches) == launched + 1
+
+
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+@pytest.mark.anyio
+async def test_a_turn_sent_at_the_seen_revision_survives_its_own_worker_relaunch(
+    host, project, monkeypatch, source
+):
+    """The SPA sends an idle conversation's revision. A send after the worker idled out
+    relaunches it, and the successor journals its startup before the claim: that is no
+    activity the operator missed, so it must not refuse the turn."""
+    monkeypatch.setattr(native_runtime, "WORKER_IDLE_TIMEOUT", 0.5)
+    engine = ENGINES[source]
+    key = (await runtime.create_session(engine, str(project), operation_id=ident()))["session_key"]
+    first = ident()
+    await runtime.submit_turn(key, operation_id=first, text="one")
+    snap, _ = await settle(key, first)
+    worker = snap["native"]["worker"]
+    for _ in range(200):
+        if native_state.read_lifecycle(worker).get("phase") == "exited":
+            break
+        await asyncio.sleep(0.05)
+    seen = await runtime.snapshot(key)
+    assert seen["native"]["worker"] is None
+    monkeypatch.setattr(native_runtime, "WORKER_IDLE_TIMEOUT", 60.0)
+    nxt = ident()
+    await runtime.submit_turn(key, operation_id=nxt, text="two", expected_revision=seen["revision"])
+    snap, turn = await settle(key, nxt)
+    assert turn["reply"] == "echo:two" and snap["native"]["worker"] != worker
+    # Not vacuous: the successor really did journal before the turn was claimed.
+    page = await runtime.events(key, after=seen["revision"])
+    assert page["events"] and not page["events"][0].get("operation_id")
+
+
+def test_only_a_successors_startup_records_keep_an_explicit_expectation(tmp_path):
+    def journal(*events):
+        j = native_journal.Journal({}, revision=10, events=native_events.Events(tmp_path))
+        for cursor, (worker, kind) in enumerate(events, 11):
+            j.events.append(
+                {
+                    "cursor": cursor,
+                    "worker_id": worker,
+                    "connection_id": "c",
+                    "ts": 0.0,
+                    "event": {"kind": kind, "data": {}},
+                }
+            )
+            j.revision = cursor
+        return j
+
+    ok = native_runtime._successor_startup_only
+    startup = journal(("new", "background"), ("new", "initialized"), ("new", "session"))
+    assert ok(startup, 10, None, "new")
+    assert ok(startup, 10, "old", "new")
+    # The worker that was live before the send: its observations are activity, startup or not.
+    assert not ok(startup, 10, "new", "new")
+    # Only the CURRENT generation's: the idled-out one's last background report (an unsolicited
+    # turn finishing) is activity the operator missed, even though nothing was live at the send.
+    assert not ok(journal(("old", "background"), ("new", "session")), 10, None, "new")
+    assert not ok(startup, 10, None, "other")
+    # Conversation content is never startup, whoever wrote it.
+    assert not ok(journal(("new", "text")), 10, None, "new")
+    assert not ok(journal(("new", "approval")), 10, None, "new")
+    # A record that is no observation (a claim, a handoff) has no event: refused.
+    claimed = journal(("new", "session"))
+    claimed.revision += 1
+    assert not ok(claimed, 10, None, "new")
+
+
+@pytest.mark.anyio
+async def test_a_turn_sent_at_a_revision_before_unseen_activity_is_still_refused(
+    host, project, monkeypatch
+):
+    """The relaunch allowance covers only the successor's own startup: an operator who has
+    not seen the previous turn's reply is refused even when the send relaunches the worker."""
+    monkeypatch.setattr(native_runtime, "WORKER_IDLE_TIMEOUT", 0.5)
+    key = await _codex(project)
+    before = (await runtime.snapshot(key))["revision"]
+    first = ident()
+    await runtime.submit_turn(key, operation_id=first, text="one")
+    snap, _ = await settle(key, first)
+    worker = snap["native"]["worker"]
+    for _ in range(200):
+        if native_state.read_lifecycle(worker).get("phase") == "exited":
+            break
+        await asyncio.sleep(0.05)
+    assert (await runtime.snapshot(key))["native"]["worker"] is None
+    with pytest.raises(runtime.StructuredError) as stale:
+        await runtime.submit_turn(key, operation_id=ident(), text="two", expected_revision=before)
+    assert stale.value.status == 409 and "revision changed" in stale.value.detail
 
 
 @pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
