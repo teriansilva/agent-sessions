@@ -23,11 +23,14 @@ Commands and tools start collapsed under an activity summary; expand it to inspe
 Agent replies have their own panel, and permission requests stay visible. The view follows new
 content while you are at the bottom; scrolling up keeps your reading position.
 
+Your messages show their local date and time beside **you**, including while queued. This is
+when BattleLab recorded your submission; delivery or **Send now** does not change it.
+
 Each response shows its local date and time beside the agent name. This is when BattleLab first
 recorded response text, so it stays fixed as the response grows and after you reload. Hover over
 the timestamp for seconds and timezone; screen readers receive the same detail. Existing recorded
 conversations show their original times after updating. If the server has no usable timestamp,
-the reply appears without one.
+the message appears without one.
 
 ## Close the tab, keep the work
 

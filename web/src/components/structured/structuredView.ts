@@ -2,23 +2,23 @@
  *  renders these answers, and the tests pin them. */
 import type { StructuredRequest, StructuredSnapshot } from "../../types/api";
 
-const responseTime = new Intl.DateTimeFormat(undefined, {
+const messageTime = new Intl.DateTimeFormat(undefined, {
   year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
 });
-const fullResponseTime = new Intl.DateTimeFormat(undefined, {
+const fullMessageTime = new Intl.DateTimeFormat(undefined, {
   year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit",
   second: "2-digit", timeZoneName: "short",
 });
 
-/** A stored response time in the browser's locale/timezone; unknown is never "now". */
-export function responseTimestamp(epoch: number | null | undefined) {
+/** A stored message time in the browser's locale/timezone; unknown is never "now". */
+export function messageTimestamp(epoch: number | null | undefined, kind: "user" | "assistant") {
   if (typeof epoch !== "number" || !Number.isFinite(epoch) || epoch < 0) return null;
   const date = new Date(epoch * 1000);
   if (!Number.isFinite(date.getTime())) return null;
   return {
     iso: date.toISOString(),
-    compact: responseTime.format(date),
-    label: `Response started: ${fullResponseTime.format(date)}`,
+    compact: messageTime.format(date),
+    label: `${kind === "user" ? "Message submitted" : "Response started"}: ${fullMessageTime.format(date)}`,
   };
 }
 

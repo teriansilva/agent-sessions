@@ -68,7 +68,7 @@ import {
   requestRows,
   requestTitle,
   reviewOnly,
-  responseTimestamp,
+  messageTimestamp,
   turnStateLabel,
 } from "./structuredView";
 
@@ -334,6 +334,25 @@ function RequestCard({
   );
 }
 
+function MessageHeader({ speaker, kind, ts }: {
+  speaker: string;
+  kind: "user" | "assistant";
+  ts?: number | null;
+}) {
+  const timestamp = messageTimestamp(ts, kind);
+  return (
+    <div className={`${chat.who} ${styles.messageHeader}`}>
+      <span>{speaker}</span>
+      {timestamp && (
+        <time className={styles.messageTimestamp} dateTime={timestamp.iso}
+          title={timestamp.label} aria-label={timestamp.label}>
+          {timestamp.compact}
+        </time>
+      )}
+    </div>
+  );
+}
+
 function TurnView({
   turn,
   agent,
@@ -364,11 +383,10 @@ function TurnView({
   const active = turn.state === "running" || turn.state === "awaiting_approval";
   const failed = ["failed", "interrupted", "uncertain", "unavailable"].includes(turn.state);
   const canSendNow = !turn.delivery || turn.delivery === "interrupt_failed";
-  const timestamp = responseTimestamp(turn.reply_ts);
   return (
     <div className={chat.exchange} data-testid="structured-turn" data-state={turn.state}>
       <div className={`${chat.turn} ${chat.user}`}>
-        <div className={chat.who}>you</div>
+        <MessageHeader speaker="you" kind="user" ts={turn.ts} />
         {!!turn.attachments?.length && (
           <div className={styles.turnImages}>
             {turn.attachments.map((a) => a.mime.startsWith("image/") ? (
@@ -432,15 +450,7 @@ function TurnView({
       ))}
       {turn.reply && (
         <div className={`${chat.turn} ${chat.asst} ${styles.reply}`} data-testid="structured-reply">
-          <div className={`${chat.who} ${styles.replyHeader}`}>
-            <span>{agent}</span>
-            {timestamp && (
-              <time className={styles.replyTimestamp} dateTime={timestamp.iso}
-                title={timestamp.label} aria-label={timestamp.label}>
-                {timestamp.compact}
-              </time>
-            )}
-          </div>
+          <MessageHeader speaker={agent} kind="assistant" ts={turn.reply_ts} />
           <div className={chat.txt}>
             <Markdown text={turn.reply_truncated ? `${turn.reply}…` : turn.reply} />
           </div>

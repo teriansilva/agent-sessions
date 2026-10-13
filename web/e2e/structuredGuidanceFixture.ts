@@ -36,10 +36,12 @@ export async function mockStructuredGuidance(page: Page, engine: string, mode: s
       { ...common, turn_id: ACTIVE, operation_id: ACTIVE, state: "running", text: "Check startup.",
         attachments: [{ stored: "20261010-010000-startup-notes.pdf", name: "startup-notes.pdf", mime: "application/octet-stream" }],
         reply: "I’m checking parallel session startup.",
+        ts: Date.parse("2026-10-12T07:29:00Z") / 1000,
         reply_ts: Date.parse("2026-10-12T07:30:42Z") / 1000,
         tools: Array.from({ length: 12 }, (_, i) => ({ id: `tool-${i}`, name: "command",
           summary: i === 0 ? COMMAND : `rg -n 'session' src/file-${i}.py`, outcome: "completed" })) },
-      { ...common, turn_id: QUEUED, operation_id: QUEUED, state: "queued", text: "Only inspect the files." },
+      { ...common, turn_id: QUEUED, operation_id: QUEUED, state: "queued", text: "Only inspect the files.",
+        ts: Date.parse("2026-10-12T07:31:00Z") / 1000 },
     ] as Json[],
   };
   const calls: Json[] = [];

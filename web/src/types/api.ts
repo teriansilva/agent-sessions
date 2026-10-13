@@ -1348,6 +1348,8 @@ export interface StructuredTurn {
   state: StructuredTurnState | string;
   text: string | null;
   reply: string | null;
+  /** Recorded operator submission, in Unix seconds; absent on older servers. */
+  ts?: number | null;
   /** Recorded first native response text, in Unix seconds; absent on older servers. */
   reply_ts?: number | null;
   text_truncated: boolean;

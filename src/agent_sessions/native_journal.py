@@ -109,6 +109,7 @@ class Operation:
     worker_id: str
     connection_id: str
     recorded_revision: int
+    ts: float  # Original claim time; later handoffs only advance recorded_revision.
     handoff: str = "uncertain"
     ever_sent: bool = False
 
@@ -307,6 +308,7 @@ def _fold_lines(journal: Journal, lines: list[bytes], first_cursor: int) -> None
                     record["worker_id"],
                     record["connection_id"],
                     cursor,
+                    ts=record["ts"],
                     handoff="queued" if kind == "native_queued" else "uncertain",
                 )
             elif kind == "native_handoff":

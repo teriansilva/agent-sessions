@@ -1,4 +1,4 @@
-"""Response times come from the persisted journal, not a browser poll or worker restart."""
+"""Message times come from the persisted journal, not a browser poll or worker restart."""
 
 from dataclasses import replace
 
@@ -124,3 +124,53 @@ def test_bounded_snapshot_keeps_each_displayed_turns_own_time(conversation, monk
     view = snapshot(root, sid, binding, max_turns=2)
     assert view["omitted_turns"] == 1
     assert [t["reply_ts"] for t in view["turns"]] == [FIRST_TEXT + 1, FIRST_TEXT + 2]
+
+
+@pytest.mark.parametrize("adapter", ADAPTERS)
+@pytest.mark.parametrize("queued", [False, True])
+def test_submission_time_survives_handoff_replay_and_cold_reads(
+    conversation, monkeypatch, adapter, queued
+):
+    root, sid, binding = conversation
+    binding = replace(binding, adapter=adapter)
+    claim = request(binding)
+    operation_id = claim["params"]["operation_id"]
+    submitted = FIRST_TEXT - 60
+    monkeypatch.setattr(journal.time, "time", lambda: submitted)
+    assert journal.claim(root, claim, queued=queued)[0]
+    first = snapshot(root, sid, binding)["turns"][0]
+    assert first["ts"] == submitted
+    assert first["reply_ts"] is None
+    if queued:
+        assert first["state"] == "queued"
+
+    monkeypatch.setattr(journal.time, "time", lambda: FIRST_TEXT - 1)
+    if queued:
+        journal.record_handoff(root, binding, operation_id, "uncertain")
+    journal.record_handoff(root, binding, operation_id, "sent")
+    monkeypatch.setattr(journal.time, "time", lambda: FIRST_TEXT)
+    journal.append_events(root, binding, [event(operation_id, "Response")])
+    monkeypatch.setattr(journal.time, "time", lambda: FIRST_TEXT + 90)
+    journal.append_events(root, binding, [completed(operation_id)])
+    assert not journal.claim(root, claim, queued=queued)[0]
+    warm = snapshot(root, sid, binding)
+    assert warm["turns"][0]["ts"] == submitted
+    assert warm["turns"][0]["reply_ts"] == FIRST_TEXT
+    journal._CACHE.clear()
+    assert snapshot(root, sid, binding) == warm
+    assert first["ts"] == submitted
+
+
+def test_bounded_snapshot_preserves_unsent_queued_submission_times(conversation, monkeypatch):
+    root, sid, binding = conversation
+    for i in range(3):
+        claim = request(binding, revision=journal.read(root, sid).revision)
+        monkeypatch.setattr(journal.time, "time", lambda i=i: FIRST_TEXT + i)
+        journal.claim(root, claim, queued=True)
+        monkeypatch.setattr(journal.time, "time", lambda: FIRST_TEXT + 90)
+        journal.record_handoff(root, binding, claim["params"]["operation_id"], "not_sent")
+    journal._CACHE.clear()
+    view = snapshot(root, sid, binding, max_turns=2)
+    assert view["omitted_turns"] == 1
+    assert [t["ts"] for t in view["turns"]] == [FIRST_TEXT + 1, FIRST_TEXT + 2]
+    assert all(t["state"] == "failed" and t["reply_ts"] is None for t in view["turns"])

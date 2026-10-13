@@ -119,7 +119,10 @@ def input_frames(project):
 async def test_send_now_reuses_queued_message_and_preserves_remaining_order(host, project, source):
     key, active, waiting, urgent = await queued_session(source, project)
     mode = "steer" if source == "codex" else "interrupt"
-    assert (await runtime.snapshot(key))["native"]["send_now"] == mode
+    before = await runtime.snapshot(key)
+    assert before["native"]["send_now"] == mode
+    submitted = {t["turn_id"]: t["ts"] for t in before["turns"]}
+    assert all(ts > 0 for ts in submitted.values())
     operation = ident()
     result = await runtime.send_now(
         key, operation_id=operation, turn_id=active, queued_turn_id=urgent
@@ -141,6 +144,8 @@ async def test_send_now_reuses_queued_message_and_preserves_remaining_order(host
         key, operation_id=operation, turn_id=active, queued_turn_id=urgent
     )
     assert replay == result
+    after = await runtime.snapshot(key)
+    assert {t["turn_id"]: t["ts"] for t in after["turns"]} == submitted
     with pytest.raises(runtime.StructuredError, match="different request"):
         await runtime.send_now(key, operation_id=operation, turn_id=active, queued_turn_id=waiting)
     writes = input_frames(project)

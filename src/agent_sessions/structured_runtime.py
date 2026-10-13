@@ -353,6 +353,7 @@ def _turn(turn: dict, text_budget: list[int] | None = None) -> dict:
         "operation_id": turn["turn_id"],
         "state": _outcome(turn),
         "text": text,
+        "ts": turn.get("ts"),
         "reply": reply,
         "reply_ts": turn.get("reply_ts"),
         "text_truncated": text_cut,

@@ -1208,6 +1208,7 @@ def project(
                 "turn_id": op.operation_id,
                 "status": "pending",
                 "text": params["text"],
+                "ts": op.ts,
                 "attachments": [
                     native_attachments.public(a) for a in params.get("attachments") or ()
                 ],
