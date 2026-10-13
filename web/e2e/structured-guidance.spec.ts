@@ -161,6 +161,57 @@ test("approval stays visible outside collapsed risky activity; read-only and old
   await expect(page.getByRole("button", { name: "Send now", exact: true })).toBeHidden();
 });
 
+const SECOND = "33333333-2222-4333-8444-666666666666";
+
+for (const theme of ["dark", "light"]) {
+  for (const busy of ["background", "operator turn", "idle", "worker exited"] as const) {
+    test(`#1430: the pane shows the agent working in the background (${busy}, ${theme})`, async ({ page }, testInfo) => {
+      const fixture = await mockStructuredGuidance(page, "claude-api", "interrupt", theme);
+      if (busy !== "operator turn") {
+        fixture.state.active_turn = "";
+        fixture.state.turns[0].state = "completed";
+      }
+      fixture.state.native.background_active = busy !== "idle";
+      if (busy === "worker exited") fixture.state.native.worker = ""; // a stale replayed flag
+      // Two queued messages: the row goes above the FIRST, exactly once.
+      fixture.state.turns.push({ ...fixture.state.turns[1], turn_id: SECOND, operation_id: SECOND,
+        text: "Then summarise them." });
+      await page.goto(`/s/claude-api/${ID}`);
+      await expect(page.getByTestId("structured-pane")).toBeVisible();
+      await expect(page.getByTestId("structured-turn").first()).toBeVisible();
+      const row = page.getByTestId("structured-background-work");
+      if (busy !== "background") {
+        await expect(row).toHaveCount(0);
+        return;
+      }
+      await expect(row).toHaveCount(1);
+      await expect(row).toHaveText("Working in the background");
+      const top = async (text: string) =>
+        (await page.getByTestId("structured-turn").filter({ hasText: text }).boundingBox())!.y;
+      const at = (await row.boundingBox())!.y;
+      expect(at).toBeGreaterThan(await top("Check startup."));
+      expect(at).toBeLessThan(await top("Only inspect the files."));
+      await page.screenshot({ path: testInfo.outputPath(`background-${theme}.png`) });
+    });
+  }
+}
+
+test("#1430: with nothing queued the row ends the conversation, and holds still for reduced motion", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const fixture = await mockStructuredGuidance(page, "claude-api", "interrupt");
+  fixture.state.active_turn = "";
+  fixture.state.turns = [{ ...fixture.state.turns[0], state: "completed" }];
+  fixture.state.native.background_active = true;
+  await page.goto(`/s/claude-api/${ID}`);
+  const row = page.getByTestId("structured-background-work");
+  await expect(row).toHaveCount(1);
+  const last = (await page.getByTestId("structured-turn").last().boundingBox())!;
+  expect((await row.boundingBox())!.y).toBeGreaterThanOrEqual(last.y + last.height - 1);
+  const motion = await row.locator("span[aria-hidden] span").first()
+    .evaluate((el) => getComputedStyle(el).animationName);
+  expect(motion).toBe("none");
+});
+
 /** The page's FIRST snapshot already shows the agent running a turn of its own (#1427). */
 async function behindAgentTurn(page: Page, theme = "dark", capable = true) {
   const fixture = await mockStructuredGuidance(page, "claude-api", "interrupt", theme);

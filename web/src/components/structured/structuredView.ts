@@ -22,6 +22,14 @@ export function messageTimestamp(epoch: number | null | undefined, kind: "user" 
   };
 }
 
+/** The agent is working with no operator turn running: a background task or subagent, or a turn
+ *  it started itself. Without this the pane looks idle while the agent works (#1430). Only a live
+ *  worker can be working: the flag is replayed from the journal, so an exited one's last word
+ *  must not keep claiming it. */
+export function backgroundWorking(snap: StructuredSnapshot | null): boolean {
+  return !!snap && !snap.active_turn && !!snap.native?.worker && !!snap.native.background_active;
+}
+
 /** What Send now would stop or steer: the operator turn running now, else a turn the agent
  *  runs for itself that this worker can interrupt (#1427). Null: nothing a queued message can
  *  go past right now. */

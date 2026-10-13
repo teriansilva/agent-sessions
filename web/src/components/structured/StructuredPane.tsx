@@ -11,7 +11,7 @@ import {
   Square,
   SquareDashedBottom,
 } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ClipboardEvent as ReactClipboardEvent, KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 import { engineInfo, engineLabel, isAgent, useEngineRoster } from "../../app/engineRoster";
@@ -60,6 +60,7 @@ import chat from "../chat/ChatPane.module.css";
 import { Markdown } from "./Markdown";
 import styles from "./StructuredPane.module.css";
 import {
+  backgroundWorking,
   choiceLabel,
   isActive,
   operationFor,
@@ -332,6 +333,20 @@ function RequestCard({
         </ul>
       )}
     </section>
+  );
+}
+
+/** The agent works with no operator turn running (#1430): the same bars as a running turn. */
+function BackgroundWork() {
+  return (
+    <div className={chat.wait} role="status" data-testid="structured-background-work">
+      <span className={chat.bars} aria-hidden="true">
+        <span />
+        <span />
+        <span />
+      </span>
+      Working in the background
+    </div>
   );
 }
 
@@ -1444,6 +1459,9 @@ export function StructuredPane({
   }
 
   const turns = snap?.turns ?? [];
+  // Where "Working in the background" goes: above the first queued message, else last (-1: none).
+  const firstQueued = turns.findIndex((t) => t.state === "queued");
+  const backgroundAt = !backgroundWorking(snap) ? -1 : firstQueued === -1 ? turns.length : firstQueued;
   const pending = snap?.pending_requests ?? [];
   return (
     <div className={`${chat.pane} ${styles.pane}`} data-testid="structured-pane">
@@ -1538,9 +1556,11 @@ export function StructuredPane({
         {snap && snap.omitted_turns > 0 && (
           <p className={chat.notice}>{snap.omitted_turns} earlier turns are not shown.</p>
         )}
-        {turns.map((t) => (
+        {turns.map((t, i) => (
+          <Fragment key={t.turn_id}>
+          {/* Above the first queued message: that work is what it waits behind. */}
+          {i === backgroundAt && <BackgroundWork />}
           <TurnView
-            key={t.turn_id}
             turn={t}
             agent={agent}
             requests={pending.filter((r) => r.turn_id === t.turn_id)}
@@ -1554,7 +1574,9 @@ export function StructuredPane({
             sendingNow={sendingNow === t.turn_id}
             sendNowDisabled={!!sendingNow || !!recoveringSendNow || turns.some((q) => q.state === "queued" && q.delivery === "interrupting")}
           />
+          </Fragment>
         ))}
+        {backgroundAt === turns.length && <BackgroundWork />}
         {recoveringSendNow && (
           <div className={styles.queued} data-testid="structured-send-now-recovery">
             <div className={styles.queueRow}>

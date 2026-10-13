@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import type { StructuredRequest, StructuredSnapshot } from "../../types/api";
-import { choiceLabel, operationFor, requestIds, requestRows, reviewOnly, sendNowTarget } from "./structuredView";
+import { backgroundWorking, choiceLabel, operationFor, requestIds, requestRows, reviewOnly, sendNowTarget } from "./structuredView";
 
 function req(over: Partial<StructuredRequest>): StructuredRequest {
   return { request_id: "7", turn_id: "t", kind: "command", choices: ["approve", "reject", "cancel"], ...over };
@@ -85,6 +85,19 @@ test("a send reuses its operation id for the same text and mints a new one when 
   const first = operationFor(null, "hello", mint);
   expect(operationFor(first, "hello", mint)).toBe(first);
   expect(operationFor(first, "hello again", mint).id).toBe("id2");
+});
+
+test("the agent working with no operator turn running is shown, never doubled (#1430)", () => {
+  const snap = (active_turn: string | null, background_active: boolean) =>
+    ({ active_turn, turns: [], native: { native_id: "n", worker: "w", background_active } }) as unknown as StructuredSnapshot;
+  expect(backgroundWorking(null)).toBe(false);
+  expect(backgroundWorking(snap(null, true))).toBe(true);
+  expect(backgroundWorking(snap(null, false))).toBe(false);
+  expect(backgroundWorking(snap("op", true))).toBe(false); // the operator turn shows its own
+  // A stale flag from a worker that has exited claims nothing.
+  const exited = snap(null, true);
+  exited.native!.worker = null;
+  expect(backgroundWorking(exited)).toBe(false);
 });
 
 test("Send now targets the operator turn, else the agent's own turn its worker can interrupt (#1427)", () => {
