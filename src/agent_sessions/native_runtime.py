@@ -1194,6 +1194,7 @@ def project(
     native_id = record.get("native_id")
     model_effective = None
     background = False
+    background_turn: tuple[str | None, str] | None = None  # (target, the worker that minted it)
     cwd = journal.header.get("cwd")
     submits = [
         op.operation_id for op in journal.operations.values() if op.request["action"] == "submit"
@@ -1240,6 +1241,8 @@ def project(
             model_effective = data["model_effective"]
         elif kind == "background":
             background = bool(data.get("active"))
+            if "background_turn" in data:
+                background_turn = (data["background_turn"], item["worker_id"])
         elif kind == "approval" and turn is not None:
             exact = (item["worker_id"], data["operation_id"], data["request_id"])
             pending[exact] = {**data, "worker_id": item["worker_id"]}
@@ -1397,6 +1400,11 @@ def project(
             "native_id": native_id,
             "worker": live_worker,
             "background_active": background,
+            # Only the live worker's own turn is a Send now target (#1427): a target minted by an
+            # exited or replaced generation names a turn nothing can stop any more.
+            "background_turn": background_turn[0]
+            if background_turn is not None and background_turn[1] == live_worker
+            else None,
         },
     }
 
@@ -1462,6 +1470,12 @@ def _snapshot_sync(engine_id: str, session_id: str) -> dict:
     mode = life.get("send_now")
     if mode in {"steer", "interrupt"}:
         view["native"]["send_now"] = mode
+    # Send now against a turn the agent runs for itself (#1427), only from a worker that says it
+    # can; an older worker's target is never offered.
+    if life.get("send_now_background") == "interrupt":
+        view["native"]["send_now_background"] = "interrupt"
+    else:
+        view["native"]["background_turn"] = None
     view["native"]["files"] = not live or life.get("files") is True
     return view
 
@@ -1762,6 +1776,13 @@ async def send_now(
         live = await asyncio.to_thread(_live_worker, session_id)
         life = await asyncio.to_thread(native_state.read_lifecycle, live) if live else {}
         mode = life.get("send_now")
+        # A turn the agent runs for itself is always interrupted, whatever the worker's mode for
+        # an operator turn (#1427): a steer would put the reply in a turn nobody owns.
+        target = await asyncio.to_thread(_background_turn, journal, live)
+        if target is not None and target == turn_id:
+            mode = life.get("send_now_background")
+            if mode != "interrupt":
+                raise NativeError(409, "Send now is available in newly started sessions")
         if mode not in {"steer", "interrupt"}:
             raise NativeError(409, "Send now is available in newly started sessions")
     params = {"turn_id": turn_id, "queued_turn_id": queued_turn_id, "mode": mode}
@@ -1778,6 +1799,18 @@ async def send_now(
     if receipt["handoff"] == "not_sent":
         raise NativeError(409, "Send now was not applied; check the current message state")
     return receipt
+
+
+def _background_turn(journal: native_journal.Journal, live: str | None) -> str | None:
+    """The live worker's current Send now target for a turn the agent runs for itself."""
+    if live is None:
+        return None
+    for index in range(len(journal.events) - 1, -1, -1):
+        item = journal.events[index]
+        event = item["event"]
+        if event["kind"] == "background" and "background_turn" in event["data"]:
+            return event["data"]["background_turn"] if item["worker_id"] == live else None
+    return None
 
 
 def _gone(session_id: str, worker_id: str) -> bool:

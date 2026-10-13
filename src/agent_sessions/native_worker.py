@@ -406,16 +406,31 @@ class Worker:
             self.flush_now.clear()
             self.flush()
 
-    def native_busy(self) -> bool:
+    def _turn_busy(self) -> bool:
         codec = self.codec
         return (
             codec.operation_id is not None
             or bool(self.priority_requests)
             or bool(getattr(codec, "_steers", None))
             or bool(codec._approvals)
-            or bool(getattr(codec, "_background", None))
             or getattr(codec, "_session_state", None) in {"running", "requires_action"}
+            or getattr(codec, "unowned_turn", False)
         )
+
+    def native_busy(self) -> bool:
+        """Anything running at all, background tasks included: the worker must stay alive."""
+        return self._turn_busy() or bool(getattr(self.codec, "_background", None))
+
+    def dispatch_busy(self) -> bool:
+        """May an operator message go to the agent now (#1427)?
+
+        A running background task alone does not stop it once this generation's codec has PROVED
+        it can tell the operator's output from a turn the agent starts for itself. Until then the
+        old rule holds: a task could start such a turn, whose output would read as the reply.
+        """
+        if getattr(self.codec, "lifecycle_proven", False):
+            return self._turn_busy()
+        return self.native_busy()
 
     def busy(self) -> bool:
         return bool(self.queued) or self.native_busy()
@@ -515,7 +530,7 @@ class Worker:
                 self.queue_wake.clear()
                 retry = False
                 async with self.effects:
-                    while self.queued and not self.native_busy():
+                    while self.queued and not self.dispatch_busy():
                         if self.terminated or self.closing or self.done.is_set():
                             return
                         # Completion must be durable before the following turn can start.
@@ -841,7 +856,7 @@ class Worker:
                     )
             if action == "interrupt" and self.codec.operation_id != params["turn_id"]:
                 return self.error(request, "stale", "that turn is not active")
-            queued = action == "submit" and self.busy()
+            queued = action == "submit" and (bool(self.queued) or self.dispatch_busy())
             try:
                 fresh, receipt = await asyncio.to_thread(
                     native_journal.claim, self.journal_root, request, queued=queued
@@ -884,15 +899,19 @@ class Worker:
             queued = next(
                 (p for p in self.queued if p["operation_id"] == params["queued_turn_id"]), None
             )
-            if queued is None or self.codec.operation_id != params["turn_id"]:
+            # The target is the operator turn running now, or a turn the agent runs for itself
+            # (#1427): never the other, and never one that has since ended.
+            background = self._background_target(params["turn_id"])
+            if queued is None or not (background or self.codec.operation_id == params["turn_id"]):
                 return self.error(
                     request, "stale", "the message is no longer queued behind that turn"
                 )
-            if self.codec.native_turn_id is None:
+            if not background and self.codec.native_turn_id is None:
                 return self.error(
                     request, "busy", "the agent has not acknowledged the active turn yet"
                 )
-            if params["mode"] != self.codec.send_now_mode:
+            expected = self.codec.send_now_background if background else self.codec.send_now_mode
+            if params["mode"] != expected:
                 return self.error(request, "unsupported", "this worker uses another delivery mode")
             if self.priority_turn == params["turn_id"]:
                 return self.error(
@@ -906,7 +925,11 @@ class Worker:
                     return self.receipt(request, receipt)
                 # Native output is read independently while the claim fsyncs. Never cancel a
                 # newer response, or consume a queued message when its observed turn ended.
-                if self.codec.operation_id != params["turn_id"]:
+                if (
+                    not self._background_target(params["turn_id"])
+                    if background
+                    else self.codec.operation_id != params["turn_id"]
+                ):
                     receipt = await asyncio.to_thread(
                         native_journal.record_handoff,
                         self.journal_root,
@@ -950,6 +973,16 @@ class Worker:
             )
         except (WorkerError, api_source.SourceError) as exc:
             return self.error(request, "unavailable", str(exc))
+
+    def _background_target(self, turn_id: str) -> bool:
+        """Is ``turn_id`` the turn the agent is running for itself right now (#1427)?"""
+        codec = self.codec
+        return (
+            codec.send_now_background is not None
+            and codec.operation_id is None
+            and codec.background_turn is not None
+            and codec.background_turn == turn_id
+        )
 
     async def handoff(self, action: str, params: dict, *, receipt=None, queued=False) -> dict:
         try:
@@ -1022,7 +1055,11 @@ class Worker:
                 cwd=self.config["cwd"],
             )
         if action == "interrupt":
-            frame = self.codec.interrupt()
+            frame = (
+                self.codec.interrupt_background(params["turn_id"])
+                if params.get("queued_turn_id") and self._background_target(params["turn_id"])
+                else self.codec.interrupt()
+            )
             rid = frame.get("id", frame.get("request_id"))
             if rid is not None and params.get("queued_turn_id"):
                 self.priority_requests[rid] = (
@@ -1142,6 +1179,9 @@ class Worker:
                 native_id=self.native_id,
                 ready_at=time.time(),
                 send_now=self.codec.send_now_mode,
+                # Send now against a turn the agent runs for itself (#1427); absent on workers
+                # from before it, which the server then never offers it for.
+                send_now_background=self.codec.send_now_background,
                 files=True,
             )
             tasks.append(asyncio.create_task(self.idle_watch()))

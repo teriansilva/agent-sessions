@@ -1098,3 +1098,423 @@ def test_an_identical_repeated_patch_keeps_the_pending_request():
     key = codec.feed(_file_change())[0].data["request_id"]
     assert codec.feed(_patch("-a\n+b\n")) == []
     assert codec.decide(key, "reject") == {"id": 5, "result": {"decision": "decline"}}
+
+
+# --- #1427: the command lifecycle fences an operator turn's output ------------------------------
+# Frame sequences from the real CLI (`stream-json --verbose`, the worker's own argv), recorded on
+# #1427 (comments 94438, 94477, 94505): every operator input gets `command_lifecycle` queued →
+# started → completed with the uuid BattleLab submitted; a turn the agent starts for a task
+# notification gets none, and its assistant frames carry no marker at all.
+
+NEXT = "3e0d7d5e-2a3b-4c1e-9f1a-6b2c8d4e5f60"
+
+
+def _life(command, state):
+    return {
+        "type": "command_lifecycle",
+        "command_uuid": command,
+        "state": state,
+        "uuid": str(uuid.uuid4()),
+        "session_id": SESSION,
+    }
+
+
+def _say(text, **extra):
+    message = {"id": "msg_" + uuid.uuid4().hex[:8], "content": [{"type": "text", "text": text}]}
+    return {
+        "type": "assistant",
+        "session_id": SESSION,
+        "parent_tool_use_id": None,
+        "message": message,
+        **extra,
+    }
+
+
+def _result(text, **extra):
+    return {
+        "type": "result",
+        "subtype": "success",
+        "uuid": str(uuid.uuid4()),
+        "is_error": False,
+        "terminal_reason": "completed",
+        "result": text,
+        "session_id": SESSION,
+        **extra,
+    }
+
+
+def _operator_turn(codec, operation, text):
+    """One complete operator turn, as the real CLI frames it."""
+    codec.submit("go", operation)
+    out = []
+    for frame in (
+        _life(operation, "queued"),
+        _life(operation, "started"),
+        _say(text, user_message_uuid=operation),
+        _result(text, origin={"kind": "human"}, user_message_uuid=operation),
+        _life(operation, "completed"),
+    ):
+        out += codec.feed(frame)
+    return out
+
+
+def _owner_text(events):
+    """{operation_id or None: the text attributed to it}: who each piece of output belongs to."""
+    owned: dict = {}
+    for e in events:
+        if e.kind == "text":
+            owned[e.data["operation_id"]] = owned.get(e.data["operation_id"], "") + e.data["text"]
+    return owned
+
+
+def test_claude_lifecycle_is_unknown_until_one_correlated_cycle_completes():
+    codec = ClaudeCodec(SESSION)
+    assert not codec.lifecycle_proven  # a fresh generation proves nothing
+    codec.submit("go", OPERATION)
+    for frame in (_life(OPERATION, "queued"), _life(OPERATION, "started"), _say("hi")):
+        codec.feed(frame)
+        assert not codec.lifecycle_proven
+    codec.feed(_result("hi", origin={"kind": "human"}, user_message_uuid=OPERATION))
+    assert not codec.lifecycle_proven  # the cycle is complete only with its `completed`
+    codec.feed(_life(OPERATION, "completed"))
+    assert codec.lifecycle_proven
+
+
+def test_claude_without_lifecycle_frames_never_proves_the_fence():
+    """An older CLI emits none: its generation keeps the conservative dispatch rule for ever."""
+    codec = ClaudeCodec(SESSION)
+    for operation in (OPERATION, NEXT):
+        codec.submit("go", operation)
+        events = codec.feed(_say("reply")) + codec.feed(_result("reply"))
+        assert _owner_text(events) == {operation: "reply"}  # attribution as before
+    assert not codec.lifecycle_proven
+
+
+@pytest.mark.parametrize(
+    "stray",
+    [
+        lambda op: _life("9d1f0b8e-1c2d-4e3f-8a9b-0c1d2e3f4a5b", "started"),  # never submitted
+        lambda op: _life(op, "completed"),  # completed before its result
+        lambda op: _life(op, "failed"),  # a state we do not know
+    ],
+    ids=["unknown-command", "completed-early", "unknown-state"],
+)
+def test_claude_a_lifecycle_frame_outside_the_cycle_makes_the_fence_unknown(stray):
+    codec = ClaudeCodec(SESSION)
+    _operator_turn(codec, OPERATION, "one")
+    assert codec.lifecycle_proven
+    codec.submit("go", NEXT)
+    codec.feed(_life(NEXT, "queued"))
+    codec.feed(_life(NEXT, "started"))
+    codec.feed(stray(NEXT))
+    assert not codec.lifecycle_proven
+
+
+def test_claude_a_notification_turn_starting_before_the_operators_write_keeps_its_own_text():
+    """The race (#1427): a task-notification turn begins between the dispatch check and the
+    write. Its frames arrive after the write but before the operator's `started`: they are the
+    agent's own turn, and the operator's reply holds only its own text."""
+    codec = ClaudeCodec(SESSION)
+    _operator_turn(codec, OPERATION, "started a task")
+    assert codec.lifecycle_proven
+    codec.submit("what next?", NEXT)  # written while the notification turn is starting
+    events = []
+    for frame in (
+        {
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": "bg1",
+            "status": "completed",
+            "session_id": SESSION,
+        },
+        {"type": "system", "subtype": "init", "session_id": SESSION},
+        _say("The background command finished."),  # unmarked: the notification turn's output
+        _result(
+            "The background command finished.",
+            origin={"kind": "task-notification", "producer": "session-task"},
+        ),
+        _life(NEXT, "queued"),
+        _life(NEXT, "started"),
+        _say("Here is what is next.", user_message_uuid=NEXT),
+        _result("Here is what is next.", origin={"kind": "human"}, user_message_uuid=NEXT),
+        _life(NEXT, "completed"),
+    ):
+        events += codec.feed(frame)
+    assert _owner_text(events) == {NEXT: "Here is what is next."}
+    completed = [e for e in events if e.kind == "turn_completed"]
+    assert len(completed) == 1 and completed[0].data["operation_id"] == NEXT
+    assert completed[0].data["text"] == "Here is what is next."
+    assert not codec.unowned_turn and codec.lifecycle_proven
+
+
+def test_claude_a_task_finishing_inside_an_operator_window_starts_no_other_turn():
+    """#94505: a task completing during an operator lifecycle is folded into that turn as system
+    frames; the reply is the operator's, and nothing is left running."""
+    codec = ClaudeCodec(SESSION)
+    _operator_turn(codec, OPERATION, "started a task")
+    codec.submit("run the slow check", NEXT)
+    events = []
+    for frame in (
+        _life(NEXT, "queued"),
+        _life(NEXT, "started"),
+        {"type": "system", "subtype": "task_started", "task_id": "fg1", "session_id": SESSION},
+        {
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "bg1",
+            "patch": {"status": "completed"},
+            "session_id": SESSION,
+        },
+        {
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": "bg1",
+            "status": "completed",
+            "session_id": SESSION,
+        },
+        _say("finished"),
+        _result("finished", origin={"kind": "human"}, user_message_uuid=NEXT),
+        _life(NEXT, "completed"),
+    ):
+        events += codec.feed(frame)
+    assert _owner_text(events) == {NEXT: "finished"}
+    assert [e.data["operation_id"] for e in events if e.kind == "turn_completed"] == [NEXT]
+    assert not codec.unowned_turn
+
+
+def test_claude_a_turn_the_agent_runs_for_itself_is_tracked_until_its_result():
+    codec = ClaudeCodec(SESSION)
+    _operator_turn(codec, OPERATION, "started a task")
+    (started,) = codec.feed(_say("The background command finished."))
+    assert codec.unowned_turn  # dispatch must wait for this turn to end
+    target = codec.background_turn
+    assert started.kind == "background" and started.data["background_turn"] == target
+    assert codec.feed(_say("More of it.")) == []  # one turn, one target
+    (ended,) = codec.feed(_result("done", origin={"kind": "task-notification"}))
+    assert ended.data["background_turn"] is None and ended.data["state"] == "completed"
+    assert not codec.unowned_turn and codec.background_turn is None
+
+
+def test_claude_a_result_for_another_input_never_completes_the_operator_turn():
+    codec = claude_running()
+    events = codec.feed(_result("not yours", user_message_uuid=NEXT))
+    assert [e.kind for e in events] == ["background"]
+    assert codec.operation_id == OPERATION
+
+
+def test_codex_a_turn_the_agent_starts_itself_is_tracked_and_interrupted_by_its_own_id():
+    codec = codex_session()
+    unsolicited = "0199f3ac-53fb-7c10-81ef-bbbbbbbbbbbb"
+    started = {
+        "method": "turn/started",
+        "params": {"threadId": SESSION, "turn": {"id": unsolicited, "status": "inProgress"}},
+    }
+    (event,) = codec.feed(started)
+    target = codec.background_turn
+    assert event.kind == "background" and event.data["background_turn"] == target is not None
+    assert codec.unowned_turn  # an operator message now waits instead of a second turn/start
+    frame = codec.interrupt_background(target)
+    assert frame["method"] == "turn/interrupt"
+    assert frame["params"] == {"threadId": SESSION, "turnId": unsolicited}
+    with pytest.raises(ProtocolError):
+        codec.interrupt_background(str(uuid.uuid4()))  # only the exact target
+    with pytest.raises(ProtocolError):
+        codec.interrupt()  # there is no operator turn to interrupt
+    (ended,) = codec.feed(
+        {
+            "method": "turn/completed",
+            "params": {"threadId": SESSION, "turn": {"id": unsolicited, "status": "interrupted"}},
+        }
+    )
+    assert ended.data["background_turn"] is None
+    assert not codec.unowned_turn and codec.background_turn is None
+
+
+def test_claude_interrupts_its_own_turn_only_by_the_exact_target_and_never_mid_operator_turn():
+    codec = ClaudeCodec(SESSION)
+    codec.lifecycle_proven = True
+    codec.feed(_say("The background command finished."))
+    target = codec.background_turn
+    assert codec.interrupt_background(target)["request"]["subtype"] == "interrupt"
+    with pytest.raises(ProtocolError):
+        codec.interrupt_background(str(uuid.uuid4()))
+    running = claude_running()
+    with pytest.raises(ProtocolError):
+        running.interrupt_background(target)
+
+
+def test_a_client_that_cannot_run_a_turn_by_itself_offers_no_background_send_now():
+    from agent_sessions.native_protocol import OpencodeAcpCodec
+
+    assert OpencodeAcpCodec.send_now_background is None
+    assert ClaudeCodec.send_now_background == CodexCodec.send_now_background == "interrupt"
+
+
+def test_claude_inside_a_lifecycle_window_only_the_result_naming_the_input_completes_it():
+    """Hermes on #1429: an unbound result (no `user_message_uuid`) inside the operator's started
+    window is nobody's reply; the true, correlated answer still completes the turn."""
+    codec = ClaudeCodec(SESSION)
+    _operator_turn(codec, OPERATION, "one")
+    assert codec.lifecycle_proven
+    codec.submit("go", NEXT)
+    events = []
+    for frame in (
+        _life(NEXT, "queued"),
+        _life(NEXT, "started"),
+        _result("WRONG", origin={"kind": "human"}),  # names no input
+        _say("right", user_message_uuid=NEXT),
+        _result("right", origin={"kind": "human"}, user_message_uuid=NEXT),
+        _life(NEXT, "completed"),
+    ):
+        events += codec.feed(frame)
+    completed = [e for e in events if e.kind == "turn_completed"]
+    assert len(completed) == 1 and completed[0].data["operation_id"] == NEXT
+    assert completed[0].data["text"] == "right"
+    assert "WRONG" not in json.dumps(
+        [e.data for e in events if e.kind in {"text", "turn_completed"}]
+    )
+    # The anomaly cost the fence its proof; the next complete cycle earns it back.
+    assert not codec.lifecycle_proven
+    _operator_turn(codec, str(uuid.uuid4()), "three")
+    assert codec.lifecycle_proven
+
+
+def test_claude_an_interrupted_input_ends_its_cycle_with_cancelled():
+    """Captured from the real CLI (#1427): an interrupt's result names the input
+    (`error_during_execution`, `aborted_tools`) and the lifecycle ends `cancelled`."""
+    codec = ClaudeCodec(SESSION)
+    codec.submit("go", OPERATION)
+    events = []
+    for frame in (
+        _life(OPERATION, "queued"),
+        _life(OPERATION, "started"),
+        {
+            **_result("", origin={"kind": "human"}, user_message_uuid=OPERATION),
+            "subtype": "error_during_execution",
+            "is_error": True,
+            "terminal_reason": "aborted_tools",
+        },
+        _life(OPERATION, "cancelled"),
+    ):
+        events += codec.feed(frame)
+    (completed,) = [e for e in events if e.kind == "turn_completed"]
+    assert completed.data["state"] == "interrupted" and not completed.data["error"]
+    assert codec.lifecycle_proven
+
+
+@pytest.mark.parametrize("ending,state", [("completed", "failed"), ("cancelled", "interrupted")])
+def test_claude_an_input_ended_without_its_result_completes_visibly(ending, state):
+    codec = ClaudeCodec(SESSION)
+    _operator_turn(codec, OPERATION, "one")
+    codec.submit("go", NEXT)
+    events = []
+    for frame in (_life(NEXT, "queued"), _life(NEXT, "started"), _life(NEXT, ending)):
+        events += codec.feed(frame)
+    (completed,) = [e for e in events if e.kind == "turn_completed"]
+    assert completed.data["operation_id"] == NEXT and completed.data["state"] == state
+    assert codec.operation_id is None and not codec.lifecycle_proven
+
+
+@pytest.mark.parametrize(
+    "anomaly",
+    [
+        lambda: _life("9d1f0b8e-1c2d-4e3f-8a9b-0c1d2e3f4a5b", "started"),  # a stray input
+        lambda: _result("x", origin={"kind": "human"}, user_message_uuid=str(uuid.uuid4())),
+        lambda: _result("x", origin={"kind": "human"}),  # names no input
+    ],
+    ids=["stray-lifecycle", "foreign-result", "unbound-result"],
+)
+def test_claude_a_cycle_that_saw_an_anomaly_never_re_earns_the_proof(anomaly):
+    """Hermes on #1429 (review 6192): any anomaly taints the cycle in flight. Its own correct
+    result and `completed` prove nothing; only a LATER clean cycle does."""
+    codec = ClaudeCodec(SESSION)
+    _operator_turn(codec, OPERATION, "one")
+    assert codec.lifecycle_proven
+    codec.submit("go", NEXT)
+    for frame in (_life(NEXT, "queued"), _life(NEXT, "started"), anomaly()):
+        codec.feed(frame)
+    assert not codec.lifecycle_proven
+    events = []
+    for frame in (
+        _result("right", origin={"kind": "human"}, user_message_uuid=NEXT),
+        _life(NEXT, "completed"),
+    ):
+        events += codec.feed(frame)
+    assert [e.data["text"] for e in events if e.kind == "turn_completed"] == ["right"]
+    assert not codec.lifecycle_proven  # the tainted cycle proved nothing
+    _operator_turn(codec, str(uuid.uuid4()), "clean")
+    assert codec.lifecycle_proven  # a later clean one does
+
+
+def _state(state):
+    return {
+        "type": "system",
+        "subtype": "session_state_changed",
+        "state": state,
+        "session_id": SESSION,
+    }
+
+
+def test_claude_a_running_state_no_input_owns_is_a_send_now_target_before_any_output():
+    """Hermes on #1429 (review 6203): a turn the agent starts for itself is a target from its
+    start, not from its first output; its idle state ends it."""
+    codec = ClaudeCodec(SESSION)
+    _operator_turn(codec, OPERATION, "one")
+    (_, started) = codec.feed(_state("running"))
+    target = codec.background_turn
+    assert target and codec.unowned_turn and started.data["background_turn"] == target
+    assert codec.feed(_say("thinking out loud")) == []  # the same turn, the same target
+    assert codec.background_turn == target
+    (_, ended) = codec.feed(_state("idle"))
+    assert ended.data["background_turn"] is None and not codec.unowned_turn
+
+
+def test_claude_a_running_state_inside_an_operator_window_is_that_inputs_turn():
+    codec = ClaudeCodec(SESSION)
+    _operator_turn(codec, OPERATION, "one")
+    codec.submit("go", NEXT)
+    for frame in (_life(NEXT, "queued"), _life(NEXT, "started"), _state("running")):
+        codec.feed(frame)
+    assert codec.background_turn is None and not codec.unowned_turn
+
+
+def test_claude_the_current_cli_marks_its_own_turn_with_requesting_before_any_output():
+    """Hermes on #1429 (review 6205): the CLI in this mode emits no session state, so the target
+    must come from what it DOES send. Real frames (captured, #1427): a notification turn's
+    `init`, then `status: requesting` 2 ms later, then 4.4 s with nothing, then output."""
+    codec = ClaudeCodec(SESSION)
+    _operator_turn(codec, OPERATION, "started a task")
+    for frame in (
+        {
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": "bg1",
+            "status": "completed",
+            "session_id": SESSION,
+        },
+        {"type": "system", "subtype": "init", "session_id": SESSION},
+    ):
+        codec.feed(frame)
+    assert codec.background_turn is None  # neither of these starts a turn by itself
+    codec.feed(
+        {"type": "system", "subtype": "status", "status": "requesting", "session_id": SESSION}
+    )
+    target = codec.background_turn
+    assert target and codec.unowned_turn  # before any output
+    codec.feed(_say("The background command finished."))
+    assert codec.background_turn == target
+    codec.feed(_result("done", origin={"kind": "task-notification"}))
+    assert codec.background_turn is None and not codec.unowned_turn
+
+
+def test_claude_a_request_inside_the_operators_window_is_that_inputs_own():
+    codec = ClaudeCodec(SESSION)
+    _operator_turn(codec, OPERATION, "one")
+    codec.submit("go", NEXT)
+    for frame in (
+        _life(NEXT, "queued"),
+        _life(NEXT, "started"),
+        {"type": "system", "subtype": "status", "status": "requesting", "session_id": SESSION},
+    ):
+        codec.feed(frame)
+    assert codec.background_turn is None and not codec.unowned_turn

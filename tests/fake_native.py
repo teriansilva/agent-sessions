@@ -12,6 +12,11 @@ Behaviour is selected by the turn text, so a test drives it purely through the p
 * ``HANG``    — start the turn and never finish it (for interrupt / worker death).
 * ``WAIT_RELEASE`` — finish normally after the test creates ``release-queued-turn``.
 * ``DIE``     — exit right after accepting the turn (native crash mid-turn).
+* ``BGTASK``  — (claude) start a background task and reply ``started``. Once the test creates
+  ``release-bg-task`` the task completes and the agent runs a turn of its own for the
+  notification (output ``notified``, a ``task-notification`` result). It is held open until
+  ``release-notification`` while ``hold-notification`` (after its output) or
+  ``hold-notification-start`` (before any output) exists (#1427).
 * anything else — stream a reply ``echo:<text>`` and complete.
 
 Every frame received is appended to ``$PWD/native-frames.jsonl`` so tests can prove a frame
@@ -21,6 +26,7 @@ was written exactly once. ``--version`` prints a version above the protocol floo
 import json
 import os
 import sys
+import threading
 import time
 import uuid
 
@@ -38,9 +44,23 @@ def log(frame):
         fh.write(json.dumps(entry) + "\n")
 
 
+_OUT = threading.Lock()
+
+
 def send(frame):
-    sys.stdout.write(json.dumps(frame) + "\n")
-    sys.stdout.flush()
+    with _OUT:  # a background notification turn writes from its own thread (#1427)
+        sys.stdout.write(json.dumps(frame) + "\n")
+        sys.stdout.flush()
+
+
+def _wait_file(name, seconds=20, cancel=None):
+    """Until ``name`` exists, ``cancel`` is set (True returned) or the deadline passes."""
+    deadline = time.monotonic() + seconds
+    while not os.path.exists(name) and time.monotonic() < deadline:
+        if cancel is not None and cancel.is_set():
+            return True
+        time.sleep(0.01)
+    return False
 
 
 def wait_release(text):
@@ -320,8 +340,118 @@ def claude():
         None,  # the model probe (#1313) starts no session
     )
     stream = frames()
+    # Like the real CLI (#1427): one turn at a time, an operator input framed by
+    # `command_lifecycle` (only while `emit-lifecycle` exists: an older CLI emits none), and a
+    # notification turn the agent starts for itself framed by nothing.
+    turn = threading.Lock()
+    # The notification turn in flight, if any: an interrupt stops IT (#1427 Send now).
+    note = {"active": False, "cancel": threading.Event()}
+    hanging = {"uuid": None}  # an operator input whose turn never ended by itself (`HANG`)
+
+    def lifecycle(command, state):
+        if os.path.exists("emit-lifecycle"):
+            send(
+                {
+                    "type": "command_lifecycle",
+                    "command_uuid": command,
+                    "state": state,
+                    "uuid": str(uuid.uuid4()),
+                    "session_id": session,
+                }
+            )
+
+    def notification_turn():
+        # Far longer than any test waits for a turn: a test must never see the task end by itself.
+        _wait_file("release-bg-task", seconds=120)
+        send(
+            {
+                "type": "system",
+                "subtype": "task_notification",
+                "task_id": "bg1",
+                "status": "completed",
+                "session_id": session,
+            }
+        )
+        with turn:
+            note["active"] = True
+            note["cancel"].clear()
+            send(
+                {"type": "system", "subtype": "init", "model": "fake-claude", "session_id": session}
+            )
+            cancelled = False
+            # Like the real CLI: every model request is announced, before any output.
+            send(
+                {
+                    "type": "system",
+                    "subtype": "status",
+                    "status": "requesting",
+                    "session_id": session,
+                }
+            )
+            if os.path.exists("emit-session-state"):  # a CLI that reports its session state
+                send(
+                    {
+                        "type": "system",
+                        "subtype": "session_state_changed",
+                        "state": "running",
+                        "session_id": session,
+                    }
+                )
+            if os.path.exists("hold-notification-start"):  # started, no output yet (the race)
+                cancelled = _wait_file("release-notification", cancel=note["cancel"])
+            send(
+                {
+                    "type": "assistant",
+                    "parent_tool_use_id": None,
+                    "session_id": session,
+                    "message": {
+                        "id": "msg_note",
+                        "content": [{"type": "text", "text": "notified"}],
+                    },
+                }
+            )
+            if not cancelled and os.path.exists("hold-notification"):
+                cancelled = _wait_file("release-notification", cancel=note["cancel"])
+            result = {
+                "type": "result",
+                "subtype": "success",
+                "uuid": str(uuid.uuid4()),
+                "is_error": False,
+                "result": "notified",
+                "session_id": session,
+                "origin": {"kind": "task-notification", "producer": "session-task"},
+            }
+            if cancelled:  # what the real CLI sends for an interrupted turn
+                result.update(
+                    subtype="error_during_execution",
+                    is_error=True,
+                    result="",
+                    terminal_reason="aborted_streaming",
+                )
+            note["active"] = False
+            send(result)
+            if os.path.exists("emit-session-state"):
+                send(
+                    {
+                        "type": "system",
+                        "subtype": "session_state_changed",
+                        "state": "idle",
+                        "session_id": session,
+                    }
+                )
+
     for frame in stream:
         kind = frame.get("type")
+        if kind == "user":
+            lifecycle(frame.get("uuid"), "queued")
+            with turn:
+                lifecycle(frame.get("uuid"), "started")
+                finished = claude_turn(frame, stream, session, notification_turn)
+            if finished:
+                lifecycle(frame.get("uuid"), "completed")
+            else:
+                hanging["uuid"] = frame.get("uuid")
+            continue
         if kind == "control_request" and frame["request"]["subtype"] == "initialize":
             send(
                 {
@@ -346,6 +476,19 @@ def claude():
                 }
             )
         elif kind == "control_request" and frame["request"]["subtype"] == "interrupt":
+            if note["active"] and not os.path.exists("refuse-interrupt"):
+                send(
+                    {
+                        "type": "control_response",
+                        "response": {
+                            "subtype": "success",
+                            "request_id": frame["request_id"],
+                            "response": {},
+                        },
+                    }
+                )
+                note["cancel"].set()  # the notification turn ends, interrupted
+                continue
             if os.path.exists("refuse-interrupt"):
                 completed = {
                     "type": "result",
@@ -382,130 +525,147 @@ def claude():
                 }
             )
             wait_cancel()
-            send(
-                {
-                    "type": "result",
-                    "subtype": "success",
-                    "uuid": str(uuid.uuid4()),
-                    "is_error": False,
-                    "terminal_reason": "aborted_streaming",
-                    "result": "",
-                    "session_id": session,
-                }
-            )
-        elif kind == "user":
-            text = frame["message"]["content"]
-            if isinstance(text, list):  # #1332 Phase 3: base64 image blocks, then the words
-                images = [b for b in text if b["type"] == "image"]
-                words = "".join(b["text"] for b in text if b["type"] == "text")
-                text = f"IMAGES:{len(images)}:{images[0]['source']['media_type']}:" + words
-            # Like the real CLI: the history file appears with the first turn, not before.
-            slug = os.getcwd().replace("/", "-")
-            history = os.path.join(os.environ["HOME"], ".claude", "projects", slug)
-            os.makedirs(history, exist_ok=True)
-            with open(os.path.join(history, session + ".jsonl"), "a") as fh:
-                fh.write(json.dumps({"type": "user", "message": text}) + "\n")
-            send(
-                {"type": "system", "subtype": "init", "model": "fake-claude", "session_id": session}
-            )
-            if text == "DIE":
-                sys.exit(9)
-            if text == "HANG":
-                continue
-            wait_release(text)
-            answer = "echo:" + text
-            if text == "APPROVE":
-                send(
-                    {
-                        "type": "control_request",
-                        "request_id": "perm-1",
-                        "request": {
-                            "subtype": "can_use_tool",
-                            "tool_name": "Bash",
-                            "tool_use_id": "toolu_1",
-                            "input": {"command": "ls -la"},
-                            "blocked_path": "/etc/hosts",
-                            "decision_reason": "outside the working directory",
-                            "title": "Run ls -la",
-                        },
-                        "session_id": session,
-                    }
+            aborted = {
+                "type": "result",
+                "subtype": "success",
+                "uuid": str(uuid.uuid4()),
+                "is_error": False,
+                "terminal_reason": "aborted_streaming",
+                "result": "",
+                "session_id": session,
+            }
+            if os.path.exists("emit-lifecycle") and hanging["uuid"]:
+                # The current CLI (captured, #1427): the interrupted input is named, and its
+                # lifecycle ends `cancelled`.
+                aborted.update(
+                    origin={"kind": "human"},
+                    user_message_uuid=hanging["uuid"],
+                    subtype="error_during_execution",
+                    is_error=True,
                 )
-                reply = next(stream)
-                answer = "approved:" + reply["response"]["response"]["behavior"]
-            if text.startswith("ASKJSON:"):
-                send(
-                    {
-                        "type": "control_request",
-                        "request_id": "perm-2",
-                        "request": {
-                            "subtype": "can_use_tool",
-                            "tool_use_id": "toolu_2",
-                            **json.loads(text[len("ASKJSON:") :]),
-                        },
-                        "session_id": session,
-                    }
-                )
-                reply = next(stream)
-                answer = "decided:" + json.dumps(reply["response"]["response"], sort_keys=True)
-            if text.startswith("RUN:"):
-                send(
-                    {
-                        "type": "assistant",
-                        "message": {
-                            "id": "msg_run",
-                            "model": "fake-claude-1",
-                            "content": [
-                                {
-                                    "type": "tool_use",
-                                    "id": "toolu_run",
-                                    "name": "Bash",
-                                    "input": {"command": text[len("RUN:") :]},
-                                }
-                            ],
-                        },
-                        "session_id": session,
-                    }
-                )
-            if text == "SUBAGENT":
-                request = {
+            send(aborted)
+            if os.path.exists("emit-lifecycle") and hanging["uuid"]:
+                lifecycle(hanging["uuid"], "cancelled")
+            hanging["uuid"] = None
+
+
+def claude_turn(frame, stream, session, notification_turn):
+    text = frame["message"]["content"]
+    if isinstance(text, list):  # #1332 Phase 3: base64 image blocks, then the words
+        images = [b for b in text if b["type"] == "image"]
+        words = "".join(b["text"] for b in text if b["type"] == "text")
+        text = f"IMAGES:{len(images)}:{images[0]['source']['media_type']}:" + words
+    # Like the real CLI: the history file appears with the first turn, not before.
+    slug = os.getcwd().replace("/", "-")
+    history = os.path.join(os.environ["HOME"], ".claude", "projects", slug)
+    os.makedirs(history, exist_ok=True)
+    with open(os.path.join(history, session + ".jsonl"), "a") as fh:
+        fh.write(json.dumps({"type": "user", "message": text}) + "\n")
+    send({"type": "system", "subtype": "init", "model": "fake-claude", "session_id": session})
+    if text == "DIE":
+        sys.exit(9)
+    if text == "HANG":
+        return False  # the turn never ends: no `completed` either
+    wait_release(text)
+    answer = "echo:" + text
+    if text == "BGTASK":
+        send({"type": "system", "subtype": "task_started", "task_id": "bg1", "session_id": session})
+        threading.Thread(target=notification_turn, daemon=True).start()
+        answer = "started"
+    if text == "APPROVE":
+        send(
+            {
+                "type": "control_request",
+                "request_id": "perm-1",
+                "request": {
                     "subtype": "can_use_tool",
                     "tool_name": "Bash",
-                    "tool_use_id": "toolu_sub",
-                    "input": {"command": "rm -rf build"},
-                    "agent_id": "agent-background-1",
-                }
-                send(
-                    {
-                        "type": "control_request",
-                        "request_id": "perm-sub",
-                        "request": request,
-                        "session_id": session,
-                    }
-                )
-                reply = next(stream)
-                answer = "subagent:" + reply["response"]["subtype"]
-            send(
-                {
-                    "type": "assistant",
-                    "message": {
-                        "id": "msg_1",
-                        "model": "fake-claude-1",
-                        "content": [{"type": "text", "text": answer}],
-                    },
-                    "session_id": session,
-                }
-            )
-            send(
-                {
-                    "type": "result",
-                    "subtype": "success",
-                    "uuid": str(uuid.uuid4()),
-                    "is_error": False,
-                    "result": answer,
-                    "session_id": session,
-                }
-            )
+                    "tool_use_id": "toolu_1",
+                    "input": {"command": "ls -la"},
+                    "blocked_path": "/etc/hosts",
+                    "decision_reason": "outside the working directory",
+                    "title": "Run ls -la",
+                },
+                "session_id": session,
+            }
+        )
+        reply = next(stream)
+        answer = "approved:" + reply["response"]["response"]["behavior"]
+    if text.startswith("ASKJSON:"):
+        send(
+            {
+                "type": "control_request",
+                "request_id": "perm-2",
+                "request": {
+                    "subtype": "can_use_tool",
+                    "tool_use_id": "toolu_2",
+                    **json.loads(text[len("ASKJSON:") :]),
+                },
+                "session_id": session,
+            }
+        )
+        reply = next(stream)
+        answer = "decided:" + json.dumps(reply["response"]["response"], sort_keys=True)
+    if text.startswith("RUN:"):
+        send(
+            {
+                "type": "assistant",
+                "message": {
+                    "id": "msg_run",
+                    "model": "fake-claude-1",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_run",
+                            "name": "Bash",
+                            "input": {"command": text[len("RUN:") :]},
+                        }
+                    ],
+                },
+                "session_id": session,
+            }
+        )
+    if text == "SUBAGENT":
+        request = {
+            "subtype": "can_use_tool",
+            "tool_name": "Bash",
+            "tool_use_id": "toolu_sub",
+            "input": {"command": "rm -rf build"},
+            "agent_id": "agent-background-1",
+        }
+        send(
+            {
+                "type": "control_request",
+                "request_id": "perm-sub",
+                "request": request,
+                "session_id": session,
+            }
+        )
+        reply = next(stream)
+        answer = "subagent:" + reply["response"]["subtype"]
+    send(
+        {
+            "type": "assistant",
+            "message": {
+                "id": "msg_1",
+                "model": "fake-claude-1",
+                "content": [{"type": "text", "text": answer}],
+            },
+            "session_id": session,
+        }
+    )
+    result = {
+        "type": "result",
+        "subtype": "success",
+        "uuid": str(uuid.uuid4()),
+        "is_error": False,
+        "result": answer,
+        "session_id": session,
+    }
+    if os.path.exists("emit-lifecycle"):  # the current CLI names the input it answered
+        result.update(origin={"kind": "human"}, user_message_uuid=frame.get("uuid"))
+    send(result)
+    return True
 
 
 def _control(name, default=None):

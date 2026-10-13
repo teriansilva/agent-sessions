@@ -31,7 +31,9 @@ export async function mockStructuredGuidance(page: Page, engine: string, mode: s
     state: "running", active_turn: ACTIVE, model_requested: null,
     files: true,
     omitted_turns: 0, pending_requests: [] as Json[], read_only: null as string | null,
-    native: { native_id: "native", worker: "worker", background_active: false, send_now: mode },
+    native: { native_id: "native", worker: "worker", background_active: false, send_now: mode,
+      // #1427: a turn the agent runs for itself, and whether this worker can interrupt it.
+      background_turn: null as string | null, send_now_background: "" as string },
     turns: [
       { ...common, turn_id: ACTIVE, operation_id: ACTIVE, state: "running", text: "Check startup.",
         attachments: [{ stored: "20261010-010000-startup-notes.pdf", name: "startup-notes.pdf", mime: "application/octet-stream" }],

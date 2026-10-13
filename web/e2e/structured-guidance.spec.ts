@@ -160,3 +160,41 @@ test("approval stays visible outside collapsed risky activity; read-only and old
   await expect(page.getByTestId("structured-pane")).toContainText("agent removed");
   await expect(page.getByRole("button", { name: "Send now", exact: true })).toBeHidden();
 });
+
+/** The page's FIRST snapshot already shows the agent running a turn of its own (#1427). */
+async function behindAgentTurn(page: Page, theme = "dark", capable = true) {
+  const fixture = await mockStructuredGuidance(page, "claude-api", "interrupt", theme);
+  fixture.state.active_turn = "";
+  fixture.state.turns[0].state = "completed";
+  fixture.state.native.background_active = true;
+  fixture.state.native.background_turn = BACKGROUND;
+  fixture.state.native.send_now_background = capable ? "interrupt" : "";
+  await page.goto(`/s/claude-api/${ID}`);
+  await expect(page.getByTestId("structured-pane")).toBeVisible();
+  return fixture;
+}
+
+const BACKGROUND = "44444444-2222-4333-8444-555555555555";
+
+for (const theme of ["dark", "light"]) {
+  test(`#1427: a message queued behind the agent's own turn offers Send now against it (${theme})`, async ({ page }, testInfo) => {
+    const fixture = await behindAgentTurn(page, theme);
+    const queued = page.getByTestId("structured-turn").filter({ hasText: "Only inspect the files." });
+    const sendNow = queued.getByRole("button", { name: "Send now", exact: true });
+    await expect(sendNow).toBeVisible();
+    await expect(queued).toContainText("Interrupts the current response");
+    const box = (await sendNow.boundingBox())!;
+    expect(box.height).toBeGreaterThanOrEqual(44); // the touch target, in the new state too
+    await page.screenshot({ path: testInfo.outputPath("background-turn.png") });
+    await sendNow.click();
+    await expect.poll(() => fixture.calls.length).toBe(1);
+    expect(fixture.calls[0]).toMatchObject({ turn_id: BACKGROUND, queued_turn_id: QUEUED });
+  });
+}
+
+test("#1427: an older worker's background turn offers no Send now", async ({ page }) => {
+  await behindAgentTurn(page, "dark", false);
+  const queued = page.getByTestId("structured-turn").filter({ hasText: "Only inspect the files." });
+  await expect(queued).toContainText("Queued");
+  await expect(queued.getByRole("button", { name: "Send now", exact: true })).toHaveCount(0);
+});

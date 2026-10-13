@@ -69,6 +69,7 @@ import {
   requestTitle,
   reviewOnly,
   messageTimestamp,
+  sendNowTarget,
   turnStateLabel,
 } from "./structuredView";
 
@@ -909,11 +910,12 @@ export function StructuredPane({
       // Current capability/turn state cannot authorize a replacement request on this path.
       if (!operation) return;
     } else {
-      if (recoveringSendNow || readOnly || !snap?.active_turn || !snap?.native?.send_now) return;
+      const sendTarget = sendNowTarget(snap);
+      if (recoveringSendNow || readOnly || !snap || !sendTarget) return;
       const queued = snap.turns.find((t) => t.turn_id === queuedTurnId);
       if (queued?.state !== "queued" || (queued.delivery && queued.delivery !== "interrupt_failed")) return;
       if (queued.delivery === "interrupt_failed") operation = undefined;
-      operation ??= { id: uuid(), turnId: snap.active_turn };
+      operation ??= { id: uuid(), turnId: sendTarget.turnId };
     }
     sendNowIds.current.set(target, operation);
     sendNowBusy.current = true;
@@ -1548,7 +1550,7 @@ export function StructuredPane({
             onInterrupt={(tid) => void interrupt(tid)}
             interrupting={interrupting}
             onSendNow={(tid) => void sendNow(tid)}
-            sendNowMode={snap?.active_turn ? snap.native?.send_now : undefined}
+            sendNowMode={sendNowTarget(snap)?.mode}
             sendingNow={sendingNow === t.turn_id}
             sendNowDisabled={!!sendingNow || !!recoveringSendNow || turns.some((q) => q.state === "queued" && q.delivery === "interrupting")}
           />

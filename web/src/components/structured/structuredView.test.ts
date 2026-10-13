@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
-import type { StructuredRequest } from "../../types/api";
-import { choiceLabel, operationFor, requestIds, requestRows, reviewOnly } from "./structuredView";
+import type { StructuredRequest, StructuredSnapshot } from "../../types/api";
+import { choiceLabel, operationFor, requestIds, requestRows, reviewOnly, sendNowTarget } from "./structuredView";
 
 function req(over: Partial<StructuredRequest>): StructuredRequest {
   return { request_id: "7", turn_id: "t", kind: "command", choices: ["approve", "reject", "cancel"], ...over };
@@ -85,4 +85,20 @@ test("a send reuses its operation id for the same text and mints a new one when 
   const first = operationFor(null, "hello", mint);
   expect(operationFor(first, "hello", mint)).toBe(first);
   expect(operationFor(first, "hello again", mint).id).toBe("id2");
+});
+
+test("Send now targets the operator turn, else the agent's own turn its worker can interrupt (#1427)", () => {
+  const snap = (over: Partial<StructuredSnapshot>, native: Partial<NonNullable<StructuredSnapshot["native"]>> = {}) =>
+    ({ active_turn: null, turns: [], native: { native_id: "n", worker: "w", background_active: false, ...native }, ...over }) as unknown as StructuredSnapshot;
+  expect(sendNowTarget(null)).toBeNull();
+  // The operator turn wins, in the worker's own mode.
+  expect(sendNowTarget(snap({ active_turn: "op" }, { send_now: "steer", background_turn: "bg", send_now_background: "interrupt" })))
+    .toEqual({ turnId: "op", mode: "steer" });
+  expect(sendNowTarget(snap({ active_turn: "op" }))).toBeNull(); // an old worker: no Send now at all
+  // No operator turn: the agent's own turn, always interrupted.
+  expect(sendNowTarget(snap({}, { send_now: "steer", background_turn: "bg", send_now_background: "interrupt" })))
+    .toEqual({ turnId: "bg", mode: "interrupt" });
+  // …only from a worker that advertises it, and only while that turn runs.
+  expect(sendNowTarget(snap({}, { send_now: "interrupt", background_turn: "bg" }))).toBeNull();
+  expect(sendNowTarget(snap({}, { send_now: "interrupt", background_turn: null, send_now_background: "interrupt" }))).toBeNull();
 });

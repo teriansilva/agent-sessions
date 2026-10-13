@@ -22,6 +22,21 @@ export function messageTimestamp(epoch: number | null | undefined, kind: "user" 
   };
 }
 
+/** What Send now would stop or steer: the operator turn running now, else a turn the agent
+ *  runs for itself that this worker can interrupt (#1427). Null: nothing a queued message can
+ *  go past right now. */
+export function sendNowTarget(
+  snap: StructuredSnapshot | null,
+): { turnId: string; mode: "steer" | "interrupt" } | null {
+  if (!snap) return null;
+  if (snap.active_turn) return snap.native?.send_now ? { turnId: snap.active_turn, mode: snap.native.send_now } : null;
+  const native = snap.native;
+  if (native?.background_turn && native.send_now_background === "interrupt") {
+    return { turnId: native.background_turn, mode: "interrupt" };
+  }
+  return null;
+}
+
 /** Turn states during which the agent is still working and the view keeps reading. */
 export function isActive(snap: StructuredSnapshot | null): boolean {
   return !!snap && (snap.state === "running" || snap.state === "awaiting_approval" || snap.state === "queued" || snap.state === "delivering");

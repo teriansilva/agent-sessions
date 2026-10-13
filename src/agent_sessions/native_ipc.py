@@ -455,7 +455,12 @@ _EVENT_FIELDS = {
         _COMMON | {"state", "error"},
         _RPC | {"text", "background_active", "native_state"},
     ),
-    "background": ({"state"}, {"native_turn_id", "task_id", "active", "native_state"}),
+    # `background_turn` (#1427): the Send now target of a turn the agent runs for itself; null
+    # once it has ended.
+    "background": (
+        {"state"},
+        {"native_turn_id", "task_id", "active", "native_state", "background_turn"},
+    ),
     "response": (_RPC, set()),
     "error": ({"message"}, _COMMON | _RPC | {"native_will_retry"}),
     "disconnected": ({"state", "native_id", "native_turn_id", "operation_id"}, set()),
@@ -476,9 +481,10 @@ def _event(value):
             "model_configured",
             "model_effective",
             "native_state",
+            "background_turn",
         }:
             out[key] = None
-        elif key in {"operation_id", "worker_id", "connection_id", "control_id"}:
+        elif key in {"operation_id", "worker_id", "connection_id", "control_id", "background_turn"}:
             out[key] = _uuid(item)
         elif key in {"native_id", "native_turn_id", "item_id", "request_id", "task_id", "tool"}:
             out[key] = _native(item, 258 if key == "request_id" else 256)

@@ -213,8 +213,15 @@ def _approval_bound(frame: dict[str, Any]) -> None:
 class _Codec:
     # The worker owns selection/queueing; codecs only map native effects (#1389).
     send_now_mode = "interrupt"
+    # Send now against a turn the agent runs for itself (#1427): always an interrupt, since a
+    # steered reply would land in a turn no operator message owns. None: no such turn exists.
+    send_now_background: str | None = None
 
     def __init__(self) -> None:
+        # A turn the agent runs that no operator command owns, and its Send now target: minted
+        # when it starts, cleared when it ends (#1427).
+        self.unowned_turn = False
+        self.background_turn: str | None = None
         self._serial = 0
         self._requests: dict[str, tuple[str, str | None]] = {}
         self._approvals: dict[str, dict[str, Any]] = {}
@@ -311,6 +318,7 @@ class _Codec:
 
 class CodexCodec(_Codec):
     send_now_mode = "steer"
+    send_now_background = "interrupt"
     ADAPTER = "codex-app-server"
 
     def __init__(self, effort: str | None = None) -> None:
@@ -319,6 +327,7 @@ class CodexCodec(_Codec):
         # v2 schema), so it rides on every `turn/start` this connection sends.
         self.effort = _effort(effort)
         self._steers: dict[str, str] = {}
+        self._unsolicited: str | None = None  # the native id of a turn the agent started itself
         self._early_frames: list[dict[str, Any]] = []
         self._early_size = 0
         # The latest proposed changes per file-change item of the active turn. A file-change
@@ -451,6 +460,20 @@ class CodexCodec(_Codec):
             "turn/interrupt", {"threadId": self.native_id, "turnId": self.native_turn_id}
         )
 
+    def interrupt_background(self, target: str) -> dict:
+        """Stop the turn the agent started itself, by ITS native id; never a steer (#1427)."""
+        if (
+            self.native_id is None
+            or self.operation_id is not None
+            or self._unsolicited is None
+            or target is None
+            or target != self.background_turn
+        ):
+            raise ProtocolError("no turn of the agent's own to interrupt")
+        return self._request(
+            "turn/interrupt", {"threadId": self.native_id, "turnId": self._unsolicited}
+        )
+
     def decide(
         self, request_id: str, decision: str, *, grant: str | None = None, cwd: str | None = None
     ) -> dict:
@@ -472,11 +495,36 @@ class CodexCodec(_Codec):
         if self.operation_id is None or (
             self.native_turn_id is not None and self.native_turn_id != turn_id
         ):
-            return [
-                _event(
-                    "background", native_turn_id=turn_id, state=_text(turn.get("status"), limit=64)
-                )
-            ]
+            state = _text(turn.get("status"), limit=64)
+            if self.operation_id is None and not completed and self._unsolicited is None:
+                # A turn the agent started itself (#1427): operator messages wait behind it, and
+                # it is the Send now target until it ends.
+                self._unsolicited = turn_id
+                self.unowned_turn = True
+                self.background_turn = str(uuid.uuid4())
+                return [
+                    _event(
+                        "background",
+                        native_turn_id=turn_id,
+                        state=state,
+                        active=True,
+                        background_turn=self.background_turn,
+                    )
+                ]
+            if completed and turn_id == self._unsolicited:
+                self._unsolicited = None
+                self.unowned_turn = False
+                self.background_turn = None
+                return [
+                    _event(
+                        "background",
+                        native_turn_id=turn_id,
+                        state=state,
+                        active=False,
+                        background_turn=None,
+                    )
+                ]
+            return [_event("background", native_turn_id=turn_id, state=state)]
         already_started = self.native_turn_id == turn_id
         self.native_turn_id = turn_id
         data = {"native_turn_id": turn_id, "operation_id": self.operation_id}
@@ -825,6 +873,10 @@ class CodexCodec(_Codec):
         return []
 
 
+# How the CLI's lifecycle ends an input: answered, or interrupted (#1427).
+_LIFECYCLE_ENDED = frozenset({"completed", "cancelled"})
+
+
 class ClaudeCodec(_Codec):
     """One serial native connection, with result replay detection across its submitted turns.
 
@@ -836,6 +888,7 @@ class ClaudeCodec(_Codec):
     """
 
     ADAPTER = "claude-stream-json"
+    send_now_background = "interrupt"
 
     def __init__(self, session_id: str) -> None:
         super().__init__()
@@ -843,6 +896,15 @@ class ClaudeCodec(_Codec):
         self._background: set[str] = set()
         self._session_state: str | None = None
         self._results: dict[str, str] = {}
+        # The command lifecycle (#1427). The CLI frames every input it is given with
+        # `command_lifecycle` queued → started → completed carrying the uuid we submitted, and a
+        # turn it starts itself (a task notification) with none. Output belongs to an operator
+        # turn only inside its own started window. Unknown per generation until one complete,
+        # correlated cycle is seen; a frame outside the cycle makes it unknown again.
+        self.lifecycle_proven = False
+        self._cycle: str | None = None  # the operator command: written | queued | started
+        self._closing: str | None = None  # a command whose result came, awaiting `completed`
+        self._tainted = False  # this command's cycle saw an anomaly: it proves nothing
 
     @staticmethod
     def argv(
@@ -899,6 +961,8 @@ class ClaudeCodec(_Codec):
             )
         self._submit(text, operation_id, images)
         self.native_turn_id = self.operation_id
+        self._cycle = "written"
+        self._tainted = False
         content: str | list[dict] = text
         if images:
             content = [
@@ -921,6 +985,83 @@ class ClaudeCodec(_Codec):
         if self.operation_id is None:
             raise ProtocolError("no correlated native turn to interrupt")
         return self._request("interrupt")
+
+    def interrupt_background(self, target: str) -> dict:
+        """Stop the turn the agent runs for itself; ``target`` is the one the operator saw."""
+        if self.operation_id is not None or target is None or target != self.background_turn:
+            raise ProtocolError("no turn of the agent's own to interrupt")
+        return self._request("interrupt")
+
+    def _agent_turn(self, running: bool) -> list[NativeEvent]:
+        """A turn the agent runs for itself starts or ends: mint or clear its Send now target."""
+        if running == self.unowned_turn:
+            return []
+        self.unowned_turn = running
+        self.background_turn = str(uuid.uuid4()) if running else None
+        return [
+            _event(
+                "background",
+                state="running" if running else "completed",
+                active=running or bool(self._background),
+                background_turn=self.background_turn,
+            )
+        ]
+
+    def _lifecycle(self, frame: dict) -> list[NativeEvent]:
+        command, state = frame.get("command_uuid"), frame.get("state")
+        if command is not None and command == self.operation_id:
+            expected = {"queued": "written", "started": "queued"}.get(state)
+            if expected is not None and self._cycle == expected:
+                self._cycle = state
+                # The CLI runs one turn at a time: this one starts only after any turn the agent
+                # was running for itself has ended.
+                return self._agent_turn(False) if state == "started" else []
+            if state in _LIFECYCLE_ENDED and self._cycle == "started":
+                # The CLI ended this input without the result that names it: complete it
+                # visibly, never leave it running for ever, and trust the fence no longer.
+                return self._ended_without_result(state)
+        elif command is not None and command == self._closing and state in _LIFECYCLE_ENDED:
+            # `cancelled` is how the CLI ends an interrupted input (captured, #1427).
+            self._closing = None
+            self.lifecycle_proven = True
+            return []
+        # Out of order, unknown or unexpected: this generation can no longer fence its output.
+        self._distrust()
+        return []
+
+    def _distrust(self) -> None:
+        """Every anomaly comes here (Hermes on #1429): the fence is no longer proved, the cycle in
+        flight can never prove it, and a cycle waiting for its `completed` proves nothing. Only a
+        LATER cycle that saw nothing unexpected earns the proof back."""
+        self.lifecycle_proven = False
+        self._tainted = True
+        self._closing = None
+
+    def _ended_without_result(self, state: str) -> list[NativeEvent]:
+        common = {"operation_id": self.operation_id, "native_turn_id": self.native_turn_id}
+        self._distrust()
+        self._cycle = None
+        self.operation_id = None
+        self.native_turn_id = None
+        self._approvals.clear()
+        interrupted = state == "cancelled"
+        return [
+            _event(
+                "turn_completed",
+                **common,
+                state="interrupted" if interrupted else "failed",
+                text="",
+                background_active=bool(self._background),
+                native_state=self._session_state,
+                error="" if interrupted else "the agent ended this turn without its result",
+            )
+        ]
+
+    def _owned(self) -> bool:
+        """Is the frame being read the operator turn's own output?"""
+        if self.operation_id is None:
+            return False
+        return self._cycle == "started" or not self.lifecycle_proven
 
     @staticmethod
     def _response(request_id: str, response: dict) -> dict:
@@ -1062,6 +1203,8 @@ class ClaudeCodec(_Codec):
         subtype = frame.get("subtype")
         if not isinstance(kind, str) or (subtype is not None and not isinstance(subtype, str)):
             raise ProtocolError("native message kind must be a string")
+        if kind == "command_lifecycle":
+            return self._lifecycle(frame)
         if kind == "system" and subtype == "init":
             return [
                 _event(
@@ -1111,7 +1254,7 @@ class ClaudeCodec(_Codec):
                 if isinstance(state, str) and state in {"running", "idle", "requires_action"}
                 else "unknown"
             )
-            return [
+            out = [
                 _event(
                     "background",
                     state=self._session_state,
@@ -1119,14 +1262,30 @@ class ClaudeCodec(_Codec):
                     native_state=self._session_state,
                 )
             ]
+            # The session's own state machine marks a turn the agent runs for itself from its
+            # START, before any output (Hermes on #1429): the Send now target exists as soon as
+            # the queue is held, and ends with the state. A running state the operator's input
+            # owns is that input's turn, never the agent's.
+            if self._session_state in {"running", "requires_action"} and not self._owned():
+                out += self._agent_turn(True)
+            elif self._session_state == "idle":
+                out += self._agent_turn(False)
+            return out
         if kind == "system" and subtype == "status":
-            return [
+            out = [
                 _event(
                     "background",
                     state=_text(frame.get("status"), limit=64),
                     active=bool(self._background),
                 )
             ]
+            # The current CLI announces every model request with `status: requesting`, 2 ms after
+            # a turn starts and seconds before its first output (captured, #1427 / Hermes on
+            # #1429). Outside every operator window that is a turn the agent runs for itself:
+            # its Send now target exists from here, and its own result ends it.
+            if frame.get("status") == "requesting" and not self._owned():
+                out += self._agent_turn(True)
+            return out
         origin = frame.get("origin")
         if origin is not None and (
             not isinstance(origin, dict) or not isinstance(origin.get("kind"), str)
@@ -1150,10 +1309,35 @@ class ClaudeCodec(_Codec):
         background = frame.get("parent_tool_use_id") is not None or (
             isinstance(origin, dict) and origin.get("kind") != "human"
         )
-        if background:
+        if kind == "result" and frame.get("user_message_uuid") not in (None, self.operation_id):
+            background = True  # another input's result can never complete this turn
+            self._distrust()  # nor can a stream that carried one prove the fence
+        if (
+            kind == "result"
+            and not background
+            and self.operation_id is not None
+            and self._cycle == "started"
+            and frame.get("user_message_uuid") != self.operation_id
+        ):
+            # Inside a lifecycle window only the result NAMING this input completes it (Hermes on
+            # #1429): an unbound one is nobody's reply, and the fence is no longer trusted. The
+            # input still ends, by its own result or its lifecycle `completed` / `cancelled`.
+            self._distrust()
             return [_event("background", state="activity", active=True)]
-        if self.operation_id is None:
-            return []
+        if background:
+            ended = []
+            if kind == "result" and frame.get("parent_tool_use_id") is None:
+                ended = self._agent_turn(False)  # the agent's own turn has ended
+            return ended or [_event("background", state="activity", active=True)]
+        if not self._owned():
+            # Output no operator turn owns: a turn the agent runs for itself. Before the
+            # operator's `started`, this is the turn that was already running when it wrote.
+            if kind == "result":
+                return self._agent_turn(False)
+            out = self._agent_turn(True) if kind in {"assistant", "stream_event", "user"} else []
+            if self.operation_id is None:
+                return out
+            return [*out, _event("background", state="activity", active=True)]
         common = {"operation_id": self.operation_id, "native_turn_id": self.native_turn_id}
         if kind == "result":
             # An interrupt is reported as an error result (`error_during_execution`) whose
@@ -1166,6 +1350,9 @@ class ClaudeCodec(_Codec):
                 state = "failed"
             else:
                 state = "completed"
+            clean = self._cycle == "started" and not self._tainted
+            self._closing = self.operation_id if clean else None
+            self._cycle = None
             self.operation_id = None
             self.native_turn_id = None
             self._approvals.clear()

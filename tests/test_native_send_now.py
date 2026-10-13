@@ -542,3 +542,226 @@ async def test_cancel_refusal_preserves_fifo_without_send_now_retry(host, projec
         == receipt
     )
     assert len(input_frames(project)) == 3
+
+
+# --- #1427: Send now against a turn the agent runs for itself ----------------------------------
+
+UNSOLICITED = "0199f3ac-53fb-7c10-81ef-aaaaaaaaaaaa"
+
+
+def _agent_turn_codec(kind):
+    """A real codec with NO operator turn, running a turn the agent started itself."""
+    from agent_sessions.native_protocol import ClaudeCodec
+    from test_native_protocol import SESSION, _say, codex_session
+
+    if kind == "codex":
+        codec = codex_session()
+        (event,) = codec.feed(
+            {
+                "method": "turn/started",
+                "params": {
+                    "threadId": SESSION,
+                    "turn": {"id": UNSOLICITED, "status": "inProgress"},
+                },
+            }
+        )
+    elif kind == "claude-state":  # known from its running state alone, before any output
+        codec = ClaudeCodec(SESSION)
+        codec.lifecycle_proven = True
+        (_, event) = codec.feed(
+            {
+                "type": "system",
+                "subtype": "session_state_changed",
+                "state": "running",
+                "session_id": SESSION,
+            }
+        )
+    else:
+        codec = ClaudeCodec(SESSION)
+        codec.lifecycle_proven = True
+        (event,) = codec.feed(_say("The background command finished."))
+    assert codec.operation_id is None and codec.unowned_turn
+    assert event.data["background_turn"] == codec.background_turn is not None
+    return codec
+
+
+def background_worker(conversation, monkeypatch, kind):
+    root, sid, binding = conversation
+    worker = native_worker.Worker(
+        {
+            "worker_id": binding.worker_id,
+            "session_key": binding.session_key,
+            "adapter": binding.adapter,
+            "journal_root": str(root),
+            "capability": native_ipc.Capability.create()._value,
+            "connection_id": binding.connection_id,
+        },
+        root,
+    )
+    worker.codec = _agent_turn_codec(kind)
+    worker.ready.set()
+    monkeypatch.setattr(worker, "gate_open", lambda: True)
+    monkeypatch.setattr(worker, "queued_admission", contextlib.nullcontext)
+    queued = journal_tests.request(binding, revision=native_journal.read(root, sid).revision)
+    native_journal.claim(root, queued, queued=True)
+    worker.queued.append(queued["params"])
+    control = journal_tests.request(
+        binding,
+        action="send_now",
+        turn_id=worker.codec.background_turn,
+        queued_turn_id=queued["params"]["operation_id"],
+        mode="interrupt",
+        revision=native_journal.read(root, sid).revision,
+    )
+    return worker, queued, control
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("kind", ["claude", "claude-state", "codex"])
+async def test_send_now_interrupts_the_agents_own_turn_and_promotes_the_message(
+    conversation, monkeypatch, kind
+):
+    worker, queued, control = background_worker(conversation, monkeypatch, kind)
+    writes = []
+
+    async def write(frame):
+        writes.append(frame)
+
+    monkeypatch.setattr(worker, "write", write)
+    result = await worker.effect(control)
+    assert result["result"]["handoff"] == "sent"
+    (frame,) = writes
+    if kind == "codex":  # that turn, by its own native id; never a steer into it
+        assert frame["method"] == "turn/interrupt"
+        assert frame["params"]["turnId"] == UNSOLICITED
+    else:
+        assert frame["type"] == "control_request" and frame["request"]["subtype"] == "interrupt"
+    # Promoted on the agent's acknowledgement, never consumed by the control itself.
+    assert worker.queued == [queued["params"]]
+    assert worker.dispatch_busy()  # the agent's turn still has to end first
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("kind", ["claude", "claude-state", "codex"])
+@pytest.mark.parametrize("then", ["ended", "an-operator-turn-began"])
+async def test_the_agents_turn_ending_during_the_claim_records_not_sent(
+    conversation, monkeypatch, kind, then
+):
+    """Never stop a newer turn: if the agent's turn ended while the claim fsynced, and even if an
+    operator turn has begun since, nothing is written and the message stays queued."""
+    from test_native_protocol import OPERATION, TURN
+
+    worker, queued, control = background_worker(conversation, monkeypatch, kind)
+    original_claim = native_journal.claim
+
+    def end_during_claim(*args, **kwargs):
+        result = original_claim(*args, **kwargs)
+        worker.codec.unowned_turn = False
+        worker.codec.background_turn = None
+        if then == "an-operator-turn-began":
+            worker.codec.operation_id = OPERATION
+            worker.codec.native_turn_id = TURN
+            if kind == "claude":
+                worker.codec._cycle = "started"
+        return result
+
+    monkeypatch.setattr(native_journal, "claim", end_during_claim)
+
+    async def forbidden(frame):
+        pytest.fail("an ended turn must never receive a native write")
+
+    monkeypatch.setattr(worker, "write", forbidden)
+    result = await worker.effect(control)
+    assert result["result"]["handoff"] == "not_sent"
+    assert worker.queued == [queued["params"]]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("kind", ["claude", "claude-state", "codex"])
+async def test_a_refused_interrupt_of_the_agents_turn_keeps_fifo(conversation, monkeypatch, kind):
+    worker, queued, control = background_worker(conversation, monkeypatch, kind)
+    writes = []
+
+    async def write(frame):
+        writes.append(frame)
+
+    monkeypatch.setattr(worker, "write", write)
+    await worker.effect(control)
+    (frame,) = writes
+    request_id = frame.get("id", frame.get("request_id"))
+    refusal = (
+        {"id": request_id, "error": {"code": -32000, "message": "refused"}}
+        if kind == "codex"
+        else {
+            "type": "control_response",
+            "response": {"subtype": "error", "request_id": request_id, "error": "refused"},
+        }
+    )
+    recorded = []
+    monkeypatch.setattr(worker, "record", lambda events: recorded.extend(events))
+    await worker.handle_events(worker.codec.feed(refusal))
+    assert [e.kind for e in recorded if e.kind == "delivery_failed"] == ["delivery_failed"]
+    assert worker.queued == [queued["params"]] and worker.priority_turn is None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("kind", ["claude", "claude-state", "codex"])
+@pytest.mark.parametrize("change", ["steer", "stale-target", "no-capability"])
+async def test_send_now_against_the_agents_turn_is_refused_unless_exact(
+    conversation, monkeypatch, kind, change
+):
+    worker, queued, control = background_worker(conversation, monkeypatch, kind)
+    if change == "steer":
+        control["params"]["mode"] = "steer"
+    elif change == "stale-target":
+        control["params"]["turn_id"] = ident()
+    else:  # a worker from before #1427 has no such Send now
+        monkeypatch.setattr(type(worker.codec), "send_now_background", None)
+
+    async def forbidden(frame):
+        pytest.fail("no native write for a refused Send now")
+
+    monkeypatch.setattr(worker, "write", forbidden)
+    result = await worker.effect(control)
+    assert "error" in result
+    assert worker.queued == [queued["params"]]
+
+
+@pytest.mark.anyio
+async def test_after_an_anomalous_cycle_a_running_task_holds_the_queue_again(
+    conversation, monkeypatch
+):
+    """The decision that matters (Hermes on #1429): with a background task running, a worker
+    whose last cycle saw an anomaly must keep QUEUEING, exactly as before the fence."""
+    from agent_sessions.native_protocol import ClaudeCodec
+    from test_native_protocol import NEXT, OPERATION, SESSION, _life, _operator_turn, _result
+
+    root, sid, binding = conversation
+    worker = native_worker.Worker(
+        {
+            "worker_id": binding.worker_id,
+            "session_key": binding.session_key,
+            "adapter": binding.adapter,
+            "journal_root": str(root),
+            "capability": native_ipc.Capability.create()._value,
+            "connection_id": binding.connection_id,
+        },
+        root,
+    )
+    codec = worker.codec = ClaudeCodec(SESSION)
+    _operator_turn(codec, OPERATION, "one")
+    codec.feed(
+        {"type": "system", "subtype": "task_started", "task_id": "bg1", "session_id": SESSION}
+    )
+    assert worker.native_busy() and not worker.dispatch_busy()  # proved: the task does not hold
+    codec.submit("go", NEXT)
+    for frame in (
+        _life(NEXT, "queued"),
+        _life(NEXT, "started"),
+        _life("9d1f0b8e-1c2d-4e3f-8a9b-0c1d2e3f4a5b", "started"),  # the anomaly
+        _result("right", origin={"kind": "human"}, user_message_uuid=NEXT),
+        _life(NEXT, "completed"),
+    ):
+        codec.feed(frame)
+    assert codec.operation_id is None
+    assert worker.native_busy() and worker.dispatch_busy()  # the task holds the queue again

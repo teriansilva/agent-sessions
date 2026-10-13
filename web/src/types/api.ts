@@ -1428,6 +1428,10 @@ export interface StructuredSnapshot {
     background_active: boolean;
     /** Advertised by this running worker, absent on older workers. */
     send_now?: "steer" | "interrupt";
+    /** A turn the agent runs for itself (a task notification) that Send now can interrupt
+     *  (#1427), or null. Only from a worker advertising `send_now_background`. */
+    background_turn?: string | null;
+    send_now_background?: "interrupt";
   };
   /** Why this conversation takes no new work (its client is retiring), or null. */
   read_only?: string | null;
