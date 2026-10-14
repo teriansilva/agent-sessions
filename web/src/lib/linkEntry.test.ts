@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyLink } from "./linkEntry";
+import { classifyLink, isPublicShareLink } from "./linkEntry";
 
 const O = "https://battlelab.example";
 const MID = "msn_" + "a".repeat(32);
@@ -31,5 +31,19 @@ describe("classifyLink (#1232)", () => {
     ["junk", "http://["],
   ])("rejects %s", (_, raw) => {
     expect(classifyLink(raw, O)).toBeNull();
+  });
+});
+
+describe("isPublicShareLink (#1404)", () => {
+  const O = "https://lab.example";
+  it("knows a same-origin public link, and nothing else", () => {
+    expect(isPublicShareLink(`${O}/p/${"A".repeat(43)}`, O)).toBe(true);
+    expect(isPublicShareLink("/p/abc_DEF-1", O)).toBe(true);
+    expect(isPublicShareLink(`${O}/p/`, O)).toBe(false);
+    expect(isPublicShareLink(`https://evil.example/p/${"A".repeat(43)}`, O)).toBe(false);
+    expect(isPublicShareLink(`${O}/s/claude/abc`, O)).toBe(false);
+    expect(isPublicShareLink(`${O}/p/a/b`, O)).toBe(false);
+    // a public link is never classified as an in-app route
+    expect(classifyLink(`${O}/p/${"A".repeat(43)}`, O)).toBeNull();
   });
 });

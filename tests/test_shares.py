@@ -294,7 +294,11 @@ def test_operator_creates_a_link_and_a_fresh_visitor_unlocks_it(app, auth_cfg):
     v = _visitor(app, auth_cfg)
     r = v.post("/api/public/unlock", json={"token": _token(made["url"])})
     assert r.status_code == 200
-    assert r.json()["share"] == {
+    view = r.json()["share"]
+    link = view.pop("link")
+    # The link's opaque identity: the viewer binds every snapshot to it (#1444); never the id.
+    assert isinstance(link, str) and len(link) == 24 and made["share"]["share_id"] not in link
+    assert view == {
         "kind": "terminal",
         "mode": "view",
         "title": "Deploy the relay",
@@ -308,7 +312,61 @@ def test_operator_creates_a_link_and_a_fresh_visitor_unlocks_it(app, auth_cfg):
     assert "SameSite=strict" in cookie and "HttpOnly" in cookie and "Secure" in cookie
     me = v.get("/api/public/share")
     assert me.status_code == 200 and me.json()["share"]["title"] == "Deploy the relay"
+    assert me.json()["share"]["link"] == link
     assert TERM not in me.text  # the visitor never learns the session key
+    # Another link opened in the same browser names a different link.
+    other = _create(op, title="Another")
+    again = v.post("/api/public/unlock", json={"token": _token(other["url"])})
+    assert again.status_code == 200 and again.json()["share"]["link"] != link
+    assert v.get("/api/public/share").json()["share"]["link"] == again.json()["share"]["link"]
+
+
+def test_the_title_a_visitor_sees_is_redacted_and_fails_closed(app, auth_cfg, monkeypatch):
+    """The title defaults to the session's, which can fall back to its first message: it goes
+    through the secret-value redactor like every other visitor string (#1444 review)."""
+    from agent_sessions import template_secrets
+
+    monkeypatch.setattr(template_secrets, "redaction_values", lambda: ["s3cret-value-123"])
+    op = _operator(app, auth_cfg)
+    made = _create(op, title="deploy with s3cret-value-123 now")
+    v = _visitor(app, auth_cfg)
+    r = v.post("/api/public/unlock", json={"token": _token(made["url"])})
+    assert r.status_code == 200
+    assert (
+        "s3cret-value-123" not in r.text
+        and r.json()["share"]["title"] == "deploy with [secret] now"
+    )
+    me = v.get("/api/public/share")
+    assert "s3cret-value-123" not in me.text and "[secret]" in me.json()["share"]["title"]
+
+    def boom():
+        raise template_secrets.RedactionUnavailable("store unreadable")
+
+    monkeypatch.setattr(template_secrets, "redaction_values", boom)
+    shut = v.get("/api/public/share")
+    assert shut.status_code == 503 and "s3cret-value-123" not in shut.text
+
+
+def test_an_unusable_key_makes_every_visitor_read_503_never_500(app, auth_cfg, monkeypatch):
+    """The link identity is keyed (#1444): when the key can't be used, unlock, /share and /name
+    refuse with 503 (fail closed), never a 500 or an unbound answer."""
+    from agent_sessions import share_api, template_secrets
+
+    op = _operator(app, auth_cfg)
+    made = _create(op, mode="view")
+    v = _visitor(app, auth_cfg)
+    ok = v.post("/api/public/unlock", json={"token": _token(made["url"])})
+    assert ok.status_code == 200
+    csrf = ok.json()["csrf"]
+
+    def boom(_share_id):
+        raise template_secrets.SecretKeyUnavailable("key unusable")
+
+    monkeypatch.setattr(share_api, "link_id", boom)
+    assert v.post("/api/public/unlock", json={"token": _token(made["url"])}).status_code == 503
+    assert v.get("/api/public/share").status_code == 503
+    named = v.post("/api/public/name", json={"name": "Alex"}, headers={"X-CSRF-Token": csrf})
+    assert named.status_code == 503
 
 
 def test_the_url_is_returned_once_and_never_listed(app, auth_cfg):
@@ -534,8 +592,18 @@ def test_public_prefixes_send_no_referrer_and_no_store(app, auth_cfg):
     assert v.get("/healthz").headers["referrer-policy"] == "strict-origin-when-cross-origin"
 
 
-def test_without_the_viewer_bundle_the_url_answers_a_plain_placeholder(app, auth_cfg):
-    v = _visitor(app, auth_cfg)
+def test_without_the_viewer_bundle_the_url_answers_a_plain_placeholder(
+    auth_cfg, tmp_path, monkeypatch
+):
+    from agent_sessions import main
+
+    # A build without `share.html` (an install from before P4's viewer), not whatever happens to
+    # be built in this checkout's web/dist.
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<html>SPA</html>")
+    monkeypatch.setattr(main, "_WEB_DIST", dist)
+    v = _visitor(create_app(auth_cfg), auth_cfg)
     r = v.get("/p/" + "A" * 43)
     assert r.status_code == 200
     assert "can't show shared sessions yet" in r.text
@@ -556,7 +624,12 @@ def test_the_viewer_page_is_served_for_any_token_and_never_the_spa_shell(
     for tok in ("A" * 43, "whatever"):
         r = v.get(f"/p/{tok}")
         assert r.status_code == 200 and "VIEWER" in r.text
-    assert v.get("/p/").status_code == 404  # the bare prefix is reserved, not the SPA
+    # The bare prefix is where the viewer moves the address bar after unlocking (P4): a reload
+    # there gets the viewer too, never the SPA shell.
+    bare = v.get("/p/")
+    assert bare.status_code == 200 and "VIEWER" in bare.text
+    assert bare.headers["referrer-policy"] == "no-referrer"
+    assert bare.headers["cache-control"] == "no-store"
 
 
 def test_none_mode_turns_public_sharing_off(tmp_path, monkeypatch, fake_jsonl):

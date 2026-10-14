@@ -1,5 +1,23 @@
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
+
+/** The public share viewer (#1404) is not the app: VitePWA links the app manifest into EVERY html
+ *  entry, which would offer a visitor "Install BattleLab" (the operator's app, whose
+ *  `handle_links` would then capture public links). Drop it from share.html only. */
+function shareViewerWithoutManifest(): Plugin {
+  return {
+    name: "share-viewer-without-manifest",
+    enforce: "post",
+    // On the emitted file, after every other plugin has written to it (VitePWA adds the link in
+    // its own late hooks).
+    generateBundle(_options, bundle) {
+      const page = bundle["share.html"];
+      if (page && page.type === "asset" && typeof page.source === "string") {
+        page.source = page.source.replace(/\s*<link rel="manifest"[^>]*>/g, "");
+      }
+    },
+  };
+}
 import { VitePWA } from "vite-plugin-pwa";
 
 // https://vite.dev/config/
@@ -32,11 +50,14 @@ export default defineConfig({
     cssTarget: ["chrome111", "firefox128", "safari18", "edge111"],
     // Multi-entry: the SPA (index.html) + the standalone Home Free connect page
     // (connect.html). connect.html is NOT linked from the app — a dark page for
-    // reaching a box through the blind relay.
+    // reaching a box through the blind relay. share.html is the public share viewer (#1404),
+    // which the server answers at /p/<token> and /p/: its own small bundle, none of the
+    // operator app's code.
     rollupOptions: {
       input: {
         main: "index.html",
         connect: "connect.html",
+        share: "share.html",
       },
     },
   },
@@ -95,5 +116,6 @@ export default defineConfig({
         ],
       },
     }),
+    shareViewerWithoutManifest(),
   ],
 });

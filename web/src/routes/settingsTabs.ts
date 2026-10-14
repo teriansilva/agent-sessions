@@ -34,6 +34,8 @@ export const SETTINGS_SECTIONS = [
   { id: "agents", label: "All agents", group: "agents" },
   { id: "agents-defaults", label: "Defaults", group: "agents" },
   { id: "security", label: "Security", group: "system" },
+  // Public share links (#1404 P4): list and revoke every live link.
+  { id: "sharing", label: "Sharing", group: "system" },
   { id: "updates", label: "Updates", group: "system" },
   { id: "analytics", label: "Usage analytics", group: "system" },
   { id: "system", label: "Host", group: "system" },

@@ -29,7 +29,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
-from .. import auth, engines, metadata, shares
+from .. import auth, engines, metadata, share_api, shares, template_secrets
 from ..auth import AuthConfig, enforce_origin
 
 SHARE_COOKIE = "agent_sessions_share"
@@ -147,13 +147,42 @@ class Visitor:
     name: str | None
 
 
-def visitor_view(share: shares.Share, name: str | None = None) -> dict:
+def public_title(title: str) -> str:
+    """The link's title as a visitor may see it: through the same secret-value redactor as every
+    other visitor string (``share_api``). The title defaults to the session's, which can fall back
+    to its first message, so it may hold a saved secret (#1444 review). Reads the secret store:
+    call it off the loop. Fails closed (503) when the store can't be read."""
+    try:
+        return share_api.redactor()(title or "")
+    except template_secrets.RedactionUnavailable:
+        raise HTTPException(
+            status_code=503, detail="this link can't be shown right now — try again"
+        ) from None
+
+
+def public_link(share: shares.Share) -> tuple[str, str]:
+    """``(title, link)`` for :func:`visitor_view`: the redacted title and the link's opaque
+    identity (``share_api.link_id``). Reads the secret store and its key: call it off the loop.
+    Fails closed (503)."""
+    title = public_title(share.title)
+    try:
+        return title, share_api.link_id(share.share_id)
+    except template_secrets.SecretKeyUnavailable:
+        raise HTTPException(
+            status_code=503, detail="this link can't be shown right now — try again"
+        ) from None
+
+
+def visitor_view(share: shares.Share, name: str | None = None, *, title: str, link: str) -> dict:
     """What a visitor learns about the link. Not the session key, the share id or open counts.
-    ``name_required`` tells the viewer to ask for a name before it enables the composer."""
+    ``name_required`` tells the viewer to ask for a name before it enables the composer.
+    ``title`` is :func:`public_title` of the share's title — never the raw one. ``link`` is the
+    link's opaque identity, which the viewer binds every snapshot to."""
     return {
+        "link": link,
         "kind": share.kind,
         "mode": share.mode,
-        "title": share.title,
+        "title": title,
         "expires_at": share.expires_at,
         "name": name,
         "name_required": share.mode == "send" and not name,
@@ -431,10 +460,13 @@ def register(
 
     # -- public ------------------------------------------------------------------------
 
+    @app.get("/p/")
     @app.get("/p/{token}")
-    async def share_viewer(token: str) -> Response:
+    async def share_viewer(token: str = "") -> Response:
         """The viewer page. The token is NOT checked here — the page's own unlock call does that,
-        so this route answers the same for any token and tells a prober nothing."""
+        so this route answers the same for any token and tells a prober nothing. The bare ``/p/``
+        is where the viewer moves the address bar once it has traded the token for a cookie
+        (P4), so a reload there must find the page too; it then asks ``GET /api/public/share``."""
         _unavailable()
         page = web_dist / "share.html"
         if not page.is_file():
@@ -496,7 +528,10 @@ def register(
             throttle.succeed(share.share_id, ip, stamp)
         await asyncio.to_thread(store.note_open, share.share_id)
         csrf = secrets.token_urlsafe(32)
-        resp = JSONResponse({"share": visitor_view(share, name), "csrf": csrf})
+        title, link = await asyncio.to_thread(public_link, share)
+        resp = JSONResponse(
+            {"share": visitor_view(share, name, title=title, link=link), "csrf": csrf}
+        )
         issue_share_cookie(cfg, resp, share, csrf, name)
         return _no_store(resp)
 
@@ -507,9 +542,13 @@ def register(
     ) -> Response:
         """The visitor's link, for a reload after the token left the address bar."""
         data = decode_share_cookie(cfg, request) or {}
+        title, link = await asyncio.to_thread(public_link, visitor.share)
         return _no_store(
             JSONResponse(
-                {"share": visitor_view(visitor.share, visitor.name), "csrf": data.get("csrf")}
+                {
+                    "share": visitor_view(visitor.share, visitor.name, title=title, link=link),
+                    "csrf": data.get("csrf"),
+                }
             )
         )
 
@@ -529,7 +568,8 @@ def register(
         name = shares.clean_visitor_name(body.get("name") if isinstance(body, dict) else None)
         if name is None:
             raise HTTPException(status_code=422, detail=NAME_RULE)
-        resp = JSONResponse({"share": visitor_view(visitor.share, name)})
+        title, link = await asyncio.to_thread(public_link, visitor.share)
+        resp = JSONResponse({"share": visitor_view(visitor.share, name, title=title, link=link)})
         issue_share_cookie(
             cfg, resp, visitor.share, str(data["csrf"]), name, issued_at=int(data["iat"])
         )

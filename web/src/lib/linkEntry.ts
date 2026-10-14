@@ -43,3 +43,15 @@ export function classifyLink(raw: string, origin: string): LinkEntry | null {
   }
   return null;
 }
+
+/** A public share link (`/p/<token>`, #1404) on this origin. The installed app captures every link
+ *  in its scope (`handle_links`), so a public link the operator opens is launched INTO the app's
+ *  window. It is not an in-app route: the window has to go to the server's viewer page. */
+export function isPublicShareLink(raw: string, origin: string): boolean {
+  try {
+    const url = new URL(raw, origin);
+    return url.origin === origin && /^\/p\/[A-Za-z0-9_-]+\/?$/.test(url.pathname);
+  } catch {
+    return false;
+  }
+}

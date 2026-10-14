@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useSessionsStore } from "../../app/sessionsStore";
 import { useMapWindows } from "../../app/workspaceWindows";
 import { isStandalone, takeBootEntry } from "../../lib/bootEntry";
-import { classifyLink, type LinkEntry } from "../../lib/linkEntry";
+import { classifyLink, isPublicShareLink, type LinkEntry } from "../../lib/linkEntry";
 import { acceptLinks } from "../../lib/linkHandoff";
 import { readLinkOpenMode, writeLinkOpenMode, type LinkOpenMode } from "../../lib/linkOpenMode";
 import { MAP_PATH } from "../../lib/routes";
@@ -115,6 +115,12 @@ export function EntryLinks() {
     if (!queue) return;
     queue.setConsumer((params) => {
       if (!params.targetURL) return;
+      // A public share link (#1404) is the viewer page, not an app route: a reused window
+      // would otherwise swallow it, and the link would seem to do nothing.
+      if (isPublicShareLink(params.targetURL, window.location.origin)) {
+        window.location.assign(params.targetURL);
+        return;
+      }
       const entry = classifyLink(params.targetURL, window.location.origin);
       if (!entry) return;
       // A cold launch ON the link already rendered it; a reused window has not.

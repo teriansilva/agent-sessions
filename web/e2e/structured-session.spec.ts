@@ -876,7 +876,7 @@ test("the API pane carries the terminal's head actions, and Files opens the draw
     const led = (await pane.locator("[data-panel-head] [data-head-led]").boundingBox())!;
     expect(t.x).toBeGreaterThanOrEqual(led.x + led.width);
     await pane.getByTestId("head-actions-menu").click();
-    await expect(page.getByRole("menuitem")).toHaveText(["Files", "Recap", "Hand off", "Share link", "Stop"]);
+    await expect(page.getByRole("menuitem")).toHaveText(["Files", "Recap", "Hand off", "Share link", "Share publicly…", "Stop"]);
     await page.keyboard.press("Escape");
   } else {
     const labels = await pane.locator("[data-head-action]").evaluateAll((els) =>

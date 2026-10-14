@@ -209,7 +209,9 @@ def register(app: FastAPI, *, store: shares.ShareStore, require_share) -> None:
         def build():
             # Off the loop: reading the secret store and redacting a full snapshot are real work,
             # and a slow projection must never stall every other request (#1423 review).
-            return share_api.project(snap, authors, _redactor(), share.share_id)
+            view = share_api.project(snap, authors, _redactor(), share.share_id)
+            view["link"] = share_api.link_id(share.share_id)
+            return view
 
         try:
             view = await asyncio.to_thread(build)
@@ -235,7 +237,13 @@ def register(app: FastAPI, *, store: shares.ShareStore, require_share) -> None:
             page = await runtime.events(share.session_key, after=max(0, int(after)), limit=limit)
         except runtime.StructuredError as e:
             raise _structured_error(e) from None
-        return _no_store(JSONResponse(share_api.project_events(page)))
+        try:
+            link = await asyncio.to_thread(share_api.link_id, share.share_id)
+        except template_secrets.SecretKeyUnavailable:
+            raise HTTPException(
+                status_code=503, detail="this session can't be shown right now — try again"
+            ) from None
+        return _no_store(JSONResponse(share_api.project_events(page, link)))
 
     @app.get("/api/public/uploads/{image}")
     async def public_upload(image: str, visitor=Depends(_view)) -> Response:  # noqa: B008

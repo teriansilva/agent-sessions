@@ -1,6 +1,7 @@
 import {
   ArrowLeftRight,
   BookMarked,
+  Globe,
   History,
   Mic,
   PanelRight,
@@ -43,6 +44,7 @@ import { HeadFacts } from "../terminal/HeadFacts";
 import { KeyBar, type KeyAction } from "../terminal/KeyBar";
 import type { PaneHost } from "../terminal/paneHost";
 import { SessionRecapModal } from "../terminal/SessionRecapModal";
+import { SharePubliclyModal } from "../shares/SharePubliclyModal";
 import { SentMessagesModal } from "../terminal/SentMessagesModal";
 import { TemplatePickerModal } from "../templates/TemplatePickerModal";
 import { UploadImage } from "../templates/UploadImage";
@@ -904,6 +906,11 @@ export function StructuredPane({
   const sendNowBusy = useRef(false);
   const [stopping, setStopping] = useState(false);
   const [containment, setContainment] = useState<Containment | null>(null);
+  // Share publicly… (#1404 P4): a link anyone can open, made and revoked in its own dialog.
+  const [sharePublic, setSharePublic] = useState<{ open: boolean; trigger: HTMLElement | null }>({
+    open: false,
+    trigger: null,
+  });
   const [permissionsOpen, setPermissionsOpen] = useState<{
     trigger: HTMLElement | null;
   } | null>(null);
@@ -1672,6 +1679,20 @@ export function StructuredPane({
               });
             },
           },
+          // Beside Share link, not instead of it: the operator's one-tap link (#1232) stays one tap.
+          {
+            id: "share-public",
+            label: "Share publicly…",
+            aria: "Share this session publicly",
+            title:
+              "Share publicly: a link anyone can open without a BattleLab account — view only or able to send, with an optional password and expiry",
+            icon: <Globe size={13} aria-hidden="true" />,
+            run: (trigger?: HTMLElement | null) =>
+              setSharePublic({
+                open: true,
+                trigger: trigger ?? (document.activeElement as HTMLElement | null),
+              }),
+          },
         ]
       : []),
     // Stop is a head action while a worker runs, in the pane's own bar and in a window's chrome
@@ -1813,6 +1834,15 @@ export function StructuredPane({
           reviewExcluded={row?.review_excluded}
           onClose={() => setRecap({ open: false, trigger: null })}
           returnFocusTo={recap.trigger}
+        />
+      )}
+      {sharePublic.open && (
+        <SharePubliclyModal
+          sessionKey={actionKey}
+          title={row?.title || "BattleLab session"}
+          agent={engineLabel(engine)}
+          onClose={() => setSharePublic({ open: false, trigger: null })}
+          returnFocusTo={sharePublic.trigger}
         />
       )}
       {handoff.open && (

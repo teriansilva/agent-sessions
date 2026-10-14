@@ -51,6 +51,14 @@ def overlay_authors(snapshot: dict, authors: dict[str, dict] | None) -> dict:
     return snapshot
 
 
+def link_id(share_id: str) -> str:
+    """The OPAQUE identity of a link, as its own visitor may hold it (#1444 review): a keyed
+    fingerprint of the share id, never the id itself. The viewer stamps every snapshot and event
+    page it is given with it and refuses an answer for another link — the share cookie is one per
+    browser, so a second tab unlocking another link changes what this tab's polls return."""
+    return template_secrets.keyed_digest("public-share-link", share_id)[:24]
+
+
 def image_handle(share_id: str, stored: str) -> str:
     """The OPAQUE name a visitor gets for an image: a keyed fingerprint of (link, stored name).
     The stored name carries the uploader's original filename, which can itself hold a secret, so
@@ -194,6 +202,9 @@ def _turn(t: dict, authors: dict[str, dict], r: _Redactor, share_id: str) -> dic
         "tools": _tools(t.get("tools"), r),
         "tools_truncated": bool(t.get("tools_truncated")),
         "author": author_view(authors.get(t.get("operation_id"))),
+        # Sent through THIS link — what Send now is checked against (per link, never by the
+        # self-chosen name). Another link's turns are just `false`: no other link is named.
+        "mine": (authors.get(t.get("operation_id")) or {}).get("share_id") == share_id,
     }
 
 
@@ -233,11 +244,12 @@ def project(snapshot: dict, authors: dict[str, dict], r: _Redactor, share_id: st
     }
 
 
-def project_events(page: dict) -> dict:
+def project_events(page: dict, link: str) -> dict:
     """The visitor's view of an events page: cursors and kinds only, never ``data`` (tool output,
     worker and connection ids live there). The viewer uses it to know WHEN to re-read the
     projected snapshot, exactly as the operator's pane does."""
     return {
+        "link": link,
         "revision": page.get("revision"),
         "next_cursor": page.get("next_cursor"),
         "events": [

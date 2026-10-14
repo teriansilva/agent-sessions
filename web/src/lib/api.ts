@@ -1,6 +1,7 @@
 import type { GalleryIndex, GalleryInspection, GalleryOperation, GalleryKind, GalleryComparison, GalleryFiles, LocalSkill } from "../types/gallery";
 import type { CollectionInput, SharedVariable, SharedVariableInput, SharedVariableUpdate, SharedVariablesResponse, VariableCollection } from "../types/variables";
 import type { Resources, ResourceSettings, ResourceValues } from "../types/resources";
+import type { CreatedShare, ShareList, ShareMode } from "./shareFormat";
 import type { DeploymentReceipt, DeploymentRemoval, DeploymentReview, DeploymentStatus, PlaybookInputs } from "../types/playbookDeployment";
 // Typed client for the FastAPI `/api/*` surface. Same-origin; cookie session auth.
 // Mutations (later) attach the CSRF token + are origin-checked server-side.
@@ -605,6 +606,23 @@ function announceProjects<T>(p: Promise<T>): Promise<T> {
 }
 
 export const api = {
+  // Public share links (#1404 P4). `createShare` is the ONLY call whose answer carries a link's
+  // URL — the server keeps its digest, so it is shown once. A `send` link needs `accept_risk`.
+  shares: (session?: string) =>
+    getJsonWithDetail<ShareList>(
+      session ? `/api/shares?session=${encodeURIComponent(session)}` : "/api/shares",
+    ),
+  createShare: (body: {
+    session: string;
+    mode: ShareMode;
+    title: string;
+    password?: string;
+    expires_at?: number | null;
+    accept_risk?: true;
+  }) => mutateJson<CreatedShare>("POST", "/api/shares", body),
+  revokeShare: (shareId: string) =>
+    mutateJson<{ revoked: boolean }>("DELETE", `/api/shares/${encodeURIComponent(shareId)}`),
+  revokeAllShares: () => mutateJson<{ revoked: number }>("POST", "/api/shares/revoke-all"),
   publicGallery: () => getJsonWithDetail<GalleryIndex>("/api/gallery"),
   refreshGallery: () => mutateJson<GalleryIndex>("POST", "/api/gallery/refresh"),
   inspectGallery: (digest: string, localId: string) => getJsonWithDetail<GalleryInspection>(`/api/gallery/content/${encodeURIComponent(digest)}?local_id=${encodeURIComponent(localId)}`),

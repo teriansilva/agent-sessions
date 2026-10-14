@@ -143,7 +143,8 @@ def test_events_carry_cursors_and_kinds_only():
         "next_cursor": 3,
         "events": [{"cursor": 3, "kind": "tool", "data": {"output": "secret", "worker_id": "w"}}],
     }
-    assert share_api.project_events(page) == {
+    assert share_api.project_events(page, "L1") == {
+        "link": "L1",
         "revision": 3,
         "next_cursor": 3,
         "events": [{"cursor": 3, "kind": "tool"}],
@@ -292,8 +293,12 @@ async def test_a_send_link_sends_as_the_visitor_and_both_views_say_so(env, host,
         assert again.status_code in (200, 202)  # a retry reuses the operation: one turn
         await _settle_visitor_turn(env, key)
         view = (await v.get("/api/public/session")).json()
+        events = (await v.get("/api/public/events?after=0")).json()
     texts = [t for t in view["turns"] if t["text"] == "hello from Alex"]
     assert len(texts) == 1 and texts[0]["author"] == {"name": "Alex", "via": "public_link"}
+    assert texts[0]["mine"] is True  # sent through this link: Send now may be offered
+    # Both reads are bound to the link the cookie names (#1444): the viewer refuses another's.
+    assert view["link"] == events["link"] == share_api.link_id(share.share_id)
     assert view["can_send"] is True
     for leak in ("cwd", "native", "operation_id", str(project)):
         assert leak not in repr(view), leak
@@ -868,6 +873,29 @@ async def test_an_unusable_secret_key_answers_503_not_500(env, host, project, mo
     assert r.status_code == 503
 
 
+@pytest.mark.anyio
+async def test_an_unusable_key_for_the_link_id_answers_503_on_session_and_events(
+    env,
+    host,  # noqa: F811
+    project,  # noqa: F811
+    monkeypatch,
+):
+    """Every snapshot and events page carries the keyed link identity (#1444): an unusable key
+    is a 503, never a 500 or an answer the viewer can't bind to its link."""
+    key = await _session("codex", project)
+    v, _ = await _visitor(env, key)
+
+    def unusable(*_a, **_k):
+        raise template_secrets.SecretKeyUnavailable("bad key")
+
+    async with contextlib.aclosing(v):
+        with monkeypatch.context() as m:
+            m.setattr(share_api, "link_id", unusable)
+            session = await v.get("/api/public/session")
+            events = await v.get("/api/public/events?after=0")
+    assert session.status_code == 503 and events.status_code == 503
+
+
 def test_terminal_escapes_cannot_stretch_a_secret_past_the_trim():
     r = share_api._Redactor([SECRET])
     coloured = "".join("\x1b[38;5;196m" + ch for ch in SECRET)
@@ -895,6 +923,33 @@ def test_a_visitors_own_turn_is_shown_as_typed_and_others_are_redacted():
 
 
 # ---- Hermes on #1423 (71379cb0): uploads fenced and bounded ---------------------------------
+
+
+def test_send_now_eligibility_is_per_link_never_by_name():
+    """`mine` is what Send now is offered on, and it is what the server checks: the LINK the turn
+    came through. A rename on the same link keeps it; the same name on another link never gets it
+    (Hermes on #1444)."""
+    r = share_api._Redactor([])
+    authors = {
+        "op-mine": {"name": "Alex", "share_id": "s1"},  # sent as Alex, now renamed: still mine
+        "op-other": {"name": "Alex", "share_id": "s2"},  # same name, another link
+    }
+    snap = {
+        "turns": [
+            {"turn_id": "a", "operation_id": "op-mine", "state": "queued", "text": "x"},
+            {"turn_id": "b", "operation_id": "op-other", "state": "queued", "text": "y"},
+            {"turn_id": "c", "operation_id": "op-operator", "state": "queued", "text": "z"},
+        ]
+    }
+    turns = share_api.project(snap, authors, r, "s1")["turns"]
+    assert [t["mine"] for t in turns] == [True, False, False]
+    assert "s2" not in repr(turns) and "s1" not in repr(turns)  # no link id is named
+
+
+def test_a_link_id_is_opaque_stable_and_per_link():
+    a, b = share_api.link_id("share-A"), share_api.link_id("share-B")
+    assert a == share_api.link_id("share-A") and a != b
+    assert "share-A" not in a and len(a) == 24
 
 
 def test_a_live_upload_can_never_outlive_its_slot():

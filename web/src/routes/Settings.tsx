@@ -113,6 +113,7 @@ import { SOURCE_URL } from "../lib/links";
 import { whatsNewLabel } from "../whatsnew/due";
 import { useOpenWhatsNew } from "../whatsnew/WhatsNewContext";
 import { engineLabel, useEngineRoster } from "../app/engineRoster";
+import { SharingSettings } from "../components/shares/SharingSettings";
 
 const BUY_ME_A_COFFEE = "https://buymeacoffee.com/teriansilva";
 // AGPL-3.0 §13: a network-served build must offer its users the Corresponding Source. The
@@ -2546,6 +2547,7 @@ export function Settings() {
           (agentId ? <AgentDetail id={agentId} /> : <AgentsRoster />)}
         {section === "agents-defaults" && <AgentDefaultsPage />}
         {section === "security" && <SecurityPanel />}
+        {section === "sharing" && <SharingSettings />}
         {section === "updates" && <UpdatesCard />}
         {section === "analytics" && <AnalyticsCard />}
         {section === "system" && <SystemCard />}

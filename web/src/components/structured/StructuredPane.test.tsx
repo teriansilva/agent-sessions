@@ -595,6 +595,7 @@ test("the head carries the terminal's actions that work for an API session — n
     "Hand off session to another engine",
     "Open this session as a window on the map",
     "Share a link to this session",
+    "Share this session publicly",
     "Stop the worker",
   ]);
   expect(screen.queryByRole("button", { name: /adopt this session/i })).toBeNull();
@@ -639,7 +640,7 @@ test("at ≤800px every action lives in ONE Actions menu", async () => {
     expect(document.querySelectorAll("[data-head-action]")).toHaveLength(0);
     await userEvent.click(screen.getByRole("button", { name: /actions/i }));
     const items = screen.getAllByRole("menuitem").map((m) => m.textContent);
-    expect(items).toEqual(["Files", "Recap", "Hand off", "Share link", "Stop"]);
+    expect(items).toEqual(["Files", "Recap", "Hand off", "Share link", "Share publicly…", "Stop"]);
   } finally {
     window.matchMedia = original;
   }
