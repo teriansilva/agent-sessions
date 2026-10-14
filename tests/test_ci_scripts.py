@@ -260,6 +260,85 @@ def test_a_sibling_failure_stops_the_whole_process_group(monkeypatch, tmp_path):
     assert not _alive(grandchild), "the grandchild survived — the group was not stopped"
 
 
+def test_a_killed_watcher_takes_the_whole_command_group_with_it(tmp_path):
+    """A cancelled run SIGKILLs the step's process group, so the watcher dies before any handler
+    of its own can run. The command leads a group of its own and used to live on under init: an
+    e2e shard still waiting for a slot then took one for a run nobody was waiting on."""
+    pids = tmp_path / "pids"
+    child = (
+        "import subprocess,sys,time;"
+        "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(120)']);"
+        "import os;"
+        f"open({str(pids)!r},'w').write(f'{{os.getppid()}} {{os.getpid()}} {{p.pid}}');"
+        "time.sleep(120)"
+    )
+    # Credentials set, so it really watches; the address refuses at once and a failed read keeps
+    # the command running, which is the state a waiting shard is in when its run is cancelled.
+    env = {**os.environ, "API": "https://127.0.0.1:9", "HEAD_SHA": "sha", "TOKEN": "tok"}
+    env["SIBLING_WATCH_INTERVAL"] = "600"
+    watcher = subprocess.Popen(
+        [str(sys.executable), str(SCRIPTS / "sibling_watch.py"), "--self", SELF, "--"]
+        + [sys.executable, "-c", child],
+        env=env,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    started: list[int] = []
+    try:
+        deadline = time.monotonic() + 20
+        while not (pids.exists() and pids.read_text().count(" ") == 2):
+            assert time.monotonic() < deadline, "the command never started"
+            time.sleep(0.05)
+        started = [int(p) for p in pids.read_text().split()]
+        watcher.kill()  # what the runner's cancel does: no handler runs
+        watcher.wait(timeout=10)
+        deadline = time.monotonic() + 30
+        while any(_alive(p) for p in started) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        # The guard (the command's parent), the command and its grandchild: all of them.
+        assert not any(_alive(p) for p in started), "the command outlived its killed watcher"
+    finally:
+        for p in started:  # only processes this test started
+            if p > 1 and _alive(p):
+                os.kill(p, 9)
+        if watcher.poll() is None:
+            watcher.kill()
+
+
+def test_a_cancel_during_a_status_read_still_stops_the_group(monkeypatch, tmp_path):
+    """The runner's SIGTERM can land while the status request is in flight. The broad catch of a
+    failed read must not swallow it as one (review 6288)."""
+    import signal
+
+    pidfile = tmp_path / "grandchild.pid"
+    child = [
+        sys.executable,
+        "-c",
+        (
+            "import subprocess,sys,time;"
+            f"p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']);"
+            f"open({str(pidfile)!r},'w').write(str(p.pid));time.sleep(60)"
+        ),
+    ]
+
+    def read(api, sha, token):
+        deadline = time.monotonic() + 20
+        while not pidfile.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        os.kill(os.getpid(), signal.SIGTERM)  # the cancel, mid-request
+        time.sleep(1)  # the handler runs here, inside the read
+        return []
+
+    monkeypatch.setattr(watch, "read_statuses", read)
+    rc = watch.run(child, SELF, "api", "sha", "tok", interval=0.2)
+    assert rc == 143, "the cancel was taken for a failed read and the command kept running"
+    grandchild = int(pidfile.read_text())
+    deadline = time.monotonic() + 5
+    while _alive(grandchild) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not _alive(grandchild), "the grandchild survived the cancel"
+
+
 def test_a_clean_run_returns_the_commands_own_status(monkeypatch):
     _fake_reader(monkeypatch, [[_st("x", "pending")]])
     assert watch.run([sys.executable, "-c", "raise SystemExit(7)"], SELF, "a", "s", "t", 0.05) == 7
