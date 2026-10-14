@@ -1330,7 +1330,9 @@ def _native_turns(root: Path, native_id: str) -> list[Turn]:
         text = op.request["params"].get("text")
         if isinstance(text, str):
             out.append(Turn("user", text))
-        reply = "".join(replies.get(op.operation_id, ())) or final.get(op.operation_id)
+        reply = "\n\n".join(t for t in replies.get(op.operation_id, ()) if t.strip()) or final.get(
+            op.operation_id
+        )
         if reply:
             out.append(Turn("assistant", reply))
     return out

@@ -1224,6 +1224,13 @@ def _mark_unreachable(gen: Generation) -> None:
 # --- journal projection -----------------------------------------------------------------------
 
 
+def _paragraph(text: str, block: str) -> str:
+    """Append one agent message to a reply, a blank line apart so Markdown keeps them apart."""
+    if text and block.strip() and not text.endswith("\n\n"):
+        text += "\n\n"
+    return (text + block)[-SNAPSHOT_TEXT:]
+
+
 def _journal(prov, session_id: str) -> native_journal.Journal:
     try:
         return native_journal.read(_journal_root(prov), session_id)
@@ -1267,6 +1274,7 @@ def project(
                 "reply": "",
                 "reply_ts": None,
                 "partial": "",
+                "partial_item": None,
                 "context": params.get("context") or {},
                 "tools": [],
                 "handoff": op.handoff,
@@ -1310,9 +1318,16 @@ def project(
             if data["text"] and turn["reply_ts"] is None:
                 turn["reply_ts"] = item.get("ts")
             if data["partial"]:
-                turn["partial"] = (turn["partial"] + data["text"])[-SNAPSHOT_TEXT:]
+                # Streamed pieces of ONE message concatenate; a new message id starts a paragraph.
+                item = data.get("item_id")
+                if item and turn["partial_item"] and item != turn["partial_item"]:
+                    turn["partial"] = _paragraph(turn["partial"], data["text"])
+                else:
+                    turn["partial"] = (turn["partial"] + data["text"])[-SNAPSHOT_TEXT:]
+                turn["partial_item"] = item or turn["partial_item"]
             else:
-                turn["reply"] = (turn["reply"] + data["text"])[-SNAPSHOT_TEXT:]
+                # Each settled text block is its own message: without a break, "…done.Next…".
+                turn["reply"] = _paragraph(turn["reply"], data["text"])
         elif kind == "tool":
             entry = {
                 "name": data.get("tool") or "tool",
@@ -1439,7 +1454,14 @@ def project(
             }
         )
     for turn in turns.values():
-        for key in ("partial", "handoff", "worker_id", "completed", "delivery_operation_id"):
+        for key in (
+            "partial",
+            "partial_item",
+            "handoff",
+            "worker_id",
+            "completed",
+            "delivery_operation_id",
+        ):
             turn.pop(key, None)
     return {
         "turns": list(turns.values()),
