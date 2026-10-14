@@ -21,6 +21,7 @@ import type {
   AutomationRun,
 } from "../types/automations";
 import { uploadStoredName } from "./templateMessage";
+import { projectPickerStore, type ProjectPickerEntity } from "./projectPickerStore";
 import type {
   AgentEndpoint,
   AgentEndpointPatch,
@@ -586,6 +587,12 @@ function pluginPost<T>(path: string, body: unknown): Promise<T> {
   return mutateJson<T>("POST", path, body);
 }
 
+/** A project mutation settled (#1436): the launch picker's cached list may be stale now, so tell it
+ *  to refetch. On failure too — a partial archive can still have changed what is listed. */
+function announceProjects<T>(p: Promise<T>): Promise<T> {
+  return p.finally(() => projectPickerStore.invalidate());
+}
+
 export const api = {
   publicGallery: () => getJsonWithDetail<GalleryIndex>("/api/gallery"),
   refreshGallery: () => mutateJson<GalleryIndex>("POST", "/api/gallery/refresh"),
@@ -966,6 +973,11 @@ export const api = {
     getJson<{ projects: ProjectEntity[] }>(
       `/api/projects${opts?.includeArchived ? "?include_archived=1" : ""}`,
     ),
+  /** The launch picker's projects (#1436): the same entities WITHOUT `session_count`, so the
+   *  server skips its session walk. Only the New session form reads this — see
+   *  `projectPickerStore` for why the type is separate. */
+  projectPickerEntities: () =>
+    getJson<{ projects: ProjectPickerEntity[] }>("/api/projects?counts=0"),
   /** Create an entity (#361). "From a folder" is just `folders: [cwd]`; adopting a folder
    *  (or one nested under/above) already owned by another project is a 409 whose detail
    *  string names the conflict. CSRF-guarded. */
@@ -975,10 +987,15 @@ export const api = {
     folders?: string[];
     default_folder?: string;
   }) =>
-    mutateJson<Omit<ProjectEntity, "session_count">>(
-      "POST",
-      "/api/projects",
-      body,
+    announceProjects(
+      mutateJson<Omit<ProjectEntity, "session_count">>(
+        "POST",
+        "/api/projects",
+        body,
+      ).then((created) => {
+        projectPickerStore.add(created);
+        return created;
+      }),
     ),
   /** On-demand AI auto-sort (#424 Phase 6): one bounded pass assigning unassigned sessions to
    *  existing projects. 409 unless auto_sort is enabled AND the reused ai_review endpoint is
@@ -996,9 +1013,11 @@ export const api = {
       default_folder?: string;
     },
   ) =>
-    patchJson<Omit<ProjectEntity, "session_count">>(
-      `/api/projects/${enc(id)}`,
-      body,
+    announceProjects(
+      patchJson<Omit<ProjectEntity, "session_count">>(
+        `/api/projects/${enc(id)}`,
+        body,
+      ),
     ),
   /** Folder picker (#448): immediate subdirectories of `path` (default ~), bounded to ~/.
    *  Returns the resolved path, the home root, and the child dirs. */
@@ -1203,18 +1222,24 @@ export const api = {
   /** Remove the ENTITY only (#361): members revert to folder grouping on the next
    *  resolve — session files are never touched. CSRF-guarded. */
   deleteProject: (id: string) =>
-    deleteJson<{ deleted: boolean; id: string }>(`/api/projects/${enc(id)}`),
+    announceProjects(
+      deleteJson<{ deleted: boolean; id: string }>(`/api/projects/${enc(id)}`),
+    ),
   /** Bulk archive/unarchive every member session (#361 Phase 2). Idempotent + blindly
    *  retryable — after a partial failure, re-calling retries only the failed set. */
   archiveProject: (id: string) =>
-    mutateJson<ProjectArchiveReport>(
-      "POST",
-      `/api/projects/${enc(id)}/archive`,
+    announceProjects(
+      mutateJson<ProjectArchiveReport>(
+        "POST",
+        `/api/projects/${enc(id)}/archive`,
+      ),
     ),
   unarchiveProject: (id: string) =>
-    mutateJson<ProjectArchiveReport>(
-      "POST",
-      `/api/projects/${enc(id)}/unarchive`,
+    announceProjects(
+      mutateJson<ProjectArchiveReport>(
+        "POST",
+        `/api/projects/${enc(id)}/unarchive`,
+      ),
     ),
   /** Session → project assignment (#361): one sidecar metadata write. `null`/"" clears;
    *  an unknown project id is a 422. Engine stores stay read-only. */

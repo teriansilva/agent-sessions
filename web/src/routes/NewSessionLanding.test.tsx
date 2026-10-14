@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
@@ -7,6 +7,7 @@ import { setRoster } from "../app/engineRoster";
 import fixture from "../test/roster.fixture.json";
 import { ApiError, api } from "../lib/api";
 import { mintNewSessionId } from "../lib/newSession";
+import { projectPickerStore } from "../lib/projectPickerStore";
 import type { NewSessionDraft } from "../lib/newProject";
 import { MAP_PATH, NEW_PROJECT_PATH } from "../lib/routes";
 import type { AppConfig, EngineInfo } from "../types/api";
@@ -22,7 +23,7 @@ vi.mock("../lib/api", async (orig) => {
   return {
     ...actual,
     api: {
-      projectEntities: vi.fn(),
+      projectPickerEntities: vi.fn(),
       createProject: vi.fn(),
       setSessionProject: vi.fn(),
       chatNew: vi.fn(),
@@ -38,7 +39,7 @@ vi.mock("../lib/api", async (orig) => {
 // wiring (project→folder default, override, new-project default folder, stamping).
 vi.mock("../components/FolderPickerModal", () => ({
   FolderPickerModal: ({ onPick }: { onPick: (p: string) => void }) => (
-    <div role="dialog" aria-label="folder picker">
+    <div role="dialog" aria-modal="true" aria-label="folder picker">
       <button type="button" onClick={() => onPick("/picked")}>
         stub-pick
       </button>
@@ -46,7 +47,36 @@ vi.mock("../components/FolderPickerModal", () => ({
   ),
 }));
 
-const mockEntities = vi.mocked(api.projectEntities);
+const mockEntities = vi.mocked(api.projectPickerEntities);
+
+// The pickers are native radio groups (#1436). These read and drive them by VALUE, the way the
+// old selects were driven, so a test names an engine or project id — never a display label.
+const radioIn = (group: HTMLElement, value: string) =>
+  (within(group).getAllByRole("radio") as HTMLInputElement[]).find((r) => r.value === value);
+async function findProjects(): Promise<HTMLElement> {
+  const group = await screen.findByRole("radiogroup", { name: "Project" });
+  await within(group).findAllByRole("radio");
+  return group;
+}
+const checkedIn = (name: string) =>
+  (within(screen.getByRole("radiogroup", { name })).getAllByRole("radio") as HTMLInputElement[]).find(
+    (r) => r.checked,
+  )?.value;
+const projectValue = () => checkedIn("Project");
+const agentValue = () => checkedIn("Agent");
+async function chooseProject(user: ReturnType<typeof userEvent.setup>, id: string) {
+  const radio = radioIn(await findProjects(), id);
+  if (!radio) throw new Error(`no project radio ${id}`);
+  await user.click(radio);
+}
+async function chooseAgent(user: ReturnType<typeof userEvent.setup>, id: string) {
+  const radio = radioIn(await screen.findByRole("radiogroup", { name: "Agent" }), id);
+  if (!radio) throw new Error(`no agent radio ${id}`);
+  await user.click(radio);
+}
+const launchFolder = () => screen.getByTestId("launch-folder").getAttribute("data-path");
+/** Put keyboard focus inside the form without changing any choice — the shortcuts are scoped to it. */
+const focusForm = () => act(() => screen.getByRole("button", { name: /choose folder/i }).focus());
 
 const ENTITIES = [
   {
@@ -104,6 +134,7 @@ const CLI_MODELS = {
 };
 
 beforeEach(() => {
+  projectPickerStore.reset(); // the picker's cache outlives a render, as it outlives a route
   navigateMock.mockReset();
   mockEntities.mockReset();
   mockEntities.mockResolvedValue({ projects: ENTITIES });
@@ -137,7 +168,7 @@ test.each([
 test("the agent picker is hidden with one engine, shown with more (#448 reorder)", async () => {
   const { unmount } = renderLanding(["claude"]);
   expect(
-    await screen.findByRole("combobox", { name: "Project" }),
+    await findProjects(),
   ).toBeInTheDocument();
   expect(screen.queryByText("Agent")).not.toBeInTheDocument();
   unmount();
@@ -148,12 +179,10 @@ test("the agent picker is hidden with one engine, shown with more (#448 reorder)
 test("selecting a project prefills the Folder with its default and launches there (#448)", async () => {
   const user = userEvent.setup();
   renderLanding(["claude"]);
-  const project = (await screen.findByRole("combobox", {
-    name: "Project",
-  })) as HTMLSelectElement;
-  expect(project.value).toBe("p-a"); // first entity is the default selection
+  await findProjects();
+  expect(projectValue()).toBe("p-a"); // first entity is the default selection
   expect(
-    (screen.getByLabelText("Launch folder") as HTMLInputElement).value,
+    launchFolder(),
   ).toBe("/a");
 
   await user.click(screen.getByRole("button", { name: /start session/i }));
@@ -170,21 +199,20 @@ test("selecting a project prefills the Folder with its default and launches ther
 test("changing the project switches the default folder (#448)", async () => {
   const user = userEvent.setup();
   renderLanding(["claude"]);
-  const project = await screen.findByRole("combobox", { name: "Project" });
-  await user.selectOptions(project, "p-b");
+  await chooseProject(user, "p-b");
   expect(
-    (screen.getByLabelText("Launch folder") as HTMLInputElement).value,
+    launchFolder(),
   ).toBe("/b");
 });
 
 test("Choose folder overrides the project default for this session + stamps the project (#448)", async () => {
   const user = userEvent.setup();
   renderLanding(["claude"]);
-  await screen.findByRole("combobox", { name: "Project" }); // default project = Alpha (/a)
+  await findProjects(); // default project = Alpha (/a)
   await user.click(screen.getByRole("button", { name: /choose folder/i }));
   await user.click(screen.getByRole("button", { name: "stub-pick" }));
   expect(
-    (screen.getByLabelText("Launch folder") as HTMLInputElement).value,
+    launchFolder(),
   ).toBe("/picked");
 
   await user.click(screen.getByRole("button", { name: /start session/i }));
@@ -201,10 +229,9 @@ test("Choose folder overrides the project default for this session + stamps the 
 test("'no project' launches in the config default folder without stamping (#448)", async () => {
   const user = userEvent.setup();
   renderLanding(["claude"], { default_project: "/d" });
-  const project = await screen.findByRole("combobox", { name: "Project" });
-  await user.selectOptions(project, "");
+  await chooseProject(user, "");
   expect(
-    (screen.getByLabelText("Launch folder") as HTMLInputElement).value,
+    launchFolder(),
   ).toBe("/d");
   await user.click(screen.getByRole("button", { name: /start session/i }));
   const [, opts] = navigateMock.mock.calls[0] as [
@@ -218,7 +245,7 @@ test("'no project' launches in the config default folder without stamping (#448)
 test("opencode stamping uses the new-<uuid> placeholder key (#448)", async () => {
   const user = userEvent.setup();
   renderLanding(["opencode"]);
-  await screen.findByRole("combobox", { name: "Project" });
+  await findProjects();
   await user.click(screen.getByRole("button", { name: /choose folder/i })); // override → /picked
   await user.click(screen.getByRole("button", { name: "stub-pick" }));
   await user.click(screen.getByRole("button", { name: /start session/i }));
@@ -239,9 +266,8 @@ const DRAFT: NewSessionDraft = {
 test("+ New project… saves the draft into this entry, then opens the wizard with it (#1187)", async () => {
   const user = userEvent.setup();
   renderLanding(["claude", "opencode"]);
-  const project = await screen.findByRole("combobox", { name: "Project" });
-  await user.selectOptions(project, "");
-  await user.selectOptions(screen.getByRole("combobox", { name: /agent/i }), "opencode");
+  await chooseProject(user, "");
+  await chooseAgent(user, "opencode");
   await user.click(screen.getByRole("checkbox", { name: /skip permission/i }));
   await user.click(screen.getByRole("link", { name: /new project/i }));
   const draft = {
@@ -262,7 +288,7 @@ test("+ New project… saves the draft into this entry, then opens the wizard wi
 
 test("a modified click (new tab) is left to the browser — the link's own href (#1187)", async () => {
   renderLanding(["claude"]);
-  await screen.findByRole("combobox", { name: "Project" });
+  await findProjects();
   const link = screen.getByRole("link", { name: /new project/i });
   expect(link).toHaveAttribute("href", NEW_PROJECT_PATH);
   link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true }));
@@ -272,7 +298,7 @@ test("a modified click (new tab) is left to the browser — the link's own href 
 test("the draft records the map return, so the detour keeps it (#1187)", async () => {
   const user = userEvent.setup();
   renderLanding(["claude"], {}, { returnTo: MAP_PATH });
-  await screen.findByRole("combobox", { name: "Project" });
+  await findProjects();
   await user.click(screen.getByRole("link", { name: /new project/i }));
   const [, [, pushed]] = navigateMock.mock.calls as [unknown, [string, { state: { draft: unknown } }]];
   expect(pushed.state.draft).toMatchObject({ returnTo: MAP_PATH, projectChoice: null });
@@ -289,10 +315,10 @@ test("finish: the created project and its folder are selected, the agent/bypass 
       selectProjectId: "p-b",
     },
   );
-  const project = (await screen.findByRole("combobox", { name: "Project" })) as HTMLSelectElement;
-  expect(project.value).toBe("p-b");
-  expect((screen.getByLabelText("Launch folder") as HTMLInputElement).value).toBe("/b");
-  expect((screen.getByRole("combobox", { name: /agent/i }) as HTMLSelectElement).value).toBe(
+  await findProjects();
+  expect(projectValue()).toBe("p-b");
+  expect(launchFolder()).toBe("/b");
+  expect(agentValue()).toBe(
     "opencode",
   );
   expect(screen.getByRole("checkbox", { name: /skip permission/i })).not.toBeChecked();
@@ -305,16 +331,16 @@ test("finish: the created project and its folder are selected, the agent/bypass 
 
 test("cancel: the prior project + folder override come back exactly (#1187)", async () => {
   renderLanding(["claude"], {}, { restoreDraft: DRAFT });
-  const project = (await screen.findByRole("combobox", { name: "Project" })) as HTMLSelectElement;
-  expect(project.value).toBe("p-b");
-  expect((screen.getByLabelText("Launch folder") as HTMLInputElement).value).toBe("/b/sub");
+  await findProjects();
+  expect(projectValue()).toBe("p-b");
+  expect(launchFolder()).toBe("/b/sub");
   expect(navigateMock).toHaveBeenCalledWith("/", { replace: true, state: null });
 });
 
 test("cancel keeps an explicit “no project” — it never falls back to the default (#1187)", async () => {
   renderLanding(["claude"], {}, { restoreDraft: { ...DRAFT, projectChoice: "", cwdOverride: null } });
-  const project = (await screen.findByRole("combobox", { name: "Project" })) as HTMLSelectElement;
-  expect(project.value).toBe("");
+  await findProjects();
+  expect(projectValue()).toBe("");
 });
 
 test("cancel keeps an UNTOUCHED project choice untouched — the default selection applies (#1187)", async () => {
@@ -323,24 +349,24 @@ test("cancel keeps an UNTOUCHED project choice untouched — the default selecti
     { default_project_id: "p-b" },
     { restoreDraft: { ...DRAFT, projectChoice: null, cwdOverride: null } },
   );
-  const project = (await screen.findByRole("combobox", { name: "Project" })) as HTMLSelectElement;
-  expect(project.value).toBe("p-b");
+  await findProjects();
+  expect(projectValue()).toBe("p-b");
 });
 
 test("malformed restore state is ignored, not trusted (#1187)", async () => {
   renderLanding(["claude"], {}, { restoreDraft: "nope", selectProjectId: 42 });
-  const project = (await screen.findByRole("combobox", { name: "Project" })) as HTMLSelectElement;
-  expect(project.value).toBe("p-a");
+  await findProjects();
+  expect(projectValue()).toBe("p-a");
   expect(navigateMock).not.toHaveBeenCalled();
 });
 
-test("no Project select when there are no entities, but New project is offered (#448)", async () => {
+test("with no entities the list offers only “No project”, and New project (#448, #1436)", async () => {
   mockEntities.mockResolvedValue({ projects: [] });
   renderLanding(["claude"]);
-  expect(
-    await screen.findByRole("link", { name: /new project/i }),
-  ).toBeInTheDocument();
-  expect(screen.queryByRole("combobox", { name: "Project" })).toBeNull();
+  const group = await findProjects();
+  expect(within(group).getAllByRole("radio").map((r) => (r as HTMLInputElement).value)).toEqual([""]);
+  expect(projectValue()).toBe("");
+  expect(screen.getByRole("link", { name: /new project/i })).toBeInTheDocument();
 });
 
 // ---- Starred default project (#615 Phase 2) -------------------------------------------
@@ -352,34 +378,28 @@ test("no Project select when there are no entities, but New project is offered (
 
 test("the starred project is pre-selected, not the alphabetically-first one (#615)", async () => {
   renderLanding(["claude"], { default_project_id: "p-b" });
-  const project = (await screen.findByRole("combobox", {
-    name: "Project",
-  })) as HTMLSelectElement;
-  expect(project.value).toBe("p-b");
+  await findProjects();
+  expect(projectValue()).toBe("p-b");
   expect(
-    (screen.getByLabelText("Launch folder") as HTMLInputElement).value,
+    launchFolder(),
   ).toBe("/b");
 });
 
 test("a starred project that no longer exists falls back to the first project (#615)", async () => {
   // Deleted, or archived — `projectEntities()` drops archived, so both look like this.
   renderLanding(["claude"], { default_project_id: "p-gone" });
-  const project = (await screen.findByRole("combobox", {
-    name: "Project",
-  })) as HTMLSelectElement;
-  expect(project.value).toBe("p-a");
+  await findProjects();
+  expect(projectValue()).toBe("p-a");
   expect(
-    (screen.getByLabelText("Launch folder") as HTMLInputElement).value,
+    launchFolder(),
   ).toBe("/a");
 });
 
 test("an archived starred project falls back — it is absent from the entity list (#615)", async () => {
   mockEntities.mockResolvedValue({ projects: [ENTITIES[1]] }); // only Beta survives the archive
   renderLanding(["claude"], { default_project_id: "p-a" });
-  const project = (await screen.findByRole("combobox", {
-    name: "Project",
-  })) as HTMLSelectElement;
-  expect(project.value).toBe("p-b");
+  await findProjects();
+  expect(projectValue()).toBe("p-b");
 });
 
 test("a starred project with no default folder falls through to the legacy cwd (#615)", async () => {
@@ -392,12 +412,10 @@ test("a starred project with no default folder falls through to the legacy cwd (
     default_project_id: "p-a",
     default_project: "/legacy",
   });
-  const project = (await screen.findByRole("combobox", {
-    name: "Project",
-  })) as HTMLSelectElement;
-  expect(project.value).toBe("p-a"); // still starred…
+  await findProjects();
+  expect(projectValue()).toBe("p-a"); // still starred…
   expect(
-    (screen.getByLabelText("Launch folder") as HTMLInputElement).value,
+    launchFolder(),
   ).toBe("/legacy");
 });
 
@@ -420,10 +438,9 @@ test("the form starts from the stored default agent and bypass (#1128)", async (
   renderLanding(["claude", "codex"], {
     agent_defaults: { default_engine: "codex", bypass: false },
   });
-  await screen.findByRole("combobox", { name: "Project" });
+  await findProjects();
   expect(
-    (screen.getByRole("combobox", { name: "Agent" }) as HTMLSelectElement)
-      .value,
+    agentValue(),
   ).toBe("codex");
   expect(
     screen.getByRole("checkbox", { name: /skip permission prompts/i }),
@@ -439,11 +456,8 @@ test("the operator can still change both for this session (#1128)", async () => 
   renderLanding(["claude", "codex"], {
     agent_defaults: { default_engine: "codex", bypass: false },
   });
-  await screen.findByRole("combobox", { name: "Project" });
-  await user.selectOptions(
-    screen.getByRole("combobox", { name: "Agent" }),
-    "claude",
-  );
+  await findProjects();
+  await chooseAgent(user, "claude");
   await user.click(
     screen.getByRole("checkbox", { name: /skip permission prompts/i }),
   );
@@ -455,7 +469,7 @@ test("the operator can still change both for this session (#1128)", async () => 
 test("bypass stays on when the server sends no agent defaults (#1128)", async () => {
   const user = userEvent.setup();
   renderLanding(["claude"]);
-  await screen.findByRole("combobox", { name: "Project" });
+  await findProjects();
   const [, opts] = await startAndReadFresh(user);
   expect(opts.state.fresh).toEqual({ cwd: "/a", bypass: true });
 });
@@ -469,13 +483,12 @@ test("a default that is not installed falls back visibly, never silently (#1128)
   renderLanding(["claude", "codex"], {
     agent_defaults: { default_engine: "gemini", bypass: true },
   });
-  await screen.findByRole("combobox", { name: "Project" });
+  await findProjects();
   expect(screen.getByRole("status")).toHaveTextContent(
     "Your default, Gemini CLI, is not installed — new sessions use Claude Code until it is. Your choice is kept.",
   );
   expect(
-    (screen.getByRole("combobox", { name: "Agent" }) as HTMLSelectElement)
-      .value,
+    agentValue(),
   ).toBe("claude");
 });
 
@@ -488,8 +501,7 @@ test("starting an API-agent conversation is single-flight — two clicks create 
     }),
   );
   renderLanding(["apichat"], { default_project: "/d" });
-  const project = await screen.findByRole("combobox", { name: "Project" });
-  await user.selectOptions(project, "");
+  await chooseProject(user, "");
   const startBtn = screen.getByRole("button", { name: /start session/i });
   await user.click(startBtn);
   await user.click(startBtn);
@@ -508,7 +520,7 @@ test("a chat creation that completes after the form is gone does not navigate (H
     }),
   );
   const { unmount } = renderLanding(["apichat"], { default_project: "/d" });
-  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await chooseProject(user, "");
   await user.click(screen.getByRole("button", { name: /start session/i }));
   unmount();
   resolve({ id: "apichat:0190a3b2-1c2d-7e3f-8a9b-0c1d2e3f4a5b" });
@@ -522,7 +534,7 @@ test("the model select starts on `default`, and `default` launches exactly as be
   setRoster(FIXTURE);
   const user = userEvent.setup();
   renderLanding(["claude"]);
-  await screen.findByRole("combobox", { name: "Project" });
+  await findProjects();
   const model = screen.getByRole("combobox", { name: "Model" }) as HTMLSelectElement;
   expect(model.value).toBe("default");
   expect(model.options[0].value).toBe("default");
@@ -537,7 +549,7 @@ test("a chosen model rides the launch (#1189)", async () => {
   setRoster(FIXTURE);
   const user = userEvent.setup();
   renderLanding(["claude"]);
-  await screen.findByRole("combobox", { name: "Project" });
+  await findProjects();
   await user.selectOptions(screen.getByRole("combobox", { name: "Model" }), "claude-sonnet-5");
   const [, opts] = await startAndReadFresh(user);
   expect(opts.state.fresh).toEqual({ cwd: "/a", bypass: true, model: "claude-sonnet-5" });
@@ -547,14 +559,14 @@ test("switching engine clears the model (#1189)", async () => {
   setRoster(FIXTURE);
   const user = userEvent.setup();
   renderLanding(["claude", "codex"]);
-  await screen.findByRole("combobox", { name: "Project" });
+  await findProjects();
   await user.selectOptions(screen.getByRole("combobox", { name: "Model" }), "claude-opus-5");
-  await user.selectOptions(screen.getByRole("combobox", { name: "Agent" }), "codex");
+  await chooseAgent(user, "codex");
   expect((screen.getByRole("combobox", { name: "Model" }) as HTMLSelectElement).value).toBe(
     "default",
   );
   // …and back: the claude choice does not come back either.
-  await user.selectOptions(screen.getByRole("combobox", { name: "Agent" }), "claude");
+  await chooseAgent(user, "claude");
   expect((screen.getByRole("combobox", { name: "Model" }) as HTMLSelectElement).value).toBe(
     "default",
   );
@@ -566,7 +578,7 @@ test("an engine whose model is configured elsewhere offers no select, and says w
   setRoster(FIXTURE);
   const user = userEvent.setup();
   renderLanding(["opencode"]);
-  await screen.findByRole("combobox", { name: "Project" });
+  await findProjects();
   expect(screen.queryByRole("combobox", { name: "Model" })).not.toBeInTheDocument();
   expect(screen.getByTestId("new-session-model-elsewhere")).toHaveTextContent(
     "own configuration",
@@ -587,7 +599,7 @@ test("a restored choice the roster no longer offers is shown and SENT, never swa
     modelChoice: { engine: "claude", model: "claude-retired-1" },
   };
   renderLanding(["claude"], {}, { restoreDraft: draft });
-  await screen.findByRole("combobox", { name: "Project" });
+  await findProjects();
   const model = screen.getByRole("combobox", { name: "Model" }) as HTMLSelectElement;
   expect(model.value).toBe("claude-retired-1");
   expect(screen.getByRole("option", { name: /no longer offered/ })).toBeInTheDocument();
@@ -607,15 +619,21 @@ test("agents are grouped Console vs API; an unavailable client is listed, disabl
       { id: "claude-api", label: "Claude — API", reason: "claude 2.1.287 or later is required" },
     ],
   });
-  const select = await screen.findByRole("combobox", { name: "Agent" });
-  const groups = Array.from(select.querySelectorAll("optgroup")).map((g) => g.label);
-  expect(groups).toEqual(["Console — terminal", "API — structured, no terminal"]);
-  const api = select.querySelector('optgroup[label^="API"]')!;
-  const options = Array.from(api.querySelectorAll("option"));
-  expect(options.map((o) => [o.textContent, o.disabled])).toEqual([
-    ["Codex — API", false],
-    ["Claude — API — unavailable", true],
+  const group = await screen.findByRole("radiogroup", { name: "Agent" });
+  expect(within(group).getByText("Terminal")).toBeInTheDocument();
+  expect(within(group).getByText("API — structured, no terminal")).toBeInTheDocument();
+  // The unavailable client is a disabled tile whose reason is part of its accessible name — no
+  // separate box (#1436), and never silently absent (#1311).
+  const radios = within(group).getAllByRole("radio") as HTMLInputElement[];
+  expect(radios.map((r) => [r.value, r.disabled])).toEqual([
+    ["claude", false],
+    ["codex", false],
+    ["codex-api", false],
+    ["unavailable:claude-api", true],
   ]);
+  expect(
+    within(group).getByRole("radio", { name: /claude — api.*claude 2\.1\.287 or later is required/i }),
+  ).toBeDisabled();
   expect(screen.getByTestId("new-session-unavailable")).toHaveTextContent(
     "claude 2.1.287 or later is required",
   );
@@ -630,8 +648,10 @@ test("an API client offers Skip permission prompts, unticked, only when its adap
   });
   // The console agent follows the stored default (on)…
   expect(await screen.findByRole("checkbox", { name: /skip permission prompts/i })).toBeChecked();
-  await user.selectOptions(screen.getByRole("combobox", { name: "Agent" }), "codex-api");
-  expect(screen.getByTestId("new-session-api-about")).toHaveTextContent("Codex");
+  await chooseAgent(user, "codex-api");
+  // The old "API client · ready" box is gone (#1436): the tile names the CLI it drives.
+  expect(screen.queryByTestId("new-session-api-about")).toBeNull();
+  expect(screen.getByRole("radio", { name: /codex — api/i })).toHaveAccessibleName(/via codex cli/i);
   const skip = screen.getByRole("checkbox", { name: /skip permission prompts/i });
   // Guarded by default: the console default does not apply to an API client (#1339).
   expect(skip).not.toBeChecked();
@@ -642,7 +662,7 @@ test("an API client offers Skip permission prompts, unticked, only when its adap
   // A client whose adapter has not mapped it (the server says so) offers no toggle at all.
   setRoster(withApi(FIXTURE, "codex-api", { can_bypass: false }));
   renderLanding(["claude", "codex-api"], { default_project: "/d" });
-  await user.selectOptions(await screen.findByRole("combobox", { name: "Agent" }), "codex-api");
+  await chooseAgent(user, "codex-api");
   expect(screen.queryByRole("checkbox", { name: /skip permission prompts/i })).toBeNull();
 });
 
@@ -654,12 +674,12 @@ test("a console skip choice never carries into an API client (Hermes on #1341)",
     .mockReset()
     .mockResolvedValueOnce({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
   renderLanding(["claude", "codex-api"], { default_project: "/d" });
-  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await chooseProject(user, "");
   const consoleSkip = screen.getByRole("checkbox", { name: /skip permission prompts/i });
   await user.click(consoleSkip); // off…
   await user.click(consoleSkip); // …and explicitly on again, for the console agent
   expect(consoleSkip).toBeChecked();
-  await user.selectOptions(screen.getByRole("combobox", { name: "Agent" }), "codex-api");
+  await chooseAgent(user, "codex-api");
   expect(screen.getByRole("checkbox", { name: /skip permission prompts/i })).not.toBeChecked();
   expect(screen.queryByTestId("api-bypass-warning")).toBeNull();
   await user.click(screen.getByRole("button", { name: /start session/i }));
@@ -683,9 +703,9 @@ test("an API skip tick is never restored from a draft and never survives an agen
   await user.click(skip);
   expect(skip).toBeChecked();
   // Leaving the client and coming back clears it: every agent change needs a fresh tick (5913).
-  await user.selectOptions(screen.getByRole("combobox", { name: "Agent" }), "claude");
+  await chooseAgent(user, "claude");
   expect(screen.getByRole("checkbox", { name: /skip permission prompts/i })).toBeChecked(); // console: its own (restored) choice
-  await user.selectOptions(screen.getByRole("combobox", { name: "Agent" }), "codex-api");
+  await chooseAgent(user, "codex-api");
   expect(screen.getByRole("checkbox", { name: /skip permission prompts/i })).not.toBeChecked();
 });
 
@@ -695,7 +715,7 @@ test("a lost skip create keeps no client slot: the error points at the session l
   const user = userEvent.setup();
   vi.mocked(api.structuredCreate).mockReset().mockRejectedValueOnce(new TypeError("response lost"));
   const first = renderLanding(["codex-api"], { default_project: "/d" });
-  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await chooseProject(user, "");
   await user.click(screen.getByRole("checkbox", { name: /skip permission prompts/i }));
   await user.click(screen.getByRole("button", { name: /start session/i }));
   expect(await screen.findByTestId("start-error")).toHaveTextContent(
@@ -704,7 +724,7 @@ test("a lost skip create keeps no client slot: the error points at the session l
   expect(sessionStorage.getItem("battlelab.pendingStructuredCreate")).toBeNull();
   first.unmount(); // the page reloads
   renderLanding(["codex-api"], { default_project: "/d" });
-  await screen.findByRole("combobox", { name: "Project" });
+  await findProjects();
   expect(api.structuredSnapshot).not.toHaveBeenCalled();
   expect(screen.queryByTestId("api-recovered-create")).toBeNull();
   expect(screen.getByRole("checkbox", { name: /skip permission prompts/i })).not.toBeChecked();
@@ -719,7 +739,7 @@ test("a lost skip create on the same form: the next create is a new, guarded one
     .mockRejectedValueOnce(new TypeError("response lost"))
     .mockRejectedValueOnce(new TypeError("response lost"));
   renderLanding(["codex-api"], { default_project: "/d" });
-  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await chooseProject(user, "");
   await user.click(screen.getByRole("checkbox", { name: /skip permission prompts/i }));
   await user.click(screen.getByRole("button", { name: /start session/i }));
   await screen.findByTestId("start-error");
@@ -743,13 +763,13 @@ test("a lost skip create the server never made is forgotten: the next start is g
     .mockRejectedValueOnce(new TypeError("response lost"))
     .mockResolvedValueOnce({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
   const first = renderLanding(["codex-api"], { default_project: "/d" });
-  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await chooseProject(user, "");
   await user.click(screen.getByRole("checkbox", { name: /skip permission prompts/i }));
   await user.click(screen.getByRole("button", { name: /start session/i }));
   await screen.findByTestId("start-error");
   first.unmount();
   renderLanding(["codex-api"], { default_project: "/d" }); // the lookup 404s (beforeEach)
-  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await chooseProject(user, "");
   await vi.waitFor(() =>
     expect(sessionStorage.getItem("battlelab.pendingStructuredCreate")).toBeNull(),
   );
@@ -793,7 +813,7 @@ test.each([
     vi.mocked(api.structuredCreate).mockRejectedValueOnce(new ApiError(422, "refused"));
   }
   renderLanding(["codex-api"], { default_project: "/d" });
-  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await chooseProject(user, "");
   await user.click(screen.getByRole("button", { name: /start session/i })); // guarded
   await screen.findByTestId("start-error");
   const guarded = JSON.parse(sessionStorage.getItem("battlelab.pendingStructuredCreate")!) as { id: string };
@@ -818,7 +838,7 @@ test("a found create stays recoverable until it is OPENED — a late or unmounte
     .mockImplementationOnce(() => new Promise((r) => (release = () => r({} as never))))
     .mockResolvedValue({} as never);
   const first = renderLanding(["codex-api"], { default_project: "/d" });
-  await screen.findByRole("combobox", { name: "Project" });
+  await findProjects();
   first.unmount(); // navigated away before the lookup answered
   release();
   await new Promise((r) => setTimeout(r, 0));
@@ -839,15 +859,14 @@ test.each(["opencode-api", "codex-api", "claude-api"])("a recovered %s attempt a
   vi.mocked(api.structuredSnapshot).mockResolvedValue({ native: null } as never);
   vi.mocked(api.structuredCreate).mockReset();
   renderLanding([engine, "opencode", "apichat", engine === "codex-api" ? "claude-api" : "codex-api"]);
-  const agent = await screen.findByRole("combobox", { name: "Agent" });
-  await user.selectOptions(agent, engine);
+  await chooseAgent(user, engine);
   await screen.findByTestId("api-recovered-create");
   for (const choice of ["opencode", "apichat", engine === "codex-api" ? "claude-api" : "codex-api"]) {
-    await user.selectOptions(agent, choice);
+    await chooseAgent(user, choice);
     expect(screen.queryByTestId("api-recovered-create")).toBeNull();
     expect(sessionStorage.getItem("battlelab.pendingStructuredCreate")).toBe(saved);
   }
-  await user.selectOptions(agent, engine);
+  await chooseAgent(user, engine);
   expect(await screen.findByTestId("api-recovered-create")).toHaveTextContent("Open it to check its status");
   expect(api.structuredCreate).not.toHaveBeenCalled();
   expect(api.structuredStart).not.toHaveBeenCalled();
@@ -868,7 +887,7 @@ test("dismissing a found attempt permits a fresh guarded create after reload (#1
   expect(api.structuredStart).not.toHaveBeenCalled();
   first.unmount();
   renderLanding(["opencode-api"], { default_project: "/d" });
-  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await chooseProject(user, "");
   expect(screen.queryByTestId("api-recovered-create")).toBeNull();
   expect(api.structuredSnapshot).toHaveBeenCalledTimes(1);
   await user.click(screen.getByRole("button", { name: /start session/i }));
@@ -906,7 +925,7 @@ test("a recovered attempt cannot be dismissed while its guarded retry is in flig
   vi.mocked(api.structuredCreate).mockReset().mockImplementation(() => new Promise((_, r) => { reject = r; }));
   renderLanding(["codex-api"], { default_project: "/d" });
   const dismiss = await screen.findByRole("button", { name: "Dismiss reminder" });
-  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await chooseProject(user, "");
   await user.click(screen.getByRole("button", { name: /start session/i }));
   expect(dismiss).toBeDisabled();
   await user.click(dismiss);
@@ -928,7 +947,7 @@ test("a newer create hides the older reminder while the form stays mounted (#137
   vi.mocked(api.structuredCreate).mockReset().mockImplementation(() => new Promise((_, r) => { reject = r; }));
   renderLanding(["codex-api"], { default_project: "/new" });
   await screen.findByTestId("api-recovered-create");
-  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await chooseProject(user, "");
   await user.click(screen.getByRole("button", { name: /start session/i }));
   expect(screen.queryByTestId("api-recovered-create")).toBeNull();
   const nextId = vi.mocked(api.structuredCreate).mock.calls[0][2];
@@ -952,7 +971,7 @@ test("opening a recovered session during its retry preserves the identity if the
     .mockRejectedValue(new TypeError("response lost again"));
   const first = renderLanding(["opencode-api"], { default_project: "/d" });
   const open = await screen.findByRole("link", { name: "Open previous session" });
-  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await chooseProject(user, "");
   await user.click(screen.getByRole("button", { name: /start session/i }));
   await user.click(open);
   expect(sessionStorage.getItem("battlelab.pendingStructuredCreate")).toBe(saved);
@@ -960,7 +979,7 @@ test("opening a recovered session during its retry preserves the identity if the
   await new Promise((r) => setTimeout(r, 0));
   first.unmount();
   renderLanding(["opencode-api"], { default_project: "/d" });
-  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await chooseProject(user, "");
   await user.click(screen.getByRole("button", { name: /start session/i }));
   await screen.findByTestId("start-error");
   expect(vi.mocked(api.structuredCreate).mock.calls.map((args) => args[2])).toEqual(["previous-id", "previous-id"]);
@@ -977,7 +996,7 @@ test.each([
   let release!: () => void;
   vi.mocked(api.structuredSnapshot).mockImplementationOnce(() => new Promise((r) => { release = () => r({} as never); }));
   renderLanding(["codex-api"]);
-  await screen.findByRole("combobox", { name: "Project" });
+  await findProjects();
   const changed = JSON.stringify({ ...saved, [field]: value });
   sessionStorage.setItem("battlelab.pendingStructuredCreate", changed);
   release();
@@ -1003,7 +1022,7 @@ test("a skip create is launched only after its response arrived: create, THEN st
     return {} as never;
   });
   renderLanding(["codex-api"], { default_project: "/d" });
-  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await chooseProject(user, "");
   await user.click(screen.getByRole("checkbox", { name: /skip permission prompts/i }));
   await user.click(screen.getByRole("button", { name: /start session/i }));
   await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
@@ -1019,7 +1038,7 @@ test("a guarded create never calls start (#1339)", async () => {
     .mockReset()
     .mockResolvedValueOnce({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
   renderLanding(["codex-api"], { default_project: "/d" });
-  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await chooseProject(user, "");
   await user.click(screen.getByRole("button", { name: /start session/i }));
   await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
   expect(api.structuredStart).not.toHaveBeenCalled();
@@ -1034,7 +1053,7 @@ test("one tick authorizes one create: after a lost skip attempt the next create 
     .mockRejectedValueOnce(new TypeError("response lost"))
     .mockResolvedValueOnce({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
   renderLanding(["codex-api"], { default_project: "/d" });
-  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await chooseProject(user, "");
   await user.click(screen.getByRole("checkbox", { name: /skip permission prompts/i }));
   await user.click(screen.getByRole("button", { name: /start session/i }));
   await screen.findByTestId("start-error");
@@ -1064,7 +1083,7 @@ test.each([
   vi.mocked(api.structuredCreate).mockReset().mockRejectedValueOnce(new TypeError("response lost"));
   const user = userEvent.setup();
   renderLanding(["codex-api"], { default_project: "/d" });
-  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await chooseProject(user, "");
   await user.click(screen.getByRole("button", { name: /start session/i })); // a NEW, guarded create
   await screen.findByTestId("start-error");
   const newer = JSON.parse(sessionStorage.getItem("battlelab.pendingStructuredCreate")!) as { id: string };
@@ -1086,7 +1105,7 @@ test("a retry reuses the id only for the same mode: switching it is a new create
     .mockRejectedValueOnce(new TypeError("response lost"))
     .mockResolvedValueOnce({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
   renderLanding(["codex-api"], { default_project: "/d" });
-  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await chooseProject(user, "");
   await user.click(screen.getByRole("button", { name: /start session/i }));
   await screen.findByTestId("start-error");
   await user.click(screen.getByRole("checkbox", { name: /skip permission prompts/i }));
@@ -1106,8 +1125,7 @@ test("starting an API client creates it on the server — single-flight, retry r
     .mockRejectedValueOnce(new TypeError("network"))
     .mockResolvedValueOnce({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
   renderLanding(["codex-api"], { default_project: "/d" });
-  const project = await screen.findByRole("combobox", { name: "Project" });
-  await user.selectOptions(project, "");
+  await chooseProject(user, "");
   const startBtn = screen.getByRole("button", { name: /start session/i });
   await user.click(startBtn);
   await screen.findByTestId("start-error");
@@ -1129,12 +1147,12 @@ test("an unresolved API create survives a reload: Start after remount reuses the
     .mockRejectedValueOnce(new TypeError("response lost"))
     .mockResolvedValueOnce({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
   const first = renderLanding(["codex-api"], { default_project: "/d" });
-  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await chooseProject(user, "");
   await user.click(screen.getByRole("button", { name: /start session/i }));
   await screen.findByTestId("start-error");
   first.unmount(); // the page reloads
   renderLanding(["codex-api"], { default_project: "/d" });
-  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await chooseProject(user, "");
   await user.click(screen.getByRole("button", { name: /start session/i }));
   await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
   const [a, b] = vi.mocked(api.structuredCreate).mock.calls;
@@ -1149,7 +1167,7 @@ test("an API client offers the models its own CLI reports and creates on the cho
     .mockReset()
     .mockResolvedValue({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
   renderLanding(["codex-api"], { default_project: "/d" });
-  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await chooseProject(user, "");
   const select = await screen.findByRole("combobox", { name: "Model" });
   expect(api.structuredModels).toHaveBeenCalledWith("codex-api");
   expect(Array.from(select.querySelectorAll("option")).map((o) => [o.value, o.textContent])).toEqual([
@@ -1187,7 +1205,7 @@ test("choosing another model after a lost create is a new create, never the same
     .mockRejectedValueOnce(new TypeError("response lost"))
     .mockResolvedValueOnce({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
   renderLanding(["codex-api"], { default_project: "/d" });
-  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await chooseProject(user, "");
   const select = await screen.findByRole("combobox", { name: "Model" });
   await user.selectOptions(select, "gpt-6.1-sol");
   await user.click(screen.getByRole("button", { name: /start session/i }));
@@ -1262,7 +1280,7 @@ test("the stored defaults preselect model and effort, and the create sends them 
     .mockReset()
     .mockResolvedValue({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
   renderLanding(["codex-api"], DEFAULTS("gpt-6.1-sol", "high"));
-  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await chooseProject(user, "");
   await vi.waitFor(() =>
     expect(screen.getByRole("combobox", { name: "Model" })).toHaveValue("gpt-6.1-sol"),
   );
@@ -1321,7 +1339,7 @@ test("choosing another level after a lost create is a new create, never the same
     .mockRejectedValueOnce(new TypeError("response lost"))
     .mockResolvedValueOnce({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
   renderLanding(["codex-api"], DEFAULTS("gpt-6.1-sol", "high"));
-  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await chooseProject(user, "");
   const effort = await screen.findByTestId("new-session-effort");
   await user.click(screen.getByRole("button", { name: /start session/i }));
   await screen.findByTestId("start-error");
@@ -1340,9 +1358,382 @@ test("a saved default is shown while the list answers, but Start waits for it (#
   vi.mocked(api.structuredModels).mockReturnValue(new Promise((res) => (answer = res)));
   const user = userEvent.setup();
   renderLanding(["codex-api"], DEFAULTS("gpt-6.1-sol", "high"));
-  await user.selectOptions(await screen.findByRole("combobox", { name: "Project" }), "");
+  await chooseProject(user, "");
   expect(await screen.findByRole("combobox", { name: "Model" })).toHaveValue("gpt-6.1-sol");
   expect(screen.getByRole("button", { name: /start session/i })).toBeDisabled();
   await act(async () => answer(LEVELS));
   await vi.waitFor(() => expect(screen.getByRole("button", { name: /start session/i })).toBeEnabled());
+});
+
+// ---- #1436: the polished form — cached projects, start-time freshness, folder contract --------
+
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+test("a cached project list paints at once; Start waits for this visit's revalidation (#1436)", async () => {
+  projectPickerStore.commit(0, ENTITIES);
+  const pending = deferred<{ projects: typeof ENTITIES }>();
+  mockEntities.mockReturnValue(pending.promise);
+  renderLanding(["claude"]);
+  // No skeleton: the cached rows are there on the first render.
+  expect(screen.queryByTestId("project-skeleton")).toBeNull();
+  expect(projectValue()).toBe("p-a");
+  expect(screen.getByRole("button", { name: /start session/i })).toBeDisabled();
+  expect(screen.getByTestId("new-session-summary")).toHaveTextContent("Checking projects…");
+  await act(async () => pending.resolve({ projects: ENTITIES }));
+  expect(screen.getByRole("button", { name: /start session/i })).toBeEnabled();
+  expect(screen.getByTestId("new-session-summary")).toHaveTextContent("Start");
+});
+
+test("a first-ever load shows fixed-height skeleton rows, then the list (#1436)", async () => {
+  const pending = deferred<{ projects: typeof ENTITIES }>();
+  mockEntities.mockReturnValue(pending.promise);
+  renderLanding(["claude"]);
+  expect(screen.getAllByTestId("project-skeleton")).toHaveLength(2);
+  await act(async () => pending.resolve({ projects: ENTITIES }));
+  expect(screen.queryByTestId("project-skeleton")).toBeNull();
+  expect(projectValue()).toBe("p-a");
+});
+
+test("an explicit choice the fresh list dropped falls back BEFORE Start, and is never stamped (#1436)", async () => {
+  const user = userEvent.setup();
+  projectPickerStore.commit(0, ENTITIES); // the cache still has Beta…
+  const pending = deferred<{ projects: typeof ENTITIES }>();
+  mockEntities.mockReturnValue(pending.promise);
+  renderLanding(["claude"], {}, { restoreDraft: { ...DRAFT, engineChoice: "claude", cwdOverride: null } });
+  expect(projectValue()).toBe("p-b");
+  expect(screen.getByRole("button", { name: /start session/i })).toBeDisabled();
+  // …but Beta was archived meanwhile: the confirmed list has only Alpha.
+  await act(async () => pending.resolve({ projects: [ENTITIES[0]] }));
+  expect(projectValue()).toBe("p-a");
+  expect(launchFolder()).toBe("/a");
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  const [, opts] = navigateMock.mock.calls.at(-1) as [string, { state: { fresh: { cwd: string } } }];
+  expect(opts.state.fresh.cwd).toBe("/a");
+  expect(api.setSessionProject).not.toHaveBeenCalledWith(expect.anything(), "p-b");
+});
+
+test("a failed refresh keeps the cached list visible, and Start still works (#1436)", async () => {
+  const user = userEvent.setup();
+  projectPickerStore.commit(0, ENTITIES);
+  mockEntities.mockRejectedValue(new ApiError(502, "bad gateway"));
+  renderLanding(["claude"], {}, { restoreDraft: { ...DRAFT, engineChoice: "claude", cwdOverride: null } });
+  expect(await screen.findByText(/couldn’t refresh your projects/i)).toBeInTheDocument();
+  // An unreachable server proves nothing: the explicit choice stands, the rows stay.
+  expect(projectValue()).toBe("p-b");
+  const start = screen.getByRole("button", { name: /start session/i });
+  expect(start).toBeEnabled();
+  await user.click(start);
+  expect(navigateMock).toHaveBeenCalled();
+});
+
+test("a failed first load says so and still lets the operator start without a project (#1436)", async () => {
+  const user = userEvent.setup();
+  mockEntities.mockRejectedValue(new ApiError(502, "bad gateway"));
+  renderLanding(["claude"], { default_project: "/d" });
+  expect(await screen.findByText(/couldn’t load your projects/i)).toBeInTheDocument();
+  expect(projectValue()).toBe("");
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  expect(api.setSessionProject).not.toHaveBeenCalled();
+});
+
+const FOLDERLESS = { ...ENTITIES[0], id: "p-x", name: "Scratch", folders: [], default_folder: "" };
+
+test("a folderless project with a global default starts there, with no error copy (#1436)", async () => {
+  mockEntities.mockResolvedValue({ projects: [FOLDERLESS] });
+  renderLanding(["claude"], { default_project: "/legacy" });
+  await findProjects();
+  expect(launchFolder()).toBe("/legacy");
+  expect(screen.getByText(/“Scratch” has no default folder · using your global default/)).toBeInTheDocument();
+  expect(screen.queryByText(/choose one for this session/i)).toBeNull();
+  expect(screen.getByRole("button", { name: /start session/i })).toBeEnabled();
+});
+
+test("a folderless project with no global default: “No folder”, Start disabled until one is chosen (#1436)", async () => {
+  const user = userEvent.setup();
+  mockEntities.mockResolvedValue({ projects: [FOLDERLESS] });
+  renderLanding(["claude"]);
+  await findProjects();
+  expect(screen.getByTestId("launch-folder")).toHaveTextContent("No folder");
+  expect(screen.getByText(/“Scratch” has no default folder — choose one/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /start session/i })).toBeDisabled();
+  await user.click(screen.getByRole("button", { name: /choose folder/i }));
+  await user.click(screen.getByRole("button", { name: "stub-pick" }));
+  expect(launchFolder()).toBe("/picked");
+  expect(screen.getByRole("button", { name: /start session/i })).toBeEnabled();
+});
+
+test("a project's other folders are one-tap picks; “use project default” undoes an override (#1436)", async () => {
+  const user = userEvent.setup();
+  mockEntities.mockResolvedValue({
+    projects: [{ ...ENTITIES[0], folders: ["/a", "/a/web"], default_folder: "/a" }],
+  });
+  renderLanding(["claude"]);
+  await findProjects();
+  expect(screen.getByText(/default folder for “Alpha”/i)).toBeInTheDocument();
+  const chips = within(screen.getByRole("group", { name: "Project folders" }));
+  await user.click(chips.getByRole("button", { name: "/a/web" }));
+  expect(launchFolder()).toBe("/a/web");
+  expect(chips.getByRole("button", { name: "/a/web" })).toHaveAttribute("aria-pressed", "true");
+  await user.click(screen.getByRole("button", { name: /use project default/i }));
+  expect(launchFolder()).toBe("/a");
+});
+
+test("the folder card shows the folder's name over its parent (#1436)", async () => {
+  mockEntities.mockResolvedValue({
+    projects: [{ ...ENTITIES[0], folders: ["/home/u/claude/agent-sessions"], default_folder: "/home/u/claude/agent-sessions" }],
+  });
+  renderLanding(["claude"]);
+  await findProjects();
+  const card = screen.getByTestId("launch-folder");
+  expect(card).toHaveTextContent("agent-sessions~/claude/");
+  expect(card).toHaveAttribute("data-path", "/home/u/claude/agent-sessions");
+});
+
+test("more than six projects get a filter, and / focuses it (#1436)", async () => {
+  const user = userEvent.setup();
+  const many = Array.from({ length: 7 }, (_, i) => ({
+    ...ENTITIES[0],
+    id: `p-${i}`,
+    name: `Project ${i}`,
+    folders: [`/p${i}`],
+    default_folder: `/p${i}`,
+  }));
+  mockEntities.mockResolvedValue({ projects: many });
+  renderLanding(["claude"]);
+  await findProjects();
+  const filter = screen.getByRole("searchbox", { name: "Filter projects" });
+  // From the body (nothing focused) — the state on arrival (#1437 review, round 2).
+  await user.keyboard("/");
+  expect(filter).toHaveFocus();
+  act(() => filter.blur());
+  // From a project row's radio — where focus sits after a click; a radio is not typing.
+  await user.click(radioIn(screen.getByRole("radiogroup", { name: "Project" }), "p-3")!);
+  await user.keyboard("/");
+  expect(filter).toHaveFocus();
+  await user.keyboard("6");
+  const values = within(screen.getByRole("radiogroup", { name: "Project" }))
+    .getAllByRole("radio")
+    .map((r) => (r as HTMLInputElement).value);
+  // The selected project always stays listed, so the filter never hides what Start would use.
+  expect(values).toEqual(["", "p-3", "p-6"]);
+});
+
+test("Ctrl+Enter starts the session; the summary says what Start will do (#1436)", async () => {
+  const user = userEvent.setup();
+  renderLanding(["claude"]);
+  await findProjects();
+  expect(screen.getByTestId("new-session-summary")).toHaveTextContent(/Start Claude Code in \/a/);
+  expect(screen.getByTestId("new-session-summary")).toHaveTextContent("project Alpha");
+  focusForm();
+  await user.keyboard("{Control>}{Enter}{/Control}");
+  expect(navigateMock).toHaveBeenCalledWith(
+    expect.stringMatching(/^\/s\/claude\//),
+    expect.objectContaining({ state: expect.objectContaining({ fresh: expect.objectContaining({ cwd: "/a" }) }) }),
+  );
+});
+
+test("Ctrl+Enter does nothing while Start is held (#1436)", async () => {
+  const user = userEvent.setup();
+  projectPickerStore.commit(0, ENTITIES);
+  mockEntities.mockReturnValue(new Promise(() => {}));
+  renderLanding(["claude"]);
+  focusForm();
+  await user.keyboard("{Control>}{Enter}{/Control}");
+  expect(navigateMock).not.toHaveBeenCalled();
+});
+
+test("the agent tiles mark the stored default and pick by click (#1436)", async () => {
+  const user = userEvent.setup();
+  renderLanding(["claude", "codex"], { agent_defaults: { default_engine: "codex", bypass: true } });
+  const group = await screen.findByRole("radiogroup", { name: "Agent" });
+  expect(agentValue()).toBe("codex");
+  expect(within(group).getByRole("radio", { name: /codex.*default/i })).toBeChecked();
+  await chooseAgent(user, "claude");
+  expect(agentValue()).toBe("claude");
+});
+
+test("a failed refresh never launches a choice it cannot vouch for — no folder, no stamp (Hermes on #1437)", async () => {
+  const user = userEvent.setup();
+  projectPickerStore.commit(0, [ENTITIES[0]]); // a cache that does not have p-gone
+  mockEntities.mockRejectedValue(new ApiError(502, "bad gateway"));
+  renderLanding(["claude"], { default_project: "/d" }, { restoreDraft: { ...DRAFT, engineChoice: "claude", projectChoice: "p-gone", cwdOverride: null } });
+  expect(await screen.findByText(/couldn’t refresh your projects/i)).toBeInTheDocument();
+  expect(screen.getByTestId("new-session-summary")).toHaveTextContent(/couldn’t confirm the project you chose/i);
+  expect(screen.getByRole("button", { name: /start session/i })).toBeDisabled();
+  focusForm();
+  await user.keyboard("{Control>}{Enter}{/Control}");
+  // (The one navigate here is the restore's own history clean-up — never a launch.)
+  expect(navigateMock).not.toHaveBeenCalledWith(expect.stringMatching(/^\/s\//), expect.anything());
+  // Choosing again is the way out.
+  await chooseProject(user, "p-a");
+  expect(screen.getByRole("button", { name: /start session/i })).toBeEnabled();
+});
+
+test("a project the wizard just created launches in ITS folder even when the refresh fails (Hermes on #1437)", async () => {
+  const user = userEvent.setup();
+  projectPickerStore.commit(0, [ENTITIES[0]]);
+  // What `api.createProject` does on success: the created entity joins the picker's cache.
+  projectPickerStore.add({ ...ENTITIES[1], id: "p-new", name: "Gamma", folders: ["/g"], default_folder: "/g" });
+  mockEntities.mockRejectedValue(new ApiError(502, "bad gateway"));
+  renderLanding(["claude"], { default_project: "/d" }, { selectProjectId: "p-new" });
+  expect(await screen.findByText(/couldn’t refresh your projects/i)).toBeInTheDocument();
+  expect(projectValue()).toBe("p-new");
+  expect(launchFolder()).toBe("/g");
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  const [, opts] = navigateMock.mock.calls.at(-1) as [string, { state: { fresh: { cwd: string } } }];
+  expect(opts.state.fresh.cwd).toBe("/g");
+});
+
+test("a first visit holds Start until the projects arrive, even with a global folder (Hermes on #1437)", async () => {
+  const user = userEvent.setup();
+  const pending = deferred<{ projects: typeof ENTITIES }>();
+  mockEntities.mockReturnValue(pending.promise);
+  renderLanding(["claude"], { default_project: "/d", default_project_id: "p-b" });
+  expect(screen.getByRole("button", { name: /start session/i })).toBeDisabled();
+  focusForm();
+  await user.keyboard("{Control>}{Enter}{/Control}");
+  expect(navigateMock).not.toHaveBeenCalled();
+  await act(async () => pending.resolve({ projects: ENTITIES }));
+  // The starred project and ITS folder — not the global folder a quick click would have used.
+  expect(projectValue()).toBe("p-b");
+  expect(launchFolder()).toBe("/b");
+  expect(screen.getByRole("button", { name: /start session/i })).toBeEnabled();
+});
+
+test("an explicit “No project” has nothing to confirm — Start is not held for the list (#1437)", async () => {
+  mockEntities.mockReturnValue(new Promise(() => {}));
+  renderLanding(["claude"], { default_project: "/d" }, { restoreDraft: { ...DRAFT, engineChoice: "claude", projectChoice: "", cwdOverride: null } });
+  expect(screen.getByRole("button", { name: /start session/i })).toBeEnabled();
+});
+
+test("Ctrl+Enter outside the form never starts a session — the sidebar, the body (#1437 review)", async () => {
+  const user = userEvent.setup();
+  render(
+    <>
+      <a href="/s/claude/x">a sidebar session</a>
+    </>,
+  );
+  renderLanding(["claude"]);
+  await findProjects();
+  act(() => screen.getByRole("link", { name: "a sidebar session" }).focus());
+  await user.keyboard("{Control>}{Enter}{/Control}");
+  act(() => (document.activeElement as HTMLElement | null)?.blur());
+  await user.keyboard("{Control>}{Enter}{/Control}");
+  expect(navigateMock).not.toHaveBeenCalledWith(expect.stringMatching(/^\/s\//), expect.anything());
+});
+
+test("Ctrl+Enter inside the folder picker does not start a session (#1437 review)", async () => {
+  const user = userEvent.setup();
+  renderLanding(["claude"]);
+  await findProjects();
+  await user.click(screen.getByRole("button", { name: /choose folder/i }));
+  act(() => screen.getByRole("button", { name: "stub-pick" }).focus());
+  await user.keyboard("{Control>}{Enter}{/Control}");
+  expect(navigateMock).not.toHaveBeenCalledWith(expect.stringMatching(/^\/s\//), expect.anything());
+});
+
+test("a held Ctrl+Enter starts ONE session — auto-repeat is ignored (#1437 review)", async () => {
+  renderLanding(["claude"]);
+  await findProjects();
+  const card = screen.getByRole("button", { name: /choose folder/i });
+  act(() => card.focus());
+  const press = (repeat: boolean) =>
+    act(() => {
+      card.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, repeat, bubbles: true, cancelable: true }),
+      );
+    });
+  press(false);
+  press(true);
+  press(true);
+  expect(navigateMock.mock.calls.filter(([to]) => String(to).startsWith("/s/"))).toHaveLength(1);
+});
+
+test("“No project” is clickable while the list loads — the way out of a hung request (#1437 review)", async () => {
+  const user = userEvent.setup();
+  mockEntities.mockReturnValue(new Promise(() => {}));
+  renderLanding(["claude"], { default_project: "/d" });
+  expect(screen.getByRole("button", { name: /start session/i })).toBeDisabled();
+  await user.click(radioIn(screen.getByRole("radiogroup", { name: "Project" }), "")!);
+  expect(screen.getByRole("button", { name: /start session/i })).toBeEnabled();
+});
+
+test("`/` never takes focus from outside the form, nor from a text field in it (#1437 review)", async () => {
+  const user = userEvent.setup();
+  const many = Array.from({ length: 7 }, (_, i) => ({
+    ...ENTITIES[0],
+    id: `p-${i}`,
+    name: `Project ${i}`,
+    folders: [`/p${i}`],
+    default_folder: `/p${i}`,
+  }));
+  mockEntities.mockResolvedValue({ projects: many });
+  render(<a href="/s/claude/x">a sidebar session</a>);
+  renderLanding(["claude"]);
+  await findProjects();
+  const filter = screen.getByRole("searchbox", { name: "Filter projects" });
+  act(() => screen.getByRole("link", { name: "a sidebar session" }).focus());
+  await user.keyboard("/");
+  expect(filter).not.toHaveFocus();
+  await user.click(filter);
+  await user.keyboard("a/b");
+  expect(filter).toHaveValue("a/b"); // typed, not swallowed
+});
+
+test("Ctrl+Enter on a link inside the form keeps the link's own gesture (#1437 review)", async () => {
+  const user = userEvent.setup();
+  renderLanding(["claude"]);
+  await findProjects();
+  act(() => screen.getByRole("link", { name: /new project/i }).focus());
+  await user.keyboard("{Control>}{Enter}{/Control}");
+  expect(navigateMock).not.toHaveBeenCalledWith(expect.stringMatching(/^\/s\//), expect.anything());
+});
+
+test("`/` from the body does nothing while a modal is open — e.g. the folder picker (#1437 review)", async () => {
+  const user = userEvent.setup();
+  const many = Array.from({ length: 7 }, (_, i) => ({
+    ...ENTITIES[0],
+    id: `p-${i}`,
+    name: `Project ${i}`,
+    folders: [`/p${i}`],
+    default_folder: `/p${i}`,
+  }));
+  mockEntities.mockResolvedValue({ projects: many });
+  render(<div role="dialog" aria-modal="true" aria-label="some modal" />);
+  renderLanding(["claude"]);
+  await findProjects();
+  act(() => (document.activeElement as HTMLElement | null)?.blur());
+  await user.keyboard("/");
+  expect(screen.getByRole("searchbox", { name: "Filter projects" })).not.toHaveFocus();
+});
+
+test("while the folder picker is opening, focus still on its trigger: Ctrl+Enter and / do nothing (Hermes 6231)", async () => {
+  const user = userEvent.setup();
+  const many = Array.from({ length: 7 }, (_, i) => ({
+    ...ENTITIES[0],
+    id: `p-${i}`,
+    name: `Project ${i}`,
+    folders: [`/p${i}`],
+    default_folder: `/p${i}`,
+  }));
+  mockEntities.mockResolvedValue({ projects: many });
+  renderLanding(["claude"]);
+  await findProjects();
+  const trigger = screen.getByRole("button", { name: /choose folder/i });
+  await user.click(trigger);
+  // The real picker moves focus only after /api/fs/dirs answers; until then it is here.
+  expect(screen.getByRole("dialog", { name: "folder picker" })).toBeInTheDocument();
+  act(() => trigger.focus());
+  await user.keyboard("{Control>}{Enter}{/Control}");
+  expect(navigateMock).not.toHaveBeenCalledWith(expect.stringMatching(/^\/s\//), expect.anything());
+  await user.keyboard("/");
+  expect(screen.getByRole("searchbox", { name: "Filter projects" })).not.toHaveFocus();
 });

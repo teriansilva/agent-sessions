@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { settingsPath } from "../src/routes/settingsTabs";
+import { projectPicker, launchFolder } from "./newSessionForm";
 
 // Real-browser check of the project-entity surfaces: the Settings → Projects manager (list /
 // create-with-default-folder / archive report) and the new-session Project→Folder flow (#448:
@@ -250,15 +251,13 @@ test.describe("New-session Project → Folder (#448)", () => {
     page,
   }) => {
     await page.goto("/");
-    await expect(page.getByLabel("Project", { exact: true })).toHaveValue(
-      "p-1",
-    ); // SampleProject is default
-    await expect(page.getByLabel("Launch folder")).toHaveValue("/home/u/sampleproject"); // its default folder
+    await expect(projectPicker(page).radio("p-1")).toBeChecked(); // SampleProject is default
+    await expect(launchFolder(page)).toHaveAttribute("data-path", "/home/u/sampleproject"); // its default folder
 
     // Override the folder for this session via the ~/ picker.
     await page.getByRole("button", { name: /choose folder/i }).click();
     await page.getByRole("button", { name: "free" }).click();
     await page.getByRole("button", { name: /^Select/ }).click();
-    await expect(page.getByLabel("Launch folder")).toHaveValue("/home/u/free");
+    await expect(launchFolder(page)).toHaveAttribute("data-path", "/home/u/free");
   });
 });

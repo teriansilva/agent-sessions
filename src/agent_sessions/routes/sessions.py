@@ -955,6 +955,12 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # GET /api/folders (the SPA is the only consumer and moved with it). Archived
         # entities are hidden by default; Settings opts in via ?include_archived=1.
         include_archived = request.query_params.get("include_archived") == "1"
+        # `?counts=0` (#1436): the launch picker never shows `session_count`, so it skips the
+        # membership walk below and reads the project file alone (sub-millisecond, against a
+        # 5.5 s cold walk measured on the author's install). The response is then a strict subset
+        # of the counted one — the same entities, minus `session_count`.
+        if request.query_params.get("counts") == "0":
+            return JSONResponse(await asyncio.to_thread(_project_entities, include_archived))
 
         # OFF THE EVENT LOOP, AND OFF THE UNCACHED WALK (#1048). This route used to run the whole
         # of the body below inline in the coroutine, over `engines.scan_all()` — so opening
@@ -962,6 +968,16 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # AND blocked every terminal WebSocket for its duration. `/api/sessions` has used
         # `to_thread` + the TTL snapshot since #678; this is the same treatment, not a new pattern.
         return JSONResponse(await asyncio.to_thread(_projects_payload, include_archived))
+
+    def _project_entities(include_archived: bool) -> dict:
+        """The uncounted `/api/projects?counts=0` body: the entities only, never a session walk."""
+        return {
+            "projects": [
+                p.as_dict()
+                for p in sorted(projects.load().values(), key=lambda p: (p.name.casefold(), p.id))
+                if include_archived or not p.archived
+            ]
+        }
 
     def _projects_payload(include_archived: bool) -> dict:
         """`/api/projects`'s body, as one blocking function. Only ever called through

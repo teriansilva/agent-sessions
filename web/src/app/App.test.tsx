@@ -41,6 +41,7 @@ vi.mock("../lib/api", () => ({
       }),
     folders: vi.fn().mockResolvedValue({ folders: [] }),
     projectEntities: vi.fn().mockResolvedValue({ projects: [] }),
+    projectPickerEntities: vi.fn().mockResolvedValue({ projects: [] }),
   },
   setCsrfToken: vi.fn(),
   gotoChangePassword: vi.fn(),

@@ -1,6 +1,7 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 import { mockRoster } from "./roster";
 import directoryGrants from "../../tests/fixtures/claude_directory_grants.json" with { type: "json" };
+import { agentPicker } from "./newSessionForm";
 
 // #1311: a native API client's session is a STRUCTURED VIEW, never a terminal. The server is
 // mocked: the snapshot route is a small state machine, so the spec drives the real client through
@@ -142,7 +143,7 @@ async function recoverOpencode(page: Page, theme: "dark" | "light") {
     engine: "opencode-api", cwd: "/home/u/proj", model: "default", id,
   })), ID);
   await page.reload();
-  await page.getByRole("combobox", { name: "Agent", exact: true }).selectOption("opencode-api");
+  await agentPicker(page).selectOption("opencode-api");
   await expect(page.getByTestId("api-recovered-create")).toBeVisible();
   return mutations;
 }
@@ -150,7 +151,7 @@ async function recoverOpencode(page: Page, theme: "dark" | "light") {
 for (const theme of ["dark", "light"] as const) {
   test(`New session: API recovery stays with its client; dismiss keeps history and permits a fresh start (${theme})`, async ({ page }) => {
     const mutations = await recoverOpencode(page, theme);
-    const agent = page.getByRole("combobox", { name: "Agent", exact: true });
+    const agent = agentPicker(page);
     const notice = page.getByTestId("api-recovered-create");
     // #1373: the saved API attempt leaked into the ordinary terminal and every other client.
     for (const engine of ["opencode", "codex-api", "claude-api", "apichat"]) {
@@ -222,7 +223,7 @@ test("New session: opening recovery during a retry keeps its identity after a lo
   expect(stored).not.toBeNull();
   expect(JSON.parse(stored!).id).toBe(ID);
   await page.goto("/");
-  await page.getByRole("combobox", { name: "Agent", exact: true }).selectOption("opencode-api");
+  await agentPicker(page).selectOption("opencode-api");
   await expect(page.getByTestId("api-recovered-create")).toBeVisible();
   await page.getByRole("button", { name: /start session/i }).click();
   await expect.poll(() => bodies.length).toBe(2);
@@ -501,13 +502,19 @@ test("New session: API clients are their own group, unavailable ones say why; a 
   });
   await serveSession(page, () => snapshot());
   await page.goto("/");
-  const agent = page.getByRole("combobox", { name: "Agent" });
-  await expect(agent.locator("optgroup")).toHaveCount(2);
-  await expect(agent.locator('option[disabled]')).toHaveText("Claude — API — unavailable");
+  const agent = agentPicker(page);
+  // Terminal and API groups; a client that cannot start is a disabled tile with its reason on it
+  // (#1436 — no separate "unavailable" or "API client · ready" box).
+  const group = page.getByRole("radiogroup", { name: "Agent" });
+  await expect(group.getByText("Terminal", { exact: true })).toBeVisible();
+  await expect(group.getByText("API — structured, no terminal")).toBeVisible();
+  await expect(agent.radio("unavailable:claude-api")).toBeDisabled();
   await expect(page.getByTestId("new-session-unavailable")).toContainText("2.1.287 or later");
   await expect(page.getByRole("checkbox", { name: /skip permission prompts/i })).toBeVisible();
   await agent.selectOption("codex-api");
-  await expect(page.getByTestId("new-session-api-about")).toContainText("Codex");
+  await expect(agent.radio("codex-api")).toBeChecked();
+  await expect(page.getByTestId("new-session-api-about")).toHaveCount(0);
+  await expect(page.locator('label:has(> input[value="codex-api"])')).toContainText("via Codex CLI");
   // #1339: the toggle is offered for an API client whose adapter maps it; unticked = guarded.
   const skip = page.getByRole("checkbox", { name: /skip permission prompts/i });
   await expect(skip).toBeVisible();
@@ -550,7 +557,7 @@ test("New session: Skip permission prompts creates, THEN starts the session — 
     },
   });
   await page.goto("/");
-  await page.getByRole("combobox", { name: "Agent" }).selectOption("codex-api");
+  await agentPicker(page).selectOption("codex-api");
   const skip = page.getByRole("checkbox", { name: /skip permission prompts/i });
   await skip.check();
   await expect(page.getByTestId("api-bypass-warning")).toContainText("won’t ask");
@@ -603,7 +610,7 @@ test("New session: a console skip choice never carries into an API client (Herme
   const skip = page.getByRole("checkbox", { name: /skip permission prompts/i });
   await skip.uncheck(); // the console agent: off…
   await skip.check(); // …and explicitly on again
-  await page.getByRole("combobox", { name: "Agent" }).selectOption("codex-api");
+  await agentPicker(page).selectOption("codex-api");
   await expect(skip).not.toBeChecked();
   await expect(page.getByTestId("api-bypass-warning")).toHaveCount(0);
   await page.getByRole("button", { name: /start session/i }).click();
@@ -635,13 +642,13 @@ test("New session: a lost skip create keeps no client slot — the error points 
       : r.fulfill({ json: s });
   });
   await page.goto("/");
-  await page.getByRole("combobox", { name: "Agent" }).selectOption("codex-api");
+  await agentPicker(page).selectOption("codex-api");
   await page.getByRole("checkbox", { name: /skip permission prompts/i }).check();
   await page.getByRole("button", { name: /start session/i }).click();
   await expect(page.getByTestId("start-error")).toContainText("waits in your session list");
   expect(await page.evaluate(() => sessionStorage.getItem("battlelab.pendingStructuredCreate"))).toBeNull();
   await page.reload();
-  await page.getByRole("combobox", { name: "Agent" }).selectOption("codex-api");
+  await agentPicker(page).selectOption("codex-api");
   await expect(page.getByRole("checkbox", { name: /skip permission prompts/i })).not.toBeChecked();
   await expect(page.getByTestId("api-recovered-create")).toHaveCount(0);
   // Opened from the list, it waits — nothing ran — with Start / Discard.
@@ -669,7 +676,7 @@ test("New session: a later skip create never erases a lost guarded create — re
     return r.fulfill({ json: snapshot({ session_key: `codex-api:${String(bodies[0]?.operation_id)}` }) });
   });
   await page.goto("/");
-  const agent = page.getByRole("combobox", { name: "Agent" });
+  const agent = agentPicker(page);
   await agent.selectOption("codex-api");
   await page.getByRole("button", { name: /start session/i }).click();
   await expect(page.getByTestId("start-error")).toBeVisible();
@@ -680,14 +687,14 @@ test("New session: a later skip create never erases a lost guarded create — re
   expect(JSON.parse(slot!).id).toBe(bodies[0].operation_id);
   await page.goto("/");
   await expect(page.getByTestId("api-recovered-create")).toHaveCount(0); // ordinary Claude selected
-  await page.getByRole("combobox", { name: "Agent" }).selectOption("codex-api");
+  await agentPicker(page).selectOption("codex-api");
   await expect(page.getByTestId("api-recovered-create")).toContainText("previous Codex — API session is saved");
 });
 
 test("New session: a skip tick never survives an agent change (Hermes 5913)", async ({ page }) => {
   await setup(page, "dark", ["claude", "codex-api"]);
   await page.goto("/");
-  const agent = page.getByRole("combobox", { name: "Agent" });
+  const agent = agentPicker(page);
   const skip = page.getByRole("checkbox", { name: /skip permission prompts/i });
   await agent.selectOption("codex-api");
   await skip.check();
@@ -711,7 +718,7 @@ test("New session: an API client whose adapter cannot skip prompts offers no tog
     },
   });
   await page.goto("/");
-  await page.getByRole("combobox", { name: "Agent" }).selectOption("codex-api");
+  await agentPicker(page).selectOption("codex-api");
   await expect(page.getByRole("checkbox", { name: /skip permission prompts/i })).toHaveCount(0);
 });
 

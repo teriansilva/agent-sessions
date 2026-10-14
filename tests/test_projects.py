@@ -571,3 +571,31 @@ def test_validate_color_is_single_source_of_truth_for_projects(tmp_home):
     # Round-trip on a valid input normalizes the same way.
     assert projects._validate_color("#5FD7FF") == "#5fd7ff"
     assert metadata.validate_color("#5FD7FF") == "#5fd7ff"
+
+
+def test_projects_counts_0_skips_the_session_walk(auth_cfg, fake_jsonl, monkeypatch):
+    """#1436: the launch picker asks `?counts=0` — the same entities, no `session_count`, and no
+    session walk at all; the default response stays counted."""
+    from agent_sessions import engines
+
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    h = _hdr(csrf, auth_cfg)
+    pid = c.post(
+        "/api/projects", json={"name": "Picker", "folders": [_TMP_OTHER]}, headers=h
+    ).json()["id"]
+    other = c.post("/api/projects", json={"name": "Shelved"}, headers=h).json()["id"]
+    assert c.post(f"/api/projects/{other}/archive", headers=h).status_code == 200
+
+    counted = c.get("/api/projects").json()["projects"]
+    assert [(e["id"], e["session_count"]) for e in counted] == [(pid, 1)]
+
+    def _no_walk(*_a, **_k):
+        raise AssertionError("?counts=0 must not walk the sessions")
+
+    monkeypatch.setattr(engines, "scan_all_cached", _no_walk)
+    monkeypatch.setattr(engines, "scan_all", _no_walk)
+    fast = c.get("/api/projects?counts=0").json()["projects"]
+    assert fast == [{k: v for k, v in e.items() if k != "session_count"} for e in counted]
+    with_archived = c.get("/api/projects?counts=0&include_archived=1").json()["projects"]
+    assert [e["id"] for e in with_archived] == [pid, other]

@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, type MouseEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent,
+} from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useConfig } from "../app/config";
 import { MAP_PATH, useMapWindows } from "../app/workspaceWindows";
@@ -24,7 +30,15 @@ import { unavailableDefaultNotice } from "../lib/agentDefaults";
 import { levelsOf, resolveSessionDefault } from "../lib/sessionDefaults";
 import { agentPath } from "./settingsTabs";
 import { owningProjectId } from "../lib/projectTree";
-import type { ProjectEntity, StructuredModelList } from "../types/api";
+import { shortCwd } from "../lib/format";
+import { useProjectPicker } from "../app/useProjectPicker";
+import {
+  AgentTiles,
+  FolderCard,
+  ProjectList,
+  type FolderState,
+} from "../components/newSession/NewSessionControls";
+import type { StructuredModelList } from "../types/api";
 import styles from "./NewSessionLanding.module.css";
 
 /** Landing at "/" — no session selected. Pick an engine + project + folder and start a new
@@ -227,12 +241,26 @@ export function NewSessionLanding() {
   const modelSelect = engineInfo(engine)?.model_select;
 
   // Project entities own the default launch folder (#448). projectChoice === null = untouched
-  // (use the default selection); "" = no project; else an entity id.
-  const [entities, setEntities] = useState<ProjectEntity[]>([]);
+  // (use the default selection); "" = no project; else an entity id. The list paints from the
+  // picker's cache and revalidates on every mount (#1436); `projectsFresh` = that revalidation
+  // has settled, and nothing starts before it does (see `canStart`).
+  const picker = useProjectPicker();
+  const entities = picker.projects ?? [];
+  const projectsFresh = picker.fresh;
   // A created project wins; otherwise the draft's own choice comes back in all three states.
   const [projectChoice, setProjectChoice] = useState<string | null>(
     restore.selectProjectId ?? restore.draft?.projectChoice ?? null,
   );
+  // An explicit choice the CONFIRMED list no longer has (archived or deleted since it was cached,
+  // or since the draft was saved) is void: the selection falls back to the default resolution and
+  // the folder follows it — before Start, never after (#1436). Until the list is confirmed, or if
+  // confirming it failed, the choice stands (a just-created project is not in the old cache yet,
+  // and an unreachable server proves nothing; the server still refuses an unknown id on stamp).
+  const choiceVanished =
+    !!projectChoice &&
+    projectsFresh &&
+    !picker.failed &&
+    !entities.some((p) => p.id === projectChoice);
   // The operator's starred project (#615 Phase 2). `entities` is already archived-filtered, so an
   // id naming an archived — or since-deleted — project simply isn't found, and we fall back to the
   // first project rather than pre-selecting nothing. Before #615 there was no pref at all: the
@@ -240,7 +268,7 @@ export function NewSessionLanding() {
   const starredId = config?.default_project_id ?? "";
   const starredExists = entities.some((p) => p.id === starredId);
   const defaultProjectId = (starredExists ? starredId : entities[0]?.id) ?? "";
-  const projectSel = projectChoice ?? defaultProjectId;
+  const projectSel = (choiceVanished ? null : projectChoice) ?? defaultProjectId;
   const selectedProject = entities.find((p) => p.id === projectSel);
 
   // Folder: the project's default unless overridden for this session via the picker.
@@ -265,17 +293,23 @@ export function NewSessionLanding() {
   // keeps `??`: an explicit "" from the picker is a real choice.
   const projectCwd =
     selectedProject?.default_folder || config?.default_project || "";
-  const cwd = cwdOverride ?? projectCwd;
-  const isProjectDefault =
-    !!selectedProject && cwd === selectedProject.default_folder && cwd !== "";
+  const cwd = (choiceVanished ? null : cwdOverride) ?? projectCwd;
+  const overridden = !choiceVanished && cwdOverride !== null;
+  const folderState: FolderState = !cwd
+    ? "none"
+    : selectedProject?.default_folder && cwd === selectedProject.default_folder
+      ? "project-default"
+      : overridden
+        ? "override"
+        : "global-default";
 
   // The folder picker overrides this session's folder. `false` = closed.
-  const [picker, setPicker] = useState(false);
+  const [folderPicker, setFolderPicker] = useState(false);
   // Captured at open time (not read from a ref during render) so focus returns to the trigger.
   const [pickerReturn, setPickerReturn] = useState<HTMLElement | null>(null);
   const openPicker = (e: { currentTarget: HTMLElement }) => {
     setPickerReturn(e.currentTarget);
-    setPicker(true);
+    setFolderPicker(true);
   };
 
   // Creating a project is the New project wizard's job (#1187). It carries this form's draft so
@@ -307,16 +341,6 @@ export function NewSessionLanding() {
     await navigate(NEW_PROJECT_PATH, { state: wizardState });
   };
 
-  const refreshEntities = () =>
-    api
-      .projectEntities()
-      .then((r) => setEntities(r.projects.filter((p) => !p.archived)))
-      .catch(() => {});
-
-  useEffect(() => {
-    refreshEntities();
-  }, []);
-
   // Nothing launches on a guessed capability (#853 P4): until the roster says whether this engine
   // pins or adopts its id, Start waits. `roster` is read so this re-evaluates when it lands.
   const mintKnown = roster.loaded && mintsOwnId(engine) !== undefined;
@@ -324,7 +348,28 @@ export function NewSessionLanding() {
   // on it until that list has vouched for it (#1407 PR review): a quick Start must never send the
   // value the screen would then have called stale.
   const awaitingDefaults = isApi && !!savedDefault && preset.pending && modelChoice?.engine !== engine;
-  const canStart = Boolean(engine && cwd && mintKnown && !awaitingDefaults);
+  // A project selection is launched only from a CONFIRMED list (#1436): until this mount's
+  // revalidation settles, Start waits — a few ms with the count-free read. "No project", chosen
+  // explicitly, has nothing to confirm.
+  //
+  // Keyed on the operator's CHOICE, not on `projectSel`: before the first list lands `projectSel` is
+  // "" only because nothing is known yet, and launching then would skip the starred project that
+  // is about to appear (Hermes on #1437, finding 1). Only an explicit "No project" skips the wait.
+  const awaitingProjects = !projectsFresh && projectChoice !== "";
+  // An explicit choice the list cannot vouch for — not in it, and the refresh failed — has no known
+  // folder, so it never launches: not into the global default, not stamped onto an unrelated
+  // folder (Hermes on #1437, finding 2). A project the wizard just created is not this case: its
+  // create put it in the picker's cache (`api.createProject`).
+  const unconfirmedChoice =
+    !!projectChoice && picker.failed && !entities.some((p) => p.id === projectChoice);
+  const canStart = Boolean(
+    engine &&
+      cwd &&
+      mintKnown &&
+      !awaitingDefaults &&
+      !awaitingProjects &&
+      !unconfirmedChoice,
+  );
 
   const [startError, setStartError] = useState<string | null>(null);
   // Chat creation is single-flight (Hermes on #1219): each `/api/chat/new` mints and persists a
@@ -508,12 +553,46 @@ export function NewSessionLanding() {
 
   const onPick = (path: string) => {
     setCwdOverride(path);
-    setPicker(false);
+    setFolderPicker(false);
   };
+  // Any explicit project choice settles a vanished one; the folder follows the new project.
+  const chooseProject = (id: string) => {
+    setProjectChoice(id);
+    setCwdOverride(null);
+  };
+  // A project folder chip: its default folder is "no override", anything else is one.
+  const pickProjectFolder = (folder: string) =>
+    setCwdOverride(folder === projectCwd ? null : folder);
+
+  // Ctrl/⌘+Enter starts — but only with focus INSIDE the form (#1437 review). A document-wide
+  // listener fired from the sidebar, the top bar or a dialog beside the form, launching an agent
+  // the operator never asked for (and Ctrl+Enter on a link is the browser's background-tab
+  // gesture). The folder picker renders outside the card, so it never reaches here. A held key's
+  // auto-repeat is ignored: the console path has no in-flight guard of its own.
+  const onFormKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== "Enter" || !(e.ctrlKey || e.metaKey) || e.repeat || e.defaultPrevented) return;
+    // A focused link keeps its own Ctrl+Enter — the browser's open-in-background-tab.
+    if ((e.target as Element).closest?.("a[href]")) return;
+    // Nothing starts while a modal is up. The folder picker moves focus into itself only once its
+    // directory listing answers, so until then focus is still on "Choose folder…" INSIDE this form
+    // (Hermes on #1437, review 6231). Checked twice: our own picker state, and any aria-modal.
+    if (folderPicker || document.querySelector('[aria-modal="true"]')) return;
+    e.preventDefault();
+    start();
+  };
+
+  const permissionNote =
+    runtimeOf(engine) === "chat"
+      ? ""
+      : isApi && !apiCanBypass
+        ? "asks before each request"
+        : bypass
+          ? "skips permission prompts"
+          : "asks before each request";
 
   return (
     <div className={styles.landing}>
-      <div className={styles.card}>
+      <div className={styles.card} data-new-session-form onKeyDown={onFormKeyDown}>
         <div className={styles.brandHero}>
           <div className={styles.wordmark}>
             Battle<b>Lab</b>
@@ -522,67 +601,24 @@ export function NewSessionLanding() {
         </div>
         <h1>Start a new session</h1>
 
-        {engines.length > 1 && (
-          <label className={styles.field}>
-            <span>Agent</span>
-            <select
+        {(engines.length > 1 || unavailable.length > 0) && (
+          <section className={styles.section} aria-labelledby="new-session-agent-head">
+            <h2 id="new-session-agent-head" className={styles.sectionHead}>
+              Agent
+            </h2>
+            <AgentTiles
+              consoleEngines={consoleEngines}
+              apiEngines={apiEngines}
+              unavailable={unavailable}
               value={engine}
-              onChange={(e) => {
-                setEngineChoice(e.target.value);
+              defaultEngine={defaultChoice.engine ?? ""}
+              onChange={(id) => {
+                setEngineChoice(id);
                 setModelChoice(null); // a model belongs to the engine it was chosen for
                 setApiBypassChoice(null); // a skip tick never survives an agent change (Hermes 5913)
               }}
-            >
-              {/* Console (a terminal) vs API (structured, no terminal) — #1311. A client that
-                  cannot start is listed, disabled, so its absence is explained, not silent. */}
-              <optgroup label="Console — terminal">
-                {consoleEngines.map((id) => (
-                  <option key={id} value={id}>
-                    {engineName(id)}
-                  </option>
-                ))}
-              </optgroup>
-              {(apiEngines.length > 0 || unavailable.length > 0) && (
-                <optgroup label="API — structured, no terminal">
-                  {apiEngines.map((id) => (
-                    <option key={id} value={id}>
-                      {engineLabel(id)}
-                    </option>
-                  ))}
-                  {unavailable.map((c) => (
-                    <option key={c.id} value={`unavailable:${c.id}`} disabled>
-                      {c.label} — unavailable
-                    </option>
-                  ))}
-                </optgroup>
-              )}
-            </select>
-          </label>
-        )}
-        {isApi && (
-          <div className={styles.about} data-testid="new-session-api-about">
-            <div className={styles.aboutHead}>
-              <span className={`${styles.led} ${styles.ledUp}`} aria-hidden="true" />
-              API client · ready
-            </div>
-            <p>
-              BattleLab drives your installed <b>{engineLabel(apiSource)}</b> CLI through its
-              structured protocol: its login, config, MCP servers and skills apply. No terminal.
-              {apiCanBypass
-                ? " You answer each request it makes in the session view, unless you skip permission prompts below."
-                : " You answer each request it makes in the session view."}
-            </p>
-          </div>
-        )}
-        {unavailable.length > 0 && (
-          <div className={`${styles.about} ${styles.unavailable}`} data-testid="new-session-unavailable">
-            {unavailable.map((c) => (
-              <p key={c.id}>
-                <span className={`${styles.led} ${styles.ledDown}`} aria-hidden="true" />
-                <b>{c.label}</b> is unavailable: <span className={styles.reason}>{c.reason}</span>
-              </p>
-            ))}
-          </div>
+            />
+          </section>
         )}
 
         {/* A chosen model whose list has since gone (discovery failed, or a restored draft) keeps
@@ -689,68 +725,41 @@ export function NewSessionLanding() {
         )}
 
         {/* Project FIRST (#448): it owns the default launch folder below. */}
-        {entities.length > 0 && (
-          <label className={styles.field}>
-            <span>Project</span>
-            <select
-              aria-label="Project"
-              value={projectSel}
-              onChange={(e) => {
-                setProjectChoice(e.target.value);
-                setCwdOverride(null); // folder follows the newly-selected project's default
-              }}
-            >
-              <option value="">no project</option>
-              {entities.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-        <Link
-          to={NEW_PROJECT_PATH}
-          state={wizardState}
-          className={styles.setDefault}
-          onClick={(e) => void openWizard(e)}
-        >
-          + New project…
-        </Link>
+        <section className={styles.section} aria-labelledby="new-session-project-head">
+          <h2 id="new-session-project-head" className={styles.sectionHead}>
+            Project
+          </h2>
+          <ProjectList
+            projects={picker.projects}
+            // With no list at all yet, an untouched choice checks NOTHING: "No project" would only
+            // be standing in for a default not known yet — and a checked row cannot be clicked to
+            // choose it (#1437 review). A cached list already knows the default.
+            value={picker.projects === null && !projectsFresh && projectChoice === null ? null : projectSel}
+            starredId={starredId}
+            loading={!projectsFresh}
+            failed={picker.failed}
+            newProjectTo={NEW_PROJECT_PATH}
+            newProjectState={wizardState}
+            onNewProject={(e) => void openWizard(e)}
+            onChange={chooseProject}
+          />
+        </section>
 
         {/* Folder BELOW the project (#448): prefilled from the project's default, overridable. */}
-        <label className={styles.field}>
-          <span>Folder</span>
-          <div className={styles.folderRow}>
-            <input
-              type="text"
-              readOnly
-              aria-label="Launch folder"
-              className={styles.folderPath}
-              value={cwd || "no folder selected"}
-            />
-            <button
-              type="button"
-              className={styles.newFolderBtn}
-              onClick={openPicker}
-            >
-              Choose folder…
-            </button>
-          </div>
-        </label>
-        {isProjectDefault ? (
-          <p className={styles.hint}>
-            ✓ default folder for “{selectedProject?.name}” — change it just for
-            this session
-          </p>
-        ) : selectedProject &&
-          !selectedProject.default_folder &&
-          !cwdOverride ? (
-          <p className={styles.error}>
-            “{selectedProject.name}” has no default folder — choose one for this
-            session.
-          </p>
-        ) : null}
+        <section className={styles.section} aria-labelledby="new-session-folder-head">
+          <h2 id="new-session-folder-head" className={styles.sectionHead}>
+            Folder
+          </h2>
+          <FolderCard
+            cwd={cwd}
+            state={folderState}
+            projectName={selectedProject?.name ?? ""}
+            folders={selectedProject?.folders ?? []}
+            onChoose={openPicker}
+            onPick={pickProjectFolder}
+            onReset={() => setCwdOverride(null)}
+          />
+        </section>
 
         {/* A `chat` agent (#1209) has no tools, so there are no permission prompts to skip. An
             `api` client (#1339) offers it only when the server says its adapter maps it
@@ -793,30 +802,50 @@ export function NewSessionLanding() {
           </div>
         )}
 
-        <button
-          type="button"
-          className={`${styles.start} shine`}
-          disabled={!canStart || startingChat}
-          onClick={start}
-        >
-          Start session
-        </button>
+        <p className={styles.hint}>
+          …or open an existing session from the list.
+        </p>
         {startError && (
           <p className={styles.hint} role="alert" data-testid="start-error">
             {startError}
           </p>
         )}
-        <p className={styles.hint}>
-          …or open an existing session from the list.
-        </p>
+        <div className={styles.startBar}>
+          <p className={styles.summary} data-testid="new-session-summary">
+            {awaitingProjects ? (
+              "Checking projects…"
+            ) : unconfirmedChoice ? (
+              "Couldn’t confirm the project you chose — pick it again once your projects load, or choose another."
+            ) : engine && cwd ? (
+              <>
+                Start <b>{engineLabel(engine)}</b> in <code>{shortCwd(cwd)}</code>
+                <br />
+                {[selectedProject ? `project ${selectedProject.name}` : "no project", permissionNote]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </>
+            ) : (
+              "Choose a folder to start in."
+            )}
+          </p>
+          <button
+            type="button"
+            className={`${styles.start} shine`}
+            disabled={!canStart || startingChat}
+            onClick={start}
+            aria-keyshortcuts="Control+Enter Meta+Enter"
+          >
+            Start session
+          </button>
+        </div>
       </div>
 
-      {picker && (
+      {folderPicker && (
         <FolderPickerModal
           initialPath={cwd || undefined}
           title="Choose a folder"
           onPick={onPick}
-          onCancel={() => setPicker(false)}
+          onCancel={() => setFolderPicker(false)}
           returnFocusTo={pickerReturn}
         />
       )}

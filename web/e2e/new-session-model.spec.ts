@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { mockRoster } from "./roster";
+import { agentPicker } from "./newSessionForm";
 
 // #1189: the new-session form's Model select, in a real browser on the desktop AND mobile
 // projects. The backend is mocked; the terminal socket is intercepted so the spec asserts the
@@ -75,7 +76,7 @@ test("switching engine clears the model, and a configured-elsewhere engine offer
   await mockBackend(page, ["claude", "codex", "opencode"]);
   const sockets = await captureSockets(page);
   await page.goto("/");
-  const agent = page.getByRole("combobox", { name: "Agent" });
+  const agent = agentPicker(page);
   const model = page.getByRole("combobox", { name: "Model" });
   await model.selectOption("claude-sonnet-5");
   await agent.selectOption("codex");

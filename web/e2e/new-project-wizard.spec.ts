@@ -6,6 +6,7 @@ import {
   NEW_PROJECT_PATH,
   SESSIONS_PATH,
 } from "../src/lib/routes";
+import { agentPicker, projectPicker, launchFolder } from "./newSessionForm";
 
 /** The New project wizard (#1187), in a real browser on the desktop AND mobile projects.
  *
@@ -203,8 +204,8 @@ test.describe("New project wizard (#1187)", () => {
 
     await page.getByRole("button", { name: "Start a session" }).click();
     await expect(page.getByRole("heading", { name: "Start a new session" })).toBeVisible();
-    await expect(page.getByLabel("Project", { exact: true })).toHaveValue("p-new");
-    await expect(page.getByLabel("Launch folder")).toHaveValue("/home/u/payments-api");
+    await expect(projectPicker(page).radio("p-new")).toBeChecked();
+    await expect(launchFolder(page)).toHaveAttribute("data-path", "/home/u/payments-api");
     await expect(page.locator("aside.sidebar")).not.toBeHidden();
   });
 
@@ -213,34 +214,34 @@ test.describe("New project wizard (#1187)", () => {
   }) => {
     await mockApp(page);
     await page.goto(SESSIONS_PATH);
-    await page.getByLabel("Agent").selectOption("codex");
+    await agentPicker(page).selectOption("codex");
     await page.getByRole("checkbox", { name: /skip permission/i }).uncheck();
-    await page.getByLabel("Project", { exact: true }).selectOption("");
+    await projectPicker(page).selectOption("");
     await openFromNewSession(page);
     await page.getByLabel("Project name").fill("Never mind");
     await page.getByRole("button", { name: "Cancel" }).click();
     await page.getByRole("button", { name: "Discard and leave" }).click();
 
     await expect(page.getByRole("heading", { name: "Start a new session" })).toBeVisible();
-    await expect(page.getByLabel("Agent")).toHaveValue("codex");
+    await expect(agentPicker(page).radio("codex")).toBeChecked();
     await expect(page.getByRole("checkbox", { name: /skip permission/i })).not.toBeChecked();
     // "" stays "": never swapped for the default project.
-    await expect(page.getByLabel("Project", { exact: true })).toHaveValue("");
+    await expect(projectPicker(page).radio("")).toBeChecked();
     expect(page.url()).not.toContain("selectProject");
   });
 
   test("the browser's Back from the wizard restores New session too", async ({ page }) => {
     await mockApp(page);
     await page.goto(SESSIONS_PATH);
-    await page.getByLabel("Agent").selectOption("codex");
+    await agentPicker(page).selectOption("codex");
     await page.getByRole("checkbox", { name: /skip permission/i }).uncheck();
-    await page.getByLabel("Project", { exact: true }).selectOption("");
+    await projectPicker(page).selectOption("");
     await openFromNewSession(page);
     await page.goBack(); // clean draft → no question
     await expect(page.getByRole("heading", { name: "Start a new session" })).toBeVisible();
-    await expect(page.getByLabel("Agent")).toHaveValue("codex");
+    await expect(agentPicker(page).radio("codex")).toBeChecked();
     await expect(page.getByRole("checkbox", { name: /skip permission/i })).not.toBeChecked();
-    await expect(page.getByLabel("Project", { exact: true })).toHaveValue("");
+    await expect(projectPicker(page).radio("")).toBeChecked();
   });
 
   test("cancel keeps an UNTOUCHED project untouched and the folder override intact", async ({
@@ -248,17 +249,17 @@ test.describe("New project wizard (#1187)", () => {
   }) => {
     await mockApp(page);
     await page.goto(SESSIONS_PATH);
-    await expect(page.getByLabel("Project", { exact: true })).toHaveValue("p-1");
+    await expect(projectPicker(page).radio("p-1")).toBeChecked();
     await page.getByRole("button", { name: /choose folder/i }).click();
     await page.getByRole("button", { name: "Home" }).click(); // the picker opens at ~/sampleproject
     await page.getByRole("button", { name: "free" }).click();
     await page.getByRole("button", { name: /^Select/ }).click();
-    await expect(page.getByLabel("Launch folder")).toHaveValue("/home/u/free");
+    await expect(launchFolder(page)).toHaveAttribute("data-path", "/home/u/free");
     await openFromNewSession(page);
     await page.getByRole("button", { name: "Cancel" }).click(); // clean → no question
     await expect(page.getByRole("heading", { name: "Start a new session" })).toBeVisible();
-    await expect(page.getByLabel("Project", { exact: true })).toHaveValue("p-1");
-    await expect(page.getByLabel("Launch folder")).toHaveValue("/home/u/free");
+    await expect(projectPicker(page).radio("p-1")).toBeChecked();
+    await expect(launchFolder(page)).toHaveAttribute("data-path", "/home/u/free");
   });
 
   test("map → New session → wizard → session: the launch still goes back to the map as a window", async ({
@@ -290,7 +291,7 @@ test.describe("New project wizard (#1187)", () => {
     await expect(page.locator(".tr-overview .tr-ov-chip").first()).toBeVisible();
     await page.locator('.sidebar .sidebarBody a[href="/"]').first().click();
     await expect(page.getByRole("heading", { name: "Start a new session" })).toBeVisible();
-    await page.getByLabel("Agent").selectOption("codex");
+    await agentPicker(page).selectOption("codex");
     await page.getByRole("checkbox", { name: /skip permission/i }).uncheck();
 
     await openFromNewSession(page);
@@ -299,9 +300,9 @@ test.describe("New project wizard (#1187)", () => {
     await page.getByRole("button", { name: "Done" }).click();
 
     await expect(page.getByRole("heading", { name: "Start a new session" })).toBeVisible();
-    await expect(page.getByLabel("Agent")).toHaveValue("codex");
+    await expect(agentPicker(page).radio("codex")).toBeChecked();
     await expect(page.getByRole("checkbox", { name: /skip permission/i })).not.toBeChecked();
-    await expect(page.getByLabel("Project", { exact: true })).toHaveValue("p-new");
+    await expect(projectPicker(page).radio("p-new")).toBeChecked();
     await page.getByRole("button", { name: /start session/i }).click();
     // Back on the map, as a window — the map-return intent survived the detour.
     await expect(page).toHaveURL(new RegExp(`${MAP_PATH}$`));
