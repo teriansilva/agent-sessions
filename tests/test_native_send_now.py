@@ -579,7 +579,7 @@ def _agent_turn_codec(kind):
     else:
         codec = ClaudeCodec(SESSION)
         codec.lifecycle_proven = True
-        (event,) = codec.feed(_say("The background command finished."))
+        event, *_ = codec.feed(_say("The background command finished."))
     assert codec.operation_id is None and codec.unowned_turn
     assert event.data["background_turn"] == codec.background_turn is not None
     return codec
@@ -765,3 +765,166 @@ async def test_after_an_anomalous_cycle_a_running_task_holds_the_queue_again(
         codec.feed(frame)
     assert codec.operation_id is None
     assert worker.native_busy() and worker.dispatch_busy()  # the task holds the queue again
+
+
+# --- #1438: Interrupt (and Esc) stops a turn the agent runs for itself, directly -----------------
+
+
+def own_turn_worker(conversation, monkeypatch, kind):
+    """A worker running a turn the agent started itself, nothing queued, and the operator's
+    interrupt naming the target the pane showed."""
+    root, sid, binding = conversation
+    worker = native_worker.Worker(
+        {
+            "worker_id": binding.worker_id,
+            "session_key": binding.session_key,
+            "adapter": binding.adapter,
+            "journal_root": str(root),
+            "capability": native_ipc.Capability.create()._value,
+            "connection_id": binding.connection_id,
+        },
+        root,
+    )
+    worker.codec = _agent_turn_codec(kind)
+    worker.ready.set()
+    monkeypatch.setattr(worker, "gate_open", lambda: True)
+    control = journal_tests.request(
+        binding,
+        action="interrupt",
+        turn_id=worker.codec.background_turn,
+        revision=native_journal.read(root, sid).revision,
+    )
+    writes = []
+
+    async def write(frame):
+        writes.append(frame)
+
+    monkeypatch.setattr(worker, "write", write)
+    return worker, control, writes
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("kind", ["claude", "claude-state", "codex"])
+async def test_interrupt_stops_the_agents_own_turn_directly(conversation, monkeypatch, kind):
+    worker, control, writes = own_turn_worker(conversation, monkeypatch, kind)
+    result = await worker.effect(control)
+    assert result["result"]["handoff"] == "sent"
+    (frame,) = writes
+    if kind == "codex":  # that turn, by its own native id
+        assert frame["method"] == "turn/interrupt"
+        assert frame["params"]["turnId"] == UNSOLICITED
+    else:
+        assert frame["type"] == "control_request" and frame["request"]["subtype"] == "interrupt"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("kind", ["claude", "claude-state", "codex"])
+@pytest.mark.parametrize("change", ["ended", "older-target", "an-operator-turn-began"])
+async def test_interrupt_of_an_own_turn_that_moved_is_stale_and_writes_nothing(
+    conversation, monkeypatch, kind, change
+):
+    """Checked BEFORE the claim: a turn that ended, a target from an earlier own turn, or an
+    operator turn running now is never what this button stops."""
+    from test_native_protocol import OPERATION, TURN
+
+    worker, control, writes = own_turn_worker(conversation, monkeypatch, kind)
+    if change == "ended":
+        worker.codec.unowned_turn = False
+        worker.codec.background_turn = None
+    elif change == "older-target":
+        control["params"]["turn_id"] = ident()
+    else:
+        worker.codec.unowned_turn = False
+        worker.codec.background_turn = None
+        worker.codec.operation_id = OPERATION
+        worker.codec.native_turn_id = TURN
+    result = await worker.effect(control)
+    assert result["error"]["code"] == "stale"
+    assert writes == []
+    root, sid, _ = conversation
+    assert control["params"]["operation_id"] not in native_journal.read(root, sid).operations
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("kind", ["claude", "claude-state", "codex"])
+@pytest.mark.parametrize("then", ["ended", "an-operator-turn-began"])
+async def test_an_own_turn_ending_during_the_claim_is_not_sent_never_redirected(
+    conversation, monkeypatch, kind, then
+):
+    """Checked AGAIN once claimed: the write goes to that turn or nowhere, never to whatever
+    runs now — above all not to an operator turn that began meanwhile."""
+    from test_native_protocol import OPERATION, TURN
+
+    worker, control, writes = own_turn_worker(conversation, monkeypatch, kind)
+    original_claim = native_journal.claim
+
+    def end_during_claim(*args, **kwargs):
+        result = original_claim(*args, **kwargs)
+        worker.codec.unowned_turn = False
+        worker.codec.background_turn = None
+        if kind == "codex":
+            worker.codec._unsolicited = None
+        if then == "an-operator-turn-began":
+            worker.codec.operation_id = OPERATION
+            worker.codec.native_turn_id = TURN
+            if kind != "codex":
+                worker.codec._cycle = "started"
+        return result
+
+    monkeypatch.setattr(native_journal, "claim", end_during_claim)
+    result = await worker.effect(control)
+    assert result["result"]["handoff"] == "not_sent"
+    assert writes == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("kind", ["claude", "codex"])
+async def test_a_retried_own_turn_interrupt_answers_as_the_first_did(
+    conversation, monkeypatch, kind
+):
+    """The same request id after its turn ended returns its receipt, and writes nothing more."""
+    worker, control, writes = own_turn_worker(conversation, monkeypatch, kind)
+    first = await worker.effect(control)
+    worker.codec.unowned_turn = False
+    worker.codec.background_turn = None
+    again = await worker.effect(control)
+    assert again["result"] == first["result"] and first["result"]["handoff"] == "sent"
+    assert len(writes) == 1
+
+
+@pytest.mark.anyio
+async def test_an_agent_without_own_turn_interrupt_says_so(conversation, monkeypatch):
+    worker, control, writes = own_turn_worker(conversation, monkeypatch, "claude")
+    monkeypatch.setattr(type(worker.codec), "send_now_background", None)
+    result = await worker.effect(control)
+    assert result["error"]["code"] == "unsupported"
+    assert writes == []
+
+
+@pytest.mark.anyio
+async def test_claudes_own_turn_interrupt_is_best_effort_at_the_child_boundary(
+    conversation, monkeypatch
+):
+    """Hermes on #1439: Claude's `interrupt` control names no turn. If the target ends after the
+    worker's last check and before the CLI reads the frame, the CLI decides what it stops. The
+    worker therefore never claims more than it knows: the receipt means SENT, the target's end is
+    whatever the CLI reports for it, and a turn that starts afterwards has a new target that this
+    request can never name."""
+    from test_native_protocol import _result, _say
+
+    worker, control, writes = own_turn_worker(conversation, monkeypatch, "claude")
+    target = control["params"]["turn_id"]
+    result = await worker.effect(control)
+    assert result["result"]["handoff"] == "sent"  # sent, not "interrupted that turn"
+    (frame,) = writes
+    assert frame["request"] == {"subtype": "interrupt"}  # no turn named: best effort
+    # In the gap: the target ends on its own, then the agent starts another turn of its own.
+    ended = worker.codec.feed(_result("done", origin={"kind": "task-notification"}))
+    assert [e.data["state"] for e in ended if e.kind == "background"] == ["completed"]
+    started = worker.codec.feed(_say("Another wake-up."))
+    newer = worker.codec.background_turn
+    assert newer and newer != target
+    assert started[0].data["background_turn"] == newer
+    # Nothing re-targets the old request at the newer turn.
+    retried = await worker.effect(control)
+    assert retried["result"] == result["result"] and len(writes) == 1

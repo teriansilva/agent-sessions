@@ -877,6 +877,19 @@ class CodexCodec(_Codec):
 _LIFECYCLE_ENDED = frozenset({"completed", "cancelled"})
 
 
+def _result_state(frame: dict) -> str:
+    """How a result ended its turn. An interrupt is reported as an error result
+    (`error_during_execution`) whose terminal reason is the abort: it is interrupted, and its
+    diagnostic no failure."""
+    if frame.get("terminal_reason") in ("aborted_streaming", "aborted_tools"):
+        return "interrupted"
+    if frame["is_error"] or frame.get("subtype") != "success":
+        return "failed"
+    if frame.get("terminal_reason") not in (None, "completed"):
+        return "failed"
+    return "completed"
+
+
 class ClaudeCodec(_Codec):
     """One serial native connection, with result replay detection across its submitted turns.
 
@@ -992,8 +1005,9 @@ class ClaudeCodec(_Codec):
             raise ProtocolError("no turn of the agent's own to interrupt")
         return self._request("interrupt")
 
-    def _agent_turn(self, running: bool) -> list[NativeEvent]:
-        """A turn the agent runs for itself starts or ends: mint or clear its Send now target."""
+    def _agent_turn(self, running: bool, outcome: str = "completed") -> list[NativeEvent]:
+        """A turn the agent runs for itself starts or ends: mint or clear its Send now target.
+        An end carries how it ended (#1438): its own result says, else it simply completed."""
         if running == self.unowned_turn:
             return []
         self.unowned_turn = running
@@ -1001,7 +1015,7 @@ class ClaudeCodec(_Codec):
         return [
             _event(
                 "background",
-                state="running" if running else "completed",
+                state="running" if running else outcome,
                 active=running or bool(self._background),
                 background_turn=self.background_turn,
             )
@@ -1327,29 +1341,24 @@ class ClaudeCodec(_Codec):
         if background:
             ended = []
             if kind == "result" and frame.get("parent_tool_use_id") is None:
-                ended = self._agent_turn(False)  # the agent's own turn has ended
+                # the agent's own turn has ended
+                ended = self._agent_turn(False, _result_state(frame))
+            elif not self._owned():
+                ended = self._own_output(frame, kind)
             return ended or [_event("background", state="activity", active=True)]
         if not self._owned():
             # Output no operator turn owns: a turn the agent runs for itself. Before the
             # operator's `started`, this is the turn that was already running when it wrote.
             if kind == "result":
-                return self._agent_turn(False)
+                return self._agent_turn(False, _result_state(frame))
             out = self._agent_turn(True) if kind in {"assistant", "stream_event", "user"} else []
+            out += self._own_output(frame, kind)
             if self.operation_id is None:
                 return out
             return [*out, _event("background", state="activity", active=True)]
         common = {"operation_id": self.operation_id, "native_turn_id": self.native_turn_id}
         if kind == "result":
-            # An interrupt is reported as an error result (`error_during_execution`) whose
-            # terminal reason is the abort: it is interrupted, and its diagnostic no failure.
-            if frame.get("terminal_reason") in ("aborted_streaming", "aborted_tools"):
-                state = "interrupted"
-            elif frame["is_error"] or subtype != "success":
-                state = "failed"
-            elif frame.get("terminal_reason") not in (None, "completed"):
-                state = "failed"
-            else:
-                state = "completed"
+            state = _result_state(frame)
             clean = self._cycle == "started" and not self._tainted
             self._closing = self.operation_id if clean else None
             self._cycle = None
@@ -1368,6 +1377,24 @@ class ClaudeCodec(_Codec):
                     error="" if state == "interrupted" else _summary(frame.get("errors")),
                 )
             ]
+        return self._output(frame, kind, common)
+
+    def _own_output(self, frame: dict, kind: str) -> list[NativeEvent]:
+        """What the agent does in a turn of its own (#1438), named by that turn's target. A
+        subagent's frames stay its parent tool's business; a frame that cannot be read is
+        skipped, never a reason to drop the connection over a turn nobody submitted."""
+        if self.background_turn is None or frame.get("parent_tool_use_id") is not None:
+            return []
+        try:
+            return self._output(frame, kind, {"agent_turn": self.background_turn}, own=True)
+        except ProtocolError:
+            return []
+
+    def _output(
+        self, frame: dict, kind: str, common: dict, *, own: bool = False
+    ) -> list[NativeEvent]:
+        """A turn's text and tool calls. An own turn records whole messages only: its streamed
+        deltas would cost a journal write each, for a block that is collapsed by default."""
         if kind == "assistant":
             msg = frame.get("message")
             if not isinstance(msg, dict) or not isinstance(msg.get("content"), list):
@@ -1375,7 +1402,7 @@ class ClaudeCodec(_Codec):
             item = {"item_id": _identity(msg["id"])} if "id" in msg else {}
             output = []
             model = _observed_model(msg.get("model"))
-            if model is not None:
+            if model is not None and not own:
                 output.append(_event("model", **common, model_effective=model))
             for block in msg["content"][:128]:
                 if not isinstance(block, dict):
@@ -1418,7 +1445,7 @@ class ClaudeCodec(_Codec):
                     for block in content[:128]
                     if isinstance(block, dict) and block.get("type") == "tool_result"
                 ]
-        if kind == "stream_event":
+        if kind == "stream_event" and not own:
             event = frame.get("event")
             if isinstance(event, dict) and event.get("type") == "content_block_delta":
                 delta = event.get("delta")

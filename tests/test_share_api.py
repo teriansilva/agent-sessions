@@ -959,3 +959,32 @@ async def test_an_upload_whose_slot_is_gone_leaves_no_file(env, host, project, m
         r = await v.post("/api/public/upload", content=PNG, headers={"Content-Type": "image/png"})
     assert r.status_code == 409
     assert set(upload_routes.ensure_uploads_dir().iterdir()) == before
+
+
+@pytest.mark.anyio
+async def test_a_visitor_can_never_interrupt_the_agents_own_turn(env, host, project, monkeypatch):  # noqa: F811
+    """#1438: the agent's own turn is the owner's to stop. Refused by name — for the shown turn
+    and for the live target — before any interrupt reaches the runtime."""
+    key = await _session("claude", project)
+    own, target = ident(), ident()
+    real = await runtime.snapshot(key)
+    shown = {
+        **real,
+        "turns": [*real["turns"], {"kind": "agent", "turn_id": own, "state": "running"}],
+        "native": {**(real.get("native") or {}), "background_turn": target},
+    }
+
+    async def snapshot(_key):
+        return shown
+
+    async def never(*_args, **_kwargs):
+        pytest.fail("a visitor's interrupt of the agent's own turn reached the runtime")
+
+    monkeypatch.setattr(public_api, "_snapshot", snapshot)
+    monkeypatch.setattr(runtime, "interrupt", never)
+    v, _ = await _visitor(env, key)
+    async with contextlib.aclosing(v):
+        for turn_id in (own, target):
+            r = await v.post("/api/public/interrupt", json={"turn_id": turn_id})
+            assert r.status_code == 403
+            assert "owner" in r.json()["detail"]

@@ -379,6 +379,7 @@ class Worker:
                 and data.get("partial")
                 and last["data"].get("partial")
                 and data.get("operation_id") == last["data"].get("operation_id")
+                and data.get("agent_turn") == last["data"].get("agent_turn")
                 and data.get("item_id") == last["data"].get("item_id")
                 and len(last["data"]["text"]) + len(data["text"]) <= native_ipc.MAX_EVENT_TEXT
             ):
@@ -853,7 +854,20 @@ class Worker:
                         "unsupported",
                         "this request could not be presented completely; it can only be declined",
                     )
-            if action == "interrupt" and self.codec.operation_id != params["turn_id"]:
+            if (
+                action == "interrupt"
+                and self.codec.operation_id != params["turn_id"]
+                # A turn the agent runs for itself (#1438), named by the target the operator saw.
+                # Checked again once claimed: `interrupt_background` refuses a target that moved.
+                and not self._background_target(params["turn_id"])
+            ):
+                replayed = await self._replayed(request)
+                if replayed is not None:
+                    return replayed
+                if self.codec.unowned_turn and self.codec.send_now_background is None:
+                    return self.error(
+                        request, "unsupported", "this agent can't interrupt a turn of its own"
+                    )
                 return self.error(request, "stale", "that turn is not active")
             queued = action == "submit" and (bool(self.queued) or self.dispatch_busy())
             try:
@@ -973,6 +987,23 @@ class Worker:
         except (WorkerError, api_source.SourceError) as exc:
             return self.error(request, "unavailable", str(exc))
 
+    async def _replayed(self, request: dict) -> dict | None:
+        """The receipt of a request this journal already holds, so a retried interrupt answers
+        as it did the first time even after its turn ended (#1438). None: never claimed."""
+        params = request["params"]
+        try:
+            journal = await asyncio.to_thread(
+                native_journal.read, self.journal_root, self.session_id
+            )
+        except native_journal.JournalError:
+            return None
+        previous = journal.operations.get(params["operation_id"])
+        if previous is None:
+            return None
+        if previous.request != native_ipc.immutable_request(request):
+            return self.error(request, "conflict", "native operation UUID binds another request")
+        return self.receipt(request, previous.receipt())
+
     def _background_target(self, turn_id: str) -> bool:
         """Is ``turn_id`` the turn the agent is running for itself right now (#1427)?"""
         codec = self.codec
@@ -1050,10 +1081,13 @@ class Worker:
                 cwd=self.config["cwd"],
             )
         if action == "interrupt":
+            # Any target but the operator turn running NOW goes to `interrupt_background`, which
+            # refuses one that moved since the claim (#1438): a turn that ended between the
+            # check and this write is reported, never swapped for whatever runs now.
             frame = (
-                self.codec.interrupt_background(params["turn_id"])
-                if params.get("queued_turn_id") and self._background_target(params["turn_id"])
-                else self.codec.interrupt()
+                self.codec.interrupt()
+                if self.codec.operation_id == params["turn_id"]
+                else self.codec.interrupt_background(params["turn_id"])
             )
             rid = frame.get("id", frame.get("request_id"))
             if rid is not None and params.get("queued_turn_id"):
@@ -1177,6 +1211,9 @@ class Worker:
                 # Send now against a turn the agent runs for itself (#1427); absent on workers
                 # from before it, which the server then never offers it for.
                 send_now_background=self.codec.send_now_background,
+                # Interrupt a turn the agent runs for itself directly, not only via Send now
+                # (#1438); absent on older workers, which the pane then offers no button for.
+                interrupt_own=self.codec.send_now_background == "interrupt",
                 files=True,
             )
             tasks.append(asyncio.create_task(self.idle_watch()))

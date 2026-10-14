@@ -105,7 +105,10 @@ class Events(Sequence):
         }:
             self._global.append(index)
         else:
-            operation = event["data"].get("operation_id")
+            # An own turn's output (#1438) is indexed by its agent turn, so one bounded read
+            # serves either kind. Only the index is shared: the projection attributes by FIELD,
+            # so an operation id equal to an agent turn's never moves output between them.
+            operation = event["data"].get("operation_id") or event["data"].get("agent_turn")
             self._operations.setdefault(operation, array("Q")).append(index)
 
     def for_operations(self, operations: set[str]):

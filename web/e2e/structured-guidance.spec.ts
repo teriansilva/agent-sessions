@@ -187,7 +187,8 @@ for (const theme of ["dark", "light"]) {
         return;
       }
       await expect(row).toHaveCount(1);
-      await expect(row).toHaveText("Working in the background");
+      // A turn the agent runs for itself shows as that turn (#1438); this row is a task's.
+      await expect(row).toContainText("A background task is running");
       const top = async (text: string) =>
         (await page.getByTestId("structured-turn").filter({ hasText: text }).boundingBox())!.y;
       const at = (await row.boundingBox())!.y;

@@ -112,6 +112,9 @@ class Operation:
     ts: float  # Original claim time; later handoffs only advance recorded_revision.
     handoff: str = "uncertain"
     ever_sent: bool = False
+    # Where the claim sits in the journal; never advanced. Orders it among the agent's own turns
+    # (#1438) by the journal itself, not a wall clock that can step backwards.
+    claimed_revision: int = 0
 
     def receipt(self):
         return {
@@ -310,6 +313,7 @@ def _fold_lines(journal: Journal, lines: list[bytes], first_cursor: int) -> None
                     cursor,
                     ts=record["ts"],
                     handoff="queued" if kind == "native_queued" else "uncertain",
+                    claimed_revision=cursor,
                 )
             elif kind == "native_handoff":
                 _fields(

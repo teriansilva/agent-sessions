@@ -40,6 +40,8 @@ def overlay_authors(snapshot: dict, authors: dict[str, dict] | None) -> dict:
     labelling a visitor's instruction as the operator's would be worse than saying we can't tell
     (Hermes on #1423)."""
     for turn in snapshot.get("turns") or []:
+        if turn.get("kind") == "agent":
+            continue  # nobody sent it (#1438): no author, and never "sender unknown"
         if authors is None:
             turn["author"] = dict(UNKNOWN_AUTHOR)
         else:
@@ -142,8 +144,31 @@ def _tools(items, r: _Redactor) -> list[dict]:
     return out
 
 
-def _turn(t: dict, authors: dict[str, dict], r: _Redactor, share_id: str) -> dict:
+def _agent_turn(t: dict, r: _Redactor) -> dict:
+    """A turn the agent ran for itself (#1438): the operator's agent key set, redacted, minus
+    `reason` (withheld here as for every turn). Nothing that belongs to a submission."""
     return {
+        "kind": "agent",
+        "turn_id": t.get("turn_id"),
+        "state": r(t.get("state")),
+        "ts": t.get("ts"),
+        "reply": r(
+            t.get("reply"),
+            start=bool(t.get("reply_truncated")),
+            end=bool(t.get("reply_truncated")),
+        ),
+        "reply_ts": t.get("reply_ts"),
+        "reply_truncated": bool(t.get("reply_truncated")),
+        "tools": _tools(t.get("tools"), r),
+        "tools_truncated": bool(t.get("tools_truncated")),
+    }
+
+
+def _turn(t: dict, authors: dict[str, dict], r: _Redactor, share_id: str) -> dict:
+    if t.get("kind") == "agent":
+        return _agent_turn(t, r)
+    return {
+        "kind": "operator",
         "turn_id": t.get("turn_id"),  # equals the operation id; no public input accepts one
         "state": r(t.get("state")),
         "delivery": r(t.get("delivery")),

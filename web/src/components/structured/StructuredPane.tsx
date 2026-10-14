@@ -53,8 +53,10 @@ import type {
   Containment,
   Template,
   StructuredRequest,
+  StructuredAgentTurn,
   StructuredRisk,
   StructuredSnapshot,
+  StructuredTool,
   StructuredTurn,
 } from "../../types/api";
 import chat from "../chat/ChatPane.module.css";
@@ -64,7 +66,11 @@ import styles from "./StructuredPane.module.css";
 import {
   backgroundWorking,
   choiceLabel,
+  interruptTarget,
   isActive,
+  isAgentTurn,
+  operatorTurns,
+  ownTurnInterruptible,
   operationFor,
   requestIds,
   sendIdentity,
@@ -81,6 +87,8 @@ import {
 export const STRUCTURED_ACTIVE_POLL_MS = 1_000;
 /** Idle: background activity (or another tab) can still change the conversation. */
 export const STRUCTURED_IDLE_POLL_MS = 10_000;
+/** An acknowledged Interrupt whose turn has not ended may be pressed again after this. */
+const STOPPING_RETRY_MS = 10_000;
 /** Reconnect back-off ceiling after failed reads. */
 const MAX_BACKOFF_MS = 15_000;
 /** Files/pictures per message — the server checks the same shared four-attachment cap. */
@@ -439,17 +447,142 @@ function RequestQueue({ requests, render }: {
   </div>;
 }
 
-/** The agent works with no operator turn running (#1430): the same bars as a running turn. */
+/** The agent works with no turn running (#1430) — a background task, since a turn it runs for
+ *  itself shows as that turn (#1438). Not a turn: nothing here is interruptible. */
 function BackgroundWork() {
   return (
-    <div className={chat.wait} role="status" data-testid="structured-background-work">
+    <div className={`${chat.wait} ${styles.taskRow}`} role="status" data-testid="structured-background-work">
       <span className={chat.bars} aria-hidden="true">
         <span />
         <span />
         <span />
       </span>
-      Working in the background
+      A background task is running
+      <span className={styles.ownNote}>Not a turn: there is nothing to interrupt. Stop ends the worker.</span>
     </div>
+  );
+}
+
+/** The `Esc` beside an Interrupt button; shown only with a fine pointer (CSS). */
+function EscHint() {
+  return (
+    <kbd className={styles.kbd} aria-hidden="true">
+      Esc
+    </kbd>
+  );
+}
+
+function toolCount(tools: StructuredTool[], truncated: boolean): string {
+  return `${truncated ? "Latest " : ""}${tools.length} commands & tools`;
+}
+
+function ToolList({ tools, label }: { tools: StructuredTool[]; label: string }) {
+  return (
+    <ul className={chat.tools} aria-label={label}>
+      {tools.map((t) => (
+        <li key={t.id} className={chat.tool} data-testid="structured-tool">
+          <span className={chat.toolVerb}>{t.name}</span>
+          {t.summary && <code className={chat.toolPath}>{t.summary}</code>}
+          {t.outcome && <span className={chat.toolDetail}>{t.outcome}</span>}
+          <RiskMark risk={t.risk} />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** A turn the agent ran for itself (#1438): a scheduled wake-up, a task notification. Its activity
+ *  is collapsed with the latest call live in the summary; Interrupt (and Esc) stop it — the turn,
+ *  never the worker. */
+function AgentTurnView({
+  turn,
+  agent,
+  interruptible,
+  readOnly,
+  live,
+  stopping,
+  onInterrupt,
+}: {
+  turn: StructuredAgentTurn;
+  agent: string;
+  interruptible: boolean;
+  readOnly: boolean;
+  live: boolean;
+  stopping: boolean;
+  onInterrupt: (turnId: string) => void;
+}) {
+  const running = turn.state === "running";
+  const latest = turn.tools[turn.tools.length - 1];
+  const ended =
+    turn.state === "interrupted" ? "Interrupted" : turn.state === "failed" ? "Failed" : null;
+  const bars = (
+    <span className={chat.bars} aria-hidden="true">
+      <span />
+      <span />
+      <span />
+    </span>
+  );
+  return (
+    <section
+      className={styles.ownTurn}
+      data-testid="structured-agent-turn"
+      data-state={turn.state}
+      aria-label={`${agent}, on its own`}
+    >
+      <MessageHeader speaker={`${agent} · on its own`} kind="assistant" ts={turn.ts} />
+      {turn.tools.length > 0 ? (
+        <details className={styles.activity} data-testid="structured-agent-activity">
+          <summary>
+            {running && bars}
+            {running && "Working on its own · "}
+            {toolCount(turn.tools, turn.tools_truncated)}
+            {ended && <span className={styles.activityFailed}> · {ended}</span>}
+            {turn.tools.some((t) => t.risk?.level === "risky") && <span className={styles.activityRisk}> · Risky activity</span>}
+            {running && latest && (
+              <span className={styles.latest} data-testid="structured-agent-latest">
+                <b>{latest.name}</b> {latest.summary}
+              </span>
+            )}
+          </summary>
+          <ToolList tools={turn.tools} label="What the agent is doing on its own" />
+        </details>
+      ) : running ? (
+        <div className={chat.wait}>
+          {bars}
+          Working on its own
+        </div>
+      ) : (
+        ended && <p className={`${styles.ownNote} ${styles.activityFailed}`}>{ended}</p>
+      )}
+      {turn.reply && (
+        <div className={`${chat.txt} ${styles.ownReply}`} data-testid="structured-agent-reply">
+          <Markdown text={turn.reply_truncated ? `${turn.reply}…` : turn.reply} />
+        </div>
+      )}
+      {turn.state === "failed" && turn.reason && (
+        <p className={`${styles.ownNote} ${styles.activityFailed}`} role="alert">{turn.reason}</p>
+      )}
+      {running && live && !readOnly && (
+        interruptible ? (
+          <div className={styles.ownControls}>
+            <button
+              type="button"
+              className={`${chat.ghost} ${styles.interrupt}`}
+              disabled={stopping}
+              onClick={() => onInterrupt(turn.turn_id)}
+              data-testid="structured-agent-interrupt"
+            >
+              {stopping ? "Interrupting…" : "Interrupt"}
+              {!stopping && <EscHint />}
+            </button>
+          </div>
+        ) : (
+          <p className={styles.ownNote} data-testid="structured-agent-no-interrupt">
+            This agent can’t be interrupted from here — Stop ends the worker.
+          </p>
+        )
+      )}
+    </section>
   );
 }
 
@@ -564,21 +697,12 @@ function TurnView({
       {turn.tools.length > 0 && (
         <details className={styles.activity} data-testid="structured-activity">
           <summary>
-            {turn.tools_truncated ? "Latest " : ""}{turn.tools.length} commands & tools
+            {toolCount(turn.tools, turn.tools_truncated)}
             {active && " · Working"}
             {turn.tools.some((t) => /failed|error/i.test(t.outcome)) && <span className={styles.activityFailed}> · Failed activity</span>}
             {turn.tools.some((t) => t.risk?.level === "risky") && <span className={styles.activityRisk}> · Risky activity</span>}
           </summary>
-          <ul className={chat.tools} aria-label="What the agent did">
-            {turn.tools.map((t) => (
-              <li key={t.id} className={chat.tool} data-testid="structured-tool">
-                <span className={chat.toolVerb}>{t.name}</span>
-                {t.summary && <code className={chat.toolPath}>{t.summary}</code>}
-                {t.outcome && <span className={chat.toolDetail}>{t.outcome}</span>}
-                <RiskMark risk={t.risk} />
-              </li>
-            ))}
-          </ul>
+          <ToolList tools={turn.tools} label="What the agent did" />
         </details>
       )}
       <RequestQueue requests={requests} render={(r) => (
@@ -642,11 +766,12 @@ function TurnView({
           {!readOnly && (
             <button
               type="button"
-              className={`${chat.ghost} ${styles.inline}`}
+              className={`${chat.ghost} ${styles.inline} ${styles.interrupt}`}
               disabled={interrupting}
               onClick={() => onInterrupt(turn.turn_id)}
             >
-              Interrupt
+              {interrupting ? "Interrupting…" : "Interrupt"}
+              {!interrupting && <EscHint />}
             </button>
           )}
         </div>
@@ -727,7 +852,7 @@ export function StructuredPane({
   // operation shows up as a turn, the server had it (Hermes on #1346).
   useEffect(() => {
     if (!snap) return;
-    const turns = new Set(snap.turns.map((t) => t.turn_id));
+    const turns = new Set(operatorTurns(snap).map((t) => t.turn_id));
     const settled = readSent().filter(
       (e) => !e.confirmed && e.session === key && e.operation && turns.has(e.operation),
     );
@@ -753,6 +878,9 @@ export function StructuredPane({
   const [deciding, setDeciding] = useState<Record<string, Deciding>>({});
   const [actionError, setActionError] = useState<string | null>(null);
   const [interrupting, setInterrupting] = useState(false);
+  // The turn an acknowledged Interrupt is waiting on (#1438): "Interrupting…" until it ends, with
+  // a retry after STOPPING_RETRY_MS in case the agent never acts on it.
+  const [stoppingTurn, setStoppingTurn] = useState<string | null>(null);
   const [sendingNow, setSendingNow] = useState<string | null>(null);
   const [sendNowUnknown, setSendNowUnknown] = useState<{ key: string; queuedTurnId: string } | null>(null);
   const recoveringSendNow = sendNowUnknown?.key === key ? sendNowUnknown : null;
@@ -1003,7 +1131,7 @@ export function StructuredPane({
       await load();
     } catch (e) {
       const s = await load();
-      if (s?.turns.some((t) => t.turn_id === attempt.id)) {
+      if (operatorTurns(s ?? null).some((t) => t.turn_id === attempt.id)) {
         sent();
         op.current = null;
         setDraft("");
@@ -1068,16 +1196,44 @@ export function StructuredPane({
   };
 
   const interrupt = async (turnId: string) => {
+    if (interrupting) return; // Esc held or pressed twice: one request
     setInterrupting(true);
     setActionError(null);
     try {
       await api.structuredInterrupt(key, uuid(), turnId);
+      setStoppingTurn(turnId);
     } catch (e) {
       setActionError(`Interrupt not sent: ${detail(e, "no answer")}`);
     } finally {
       setInterrupting(false);
       await load();
     }
+  };
+
+  // Only while that turn still runs: its end (or the retry window) releases the button.
+  const stoppingNow = snap?.turns.some(
+    (t) => t.turn_id === stoppingTurn && (t.state === "running" || t.state === "awaiting_approval"),
+  )
+    ? stoppingTurn
+    : null;
+  useEffect(() => {
+    if (!stoppingNow) return;
+    const retry = setTimeout(() => setStoppingTurn(null), STOPPING_RETRY_MS);
+    return () => clearTimeout(retry);
+  }, [stoppingNow]);
+
+  /** Esc interrupts the running turn — the operator's, else the agent's own (#1438) — but only
+   *  when nothing else wanted the key: a menu, list or dialog closes first (they handle Escape
+   *  before it bubbles here), portaled UI is not this pane, and IME composition is typing. */
+  const onPaneKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== "Escape" || e.defaultPrevented || e.repeat || e.nativeEvent.isComposing) return;
+    if (!(e.target instanceof Node) || !e.currentTarget.contains(e.target)) return;
+    if (document.querySelector('[aria-modal="true"], [role="menu"]')) return;
+    if (readOnly || interrupting) return;
+    const target = interruptTarget(snap);
+    if (!target || stoppingNow === target) return;
+    e.preventDefault();
+    void interrupt(target);
   };
 
   const sendNow = async (queuedTurnId: string) => {
@@ -1091,7 +1247,7 @@ export function StructuredPane({
     } else {
       const sendTarget = sendNowTarget(snap);
       if (recoveringSendNow || readOnly || permissionPending || !snap || !sendTarget) return;
-      const queued = snap.turns.find((t) => t.turn_id === queuedTurnId);
+      const queued = operatorTurns(snap).find((t) => t.turn_id === queuedTurnId);
       if (queued?.state !== "queued" || (queued.delivery && queued.delivery !== "interrupt_failed")) return;
       if (queued.delivery === "interrupt_failed") operation = undefined;
       operation ??= { id: uuid(), turnId: sendTarget.turnId };
@@ -1197,7 +1353,7 @@ export function StructuredPane({
   useEffect(() => {
     const held = op.current;
     if (!held || !snap || sending.current) return;
-    if (!snap.turns.some((t) => t.turn_id === held.id)) return;
+    if (!operatorTurns(snap).some((t) => t.turn_id === held.id)) return;
     op.current = null;
     const names = attachments.map((a) => a.stored);
     if (sendIdentity(draft.trim(), names) === held.text) {
@@ -1677,12 +1833,12 @@ export function StructuredPane({
   }
 
   const turns = snap?.turns ?? [];
-  // Where "Working in the background" goes: above the first queued message, else last (-1: none).
-  const firstQueued = turns.findIndex((t) => t.state === "queued");
+  // Where the background-task row goes: above the first queued message, else last (-1: none).
+  const firstQueued = turns.findIndex((t) => !isAgentTurn(t) && t.state === "queued");
   const backgroundAt = !backgroundWorking(snap) ? -1 : firstQueued === -1 ? turns.length : firstQueued;
   const pending = snap?.pending_requests ?? [];
   return (
-    <div className={`${chat.pane} ${styles.pane}`} data-testid="structured-pane">
+    <div className={`${chat.pane} ${styles.pane}`} data-testid="structured-pane" onKeyDown={onPaneKey}>
       {header}
       {overlays}
       {snap?.permission_change?.state === "stopping" && !enablingPermissions && (
@@ -1795,6 +1951,17 @@ export function StructuredPane({
           <Fragment key={t.turn_id}>
           {/* Above the first queued message: that work is what it waits behind. */}
           {i === backgroundAt && <BackgroundWork />}
+          {isAgentTurn(t) ? (
+            <AgentTurnView
+              turn={t}
+              agent={agent}
+              interruptible={ownTurnInterruptible(snap, t)}
+              readOnly={readOnly}
+              live={!!snap?.native?.worker}
+              stopping={interrupting || stoppingNow === t.turn_id}
+              onInterrupt={(tid) => void interrupt(tid)}
+            />
+          ) : (
           <TurnView
             turn={t}
             folder={snap?.cwd}
@@ -1805,12 +1972,13 @@ export function StructuredPane({
             approvalsDisabled={permissionPending}
             onDecide={(r, c, g) => void decide(r, c, g)}
             onInterrupt={(tid) => void interrupt(tid)}
-            interrupting={interrupting}
+            interrupting={interrupting || stoppingNow === t.turn_id}
             onSendNow={(tid) => void sendNow(tid)}
             sendNowMode={sendNowTarget(snap)?.mode}
             sendingNow={sendingNow === t.turn_id}
-            sendNowDisabled={permissionPending || !!sendingNow || !!recoveringSendNow || turns.some((q) => q.state === "queued" && q.delivery === "interrupting")}
+            sendNowDisabled={permissionPending || !!sendingNow || !!recoveringSendNow || operatorTurns(snap).some((q) => q.state === "queued" && q.delivery === "interrupting")}
           />
+          )}
           </Fragment>
         ))}
         {backgroundAt === turns.length && <BackgroundWork />}

@@ -1343,6 +1343,8 @@ export interface StructuredTool {
 }
 
 export interface StructuredTurn {
+  /** An operator submission; absent on older servers (#1438). */
+  kind?: "operator";
   turn_id: string;
   operation_id: string;
   state: StructuredTurnState | string;
@@ -1366,6 +1368,24 @@ export interface StructuredTurn {
   /** Who sent it through a public link (#1404 P2) — a self-chosen name, not a verified identity.
    *  Absent or null for the operator's own turns. */
   author?: { name: string; via: "public_link" } | { name: null; via: "unknown" } | null;
+}
+
+/** A turn the agent ran for itself — a scheduled wake-up, a task notification (#1438). Nobody
+ *  sent it: it has no text, author, attachments or delivery, only what the agent did and said. */
+export interface StructuredAgentTurn {
+  kind: "agent";
+  /** Its interrupt target (the worker's `background_turn` while it runs). */
+  turn_id: string;
+  state: StructuredTurnState | string;
+  /** When it started, in Unix seconds. */
+  ts?: number | null;
+  reply: string | null;
+  reply_ts?: number | null;
+  reply_truncated: boolean;
+  /** Why it failed, when it did. */
+  reason?: string;
+  tools: StructuredTool[];
+  tools_truncated: boolean;
 }
 
 /** One exact pending request. `payload` is the COMPLETE request the decision answers; `choices`
@@ -1424,7 +1444,7 @@ export interface StructuredSnapshot {
   start_incomplete?: boolean;
   /** It waited too long and was never launched. */
   start_expired?: boolean;
-  turns: StructuredTurn[];
+  turns: (StructuredTurn | StructuredAgentTurn)[];
   omitted_turns: number;
   pending_requests: StructuredRequest[];
   native?: {
@@ -1437,6 +1457,8 @@ export interface StructuredSnapshot {
      *  (#1427), or null. Only from a worker advertising `send_now_background`. */
     background_turn?: string | null;
     send_now_background?: "interrupt";
+    /** This worker takes Interrupt on a turn the agent runs for itself directly (#1438). */
+    interrupt_own?: boolean;
   };
   /** Why this conversation takes no new work (its client is retiring), or null. */
   read_only?: string | null;

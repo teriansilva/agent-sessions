@@ -410,6 +410,15 @@ def register(app: FastAPI, *, store: shares.ShareStore, require_share) -> None:
             raise HTTPException(status_code=422, detail="turn_id is required")
         await asyncio.to_thread(_not_mission_held, share.session_key)
         snap = await _snapshot(share.session_key)
+        # A turn the agent runs for itself (#1438) is the operator's to stop, never a visitor's:
+        # refused by name, not left to the active-turn check below.
+        if any(
+            t.get("kind") == "agent" and t.get("turn_id") == turn_id
+            for t in snap.get("turns") or []
+        ) or turn_id == (snap.get("native") or {}).get("background_turn"):
+            raise HTTPException(
+                status_code=403, detail="only the owner can interrupt the agent's own turn"
+            )
         if snap.get("active_turn") != turn_id:
             raise HTTPException(status_code=409, detail="that turn isn't running")
         op = str(uuid.uuid4())

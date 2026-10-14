@@ -92,7 +92,9 @@ function renderPane() {
 }
 
 async function hold() {
-  fireEvent.pointerDown(mic(), HOLD);
+  // The mic appears once the pane has loaded, after the textbox: wait for it, never assume it
+  // (a loaded runner rendered the textbox first and found no mic, #1439).
+  fireEvent.pointerDown(await screen.findByRole("button", { name: /voice input/i }), HOLD);
   await waitFor(() => expect(last).not.toBeNull());
 }
 

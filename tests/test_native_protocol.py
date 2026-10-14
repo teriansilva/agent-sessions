@@ -8,6 +8,7 @@ import uuid
 
 import pytest
 
+from agent_sessions import native_ipc
 from agent_sessions.native_protocol import (
     MAX_FRAME_BYTES,
     MAX_INPUT_TEXT,
@@ -1159,11 +1160,22 @@ def _operator_turn(codec, operation, text):
 
 
 def _owner_text(events):
-    """{operation_id or None: the text attributed to it}: who each piece of output belongs to."""
+    """{operation_id or None: the text attributed to it}: which operator turn owns each piece of
+    output. A turn the agent runs for itself names no operation (#1438); see `_agent_text`."""
     owned: dict = {}
     for e in events:
-        if e.kind == "text":
+        if e.kind == "text" and "agent_turn" not in e.data:
             owned[e.data["operation_id"]] = owned.get(e.data["operation_id"], "") + e.data["text"]
+    return owned
+
+
+def _agent_text(events):
+    """{agent_turn: its text}: what each turn the agent ran for itself said (#1438)."""
+    owned: dict = {}
+    for e in events:
+        if e.kind == "text" and "agent_turn" in e.data:
+            assert "operation_id" not in e.data and "native_turn_id" not in e.data
+            owned[e.data["agent_turn"]] = owned.get(e.data["agent_turn"], "") + e.data["text"]
     return owned
 
 
@@ -1285,11 +1297,13 @@ def test_claude_a_task_finishing_inside_an_operator_window_starts_no_other_turn(
 def test_claude_a_turn_the_agent_runs_for_itself_is_tracked_until_its_result():
     codec = ClaudeCodec(SESSION)
     _operator_turn(codec, OPERATION, "started a task")
-    (started,) = codec.feed(_say("The background command finished."))
+    started, said = codec.feed(_say("The background command finished."))
     assert codec.unowned_turn  # dispatch must wait for this turn to end
     target = codec.background_turn
     assert started.kind == "background" and started.data["background_turn"] == target
-    assert codec.feed(_say("More of it.")) == []  # one turn, one target
+    # #1438: what it says is recorded under its own target, never an operation.
+    assert _agent_text([said]) == {target: "The background command finished."}
+    assert _agent_text(codec.feed(_say("More of it."))) == {target: "More of it."}  # one target
     (ended,) = codec.feed(_result("done", origin={"kind": "task-notification"}))
     assert ended.data["background_turn"] is None and ended.data["state"] == "completed"
     assert not codec.unowned_turn and codec.background_turn is None
@@ -1463,7 +1477,8 @@ def test_claude_a_running_state_no_input_owns_is_a_send_now_target_before_any_ou
     (_, started) = codec.feed(_state("running"))
     target = codec.background_turn
     assert target and codec.unowned_turn and started.data["background_turn"] == target
-    assert codec.feed(_say("thinking out loud")) == []  # the same turn, the same target
+    # the same turn, the same target: its text is recorded under it (#1438)
+    assert _agent_text(codec.feed(_say("thinking out loud"))) == {target: "thinking out loud"}
     assert codec.background_turn == target
     (_, ended) = codec.feed(_state("idle"))
     assert ended.data["background_turn"] is None and not codec.unowned_turn
@@ -1518,3 +1533,164 @@ def test_claude_a_request_inside_the_operators_window_is_that_inputs_own():
     ):
         codec.feed(frame)
     assert codec.background_turn is None and not codec.unowned_turn
+
+
+# --- #1438: what the agent does in a turn of its own ---------------------------------------------
+
+
+def _use(tool_id, name, tool_input, **extra):
+    message = {
+        "id": "msg_" + uuid.uuid4().hex[:8],
+        "content": [{"type": "tool_use", "id": tool_id, "name": name, "input": tool_input}],
+    }
+    return {
+        "type": "assistant",
+        "session_id": SESSION,
+        "parent_tool_use_id": None,
+        "message": message,
+        **extra,
+    }
+
+
+def _tool_result(tool_id, content, *, is_error=False, **extra):
+    return {
+        "type": "user",
+        "session_id": SESSION,
+        "parent_tool_use_id": None,
+        "message": {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tool_id,
+                    "content": content,
+                    "is_error": is_error,
+                }
+            ],
+        },
+        **extra,
+    }
+
+
+def _own_turn(codec):
+    """An operator turn, then a wake-up the agent runs for itself; returns its target."""
+    _operator_turn(codec, OPERATION, "Waiting for the review.")
+    codec.feed(_say("The review is in."))
+    assert codec.unowned_turn and codec.background_turn
+    return codec.background_turn
+
+
+def test_claude_an_own_turns_tool_calls_are_recorded_under_its_target_never_an_operation():
+    codec = ClaudeCodec(SESSION)
+    target = _own_turn(codec)
+    used = codec.feed(_use("toolu_a", "Bash", {"command": "gh pr checks 1436"}))
+    done = codec.feed(_tool_result("toolu_a", "all green"))
+    failed = codec.feed(_use("toolu_b", "Read", {"file_path": "/nope"})) + codec.feed(
+        _tool_result("toolu_b", "no such file", is_error=True)
+    )
+    tools = [e for e in used + done + failed if e.kind == "tool"]
+    assert [(e.data["item_id"], e.data["state"]) for e in tools] == [
+        ("toolu_a", "running"),
+        ("toolu_a", "completed"),
+        ("toolu_b", "running"),
+        ("toolu_b", "failed"),
+    ]
+    for e in tools:
+        assert e.data["agent_turn"] == target
+        assert "operation_id" not in e.data and "native_turn_id" not in e.data
+        native_ipc.normalize_event({"kind": e.kind, "data": e.data})  # it passes the boundary
+    assert tools[0].data["tool"] == "Bash" and "gh pr checks 1436" in tools[0].data["summary"]
+
+
+@pytest.mark.parametrize(
+    ("result", "state"),
+    [
+        ({}, "completed"),
+        (
+            {
+                "subtype": "error_during_execution",
+                "is_error": True,
+                "terminal_reason": "aborted_streaming",
+            },
+            "interrupted",
+        ),
+        ({"subtype": "error_max_turns", "is_error": True, "terminal_reason": None}, "failed"),
+    ],
+)
+def test_claude_an_own_turns_end_says_how_it_ended(result, state):
+    codec = ClaudeCodec(SESSION)
+    _own_turn(codec)
+    (ended,) = codec.feed(_result("done", origin={"kind": "task-notification"}, **result))
+    assert ended.data["background_turn"] is None and ended.data["state"] == state
+
+
+def test_claude_an_own_turn_records_whole_messages_not_streamed_deltas():
+    codec = ClaudeCodec(SESSION)
+    _own_turn(codec)
+    delta = {
+        "type": "stream_event",
+        "session_id": SESSION,
+        "parent_tool_use_id": None,
+        "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Hel"}},
+    }
+    assert [e for e in codec.feed(delta) if e.kind == "text"] == []
+
+
+def test_claude_a_subagents_frames_in_an_own_turn_stay_unrecorded():
+    codec = ClaudeCodec(SESSION)
+    _own_turn(codec)
+    events = codec.feed(_use("toolu_s", "Grep", {"pattern": "x"}, parent_tool_use_id="toolu_p"))
+    assert [e.kind for e in events] == ["background"]
+
+
+def test_claude_an_unreadable_own_turn_frame_is_skipped_not_fatal():
+    codec = ClaudeCodec(SESSION)
+    target = _own_turn(codec)
+    broken = _say("x")
+    broken["message"]["content"] = ["not a block"]
+    assert [e for e in codec.feed(broken) if e.kind == "text"] == []
+    assert codec.background_turn == target  # the connection and the turn carry on
+    assert _agent_text(codec.feed(_say("still here"))) == {target: "still here"}
+
+
+def test_claude_an_own_turn_never_changes_who_owns_operator_output():
+    """The #1429 fence holds: an own turn's output is the own turn's, and the next operator
+    turn's output is that turn's alone."""
+    codec = ClaudeCodec(SESSION)
+    target = _own_turn(codec)
+    events = codec.feed(_say("own words"))
+    events += _operator_turn(codec, NEXT, "operator words")
+    assert _agent_text(events) == {target: "own words"}
+    assert _owner_text(events) == {NEXT: "operator words"}
+
+
+@pytest.mark.parametrize(
+    ("data", "valid"),
+    [
+        ({"agent_turn": NEXT, "text": "a", "partial": False, "truncated": False}, True),
+        (
+            {"operation_id": OPERATION, "native_turn_id": OPERATION, "text": "a"}
+            | {"partial": False, "truncated": False},
+            True,
+        ),
+        (  # both: an own turn's output never also names an operation
+            {"agent_turn": NEXT, "operation_id": OPERATION, "native_turn_id": OPERATION}
+            | {"text": "a", "partial": False, "truncated": False},
+            False,
+        ),
+        ({"text": "a", "partial": False, "truncated": False}, False),  # neither
+        ({"agent_turn": "not-a-uuid", "text": "a", "partial": False, "truncated": False}, False),
+        (
+            {"agent_turn": NEXT, "native_turn_id": TURN, "text": "a"}
+            | {"partial": False, "truncated": False},
+            False,
+        ),
+    ],
+)
+def test_ipc_output_names_exactly_one_operator_or_agent_turn(data, valid):
+    event = {"kind": "text", "data": data}
+    if valid:
+        native_ipc.normalize_event(event)
+    else:
+        with pytest.raises(native_ipc.IPCError):
+            native_ipc.normalize_event(event)

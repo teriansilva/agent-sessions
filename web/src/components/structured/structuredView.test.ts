@@ -1,6 +1,19 @@
-import { expect, test } from "vitest";
+import { describe, expect, test } from "vitest";
 import type { StructuredRequest, StructuredSnapshot } from "../../types/api";
-import { backgroundWorking, choiceLabel, operationFor, requestIds, requestRows, reviewOnly, sendNowTarget } from "./structuredView";
+import {
+  backgroundWorking,
+  choiceLabel,
+  interruptTarget,
+  isActive,
+  operationFor,
+  operatorTurns,
+  ownTurnInterruptible,
+  requestIds,
+  requestRows,
+  reviewOnly,
+  runningAgentTurn,
+  sendNowTarget,
+} from "./structuredView";
 
 function req(over: Partial<StructuredRequest>): StructuredRequest {
   return { request_id: "7", turn_id: "t", kind: "command", choices: ["approve", "reject", "cancel"], ...over };
@@ -114,4 +127,51 @@ test("Send now targets the operator turn, else the agent's own turn its worker c
   // …only from a worker that advertises it, and only while that turn runs.
   expect(sendNowTarget(snap({}, { send_now: "interrupt", background_turn: "bg" }))).toBeNull();
   expect(sendNowTarget(snap({}, { send_now: "interrupt", background_turn: null, send_now_background: "interrupt" }))).toBeNull();
+});
+
+describe("a turn the agent runs for itself (#1438)", () => {
+  const own = (state: string, turn_id = "own-1") =>
+    ({ kind: "agent", turn_id, state, reply: "", reply_truncated: false, tools: [], tools_truncated: false }) as const;
+  const op = (state: string, turn_id = "op-1") =>
+    ({ kind: "operator", turn_id, operation_id: turn_id, state, text: "hi", reply: "", text_truncated: false,
+      reply_truncated: false, reason: null, tools: [], tools_truncated: false }) as const;
+  const snap = (turns: unknown[], native: Record<string, unknown> = {}, active_turn: string | null = null) =>
+    ({ active_turn, state: "idle", turns, native: { native_id: "n", worker: "w", background_active: true,
+      background_turn: "own-1", send_now_background: "interrupt", interrupt_own: true, ...native } }) as unknown as StructuredSnapshot;
+
+  test("is shown as its turn, not as the background-task row, and reads live", () => {
+    const running = snap([op("completed"), own("running")]);
+    expect(runningAgentTurn(running)?.turn_id).toBe("own-1");
+    expect(backgroundWorking(running)).toBe(false);
+    expect(isActive(running)).toBe(true);
+    const ended = snap([op("completed"), own("completed")]);
+    expect(runningAgentTurn(ended)).toBeNull();
+    expect(backgroundWorking(ended)).toBe(true); // a task still running: the generic row
+    expect(isActive(ended)).toBe(false);
+    // An exited worker runs nothing, whatever its last record said.
+    expect(runningAgentTurn(snap([own("running")], { worker: null }))).toBeNull();
+  });
+
+  test("is interruptible only as the live worker's own target, from a worker that takes it", () => {
+    const turn = own("running");
+    expect(ownTurnInterruptible(snap([turn]), turn)).toBe(true);
+    expect(ownTurnInterruptible(snap([turn], { interrupt_own: undefined }), turn)).toBe(false); // older worker
+    expect(ownTurnInterruptible(snap([turn], { background_turn: "own-2" }), turn)).toBe(false); // a newer turn
+    expect(ownTurnInterruptible(snap([turn], { send_now_background: undefined }), turn)).toBe(false);
+    expect(ownTurnInterruptible(snap([own("completed")]), own("completed"))).toBe(false);
+  });
+
+  test("Esc stops the operator turn running now, else the agent's own, else nothing", () => {
+    expect(interruptTarget(snap([op("running"), own("running")], {}, "op-1"))).toBe("op-1");
+    expect(interruptTarget(snap([op("awaiting_approval")], {}, "op-1"))).toBe("op-1");
+    expect(interruptTarget(snap([op("completed"), own("running")]))).toBe("own-1");
+    expect(interruptTarget(snap([op("completed"), own("running")], { interrupt_own: false }))).toBeNull();
+    expect(interruptTarget(snap([op("completed"), own("completed")]))).toBeNull();
+    expect(interruptTarget(null)).toBeNull();
+  });
+
+  test("is never mistaken for a message someone sent", () => {
+    expect(operatorTurns(snap([op("completed"), own("running"), op("queued", "op-2")])).map((t) => t.turn_id))
+      .toEqual(["op-1", "op-2"]);
+  });
 });

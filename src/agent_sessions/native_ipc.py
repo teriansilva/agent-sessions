@@ -432,8 +432,14 @@ _EVENT_FIELDS = {
     "turn_started": (_COMMON, _RPC),
     "input_accepted": (_COMMON, _RPC),
     "delivery_failed": (_COMMON | {"message", "control_id"}, set()),
-    "text": (_COMMON | {"text", "partial", "truncated"}, {"item_id"}),
-    "tool": (_COMMON | {"item_id"}, {"tool", "state", "summary", "output", "completed"}),
+    # #1438: output of a turn the agent runs for itself names its `agent_turn` (the minted
+    # `background_turn`) INSTEAD of an operation: the journal binds every `operation_id` to an
+    # operator submit, and an own turn is none. Exactly one of the two is present.
+    "text": ({"text", "partial", "truncated"}, _COMMON | {"item_id", "agent_turn"}),
+    "tool": (
+        {"item_id"},
+        _COMMON | {"agent_turn", "tool", "state", "summary", "output", "completed"},
+    ),
     "approval": (
         _COMMON
         | {
@@ -484,7 +490,14 @@ def _event(value):
             "background_turn",
         }:
             out[key] = None
-        elif key in {"operation_id", "worker_id", "connection_id", "control_id", "background_turn"}:
+        elif key in {
+            "operation_id",
+            "worker_id",
+            "connection_id",
+            "control_id",
+            "background_turn",
+            "agent_turn",
+        }:
             out[key] = _uuid(item)
         elif key in {"native_id", "native_turn_id", "item_id", "request_id", "task_id", "tool"}:
             out[key] = _native(item, 258 if key == "request_id" else 256)
@@ -531,6 +544,11 @@ def _event(value):
                 if key in {"state", "native_state"}
                 else MAX_EVENT_TEXT,
             )
+    if kind in {"text", "tool"} and (
+        ("agent_turn" in out) == ("operation_id" in out)
+        or ("operation_id" in out) != ("native_turn_id" in out)
+    ):
+        raise IPCError("native output names exactly one operator or agent turn")
     if kind not in {"error", "disconnected"} and "operation_id" in out:
         _uuid(out["operation_id"])
         _native(out["native_turn_id"])

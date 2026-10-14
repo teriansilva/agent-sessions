@@ -1257,7 +1257,38 @@ def project(
     submits = [
         op.operation_id for op in journal.operations.values() if op.request["action"] == "submit"
     ]
-    selected = set(submits if max_turns is None else submits[-max_turns:])
+    # Turns the agent ran for itself (#1438), from the global `background` events that mint their
+    # target. They share ONE display window with operator turns, newest first, so a bounded read
+    # shows what a full one would. Ordered by journal position, never by a wall clock.
+    starts, settled = [], set()
+    for item in journal.events.for_operations(set()):
+        kind, data = item["event"]["kind"], item["event"]["data"]
+        if kind == "background" and data.get("background_turn"):
+            starts.append((item["cursor"], data["background_turn"]))
+        elif kind == "turn_completed" and data.get("operation_id"):
+            settled.add(data["operation_id"])
+    timeline = sorted(
+        [(journal.operations[op].claimed_revision, 0, op) for op in submits]
+        + [(cursor, 1, agent) for cursor, agent in starts],
+    )
+    shown = timeline if max_turns is None else timeline[-max_turns:] if max_turns else []
+    # Live work is never cut (Hermes on #1439), however many turns the agent ran for itself since:
+    # every message the live worker still holds queued, and the newest one it dispatched if it has
+    # not completed (it may have waited behind those turns). Nothing else: an input that settles
+    # without a completion (a steer, a refusal) is history, and history ages out as before.
+    live_submits = [op for op in submits if journal.operations[op].worker_id == live_worker]
+    dispatched = [
+        op for op in live_submits if journal.operations[op].handoff in {"uncertain", "sent"}
+    ]
+    keep = {op for op in live_submits if journal.operations[op].handoff == "queued"}
+    if dispatched and dispatched[-1] not in settled:
+        keep.add(dispatched[-1])
+    waiting = [entry for entry in timeline if entry[1] == 0 and entry[2] in keep]
+    shown = sorted({*shown, *waiting})
+    selected = {entry[2] for entry in shown if entry[1] == 0}
+    selected_agents = {entry[2] for entry in shown if entry[1] == 1}
+    agents: dict[str, dict] = {}
+    open_agent: str | None = None
     for op in journal.operations.values():
         params = op.request["params"]
         if op.request["action"] == "submit":
@@ -1290,10 +1321,19 @@ def project(
                 queued["delivery"] = "steering" if params["mode"] == "steer" else "interrupting"
                 queued["delivery_turn_id"] = params["turn_id"]
                 queued["delivery_operation_id"] = op.operation_id
-    observations = journal.events if max_turns is None else journal.events.for_operations(selected)
+    observations = (
+        journal.events
+        if max_turns is None
+        else journal.events.for_operations(selected | selected_agents)
+    )
     for item in observations:
         kind, data = item["event"]["kind"], item["event"]["data"]
-        turn = turns.get(data.get("operation_id") or "")
+        # Attribution is by FIELD: an agent turn's output never lands on an operator turn.
+        turn = (
+            agents.get(data["agent_turn"])
+            if "agent_turn" in data
+            else turns.get(data.get("operation_id") or "")
+        )
         if kind == "session" and data.get("native_id"):
             native_id = data["native_id"]
         elif kind == "model" and data.get("model_effective"):
@@ -1302,6 +1342,30 @@ def project(
             background = bool(data.get("active"))
             if "background_turn" in data:
                 background_turn = (data["background_turn"], item["worker_id"])
+                if open_agent is not None:
+                    previous = agents.get(open_agent)
+                    if previous is not None and previous["worker_id"] != item["worker_id"]:
+                        # A new generation speaks: the old one died mid-turn, whatever this says.
+                        _settle_agent(previous, "worker_ended")
+                    else:
+                        # Its end, or a start that implies it (one turn runs at a time).
+                        _settle_agent(previous, data["state"])
+                open_agent = data["background_turn"]
+                if open_agent in selected_agents and open_agent not in agents:
+                    agents[open_agent] = {
+                        "kind": "agent",
+                        "position": item["cursor"],
+                        "turn_id": open_agent,
+                        "status": "pending",
+                        "ts": item.get("ts"),
+                        "reply": "",
+                        "reply_ts": None,
+                        "partial": "",
+                        "partial_item": None,
+                        "tools": [],
+                        "worker_id": item["worker_id"],
+                        "completed": False,
+                    }
         elif kind == "approval" and turn is not None:
             exact = (item["worker_id"], data["operation_id"], data["request_id"])
             pending[exact] = {**data, "worker_id": item["worker_id"]}
@@ -1345,6 +1409,10 @@ def project(
             if existing is None:
                 turn["tools"].append(entry)
             else:
+                # A result names only the call it answers (Claude's carry no tool): it keeps the
+                # call's name rather than the placeholder (#1438).
+                if not data.get("tool"):
+                    entry.pop("name")
                 existing.update({k: v for k, v in entry.items() if v})
             # The same advisory classifier as a pending card (#1339): a tool row that ran a
             # command — asked or, in a skip-permissions session, never asked — says so.
@@ -1453,7 +1521,14 @@ def project(
                 "context": dict(turn["context"]),
             }
         )
-    for turn in turns.values():
+    for agent in agents.values():
+        if agent["worker_id"] != live_worker:
+            # Its worker is gone: nothing will end this turn now.
+            _settle_agent(agent, "worker_ended")
+    for turn_id, turn in turns.items():
+        turn["position"] = journal.operations[turn_id].claimed_revision
+    shown_turns = sorted([*turns.values(), *agents.values()], key=lambda t: t["position"])
+    for turn in shown_turns:
         for key in (
             "partial",
             "partial_item",
@@ -1461,11 +1536,12 @@ def project(
             "worker_id",
             "completed",
             "delivery_operation_id",
+            "position",
         ):
             turn.pop(key, None)
     return {
-        "turns": list(turns.values()),
-        "omitted_turns": len(submits) - len(turns),
+        "turns": shown_turns,
+        "omitted_turns": len(timeline) - len(shown_turns),
         "revision": journal.revision,
         "cwd": journal.header["cwd"],
         "in_flight": in_flight,
@@ -1498,6 +1574,21 @@ def project(
             else None,
         },
     }
+
+
+def _settle_agent(agent: dict | None, state: str) -> None:
+    """End a turn the agent ran for itself, as its end event says (#1438)."""
+    if agent is None or agent["completed"]:
+        return
+    agent["completed"] = True
+    if state == "interrupted":
+        agent["status"], agent["code"] = "failed", "interrupted"
+    elif state == "worker_ended":
+        agent["status"], agent["reason"] = "failed", "the native worker ended during this turn"
+    elif state == "failed":
+        agent["status"], agent["reason"] = "failed", "the agent reported an error"
+    else:
+        agent["status"] = "done"
 
 
 def _offered(adapter: str | None, approval: dict, cwd: str | None) -> dict:
@@ -1570,6 +1661,8 @@ def _snapshot_sync(engine_id: str, session_id: str) -> dict:
     # can; an older worker's target is never offered.
     if life.get("send_now_background") == "interrupt":
         view["native"]["send_now_background"] = "interrupt"
+        # Its Interrupt button (#1438), only from a worker that accepts the direct request.
+        view["native"]["interrupt_own"] = life.get("interrupt_own") is True
     else:
         view["native"]["background_turn"] = None
     view["native"]["files"] = not live or life.get("files") is True

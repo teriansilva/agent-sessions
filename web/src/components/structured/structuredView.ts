@@ -1,6 +1,11 @@
 /** Pure view logic for a structured (native API) session (#1311). No React, no fetch: the pane
  *  renders these answers, and the tests pin them. */
-import type { StructuredRequest, StructuredSnapshot } from "../../types/api";
+import type {
+  StructuredAgentTurn,
+  StructuredRequest,
+  StructuredSnapshot,
+  StructuredTurn,
+} from "../../types/api";
 
 const messageTime = new Intl.DateTimeFormat(undefined, {
   year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
@@ -22,12 +27,57 @@ export function messageTimestamp(epoch: number | null | undefined, kind: "user" 
   };
 }
 
-/** The agent is working with no operator turn running: a background task or subagent, or a turn
- *  it started itself. Without this the pane looks idle while the agent works (#1430). Only a live
- *  worker can be working: the flag is replayed from the journal, so an exited one's last word
- *  must not keep claiming it. */
+/** A turn the agent ran for itself (#1438), never a message someone sent. */
+export function isAgentTurn(t: StructuredTurn | StructuredAgentTurn): t is StructuredAgentTurn {
+  return t.kind === "agent";
+}
+
+/** The operator's conversation: every turn someone sent. */
+export function operatorTurns(snap: StructuredSnapshot | null): StructuredTurn[] {
+  return (snap?.turns ?? []).filter((t): t is StructuredTurn => !isAgentTurn(t));
+}
+
+/** The turn the agent is running for itself right now, on a live worker (#1438). */
+export function runningAgentTurn(snap: StructuredSnapshot | null): StructuredAgentTurn | null {
+  if (!snap?.native?.worker) return null;
+  const last = [...snap.turns].reverse().find(isAgentTurn);
+  return last?.state === "running" ? last : null;
+}
+
+/** Can Interrupt (and Esc) stop this turn the agent runs for itself? Only the live worker's own
+ *  target, from a worker that takes the request directly (#1438). */
+export function ownTurnInterruptible(snap: StructuredSnapshot | null, turn: StructuredAgentTurn): boolean {
+  return (
+    turn.state === "running" &&
+    !snap?.active_turn &&
+    !!snap?.native?.interrupt_own &&
+    snap.native.send_now_background === "interrupt" &&
+    snap.native.background_turn === turn.turn_id
+  );
+}
+
+/** What Esc stops: the operator turn running now, else the agent's own interruptible turn. */
+export function interruptTarget(snap: StructuredSnapshot | null): string | null {
+  if (!snap) return null;
+  if (snap.active_turn) {
+    const active = operatorTurns(snap).find((t) => t.turn_id === snap.active_turn);
+    return active && (active.state === "running" || active.state === "awaiting_approval") ? active.turn_id : null;
+  }
+  const own = runningAgentTurn(snap);
+  return own && ownTurnInterruptible(snap, own) ? own.turn_id : null;
+}
+
+/** The agent is working with no turn shown running: a background task (#1430). A turn it runs for
+ *  itself is shown as that turn (#1438), not as this row. Only a live worker can be working: the
+ *  flag is replayed from the journal, so an exited one's last word must not keep claiming it. */
 export function backgroundWorking(snap: StructuredSnapshot | null): boolean {
-  return !!snap && !snap.active_turn && !!snap.native?.worker && !!snap.native.background_active;
+  return (
+    !!snap &&
+    !snap.active_turn &&
+    !!snap.native?.worker &&
+    !!snap.native.background_active &&
+    !runningAgentTurn(snap)
+  );
 }
 
 /** What Send now would stop or steer: the operator turn running now, else a turn the agent
@@ -47,7 +97,15 @@ export function sendNowTarget(
 
 /** Turn states during which the agent is still working and the view keeps reading. */
 export function isActive(snap: StructuredSnapshot | null): boolean {
-  return !!snap && (snap.state === "running" || snap.state === "awaiting_approval" || snap.state === "queued" || snap.state === "delivering");
+  return (
+    !!snap &&
+    (snap.state === "running" ||
+      snap.state === "awaiting_approval" ||
+      snap.state === "queued" ||
+      snap.state === "delivering" ||
+      // The agent's own turn reads live too: its latest call is the summary line (#1438).
+      !!runningAgentTurn(snap))
+  );
 }
 
 /** One row of a request card. EVERY top-level field of the payload becomes a row: the operator

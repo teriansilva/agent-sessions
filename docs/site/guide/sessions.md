@@ -23,6 +23,22 @@ Commands and tools start collapsed under an activity summary; expand it to inspe
 Agent replies have their own panel, and permission requests stay visible. The view follows new
 content while you are at the bottom; scrolling up keeps your reading position.
 
+Sometimes the agent works without a message from you — a scheduled wake-up, or a background
+task reporting back. That turn appears as **‹agent› · on its own**: its activity is collapsed,
+with the latest command in the summary, and what it says is kept as its reply. While it runs,
+**Interrupt** stops that turn (not the worker), as it does for your own running turn. A
+background task with no turn running shows a plain status row; there is nothing to interrupt
+there, and **Stop** in the header ends the worker. Workers started before an application update
+may not offer Interrupt on the agent's own turn until the next worker starts. With Claude, an
+interrupt pressed at the very moment a turn finishes may stop the agent's next turn instead,
+because Claude's interrupt applies to whatever it is running when it arrives; each turn shows how
+it actually ended.
+
+On a keyboard, **Esc** does the same as Interrupt while focus is in the conversation or the
+composer: it stops your running turn, or else the agent's own. Esc that closes a menu or a list
+only closes it, and Esc while composing text with an input method does nothing. Read-only
+conversations and shared links never interrupt.
+
 Your messages show their local date and time beside **you**, including while queued. This is
 when BattleLab recorded your submission; delivery or **Send now** does not change it.
 

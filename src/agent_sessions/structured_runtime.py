@@ -352,9 +352,12 @@ def _turn(turn: dict, text_budget: list[int] | None = None) -> dict:
             text_budget[0] -= len(text)
         return text, len(value) > len(text)
 
+    if turn.get("kind") == "agent":
+        return _agent_turn(turn, bounded)
     text, text_cut = bounded(turn.get("text"))
     reply, reply_cut = bounded(turn.get("reply"))
     return {
+        "kind": "operator",
         "turn_id": turn["turn_id"],
         "operation_id": turn["turn_id"],
         "state": _outcome(turn),
@@ -378,12 +381,46 @@ def _turn(turn: dict, text_budget: list[int] | None = None) -> dict:
     }
 
 
+def _agent_turn(turn: dict, bounded) -> dict:
+    """A turn the agent ran for itself (#1438): its own key set, never an operator submission's.
+    No `operation_id`, `text`, `attachments`, `delivery`, `context` or `requires_authority` —
+    absent, not null — so nothing can mistake it for a message someone sent."""
+    reply, reply_cut = bounded(turn.get("reply"))
+    return {
+        "kind": "agent",
+        "turn_id": turn["turn_id"],
+        "state": _outcome(turn),
+        "ts": turn.get("ts"),
+        "reply": reply,
+        "reply_ts": turn.get("reply_ts"),
+        "reply_truncated": reply_cut,
+        **({"reason": turn["reason"]} if turn.get("reason") else {}),
+        "tools": list(turn.get("tools") or [])[-64:],
+        "tools_truncated": len(turn.get("tools") or []) > 64,
+    }
+
+
 def _snapshot(session_key: str, raw: dict) -> dict:
     all_turns = raw["turns"]
     budget = [SNAPSHOT_TEXT_BUDGET]
-    # Spend the display budget on newest turns first; return chronological order.
-    turns = [_turn(t, budget) for t in reversed(all_turns[-SNAPSHOT_TURNS:])]
-    turns.reverse()
+    # The newest turns, plus any older operator turn that is still live (queued or running behind
+    # the agent's own turns, Hermes on #1439): history is cut, live work never.
+    live = {"queued", "running", "awaiting_approval", "delivering"}
+    window = all_turns[-SNAPSHOT_TURNS:]
+    older = all_turns[:-SNAPSHOT_TURNS] if len(all_turns) > SNAPSHOT_TURNS else []
+    kept = [t for t in older if t.get("kind") != "agent" and _outcome(t) in live]
+    shown = [*kept, *window]
+    # Live operator input is never charged to the shared budget: each waiting or running message
+    # gets its own per-field cap (SNAPSHOT_TEXT), so what is pending always reads in full however
+    # many such messages there are or how much history follows (Hermes on #1439). The journal
+    # bounds that set (MAX_QUEUED + the one running). History spends the shared budget, newest
+    # first. Return chronological order.
+    first = [i for i, t in enumerate(shown) if t.get("kind") != "agent" and _outcome(t) in live]
+    projected = {i: _turn(shown[i]) for i in first}
+    for i in reversed(range(len(shown))):
+        if i not in projected:
+            projected[i] = _turn(shown[i], budget)
+    turns = [projected[i] for i in range(len(shown))]
     requests = list(raw.get("pending_requests") or [])
     for turn in all_turns if "pending_requests" not in raw else ():
         if turn["status"] != "awaiting_approval":
@@ -403,11 +440,14 @@ def _snapshot(session_key: str, raw: dict) -> dict:
                 }
             )
     state = "idle"
-    active = next((t for t in all_turns if t["turn_id"] == raw.get("in_flight")), None)
+    # The session's state is the operator's conversation; the agent's own turns (#1438) report
+    # through `native.background_active`, as before they were shown.
+    operator = [t for t in all_turns if t.get("kind") != "agent"]
+    active = next((t for t in operator if t["turn_id"] == raw.get("in_flight")), None)
     if active is not None:
         state = _outcome(active)
-    elif all_turns and _outcome(all_turns[-1]) != "completed":
-        state = _outcome(all_turns[-1])
+    elif operator and _outcome(operator[-1]) != "completed":
+        state = _outcome(operator[-1])
     return {
         "session_key": session_key,
         "revision": raw["revision"],
@@ -521,7 +561,7 @@ async def submit_turn(
         idempotent=True,
     )
     raw = await adapter.snapshot(engine, native)
-    turn = next(t for t in raw["turns"] if t["turn_id"] == tid)
+    turn = next(t for t in raw["turns"] if t["turn_id"] == tid and t.get("kind") != "agent")
     return {"session_key": f"{engine}:{native}", "revision": raw["revision"], **_turn(turn)}
 
 

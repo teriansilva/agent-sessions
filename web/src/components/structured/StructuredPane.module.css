@@ -473,3 +473,63 @@
   font: 12px var(--font-mono);
   border-left: 3px solid var(--line-strong);
 }
+/* A turn the agent ran for itself (#1438): its own block, a neutral rule (not amber — nobody sent
+   it, and amber is the operator's turn), activity collapsed with the latest call in the summary. */
+.ownTurn {
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--line-strong);
+  background: var(--bg-1);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.ownTurn > .activity { background: var(--bg-0); }
+.ownTurn > .activity > summary :global(span[aria-hidden="true"]) { margin-right: 8px; }
+.latest {
+  display: block;
+  margin-top: 4px;
+  font: 12px var(--font-mono);
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.latest b {
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 11px;
+  margin-right: 4px;
+}
+.ownReply {
+  border-left: 1px solid var(--line);
+  padding-left: 14px;
+}
+.ownControls { display: flex; flex-wrap: wrap; gap: 8px; }
+.ownNote {
+  margin: 0;
+  font: 12px var(--font-mono);
+  color: var(--text-muted);
+}
+.taskRow { flex-wrap: wrap; }
+.taskRow .ownNote { flex-basis: 100%; }
+/* Interrupt: the chat ghost (44px), with room for its key hint. */
+.interrupt { gap: 10px; }
+.kbd {
+  font: 600 10px var(--font-mono);
+  letter-spacing: 0.04em;
+  text-transform: none;
+  padding: 2px 5px;
+  border: 1px solid var(--line-strong);
+  color: var(--text-muted);
+  background: var(--bg-2);
+}
+/* No keyboard to press it on: the hint would be noise. */
+@media (hover: none), (pointer: coarse) {
+  .kbd { display: none; }
+}
+@media (max-width: 480px) {
+  .ownControls .interrupt { flex: 1 1 100%; }
+}

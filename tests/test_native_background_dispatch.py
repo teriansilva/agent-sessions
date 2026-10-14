@@ -42,7 +42,13 @@ async def _state(key: str, turn_id: str) -> str | None:
 
 
 async def _replies(key: str) -> list[str]:
-    return [t["reply"] for t in (await runtime.snapshot(key))["turns"]]
+    """The operator turns' replies. A turn the agent ran for itself is shown as its own (#1438)
+    and is nobody's reply; see `_agent_replies`."""
+    return [t["reply"] for t in (await runtime.snapshot(key))["turns"] if t["kind"] != "agent"]
+
+
+async def _agent_replies(key: str) -> list[str]:
+    return [t["reply"] for t in (await runtime.snapshot(key))["turns"] if t["kind"] == "agent"]
 
 
 async def _task_completed(key: str) -> None:
@@ -72,6 +78,8 @@ async def test_a_message_goes_out_while_a_background_task_runs(host, project):  
     await _task_completed(key)
     await asyncio.sleep(0.5)
     assert "notified" not in "".join(await _replies(key))
+    # …it is the agent's own turn, and shown as one (#1438).
+    assert "notified" in "".join(await _agent_replies(key))
 
 
 @pytest.mark.anyio
