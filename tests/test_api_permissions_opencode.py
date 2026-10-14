@@ -73,6 +73,97 @@ def test_a_different_or_incomplete_context_never_fills_permission_input(change):
         codec.decide(approval.data["request_id"], "approve")
 
 
+def read():
+    """A read permission exactly as opencode 1.18.35 asks it: no arguments, no locations."""
+    return {
+        "toolCallId": "call-read",
+        "title": "read",
+        "kind": "read",
+        "status": "pending",
+        "locations": [],
+        "rawInput": {},
+    }
+
+
+def test_an_empty_read_permission_shows_the_file_its_running_call_names():
+    """Measured on 1.18.35: the call's `in_progress` update names the file, then the permission
+    request for that same call arrives empty. An external file is asked twice (directory, then
+    read) and both must be approvable, or no file outside the project can ever be read."""
+    codec = oc._codec()
+    codec.submit("go", str(uuid.uuid4()))
+    path = "/home/u/.agent-sessions/uploads/image.png"
+    args = {"filePath": path, "limit": 1}
+    update(
+        codec,
+        **{**read(), "status": "in_progress", "locations": [{"path": path}], "rawInput": args},
+    )
+    directory = {
+        "toolCallId": "call-read",
+        "title": "/home/u/.agent-sessions/uploads",
+        "kind": "other",
+        "status": "pending",
+        "locations": [{"path": path}, {"path": "/home/u/.agent-sessions/uploads"}],
+        "rawInput": {"filepath": path, "parentDir": "/home/u/.agent-sessions/uploads"},
+    }
+    [first] = oc._ask(codec, 0, tool_call=directory)
+    assert first.data["complete"]
+    assert "toolContext" not in json.loads(first.data["summary"])  # its own input suffices
+    codec.decide(first.data["request_id"], "approve")
+    [second] = oc._ask(codec, 1, tool_call=read())
+    payload = json.loads(second.data["summary"])
+    assert payload["toolCall"]["rawInput"] == {}  # original stays inspectable
+    assert payload["toolContext"]["rawInput"] == args
+    assert second.data["complete"] and second.data["choices"] == ["approve", "reject"]
+    assert native_grants.derive("opencode-acp", "read", payload, "/w")["always"]
+    assert (
+        codec.decide(second.data["request_id"], "approve")["result"]["outcome"]["optionId"]
+        == "once"
+    )
+
+
+@pytest.mark.parametrize(
+    "running",
+    [
+        {"limit": 1},  # Hermes on #1456: input that names no file approves a blind read
+        {"filePath": ""},
+        {"filePath": "   "},
+        {"filePath": ["/etc/passwd"]},
+        {"path": "/w/notes.txt"},  # not the field the read acts on
+    ],
+)
+def test_a_borrowed_read_must_name_its_file(running):
+    codec = oc._codec()
+    codec.submit("go", str(uuid.uuid4()))
+    update(codec, **{**read(), "status": "in_progress", "rawInput": running})
+    [approval] = oc._ask(codec, tool_call=read())
+    assert not approval.data["complete"] and approval.data["choices"] == ["reject"]
+    assert "toolContext" not in json.loads(approval.data["summary"])
+    with pytest.raises(native_protocol.ProtocolError):
+        codec.decide(approval.data["request_id"], "approve")
+
+
+@pytest.mark.parametrize(
+    ("kind", "running"),
+    [
+        ("execute", {"command": "ls"}),
+        ("edit", {"filepath": "a", "diff": "d"}),
+        # Measured: 1.18.35 asks for these WITH their input; none is borrowed.
+        ("search", {"pattern": "needle"}),
+        ("fetch", {"url": "https://example.com"}),
+        ("delete", {"filePath": "/w/a"}),
+        ("move", {"filePath": "/w/a"}),
+    ],
+)
+def test_only_read_and_mcp_borrow_their_running_call_input(kind, running):
+    call = {"toolCallId": "c", "kind": kind, "title": kind}
+    codec = oc._codec()
+    codec.submit("go", str(uuid.uuid4()))
+    update(codec, **{**call, "status": "in_progress", "rawInput": running})
+    [approval] = oc._ask(codec, tool_call={**call, "status": "pending", "rawInput": {}})
+    assert not approval.data["complete"]
+    assert "toolContext" not in json.loads(approval.data["summary"])
+
+
 def test_missing_mcp_arguments_explain_why_only_decline_is_available():
     codec = oc._codec()
     codec.submit("go", str(uuid.uuid4()))

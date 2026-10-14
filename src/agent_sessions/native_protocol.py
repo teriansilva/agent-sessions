@@ -1564,6 +1564,16 @@ _ACP_APPROVABLE = {
 }
 
 
+#: Kinds whose EMPTY permission request may show the same call's running input instead, each with
+#: what that input must name. Measured on 1.18.35: MCP tools (`other`) and `read` ask with
+#: `rawInput: {}`, the input only on the call's `in_progress` update; a read must name its file.
+#: search and fetch carry their own pattern / url, and no tool asks as delete or move.
+_ACP_BORROWABLE = {
+    "other": bool,
+    "read": lambda raw: _nonempty(raw.get("filePath")),
+}
+
+
 def _acp_unpresentable(tool_call: dict) -> str | None:
     """Why a permission request cannot be approved as presented, or None when it can."""
     rule = _ACP_APPROVABLE.get(tool_call.get("kind"))
@@ -1912,18 +1922,21 @@ class OpencodeAcpCodec(_Codec):
         }
         context = self._tool_calls.get(item_id)
         effective = tool_call
-        # Only fill empty MCP permission metadata from the exact named tool, already observed
-        # running in THIS turn. Never use a command title, another call or replayed history.
+        # Only fill an empty `rawInput` (`_ACP_BORROWABLE`) from the same call, same kind and
+        # title, already observed running in THIS turn, and only with input naming what the kind
+        # acts on. Never use a command title, another call or replayed history.
+        borrowable = _ACP_BORROWABLE.get(tool_call.get("kind"))
         if (
-            tool_call.get("kind") == "other"
+            borrowable is not None
             and tool_call.get("rawInput") == {}
             and context is not None
-            and context.get("kind") == "other"
+            and context.get("kind") == tool_call.get("kind")
             and context.get("title") == tool_call.get("title")
             and _nonempty(context.get("title"))
             and context.get("status") == "in_progress"
             and isinstance(context.get("rawInput"), dict)
             and bool(context["rawInput"])
+            and borrowable(context["rawInput"])
         ):
             presented["toolContext"] = dict(context)
             effective = {**tool_call, "rawInput": context["rawInput"]}
