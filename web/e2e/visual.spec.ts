@@ -95,20 +95,26 @@ async function prepareOpenFirstWindow(page: Page): Promise<void> {
 /** Run the entry's declared interaction, if any, between `goto` and `waitFor`. */
 async function runPrepare(page: Page, p: VisualPath): Promise<void> {
   if (p.prepare === "open-first-window") await prepareOpenFirstWindow(page);
-  if (p.prepare === "playbook-flow" || p.prepare === "playbook-step") {
+  if (p.prepare === "playbook-flow" || p.prepare === "playbook-step" || p.prepare === "playbook-prompts") {
     const section = page.getByRole("region", {
       name: "Flow steps",
       exact: true,
     });
     await section.waitFor();
     await section.evaluate((el) => el.scrollIntoView({ block: "start" }));
-    if (p.prepare === "playbook-step") {
+    if (p.prepare === "playbook-step" || p.prepare === "playbook-prompts") {
       const node = page.locator(".react-flow__node").first();
       await node.focus();
       await node.press("Enter");
       await page
         .getByRole("region", { name: "Step properties", exact: true })
         .evaluate((el) => el.scrollIntoView({ block: "start" }));
+      if (p.prepare === "playbook-prompts") {
+        await page.getByRole("button", { name: "Add manual prompt", exact: true }).click();
+        await page.getByLabel("Prompt 1 title", { exact: true }).fill("Verify the change");
+        await page.getByLabel("Prompt 1 instructions", { exact: true }).fill("Run the relevant tests and record the evidence for independent review.");
+        await page.getByRole("region", { name: "Prompt 1", exact: true }).evaluate(el => el.scrollIntoView({ block: "start" }));
+      }
     }
   }
   if (p.prepare === "resource-controls" || p.prepare === "resource-advanced") {

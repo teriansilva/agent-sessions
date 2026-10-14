@@ -130,6 +130,9 @@ def render(
             lines.append("")
             if step["brief"]:
                 lines.extend(_block(expand(step["brief"])))
+            for prompt in step.get("prompts", []):
+                lines.extend(["Instructions: " + _inline(expand(prompt["title"])), ""])
+                lines.extend(_block(expand(prompt["body"])))
             if not step["checklist"]:
                 lines.extend(["No checklist evidence is declared for this step.", ""])
                 if actor["kind"] == schema.ACTOR_NONE:

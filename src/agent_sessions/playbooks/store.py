@@ -1529,12 +1529,17 @@ def _remap_ref(value: object, steps: dict[str, str]) -> object:
 def remap_flow(doc: dict, steps: dict[str, str]) -> dict:
     """A flow document with every step id — and every place one is named: `after`, `rework.to`,
     `distinct_from[].step` and `{{steps.<id>.<slot>}}` in probe arguments — mapped through
-    `steps`. Anything else is copied unchanged."""
+    `steps`. Retained direct prompts get fresh local IDs too.
+    Everything else is copied unchanged."""
+    from . import step_prompts
+
     out = dict(doc)
     new_steps = []
     for raw in doc.get("steps", []):
         s = dict(raw) if isinstance(raw, dict) else raw
         if isinstance(s, dict):
+            if isinstance(s.get("prompts"), list):
+                s["prompts"] = step_prompts.duplicate(s["prompts"])
             if isinstance(s.get("id"), str):
                 s["id"] = steps.get(s["id"], s["id"])
             if isinstance(s.get("after"), list):

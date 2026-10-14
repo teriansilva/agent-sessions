@@ -1,5 +1,6 @@
 /** One complete in-memory bundle. Unedited files retain their original spelling and bytes. */
 import type { PlaybookDetail } from "../../types/playbooks";
+import type { TemplateInput } from "../../types/api";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 
@@ -27,10 +28,28 @@ export interface Item extends Document {
   required?: boolean;
   probe_args?: Record<string, string | number>;
 }
+export interface DirectPrompt extends Document {
+  id: string;
+  title: string;
+  body: string;
+  source?: {
+    id: string;
+    revision: string;
+    template: TemplateInput;
+    bindings: Record<string, string>;
+  };
+}
+export interface PromptComparison {
+  state: "current" | "changed" | "deleted";
+  retained: DirectPrompt;
+  candidate: DirectPrompt | null;
+  reason?: string;
+}
 export interface Step extends Document {
   id: string;
   title: string;
   brief?: string;
+  prompts?: DirectPrompt[];
   actor: { kind: string; engine?: string; model?: string; label?: string };
   after?: string[];
   memory?: string;
@@ -89,6 +108,8 @@ export interface AuthoringSchema {
     flows: number;
     steps: number;
     items: number;
+    prompts?: number;
+    initial_instruction?: number;
     variables: number;
     distinct: number;
     rework_min: number;
@@ -98,6 +119,26 @@ export interface AuthoringSchema {
 export const MANIFEST = "playbook.toml";
 export const flowPath = (id: string) => `flows/${id}.toml`;
 export const flowId = (path: string) => path.slice(6, -5);
+/** Opt into retained prompts only on an explicit instruction edit; legacy edits keep format. */
+export function withStep(draft: Draft, path: string, step: Step): Draft {
+  const flow = draft.documents[path] as Flow;
+  const manifest = draft.documents[MANIFEST] as Manifest;
+  const formats = step.prompts !== undefined;
+  return {
+    ...draft,
+    documents: {
+      ...draft.documents,
+      [MANIFEST]: formats
+        ? { ...manifest, format: Math.max(4, manifest.format) }
+        : manifest,
+      [path]: {
+        ...flow,
+        format: formats ? Math.max(4, flow.format) : flow.format,
+        steps: flow.steps.map((old) => (old.id === step.id ? step : old)),
+      },
+    },
+  };
+}
 export function freshId(prefix: string) {
   return `${prefix}-${crypto.randomUUID().slice(0, 8)}`;
 }
@@ -189,7 +230,9 @@ export function differences(
     if (file === undefined) return "(absent)";
     if (typeof file === "string") return file;
     if ("toml" in file) return JSON.stringify(file.toml, null, 2);
-    const bytes = Uint8Array.from(atob(file.base64), (char) => char.charCodeAt(0));
+    const bytes = Uint8Array.from(atob(file.base64), (char) =>
+      char.charCodeAt(0),
+    );
     return `Binary file: ${bytes.length} bytes\nSHA-256: ${bytesToHex(sha256(bytes))}`;
   }
   function view(d: Draft, path: string, fields: boolean, raw: boolean): string {

@@ -38,6 +38,7 @@ import {
   newDraft,
   newStep,
   same,
+  withStep,
 } from "../components/playbooks/playbookDraft";
 import type {
   AuthoringSchema,
@@ -605,7 +606,14 @@ function Editor({
             ref={workspace}
             className={styles.workspace}
             onKeyDownCapture={(event) => {
-              if (event.key === "Escape" && !event.defaultPrevented) {
+              if (
+                event.key === "Escape" &&
+                !event.defaultPrevented &&
+                !(
+                  event.target instanceof Element &&
+                  event.target.closest("dialog")
+                )
+              ) {
                 event.preventDefault();
                 event.stopPropagation();
                 selectWorkflow();
@@ -650,12 +658,7 @@ function Editor({
                 variables={manifest.variables ?? []}
                 schema={schema}
                 field={`steps[${flow.steps.indexOf(selectedStep)}]`}
-                onChange={(s) =>
-                  document(path, {
-                    ...flow,
-                    steps: flow.steps.map((old) => (old.id === s.id ? s : old)),
-                  })
-                }
+                onChange={(s) => edit(withStep(draft, path, s))}
                 onMove={(direction) => {
                   const steps = [...flow.steps],
                     index = steps.indexOf(selectedStep);

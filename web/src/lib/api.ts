@@ -3,7 +3,7 @@ import type { CollectionInput, SharedVariable, SharedVariableInput, SharedVariab
 import type { Resources, ResourceSettings, ResourceValues } from "../types/resources";
 // Typed client for the FastAPI `/api/*` surface. Same-origin; cookie session auth.
 // Mutations (later) attach the CSRF token + are origin-checked server-side.
-import type { AuthoringSchema, Files } from "../components/playbooks/playbookDraft";
+import type { AuthoringSchema, DirectPrompt, Files, PromptComparison, Variable } from "../components/playbooks/playbookDraft";
 import type { PluginCatalog, PluginReview, PluginOperation, PluginAction } from "../types/plugins";
 import type { PlaybookDetail, PlaybookFleet, PlaybookFleetResult, PlaybookFleetReview, PlaybookList, PlaybookVerify, PlaybookWriteResult } from "../types/playbooks";
 import {
@@ -1972,6 +1972,10 @@ export const api = {
 
   // Bundles (#1192). Every mutation uses the loaded revision and the shared CSRF transport.
   playbookAuthoring: () => getJsonWithDetail<AuthoringSchema>("/api/playbooks/authoring/schema"),
+  importStepPrompt: (template_id: string, expected_updated_at: number, bindings: Record<string, string>, variables: Variable[]) =>
+    mutateJson<{ prompt: DirectPrompt }>("POST", "/api/playbooks/authoring/prompts/import", { template_id, expected_updated_at, bindings, variables }),
+  compareStepPrompt: (prompt: DirectPrompt, variables: Variable[]) =>
+    mutateJson<PromptComparison>("POST", "/api/playbooks/authoring/prompts/compare", { prompt, variables }),
   createPlaybook: (files: Files) => mutateJson<PlaybookDetail & PlaybookWriteResult>("POST", "/api/playbooks", { files }),
   savePlaybook: (id: string, revision: string, files: Files) => mutateJson<PlaybookDetail & PlaybookWriteResult>("PUT", `/api/playbooks/${encodeURIComponent(id)}`, { revision, files }),
   copyPlaybookDraft: (files: Files) => mutateJson<PlaybookDetail & PlaybookWriteResult>("POST", "/api/playbooks/authoring/copy", { files }),

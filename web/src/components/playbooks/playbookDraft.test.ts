@@ -5,6 +5,7 @@ import {
   draftFiles,
   fromDetail,
   newDraft,
+  withStep,
   type Flow,
   type Manifest,
 } from "./playbookDraft";
@@ -56,6 +57,32 @@ const original = (): PlaybookDetail => ({
 });
 
 describe("complete playbook draft", () => {
+  it("opts into prompts only when requested and preserves completion, actors and untouched files", () => {
+    const draft = fromDetail(original());
+    const flow = draft.documents["flows/main.toml"] as Flow;
+    const step = {
+      ...flow.steps[0],
+      checklist: [
+        { key: "proof", title: "Independent evidence", required: true },
+      ],
+      rework: { to: "prior", when: "proof", max_rounds: 3 },
+    };
+    const ordinary = withStep(draft, "flows/main.toml", step);
+    expect(ordinary.documents["playbook.toml"].format).toBe(3);
+    expect(ordinary.documents["flows/main.toml"].format).toBe(1);
+    const prompts = [
+      { id: "prompt-one", title: "Read", body: "Read carefully." },
+    ];
+    const edited = withStep(ordinary, "flows/main.toml", { ...step, prompts });
+    expect(edited.documents["playbook.toml"].format).toBe(4);
+    expect(edited.documents["flows/main.toml"].format).toBe(4);
+    expect((edited.documents["flows/main.toml"] as Flow).steps[0]).toEqual({
+      ...step,
+      prompts,
+    });
+    expect(edited.files).toEqual(draft.files);
+    expect(draft.documents["playbook.toml"].format).toBe(3);
+  });
   it("preserves every untouched file byte and original format", () => {
     const before = fromDetail(original());
     const draft = structuredClone(before);
@@ -118,8 +145,10 @@ describe("complete playbook draft", () => {
   it("shows concurrent TOML comments alongside differing draft and saved fields", () => {
     const mine = fromDetail(original());
     const current = structuredClone(mine);
-    (mine.documents["playbook.toml"] as Manifest).identity.name = "My unsaved name";
-    (current.documents["playbook.toml"] as Manifest).identity.name = "Changed elsewhere";
+    (mine.documents["playbook.toml"] as Manifest).identity.name =
+      "My unsaved name";
+    (current.documents["playbook.toml"] as Manifest).identity.name =
+      "Changed elsewhere";
     current.files["playbook.toml"] = "# New operator note\nformat = 3\n";
     const [diff] = differences(mine, current);
     expect(diff.path).toBe("playbook.toml");
@@ -132,11 +161,14 @@ describe("complete playbook draft", () => {
     const mine = fromDetail(original());
     const current = structuredClone(mine);
     current.files["template/raw.bin"] = { base64: "AP/9" };
-    expect(differences(mine, current)).toEqual([{
-      path: "template/raw.bin",
-      mine: "Binary file: 3 bytes\nSHA-256: d590f90f7944340fb253f0c59cb89fd41d4ec255ff246f524f8f7c94f0a233e5",
-      current: "Binary file: 3 bytes\nSHA-256: 57d2de42a73ab3a6416d2077fea44e5f3bd499c74d5503126230fb014addb4df",
-    }]);
+    expect(differences(mine, current)).toEqual([
+      {
+        path: "template/raw.bin",
+        mine: "Binary file: 3 bytes\nSHA-256: d590f90f7944340fb253f0c59cb89fd41d4ec255ff246f524f8f7c94f0a233e5",
+        current:
+          "Binary file: 3 bytes\nSHA-256: 57d2de42a73ab3a6416d2077fea44e5f3bd499c74d5503126230fb014addb4df",
+      },
+    ]);
     delete mine.files["template/raw.bin"];
     expect(differences(mine, current)[0]).toMatchObject({
       mine: "(absent)",

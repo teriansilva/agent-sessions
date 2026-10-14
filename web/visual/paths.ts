@@ -36,7 +36,8 @@ export type VisualPath = {
     | "resource-controls"
     | "resource-advanced"
     | "playbook-flow"
-    | "playbook-step";
+    | "playbook-step"
+    | "playbook-prompts";
 };
 
 /** Screen formats — every area is captured at each (the operator asked for several). */
@@ -150,6 +151,15 @@ export const VISUAL_PATHS: VisualPath[] = [
     prepare: "playbook-step",
     requireAuth: "admin",
     waitFor: { selector: '[aria-label="Step properties"]', timeoutMs: 12000 },
+  },
+  {
+    group: "authed",
+    path: "/library/playbooks/forge-workflow/edit",
+    name: "playbook-step-prompts",
+    description: "Direct step prompts — unsaved manual instructions and source controls",
+    prepare: "playbook-prompts",
+    requireAuth: "admin",
+    waitFor: { selector: '[aria-label="Prompt 1"]', timeoutMs: 12000 },
   },
   {
     group: "authed",

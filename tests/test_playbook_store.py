@@ -745,7 +745,8 @@ def test_no_playbook_route_exposes_a_parameter_as_request_input(auth_cfg):
     # authoring + review/confirm + the deployment lifecycle + git (#1196: clone, seed, remote
     # plan/create, publish plan/publish, operation status); recovery has no purge endpoint and
     # no route deletes a remote repository
-    assert len(seen) == 30, seen
+    # Direct prompt import/comparison return unsaved candidates under the same auth boundary.
+    assert len(seen) == 32, seen
 
 
 def test_the_routes_need_a_session_csrf_and_the_origin_and_are_never_cached(auth_cfg, tmp_home):

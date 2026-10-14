@@ -8,6 +8,7 @@ import {
 } from "../../app/engineRoster";
 import type { AuthoringSchema, Item, Step, Variable } from "./playbookDraft";
 import { ancestors, freshId } from "./playbookDraft";
+import { PlaybookPrompts } from "./PlaybookPrompts";
 import buttons from "../ui/actionButton.module.css";
 import styles from "./playbookEditor.module.css";
 
@@ -294,9 +295,16 @@ export function PlaybookStepEditor({
           field={`${field}.brief`}
         />
         <p className={styles.hint}>
-          Describe the work for this step. Template import is not available yet.
-          External and operator steps use this text as reference instructions.
+          Describe the work for this step. External and operator steps use this
+          text as reference instructions.
         </p>
+        <PlaybookPrompts
+          prompts={step.prompts ?? []}
+          variables={variables}
+          limit={schema.limits.prompts ?? 0}
+          field={`${field}.prompts`}
+          onChange={(prompts) => patch({ prompts })}
+        />
       </section>
       <section className={styles.propertyGroup} aria-label="Completion rules">
         <h3>Completion rules</h3>

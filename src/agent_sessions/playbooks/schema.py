@@ -17,11 +17,13 @@ from ..plugins import kinds as plugin_kinds
 from ..plugins import manifest as plugin_manifest
 
 #: Format 2 permits proposed target defaults/choices, armed only by deployment review. Format 3
-#: adds the `{{secret_path:<name>}}` reference token (template materials only). Formats 1 and 2
+#: adds the `{{secret_path:<name>}}` reference token (template materials only). Format 4 adds
+#: retained manual/template prompts directly on a step. Earlier formats
 #: retain their own validation; reading/saving never silently upgrades a document.
-FORMAT = 3
-SUPPORTED_FORMATS = frozenset({1, 2, 3})
+FORMAT = 4
+SUPPORTED_FORMATS = frozenset({1, 2, 3, 4})
 SECRET_PATH_FORMAT = 3
+DIRECT_PROMPT_FORMAT = 4
 MIGRATIONS: dict = {}
 
 # --- identities ----------------------------------------------------------------------------------
@@ -59,6 +61,10 @@ ITEM_KEY_FORBIDDEN_SUBSTRING = missions.MINTED_KEY_SEP
 MAX_FLOWS = 20
 MAX_STEPS = 30
 MAX_ITEMS_PER_STEP = 12
+MAX_PROMPTS_PER_STEP = 16
+#: The current native and configured-endpoint input contracts both admit 200,000 characters.
+#: Tests pin this against those runtime constants; execution must apply its admitted limit too.
+MAX_INITIAL_INSTRUCTION = 200_000
 MAX_VARIABLES = 32
 MAX_CONNECTIONS = 8
 MAX_MATERIALS = 200

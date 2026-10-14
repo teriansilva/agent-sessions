@@ -50,7 +50,7 @@ Choose **New playbook** and name it. Workflow properties let you name the workfl
 its inputs. Add a step, then select its graph node to open **Properties**:
 
 - **Who performs this step** records its agent, external service or operator assignment.
-- **Instructions** describes the work. Manual instructions are available; template import is pending.
+- **Instructions** describes the work, with manual prompts or retained copies from the template library.
 - **Completion rules** defines the independent evidence required for completion.
 - **What happens next** sets prerequisites and bounded review loops. **Starts after**, Move up/down
   and Remove all work without dragging; moving a step changes its display order, not its prerequisites.
@@ -61,3 +61,37 @@ properties. Advanced groups hold technical IDs, outputs and independence constra
 
 Saving writes a local bundle; it does not modify projects pinned to an earlier revision or start
 a workflow. API profile setup and AI creation are not yet available in this editor.
+
+## Add prompts directly to a step
+
+Select a step in the flowchart and open **Instructions**. Keep the brief in **Step instructions**,
+then use **Add manual prompt** or **Import template**. Prompts follow the brief in the order shown;
+the up/down buttons change their order without dragging. Removing a prompt leaves its library
+template and completion rules intact.
+
+Template import previews the source and asks you to map every field to a declared non-secret
+playbook input. The copy is unsaved until **Save playbook**. Importing the same template twice
+creates independent copies. Secrets and image attachments cannot be imported into text prompts.
+
+**Compare source** shows your customized copy beside the current source. Cancel keeps your copy;
+**Adopt source update** explicitly replaces its instructions and retained source in the draft.
+If fields changed, choose and map the source again. A deleted source leaves the retained copy
+usable. A stale import refuses without discarding your choices. Nothing is sent during these edits.
+
+### Bundle compatibility
+
+Format 4 can retain an ordered `prompts` array directly on a step. Each prompt has an ID, a title
+and its instruction body. Imported templates also retain their original definition, content
+revision and explicit mappings to the bundle's inputs. Editing or deleting a library template
+does not change a retained copy; comparison returns a separate candidate for explicit adoption.
+
+Both the manifest and flow must declare format 4. Existing bundles are never upgraded on read;
+older builds refuse this version. The existing `step.checklist` field continues to mean completion
+evidence, independently of prompt text. Copying a bundle preserves those rules and gives retained
+prompts fresh IDs.
+
+The authoring API returns unsaved copies and comparisons. Its text prompts cannot interpolate
+secrets or import image attachments. Inputs are portable names, never stored library values.
+The composed instruction keeps the brief followed by prompts in saved order and refuses missing
+inputs or an oversized result. These services do not launch work; workflow execution remains a
+separate integration.

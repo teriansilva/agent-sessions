@@ -5,6 +5,8 @@
 * ``POST   /api/playbooks``                    — create a ``local`` playbook ``{files}`` → 201
 * ``GET    /api/playbooks/authoring/schema``   — editor choices; no execution
 * ``POST   /api/playbooks/authoring/copy``     — save supplied draft with fresh identities
+* ``POST   /api/playbooks/authoring/prompts/import`` — retain a template in an unsaved prompt
+* ``POST   /api/playbooks/authoring/prompts/compare`` — compare a retained template; no adoption
 * ``GET    /api/playbooks/{pid}``              — detail: card, ``files``, ``documents``, README
 * ``PUT    /api/playbooks/{pid}``              — replace a local playbook ``{revision, files}``
 * ``DELETE /api/playbooks/{pid}?revision=…``   — delete a local playbook (refused while projects
@@ -220,6 +222,26 @@ def register(app: FastAPI, *, logged_in, csrf_guard, signing_key: str) -> None:
             return body
         out = await _run(_copy_draft, body)
         return out if isinstance(out, JSONResponse) else _json(out, 201)
+
+    @app.post(PREFIX + "/authoring/prompts/import")
+    async def import_step_prompt(
+        request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        body = await _read_body(request)
+        if isinstance(body, JSONResponse):
+            return body
+        out = await _run(authoring.template_prompt, body)
+        return out if isinstance(out, JSONResponse) else _json(out)
+
+    @app.post(PREFIX + "/authoring/prompts/compare")
+    async def compare_step_prompt(
+        request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        body = await _read_body(request)
+        if isinstance(body, JSONResponse):
+            return body
+        out = await _run(authoring.compare_template_prompt, body)
+        return out if isinstance(out, JSONResponse) else _json(out)
 
     @app.get(PREFIX + "/{pid}")
     async def get_playbook(pid: str, _user: str = Depends(logged_in)) -> JSONResponse:

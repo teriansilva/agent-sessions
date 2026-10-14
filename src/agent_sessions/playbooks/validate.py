@@ -34,7 +34,7 @@ from ..plugins.manifest import (
     compile_id_pattern,
     relative_path,
 )
-from . import schema
+from . import schema, step_prompts
 from .errors import PlaybookFormatError
 from .tree import Tree, check_segment
 
@@ -627,7 +627,7 @@ def _actor(r: _Reader) -> dict:
     return out
 
 
-def _step(sr: _Reader) -> dict:
+def _step(sr: _Reader, *, format: int, variables: dict) -> dict:
     step: dict[str, Any] = {
         "id": sr.str("id", pattern=schema.STEP_ID_RE),
         "title": sr.str("title", max_len=schema.ITEM_TITLE_MAX),
@@ -641,6 +641,23 @@ def _step(sr: _Reader) -> dict:
         "distinct_from": [],
         "skills": [],
     }
+    if sr.has("prompts"):
+        if format < schema.DIRECT_PROMPT_FORMAT:
+            raise _fail(sr._f("prompts"), "direct prompts require flow format 4")
+        prompts = [
+            step_prompts.read(pr, variables)
+            for pr in _records(sr, "prompts", max_items=schema.MAX_PROMPTS_PER_STEP)
+        ]
+        ids = [prompt["id"] for prompt in prompts]
+        if len(ids) != len(set(ids)):
+            raise _fail(sr._f("prompts"), "prompt IDs must be distinct within a step")
+        parts = [step["brief"], *(prompt["body"] for prompt in prompts)]
+        if (
+            len("\n\n".join(part for part in parts if part.strip()))
+            > schema.MAX_INITIAL_INSTRUCTION
+        ):
+            raise _fail(sr._f("prompts"), "composed initial instruction exceeds the runtime bound")
+        step["prompts"] = prompts
     for ir in _records(sr, "checklist", max_items=schema.MAX_ITEMS_PER_STEP):
         probe = missions.canonical_probe(ir.raw("probe"))
         if not isinstance(probe, str) or probe not in missions.PROBE_KINDS:
@@ -857,7 +874,7 @@ def _flow(tree: Tree, fid: str, rel: str, variables: dict, targets: dict[str, st
         steps: dict[str, dict] = {}
         keys: set[str] = set()
         for sr in records:
-            s = _step(sr)
+            s = _step(sr, format=doc["format"], variables=variables)
             if s["id"] in steps:
                 raise _fail(sr._f("id"), f"duplicate step id {s['id']!r}")
             for item in s["checklist"]:
@@ -981,6 +998,10 @@ def validate_tree(tree: Tree) -> dict:
         fid: _flow(tree, fid, rel, variables, targets)
         for fid, rel in _dir_files(tree, schema.FLOWS_DIR, ".toml", schema.MAX_FLOWS)
     }
+    if doc["format"] < schema.DIRECT_PROMPT_FORMAT and any(
+        "prompts" in step for flow in flows.values() for step in flow["steps"]
+    ):
+        raise _fail("playbook.toml: format", "direct prompts require bundle format 4")
     if doc["format"] == 1:
         _check_target_variables(variables, targets)
     if default_flow is not None and default_flow not in flows:

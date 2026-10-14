@@ -80,6 +80,24 @@ def test_an_alias_request_is_rendered_as_requested_beside_its_resolution(workflo
     assert "requested model `fixture-model`." in text  # Unaliased rows add no resolution.
 
 
+def test_retained_prompt_copies_appear_after_the_brief_without_changing_evidence(workflow):
+    step = workflow[0]["flows"]["dev"]["steps"][0]
+    step["brief"] = "Retained brief."
+    step["prompts"] = [
+        {"id": "first", "title": "Inspect", "body": "Inspect {{repo_name}}."},
+        {"id": "second", "title": "Report", "body": "Report every finding verbatim."},
+    ]
+    text = content(workflow)
+    assert (
+        text.index("Retained brief.")
+        < text.index("Inspect demo.")
+        < text.index("Report every finding verbatim.")
+    )
+    for item in step["checklist"]:
+        assert f"`{item['key']}`" in text
+    assert "Completing an agent turn does not complete a step." in text
+
+
 def test_bail_conditions_carry_their_runbook_trigger(workflow):
     bundle, values, assignments, targets = workflow
     bundle = copy.deepcopy(bundle)
