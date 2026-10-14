@@ -1324,8 +1324,9 @@ def _native_turns(root: Path, native_id: str) -> list[Turn]:
         elif kind == "turn_completed" and isinstance(data.get("text"), str):
             final[op] = data["text"]
     out: list[Turn] = []
+    removed = native_journal.withdrawn(journal)  # never sent: not part of the conversation
     for op in journal.operations.values():
-        if op.request.get("action") != "submit":
+        if op.request.get("action") != "submit" or op.operation_id in removed:
             continue
         text = op.request["params"].get("text")
         if isinstance(text, str):

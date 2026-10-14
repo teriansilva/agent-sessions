@@ -33,7 +33,9 @@ export async function mockStructuredGuidance(page: Page, engine: string, mode: s
     omitted_turns: 0, pending_requests: [] as Json[], read_only: null as string | null,
     native: { native_id: "native", worker: "worker", background_active: false, send_now: mode,
       // #1427: a turn the agent runs for itself, and whether this worker can interrupt it.
-      background_turn: null as string | null, send_now_background: "" as string },
+      background_turn: null as string | null, send_now_background: "" as string,
+      // #1447: this worker can remove a still-queued message.
+      withdraw: true as boolean },
     turns: [
       { ...common, turn_id: ACTIVE, operation_id: ACTIVE, state: "running", text: "Check startup.",
         attachments: [{ stored: "20261010-010000-startup-notes.pdf", name: "startup-notes.pdf", mime: "application/octet-stream" }],
@@ -47,6 +49,7 @@ export async function mockStructuredGuidance(page: Page, engine: string, mode: s
     ] as Json[],
   };
   const calls: Json[] = [];
+  const withdrawals: Json[] = [];
   let fail: "before" | "after" | null = null;
   let failureStatus: number | undefined;
   const failure = (r: Route) => failureStatus
@@ -60,16 +63,26 @@ export async function mockStructuredGuidance(page: Page, engine: string, mode: s
     if (sub === "/send-now") {
       calls.push(r.request().postDataJSON());
       if (fail === "before") return failure(r);
-      state.turns[1].delivery = mode === "steer" ? "steering" : "interrupting";
-      if (mode === "steer") state.turns[1].state = "delivering";
+      const target = state.turns.find((t) => t.turn_id === calls.at(-1)!.queued_turn_id) ?? state.turns[1];
+      target.delivery = mode === "steer" ? "steering" : "interrupting";
+      if (mode === "steer") target.state = "delivering";
       state.revision++;
       if (fail === "after") return failure(r);
       return r.fulfill({ json: { handoff: "sent", operation_id: calls.at(-1)!.operation_id } });
     }
+    if (sub === "/withdraw") {
+      const body = r.request().postDataJSON();
+      withdrawals.push(body);
+      const index = state.turns.findIndex((t) => t.turn_id === body.queued_turn_id && t.state === "queued");
+      if (index < 0) return r.fulfill({ status: 409, json: { detail: "the message was already sent or is no longer queued" } });
+      state.turns.splice(index, 1);
+      state.revision++;
+      return r.fulfill({ status: 202, json: { handoff: "sent", operation_id: body.operation_id } });
+    }
     if (!sub) return r.fulfill({ json: state });
     return r.fulfill({ status: 404, json: { detail: "not mocked" } });
   });
-  return { state, calls, fail: (afterHandoff = false, status?: number) => {
+  return { state, calls, withdrawals, fail: (afterHandoff = false, status?: number) => {
     fail = afterHandoff ? "after" : "before";
     failureStatus = status;
   },

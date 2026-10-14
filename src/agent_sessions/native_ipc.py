@@ -38,9 +38,19 @@ MAX_EVENTS = 100
 MAX_INTEGER = 2**53 - 1
 ADAPTERS = frozenset({"codex-app-server", "claude-stream-json", "opencode-acp"})
 ACTIONS = frozenset(
-    {"submit", "decide", "interrupt", "send_now", "snapshot", "events", "stop", "probe"}
+    {
+        "submit",
+        "decide",
+        "interrupt",
+        "send_now",
+        "withdraw",
+        "snapshot",
+        "events",
+        "stop",
+        "probe",
+    }
 )
-EFFECT_ACTIONS = frozenset({"submit", "decide", "interrupt", "send_now", "stop"})
+EFFECT_ACTIONS = frozenset({"submit", "decide", "interrupt", "send_now", "withdraw", "stop"})
 _ENGINE = re.compile(r"[a-z][a-z0-9-]{1,23}\Z", re.ASCII)
 _NATIVE = re.compile(r"[A-Za-z0-9_.:-]{1,258}\Z", re.ASCII)
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
@@ -277,6 +287,8 @@ def _params(action, value, *, immutable=False):
         },
         "interrupt": {"operation_id", "expected_revision", "turn_id"},
         "send_now": {"operation_id", "expected_revision", "turn_id", "queued_turn_id", "mode"},
+        # Remove one still-queued message before it is sent (#1447).
+        "withdraw": {"operation_id", "expected_revision", "queued_turn_id"},
         "stop": {"operation_id", "expected_revision", "target_worker_id"},
         "probe": {"target_worker_id"},
         "events": {"after", "limit"},

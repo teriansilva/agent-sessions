@@ -41,6 +41,7 @@ def params(action):
         },
         "interrupt": {**effect, "turn_id": uid()},
         "send_now": {**effect, "turn_id": uid(), "queued_turn_id": uid(), "mode": "steer"},
+        "withdraw": {**effect, "queued_turn_id": uid()},
         "stop": {**effect, "target_worker_id": uid()},
         "probe": {"target_worker_id": uid()},
         "snapshot": {},

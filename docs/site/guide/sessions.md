@@ -20,6 +20,17 @@ connection fails during Send now, **Retry Send now** checks the same request wit
 it. Messages still queued when a worker stops remain visibly not sent. After an application
 update, an already-running session may need a new worker before Send now becomes available.
 
+**Remove** takes a queued message out before it is sent; the agent never sees it and the
+messages after it keep their order. A message the agent has already received (or is receiving)
+can't be removed. If you pressed Send now for it and the agent is still stopping, removing it
+cancels the send, but the current reply still stops.
+
+**Always send now** sends the message now and keeps doing that for every message you send while
+the agent works, so you don't have to press Send now each time. The message box says what Send
+will do, and **Always send now · Turn off** beside it switches back to queueing. The setting
+belongs to this browser and acts while the session is open in it; with no BattleLab tab open,
+messages queue as usual. On Claude and opencode each new message stops the reply in progress.
+
 Commands and tools start collapsed under an activity summary; expand it to inspect the details.
 Agent replies have their own panel, and permission requests stay visible. The view follows new
 content while you are at the bottom; scrolling up keeps your reading position.

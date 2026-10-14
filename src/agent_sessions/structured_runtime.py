@@ -109,6 +109,7 @@ class _NativeAdapter:
             "events",
             "interrupt",
             "send_now",
+            "withdraw",
             "stop",
             "probe",
         )
@@ -164,6 +165,9 @@ class _NativeAdapter:
 
     async def send_now(self, engine, native, **kwargs):
         return await _native(native_runtime.send_now, engine, native, **kwargs)
+
+    async def withdraw(self, engine, native, **kwargs):
+        return await _native(native_runtime.withdraw, engine, native, **kwargs)
 
     async def stop(self, engine, native):
         return await _native(native_runtime.stop, engine, native)
@@ -640,6 +644,18 @@ async def send_now(
         native,
         operation_id=_operation_id(operation_id),
         turn_id=_operation_id(turn_id),
+        queued_turn_id=_operation_id(queued_turn_id),
+    )
+    return {"session_key": f"{engine}:{native}", **result}
+
+
+async def withdraw(session_key: str, *, operation_id: str, queued_turn_id: str) -> dict:
+    """Remove one still-queued message before it is sent (#1447)."""
+    engine, native = _key(session_key)
+    result = await _adapter(engine, "withdraw").withdraw(
+        engine,
+        native,
+        operation_id=_operation_id(operation_id),
         queued_turn_id=_operation_id(queued_turn_id),
     )
     return {"session_key": f"{engine}:{native}", **result}

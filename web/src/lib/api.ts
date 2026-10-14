@@ -715,6 +715,9 @@ export const api = {
     mutateJson<unknown>("POST", `${structuredPath(key)}/interrupt`, { operation_id, turn_id }),
   structuredSendNow: (key: string, operation_id: string, turn_id: string, queued_turn_id: string) =>
     mutateJson<unknown>("POST", `${structuredPath(key)}/send-now`, { operation_id, turn_id, queued_turn_id }),
+  /** Remove one still-queued message before it is sent (#1447). Replays by operation id. */
+  structuredWithdraw: (key: string, operation_id: string, queued_turn_id: string) =>
+    mutateJson<unknown>("POST", `${structuredPath(key)}/withdraw`, { operation_id, queued_turn_id }),
   /** Launch a skip-permissions creation the operator has seen succeed (#1339). Idempotent. */
   structuredStart: (key: string) =>
     mutateJson<StructuredSnapshot>("POST", `${structuredPath(key)}/start`),

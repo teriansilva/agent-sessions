@@ -854,6 +854,8 @@ class Worker:
                 return self.error(request, "conflict", "stop targets another worker generation")
             if action == "send_now":
                 return await self.send_now(request)
+            if action == "withdraw":
+                return await self.withdraw(request)
             # Validate what can be validated BEFORE a durable claim; a refused request that
             # never claimed can be retried with the same operation id.
             if action == "decide":
@@ -1039,6 +1041,63 @@ class Worker:
         """Is ``queued`` the first message waiting (#1442)? Checked before the claim and again
         once it is fsynced: the head that changed meanwhile settles the control ``not_sent``."""
         return bool(self.queued) and self.queued[0] is queued
+
+    async def withdraw(self, request: dict) -> dict:
+        """Remove one still-queued message before it is sent (#1447).
+
+        Runs under the same effect lock as FIFO dispatch and Send now, so a message is either
+        removed here or handed off there, never both. The queued submit settles ``not_sent``;
+        the control records ``sent`` once the entry is gone.
+        """
+        params = request["params"]
+        try:
+            journal = await asyncio.to_thread(
+                native_journal.read, self.journal_root, self.session_id
+            )
+            previous = journal.operations.get(params["operation_id"])
+            if previous is not None:
+                if previous.request != native_ipc.immutable_request(request):
+                    return self.error(
+                        request, "conflict", "native operation UUID binds another request"
+                    )
+                return self.receipt(request, previous.receipt())
+            queued = next(
+                (p for p in self.queued if p["operation_id"] == params["queued_turn_id"]), None
+            )
+            if queued is None:
+                return self.error(
+                    request, "stale", "the message was already sent or is no longer queued"
+                )
+            fresh, receipt = await asyncio.to_thread(
+                native_journal.claim, self.journal_root, request
+            )
+            if not fresh:
+                return self.receipt(request, receipt)
+            self.queued.remove(queued)
+            await asyncio.to_thread(
+                native_journal.record_handoff,
+                self.journal_root,
+                self.binding,
+                params["queued_turn_id"],
+                "not_sent",
+            )
+            receipt = await asyncio.to_thread(
+                native_journal.record_handoff,
+                self.journal_root,
+                self.binding,
+                params["operation_id"],
+                "sent",
+            )
+            self.queue_wake.set()
+            return self.receipt(request, receipt)
+        except native_journal.JournalError as exc:
+            if exc.code not in {"conflict", "invalid", "busy"}:
+                self.stop_child()  # no further write without durable evidence
+            return self.error(
+                request,
+                exc.code if exc.code in {"conflict", "invalid", "busy"} else "unavailable",
+                exc.detail,
+            )
 
     def _background_target(self, turn_id: str) -> bool:
         """Is ``turn_id`` the turn the agent is running for itself right now (#1427)?"""
@@ -1247,6 +1306,9 @@ class Worker:
                 # Send now against a turn the agent runs for itself (#1427); absent on workers
                 # from before it, which the server then never offers it for.
                 send_now_background=self.codec.send_now_background,
+                # Remove a queued message (#1447); absent on older workers, which the server
+                # then never offers it for.
+                withdraw=True,
                 # Interrupt a turn the agent runs for itself directly, not only via Send now
                 # (#1438); absent on older workers, which the pane then offers no button for.
                 interrupt_own=self.codec.send_now_background == "interrupt",

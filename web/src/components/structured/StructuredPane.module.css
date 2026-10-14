@@ -52,12 +52,61 @@
   padding: 0 14px;
   background: var(--bg-2);
   border: 1px solid var(--accent);
-  color: var(--accent);
+  color: var(--brand); /* the darker amber on light: readable as text (#1447) */
   font: 600 12px var(--font-mono);
   cursor: pointer;
 }
 .sendNow:disabled { opacity: 0.5; cursor: default; }
-.activity > summary:focus-visible, .sendNow:focus-visible {
+/* Queued-row controls (#1447): Remove on every queued message, Always send now beside Send now. */
+.queueActions { display: flex; flex-wrap: wrap; gap: 8px; }
+.alwaysSendNow {
+  min-height: 44px;
+  padding: 0 14px;
+  background: var(--bg-2);
+  border: 1px dashed var(--accent);
+  color: var(--brand);
+  font: 600 12px var(--font-mono);
+  cursor: pointer;
+}
+.remove {
+  min-height: 44px;
+  padding: 0 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  color: var(--text-muted);
+  font: 600 12px var(--font-mono);
+  cursor: pointer;
+}
+.remove:hover:not(:disabled) { color: var(--text); border-color: var(--text-muted); }
+.alwaysSendNow:disabled, .remove:disabled { opacity: 0.5; cursor: default; }
+/* The composer's "Always send now · Turn off" chip: on while shown; a press turns it off. */
+.alwaysChip {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  background: var(--bg-2);
+  border: 1px solid var(--accent);
+  color: var(--brand);
+  font: 600 11px var(--font-mono);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.alwaysMark { width: 6px; height: 6px; background: var(--accent); flex: none; }
+.alwaysOff {
+  color: var(--text-muted);
+  font-weight: 400;
+  text-transform: none;
+  border-left: 1px solid var(--line-strong);
+  padding-left: 8px;
+}
+.activity > summary:focus-visible, .sendNow:focus-visible, .alwaysSendNow:focus-visible,
+.remove:focus-visible, .alwaysChip:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }

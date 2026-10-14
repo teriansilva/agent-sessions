@@ -1457,6 +1457,8 @@ export interface StructuredSnapshot {
      *  (#1427), or null. Only from a worker advertising `send_now_background`. */
     background_turn?: string | null;
     send_now_background?: "interrupt";
+    /** The live worker can remove a still-queued message (#1447). */
+    withdraw?: boolean;
     /** This worker takes Interrupt on a turn the agent runs for itself directly (#1438). */
     interrupt_own?: boolean;
   };

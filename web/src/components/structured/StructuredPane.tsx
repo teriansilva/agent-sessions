@@ -12,6 +12,7 @@ import {
   ShieldOff,
   Square,
   SquareDashedBottom,
+  X,
 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ClipboardEvent as ReactClipboardEvent, KeyboardEvent } from "react";
@@ -63,6 +64,7 @@ import type {
 } from "../../types/api";
 import chat from "../chat/ChatPane.module.css";
 import { Markdown } from "./Markdown";
+import { autoSendNowHead, useAlwaysSendNow } from "./alwaysSendNow";
 import { PermissionsDialog } from "./PermissionsDialog";
 import styles from "./StructuredPane.module.css";
 import {
@@ -92,6 +94,9 @@ import {
 export const STRUCTURED_ACTIVE_POLL_MS = 1_000;
 /** Idle: background activity (or another tab) can still change the conversation. */
 export const STRUCTURED_IDLE_POLL_MS = 10_000;
+/** Always send now (#1447): automatic Send now attempts per queued message before it waits for
+ *  a click (a refusal while the agent's turn is not acknowledged yet clears up on its own). */
+const AUTO_SEND_TRIES = 5;
 /** An acknowledged Interrupt whose turn has not ended may be pressed again after this. */
 const STOPPING_RETRY_MS = 10_000;
 /** Reconnect back-off ceiling after failed reads. */
@@ -626,6 +631,11 @@ function TurnView({
   sendNowMode,
   sendingNow,
   sendNowDisabled,
+  alwaysSendNow,
+  onAlwaysSendNow,
+  onRemove,
+  removing,
+  canRemove,
   queuePosition,
   cutOff,
 }: {
@@ -643,6 +653,11 @@ function TurnView({
   sendNowMode?: "steer" | "interrupt";
   sendingNow: boolean;
   sendNowDisabled: boolean;
+  alwaysSendNow: boolean;
+  onAlwaysSendNow: (turnId: string) => void;
+  onRemove: (turnId: string) => void;
+  removing: boolean;
+  canRemove: boolean;
   /** Its place in line when queued, 1 = next (#1442). Only the head offers Send now. */
   queuePosition?: number;
   /** It settled interrupted because Send now stopped it (#1442). */
@@ -748,11 +763,30 @@ function TurnView({
                 : queuePosition === 1
                   ? "1st in queue · sends after the current reply"
                   : `${ordinal(queuePosition ?? 1)} in queue · sends after the message above`}</span>
-            {!readOnly && sendNowMode && canSendNow && (
-              <button type="button" className={styles.sendNow} disabled={sendNowDisabled}
-                onClick={() => onSendNow(turn.turn_id)}>
-                {sendingNow ? "Sending…" : "Send now"}
-              </button>
+            {!readOnly && ((sendNowMode && canSendNow) || (canRemove && turn.delivery !== "steering")) && (
+              <span className={styles.queueActions}>
+                {canRemove && turn.delivery !== "steering" && (
+                  <button type="button" className={styles.remove} disabled={removing || sendingNow}
+                    aria-label="Remove this queued message" onClick={() => onRemove(turn.turn_id)}>
+                    <X size={14} aria-hidden />
+                    {removing ? "Removing…" : "Remove"}
+                  </button>
+                )}
+                {/* Send now stays while Always send now is on: if an automatic attempt is
+                    refused and nothing changes, a click is still the way through. */}
+                {sendNowMode && canSendNow && (
+                  <button type="button" className={styles.sendNow} disabled={sendNowDisabled}
+                    onClick={() => onSendNow(turn.turn_id)}>
+                    {sendingNow ? "Sending…" : "Send now"}
+                  </button>
+                )}
+                {sendNowMode && canSendNow && !alwaysSendNow && (
+                  <button type="button" className={styles.alwaysSendNow} disabled={sendNowDisabled}
+                    onClick={() => onAlwaysSendNow(turn.turn_id)}>
+                    Always send now
+                  </button>
+                )}
+              </span>
             )}
           </div>
           {turn.delivery === "interrupt_failed" && (
@@ -760,10 +794,11 @@ function TurnView({
               Couldn’t interrupt: {turn.delivery_reason}. This message is still queued.
             </p>
           )}
-          {!readOnly && sendNowMode && canSendNow && (
+          {!readOnly && sendNowMode && canSendNow && !alwaysSendNow && (
             <p className={styles.queueHint}>{sendNowMode === "steer"
               ? "Adds this message to the current turn."
-              : `Stops ${agent}’s current reply, then sends this — and the messages after it, in order.`}</p>
+              : `Stops ${agent}’s current reply, then sends this — and the messages after it, in order.`}{" "}
+              <strong>Always send now</strong> does this for every message you send while the agent is working.</p>
           )}
         </div>
       )}
@@ -904,6 +939,13 @@ export function StructuredPane({
   const recoveringSendNow = sendNowUnknown?.key === key ? sendNowUnknown : null;
   const sendNowIds = useRef(new Map<string, { id: string; turnId: string }>());
   const sendNowBusy = useRef(false);
+  const [alwaysSendNow, setAlwaysSendNow] = useAlwaysSendNow();
+  // Always send now (#1447) presses Send now once per queued head; a refusal the agent may
+  // outgrow (its turn not acknowledged yet) is retried when the journal moves, a few times.
+  const autoTries = useRef(new Map<string, { revision: number; tries: number }>());
+  const [removing, setRemoving] = useState<string | null>(null);
+  // A lost Remove response keeps its operation id, so pressing Remove again replays it.
+  const removeIds = useRef(new Map<string, string>());
   const [stopping, setStopping] = useState(false);
   const [containment, setContainment] = useState<Containment | null>(null);
   // Share publicly… (#1404 P4): a link anyone can open, made and revoked in its own dialog.
@@ -1259,7 +1301,7 @@ export function StructuredPane({
     void interrupt(target);
   };
 
-  const sendNow = async (queuedTurnId: string) => {
+  const sendNow = async (queuedTurnId: string, auto = false) => {
     if (sendNowBusy.current) return;
     const target = `${key}:${queuedTurnId}`;
     let operation = sendNowIds.current.get(target);
@@ -1289,7 +1331,10 @@ export function StructuredPane({
       if (definite(e) && !recoveringSendNow) {
         sendNowIds.current.delete(target);
         setSendNowUnknown(null);
-        setActionError(`Send now not applied: ${detail(e, "refused")}`);
+        // An automatic attempt retries on its own; only its last refusal is worth showing.
+        if (!auto || (autoTries.current.get(target)?.tries ?? 0) >= AUTO_SEND_TRIES) {
+          setActionError(`Send now not applied: ${detail(e, "refused")}`);
+        }
       } else {
         setSendNowUnknown({ key, queuedTurnId });
       }
@@ -1298,6 +1343,50 @@ export function StructuredPane({
       setSendingNow(null);
       sendNowBusy.current = false;
     }
+  };
+
+  const removeQueued = async (queuedTurnId: string) => {
+    if (removing || readOnly) return;
+    const target = `${key}:${queuedTurnId}`;
+    const operation = removeIds.current.get(target) ?? uuid();
+    removeIds.current.set(target, operation);
+    setRemoving(queuedTurnId);
+    setActionError(null);
+    try {
+      await api.structuredWithdraw(key, operation, queuedTurnId);
+      removeIds.current.delete(target);
+    } catch (e) {
+      if (definite(e)) {
+        removeIds.current.delete(target);
+        setActionError(`Not removed: ${detail(e, "refused")}`);
+      } else {
+        setActionError(`Remove status is unknown: ${detail(e, "no answer")}. Press Remove again to check.`);
+      }
+    } finally {
+      await load();
+      setRemoving(null);
+    }
+  };
+
+  const autoHead = alwaysSendNow && !readOnly && !permissionPending && !recoveringSendNow && !sendingNow
+    ? autoSendNowHead(snap)
+    : null;
+  useEffect(() => {
+    if (!autoHead || !snap || sendNowBusy.current) return;
+    const target = `${key}:${autoHead}`;
+    const seen = autoTries.current.get(target);
+    if (seen && (seen.tries >= AUTO_SEND_TRIES || seen.revision === snap.revision)) return;
+    autoTries.current.set(target, { revision: snap.revision, tries: (seen?.tries ?? 0) + 1 });
+    void sendNow(autoHead, true);
+    // sendNow reads the current snapshot itself; the head and revision are the triggers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoHead, snap?.revision, key]);
+
+  const turnOnAlwaysSendNow = (queuedTurnId: string) => {
+    setAlwaysSendNow(true);
+    // This click is a Send now too; the effect then follows with the next queued message.
+    autoTries.current.set(`${key}:${queuedTurnId}`, { revision: snap?.revision ?? 0, tries: 1 });
+    void sendNow(queuedTurnId);
   };
 
   // The second phase of a skip-permissions creation (#1339): nothing ran yet; the operator starts
@@ -2028,6 +2117,11 @@ export function StructuredPane({
             queuePosition={positions.get(t.turn_id)}
             cutOff={cutBySendNow(snap, t)}
             sendNowDisabled={permissionPending || !!sendingNow || !!recoveringSendNow || operatorTurns(snap).some((q) => q.state === "queued" && q.delivery === "interrupting")}
+            alwaysSendNow={alwaysSendNow}
+            onAlwaysSendNow={turnOnAlwaysSendNow}
+            onRemove={(tid) => void removeQueued(tid)}
+            removing={removing === t.turn_id}
+            canRemove={!!snap?.native?.withdraw}
           />
           )}
           </Fragment>
@@ -2100,7 +2194,11 @@ export function StructuredPane({
                 ? "This conversation is read only"
                 : notStarted
                   ? "Start this session first"
-                  : active
+                  : active && alwaysSendNow && sendNowTarget(snap)
+                    ? sendNowTarget(snap)?.mode === "steer"
+                      ? `Message ${agent} — sends now, into the current turn.`
+                      : `Message ${agent} — sends now, stopping the current reply.`
+                    : active
                     ? `Message ${agent} — sends after earlier turns.`
                     : `Message ${agent} — Enter sends, Shift+Enter = newline.`
             }
@@ -2118,6 +2216,20 @@ export function StructuredPane({
           <span className={compose.spacer} role="status">
             {dictNote}
           </span>
+          {!readOnly && alwaysSendNow && (
+            <button
+              type="button"
+              className={styles.alwaysChip}
+              aria-pressed="true"
+              title="Messages sent while the agent works are sent now. Turn off to queue them again."
+              onClick={() => setAlwaysSendNow(false)}
+              data-testid="structured-always-send-now"
+            >
+              <span className={styles.alwaysMark} aria-hidden />
+              Always send now
+              <span className={styles.alwaysOff}>Turn off</span>
+            </button>
+          )}
           {!readOnly && snap && dictSupported && (
             <button
               type="button"

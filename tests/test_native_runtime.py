@@ -215,6 +215,7 @@ async def test_create_submit_replay_and_reconnect_observe_one_native_write(host,
         "events",
         "interrupt",
         "send_now",
+        "withdraw",  # remove a still-queued message (#1447)
         "stop",
         "probe",
     ) + (("enable_bypass",) if KINDS[source] in plugin_kinds.API_BYPASS_KINDS else ())

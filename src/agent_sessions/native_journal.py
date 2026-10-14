@@ -422,6 +422,20 @@ def read(root: Path, session_id: str) -> Journal:
         raise JournalError("unavailable", "native journal is unavailable") from None
 
 
+def withdrawn(journal: Journal) -> set[str]:
+    """Queued messages removed before they were sent (#1447), on durable proof of both halves:
+    the ``withdraw`` control recorded ``sent`` and the message settled ``not_sent``. A partial
+    record proves nothing, so that message is still shown as the journal has it."""
+    out = set()
+    for op in journal.operations.values():
+        if op.request["action"] != "withdraw" or op.handoff != "sent":
+            continue
+        target = journal.operations.get(op.request["params"]["queued_turn_id"])
+        if target is not None and target.handoff == "not_sent":
+            out.add(target.operation_id)
+    return out
+
+
 def _target(journal, session_key):
     if journal.header["request"]["session_key"] != session_key:
         raise JournalError("conflict", "native journal belongs to another client")

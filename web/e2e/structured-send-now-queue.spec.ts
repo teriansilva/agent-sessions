@@ -26,7 +26,10 @@ for (const theme of ["dark", "light"]) {
     await expect(rows(page).nth(0)).toContainText("1st in queue · sends after the current reply");
     await expect(rows(page).nth(0)).toContainText(/Stops .+’s current reply, then sends this — and the messages after it, in order\./);
     await expect(rows(page).nth(1)).toContainText("2nd in queue · sends after the message above");
-    await expect(rows(page).nth(1).getByRole("button")).toHaveCount(0);
+    // Nothing lets a later message jump the line; Remove (#1447) only takes it out.
+    await expect(rows(page).nth(1).getByRole("button", { name: /send now/i })).toHaveCount(0);
+    await expect(rows(page).nth(1).getByRole("button")).toHaveCount(1);
+    await expect(rows(page).nth(1).getByRole("button", { name: "Remove this queued message" })).toBeVisible();
     const box = await sendNow(page).boundingBox();
     expect(box!.height).toBeGreaterThanOrEqual(44); // design §8
     await page.screenshot({ path: testInfo.outputPath(`queue-${theme}.png`) });

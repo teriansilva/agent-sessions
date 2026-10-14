@@ -1259,8 +1259,13 @@ def project(
     background = False
     background_turn: tuple[str | None, str] | None = None  # (target, the worker that minted it)
     cwd = journal.header.get("cwd")
+    # A removed message (#1447) is not part of the conversation: it never takes a slot in the
+    # turn window, and is not counted as an omitted earlier turn.
+    removed = native_journal.withdrawn(journal)
     submits = [
-        op.operation_id for op in journal.operations.values() if op.request["action"] == "submit"
+        op.operation_id
+        for op in journal.operations.values()
+        if op.request["action"] == "submit" and op.operation_id not in removed
     ]
     # Turns the agent ran for itself (#1438), from the global `background` events that mint their
     # target. They share ONE display window with operator turns, newest first, so a bounded read
@@ -1684,6 +1689,9 @@ def _snapshot_sync(engine_id: str, session_id: str) -> dict:
     else:
         view["native"]["background_turn"] = None
     view["native"]["files"] = not live or life.get("files") is True
+    # Remove a queued message (#1447): only a live worker that says it can.
+    if life.get("withdraw") is True:
+        view["native"]["withdraw"] = True
     return view
 
 
@@ -2011,6 +2019,35 @@ async def send_now(
     receipt = await _revisioned(prov, session_id, operation_id, immutable, None, send)
     if receipt["handoff"] == "not_sent":
         raise NativeError(409, "Send now was not applied; check the current message state")
+    return receipt
+
+
+async def withdraw(
+    engine_id: str, session_id: str, *, operation_id: str, queued_turn_id: str
+) -> dict:
+    """Remove one still-queued message before the live worker sends it (#1447)."""
+    prov, _ = await asyncio.to_thread(_session, engine_id, session_id)
+    journal = await asyncio.to_thread(_journal, prov, session_id)
+    if operation_id not in journal.operations:
+        live = await asyncio.to_thread(_live_worker, session_id)
+        life = await asyncio.to_thread(native_state.read_lifecycle, live) if live else {}
+        if life.get("withdraw") is not True:
+            raise NativeError(
+                409, "Removing a queued message is available in newly started sessions"
+            )
+    params = {"queued_turn_id": queued_turn_id}
+    immutable = native_ipc.normalize_immutable_request({"action": "withdraw", "params": params})
+
+    async def send(_journal_now, revision):
+        return await _existing_generation_call(
+            session_id,
+            "withdraw",
+            {**params, "operation_id": operation_id, "expected_revision": revision},
+        )
+
+    receipt = await _revisioned(prov, session_id, operation_id, immutable, None, send)
+    if receipt["handoff"] == "not_sent":
+        raise NativeError(409, "The message was not removed; check the current message state")
     return receipt
 
 
