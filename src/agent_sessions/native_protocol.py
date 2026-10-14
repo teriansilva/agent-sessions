@@ -1516,7 +1516,8 @@ _ACP_APPROVABLE = {
     **{
         kind: (
             lambda call: isinstance(call.get("rawInput"), dict) and bool(call["rawInput"]),
-            "the request does not say what the tool would do",
+            "OpenCode did not include this tool’s arguments, so BattleLab cannot show what "
+            "would be approved. Deny the request or stop the turn.",
         )
         for kind in ("read", "search", "fetch", "delete", "move", "other")
     },

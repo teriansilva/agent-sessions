@@ -137,6 +137,20 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
             authors = None  # …but then every turn is UNKNOWN, never labelled the operator's
         return JSONResponse(share_api.overlay_authors(snap, authors))
 
+    @app.post("/api/structured/sessions/{key}/skip-permissions")
+    async def structured_enable_bypass(
+        key: str,
+        request: Request,
+        user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        body = await _json(request, {"operation_id"}, {"operation_id"})
+        return JSONResponse(
+            await _run(
+                structured_runtime.enable_bypass(key, operation_id=body["operation_id"], user=user)
+            )
+        )
+
     @app.get("/api/structured/sessions/{key}/events")
     async def structured_events(
         key: str, after: int = 0, limit: int = 100, _user: str = Depends(logged_in)

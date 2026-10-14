@@ -179,20 +179,36 @@ in a terminal session. Sent turns show document filenames and image thumbnails; 
 restore the attachments. After an update, an older running API session may need **Stop** and
 a new message to resume before document attachments become available.
 
-**Skip permission prompts.** New session offers the same toggle for the Codex and Claude API
+**Skip permission prompts.** New session offers the same toggle for the Codex, Claude and OpenCode API
 clients, unticked by default. A session started with it ticked never asks: Codex
-runs with no approvals and no sandbox, Claude in its `bypassPermissions` mode. The choice is fixed
-for the session (a resume keeps it) and the session header shows SKIP PERMISSIONS. Such a session
+runs with no approvals and no sandbox, Claude in its `bypassPermissions` mode, and OpenCode with an
+agent whose tool rules allow every action. The session header shows SKIP PERMISSIONS, and reopening
+the conversation keeps the choice. Such a session
 is launched only once BattleLab has confirmed your start: if the connection drops mid-start,
 the session waits with **Start (skips prompts)** and **Discard**, and an unconfirmed one expires
 after 10 minutes without ever running.
+
+You can also enable it after a supported API session has started. Open **Skip permissions**
+from the session header (under **Actions** on a phone, or the window menu on the map).
+Confirm **Stop turn & enable**, or **Enable Skip permissions** when idle. This stops the current
+turn, queued messages and pending approvals while preserving the conversation. Send a new
+message to continue with prompts skipped. If stopping the tools cannot be confirmed, the
+setting stays off and **Retry enabling** finishes the same change; reloading does not enable it
+by itself.
 
 **Approve always.** When Codex or Claude proposes a standing rule for a request, the card offers
 it under *Approve always*, worded with what it covers ("… and any command starting with it",
 "every `Bash` call") and where it is saved (Codex's exec policy, your project's or your user
 Claude settings, or this session only). Broad rules are offered too — it is your instance — and a
 risky command's options carry its RISKY reason. BattleLab never invents or widens a rule, and a
-rule can never switch the session's permission mode (that is chosen at New session).
+rule can never switch the session's permission mode (use the separate Skip permissions action).
+OpenCode's native **Allow always** is offered too. OpenCode omits the matching patterns, so the
+rule may cover every use of that tool; it lasts for this worker and folder and is lost when the
+worker restarts. The card states this before you select it.
+
+Approval cards show the action, folder and reason first; **Details** retains the complete request
+and identifiers. If OpenCode supplies no usable arguments for a tool, the card explains why it
+can only be denied or stopped. During a permission change, the approval buttons are disabled.
 
 **Risk marks.** A command that matches a short, fixed list of risky shapes (recursive or forced
 deletes, `sudo`, force-push and other destructive git, recursive `chmod`/`chown`, `dd`/`mkfs`,

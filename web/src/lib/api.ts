@@ -682,6 +682,8 @@ export const api = {
   /** Launch a skip-permissions creation the operator has seen succeed (#1339). Idempotent. */
   structuredStart: (key: string) =>
     mutateJson<StructuredSnapshot>("POST", `${structuredPath(key)}/start`),
+  structuredEnableBypass: (key: string, operation_id: string) =>
+    mutateJson<StructuredSnapshot>("POST", `${structuredPath(key)}/skip-permissions`, { operation_id }),
   structuredStop: (key: string) =>
     mutateJson<{ containment: Containment }>("POST", `${structuredPath(key)}/stop`),
   structuredContainment: (key: string) =>

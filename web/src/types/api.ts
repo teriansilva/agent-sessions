@@ -1413,8 +1413,10 @@ export interface StructuredSnapshot {
   model_effective?: string | null;
   /** The reasoning level requested at create (#1407): configuration, never an observation. */
   effort_requested?: string | null;
-  /** Started with "Skip permission prompts" (#1339). Fixed at create; the client never asks. */
+  /** Effective permission mode, including an explicit existing-session enable (#1388). */
   bypass?: boolean;
+  can_enable_bypass?: boolean;
+  permission_change?: { operation_id?: string; state?: "stopping" | "enabled" };
   /** A skip creation waits for `start` (#1339): nothing runs until the operator confirms it. */
   pending_start?: boolean;
   start_expires_at?: number;

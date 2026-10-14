@@ -25,6 +25,7 @@ import {
   type ManifestEntry,
 } from "../visual/manifest";
 import { openLinksFullScreen } from "./linkMode";
+import { mockLivePermissions, openPermissions } from "./livePermissionsFixture";
 import { mockStructuredGuidance } from "./structuredGuidanceFixture";
 
 const OUT = process.env.VISUAL_OUT ?? "visual-out";
@@ -94,6 +95,7 @@ async function prepareOpenFirstWindow(page: Page): Promise<void> {
 
 /** Run the entry's declared interaction, if any, between `goto` and `waitFor`. */
 async function runPrepare(page: Page, p: VisualPath): Promise<void> {
+  if (p.prepare === "api-permissions") await openPermissions(page);
   if (p.prepare === "project-playbooks" || p.prepare === "project-playbook-inputs") {
     await page.getByLabel("Project name").fill("Example project");
     const next = page.getByRole("button", { name: "Next", exact: true });
@@ -243,6 +245,12 @@ test("visual capture", async ({ browser }, info) => {
       const page = await ctx.newPage();
       try {
         await page.setViewportSize(VIEWPORTS[vp]);
+        // This capture exercises the production pane with deterministic API responses, without
+        // launching a vendor or changing a real conversation's permissions. The lifecycle itself
+        // is covered by the real worker/IPC tests in test_api_live_permissions.py.
+        if (p.prepare === "api-approval" || p.prepare === "api-permissions") {
+          await mockLivePermissions(page, "dark");
+        }
         if (p.fixture === "structured-guidance") {
           const engine = p.path.split("/")[2];
           await mockStructuredGuidance(page, engine, engine === "codex-api" ? "steer" : "interrupt");

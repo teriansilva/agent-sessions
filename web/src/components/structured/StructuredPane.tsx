@@ -8,6 +8,7 @@ import {
   ScrollText,
   Send,
   Share2,
+  ShieldOff,
   Square,
   SquareDashedBottom,
 } from "lucide-react";
@@ -58,6 +59,7 @@ import type {
 } from "../../types/api";
 import chat from "../chat/ChatPane.module.css";
 import { Markdown } from "./Markdown";
+import { PermissionsDialog } from "./PermissionsDialog";
 import styles from "./StructuredPane.module.css";
 import {
   backgroundWorking,
@@ -228,9 +230,9 @@ function RequestCard({
       ))}
       {declineOnly && req.kind === "file_change" && (
         <p className={styles.why} data-testid="structured-review-only">
-          <b>You can review this change but not approve it here.</b> Nothing guarantees that{" "}
-          {agent} writes exactly the patch shown, so BattleLab does not approve file changes for
-          an API session. Decline it and {agent} continues without the edit, or stop the turn.
+          <b>You can review this change but not approve it here.</b> Nothing guarantees that {agent}{" "}
+          writes exactly the patch shown, so BattleLab does not approve file changes for an API
+          session. Decline it and {agent} continues without the edit, or stop the turn.
         </p>
       )}
       {mine && (
@@ -247,6 +249,7 @@ function RequestCard({
           <button
             type="button"
             className={chat.ghost}
+            disabled={readOnly}
             onClick={() => onDecide(req, mine.decision, mine.grant)}
           >
             Retry “{mineLabel}”
@@ -271,7 +274,7 @@ function RequestCard({
                 key="always"
                 ref={alwaysToggle}
                 type="button"
-                className={chat.ghost}
+                className={chat.send}
                 aria-expanded={alwaysOpen}
                 aria-controls={`always-${req.request_id}`}
                 data-testid="structured-always"
@@ -477,6 +480,7 @@ function TurnView({
   requests,
   deciding,
   readOnly,
+  approvalsDisabled,
   onDecide,
   onInterrupt,
   interrupting,
@@ -491,6 +495,7 @@ function TurnView({
   requests: StructuredRequest[];
   deciding: Record<string, Deciding>;
   readOnly: boolean;
+  approvalsDisabled: boolean;
   onDecide: (req: StructuredRequest, choice: string, grant?: string) => void;
   onInterrupt: (turnId: string) => void;
   interrupting: boolean;
@@ -583,7 +588,7 @@ function TurnView({
           folder={folder}
           agent={agent}
           deciding={deciding[requestKey(r)] ?? null}
-          readOnly={readOnly}
+          readOnly={readOnly || approvalsDisabled}
           onDecide={onDecide}
           onInterrupt={() => onInterrupt(turn.turn_id)}
           interrupting={interrupting}
@@ -755,15 +760,31 @@ export function StructuredPane({
   const sendNowBusy = useRef(false);
   const [stopping, setStopping] = useState(false);
   const [containment, setContainment] = useState<Containment | null>(null);
-  const [recap, setRecap] = useState<{ open: boolean; trigger: HTMLElement | null }>({
+  const [permissionsOpen, setPermissionsOpen] = useState<{
+    trigger: HTMLElement | null;
+  } | null>(null);
+  const [enablingPermissions, setEnablingPermissions] = useState(false);
+  const [permissionError, setPermissionError] = useState<string | null>(null);
+  const permissionOperation = useRef<string | null>(null);
+  const permissionSending = useRef(false);
+  const [recap, setRecap] = useState<{
+    open: boolean;
+    trigger: HTMLElement | null;
+  }>({
     open: false,
     trigger: null,
   });
-  const [handoff, setHandoff] = useState<{ open: boolean; trigger: HTMLElement | null }>({
+  const [handoff, setHandoff] = useState<{
+    open: boolean;
+    trigger: HTMLElement | null;
+  }>({
     open: false,
     trigger: null,
   });
-  const [linkToast, setLinkToast] = useState<{ tick: number; ok: boolean }>({ tick: 0, ok: true });
+  const [linkToast, setLinkToast] = useState<{ tick: number; ok: boolean }>({
+    tick: 0,
+    ok: true,
+  });
   const op = useRef<{ id: string; text: string } | null>(null);
   const cursor = useRef(0);
   const logRef = useRef<HTMLDivElement>(null);
@@ -773,7 +794,17 @@ export function StructuredPane({
     // must never roll the view back. The journal revision only grows.
     if (s.revision < cursor.current) return;
     cursor.current = s.event_cursor;
-    setSnap(s);
+    if (s.bypass) setPermissionsOpen(null);
+    setSnap((previous) => {
+      // Lifecycle changes need not advance the journal. Reject the entire older snapshot:
+      // preserving just its mode would still resurrect closed approvals and the old worker.
+      const prior = previous?.permission_change?.state;
+      const incoming = s.permission_change?.state;
+      return previous && ((prior === "enabled" && incoming !== "enabled") ||
+        (prior === "stopping" && !incoming))
+        ? previous
+        : s;
+    });
     // A decision is over once its exact request is no longer pending — forget it, so a later
     // request that reuses the native id never inherits it.
     setDeciding((all) => Object.fromEntries(Object.entries(all).filter(([, d]) =>
@@ -783,7 +814,8 @@ export function StructuredPane({
     setReconnecting(false);
   }, []);
   const failed = useCallback((e: unknown) => {
-    if (e instanceof ApiError && e.status === 404) setLoadError("This conversation does not exist.");
+    if (e instanceof ApiError && e.status === 404)
+      setLoadError("This conversation does not exist.");
     else setReconnecting(true);
   }, []);
   const load = useCallback(async (): Promise<StructuredSnapshot | null> => {
@@ -834,7 +866,11 @@ export function StructuredPane({
           backoff = Math.min(MAX_BACKOFF_MS, (backoff || 1_000) * 2);
         }
       }
-      if (alive) timer = setTimeout(tick, backoff || (active ? STRUCTURED_ACTIVE_POLL_MS : STRUCTURED_IDLE_POLL_MS));
+      if (alive)
+        timer = setTimeout(
+          tick,
+          backoff || (active ? STRUCTURED_ACTIVE_POLL_MS : STRUCTURED_IDLE_POLL_MS),
+        );
     };
     timer = setTimeout(tick, active ? STRUCTURED_ACTIVE_POLL_MS : STRUCTURED_IDLE_POLL_MS);
     return () => {
@@ -871,7 +907,11 @@ export function StructuredPane({
       follow();
     };
     const changes = new MutationObserver(observe);
-    changes.observe(el, { childList: true, characterData: true, subtree: true });
+    changes.observe(el, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    });
     el.addEventListener("scroll", onScroll, { passive: true });
     observe();
     return () => {
@@ -884,6 +924,7 @@ export function StructuredPane({
   const readOnly = !!snap?.read_only;
   // An unstarted (or expired) skip creation takes no message: nothing runs until Start (#1339).
   const notStarted = !!snap?.pending_start || !!snap?.start_expired;
+  const permissionPending = enablingPermissions || snap?.permission_change?.state === "stopping";
 
   // Push-to-talk (#1332 Phase 3c): the terminal composer's own recognizer lifecycle, writing into
   // this draft. No global Space hotkey — the terminal composer on the same page keeps that.
@@ -923,7 +964,7 @@ export function StructuredPane({
     }
     const text = draft.trim();
     const names = attachments.map((a) => a.stored);
-    if ((!text && !names.length) || busy || readOnly || !snap) return;
+    if ((!text && !names.length) || busy || readOnly || permissionPending || !snap) return;
     if (slots.current.inFlight > 0 || sending.current) return; // a picture is still on its way
     const attempt = operationFor(op.current, sendIdentity(text, names), uuid);
     op.current = attempt;
@@ -931,7 +972,12 @@ export function StructuredPane({
       // Recorded at submit time, untrimmed, so Restore round-trips exactly what was typed.
       historyFor.current = {
         op: attempt.id,
-        id: appendSent({ text: draft, attachments: names, session: key, operation: attempt.id }),
+        id: appendSent({
+          text: draft,
+          attachments: names,
+          session: key,
+          operation: attempt.id,
+        }),
       };
       setHistory(readSent());
     }
@@ -981,7 +1027,7 @@ export function StructuredPane({
   };
 
   const decide = async (req: StructuredRequest, choice: string, grant?: string) => {
-    if (readOnly) return;
+    if (readOnly || permissionPending) return;
     const reqKey = requestKey(req);
     const decidingNow = deciding[reqKey];
     if (decidingNow && decidingNow.phase !== "unknown") return;
@@ -1044,7 +1090,7 @@ export function StructuredPane({
       if (!operation) return;
     } else {
       const sendTarget = sendNowTarget(snap);
-      if (recoveringSendNow || readOnly || !snap || !sendTarget) return;
+      if (recoveringSendNow || readOnly || permissionPending || !snap || !sendTarget) return;
       const queued = snap.turns.find((t) => t.turn_id === queuedTurnId);
       if (queued?.state !== "queued" || (queued.delivery && queued.delivery !== "interrupt_failed")) return;
       if (queued.delivery === "interrupt_failed") operation = undefined;
@@ -1100,6 +1146,32 @@ export function StructuredPane({
     } finally {
       setStopping(false);
       await load();
+    }
+  };
+
+  const enablePermissions = async () => {
+    if (permissionSending.current || readOnly || !snap?.can_enable_bypass || snap.bypass) return;
+    const id = snap.permission_change?.operation_id ?? permissionOperation.current ?? uuid();
+    permissionOperation.current = id;
+    permissionSending.current = true;
+    setEnablingPermissions(true);
+    setPermissionError(null);
+    try {
+      apply(await api.structuredEnableBypass(key, id));
+      setPermissionsOpen(null);
+    } catch (e) {
+      const latest = await load();
+      if (latest?.bypass) setPermissionsOpen(null);
+      else {
+        if (definite(e) && !latest?.permission_change?.operation_id)
+          permissionOperation.current = null;
+        setPermissionError(
+          `Skip permissions is not confirmed. ${detail(e, "The response was lost.")} Retry to check and finish the same change.`,
+        );
+      }
+    } finally {
+      permissionSending.current = false;
+      setEnablingPermissions(false);
     }
   };
 
@@ -1181,7 +1253,10 @@ export function StructuredPane({
     setHistoryOpen(null);
     const names = fill(entry.text, entry.attachments);
     if (names && entry.operation && entry.session === key && !entry.confirmed) {
-      op.current = { id: entry.operation, text: sendIdentity(entry.text.trim(), names) };
+      op.current = {
+        id: entry.operation,
+        text: sendIdentity(entry.text.trim(), names),
+      };
       historyFor.current = { op: entry.operation, id: entry.id };
     }
   };
@@ -1272,13 +1347,10 @@ export function StructuredPane({
       slots.current.inFlight -= 1;
       setInFlight(slots.current.inFlight);
     };
-    void imageFilesFromAsyncClipboard().then(
-      (fallback) => {
-        release();
-        if (fallback.length && gen === generation.current) void attach(fallback);
-      },
-      release,
-    );
+    void imageFilesFromAsyncClipboard().then((fallback) => {
+      release();
+      if (fallback.length && gen === generation.current) void attach(fallback);
+    }, release);
   };
 
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1333,6 +1405,20 @@ export function StructuredPane({
   const placeholder = isNewSessionPlaceholder(actionKey);
   const actionNative = actionKey.slice(actionKey.indexOf(":") + 1);
   const headActions: HeadAction[] = [
+    ...(snap?.can_enable_bypass && !readOnly
+      ? [
+          {
+            id: "skip-permissions",
+            label: "Skip permissions",
+            aria: "Enable Skip permissions for this session",
+            title: "Enable Skip permissions for this existing conversation",
+            icon: <ShieldOff size={13} aria-hidden="true" />,
+            disabled: enablingPermissions,
+            run: (trigger?: HTMLElement | null) =>
+              setPermissionsOpen({ trigger: trigger ?? taRef.current }),
+          },
+        ]
+      : []),
     ...(host.onToggleFiles
       ? [
           {
@@ -1354,7 +1440,10 @@ export function StructuredPane({
       title: "Session brief: full title, summary, and a chronological recap of this session",
       icon: <ScrollText size={13} aria-hidden="true" />,
       run: (trigger?: HTMLElement | null) =>
-        setRecap({ open: true, trigger: trigger ?? (document.activeElement as HTMLElement | null) }),
+        setRecap({
+          open: true,
+          trigger: trigger ?? (document.activeElement as HTMLElement | null),
+        }),
     },
     ...(isAgent(engine) && !placeholder
       ? [
@@ -1479,13 +1568,12 @@ export function StructuredPane({
     <div className={term.panelHead} data-panel-head="">
       <span className={term.headLeft}>
         <HeadFacts engine={engine} status={status} row={row} />
-        {/* Skip-permissions is fixed at create (#1339): say so, so a session that never asks is
-            never mistaken for one that does. */}
+        {/* Show the effective mode, including an explicit change after starting. */}
         {snap?.bypass && (
           <span
             className={`${chat.chip} ${styles.skipChip}`}
             data-testid="structured-bypass"
-            title="Started with Skip permission prompts: this agent never asks before acting."
+            title="Skip permission prompts is enabled: this agent never asks before acting."
           >
             <span className={styles.skipLong}>Skip permissions</span>
             <span className={styles.skipShort} aria-hidden="true">
@@ -1506,6 +1594,18 @@ export function StructuredPane({
 
   const overlays = (
     <>
+      {permissionsOpen && (
+        <PermissionsDialog
+          busy={enablingPermissions}
+          retry={!!snap?.permission_change?.operation_id || !!permissionError}
+          active={active}
+          error={permissionError}
+          onConfirm={() => void enablePermissions()}
+          onClose={() => setPermissionsOpen(null)}
+          returnFocusTo={permissionsOpen.trigger}
+          fallbackFocusRef={taRef}
+        />
+      )}
       {host.suppressHead &&
         host.headActionsSlot &&
         createPortal(
@@ -1585,6 +1685,23 @@ export function StructuredPane({
     <div className={`${chat.pane} ${styles.pane}`} data-testid="structured-pane">
       {header}
       {overlays}
+      {snap?.permission_change?.state === "stopping" && !enablingPermissions && (
+        <div className={styles.banner} role="status">
+          <p>
+            Enabling Skip permissions has not finished. New messages are paused until the session’s
+            tools are confirmed stopped.
+          </p>
+          {!readOnly && (
+            <button
+              type="button"
+              className={chat.send}
+              onClick={(e) => setPermissionsOpen({ trigger: e.currentTarget })}
+            >
+              Retry enabling
+            </button>
+          )}
+        </div>
+      )}
       {snap?.pending_start && (
         <div className={styles.banner} role="status" data-testid="structured-pending-start">
           <p>
@@ -1685,13 +1802,14 @@ export function StructuredPane({
             requests={pending.filter((r) => r.turn_id === t.turn_id)}
             deciding={deciding}
             readOnly={readOnly}
+            approvalsDisabled={permissionPending}
             onDecide={(r, c, g) => void decide(r, c, g)}
             onInterrupt={(tid) => void interrupt(tid)}
             interrupting={interrupting}
             onSendNow={(tid) => void sendNow(tid)}
             sendNowMode={sendNowTarget(snap)?.mode}
             sendingNow={sendingNow === t.turn_id}
-            sendNowDisabled={!!sendingNow || !!recoveringSendNow || turns.some((q) => q.state === "queued" && q.delivery === "interrupting")}
+            sendNowDisabled={permissionPending || !!sendingNow || !!recoveringSendNow || turns.some((q) => q.state === "queued" && q.delivery === "interrupting")}
           />
           </Fragment>
         ))}
@@ -1773,7 +1891,7 @@ export function StructuredPane({
             onPaste={onPaste}
             readOnly={busy}
             rows={2}
-            disabled={readOnly || notStarted}
+            disabled={readOnly || notStarted || permissionPending}
           />
         </div>
         <div className={compose.row}>
@@ -1822,6 +1940,7 @@ export function StructuredPane({
             disabled={
               readOnly ||
               notStarted ||
+              permissionPending ||
               busy ||
               uploading ||
               !snap ||

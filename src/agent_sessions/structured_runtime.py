@@ -100,7 +100,7 @@ class _NativeAdapter:
 
     @staticmethod
     def operations(prov) -> tuple[str, ...]:
-        return (
+        operations = (
             "create",
             "start",
             "snapshot",
@@ -111,6 +111,9 @@ class _NativeAdapter:
             "send_now",
             "stop",
             "probe",
+        )
+        return operations + (
+            ("enable_bypass",) if prov.manifest.api.kind in kinds.API_BYPASS_KINDS else ()
         )
 
     @staticmethod
@@ -164,6 +167,9 @@ class _NativeAdapter:
 
     async def stop(self, engine, native):
         return await _native(native_runtime.stop, engine, native)
+
+    async def enable_bypass(self, engine, native, **kwargs):
+        return await _native(native_runtime.enable_bypass, engine, native, **kwargs)
 
     async def probe(self, engine, native):
         return await _native(native_runtime.probe, engine, native)
@@ -412,8 +418,10 @@ def _snapshot(session_key: str, raw: dict) -> dict:
         "model_requested": raw.get("model"),
         # A requested level (#1407), like the model: configuration, never an observation.
         "effort_requested": raw.get("effort"),
-        # Skip-permissions is fixed at create (#1339): the head shows it, nothing can change it.
+        # Effective mode includes an explicit existing-session change (#1388).
         "bypass": bool(raw.get("bypass")),
+        "can_enable_bypass": bool(raw.get("can_enable_bypass")),
+        "permission_change": dict(raw.get("permission_change") or {}),
         # Two-phase skip start (#1339): waiting for `start`, or expired without ever running.
         "pending_start": bool(raw.get("pending_start")),
         **(
@@ -571,6 +579,15 @@ async def interrupt(session_key: str, *, operation_id: str, turn_id: str) -> dic
         engine, native, operation_id=_operation_id(operation_id), turn_id=_operation_id(turn_id)
     )
     return {"session_key": f"{engine}:{native}", **result}
+
+
+async def enable_bypass(session_key: str, *, operation_id: str, user: str) -> dict:
+    """Enable prompts bypass only after containing the previous worker; resume on next Send."""
+    engine, native = _key(session_key)
+    await _adapter(engine, "enable_bypass").enable_bypass(
+        engine, native, operation_id=_operation_id(operation_id), user=user
+    )
+    return await snapshot(f"{engine}:{native}")
 
 
 async def send_now(

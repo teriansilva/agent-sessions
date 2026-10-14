@@ -39,6 +39,7 @@ from agent_sessions import (
 )
 from agent_sessions import structured_runtime as runtime
 from agent_sessions.engines import registry
+from agent_sessions.plugins import kinds as plugin_kinds
 
 FAKE = Path(__file__).with_name("fake_native.py")
 ENGINES = {"codex": "codex-api", "claude": "claude-api", "opencode": "opencode-api"}
@@ -216,7 +217,7 @@ async def test_create_submit_replay_and_reconnect_observe_one_native_write(host,
         "send_now",
         "stop",
         "probe",
-    )
+    ) + (("enable_bypass",) if KINDS[source] in plugin_kinds.API_BYPASS_KINDS else ())
     assert not described.mission_ready
     create = ident()
     created = await runtime.create_session(engine, str(project), operation_id=create)

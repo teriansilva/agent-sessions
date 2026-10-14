@@ -12,8 +12,8 @@ the request's advisory RISKY mark. What remains is integrity, not policy:
   ``acceptWithExecpolicyAmendment`` (an argv prefix); Claude ``addRules`` with behavior
   ``allow`` and ``addDirectories``, to any destination it names. A suggestion that would CHANGE
   THE SESSION'S MODE (``setMode``) is not a grant and is never offered — the permission mode is
-  fixed at create (skip-permissions is chosen there) — and neither are ``deny``/``ask``/remove
-  or replace suggestions, which are not approvals;
+  chosen separately by the operator (never by a proposed standing rule) — and neither are
+  ``deny``/``ask``/remove or replace suggestions, which are not approvals;
 * OpenCode selects its native `allow_always` option, disclosing that ACP omits its matching
   patterns and that its remembered rules last only for this worker and folder (never persisted);
 * malformed suggestions are skipped and never break the read.

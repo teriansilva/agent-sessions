@@ -29,6 +29,7 @@ vi.mock("../../lib/api", async () => {
       structuredInterrupt: vi.fn(),
       structuredStop: vi.fn(),
       structuredStart: vi.fn(),
+      structuredEnableBypass: vi.fn(),
       upload: vi.fn(),
       templates: vi.fn(),
       templateVariables: vi.fn(() => Promise.resolve({ variables: [], limits: {} })),
@@ -441,6 +442,91 @@ test("a worker that exits without a journal record is noticed by the periodic re
     await vi.advanceTimersByTimeAsync(10_500); // one idle tick; the journal revision is unchanged
   });
   await waitFor(() => expect(screen.getByTestId("structured-worker")).toHaveTextContent("no worker"));
+});
+
+test.each([false, true])("a permission change disables approval controls and open grants (unknown decision: %s)", async (unknown) => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  const t = turn({ state: "awaiting_approval", reply: "" });
+  const before = snap({
+    state: "awaiting_approval", active_turn: t.turn_id, turns: [t], can_enable_bypass: true,
+    pending_requests: [{
+      request_id: "7", turn_id: t.turn_id, kind: "command", complete: true,
+      choices: ["approve", "reject"], payload: { command: "ls" },
+      always: [{ id: "g0123456789abcdef", label: "For this session", scope: "session" }],
+    }],
+  });
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(before);
+  vi.mocked(api.structuredDecide).mockRejectedValue(new TypeError("connection lost"));
+  renderPane();
+  const card = await screen.findByTestId("structured-request");
+  if (unknown) {
+    await user.click(within(card).getByRole("button", { name: "Approve once" }));
+    await screen.findByRole("button", { name: /Retry “Approve once”/ });
+  } else {
+    await user.click(within(card).getByTestId("structured-always"));
+    expect(within(card).getByTestId("structured-always-option")).toBeEnabled();
+  }
+  vi.mocked(api.structuredSnapshot).mockResolvedValue({
+    ...before, permission_change: { state: "stopping", operation_id: crypto.randomUUID() },
+  });
+  await act(async () => { await vi.advanceTimersByTimeAsync(10_500); });
+  await waitFor(() => {
+    for (const button of within(card).getAllByRole("button")) expect(button).toBeDisabled();
+  });
+  for (const button of within(card).getAllByRole("button")) await user.click(button);
+  expect(api.structuredDecide).toHaveBeenCalledTimes(unknown ? 1 : 0);
+  expect(api.structuredInterrupt).not.toHaveBeenCalled();
+});
+
+test("an incomplete tool request explains the missing arguments before Details", async () => {
+  const t = turn({ state: "awaiting_approval", reply: "" });
+  const reason = "OpenCode did not include this tool’s arguments, so BattleLab cannot show what would be approved. Deny the request or stop the turn.";
+  vi.mocked(api.structuredSnapshot).mockResolvedValue(snap({
+    state: "awaiting_approval", active_turn: t.turn_id, turns: [t],
+    pending_requests: [{
+      request_id: "mcp", turn_id: t.turn_id, kind: "other", complete: false,
+      choices: ["reject"], payload: { toolCall: { title: "forgejo_list_issues", rawInput: {} }, declineOnly: reason },
+    }],
+  }));
+  renderPane("opencode-api");
+  const card = await screen.findByTestId("structured-request");
+  const reasons = within(card).getAllByText(reason);
+  expect(reasons.some((node) => !node.closest("details"))).toBe(true);
+  expect(within(card).queryByRole("button", { name: /Allow/ })).toBeNull();
+  expect(within(card).getByRole("button", { name: "Deny" })).toBeEnabled();
+});
+
+test("a delayed pre-enable snapshot cannot restore closed approval buttons at the same revision", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const t = turn({ state: "interrupted", reply: "kept history" });
+  const enabled = snap({
+    state: "interrupted",
+    turns: [t],
+    bypass: true,
+    can_enable_bypass: false,
+    permission_change: { state: "enabled", operation_id: crypto.randomUUID() },
+    native: { native_id: "n", worker: null, background_active: false },
+  });
+  const before = snap({
+    state: "awaiting_approval",
+    active_turn: t.turn_id,
+    turns: [{ ...t, state: "awaiting_approval" }],
+    bypass: false,
+    can_enable_bypass: true,
+    pending_requests: [{
+      request_id: "7", turn_id: t.turn_id, kind: "command",
+      choices: ["approve", "reject"], payload: { command: "ls" }, complete: true,
+    }],
+  });
+  vi.mocked(api.structuredSnapshot).mockResolvedValueOnce(enabled).mockResolvedValue(before);
+  renderPane();
+  await screen.findByTestId("structured-bypass");
+  await act(async () => { await vi.advanceTimersByTimeAsync(10_500); });
+  expect(api.structuredSnapshot).toHaveBeenCalledTimes(2);
+  expect(screen.queryByTestId("structured-request")).toBeNull();
+  expect(screen.getByTestId("structured-bypass")).toBeInTheDocument();
+  expect(screen.getByText("kept history")).toBeInTheDocument();
 });
 
 // ---- the pane head (#1332) ---------------------------------------------------------------------

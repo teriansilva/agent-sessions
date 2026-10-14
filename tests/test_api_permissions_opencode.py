@@ -73,6 +73,18 @@ def test_a_different_or_incomplete_context_never_fills_permission_input(change):
         codec.decide(approval.data["request_id"], "approve")
 
 
+def test_missing_mcp_arguments_explain_why_only_decline_is_available():
+    codec = oc._codec()
+    codec.submit("go", str(uuid.uuid4()))
+    [approval] = oc._ask(codec, tool_call=mcp())
+    assert approval.data["choices"] == ["reject"]
+    assert not approval.data["complete"]
+    assert json.loads(approval.data["summary"])["declineOnly"] == (
+        "OpenCode did not include this tool’s arguments, so BattleLab cannot show what "
+        "would be approved. Deny the request or stop the turn."
+    )
+
+
 def test_a_changed_context_cancels_its_pending_approval():
     codec = oc._codec()
     codec.submit("go", str(uuid.uuid4()))

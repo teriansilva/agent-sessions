@@ -126,6 +126,14 @@
   flex-direction: column;
   gap: 6px;
 }
+.permissionNotice {
+  padding: 12px;
+  border-left: 3px solid var(--status-degraded);
+  color: var(--text-1);
+  background: var(--bg-2);
+  font-size: 13px;
+  line-height: 1.6;
+}
 .alwaysOption {
   width: 100%;
   min-height: 44px;

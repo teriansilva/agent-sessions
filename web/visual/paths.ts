@@ -35,6 +35,8 @@ export type VisualPath = {
     | "open-first-window"
     | "resource-controls"
     | "resource-advanced"
+    | "api-approval"
+    | "api-permissions"
     | "playbook-flow"
     | "project-playbooks"
     | "project-playbook-inputs"
@@ -91,6 +93,24 @@ export const VISUAL_PATHS: VisualPath[] = [
     description: "Shared variables and collections — definitions and optional global values",
     requireAuth: "admin",
     waitFor: { selector: '[aria-label="Search variables"]', timeoutMs: 12000 },
+  },
+  {
+    group: "authed",
+    path: "/s/codex-api/5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f",
+    name: "structured-approval",
+    description: "API approval — prominent Approve always (deterministic browser fixture)",
+    requireAuth: "admin",
+    prepare: "api-approval",
+    waitFor: { selector: '[data-testid="structured-always"]', timeoutMs: 12000 },
+  },
+  {
+    group: "authed",
+    path: "/s/codex-api/5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f",
+    name: "structured-permissions",
+    description: "Existing API conversation — Skip permissions confirmation (browser fixture)",
+    requireAuth: "admin",
+    prepare: "api-permissions",
+    waitFor: { selector: '[role="dialog"]', timeoutMs: 12000 },
   },
   {
     group: "authed",

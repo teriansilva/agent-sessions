@@ -368,6 +368,31 @@ def _session(engine_id: str, session_id: str, *, retiring_ok: bool = False) -> t
 # --- generations ------------------------------------------------------------------------------
 
 
+def _permission_change(record: dict) -> dict:
+    """A one-way, operator-bound mode change, separate from immutable creation identity."""
+    change = record.get("permission_change")
+    if change is None:
+        return {}
+    if (
+        not isinstance(change, dict)
+        or change.get("state") not in {"stopping", "enabled"}
+        or not isinstance(change.get("actor"), str)
+        or not change["actor"]
+        or len(change["actor"]) > 128
+    ):
+        raise NativeError(503, "the session permission change is unreadable")
+    try:
+        native_state._uuid(change.get("operation_id"), "permission operation")
+    except native_state.StateError:
+        raise NativeError(503, "the session permission change is unreadable") from None
+    return change
+
+
+def _effective_bypass(record: dict) -> bool:
+    change = _permission_change(record)
+    return record["request"].get("bypass") is True or change.get("state") == "enabled"
+
+
 @dataclass(frozen=True)
 class Generation:
     session_id: str
@@ -405,6 +430,8 @@ def _server_env() -> dict[str, str]:
 
 def _launch_locked(session_id: str, record: dict, prov, binding, *, mode: str) -> str:
     """Mint, persist intent, lease, launch and pin one generation. Caller holds the lock."""
+    if _permission_change(record).get("state") == "stopping":
+        raise NativeError(409, "finish enabling Skip permissions before sending another message")
     if _start_state(record) not in (None, STARTING, STARTED):
         # Two-phase skip start (#1339; state machine, operator decision on #1341): a skip
         # creation's generation is born only from `starting` (the `/start` that set it, under this
@@ -432,8 +459,8 @@ def _launch_locked(session_id: str, record: dict, prov, binding, *, mode: str) -
         # The requested level (#1407), read from the recorded request on EVERY generation, like
         # the model: a resume or a relaunch sends the level the session was created with.
         "effort": record["request"].get("effort"),
-        # Read from the recorded request on every generation, so a resume can never flip it.
-        "bypass": bool(record["request"].get("bypass")),
+        # Persisted mode on every generation; only the operator's explicit transition changes it.
+        "bypass": _effective_bypass(record),
         "mode": mode,
         "native_id": record.get("native_id"),
         "journal_root": str(_journal_root(prov)),
@@ -1055,7 +1082,7 @@ def _claude_history_exists(source, native_id: str) -> bool:
     return root is not None and any(Path(root).glob(f"projects/*/{native_id}.jsonl"))
 
 
-def _relaunch_sync(engine_id: str, session_id: str) -> str | None:
+def _relaunch_sync(engine_id: str, session_id: str, permission_operation: str | None) -> str | None:
     prov, _ = _session(engine_id, session_id)
     try:
         binding = api_source.resolve(prov)
@@ -1063,6 +1090,10 @@ def _relaunch_sync(engine_id: str, session_id: str) -> str | None:
         raise NativeError(409, str(exc)) from None
     with native_state.session_lock(session_id):
         _, record = _session(engine_id, session_id)
+        if _permission_change(record).get("operation_id") != permission_operation:
+            raise NativeError(
+                409, "permissions changed while sending; review the session and send again"
+            )
         if _start_state(record) not in (None, STARTED):
             # Refuse BEFORE touching the record: a turn must neither launch a skip creation that
             # `start` has not launched, nor close it as a side effect (#1339, Hermes 5908).
@@ -1101,7 +1132,16 @@ def _relaunch_sync(engine_id: str, session_id: str) -> str | None:
         return _launch_locked(session_id, record, prov, binding, mode=mode)
 
 
-async def _live_generation(engine_id: str, session_id: str) -> Generation:
+async def _live_generation(
+    engine_id: str, session_id: str, permission_operation: str | None
+) -> Generation:
+    record = await asyncio.to_thread(native_state.read_session, session_id)
+    if record and _permission_change(record).get("state") == "stopping":
+        raise NativeError(409, "finish enabling Skip permissions before sending another message")
+    if _permission_change(record or {}).get("operation_id") != permission_operation:
+        raise NativeError(
+            409, "permissions changed while sending; review the session and send again"
+        )
     gen = await asyncio.to_thread(_generation, session_id)
     if gen is not None:
         life = await asyncio.to_thread(native_state.read_lifecycle, gen.worker_id)
@@ -1113,7 +1153,7 @@ async def _live_generation(engine_id: str, session_id: str) -> Generation:
                 pass  # it died starting: a successor below, once it is proved gone
         elif life.get("phase") == "ready":
             return gen
-    worker_id = await asyncio.to_thread(_relaunch_sync, engine_id, session_id)
+    worker_id = await asyncio.to_thread(_relaunch_sync, engine_id, session_id, permission_operation)
     if worker_id is not None:
         await _wait_ready(worker_id)
     gen = await asyncio.to_thread(_generation, session_id)
@@ -1122,9 +1162,20 @@ async def _live_generation(engine_id: str, session_id: str) -> Generation:
     return gen
 
 
-async def _effect(engine_id: str, session_id: str, action: str, params: dict) -> dict:
+async def _effect(
+    engine_id: str,
+    session_id: str,
+    action: str,
+    params: dict,
+    permission_operation: str | None,
+) -> dict:
     for attempt in range(3):
-        gen = await _live_generation(engine_id, session_id)
+        gen = await _live_generation(engine_id, session_id, permission_operation)
+        current = await asyncio.to_thread(native_state.read_session, session_id)
+        if _permission_change(current or {}).get("operation_id") != permission_operation:
+            raise NativeError(
+                409, "permissions changed while sending; review the session and send again"
+            )
         try:
             if action == "submit" and any(
                 a["mime"] == native_attachments.FILE_MIME for a in params.get("attachments") or ()
@@ -1398,7 +1449,19 @@ def project(
         "in_flight": in_flight,
         "model": record["request"]["model"],
         "effort": record["request"].get("effort"),
-        "bypass": bool(record["request"].get("bypass")),
+        "bypass": _effective_bypass(record),
+        "can_enable_bypass": (
+            record.get("adapter") in kinds.API_BYPASS_KINDS
+            and bool(record.get("native_id"))
+            and bool(record.get("generations"))
+            and _start_state(record) in (None, STARTED)
+            and not _effective_bypass(record)
+        ),
+        "permission_change": {
+            key: value
+            for key, value in _permission_change(record).items()
+            if key in {"operation_id", "state"}
+        },
         **pending_start_view(record),
         "model_effective": model_effective,
         "pending_requests": requests,
@@ -1537,7 +1600,12 @@ async def submit(
         native_protocol.validate_text(text, allow_empty=bool(attachments))
     except native_protocol.ProtocolError as exc:
         raise NativeError(422, str(exc)) from None
-    prov, _ = await asyncio.to_thread(_session, engine_id, session_id)
+    prov, record = await asyncio.to_thread(_session, engine_id, session_id)
+    # Pin before the first journal read, and across revision retries too. A request already
+    # waiting on history must not acquire a mode enabled while it was waiting (#1388).
+    permission_operation = _permission_change(record).get("operation_id")
+    if _permission_change(record).get("state") == "stopping":
+        raise NativeError(409, "finish enabling Skip permissions before sending another message")
     params = {"text": text, "context": context or {}}
     if attachments:
         params["attachments"] = attachments
@@ -1569,6 +1637,7 @@ async def submit(
                 session_id,
                 "submit",
                 {**params, "operation_id": turn_id, "expected_revision": revision},
+                permission_operation,
             )
             break
         except NativeError as exc:
@@ -1838,44 +1907,106 @@ def _stop_sync(engine_id: str, session_id: str, discard: bool = True) -> str:
         record = native_state.read_session(session_id)
         if record is None:
             raise NativeError(404, "no such native session")
-        record["closed"] = True
-        if discard and _start_state(record) in {PENDING, STARTING, FAILED, EXPIRED}:
-            # The operator's Discard of a skip creation that never completed its start: terminal,
-            # in the same write — a later /start, a late readiness and a turn all refuse (5926).
-            _set_start(record, DISCARDED)
-        native_state.write_session(session_id, record)
+        return _stop_locked(engine_id, session_id, record, discard)
+
+
+def _stop_locked(engine_id: str, session_id: str, record: dict, discard: bool) -> str:
+    """Close admission and prove containment while holding the session lifecycle lock."""
+    record["closed"] = True
+    if discard and _start_state(record) in {PENDING, STARTING, FAILED, EXPIRED}:
+        # The operator's Discard of a skip creation that never completed its start: terminal,
+        # in the same write — a later /start, a late readiness and a turn all refuse (5926).
+        _set_start(record, DISCARDED)
+    native_state.write_session(session_id, record)
+    for worker_id in record.get("workers", []):
+        identity = _identity(worker_id)
+        if identity is None:
+            continue
+        observation = HOST.show(identity.worker)
+        if observation is not None and observation.invocation_id == identity.invocation_id:
+            with contextlib.suppress(native_containment.ContainmentError):
+                HOST.stop(native_containment.stop_argv(identity, observation))
+    deadline = time.monotonic() + STOP_TIMEOUT
+    while True:
+        remaining = []
         for worker_id in record.get("workers", []):
-            identity = _identity(worker_id)
-            if identity is None:
-                continue
-            observation = HOST.show(identity.worker)
-            if observation is not None and observation.invocation_id == identity.invocation_id:
-                with contextlib.suppress(native_containment.ContainmentError):
-                    HOST.stop(native_containment.stop_argv(identity, observation))
-        deadline = time.monotonic() + STOP_TIMEOUT
-        while True:
-            remaining = []
-            for worker_id in record.get("workers", []):
-                if _gone(session_id, worker_id):
-                    life = native_state.read_lifecycle(worker_id)
-                    release = Path(life["release"]) if life.get("release") else None
-                    _lease(release, worker_id, remove=True)
-                    native_state.forget_config(worker_id)
-                    native_state.update_lifecycle(worker_id, phase="gone", gone_at=time.time())
-                else:
-                    remaining.append(worker_id)
-            record["workers"] = remaining
+            if _gone(session_id, worker_id):
+                life = native_state.read_lifecycle(worker_id)
+                release = Path(life["release"]) if life.get("release") else None
+                _lease(release, worker_id, remove=True)
+                native_state.forget_config(worker_id)
+                native_state.update_lifecycle(worker_id, phase="gone", gone_at=time.time())
+            else:
+                remaining.append(worker_id)
+        record["workers"] = remaining
+        native_state.write_session(session_id, record)
+        if not remaining or time.monotonic() >= deadline:
+            break
+        time.sleep(0.2)
+    if not remaining:
+        # Still under the lifecycle lock: no replay or relaunch can reserve in between the
+        # proof that nothing ran and the discharge (Hermes on #1278).
+        _discharge_if_unused(engine_id, session_id, record)
+        return "gone"
+    live = any(classify(session_id, w) == "live" for w in remaining)
+    return "live" if live else "unknown"
+
+
+def _enable_bypass_sync(engine_id: str, session_id: str, operation_id: str, actor: str) -> None:
+    # #1388: the operator explicitly enables the existing vendor bypass for THIS conversation.
+    # Operator approval for Codex, Claude and OpenCode: PR #1393, comment 95140
+    # (linked from the structured-clients invariant).
+    # Never rewrite the create request: native ownership and create replay still bind that input.
+    with native_state.session_lock(session_id, wait=STOP_TIMEOUT):
+        prov, record = _session(engine_id, session_id)
+        if prov.manifest.api.kind not in kinds.API_BYPASS_KINDS:
+            raise NativeError(422, "this client cannot skip permission prompts")
+        change = _permission_change(record)
+        if change and (change["operation_id"], change["actor"]) != (operation_id, actor):
+            raise NativeError(
+                409, "a different operation already changed this session's permissions"
+            )
+        if change.get("state") == "enabled":
+            return  # Exact replay observes; it must never stop a later generation.
+        if (
+            _start_state(record) not in (None, STARTED)
+            or not record.get("generations")
+            or not record.get("native_id")
+        ):
+            raise NativeError(409, "start this session before changing its permissions")
+        if _effective_bypass(record):
+            raise NativeError(409, "this session already skips permission prompts")
+        if not change:
+            change = {
+                "operation_id": operation_id,
+                "actor": actor,
+                "state": "stopping",
+                "requested_at": time.time(),
+            }
+            record["permission_change"] = change
+            record["closed"] = True
             native_state.write_session(session_id, record)
-            if not remaining or time.monotonic() >= deadline:
-                break
-            time.sleep(0.2)
-        if not remaining:
-            # Still under the lifecycle lock: no replay or relaunch can reserve in between the
-            # proof that nothing ran and the discharge (Hermes on #1278).
-            _discharge_if_unused(engine_id, session_id, record)
-            return "gone"
-        live = any(classify(session_id, w) == "live" for w in remaining)
-        return "live" if live else "unknown"
+        # The same lifecycle lock fences submit/relaunch, Stop, archive, and worker readiness.
+        # A crash/unknown containment leaves the closed gate and durable retry identity intact.
+        if _stop_locked(engine_id, session_id, record, False) != "gone":
+            raise NativeError(
+                503, "session tools may still be running; retry enabling Skip permissions"
+            )
+        _session(engine_id, session_id)  # a retired client cannot acquire this new permission
+        change["state"] = "enabled"
+        change["enabled_at"] = time.time()
+        native_state.write_session(session_id, record)
+        # Do not launch or resend anything. The next explicit operator message resumes history.
+
+
+async def enable_bypass(engine_id: str, session_id: str, *, operation_id: str, user: str) -> None:
+    try:
+        native_state._uuid(operation_id, "permission operation")
+    except native_state.StateError as exc:
+        raise NativeError(422, str(exc)) from None
+    if not isinstance(user, str) or not user or len(user) > 128:
+        raise NativeError(422, "a permission change needs its authenticated operator")
+    await asyncio.to_thread(_enable_bypass_sync, engine_id, session_id, operation_id, user)
 
 
 def _discharge_if_unused(engine_id: str, session_id: str, record: dict) -> None:
