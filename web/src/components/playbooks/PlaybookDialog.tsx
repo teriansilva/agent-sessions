@@ -11,6 +11,7 @@ export function PlaybookDialog({
   children,
   confirmLabel,
   busy = false,
+  confirmDisabled = false,
   danger = false,
   onCancel,
   onConfirm,
@@ -21,6 +22,7 @@ export function PlaybookDialog({
   children: ReactNode;
   confirmLabel: string;
   busy?: boolean;
+  confirmDisabled?: boolean;
   danger?: boolean;
   onCancel: () => void;
   onConfirm: () => void;
@@ -72,7 +74,7 @@ export function PlaybookDialog({
         </button>
         <button
           className={`${buttons.primary} ${danger ? styles.danger : ""}`}
-          disabled={busy}
+          disabled={busy || confirmDisabled}
           onClick={onConfirm}
         >
           {confirmLabel}

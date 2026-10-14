@@ -1,0 +1,107 @@
+.root {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.root h2,
+.root h3,
+.root p {
+  margin: 0;
+}
+.root h2 {
+  font-size: 1.15rem;
+}
+.root h3 {
+  font-size: 1rem;
+}
+.card {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  display: grid;
+  gap: 10px;
+}
+.selected {
+  border: 2px solid var(--accent);
+  border-radius: 0;
+  padding: 4px;
+}
+.fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.root label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.root input:not([type="checkbox"]),
+.root select,
+.root textarea {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  min-height: 44px;
+  padding: 10px;
+  background: var(--bg-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  font: inherit;
+}
+.root .check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 44px;
+  padding: 8px 0;
+  cursor: pointer;
+}
+.check input {
+  accent-color: var(--accent);
+  flex: 0 0 auto;
+  margin: 3px 0;
+  width: 20px;
+  height: 20px;
+}
+.root summary {
+  cursor: pointer;
+  min-height: 44px;
+  display: list-item;
+  padding-block: 12px;
+  box-sizing: border-box;
+}
+.root :is(input, select, textarea, summary):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.root pre {
+  max-width: 100%;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.85rem;
+}
+.root dl {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+}
+.root dd {
+  margin: 4px 0 0;
+}
+.warning {
+  color: var(--warn-text);
+}
+.digest {
+  word-break: break-all;
+  font-size: 0.8rem;
+}
+@media (max-width: 800px) {
+  .fields {
+    grid-template-columns: 1fr;
+  }
+}

@@ -199,6 +199,8 @@ test.describe("Settings → Projects manager (#361/#448)", () => {
     await page.getByRole("button", { name: "Next", exact: true }).click();
     await page.getByRole("button", { name: "None", exact: true }).click();
     await page.getByRole("button", { name: "Next", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Choose a playbook", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Next", exact: true }).click();
     await page.getByRole("button", { name: "Create project" }).click();
     await expect
       .poll(() => created)

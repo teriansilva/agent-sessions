@@ -3,7 +3,11 @@
  *  (`e2e/new-project-wizard.spec.ts`); this pins the logic a DOM emulator can see. */
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { createMemoryRouter, RouterProvider, useLocation } from "react-router-dom";
+import {
+  createMemoryRouter,
+  RouterProvider,
+  useLocation,
+} from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
 import { ConfigRefreshCtx } from "../app/config";
 import { api, ApiError } from "../lib/api";
@@ -23,6 +27,7 @@ vi.mock("../lib/api", async (orig) => {
   return {
     ...actual,
     api: {
+      playbooks: vi.fn(),
       projectEntities: vi.fn(),
       fsDirs: vi.fn(),
       fsMkdir: vi.fn(),
@@ -84,7 +89,9 @@ function Probe({ name }: { name: string }) {
 
 const refresh = vi.fn();
 
-function renderWizard(state: WizardEntryState | Record<string, unknown> | null = null) {
+function renderWizard(
+  state: WizardEntryState | Record<string, unknown> | null = null,
+) {
   const router = createMemoryRouter(
     [
       { path: NEW_PROJECT_PATH, element: <NewProject /> },
@@ -107,18 +114,28 @@ const next = (user: ReturnType<typeof userEvent.setup>) =>
   user.click(screen.getByRole("button", { name: "Next" }));
 
 /** NAME → FOLDER (new, suggested name) → COLOUR → REVIEW. */
-async function toReview(user: ReturnType<typeof userEvent.setup>, name = "Payments API") {
+async function toReview(
+  user: ReturnType<typeof userEvent.setup>,
+  name = "Payments API",
+) {
   await user.type(screen.getByLabelText("Project name"), name);
   await next(user);
   await screen.findByTestId("np-folder-preview");
   await next(user);
+  await next(user);
+  await screen.findByRole("heading", { name: "Choose a playbook" });
   await next(user);
   await screen.findByRole("heading", { name: "Review and create" });
 }
 
 beforeEach(() => {
   refresh.mockReset();
-  vi.mocked(api.projectEntities).mockReset().mockResolvedValue({ projects: [SAMPLEPROJECT] });
+  vi.mocked(api.playbooks)
+    .mockReset()
+    .mockResolvedValue({ playbooks: [], default: null, recovery_total: 0 });
+  vi.mocked(api.projectEntities)
+    .mockReset()
+    .mockResolvedValue({ projects: [SAMPLEPROJECT] });
   vi.mocked(api.fsDirs)
     .mockReset()
     .mockResolvedValue({
@@ -128,7 +145,9 @@ beforeEach(() => {
     });
   vi.mocked(api.fsMkdir)
     .mockReset()
-    .mockImplementation(async (parent, name) => ({ path: `${parent}/${name}` }));
+    .mockImplementation(async (parent, name) => ({
+      path: `${parent}/${name}`,
+    }));
   vi.mocked(api.createProject).mockReset().mockResolvedValue(created());
   vi.mocked(api.setPrefs).mockReset().mockResolvedValue({});
 });
@@ -146,14 +165,16 @@ test("the full journey: mkdir at CREATE, then the project, with the preselected 
   expect(api.fsMkdir).not.toHaveBeenCalled();
   await next(user);
   // SampleProject already uses the first preset, so the second is preselected.
-  expect(screen.getByRole("button", { name: `Color ${COLOR_PRESETS[1]}` })).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
+  expect(
+    screen.getByRole("button", { name: `Color ${COLOR_PRESETS[1]}` }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await next(user);
   await next(user);
   expect(screen.getByText("created if absent")).toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Create project" }));
-  expect(await screen.findByRole("heading", { name: "Project created" })).toBeInTheDocument();
+  expect(
+    await screen.findByRole("heading", { name: "Project created" }),
+  ).toBeInTheDocument();
   expect(api.fsMkdir).toHaveBeenCalledWith("/home/u", "payments-api");
   expect(api.createProject).toHaveBeenCalledWith({
     name: "Payments API",
@@ -178,7 +199,9 @@ test("a new folder whose name already exists is labelled existing, reused", asyn
     "existing folder, reused",
   );
   // …and the adopted-folder conflict is flagged at this step, before the server's 409.
-  expect(screen.getByTestId("np-folder-owner")).toHaveTextContent("SampleProject");
+  expect(screen.getByTestId("np-folder-owner")).toHaveTextContent(
+    "SampleProject",
+  );
 });
 
 test("an existing folder skips mkdir and creates the project on the pick", async () => {
@@ -195,6 +218,7 @@ test("an existing folder skips mkdir and creates the project on the pick", async
   await user.click(screen.getByRole("button", { name: "stub-pick" }));
   await next(user);
   await next(user);
+  await next(user);
   expect(screen.getByText("existing")).toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Create project" }));
   await screen.findByRole("heading", { name: "Project created" });
@@ -207,7 +231,10 @@ test("an existing folder skips mkdir and creates the project on the pick", async
 test("a 409 keeps REVIEW with the server's reason, names the folder left in place, and links to FOLDER", async () => {
   const user = userEvent.setup();
   vi.mocked(api.createProject).mockRejectedValue(
-    new ApiError(409, "folder '/home/u/payments-api' conflicts with '/home/u' already adopted by project p-9"),
+    new ApiError(
+      409,
+      "folder '/home/u/payments-api' conflicts with '/home/u' already adopted by project p-9",
+    ),
   );
   renderWizard();
   await toReview(user);
@@ -215,37 +242,52 @@ test("a 409 keeps REVIEW with the server's reason, names the folder left in plac
   const alert = await screen.findByTestId("np-create-error");
   expect(alert).toHaveTextContent("conflicts with '/home/u'");
   // mkdir succeeded, so the folder exists — named, never called empty or new.
-  expect(alert).toHaveTextContent("The folder ~/payments-api exists and stays where it is.");
+  expect(alert).toHaveTextContent(
+    "The folder ~/payments-api exists and stays where it is.",
+  );
   expect(alert.textContent).not.toMatch(/empty|new folder|newly/i);
-  expect(screen.getByRole("heading", { name: "Review and create" })).toBeInTheDocument();
+  expect(
+    screen.getByRole("heading", { name: "Review and create" }),
+  ).toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Change the folder" }));
-  expect(screen.getByRole("heading", { name: "Where does it live?" })).toBeInTheDocument();
+  expect(
+    screen.getByRole("heading", { name: "Where does it live?" }),
+  ).toBeInTheDocument();
 });
 
 test("a mkdir refusal stops before the project create", async () => {
   const user = userEvent.setup();
-  vi.mocked(api.fsMkdir).mockRejectedValue(new ApiError(422, "invalid folder name"));
+  vi.mocked(api.fsMkdir).mockRejectedValue(
+    new ApiError(422, "invalid folder name"),
+  );
   renderWizard();
   await toReview(user);
   await user.click(screen.getByRole("button", { name: "Create project" }));
-  expect(await screen.findByTestId("np-create-error")).toHaveTextContent("invalid folder name");
+  expect(await screen.findByTestId("np-create-error")).toHaveTextContent(
+    "invalid folder name",
+  );
   expect(api.createProject).not.toHaveBeenCalled();
 });
 
 test("a failure that is about no field (a 500) gets no Change-the-… link", async () => {
   const user = userEvent.setup();
-  vi.mocked(api.createProject).mockRejectedValue(new ApiError(500, "POST /api/projects → 500"));
+  vi.mocked(api.createProject).mockRejectedValue(
+    new ApiError(500, "POST /api/projects → 500"),
+  );
   renderWizard();
   await toReview(user);
   await user.click(screen.getByRole("button", { name: "Create project" }));
   await screen.findByTestId("np-create-error");
   expect(screen.queryByRole("button", { name: /^Change the/ })).toBeNull();
+  expect(screen.getByRole("button", { name: "Create project" })).toBeDisabled();
+  await user.click(screen.getByRole("button", { name: "Create project" }));
+  expect(api.createProject).toHaveBeenCalledTimes(1);
 });
 
-test("retrying after a failed create is safe: mkdir again (idempotent), then one project", async () => {
+test("retrying a definite create refusal repeats idempotent mkdir, then creates one project", async () => {
   const user = userEvent.setup();
   vi.mocked(api.createProject)
-    .mockRejectedValueOnce(new ApiError(500, ""))
+    .mockRejectedValueOnce(new ApiError(422, "invalid name"))
     .mockResolvedValueOnce(created());
   renderWizard();
   await toReview(user);
@@ -270,8 +312,12 @@ test("make-default sets default_project_id; a failure shows on DONE and retries 
     await screen.findByText("Created, but not set as your default project."),
   ).toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Try again" }));
-  expect(await screen.findByText("It is now your default project.")).toBeInTheDocument();
-  expect(api.setPrefs).toHaveBeenNthCalledWith(2, { default_project_id: "p-new" });
+  expect(
+    await screen.findByText("It is now your default project."),
+  ).toBeInTheDocument();
+  expect(api.setPrefs).toHaveBeenNthCalledWith(2, {
+    default_project_id: "p-new",
+  });
   expect(api.createProject).toHaveBeenCalledTimes(1);
   expect(refresh).toHaveBeenCalled();
 });
@@ -283,9 +329,11 @@ test("Back keeps what was entered, and the rail's Edit links jump to a step", as
   await user.click(screen.getByRole("button", { name: "Back" }));
   await user.click(screen.getByRole("button", { name: "Back" }));
   await user.click(screen.getByRole("button", { name: "Back" }));
+  await user.click(screen.getByRole("button", { name: "Back" }));
   expect(screen.getByLabelText("Project name")).toHaveValue("Keep me");
   await next(user);
   expect(screen.getByLabelText("Folder name")).toHaveValue("keep-me");
+  await next(user);
   await next(user);
   await next(user);
   await user.click(screen.getByRole("button", { name: "Edit name" }));
@@ -297,9 +345,13 @@ test("each step change moves focus to the step heading", async () => {
   renderWizard();
   await user.type(screen.getByLabelText("Project name"), "Focus");
   await next(user);
-  expect(screen.getByRole("heading", { name: "Where does it live?" })).toHaveFocus();
+  expect(
+    screen.getByRole("heading", { name: "Where does it live?" }),
+  ).toHaveFocus();
   await user.click(screen.getByRole("button", { name: "Back" }));
-  expect(screen.getByRole("heading", { name: "Name the project" })).toHaveFocus();
+  expect(
+    screen.getByRole("heading", { name: "Name the project" }),
+  ).toHaveFocus();
 });
 
 test("cancel from New session restores its draft exactly, with no project id", async () => {
@@ -307,7 +359,9 @@ test("cancel from New session restores its draft exactly, with no project id", a
   renderWizard({ from: "new-session", draft: DRAFT });
   await user.click(screen.getByRole("button", { name: "Cancel" }));
   await screen.findByRole("heading", { name: "New session" });
-  expect(JSON.parse(screen.getByTestId("landed-state").textContent ?? "null")).toEqual({
+  expect(
+    JSON.parse(screen.getByTestId("landed-state").textContent ?? "null"),
+  ).toEqual({
     restoreDraft: DRAFT,
   });
 });
@@ -319,7 +373,9 @@ test("finish from New session goes back with the project selected and the draft'
   await user.click(screen.getByRole("button", { name: "Create project" }));
   await user.click(await screen.findByRole("button", { name: "Done" }));
   await screen.findByRole("heading", { name: "New session" });
-  expect(JSON.parse(screen.getByTestId("landed-state").textContent ?? "null")).toEqual({
+  expect(
+    JSON.parse(screen.getByTestId("landed-state").textContent ?? "null"),
+  ).toEqual({
     restoreDraft: { ...DRAFT, projectChoice: null, cwdOverride: null },
     selectProjectId: "p-new",
   });
@@ -331,7 +387,9 @@ test("Done returns to the entry point; Plan a mission carries the project", asyn
   await toReview(user);
   await user.click(screen.getByRole("button", { name: "Create project" }));
   await user.click(await screen.findByRole("button", { name: "Done" }));
-  expect(await screen.findByRole("heading", { name: "Settings" })).toBeInTheDocument();
+  expect(
+    await screen.findByRole("heading", { name: "Settings" }),
+  ).toBeInTheDocument();
 });
 
 test("Plan a mission here preselects the new project", async () => {
@@ -339,9 +397,13 @@ test("Plan a mission here preselects the new project", async () => {
   renderWizard({ from: "dashboard" });
   await toReview(user);
   await user.click(screen.getByRole("button", { name: "Create project" }));
-  await user.click(await screen.findByRole("button", { name: "Plan a mission here" }));
+  await user.click(
+    await screen.findByRole("button", { name: "Plan a mission here" }),
+  );
   await screen.findByRole("heading", { name: "Missions" });
-  expect(JSON.parse(screen.getByTestId("landed-state").textContent ?? "null")).toEqual({
+  expect(
+    JSON.parse(screen.getByTestId("landed-state").textContent ?? "null"),
+  ).toEqual({
     missionProjectId: "p-new",
   });
 });
@@ -353,7 +415,9 @@ test("an unknown entry point gets no Done — only DONE's own actions", async ()
   await user.click(screen.getByRole("button", { name: "Create project" }));
   await screen.findByRole("heading", { name: "Project created" });
   expect(screen.queryByRole("button", { name: "Done" })).toBeNull();
-  expect(screen.getByRole("button", { name: "Start a session" })).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "Start a session" }),
+  ).toBeInTheDocument();
 });
 
 test("leaving a dirty draft asks first; a clean one leaves at once", async () => {
@@ -361,12 +425,18 @@ test("leaving a dirty draft asks first; a clean one leaves at once", async () =>
   renderWizard({ from: "dashboard" });
   await user.type(screen.getByLabelText("Project name"), "Half done");
   await user.click(screen.getByRole("button", { name: "Cancel" }));
-  expect(await screen.findByRole("dialog")).toHaveTextContent("has not been saved");
+  expect(await screen.findByRole("dialog")).toHaveTextContent(
+    "has not been saved",
+  );
   await user.click(screen.getByRole("button", { name: "Keep editing" }));
   expect(screen.getByLabelText("Project name")).toHaveValue("Half done");
   await user.click(screen.getByRole("button", { name: "Cancel" }));
-  await user.click(await screen.findByRole("button", { name: "Discard and leave" }));
-  expect(await screen.findByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
+  await user.click(
+    await screen.findByRole("button", { name: "Discard and leave" }),
+  );
+  expect(
+    await screen.findByRole("heading", { name: "Dashboard" }),
+  ).toBeInTheDocument();
 });
 
 test("a clean wizard cancels without a question", async () => {
@@ -374,7 +444,9 @@ test("a clean wizard cancels without a question", async () => {
   renderWizard({ from: "dashboard" });
   await waitFor(() => expect(api.projectEntities).toHaveBeenCalled());
   await user.click(screen.getByRole("button", { name: "Cancel" }));
-  expect(await screen.findByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
+  expect(
+    await screen.findByRole("heading", { name: "Dashboard" }),
+  ).toBeInTheDocument();
 });
 
 test("a name clash with an active project warns but does not block", async () => {

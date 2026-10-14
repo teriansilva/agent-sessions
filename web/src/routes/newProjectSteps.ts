@@ -11,13 +11,16 @@ export const STEPS = [
   { id: "name", label: "Name" },
   { id: "folder", label: "Folder" },
   { id: "colour", label: "Colour" },
+  { id: "playbook", label: "Playbook" },
+  { id: "inputs", label: "Inputs" },
   { id: "review", label: "Review" },
   { id: "done", label: "Done" },
 ] as const;
 
 export type StepId = (typeof STEPS)[number]["id"];
 
-export const stepIndex = (id: StepId): number => STEPS.findIndex((s) => s.id === id);
+export const stepIndex = (id: StepId): number =>
+  STEPS.findIndex((s) => s.id === id);
 
 export interface ProjectDraft {
   name: string;
@@ -85,6 +88,8 @@ export function stepValid(step: StepId, d: ProjectDraft): boolean {
     case "folder":
       return folderPath(d) !== "";
     case "colour":
+    case "playbook":
+    case "inputs":
       return true;
     case "review":
       return stepValid("name", d) && stepValid("folder", d);
@@ -101,18 +106,29 @@ export function reachable(index: number, d: ProjectDraft): boolean {
 }
 
 /** An active project already called this — a WARNING, never a block: the store allows it. */
-export function nameClash(name: string, projects: ProjectEntity[]): ProjectEntity | null {
+export function nameClash(
+  name: string,
+  projects: ProjectEntity[],
+): ProjectEntity | null {
   const n = name.trim().toLowerCase();
   if (!n) return null;
-  return projects.find((p) => !p.archived && p.name.trim().toLowerCase() === n) ?? null;
+  return (
+    projects.find((p) => !p.archived && p.name.trim().toLowerCase() === n) ??
+    null
+  );
 }
 
 const nested = (a: string, b: string) =>
-  a === b || a.startsWith(`${b.replace(/\/+$/, "")}/`) || b.startsWith(`${a.replace(/\/+$/, "")}/`);
+  a === b ||
+  a.startsWith(`${b.replace(/\/+$/, "")}/`) ||
+  b.startsWith(`${a.replace(/\/+$/, "")}/`);
 
 /** The project (archived ones included, like the server's check) that already owns `path`, the
  *  folder above it or one below it — the create would 409. The server's answer stays the authority. */
-export function folderOwner(path: string, projects: ProjectEntity[]): ProjectEntity | null {
+export function folderOwner(
+  path: string,
+  projects: ProjectEntity[],
+): ProjectEntity | null {
   if (!path) return null;
   return projects.find((p) => p.folders.some((f) => nested(path, f))) ?? null;
 }

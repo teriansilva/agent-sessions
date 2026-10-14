@@ -1,6 +1,7 @@
 import type { GalleryIndex, GalleryInspection, GalleryOperation, GalleryKind, GalleryComparison, GalleryFiles, LocalSkill } from "../types/gallery";
 import type { CollectionInput, SharedVariable, SharedVariableInput, SharedVariableUpdate, SharedVariablesResponse, VariableCollection } from "../types/variables";
 import type { Resources, ResourceSettings, ResourceValues } from "../types/resources";
+import type { DeploymentReceipt, DeploymentRemoval, DeploymentReview, DeploymentStatus, PlaybookInputs } from "../types/playbookDeployment";
 // Typed client for the FastAPI `/api/*` surface. Same-origin; cookie session auth.
 // Mutations (later) attach the CSRF token + are origin-checked server-side.
 import type { AuthoringSchema, DirectPrompt, Files, PromptComparison, Variable } from "../components/playbooks/playbookDraft";
@@ -1991,6 +1992,14 @@ export const api = {
     mutateJson<PlaybookWriteResult>("DELETE", `/api/playbooks/${encodeURIComponent(id)}/default`),
   playbookProjects: (id: string) => getJsonWithDetail<PlaybookFleet>(`/api/playbooks/${encodeURIComponent(id)}/projects`),
   verifyPlaybook: (project: string) => getJsonWithDetail<PlaybookVerify>(`/api/projects/${encodeURIComponent(project)}/playbook/verify`),
+  reviewPlaybook: (id: string, inputs: PlaybookInputs) => mutateJson<DeploymentReview>("POST", `/api/playbooks/${encodeURIComponent(id)}/review`, inputs),
+  confirmPlaybook: (id: string, inputs: PlaybookInputs, digest: string, targets: string[]) => mutateJson<DeploymentReceipt>("POST", `/api/playbooks/${encodeURIComponent(id)}/review/confirm`, { inputs, digest, targets }),
+  createPlaybookTarget: (id: string, inputs: PlaybookInputs, receipt: string) => mutateJson<{ path: string; device: number; inode: number; review_digest: string }>("POST", `/api/playbooks/${encodeURIComponent(id)}/review/create-target`, { inputs, receipt }),
+  bindPlaybook: (project: string, id: string, inputs: PlaybookInputs, receipt: string, operationId: string) => mutateJson<DeploymentReceipt>("POST", `/api/projects/${encodeURIComponent(project)}/playbook/bind`, { playbook_id: id, inputs, receipt, operation_id: operationId }),
+  applyPlaybook: (project: string, receipt: string, operationId: string) => mutateJson<DeploymentStatus>("POST", `/api/projects/${encodeURIComponent(project)}/playbook/apply`, { receipt, operation_id: operationId }),
+  playbookDeployment: (project: string) => getJsonWithDetail<DeploymentStatus>(`/api/projects/${encodeURIComponent(project)}/playbook`),
+  reviewPlaybookRemoval: (project: string) => mutateJson<DeploymentRemoval>("POST", `/api/projects/${encodeURIComponent(project)}/playbook/remove/plan`, {}),
+  removePlaybookDeployment: (project: string, digest: string, operationId: string) => mutateJson<DeploymentStatus>("POST", `/api/projects/${encodeURIComponent(project)}/playbook/remove`, { digest, operation_id: operationId }),
   reviewPlaybookFleet: (id: string) => mutateJson<PlaybookFleetReview>("POST", `/api/playbooks/${encodeURIComponent(id)}/fleet/review`, {}),
   updatePlaybookFleet: (id: string, digest: string, operationId: string) =>
     mutateJson<PlaybookFleetResult>("POST", `/api/playbooks/${encodeURIComponent(id)}/fleet/update`, { digest, operation_id: operationId }),

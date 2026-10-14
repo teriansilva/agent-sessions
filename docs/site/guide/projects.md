@@ -61,14 +61,41 @@ hidden while it is open. It asks, one step at a time:
    project.
 3. **Colour**: one of the presets, or none, with a preview of the session-list row and the map
    cluster. The wizard preselects the first preset no other project uses.
-4. **Review**: everything on one page, each with an Edit link, plus *Make this my default
-   project*.
+4. **Playbook**: choose a shared gallery card or **No playbook**. A usable configured default is
+   preselected; a missing default is explained. Local unsigned playbooks ask for your trust.
+5. **Inputs**, when a playbook is selected: enter project values, use saved values or defaults,
+   and review step assignments. A secret requires an explicit value or global reference. Values
+   stay in the wizard until the project exists and its inputs are bound.
+6. **Review**: the project details and, for a playbook, proposed file changes, rendered
+   instructions, resolved inputs and targets, assignments and capability requests. Confirm each
+   target derived from a default. *Create project and apply* remains unavailable while the review
+   has conflicts or a required target is unconfirmed.
 
-Nothing is written until you press **Create project**. Then the new folder is made (only if it is
+With **No playbook**, nothing is written until you press **Create project**. Then the new folder is made (only if it is
 absent, and only under your home directory), the project is created, and the default is set if you
 asked for it. If the server refuses (for example, the folder already belongs to another project),
 you stay on Review with its reason and a link to the step that fixes it. A folder that was made
-before the refusal is left where it is and named. Trying again is safe.
+before the refusal is left where it is and named. A known refusal can be retried. If the creation
+response is lost or the server cannot establish its outcome, the wizard prevents another create:
+check **Settings → Projects** first.
+
+With a playbook, the server rechecks the review before creating anything. A reviewed absent folder
+is created exclusively; even an empty folder that appeared in the meantime requires a new review.
+If the project is then refused, you can choose another folder and review it as usual; the folder
+already made stays where it is, and a replacement of it is never accepted as the one the wizard made.
+The project is then created, its inputs bound, the reviewed files applied, and the result verified.
+Assignment does not launch agents, start a workflow, run connection probes or schedule rituals.
+
+The result distinguishes project creation, deployment and verification. If binding or applying
+fails, **Retry binding** or **Retry apply** keeps the existing project and the same operation. A
+lost response is reconciled, never treated as proof that nothing happened. After a completed apply,
+**Re-verify** checks the files and inputs again. A changed source or target requires an explicit
+new review when no operation is interrupted. **Review removal of this playbook** shows the inverse
+file changes and restored bindings before confirmation; the project and its folders stay.
+
+Playbooks that write secret-reference files need an existing project ID before review. The gallery
+explains that limitation and keeps **No playbook** usable. Shared collection selectors and saved
+API-profile controls are separate integrations; their absence does not prevent project creation.
 
 When it is done you can start a session in the new project, plan a mission in it, see it on the
 map, or go back to where you started. From New session, you return with the new project and its

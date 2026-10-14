@@ -73,6 +73,7 @@ async function mockApp(
     }),
   );
   await mockRoster(page);
+  await page.route("**/api/playbooks", (r) => r.fulfill({ json: { playbooks: [], default: null, recovery_total: 0 } }));
   const sessions = opts.sessions ?? [];
   await page.route("**/api/sessions?**", (r) =>
     r.fulfill({
@@ -162,6 +163,8 @@ async function fillToReview(page: Page, name = "Payments API") {
   await next(page);
   await expect(heading(page, "Pick a colour")).toBeVisible();
   await next(page);
+  await expect(heading(page, "Choose a playbook")).toBeVisible();
+  await next(page);
   await expect(heading(page, "Review and create")).toBeVisible();
 }
 
@@ -186,6 +189,8 @@ test.describe("New project wizard (#1187)", () => {
       "aria-pressed",
       "true",
     );
+    await next(page);
+    await expect(heading(page, "Choose a playbook")).toBeVisible();
     await next(page);
     await expect(page.getByText("created if absent")).toBeVisible();
     expect(m.mkdirs).toEqual([]); // nothing written before CREATE
@@ -406,6 +411,9 @@ test.describe("New project wizard (#1187)", () => {
     await check("folder");
     await next(page);
     await check("colour");
+    await next(page);
+    await expect(heading(page, "Choose a playbook")).toBeVisible();
+    await check("playbook");
     await next(page);
     await expect(heading(page, "Review and create")).toBeVisible();
     await check("review");

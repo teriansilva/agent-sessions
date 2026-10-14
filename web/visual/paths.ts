@@ -36,6 +36,8 @@ export type VisualPath = {
     | "resource-controls"
     | "resource-advanced"
     | "playbook-flow"
+    | "project-playbooks"
+    | "project-playbook-inputs"
     | "playbook-step"
     | "playbook-prompts";
 };
@@ -64,6 +66,24 @@ const SPA_MOUNTED = {
 } as const;
 
 export const VISUAL_PATHS: VisualPath[] = [
+  {
+    group: "authed",
+    path: "/projects/new",
+    name: "new-project-playbooks",
+    description: "New project — shared playbook gallery and explicit No playbook choice",
+    requireAuth: "admin",
+    prepare: "project-playbooks",
+    waitFor: { selector: 'input[type="search"]', timeoutMs: 12000 },
+  },
+  {
+    group: "authed",
+    path: "/projects/new",
+    name: "new-project-playbook-inputs",
+    description: "New project — transient playbook inputs and saved step assignments",
+    requireAuth: "admin",
+    prepare: "project-playbook-inputs",
+    waitFor: { selector: '#wizard-step-heading', timeoutMs: 12000 },
+  },
   {
     group: "authed",
     path: "/library/variables",

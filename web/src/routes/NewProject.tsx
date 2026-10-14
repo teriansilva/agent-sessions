@@ -1,4 +1,11 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useProjectPlaybook } from "../components/playbooks/useProjectPlaybook";
+import {
+  ProjectPlaybookGallery,
+  ProjectPlaybookInputs,
+  ProjectPlaybookOutcome,
+  ProjectPlaybookReview,
+} from "../components/playbooks/ProjectPlaybook";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useConfigRefresh } from "../app/config";
 import { FolderPickerModal } from "../components/FolderPickerModal";
@@ -35,6 +42,8 @@ const HEADINGS: Record<StepId, string> = {
   name: "Name the project",
   folder: "Where does it live?",
   colour: "Pick a colour",
+  playbook: "Choose a playbook",
+  inputs: "Set the playbook inputs",
   review: "Review and create",
   done: "Project created",
 };
@@ -54,11 +63,13 @@ interface CreateError {
 const errText = (e: unknown, fallback: string) =>
   e instanceof ApiError && e.message ? e.message : fallback;
 
-/** The New project wizard at `/projects/new` (#1187): NAME → FOLDER → COLOUR → REVIEW → DONE.
+/** The New project wizard (#1187): name/folder/colour → playbook/inputs → review → done.
  *
  *  Nothing is written before CREATE. A new folder is made at CREATE, not at the FOLDER step, so
  *  Back or leaving never leaves a directory behind; then `POST /api/projects`; then, if asked, the
- *  default-project pref. No new server route — every write is an existing, CSRF-guarded one, and
+ *  default-project pref. A selected playbook uses the server's confirmed review and exclusive
+ *  folder creation, then binds/applies/verifies against the created project. Every retry retains
+ *  that entity and the deployment operation IDs. No new server route is introduced, and
  *  the server stays the authority on the folder (`$HOME`-bounded, one project per folder → 409).
  *
  *  Where it returns to comes from router state through a closed map (`lib/newProject.ts`). Entered
@@ -116,6 +127,8 @@ export default function NewProject() {
   const [pickerReturn, setPickerReturn] = useState<HTMLElement | null>(null);
 
   const [creating, setCreating] = useState(false);
+  const creatingRef = useRef(false);
+  const [createUnknown, setCreateUnknown] = useState(false);
   const [createError, setCreateError] = useState<CreateError | null>(null);
   const [created, setCreated] = useState<Created | null>(null);
   const [defaultState, setDefaultState] = useState<
@@ -128,20 +141,34 @@ export default function NewProject() {
   const reused =
     draft.folderMode === "new" &&
     !!parentDirs?.some((d) => d.name === draft.folderName.trim());
+  const book = useProjectPlaybook(
+    path,
+    draft.folderMode === "new" && !reused,
+    created?.id,
+  );
+  const visibleSteps = book.id ? STEPS : STEPS.filter((s) => s.id !== "inputs");
+  const visibleIndex = visibleSteps.findIndex((s) => s.id === stepId);
 
   // Nothing to lose once the project exists; before that, anything typed is.
-  const leaveGuard = !created && (isDirty(draft) || creating);
+  const leaveGuard =
+    (!created && (isDirty(draft) || !!book.id)) || creating || book.busy;
   const from = entry.from;
   const target = returnTarget(from);
 
   const go = (i: number) => {
+    if (creatingRef.current || book.busy || created || createUnknown) return;
+    if (stepId === "playbook" && !book.id) book.select(null);
     setCreateError(null);
     setStep(i);
+    if (STEPS[i].id === "review" && book.id) void book.review();
   };
 
   const cancel = () => {
     if (from === "new-session")
-      navigate(SESSIONS_PATH, { replace: true, state: cancelState(entry.draft) });
+      navigate(SESSIONS_PATH, {
+        replace: true,
+        state: cancelState(entry.draft),
+      });
     else navigate(target ?? SESSIONS_PATH, { replace: true });
   };
 
@@ -157,14 +184,29 @@ export default function NewProject() {
   };
 
   const create = async () => {
-    if (creating || !stepValid("review", draft)) return;
+    if (
+      creatingRef.current ||
+      createUnknown ||
+      created ||
+      !stepValid("review", draft) ||
+      !book.canCreate
+    )
+      return;
+    creatingRef.current = true;
     setCreating(true);
     setCreateError(null);
+    if (book.id && !(await book.prepare())) {
+      creatingRef.current = false;
+      setCreating(false);
+      return;
+    }
     let folder = path;
-    let folderOnDisk: string | null = null;
+    let folderOnDisk: string | null =
+      book.id && draft.folderMode === "new" ? path : null;
     try {
-      if (draft.folderMode === "new") {
-        folder = (await api.fsMkdir(draft.parent, draft.folderName.trim())).path;
+      if (draft.folderMode === "new" && !book.id) {
+        folder = (await api.fsMkdir(draft.parent, draft.folderName.trim()))
+          .path;
         folderOnDisk = folder;
       }
     } catch (e) {
@@ -174,6 +216,7 @@ export default function NewProject() {
         leftover: null,
       });
       setCreating(false);
+      creatingRef.current = false;
       return;
     }
     let project: Created;
@@ -186,7 +229,8 @@ export default function NewProject() {
     } catch (e) {
       // 409 = the folder belongs to another project; a 422 names the field it refused.
       const message = errText(e, "Couldn’t create the project.");
-      const field = e instanceof ApiError && (e.status === 409 || e.status === 422);
+      const field =
+        e instanceof ApiError && (e.status === 409 || e.status === 422);
       const fix: StepId | null =
         field && (e.status === 409 || /folder/i.test(message))
           ? "folder"
@@ -196,13 +240,19 @@ export default function NewProject() {
               ? "name"
               : null;
       setCreateError({ message, fix, leftover: folderOnDisk });
+      // A lost or server-error response cannot prove that project creation did not commit.
+      // Never post another create blindly; the operator can inspect the Projects list.
+      if (!(e instanceof ApiError) || e.status >= 500) setCreateUnknown(true);
       setCreating(false);
+      creatingRef.current = false;
       return;
     }
     setCreated(project);
     setCreating(false);
+    creatingRef.current = false;
     setStep(stepIndex("done"));
     if (draft.makeDefault) void setDefault(project.id);
+    if (book.id) void book.deploy(project.id);
   };
 
   // --- DONE's exits: `replace`, so the finished wizard does not linger in history. ---
@@ -212,7 +262,10 @@ export default function NewProject() {
       state: finishState(from === "new-session" ? entry.draft : null, id),
     });
 
-  const openPicker = (mode: "parent" | "existing", e: { currentTarget: HTMLElement }) => {
+  const openPicker = (
+    mode: "parent" | "existing",
+    e: { currentTarget: HTMLElement },
+  ) => {
     setPickerReturn(e.currentTarget);
     setPicker(mode);
   };
@@ -249,7 +302,9 @@ export default function NewProject() {
                 setDraft((d) => ({
                   ...d,
                   name,
-                  folderName: d.touched.folderName ? d.folderName : suggestFolderName(name),
+                  folderName: d.touched.folderName
+                    ? d.folderName
+                    : suggestFolderName(name),
                 }));
               }}
               onKeyDown={(e) => {
@@ -274,13 +329,25 @@ export default function NewProject() {
           <div className={styles.modes} role="radiogroup" aria-label="Folder">
             {(
               [
-                ["new", "New folder", "Make a folder under a parent you choose"],
-                ["existing", "Existing folder", "Use a folder that is already there"],
+                [
+                  "new",
+                  "New folder",
+                  "Make a folder under a parent you choose",
+                ],
+                [
+                  "existing",
+                  "Existing folder",
+                  "Use a folder that is already there",
+                ],
               ] as const
             ).map(([mode, label, hint]) => (
               <label
                 key={mode}
-                className={draft.folderMode === mode ? `${styles.mode} ${styles.modeOn}` : styles.mode}
+                className={
+                  draft.folderMode === mode
+                    ? `${styles.mode} ${styles.modeOn}`
+                    : styles.mode
+                }
               >
                 <input
                   type="radio"
@@ -300,8 +367,13 @@ export default function NewProject() {
               <div className={styles.field}>
                 <span id="np-parent-label">Parent folder</span>
                 <div className={styles.pathRow}>
-                  <code className={styles.path} aria-labelledby="np-parent-label">
-                    {draft.parent ? shortCwd(`${draft.parent}/`).replace(/(.)\/$/, "$1") : "…"}
+                  <code
+                    className={styles.path}
+                    aria-labelledby="np-parent-label"
+                  >
+                    {draft.parent
+                      ? shortCwd(`${draft.parent}/`).replace(/(.)\/$/, "$1")
+                      : "…"}
                   </code>
                   <button
                     type="button"
@@ -332,7 +404,8 @@ export default function NewProject() {
               {parentError && <p className={styles.error}>{parentError}</p>}
               {draft.folderName.trim() && !path && (
                 <p className={styles.error}>
-                  A folder name is one path segment — no “/”, and not “.” or “..”.
+                  A folder name is one path segment — no “/”, and not “.” or
+                  “..”.
                 </p>
               )}
               {path && (
@@ -346,7 +419,10 @@ export default function NewProject() {
               {reused && (
                 <p className={styles.warn} role="status">
                   A folder with that name is already in the parent. The project
-                  will use it as it is — nothing in it is changed.
+                  will use that folder.{" "}
+                  {book.id
+                    ? "The playbook review shows every proposed file change."
+                    : "No files are changed."}
                 </p>
               )}
             </>
@@ -354,8 +430,13 @@ export default function NewProject() {
             <div className={styles.field}>
               <span id="np-existing-label">Folder</span>
               <div className={styles.pathRow}>
-                <code className={styles.path} aria-labelledby="np-existing-label">
-                  {draft.existingPath ? shortCwd(draft.existingPath) : "no folder chosen"}
+                <code
+                  className={styles.path}
+                  aria-labelledby="np-existing-label"
+                >
+                  {draft.existingPath
+                    ? shortCwd(draft.existingPath)
+                    : "no folder chosen"}
                 </code>
                 <button
                   type="button"
@@ -368,7 +449,11 @@ export default function NewProject() {
             </div>
           )}
           {owner && (
-            <p className={styles.warn} role="status" data-testid="np-folder-owner">
+            <p
+              className={styles.warn}
+              role="status"
+              data-testid="np-folder-owner"
+            >
               This folder overlaps a folder of the project “{owner.name}”
               {owner.archived ? " (archived)" : ""}. A folder belongs to one
               project, so creating will be refused — pick another folder.
@@ -389,17 +474,25 @@ export default function NewProject() {
             size="large"
             clearLabel="None"
             onChange={(color) =>
-              setDraft((d) => ({ ...d, color, touched: { ...d.touched, color: true } }))
+              setDraft((d) => ({
+                ...d,
+                color,
+                touched: { ...d.touched, color: true },
+              }))
             }
           />
           <div className={styles.previews} aria-label="Preview">
             <div className={styles.previewRow} data-testid="np-preview-row">
               <span
-                className={draft.color ? styles.dot : `${styles.dot} ${styles.dotEmpty}`}
+                className={
+                  draft.color ? styles.dot : `${styles.dot} ${styles.dotEmpty}`
+                }
                 style={draft.color ? { background: draft.color } : undefined}
                 aria-hidden="true"
               />
-              <span className={styles.previewName}>{draft.name.trim() || "Project"}</span>
+              <span className={styles.previewName}>
+                {draft.name.trim() || "Project"}
+              </span>
               <span className={styles.previewMeta}>session list</span>
             </div>
             <div
@@ -434,7 +527,9 @@ export default function NewProject() {
                 <span className={styles.tag}>
                   {draft.folderMode === "existing" || reused
                     ? "existing"
-                    : "created if absent"}
+                    : book.id
+                      ? "created exclusively after review"
+                      : "created if absent"}
                 </span>
               </dd>
               {editLink("folder", "folder")}
@@ -443,7 +538,11 @@ export default function NewProject() {
               <dt>Colour</dt>
               <dd>
                 <span
-                  className={draft.color ? styles.dot : `${styles.dot} ${styles.dotEmpty}`}
+                  className={
+                    draft.color
+                      ? styles.dot
+                      : `${styles.dot} ${styles.dotEmpty}`
+                  }
                   style={draft.color ? { background: draft.color } : undefined}
                   aria-hidden="true"
                 />{" "}
@@ -452,6 +551,7 @@ export default function NewProject() {
               {editLink("colour", "colour")}
             </div>
           </dl>
+          {book.id && <ProjectPlaybookReview book={book} />}
           <label className={styles.check}>
             <input
               type="checkbox"
@@ -461,12 +561,24 @@ export default function NewProject() {
             <span>Make this my default project for new sessions</span>
           </label>
           {createError && (
-            <div className={styles.failure} role="alert" data-testid="np-create-error">
+            <div
+              className={styles.failure}
+              role="alert"
+              data-testid="np-create-error"
+            >
               <p>{createError.message}</p>
+              {createUnknown && (
+                <p>
+                  The creation result is unknown. Open Settings → Projects to
+                  check the folder before starting another wizard. This wizard
+                  will not create a second project.
+                </p>
+              )}
               {createError.leftover && (
                 <p>
-                  The folder <code>{shortCwd(createError.leftover)}</code> exists
-                  and stays where it is. Trying again is safe.
+                  The folder <code>{shortCwd(createError.leftover)}</code>{" "}
+                  exists and stays where it is.{" "}
+                  {!createUnknown && "Trying again is safe."}
                 </p>
               )}
               {createError.fix && (
@@ -483,18 +595,29 @@ export default function NewProject() {
         </>
       );
       break;
+    case "playbook":
+      body = <ProjectPlaybookGallery book={book} />;
+      break;
+    case "inputs":
+      body = <ProjectPlaybookInputs book={book} />;
+      break;
     case "done":
       body = created && (
         <>
           <p className={styles.lede}>
             <span
-              className={created.color ? styles.dot : `${styles.dot} ${styles.dotEmpty}`}
+              className={
+                created.color ? styles.dot : `${styles.dot} ${styles.dotEmpty}`
+              }
               style={created.color ? { background: created.color } : undefined}
               aria-hidden="true"
             />{" "}
             <b>{created.name}</b> starts sessions in{" "}
             <code>{shortCwd(created.default_folder)}</code>.
           </p>
+          {book.id && (
+            <ProjectPlaybookOutcome book={book} project={created.id} />
+          )}
           {defaultState === "set" && (
             <p className={styles.ok} role="status">
               It is now your default project.
@@ -565,17 +688,51 @@ export default function NewProject() {
     <>
       <WizardShell
         kicker="New project"
-        steps={STEPS}
-        current={step}
-        canJump={isDone ? () => false : (i) => reachable(i, draft)}
-        onJump={go}
-        heading={HEADINGS[stepId]}
-        onBack={step > 0 && !isDone ? () => go(step - 1) : undefined}
-        onNext={
-          isDone ? undefined : isReview ? () => void create() : () => go(step + 1)
+        steps={visibleSteps}
+        current={visibleIndex}
+        canJump={
+          isDone || creating || book.busy || createUnknown
+            ? () => false
+            : (i) =>
+                reachable(stepIndex(visibleSteps[i].id), draft) &&
+                (i <= visibleSteps.findIndex((s) => s.id === "playbook") ||
+                  book.selectedReady)
         }
-        nextLabel={isReview ? (creating ? "Creating…" : "Create project") : "Next"}
-        nextDisabled={creating || !stepValid(stepId, draft)}
+        onJump={(i) => go(stepIndex(visibleSteps[i].id))}
+        heading={HEADINGS[stepId]}
+        onBack={
+          visibleIndex > 0 &&
+          !isDone &&
+          !creating &&
+          !book.busy &&
+          !createUnknown
+            ? () => go(stepIndex(visibleSteps[visibleIndex - 1].id))
+            : undefined
+        }
+        onNext={
+          isDone
+            ? undefined
+            : isReview
+              ? () => void create()
+              : () => go(stepIndex(visibleSteps[visibleIndex + 1].id))
+        }
+        nextLabel={
+          isReview
+            ? creating
+              ? "Creating…"
+              : book.id
+                ? "Create project and apply"
+                : "Create project"
+            : "Next"
+        }
+        nextDisabled={
+          creating ||
+          book.busy ||
+          createUnknown ||
+          !stepValid(stepId, draft) ||
+          (stepId === "playbook" && !book.selectedReady) ||
+          (isReview && !book.canCreate)
+        }
         secondary={
           isDone ? undefined : (
             <button type="button" className={styles.ghostBtn} onClick={cancel}>
@@ -585,11 +742,11 @@ export default function NewProject() {
         }
         leaveGuard={leaveGuard}
         leaveTitle={draft.name.trim() || "New project"}
-        {...(creating
+        {...(creating || book.busy
           ? {
               // Leaving does not stop a create already on the wire — say so, don't say "discard".
               leaveMessage:
-                "The project is being created. Leaving now does not stop that: it will still be created.",
+                "An operation is in flight. Leaving does not cancel that operation. The project and any completed files or bindings remain; later deployment stages stop when the wizard closes.",
               leaveConfirmLabel: "Leave anyway",
             }
           : {})}
@@ -599,12 +756,22 @@ export default function NewProject() {
       {picker && (
         <FolderPickerModal
           initialPath={
-            picker === "parent" ? draft.parent || undefined : draft.existingPath || undefined
+            picker === "parent"
+              ? draft.parent || undefined
+              : draft.existingPath || undefined
           }
-          title={picker === "parent" ? "Choose the parent folder" : "Choose the project's folder"}
+          title={
+            picker === "parent"
+              ? "Choose the parent folder"
+              : "Choose the project's folder"
+          }
           onPick={(p) => {
             if (picker === "parent")
-              setDraft((d) => ({ ...d, parent: p, touched: { ...d.touched, parent: true } }));
+              setDraft((d) => ({
+                ...d,
+                parent: p,
+                touched: { ...d.touched, parent: true },
+              }));
             else patch({ existingPath: p });
             setPicker(null);
           }}

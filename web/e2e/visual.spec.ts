@@ -94,6 +94,23 @@ async function prepareOpenFirstWindow(page: Page): Promise<void> {
 
 /** Run the entry's declared interaction, if any, between `goto` and `waitFor`. */
 async function runPrepare(page: Page, p: VisualPath): Promise<void> {
+  if (p.prepare === "project-playbooks" || p.prepare === "project-playbook-inputs") {
+    await page.getByLabel("Project name").fill("Example project");
+    const next = page.getByRole("button", { name: "Next", exact: true });
+    await next.click();
+    await page.getByTestId("np-folder-preview").waitFor();
+    await next.click(); await next.click();
+    await page.getByRole("heading", { name: "Choose a playbook", exact: true }).waitFor();
+    if (p.prepare === "project-playbook-inputs") {
+      await page.locator('[data-testid^="playbook-card-"] button:not([disabled])').first().click();
+      const trust = page.getByRole("checkbox", { name: /unsigned local playbook/ });
+      // The source is loaded after selection; wait for Next or the explicit trust control.
+      await page.waitForFunction(() => !!document.querySelector('input[type="checkbox"]') || Array.from(document.querySelectorAll("button")).some((b) => b.textContent?.trim() === "Next" && !b.disabled));
+      if (await trust.isVisible()) await trust.check();
+      await next.click();
+      await page.getByRole("heading", { name: "Set the playbook inputs", exact: true }).waitFor();
+    }
+  }
   if (p.prepare === "open-first-window") await prepareOpenFirstWindow(page);
   if (p.prepare === "playbook-flow" || p.prepare === "playbook-step" || p.prepare === "playbook-prompts") {
     const section = page.getByRole("region", {
