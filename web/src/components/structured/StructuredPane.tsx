@@ -68,6 +68,7 @@ import {
   sendIdentity,
   requestRows,
   requestTitle,
+  requestSummary,
   reviewOnly,
   messageTimestamp,
   sendNowTarget,
@@ -166,8 +167,14 @@ function RequestCard({
   deciding,
   readOnly,
   onDecide,
+  folder,
+  onInterrupt,
+  interrupting,
 }: {
   req: StructuredRequest;
+  folder?: string;
+  onInterrupt: () => void;
+  interrupting: boolean;
   agent: string;
   deciding: Deciding | null;
   readOnly: boolean;
@@ -180,7 +187,10 @@ function RequestCard({
   const alwaysToggle = useRef<HTMLButtonElement>(null);
   const alwaysList = useRef<HTMLUListElement>(null);
   useEffect(() => {
-    if (alwaysOpen) alwaysList.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    if (!alwaysOpen) return;
+    const list = alwaysList.current;
+    list?.scrollIntoView?.({ block: "nearest" });
+    list?.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true });
   }, [alwaysOpen]);
   const decidedGrant = mine?.grant ? always.find((g) => g.id === mine.grant) : undefined;
   const mineLabel = mine
@@ -188,6 +198,7 @@ function RequestCard({
       ? `${choiceLabel("always", req)}: ${decidedGrant.label}`
       : choiceLabel(mine.decision, req)
     : "";
+  const summary = requestSummary(req, folder);
   const rows = requestRows(req);
   const ids = requestIds(req);
   const declineOnly = reviewOnly(req);
@@ -207,38 +218,14 @@ function RequestCard({
           <RiskMark risk={req.risk} />
         </p>
       )}
-      <dl className={styles.kv}>
-        {rows.map((row) => (
-          <div className={styles.kvRow} key={row.key} data-testid="structured-field" data-field={row.key}>
-            <dt>{row.label}</dt>
-            <dd>
-              {row.kind === "patch" && row.files ? (
-                <Patch files={row.files} />
-              ) : row.kind === "code" ? (
-                <code className={styles.cmd}>{row.text}</code>
-              ) : row.kind === "json" ? (
-                <pre className={styles.json}>{row.text}</pre>
-              ) : row.kind === "suggestions" ? (
-                <>
-                  <pre className={styles.json}>{row.text}</pre>
-                  <span className={styles.aside}>
-                    {always.length > 0
-                      ? "Offered under Approve always, as proposed — read each option's scope and where it is saved."
-                      : "None of these can be approved always here (BattleLab offers only rules it can describe, never a mode switch)."}
-                  </span>
-                </>
-              ) : (
-                row.text
-              )}
-            </dd>
-          </div>
-        ))}
-      </dl>
-      <p className={styles.ids}>
-        {[`request ${req.request_id}`, ...ids, req.payload_digest ? `digest ${req.payload_digest.slice(0, 8)}…` : null]
-          .filter(Boolean)
-          .join(" · ")}
-      </p>
+      <div className={styles.actionSummary}>
+        <code className={styles.actionText}>{summary.action}</code>
+        {summary.folder && <p className={styles.requestFolder}>{summary.folder}</p>}
+        {summary.reason && <p className={styles.requestReason}>{summary.reason}</p>}
+      </div>
+      {rows.filter((row) => row.kind === "patch" && row.files).map((row) => (
+        <div className={styles.actionSummary} key={row.key}><Patch files={row.files!} /></div>
+      ))}
       {declineOnly && req.kind === "file_change" && (
         <p className={styles.why} data-testid="structured-review-only">
           <b>You can review this change but not approve it here.</b> Nothing guarantees that{" "}
@@ -296,7 +283,48 @@ function RequestCard({
             ];
           })
         )}
+        {!req.choices.includes("cancel") && (
+          <button type="button" className={chat.ghost} disabled={readOnly || interrupting}
+            onClick={onInterrupt}>Reject and stop the turn</button>
+        )}
       </div>
+      <details className={styles.requestDetails}>
+        <summary>Details</summary>
+        <div className={styles.detailsScroll}>
+          <dl className={styles.kv}>
+            {rows.map((row) => (
+              <div className={styles.kvRow} key={row.key} data-testid="structured-field" data-field={row.key}>
+                <dt>{row.label}</dt>
+                <dd>
+                  {row.kind === "patch" && row.files ? (
+                    <pre className={styles.json}>{JSON.stringify(row.files, null, 2)}</pre>
+                  ) : row.kind === "code" ? (
+                    <code className={styles.cmd}>{row.text}</code>
+                  ) : row.kind === "json" ? (
+                    <pre className={styles.json}>{row.text}</pre>
+                  ) : row.kind === "suggestions" ? (
+                    <>
+                      <pre className={styles.json}>{row.text}</pre>
+                      <span className={styles.aside}>
+                        {always.length > 0
+                          ? "Offered under Approve always, as proposed — read each option's scope and where it is saved."
+                          : "None of these can be approved always here (BattleLab offers only rules it can describe, never a mode switch)."}
+                      </span>
+                    </>
+                  ) : (
+                    row.text
+                  )}
+                </dd>
+              </div>
+            ))}
+          </dl>
+          <p className={styles.ids}>
+            {[`request ${req.request_id}`, ...ids, req.payload_digest ? `digest ${req.payload_digest.slice(0, 8)}…` : null]
+              .filter(Boolean)
+              .join(" · ")}
+          </p>
+        </div>
+      </details>
       {alwaysOpen && !mine && always.length > 0 && (
         <ul
           ref={alwaysList}
@@ -336,6 +364,78 @@ function RequestCard({
   );
 }
 
+/** While the pointer is in the queue, preserve space before a pending sibling so answering
+ * cannot move another action underneath it. The queue retires unneeded slots separately. */
+function RequestSlot({ children, active }: { children: React.ReactNode; active: boolean }) {
+  const box = useRef<HTMLDivElement>(null);
+  const [height, setHeight] = useState(0);
+  useEffect(() => {
+    if (!active || !box.current || typeof ResizeObserver === "undefined") return;
+    const el = box.current;
+    const resize = new ResizeObserver(() => setHeight(el.getBoundingClientRect().height));
+    resize.observe(el);
+    return () => resize.disconnect();
+  }, [active]);
+  return <div ref={box} style={active ? undefined : { minHeight: height }}>
+    {active ? children : <p className={styles.closedRequest}>Request closed</p>}
+  </div>;
+}
+
+function RequestQueue({ requests, render }: {
+  requests: StructuredRequest[];
+  render: (req: StructuredRequest) => React.ReactNode;
+}) {
+  const queue = useRef<HTMLDivElement>(null);
+  const focused = useRef<string | null>(null);
+  const [retaining, setRetaining] = useState(false);
+  const [order, setOrder] = useState<string[]>(requests.map(requestKey));
+  const pending = requests.map(requestKey);
+  const keys = retaining ? [...order] : order.filter((key) => pending.includes(key));
+  // A closed suffix protects no sibling. Retire it BEFORE appending new requests, including
+  // snapshots which both settle one request and introduce its successor in the same turn.
+  while (keys.length && !pending.includes(keys[keys.length - 1])) keys.pop();
+  keys.push(...pending.filter((key) => !keys.includes(key)));
+  // Adjust derived order before committing children, without an extra effect/render pass.
+  if (keys.length !== order.length || keys.some((key, i) => key !== order[i])) setOrder(keys);
+  useEffect(() => {
+    const outside = (event: PointerEvent) => {
+      if (event.target instanceof Node && !queue.current?.contains(event.target)) {
+        focused.current = null;
+        setRetaining(false);
+      }
+    };
+    document.addEventListener("pointerdown", outside);
+    return () => document.removeEventListener("pointerdown", outside);
+  }, []);
+  useLayoutEffect(() => {
+    if (!focused.current || pending.includes(focused.current)) return;
+    focused.current = null;
+    const root = queue.current;
+    // An acknowledgement removes the focused button. Hand off only its focus, never focus
+    // belonging to the composer or another pane, and never scroll buttons under the pointer.
+    if (document.activeElement !== document.body && !root?.contains(document.activeElement)) return;
+    (root?.querySelector<HTMLElement>("button:not(:disabled)")
+      ?? root?.querySelector<HTMLElement>("[data-testid=structured-queue]"))?.focus({ preventScroll: true });
+  });
+  if (!requests.length) return null;
+  return <div ref={queue} className={styles.queue}
+    onPointerEnter={() => setRetaining(true)}
+    onPointerLeave={(event) => { if (event.pointerType === "mouse") setRetaining(false); }}
+    onBlurCapture={(event) => {
+      if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) focused.current = null;
+    }}>
+    <p className={styles.queueHead} data-testid="structured-queue" tabIndex={-1}>
+      {requests.length} {requests.length === 1 ? "request" : "requests"} waiting
+    </p>
+    {keys.map((key) => {
+      const req = requests.find((r) => requestKey(r) === key);
+      return <div key={key} onFocusCapture={() => { focused.current = key; }}>
+        <RequestSlot active={!!req}>{req && render(req)}</RequestSlot>
+      </div>;
+    })}
+  </div>;
+}
+
 /** The agent works with no operator turn running (#1430): the same bars as a running turn. */
 function BackgroundWork() {
   return (
@@ -371,6 +471,7 @@ function MessageHeader({ speaker, title, kind, ts }: {
 }
 
 function TurnView({
+  folder,
   turn,
   agent,
   requests,
@@ -384,10 +485,11 @@ function TurnView({
   sendingNow,
   sendNowDisabled,
 }: {
+  folder?: string;
   turn: StructuredTurn;
   agent: string;
   requests: StructuredRequest[];
-  deciding: Deciding | null;
+  deciding: Record<string, Deciding>;
   readOnly: boolean;
   onDecide: (req: StructuredRequest, choice: string, grant?: string) => void;
   onInterrupt: (turnId: string) => void;
@@ -474,16 +576,19 @@ function TurnView({
           </ul>
         </details>
       )}
-      {requests.map((r) => (
+      <RequestQueue requests={requests} render={(r) => (
         <RequestCard
-          key={r.request_id}
+          key={requestKey(r)}
           req={r}
+          folder={folder}
           agent={agent}
-          deciding={deciding}
+          deciding={deciding[requestKey(r)] ?? null}
           readOnly={readOnly}
           onDecide={onDecide}
+          onInterrupt={() => onInterrupt(turn.turn_id)}
+          interrupting={interrupting}
         />
-      ))}
+      )} />
       {turn.reply && (
         <div className={`${chat.turn} ${chat.asst} ${styles.reply}`} data-testid="structured-reply">
           <MessageHeader speaker={agent} kind="assistant" ts={turn.reply_ts} />
@@ -640,7 +745,7 @@ export function StructuredPane({
   const fileRef = useRef<HTMLInputElement>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [deciding, setDeciding] = useState<Deciding | null>(null);
+  const [deciding, setDeciding] = useState<Record<string, Deciding>>({});
   const [actionError, setActionError] = useState<string | null>(null);
   const [interrupting, setInterrupting] = useState(false);
   const [sendingNow, setSendingNow] = useState<string | null>(null);
@@ -671,9 +776,9 @@ export function StructuredPane({
     setSnap(s);
     // A decision is over once its exact request is no longer pending — forget it, so a later
     // request that reuses the native id never inherits it.
-    setDeciding((d) =>
-      d && d.phase !== "sending" && !s.pending_requests.some((r) => requestKey(r) === d.key) ? null : d,
-    );
+    setDeciding((all) => Object.fromEntries(Object.entries(all).filter(([, d]) =>
+      d.phase === "sending" || s.pending_requests.some((r) => requestKey(r) === d.key),
+    )));
     setLoadError(null);
     setReconnecting(false);
   }, []);
@@ -737,14 +842,6 @@ export function StructuredPane({
       clearTimeout(timer);
     };
   }, [key, active, load]);
-
-  // A decision settles when its exact request is no longer pending — never on the POST alone.
-  const decidingNow =
-    deciding &&
-    (deciding.phase === "sending" ||
-      (snap?.pending_requests.some((r) => requestKey(r) === deciding.key) ?? true))
-      ? deciding
-      : null;
 
   useLayoutEffect(() => {
     const el = logRef.current;
@@ -886,7 +983,8 @@ export function StructuredPane({
   const decide = async (req: StructuredRequest, choice: string, grant?: string) => {
     if (readOnly) return;
     const reqKey = requestKey(req);
-    if (decidingNow && (decidingNow.key !== reqKey || decidingNow.phase === "sending")) return;
+    const decidingNow = deciding[reqKey];
+    if (decidingNow && decidingNow.phase !== "unknown") return;
     // A retry reuses the id only for the SAME decision and grant (#1339): the server binds both.
     const decision_id =
       decidingNow?.key === reqKey && decidingNow.decision === choice && decidingNow.grant === grant
@@ -900,7 +998,7 @@ export function StructuredPane({
       decision_id,
       phase: "sending",
     };
-    setDeciding(next);
+    setDeciding((all) => ({ ...all, [reqKey]: next }));
     setActionError(null);
     try {
       await api.structuredDecide(key, {
@@ -910,15 +1008,15 @@ export function StructuredPane({
         decision: choice,
         ...(grant ? { grant } : {}),
       });
-      setDeciding({ ...next, phase: "sent" }); // settled by the next snapshot, not by this answer
+      setDeciding((all) => ({ ...all, [reqKey]: { ...next, phase: "sent" } })); // settled by the next snapshot, not by this answer
       await load();
     } catch (e) {
       if (definite(e)) {
-        setDeciding(null);
+        setDeciding((all) => Object.fromEntries(Object.entries(all).filter(([k]) => k !== reqKey)));
         setActionError(`Decision not taken: ${detail(e, "refused")}`);
         await load();
       } else {
-        setDeciding({ ...next, phase: "unknown" });
+        setDeciding((all) => ({ ...all, [reqKey]: { ...next, phase: "unknown" } }));
       }
     }
   };
@@ -1582,9 +1680,10 @@ export function StructuredPane({
           {i === backgroundAt && <BackgroundWork />}
           <TurnView
             turn={t}
+            folder={snap?.cwd}
             agent={agent}
             requests={pending.filter((r) => r.turn_id === t.turn_id)}
-            deciding={decidingNow}
+            deciding={deciding}
             readOnly={readOnly}
             onDecide={(r, c, g) => void decide(r, c, g)}
             onInterrupt={(tid) => void interrupt(tid)}

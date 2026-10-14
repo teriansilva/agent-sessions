@@ -974,6 +974,28 @@ def opencode():
                     finish(rid, "ran:" + permission)
                 prompt = None
                 continue
+            if text == "COMMAND_THEN_MCP":
+                command = {
+                    "toolCallId": "cmd",
+                    "title": "git remote -v",
+                    "kind": "execute",
+                    "rawInput": {"command": "git remote -v"},
+                }
+                first = answer_to(ask(command, [ONCE, ALWAYS, REJECT]))
+                mcp = {
+                    "toolCallId": "mcp",
+                    "title": "forgejo_list_repo_labels",
+                    "kind": "other",
+                    "status": "in_progress",
+                    "rawInput": {"owner": "superstatus.io", "repo": "agent-sessions"},
+                }
+                update("tool_call_update", **mcp)
+                second = answer_to(
+                    ask({**mcp, "rawInput": {}, "status": "pending"}, [ONCE, ALWAYS, REJECT])
+                )
+                finish(rid, f"command:{first} mcp:{second}")
+                prompt = None
+                continue
             if text.startswith("BLIND_"):
                 # A permission request missing the action it would approve (Hermes on #1336).
                 tool = {

@@ -5,7 +5,7 @@ contract = 1
 # executable comes from the console agent named by `api.source`: binary, login, config, providers,
 # MCP servers, instruction files. This manifest names no binary, argv, endpoint, model list or
 # permission flag; the validator refuses them for runtime "api". The session runs only in
-# BattleLab's own ask-everything opencode agent (see docs/invariants/native-runtime.md).
+# BattleLab's own immutable guarded or bypass opencode agent (see docs/invariants/native-runtime.md).
 
 [identity]
 id = "opencode-api"

@@ -378,11 +378,12 @@ for (const theme of ["dark", "light"] as const) {
     await expect(card).toBeVisible();
     await expect(page.getByTestId("structured-pane")).toBeVisible();
     await expect(page.locator(".xterm")).toHaveCount(0);
+    await card.locator("details > summary").click();
     for (const field of ["command", "cwd", "reason", "networkApprovalContext", "proposedExecpolicyAmendment"]) {
       await expect(card.locator(`[data-field="${field}"]`)).toBeVisible();
     }
     await expect(card).toContainText("item Id call_9f2c");
-    await expect(card.getByRole("button")).toHaveText(["Approve once", "Reject"]);
+    await expect(card.getByRole("button")).toHaveText(["Approve once", "Reject", "Reject and stop the turn"]);
     await noOverflow(page);
     await targets(page, card);
     await card.getByRole("button", { name: "Approve once" }).click();
@@ -459,7 +460,7 @@ test("a decision in flight never looks settled, and its siblings wait", async ({
   await page.goto(URL_PATH);
   await page.getByRole("button", { name: "Approve once" }).click();
   await expect(page.getByTestId("structured-deciding")).toContainText("Sending");
-  await expect(page.getByRole("button", { name: "Reject" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Reject", exact: true })).toBeDisabled();
   await expect(page.getByTestId("structured-request")).toBeVisible();
 });
 

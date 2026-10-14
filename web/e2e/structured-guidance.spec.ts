@@ -148,7 +148,9 @@ test("approval stays visible outside collapsed risky activity; read-only and old
   await expect(page.getByRole("button", { name: "Approve once", exact: true })).toBeVisible();
   await expect(page.getByTestId("structured-activity").locator("summary")).toContainText("Risky activity");
   await expect(page.getByText("git push --force", { exact: true })).toBeHidden();
-  await expect(page.getByText("git status --short", { exact: true })).toBeVisible();
+  // The card's action summary shows the command; the full payload repeats it under the collapsed
+  // Details (#1339), so exactly one copy is visible.
+  await expect(page.getByText("git status --short", { exact: true }).filter({ visible: true })).toHaveCount(1);
   await page.getByRole("button", { name: "Approve once", exact: true }).scrollIntoViewIfNeeded();
   await page.screenshot({ path: testInfo.outputPath("approval-visible.png") });
   state.native.send_now = "";

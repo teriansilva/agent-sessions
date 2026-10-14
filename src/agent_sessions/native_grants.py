@@ -14,6 +14,8 @@ the request's advisory RISKY mark. What remains is integrity, not policy:
   THE SESSION'S MODE (``setMode``) is not a grant and is never offered — the permission mode is
   fixed at create (skip-permissions is chosen there) — and neither are ``deny``/``ask``/remove
   or replace suggestions, which are not approvals;
+* OpenCode selects its native `allow_always` option, disclosing that ACP omits its matching
+  patterns and that its remembered rules last only for this worker and folder (never persisted);
 * malformed suggestions are skipped and never break the read.
 
 Pure functions: the server derives the offered choices from the journaled payload, and the
@@ -216,6 +218,40 @@ def _claude(payload: dict, cwd: str | None) -> tuple[dict | None, list[dict]]:
     return risk, out
 
 
+def _opencode(payload: dict, cwd: str | None) -> tuple[dict | None, list[dict]]:
+    """ACP 1.18.35 omits the native permission patterns. Never invent an argv prefix or call
+    this persistent: Permission's instance-local approved rules disappear with this worker.
+    The operator approved every proposed grant (#1342, 89972); disclose the missing scope."""
+    call = payload.get("toolCall")
+    if not isinstance(call, dict):
+        return None, []
+    raw = call.get("rawInput")
+    risk = (
+        risk_marks.classify(raw.get("command") if isinstance(raw, dict) else None, cwd)
+        if call.get("kind") == "execute"
+        else None
+    )
+    options = payload.get("options")
+    if not isinstance(options, list) or payload.get("declineOnly") or payload.get("omitted"):
+        return risk, []
+    always = [o for o in options if isinstance(o, dict) and o.get("kind") == "allow_always"]
+    if (
+        len(always) != 1
+        or not isinstance(always[0].get("optionId"), str)
+        or not always[0]["optionId"]
+    ):
+        return risk, []
+    return risk, [
+        {
+            "grant": always[0]["optionId"],
+            "scope": "session",
+            "label": "Remember OpenCode’s permission rules — matching patterns are not provided "
+            "and may cover all uses of a tool · this worker and folder only, not saved; "
+            "resets when the worker restarts" + _risk_note(risk),
+        }
+    ]
+
+
 def derive(adapter: str, kind: str | None, payload, cwd: str | None) -> dict:
     """``{risk, always: [{id, label, scope, grant}]}`` for one complete pending request.
 
@@ -231,6 +267,8 @@ def derive(adapter: str, kind: str | None, payload, cwd: str | None) -> dict:
             risk, choices = _codex(payload, cwd)
         elif adapter == "claude-stream-json":
             risk, choices = _claude(payload, cwd)
+        elif adapter == "opencode-acp":
+            risk, choices = _opencode(payload, cwd)
         else:
             return {"risk": None, "always": []}  # any other adapter maps no standing grant
     except Exception:  # noqa: BLE001 — client-supplied shapes: fail closed, never break the read

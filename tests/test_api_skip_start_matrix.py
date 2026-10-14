@@ -1,7 +1,7 @@
 """#1339: the skip-start state machine (operator decision on #1341, after review 5926).
 
 One field, `record["start"]`, moved only by compare-and-set under the session lock. This pins
-every state × entry point for both adapters: the resulting state and how many generations were
+every state × entry point for all three adapters: the resulting state and how many generations were
 launched. `expired` and `discarded` are terminal; only `/start` (from pending/failed) and a
 `started` session may launch a generation; a late completion for a generation that is no longer
 the starting one is a no-op."""
@@ -14,7 +14,7 @@ from agent_sessions import native_runtime, native_state
 from agent_sessions import structured_runtime as runtime
 from test_native_runtime import ENGINES, host, ident, project, settle  # noqa: F401 — fixtures
 
-SOURCES = ["codex", "claude"]
+SOURCES = ["codex", "claude", "opencode"]
 
 
 @pytest.fixture

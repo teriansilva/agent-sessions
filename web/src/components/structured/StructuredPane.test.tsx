@@ -194,7 +194,7 @@ test("a command approval shows its complete request and only the server's choice
   const fields = within(card).getAllByTestId("structured-field").map((f) => f.dataset.field);
   expect(fields).toEqual(["command", "cwd", "networkApprovalContext"]);
   const buttons = within(card).getAllByRole("button").map((b) => b.textContent);
-  expect(buttons).toEqual(["Approve once", "Reject"]);
+  expect(buttons).toEqual(["Approve once", "Reject", "Reject and stop the turn"]);
 });
 
 test("a file change is review-and-decline only, with the reason stated", async () => {

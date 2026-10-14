@@ -4,8 +4,9 @@ Codec units first, then the real worker against the scripted `fake_native.py` op
 FakeHost as `test_native_runtime`), then an opt-in run against the installed CLI.
 
 The security gates pinned here: the listener password reaches only the child; the session is
-pinned to BattleLab's own ask-everything agent; approvals are exact one-shot choices (never
-`allow_always`) bound to the presented payload; a replayed history never yields a live approval;
+pinned to BattleLab's own permission mode; approvals select exact native choices, including
+honestly labelled `allow_always`,
+bound to the presented payload; a replayed history never yields a live approval;
 ownership fences console and API opencode on one `ses_*`; an API launch takes the same shared
 admission as compaction.
 """
@@ -214,7 +215,7 @@ def test_no_turn_before_the_agent_pin_and_a_mode_change_after_it_is_a_violation(
     )
 
 
-def test_approval_offers_one_shot_choices_only_and_never_answers_always():
+def test_approval_offers_one_shot_choices_and_retains_the_native_always_proposal():
     codec = _codec()
     op = str(uuid.uuid4())
     prompt = codec.submit("go", op)
@@ -226,8 +227,12 @@ def test_approval_offers_one_shot_choices_only_and_never_answers_always():
     assert data["choices"] == ["approve", "reject"] and data["complete"] is True
     presented = json.loads(data["summary"])
     assert presented["toolCall"]["rawInput"] == {"command": "ls"}
-    assert {o["kind"] for o in presented["options"]} == {"allow_once", "reject_once"}
-    assert "always" not in data["summary"]
+    assert {o["kind"] for o in presented["options"]} == {
+        "allow_once",
+        "allow_always",
+        "reject_once",
+    }
+    assert "allow_always" in data["summary"]
     for refused in ("cancel", "always", "allow_always", "approve_always"):
         with pytest.raises(ProtocolError):
             codec.decide(data["request_id"], refused)
@@ -834,7 +839,11 @@ async def test_approval_is_one_shot_and_bound_to_the_presented_request(host, pro
     [request] = snap["pending_requests"]
     assert request["choices"] == ["approve", "reject"] and request["complete"] is True
     assert request["payload"]["toolCall"]["rawInput"] == {"command": "ls -la"}
-    assert {o["kind"] for o in request["payload"]["options"]} == {"allow_once", "reject_once"}
+    assert {o["kind"] for o in request["payload"]["options"]} == {
+        "allow_once",
+        "allow_always",
+        "reject_once",
+    }
     with pytest.raises(runtime.StructuredError) as refused:
         await runtime.decide(
             key,
@@ -1257,7 +1266,7 @@ async def test_real_opencode_create_approval_and_stop(tmp_home, tmp_path, monkey
                 snap = await runtime.snapshot(key)
                 if snap["pending_requests"]:
                     request = snap["pending_requests"][0]
-                    assert "always" not in json.dumps(request["payload"].get("options"))
+                    assert "allow_always" in json.dumps(request["payload"].get("options"))
                     seen.append(request)
                     await runtime.decide(
                         key,

@@ -1449,8 +1449,7 @@ ACP_PROTOCOL_VERSION = 1
 _OPENCODE_AGENT = re.compile(r"battlelab-api-[0-9a-f]{16}\Z", re.ASCII)
 _OPENCODE_SESSION = re.compile(r"ses_[A-Za-z0-9]{1,250}\Z", re.ASCII)
 _ACP_VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
-#: The one-shot permission kinds an operator decision can select. `allow_always` (a lasting
-#: grant) and any kind this build does not know are never offered and never answerable.
+#: Native choices retained verbatim; standing grants are separately bound and labelled.
 _ONCE = {"approve": "allow_once", "reject": "reject_once"}
 
 
@@ -1538,10 +1537,12 @@ class OpencodeAcpCodec(_Codec):
 
     ACP has no server-side turn id: like Claude, the submitted operation id is the turn. The
     session runs only in the mode pinned to BattleLab's own agent (``agent``); a mode change
-    observed after the pin ends the connection. Permission requests become exact one-shot
-    approvals (allow_once / reject_once); a request is live only on the connection that asked it,
+    observed after the pin ends the connection. Permission requests retain native once/always
+    options; a request is live only on the connection that asked it,
     and `session/load` replays history without ever re-asking one.
     """
+
+    ADAPTER = "opencode-acp"
 
     def __init__(self, session_id: str | None = None, *, agent: str) -> None:
         super().__init__()
@@ -1552,6 +1553,9 @@ class OpencodeAcpCodec(_Codec):
         self.version: tuple[int, int, int] | None = None
         self._pinned = False  # the mode pin was confirmed; later mode changes are violations
         self._config_requests: dict[str, tuple[str, str]] = {}
+        # ACP permissions carry metadata, not necessarily the tool's input (MCP metadata is
+        # empty in 1.18.35). Retain bounded, same-turn tool observations for that exact call.
+        self._tool_calls: dict[str, dict] = {}
 
     @staticmethod
     def argv(binary: str) -> list[str]:
@@ -1635,6 +1639,7 @@ class OpencodeAcpCodec(_Codec):
         if images:
             raise ProtocolError("this client takes no images")
         self._submit(text, operation_id)
+        self._tool_calls.clear()
         self.native_turn_id = self.operation_id
         return self._request(
             "session/prompt",
@@ -1671,15 +1676,17 @@ class OpencodeAcpCodec(_Codec):
             out.append(_event("approval_cancelled", request_id=key))
         return out
 
-    def decide(self, request_id: str, decision: str) -> dict:
-        if decision not in _ONCE:
-            # One-shot allow or reject only: no "always", no policy-amending variant.
-            raise ProtocolError("only a one-shot allow or reject is supported")
+    def decide(
+        self, request_id: str, decision: str, *, grant: str | None = None, cwd: str | None = None
+    ) -> dict:
+        if decision not in {*_ONCE, "always"}:
+            raise ProtocolError("unsupported permission decision")
+        selected = self._always(request_id, grant, cwd) if decision == "always" else None
         item = self._approvals.get(request_id)
         if item is not None and decision == "approve" and item.get("complete") is not True:
             raise ProtocolError("this request could not be presented completely")
         pending = self._decision(request_id, decision)
-        option = pending["options"].get(_ONCE[decision])
+        option = selected if decision == "always" else pending["options"].get(_ONCE[decision])
         if option is None and decision == "approve":
             raise ProtocolError("the agent offered no one-shot approval")  # pragma: no cover
         outcome = (
@@ -1701,6 +1708,7 @@ class OpencodeAcpCodec(_Codec):
         self.operation_id = None
         self.native_turn_id = None
         self._approvals.clear()
+        self._tool_calls.clear()
         return [_event("turn_completed", **data, state=state, error=error)]
 
     def _reply(self, frame: dict) -> list[NativeEvent]:
@@ -1842,28 +1850,45 @@ class OpencodeAcpCodec(_Codec):
         for option in options[:16]:
             if (
                 isinstance(option, dict)
-                and option.get("kind") in _ONCE.values()
+                and option.get("kind") in {*_ONCE.values(), "allow_always"}
                 and isinstance(option.get("optionId"), str)
                 and 0 < len(option["optionId"]) <= 256
             ):
                 offered.setdefault(option["kind"], []).append(option["optionId"])
-        # Exactly one of each one-shot kind, or that choice is not answerable at all.
+        # Exactly one of each native kind, or that choice is not answerable at all.
         once = {kind: ids[0] for kind, ids in offered.items() if len(ids) == 1}
         item_id = _safe_id(tool_call.get("toolCallId"), "tool")
         if item_id is None:
             raise ProtocolError("native permission request names no tool call")
         # Everything the decision answers: the tool call as asked (title, kind, locations, the
         # complete rawInput — a command, or a file path and its whole diff — and its content,
-        # including the diff's old and new text), plus the one-shot options a decision can pick.
+        # including the diff's old and new text), plus the native options a decision can pick.
         presented: dict[str, Any] = {
             "toolCall": tool_call,
             "options": [
                 {"optionId": option_id, "kind": kind} for kind, option_id in sorted(once.items())
             ],
         }
+        context = self._tool_calls.get(item_id)
+        effective = tool_call
+        # Only fill empty MCP permission metadata from the exact named tool, already observed
+        # running in THIS turn. Never use a command title, another call or replayed history.
+        if (
+            tool_call.get("kind") == "other"
+            and tool_call.get("rawInput") == {}
+            and context is not None
+            and context.get("kind") == "other"
+            and context.get("title") == tool_call.get("title")
+            and _nonempty(context.get("title"))
+            and context.get("status") == "in_progress"
+            and isinstance(context.get("rawInput"), dict)
+            and bool(context["rawInput"])
+        ):
+            presented["toolContext"] = dict(context)
+            effective = {**tool_call, "rawInput": context["rawInput"]}
         # Approve needs the consequential action itself in what is presented (Hermes on #1336):
         # an allow_once option alone would approve a blind request.
-        reason = _acp_unpresentable(tool_call)
+        reason = _acp_unpresentable(effective)
         if reason is None and "allow_once" not in once:
             reason = "the agent offered no single one-shot approval"
         if reason is not None:
@@ -1894,6 +1919,8 @@ class OpencodeAcpCodec(_Codec):
                 "frame": frame,
                 "digest": digest,
                 "complete": complete,
+                "presented": presented,
+                "kind": tool_call.get("kind"),
             },
         )
         return [
@@ -1945,12 +1972,48 @@ class OpencodeAcpCodec(_Codec):
             if item_id is None:
                 raise ProtocolError("native tool update names no tool call")
             status = _text(update.get("status"), limit=64)
+            previous = self._tool_calls.get(item_id, {})
+            context = {**previous, **{k: v for k, v in update.items() if k != "sessionUpdate"}}
+            cancellations = []
+            for key, approval in list(self._approvals.items()):
+                bound = approval.get("presented", {}).get("toolContext")
+                if approval["item_id"] != item_id or not bound:
+                    continue
+                if any(context.get(k) != bound.get(k) for k in ("rawInput", "title", "kind")):
+                    # The supplementary input changed while pending: that callback can no longer
+                    # approve what was displayed. Consume it once and retract the card.
+                    self._approvals.pop(key)
+                    self._consumed.add(key)
+                    cancellations.extend(
+                        [
+                            _event(
+                                "send",
+                                frame={
+                                    "jsonrpc": "2.0",
+                                    "id": approval["id"],
+                                    "result": {"outcome": {"outcome": "cancelled"}},
+                                },
+                            ),
+                            _event("approval_cancelled", request_id=key),
+                        ]
+                    )
+            if len(_summary(context)) < MAX_TEXT and (
+                item_id in self._tool_calls or len(self._tool_calls) < MAX_PENDING
+            ):
+                self._tool_calls[item_id] = context
+            else:
+                self._tool_calls.pop(item_id, None)
             data: dict[str, Any] = {"item_id": item_id, "state": status}
             tool = _safe_id(update.get("kind"), "kind")
             if tool is not None:
                 data["tool"] = tool
             if isinstance(update.get("title"), str):
                 data["summary"] = _text(update["title"])
+            if context.get("kind") == "execute":
+                raw = context.get("rawInput")
+                # Original command input, never the display title. Oversize is unclassified.
+                summary = _summary(raw) if isinstance(raw, dict) else "{}"
+                data["summary"] = summary if len(summary) < MAX_TEXT else "{}"
             if isinstance(update.get("content"), list):
                 texts = [
                     block["content"].get("text")
@@ -1963,7 +2026,7 @@ class OpencodeAcpCodec(_Codec):
                 if texts:
                     data["output"] = _text("\n".join(texts))
             data["completed"] = status in {"completed", "failed"}
-            return [_event("tool", **common, **data)]
+            return [*cancellations, _event("tool", **common, **data)]
         return []
 
     def feed(self, message: dict[str, Any]) -> list[NativeEvent]:

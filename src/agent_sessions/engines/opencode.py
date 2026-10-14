@@ -307,19 +307,23 @@ def mcp_password_overrides(resolved: object) -> dict:
     return out
 
 
-def api_config_content(agent: str, mcp: dict | None = None) -> str:
-    """`OPENCODE_CONFIG_CONTENT` for an `opencode-api` child: BattleLab's own ask-everything agent,
+def api_config_content(agent: str, mcp: dict | None = None, *, bypass: bool = False) -> str:
+    """`OPENCODE_CONFIG_CONTENT` for an `opencode-api` child: its immutable guarded or bypass agent,
     built exactly like the unattended one (`_agent_config_content`), plus the per-server MCP
     overrides of `mcp_password_overrides`. The app's own `OPENCODE_CONFIG_CONTENT` is NOT merged
     in: the worker's environment is sanitized (#1312)."""
     if not isinstance(agent, str) or not _API_AGENT_RE.match(agent):
         raise ValueError("malformed API agent name")
+    # Operator-approved opt-in bypass (#1339, comment 89017): construct a separate all-allow
+    # block for this generation. The guarded template and the operator's config stay intact.
     config = json.loads(
         _agent_config_content(
             None,
             agent,
-            API_PERMISSION,
-            "BattleLab API client: every tool call asks the operator",
+            {key: "allow" for key in API_PERMISSION} if bypass is True else API_PERMISSION,
+            "BattleLab API client: skip permission prompts"
+            if bypass is True
+            else "BattleLab API client: every tool call asks the operator",
         )
     )
     # Belt and braces for the listener (the argv flags are what binds it to loopback): measured

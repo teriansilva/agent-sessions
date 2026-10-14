@@ -393,3 +393,75 @@
   font: 12px var(--font-mono);
   overflow-wrap: anywhere;
 }
+
+/* #1339: action first; complete protocol context is available in a bounded disclosure. */
+.actionSummary {
+  padding: 12px;
+  min-width: 0;
+}
+.actionText {
+  display: block;
+  font: 13px/1.6 var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.requestFolder, .requestReason {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.queueHead {
+  margin: 0;
+  color: var(--text-muted);
+  font: 700 12px var(--font-mono);
+}
+.requestDetails > summary {
+  min-height: 44px;
+  padding: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: 12px var(--font-mono);
+}
+.requestDetails > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.detailsScroll {
+  max-height: min(360px, 45dvh);
+  overflow: auto;
+}
+.alwaysList {
+  max-height: min(360px, 45dvh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.actions > button {
+  min-height: 44px;
+}
+@media (max-width: 480px) {
+  .actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 8px;
+  }
+  .actions > button {
+    min-width: 0;
+    white-space: normal;
+  }
+}
+.queue {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  overflow-anchor: none;
+}
+.closedRequest {
+  margin: 0;
+  padding: 12px;
+  color: var(--text-muted);
+  font: 12px var(--font-mono);
+  border-left: 3px solid var(--line-strong);
+}

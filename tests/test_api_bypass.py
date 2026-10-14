@@ -214,6 +214,7 @@ def test_the_roster_says_which_clients_can_skip(app_client):  # noqa: F811
     rows = {r["id"]: r for r in app_client.get("/api/engines").json()["engines"]}
     assert rows["codex-api"]["api"]["can_bypass"] is True
     assert rows["claude-api"]["api"]["can_bypass"] is True
+    assert rows["opencode-api"]["api"]["can_bypass"] is True
     assert rows["codex"]["api"] is None
 
 

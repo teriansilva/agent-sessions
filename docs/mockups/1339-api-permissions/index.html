@@ -1,0 +1,24 @@
+<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="../../../web/src/tokens.css">
+<title>API permissions — #1339</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui;padding:24px}main{max-width:1000px;margin:auto}h1{font:700 13px var(--font-mono);letter-spacing:.1em}h2{font:700 12px var(--font-mono);text-transform:uppercase;color:var(--text-muted)}.card{border:1px solid var(--line-strong);border-left:3px solid var(--status-degraded);background:var(--panel);padding:16px;margin:12px 0}.head{display:flex;justify-content:space-between;gap:12px;font-weight:600}.tag{font:11px var(--font-mono);color:var(--text-muted)}code,pre{font:13px/1.6 var(--font-mono);white-space:pre-wrap;overflow-wrap:anywhere}.command{display:block;margin:12px 0;color:var(--text)}.where{color:var(--text-muted);font-size:12px}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}button,summary{min-height:44px;padding:10px 14px;border:1px solid var(--line-strong);background:transparent;color:var(--text);font:600 12px var(--font-mono);cursor:pointer}.primary{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}details{margin-top:12px}summary{border:0;color:var(--text-muted);padding-left:0}pre{max-height:240px;overflow:auto;background:var(--surface-3);padding:12px}.risk{color:var(--warn-text);font-size:12px}.unknown{font-size:12px;color:var(--text-muted)}.menu{padding:12px;border:1px solid var(--line-strong);background:var(--surface-2)}.menu button{width:100%;text-align:left;font-family:inherit;margin:4px 0;min-height:56px}.before{opacity:.8}.before pre{height:180px}.note{color:var(--text-muted);font-size:13px}.status{color:var(--warn-text)}@media(max-width:600px){body{padding:14px}.card{padding:12px}.actions{display:grid;grid-template-columns:1fr 1fr}.head{display:block}.menu{max-height:260px;overflow:auto}}
+</style><main>
+<h1>API PERMISSIONS // SHARED BY EVERY API AGENT</h1>
+<section class="before"><h2>Before · OpenCode</h2><div class="card"><b>OPENCODE ASKS TO USE OTHER</b><pre>OPTIONS
+[{ "optionId": "once", "kind": "allow_once" }, …]
+
+TOOL CALL
+{ "title": "forgejo_list_repo_labels",
+  "kind": "other", "rawInput": {} }</pre><button>Deny</button></div></section>
+<h2>After · 2 requests waiting</h2><p class="note">Each decision answers one request. The next action keeps its own name and controls.</p>
+<div class="card"><div class="head"><span>OpenCode wants to use forgejo_list_repo_labels</span><span class="tag">REQUEST 1 OF 2</span></div><code class="command">owner: superstatus.io<br>repo: agent-sessions</code><div class="where">/home/operator/project</div><div class="actions"><button class="primary">Allow once</button><button>Allow always ▾</button><button>Deny</button><button>Reject & stop turn</button></div><details><summary>Details</summary><pre>Complete native request + correlated tool input,
+request id and payload digest remain inspectable here.</pre></details></div>
+<div class="card"><div class="head"><span>Codex wants to run a command</span><span class="tag">REQUEST 2 OF 2</span></div><code class="command">git push --force origin main</code><p class="risk">RISKY — force-pushes over remote history</p><div class="where">/home/u/project</div><div class="actions"><button class="primary">Approve once</button><button>Approve always ▾</button><button>Reject</button><button>Reject & stop turn</button></div><details open><summary>Details</summary><pre>{ "command": "git push --force origin main",
+  "cwd": "/home/u/project",
+  "availableDecisions": ["accept", "decline", "acceptForSession"] }
+request 7 · digest e34c…</pre></details></div>
+<h2>Always choices · scope and lifetime</h2><div class="menu"><button>Always allow `git push` and any command starting with it · saved to Codex’s exec policy · persists after this session · RISKY: force-pushes over remote history</button><button>Remember OpenCode’s permission rules · matching patterns are not provided and may cover all uses of a tool · this worker and folder only, not saved; resets when the worker restarts</button></div>
+<p class="status">Skip permissions — this agent never asks before acting.</p><p><code>EXEC rm -rf dist/</code> <span class="risk">RISKY — deletes files recursively</span></p><p><code>EXEC command unavailable</code> <span class="unknown">not classified</span></p>
+<p class="note">Sent decisions say “Waiting for the agent”; new requests have independent controls. Missing tool details explain why approval is unavailable, with Deny and Interrupt available.</p>
+</main><script>document.documentElement.dataset.theme=new URLSearchParams(location.search).get('theme')||'dark'</script>

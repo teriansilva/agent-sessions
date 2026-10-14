@@ -1270,6 +1270,12 @@ def project(
                 "id": data["item_id"],
             }
             existing = next((t for t in turn["tools"] if t["id"] == entry["id"]), None)
+            if existing is not None and not data.get("tool"):
+                entry["name"] = existing["name"]
+            if entry["name"] == "execute" and data.get("summary"):
+                raw = _payload(data["summary"])
+                if isinstance(raw, dict):
+                    entry["summary"] = str(raw.get("command") or "Command unavailable")[:500]
             if existing is None:
                 turn["tools"].append(entry)
             else:
@@ -1277,7 +1283,7 @@ def project(
             # The same advisory classifier as a pending card (#1339): a tool row that ran a
             # command — asked or, in a skip-permissions session, never asked — says so.
             row = existing if existing is not None else entry
-            if data.get("summary") and "risk" not in row:
+            if data.get("summary"):
                 risk = _tool_risk(row["name"], data["summary"], cwd)
                 if risk is not None:
                     row["risk"] = risk
@@ -1422,9 +1428,14 @@ def _offered(adapter: str | None, approval: dict, cwd: str | None) -> dict:
 
 
 def _tool_risk(name: str, summary: str, cwd: str | None) -> dict | None:
-    """A tool row's advisory risk: Codex rows carry the command line, Claude rows the input."""
+    """Original command data: Codex's command line, Claude/ACP's input, never a tool title."""
     if name == "commandExecution":
         return risk_marks.classify(summary, cwd)
+    if name == "execute":
+        payload = _payload(summary)
+        return risk_marks.classify(
+            payload.get("command") if isinstance(payload, dict) else None, cwd
+        )
     if name in {"Bash", "Write", "Edit", "MultiEdit", "NotebookEdit"}:
         payload = _payload(summary)
         return (

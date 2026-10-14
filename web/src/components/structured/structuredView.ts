@@ -161,7 +161,32 @@ export function requestIds(req: StructuredRequest): string[] {
 export function requestTitle(req: StructuredRequest, agent: string): string {
   if (req.kind === "command") return `${agent} asks to run a command`;
   if (req.kind === "file_change") return `${agent} proposes a file change`;
+  const payload = object(req.payload);
+  const call = object(payload.toolCall);
+  if (call.kind === "execute") return `${agent} asks to run a command`;
+  if (typeof call.title === "string" && call.title.trim()) return `${agent} asks to use ${call.title}`;
   return `${agent} asks to use ${req.kind}`;
+}
+
+function object(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+/** Short action facts. The complete, unchanged payload remains under Details. */
+export function requestSummary(req: StructuredRequest, folder?: string) {
+  const payload = object(req.payload);
+  const call = object(payload.toolCall);
+  const context = object(payload.toolContext);
+  const input = object(context.rawInput ?? call.rawInput ?? payload.input);
+  const command = payload.command ?? input.command;
+  const action = typeof command === "string" ? command : Array.isArray(command) ? command.map(String).join(" ")
+    : Object.keys(input).length ? Object.entries(input).map(([k, v]) => `${humanize(k)}: ${typeof v === "string" ? v : json(v)}`).join("\n")
+      : typeof call.title === "string" ? call.title : typeof payload.tool_name === "string" ? payload.tool_name : req.kind;
+  return {
+    action,
+    folder: typeof input.cwd === "string" ? input.cwd : typeof payload.cwd === "string" ? payload.cwd : folder,
+    reason: typeof payload.declineOnly === "string" ? payload.declineOnly : typeof payload.reason === "string" ? payload.reason : null,
+  };
 }
 
 /** A file change the server will not let anyone approve (#1310): review and decline only. */

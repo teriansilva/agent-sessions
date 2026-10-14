@@ -153,7 +153,7 @@ def child_environment(
     The password is minted by THIS process for this child only: it is never in the worker
     config, a journal record, the lifecycle state or any argv, so it reaches nothing but the
     child's environment (readable only by this same user, like every vendor credential).
-    `OPENCODE_CONFIG_CONTENT` defines BattleLab's own ask-everything agent (``agent``, minted per
+    `OPENCODE_CONFIG_CONTENT` defines BattleLab's own guarded or bypass agent (``agent``, minted per
     generation, the same construction as the unattended launch's) that the session is pinned to.
     The operator's own config and console opencode are untouched, and the app's own
     `OPENCODE_CONFIG_CONTENT` is not passed on (the environment is sanitized).
@@ -168,7 +168,9 @@ def child_environment(
 
         env["OPENCODE_SERVER_PASSWORD"] = server_password
         try:
-            env["OPENCODE_CONFIG_CONTENT"] = opencode.api_config_content(agent, mcp)
+            env["OPENCODE_CONFIG_CONTENT"] = opencode.api_config_content(
+                agent, mcp, bypass=config.get("bypass") is True
+            )
         except ValueError as exc:
             raise WorkerError(str(exc)) from None
     return env
@@ -199,7 +201,9 @@ class Worker:
         elif self.adapter == OPENCODE:
             from .engines import opencode
 
-            self.agent = opencode.mint_api_agent()  # this generation's own ask-everything agent
+            self.agent = (
+                opencode.mint_api_agent()
+            )  # this generation's own immutable permission mode
             self.codec = native_protocol.OpencodeAcpCodec(self.native_id, agent=self.agent)
         else:
             self.codec = native_protocol.ClaudeCodec(self.native_id)
@@ -828,11 +832,6 @@ class Worker:
                 pending = self._pending(params)
                 if pending is None:
                     return self.error(request, "stale", "that approval is no longer pending")
-                if params["decision"] == "always" and isinstance(
-                    self.codec, native_protocol.OpencodeAcpCodec
-                ):
-                    # opencode maps no standing grant yet (#1339 Phase 4): refused, never guessed.
-                    return self.error(request, "unsupported", "no standing grant for this client")
                 if params["decision"] == "always":
                     # A standing grant (#1339) is re-derived HERE from the request this
                     # connection holds — only what the client itself proposed — independently of
@@ -1044,10 +1043,6 @@ class Worker:
             method = self.codec.steer if action == "steer" else self.codec.submit
             return method(text, params["operation_id"], images)
         if action == "decide":
-            if isinstance(self.codec, native_protocol.OpencodeAcpCodec):
-                # opencode maps no standing grant yet (#1339 Phase 4): its codec takes the one-shot
-                # decision only, and an `always` never reaches it (the server offers none).
-                return self.codec.decide(params["request_id"], params["decision"])
             return self.codec.decide(
                 params["request_id"],
                 params["decision"],

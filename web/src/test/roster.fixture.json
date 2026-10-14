@@ -253,6 +253,7 @@
       "api": {
         "kind": "opencode-acp",
         "source": "opencode",
+        "can_bypass": true,
         "unavailable_reason": "opencode 1.18.35 or later is required for native mode"
       },
       "display": {
