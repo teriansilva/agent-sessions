@@ -533,3 +533,10 @@
 @media (max-width: 480px) {
   .ownControls .interrupt { flex: 1 1 100%; }
 }
+
+/* #1442: a reply Send now cut off says so — a fact about delivery, not a failure (warn, not danger). */
+.cutNote {
+  margin: 0;
+  font: 12px var(--font-mono);
+  color: var(--warn-text);
+}

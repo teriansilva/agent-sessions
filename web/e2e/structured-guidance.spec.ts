@@ -30,7 +30,7 @@ for (const [engine, mode] of clients) {
   test(`${engine}: Send now targets the original queued and active messages`, async ({ page }) => {
     const { state, calls } = await conversation(page, engine, mode);
     const queued = page.getByTestId("structured-turn").filter({ hasText: "Only inspect the files." });
-    await expect(queued).toContainText(mode === "steer" ? "Adds this message to the current turn" : "Interrupts the current response");
+    await expect(queued).toContainText(mode === "steer" ? "Adds this message to the current turn" : /Stops .+’s current reply, then sends this/);
     const sendNow = queued.getByRole("button", { name: "Send now", exact: true });
     expect((await sendNow.boundingBox())!.height).toBeGreaterThanOrEqual(44);
     await sendNow.click();
@@ -236,7 +236,7 @@ for (const theme of ["dark", "light"]) {
     const queued = page.getByTestId("structured-turn").filter({ hasText: "Only inspect the files." });
     const sendNow = queued.getByRole("button", { name: "Send now", exact: true });
     await expect(sendNow).toBeVisible();
-    await expect(queued).toContainText("Interrupts the current response");
+    await expect(queued).toContainText(/Stops .+’s current reply, then sends this/); // #1442 wording
     const box = (await sendNow.boundingBox())!;
     expect(box.height).toBeGreaterThanOrEqual(44); // the touch target, in the new state too
     await page.screenshot({ path: testInfo.outputPath("background-turn.png") });
@@ -249,6 +249,6 @@ for (const theme of ["dark", "light"]) {
 test("#1427: an older worker's background turn offers no Send now", async ({ page }) => {
   await behindAgentTurn(page, "dark", false);
   const queued = page.getByTestId("structured-turn").filter({ hasText: "Only inspect the files." });
-  await expect(queued).toContainText("Queued");
+  await expect(queued).toContainText("1st in queue"); // #1442: its place in line
   await expect(queued.getByRole("button", { name: "Send now", exact: true })).toHaveCount(0);
 });

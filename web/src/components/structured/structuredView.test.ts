@@ -3,11 +3,14 @@ import type { StructuredRequest, StructuredSnapshot } from "../../types/api";
 import {
   backgroundWorking,
   choiceLabel,
+  cutBySendNow,
   interruptTarget,
   isActive,
   operationFor,
   operatorTurns,
+  ordinal,
   ownTurnInterruptible,
+  queuePositions,
   requestIds,
   requestRows,
   reviewOnly,
@@ -173,5 +176,39 @@ describe("a turn the agent runs for itself (#1438)", () => {
   test("is never mistaken for a message someone sent", () => {
     expect(operatorTurns(snap([op("completed"), own("running"), op("queued", "op-2")])).map((t) => t.turn_id))
       .toEqual(["op-1", "op-2"]);
+  });
+});
+
+describe("Send now keeps the queue's order (#1442)", () => {
+  const op = (turn_id: string, state: string, extra: Record<string, unknown> = {}) =>
+    ({ kind: "operator", turn_id, operation_id: turn_id, state, text: turn_id, reply: "", text_truncated: false,
+      reply_truncated: false, reason: null, tools: [], tools_truncated: false, ...extra }) as const;
+  const snap = (turns: unknown[]) => ({ active_turn: null, turns }) as unknown as StructuredSnapshot;
+
+  test("positions count queued operator messages in order; agent turns and settled ones don't count", () => {
+    const s = snap([op("a", "completed"), op("b", "running"), op("c", "queued"),
+      { kind: "agent", turn_id: "own", state: "running", tools: [] }, op("d", "queued"), op("e", "queued")]);
+    expect([...queuePositions(s)]).toEqual([["c", 1], ["d", 2], ["e", 3]]);
+    expect(queuePositions(null).size).toBe(0);
+  });
+
+  test("ordinals read as English", () => {
+    expect([1, 2, 3, 4, 11, 12, 13, 21, 22, 101, 111].map(ordinal))
+      .toEqual(["1st", "2nd", "3rd", "4th", "11th", "12th", "13th", "21st", "22nd", "101st", "111th"]);
+  });
+
+  test("a turn is cut by Send now only when it settled interrupted and a sent interrupt named it", () => {
+    const cut = op("t", "interrupted");
+    expect(cutBySendNow(snap([cut, op("q", "running", { delivery_turn_id: "t" })]), cut)).toBe(true);
+    // Still waiting to go (Hermes on #1451): nothing is "answered below" yet.
+    expect(cutBySendNow(snap([cut, op("q", "queued", { delivery: "interrupting", delivery_turn_id: "t" })]), cut)).toBe(false);
+    // A steer cuts nothing; a refusal still waiting says so; nothing named it; or it wasn't interrupted.
+    expect(cutBySendNow(snap([cut, op("q", "delivered", { delivery: "steered", delivery_turn_id: "t" })]), cut)).toBe(false);
+    expect(cutBySendNow(snap([cut, op("q", "queued", { delivery: "interrupt_failed", delivery_turn_id: "t" })]), cut)).toBe(false);
+    expect(cutBySendNow(snap([cut, op("q", "running")]), cut)).toBe(false);
+    // The message itself never went (Hermes on #1451): the turn is plainly interrupted.
+    expect(cutBySendNow(snap([cut, op("q", "failed", { delivery_turn_id: "t" })]), cut)).toBe(false);
+    const done = op("t", "completed");
+    expect(cutBySendNow(snap([done, op("q", "running", { delivery_turn_id: "t" })]), done)).toBe(false);
   });
 });

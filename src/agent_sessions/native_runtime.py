@@ -1326,6 +1326,7 @@ def project(
                 queued["delivery"] = "steering" if params["mode"] == "steer" else "interrupting"
                 queued["delivery_turn_id"] = params["turn_id"]
                 queued["delivery_operation_id"] = op.operation_id
+                queued["delivery_handoff"] = op.handoff
     observations = (
         journal.events
         if max_turns is None
@@ -1488,6 +1489,17 @@ def project(
             turn.get("delivery") in {"interrupting", "interrupt_failed"}
             and turn["status"] != "queued"
         ):
+            # "Interrupted by Send now — your next message is answered below" needs BOTH: the
+            # interrupt was SENT and not refused (it may have stopped its target), and the message
+            # itself was SENT (it really is answered below). Otherwise the link is dropped and the
+            # target reads as plainly interrupted (#1442; Hermes on #1451).
+            if (
+                turn["delivery"] == "interrupt_failed"
+                or turn.get("delivery_handoff") != "sent"
+                or turn["handoff"] != "sent"
+                or turn["status"] == "failed"
+            ):
+                turn.pop("delivery_turn_id", None)
             turn.pop("delivery", None)
             turn.pop("delivery_reason", None)
     for exact, approval in pending.items():
@@ -1541,6 +1553,7 @@ def project(
             "worker_id",
             "completed",
             "delivery_operation_id",
+            "delivery_handoff",
             "position",
         ):
             turn.pop(key, None)

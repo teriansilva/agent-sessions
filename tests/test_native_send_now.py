@@ -26,7 +26,7 @@ def anyio_backend():
     return "asyncio"
 
 
-async def queued_session(source, project, text="urgent guidance"):
+async def queued_session(source, project, text="urgent guidance", *, queue=True):
     key = (await runtime.create_session(ENGINES[source], str(project), operation_id=ident()))[
         "session_key"
     ]
@@ -38,8 +38,11 @@ async def queued_session(source, project, text="urgent guidance"):
         if any(e["kind"] == "turn_started" for e in events):
             break
         await asyncio.sleep(0.02)
-    await runtime.submit_turn(key, operation_id=waiting, text="earlier queued")
-    await runtime.submit_turn(key, operation_id=urgent, text=text)
+    # The urgent message is FIRST in line: Send now only ever takes the head (#1442). `waiting`
+    # queues behind it and must keep its place. `queue=False`: a running turn, nothing queued.
+    if queue:
+        await runtime.submit_turn(key, operation_id=urgent, text=text)
+        await runtime.submit_turn(key, operation_id=waiting, text="later queued")
     return key, active, waiting, urgent
 
 
@@ -150,7 +153,7 @@ async def test_send_now_reuses_queued_message_and_preserves_remaining_order(host
         await runtime.send_now(key, operation_id=operation, turn_id=active, queued_turn_id=waiting)
     writes = input_frames(project)
     assert len(writes) == 3
-    assert "urgent guidance" in str(writes[1]) and "earlier queued" in str(writes[2])
+    assert "urgent guidance" in str(writes[1]) and "later queued" in str(writes[2])
 
 
 @pytest.mark.anyio
@@ -448,7 +451,7 @@ async def test_partial_delivery_never_becomes_replayable(conversation, monkeypat
 
 @pytest.mark.anyio
 async def test_steering_rechecks_queued_image_bytes(host, project, uploads):
-    key, active, _, _ = await queued_session("codex", project)
+    key, active, _, _ = await queued_session("codex", project, queue=False)
     name = uploads("20261008-010000-guidance.png", image_tests.PNG)
     queued = ident()
     await runtime.submit_turn(key, operation_id=queued, text="inspect image", attachments=[name])
@@ -534,8 +537,8 @@ async def test_cancel_refusal_preserves_fifo_without_send_now_retry(host, projec
     writes = input_frames(project)
     assert [f["message"]["content"] for f in writes] == [
         "HANG",
-        "earlier queued",
         "urgent guidance",
+        "later queued",
     ]
     assert (
         await runtime.send_now(key, operation_id=operation, turn_id=active, queued_turn_id=urgent)
@@ -928,3 +931,110 @@ async def test_claudes_own_turn_interrupt_is_best_effort_at_the_child_boundary(
     # Nothing re-targets the old request at the newer turn.
     retried = await worker.effect(control)
     assert retried["result"] == result["result"] and len(writes) == 1
+
+
+# --- #1442: Send now only for the head of the queue; FIFO is the contract ---------------------
+
+
+def two_queued_worker(conversation, monkeypatch, kind="codex"):
+    """A running operator turn with TWO messages queued behind it (head, then second)."""
+    from test_native_protocol import claude_running
+
+    worker, head, _ = prepared_worker(conversation, monkeypatch)
+    if kind == "claude":
+        worker.codec = claude_running()
+    root, sid, binding = conversation
+    second = journal_tests.request(binding, revision=native_journal.read(root, sid).revision)
+    native_journal.claim(root, second, queued=True)
+    worker.queued.append(second["params"])
+    mode = "steer" if kind == "codex" else "interrupt"
+
+    def control(target):
+        from test_native_protocol import OPERATION
+
+        return journal_tests.request(
+            binding,
+            action="send_now",
+            turn_id=OPERATION,
+            queued_turn_id=target["params"]["operation_id"],
+            mode=mode,
+            revision=native_journal.read(root, sid).revision,
+        )
+
+    writes = []
+
+    async def write(frame):
+        writes.append(frame)
+
+    monkeypatch.setattr(worker, "write", write)
+    return worker, head, second, control, writes
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("kind", ["codex", "claude"])
+async def test_send_now_for_a_later_message_is_refused_and_reorders_nothing(
+    conversation, monkeypatch, kind
+):
+    worker, head, second, control, writes = two_queued_worker(conversation, monkeypatch, kind)
+    later = control(second)
+    result = await worker.effect(later)
+    assert result["error"]["code"] == "stale"
+    assert "first queued" in result["error"]["message"]
+    assert writes == []
+    assert worker.queued == [head["params"], second["params"]]  # order untouched
+    journal = native_journal.read(*conversation[:2])
+    assert later["params"]["operation_id"] not in journal.operations  # nothing claimed
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("kind", ["codex", "claude"])
+async def test_send_now_for_the_head_goes_and_keeps_the_rest_in_order(
+    conversation, monkeypatch, kind
+):
+    worker, head, second, control, writes = two_queued_worker(conversation, monkeypatch, kind)
+    result = await worker.effect(control(head))
+    assert result["result"]["handoff"] == "sent"
+    assert len(writes) == 1
+    if kind == "codex":  # steered into the turn: the second is still next, still queued
+        assert worker.queued == [second["params"]]
+    else:  # interrupt: the head waits at the front for the stop, the second behind it
+        assert worker.queued == [head["params"], second["params"]]
+
+
+@pytest.mark.anyio
+async def test_once_the_head_has_gone_the_next_message_is_the_head(conversation, monkeypatch):
+    worker, head, second, control, writes = two_queued_worker(conversation, monkeypatch)
+    worker.queued.remove(head["params"])  # delivered normally
+    result = await worker.effect(control(second))
+    assert result["result"]["handoff"] == "sent"
+
+
+@pytest.mark.anyio
+async def test_a_head_that_changes_during_the_claim_settles_not_sent(conversation, monkeypatch):
+    """Two tabs: the other one sent (or withdrew) the head while this claim fsynced."""
+    worker, head, second, control, writes = two_queued_worker(conversation, monkeypatch)
+    original_claim = native_journal.claim
+
+    def head_moves_during_claim(*args, **kwargs):
+        result = original_claim(*args, **kwargs)
+        worker.queued.insert(0, worker.queued.pop())  # second is now in front
+        return result
+
+    monkeypatch.setattr(native_journal, "claim", head_moves_during_claim)
+    result = await worker.effect(control(head))
+    assert result["result"]["handoff"] == "not_sent"
+    assert writes == []
+    assert worker.queued == [second["params"], head["params"]]  # nothing consumed or moved
+
+
+@pytest.mark.anyio
+async def test_a_replayed_control_answers_from_its_receipt_after_the_head_changed(
+    conversation, monkeypatch
+):
+    worker, head, second, control, writes = two_queued_worker(conversation, monkeypatch)
+    first = control(head)
+    sent = await worker.effect(first)
+    assert sent["result"]["handoff"] == "sent"
+    # The steered head left the queue; the second is head now. The SAME control again:
+    again = await worker.effect(first)
+    assert again["result"] == sent["result"] and len(writes) == 1

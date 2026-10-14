@@ -66,6 +66,9 @@ import styles from "./StructuredPane.module.css";
 import {
   backgroundWorking,
   choiceLabel,
+  cutBySendNow,
+  ordinal,
+  queuePositions,
   interruptTarget,
   isActive,
   isAgentTurn,
@@ -621,6 +624,8 @@ function TurnView({
   sendNowMode,
   sendingNow,
   sendNowDisabled,
+  queuePosition,
+  cutOff,
 }: {
   folder?: string;
   turn: StructuredTurn;
@@ -636,10 +641,15 @@ function TurnView({
   sendNowMode?: "steer" | "interrupt";
   sendingNow: boolean;
   sendNowDisabled: boolean;
+  /** Its place in line when queued, 1 = next (#1442). Only the head offers Send now. */
+  queuePosition?: number;
+  /** It settled interrupted because Send now stopped it (#1442). */
+  cutOff?: boolean;
 }) {
   const active = turn.state === "running" || turn.state === "awaiting_approval";
   const failed = ["failed", "interrupted", "uncertain", "unavailable"].includes(turn.state);
-  const canSendNow = !turn.delivery || turn.delivery === "interrupt_failed";
+  const canSendNow =
+    queuePosition === 1 && (!turn.delivery || turn.delivery === "interrupt_failed");
   return (
     <div className={chat.exchange} data-testid="structured-turn" data-state={turn.state}>
       <div className={`${chat.turn} ${chat.user}`}>
@@ -733,7 +743,9 @@ function TurnView({
               ? "Waiting for the current response to stop · sends next"
               : turn.delivery === "steering"
                 ? "Awaiting agent acknowledgement"
-                : "Queued · sends after earlier turns"}</span>
+                : queuePosition === 1
+                  ? "1st in queue · sends after the current reply"
+                  : `${ordinal(queuePosition ?? 1)} in queue · sends after the message above`}</span>
             {!readOnly && sendNowMode && canSendNow && (
               <button type="button" className={styles.sendNow} disabled={sendNowDisabled}
                 onClick={() => onSendNow(turn.turn_id)}>
@@ -749,7 +761,7 @@ function TurnView({
           {!readOnly && sendNowMode && canSendNow && (
             <p className={styles.queueHint}>{sendNowMode === "steer"
               ? "Adds this message to the current turn."
-              : "Interrupts the current response and sends this message next."}</p>
+              : `Stops ${agent}’s current reply, then sends this — and the messages after it, in order.`}</p>
           )}
         </div>
       )}
@@ -776,7 +788,11 @@ function TurnView({
           )}
         </div>
       )}
-      {failed && (
+      {cutOff ? (
+        <p className={styles.cutNote} role="status" data-testid="structured-sendnow-cut">
+          Interrupted by Send now — your next message is answered below.
+        </p>
+      ) : failed && (
         <div className={chat.failed}>
           <div className={chat.err} role="alert" data-testid="structured-failed">
             {turnStateLabel(turn.state)}
@@ -1248,6 +1264,8 @@ export function StructuredPane({
       const sendTarget = sendNowTarget(snap);
       if (recoveringSendNow || readOnly || permissionPending || !snap || !sendTarget) return;
       const queued = operatorTurns(snap).find((t) => t.turn_id === queuedTurnId);
+      // Only the head goes now (#1442); the server refuses anything else too.
+      if (queuePositions(snap).get(queuedTurnId) !== 1) return;
       if (queued?.state !== "queued" || (queued.delivery && queued.delivery !== "interrupt_failed")) return;
       if (queued.delivery === "interrupt_failed") operation = undefined;
       operation ??= { id: uuid(), turnId: sendTarget.turnId };
@@ -1833,6 +1851,7 @@ export function StructuredPane({
   }
 
   const turns = snap?.turns ?? [];
+  const positions = queuePositions(snap);
   // Where the background-task row goes: above the first queued message, else last (-1: none).
   const firstQueued = turns.findIndex((t) => !isAgentTurn(t) && t.state === "queued");
   const backgroundAt = !backgroundWorking(snap) ? -1 : firstQueued === -1 ? turns.length : firstQueued;
@@ -1976,6 +1995,8 @@ export function StructuredPane({
             onSendNow={(tid) => void sendNow(tid)}
             sendNowMode={sendNowTarget(snap)?.mode}
             sendingNow={sendingNow === t.turn_id}
+            queuePosition={positions.get(t.turn_id)}
+            cutOff={cutBySendNow(snap, t)}
             sendNowDisabled={permissionPending || !!sendingNow || !!recoveringSendNow || operatorTurns(snap).some((q) => q.state === "queued" && q.delivery === "interrupting")}
           />
           )}

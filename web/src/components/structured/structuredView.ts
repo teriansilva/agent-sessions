@@ -296,3 +296,34 @@ export function turnStateLabel(state: string): string {
 export function sendIdentity(text: string, attachments: readonly string[]): string {
   return JSON.stringify([text, attachments]);
 }
+
+/** Each queued operator message's place in line, 1 = next (#1442). The snapshot keeps every
+ *  message the live worker still holds queued (#1439), so the first one shown is the head. */
+export function queuePositions(snap: StructuredSnapshot | null): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const t of operatorTurns(snap)) if (t.state === "queued") out.set(t.turn_id, out.size + 1);
+  return out;
+}
+
+export function ordinal(n: number): string {
+  const tens = n % 100;
+  const suffix = tens >= 11 && tens <= 13 ? "th" : ({ 1: "st", 2: "nd", 3: "rd" } as Record<number, string>)[n % 10] ?? "th";
+  return `${n}${suffix}`;
+}
+
+/** Was this turn cut off by Send now (#1442)? Only when it settled interrupted AND the message
+ *  whose Send now named it has actually GONE OUT: "your next message is answered below" is a
+ *  claim about that message. While it still waits (queued, `interrupting`) the turn reads plainly
+ *  interrupted (Hermes on #1451). The server keeps the link on a dispatched message only when both
+ *  its control and the message itself were sent and not refused; a steer never cuts anything. */
+export function cutBySendNow(snap: StructuredSnapshot | null, turn: StructuredTurn): boolean {
+  return (
+    turn.state === "interrupted" &&
+    operatorTurns(snap).some(
+      (q) =>
+        q.delivery_turn_id === turn.turn_id &&
+        q.delivery === undefined &&
+        !["queued", "failed", "uncertain", "unavailable"].includes(q.state),
+    )
+  );
+}

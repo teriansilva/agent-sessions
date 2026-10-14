@@ -8,10 +8,11 @@ BattleLab owns; API sessions use the installed agent's native protocol.
 Codex, Claude and opencode API sessions share the same conversation controls. You can keep
 typing while the agent works: **Send** queues your message without interrupting its response.
 
-For urgent guidance, choose **Send now** beside a queued message. Codex adds it to the current
-turn; Claude and opencode interrupt the current response and send that message next once the
-agent has stopped. The hint beside the button explains which behavior applies. Remaining
-messages keep their order. Guidance takes effect when the agent processes it; it cannot undo
+For urgent guidance, choose **Send now** on the first queued message. Codex adds it to the
+current turn; Claude and opencode stop the current reply and then send the queue, in order. The
+hint beside the button explains which behavior applies. Only the first queued message offers Send
+now — the others say where they stand ("2nd in queue") — so the queue always runs in the order
+shown. A reply that Send now cut off says **Interrupted by Send now**. Guidance takes effect when the agent processes it; it cannot undo
 work already performed.
 
 The message shows whether it is queued, awaiting acknowledgement, delivered, or failed. If a

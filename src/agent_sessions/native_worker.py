@@ -946,6 +946,10 @@ class Worker:
                 return self.error(
                     request, "stale", "the message is no longer queued behind that turn"
                 )
+            # FIFO is the contract (#1442): only the head of the queue goes now, so nothing ever
+            # jumps the messages before it. An old tab offering a later one is refused here.
+            if not self._queue_head(queued):
+                return self.error(request, "stale", "only the first queued message can be sent now")
             if not background and self.codec.native_turn_id is None:
                 return self.error(
                     request, "busy", "the agent has not acknowledged the active turn yet"
@@ -969,7 +973,7 @@ class Worker:
                     not self._background_target(params["turn_id"])
                     if background
                     else self.codec.operation_id != params["turn_id"]
-                ):
+                ) or not self._queue_head(queued):
                     receipt = await asyncio.to_thread(
                         native_journal.record_handoff,
                         self.journal_root,
@@ -1030,6 +1034,11 @@ class Worker:
         if previous.request != native_ipc.immutable_request(request):
             return self.error(request, "conflict", "native operation UUID binds another request")
         return self.receipt(request, previous.receipt())
+
+    def _queue_head(self, queued: dict) -> bool:
+        """Is ``queued`` the first message waiting (#1442)? Checked before the claim and again
+        once it is fsynced: the head that changed meanwhile settles the control ``not_sent``."""
+        return bool(self.queued) and self.queued[0] is queued
 
     def _background_target(self, turn_id: str) -> bool:
         """Is ``turn_id`` the turn the agent is running for itself right now (#1427)?"""
