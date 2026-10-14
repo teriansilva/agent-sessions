@@ -33,6 +33,8 @@ from . import (
     automation_loop,
     autosort_loop,
     engines,
+    memory,
+    memory_loop,
     metadata,  # noqa: F401 — compatibility: tests patch main.metadata.set_alias
     mission_archive,
     mission_dispatch_recover,
@@ -203,6 +205,10 @@ async def _reconcile_new_session(ws, prov, placeholder: str, cwd: str, snapshot)
 
 def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     cfg = cfg or AuthConfig.from_env()
+    # Shared project memory (#1441): the app itself never carries the memory variables, so no
+    # child — a launch, an auth preflight, a provider probe — can inherit a stale or foreign path.
+    # A launch is given them explicitly, and only when its project has memory on.
+    memory.scrub_process_environment()
 
     # One-time prefs migration (#357 Phase 2): union-merge any legacy `overview_excluded`
     # hide list into `projects_hidden` and drop the old key. A pure no-op once migrated
@@ -401,6 +407,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # Automations (#1201): the scheduler takes its kernel ownership lock before recovering or
         # firing anything. Env kill-switch AGENT_SESSIONS_AUTOMATION_LOOP=0 stops every trigger.
         automation_task = automation_loop.start(registry)
+        # Shared project memory (#1441): inbox files → each project's store, every 30 s, for
+        # projects with memory on. Env kill-switch AGENT_SESSIONS_MEMORY_LOOP=0.
+        memory_task = asyncio.create_task(memory_loop.run())
         try:
             yield
         finally:
@@ -431,6 +440,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 usage_task,
                 needs_you_task,
                 automation_task,
+                memory_task,
             ):
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):

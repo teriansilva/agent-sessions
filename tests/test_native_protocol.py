@@ -199,6 +199,24 @@ def test_codex_start_and_resume_carry_the_battlelab_session_as_a_shell_policy_se
     assert "config" not in CodexCodec.create_params("/project", None)
 
 
+def test_codex_memory_paths_ride_the_same_shell_policy_set():
+    """#1441: the shared project memory paths survive an operator shell policy the same way."""
+    key = "codex-api:6c51dd58-9155-47b0-aafa-2ccf0de04908"
+    paths = {"BATTLELAB_MEMORY": "/m/notes", "BATTLELAB_MEMORY_INBOX": "/m/inbox/t"}
+    told = {
+        "shell_environment_policy.set.BATTLELAB_SESSION": key,
+        "shell_environment_policy.set.BATTLELAB_MEMORY": "/m/notes",
+        "shell_environment_policy.set.BATTLELAB_MEMORY_INBOX": "/m/inbox/t",
+    }
+    assert CodexCodec().create("/p", None, session=key, shell_env=paths)["params"]["config"] == told
+    resume = CodexCodec().resume(SESSION, "/p", session=key, shell_env=paths)
+    assert resume["params"]["config"] == told
+    # Without memory the config is exactly the #1406 set.
+    assert CodexCodec().create("/p", None, session=key, shell_env={})["params"]["config"] == {
+        "shell_environment_policy.set.BATTLELAB_SESSION": key
+    }
+
+
 @pytest.mark.parametrize("action", ["read", "resume"])
 def test_native_response_must_match_requested_history(action):
     codec = CodexCodec()

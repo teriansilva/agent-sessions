@@ -61,6 +61,7 @@ STORE_ENV_PATHS: dict[str, str] = {
     "AGENT_SESSIONS_TEMPLATE_SECRETS_KEY": ".config/agent-sessions/template-secrets.key",
     "AGENT_SESSIONS_PLAYBOOKS_DIR": ".config/agent-sessions/playbooks",  # #1191 local playbooks
     "AGENT_SESSIONS_PLAYBOOK_SECRETS": ".config/agent-sessions/playbook-secrets",  # #1191
+    "AGENT_SESSIONS_MEMORY_DIR": ".config/agent-sessions/memory",  # #1441
     "AGENT_SESSIONS_PULSE_CACHE": ".config/agent-sessions/pulse-cache.json",
     "AGENT_SESSIONS_WORK_RECAP": ".config/agent-sessions/work-recap.json",  # #1086
     "AGENT_SESSIONS_NEEDS_YOU_DISMISSED": ".config/agent-sessions/needs-you-dismissed.json",
@@ -190,6 +191,8 @@ os.environ.setdefault("AGENT_SESSIONS_NEEDS_YOU_LOOP", "0")
 os.environ.setdefault("AGENT_SESSIONS_AUTOMATION_LOOP", "0")
 # Catalog loop tests opt in explicitly; ordinary app lifespans never access GitHub.
 os.environ.setdefault("AGENT_SESSIONS_CATALOG_LOOP", "0")
+# Shared project memory (#1441) ingests from the lifespan; its tests call `memory.ingest` directly.
+os.environ.setdefault("AGENT_SESSIONS_MEMORY_LOOP", "0")
 _install_tripwire()
 
 
@@ -350,6 +353,10 @@ def _isolate_prefs(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv(
         "AGENT_SESSIONS_PLAYBOOK_SECRETS",
         str(tmp_path / ".config" / "agent-sessions" / "playbook-secrets"),
+    )
+    # …and the shared project memory store (#1441), which agents' inbox files are ingested into.
+    monkeypatch.setenv(
+        "AGENT_SESSIONS_MEMORY_DIR", str(tmp_path / ".config" / "agent-sessions" / "memory")
     )
     monkeypatch.setenv(
         "AGENT_SESSIONS_TEMPLATE_SUGGESTIONS",

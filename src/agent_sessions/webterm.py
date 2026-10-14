@@ -560,6 +560,7 @@ async def run(
     maintenance_admission: opencode_admission.Admission | None = None,
     launch_provider=None,
     attach_provider=None,
+    launch_env: dict[str, str] | None = None,
 ) -> None:
     """Attach ``ws`` to the PTY of ``argv`` (a built dtach create-or-attach command).
 
@@ -577,6 +578,8 @@ async def run(
     Process creation is shielded and drained on timeout/cancellation before that guard releases.
     ``attach_provider`` checks permanent native-history ownership for an attach-only client;
     unlike ``launch_provider`` it does not require an active engine or resolve its binary.
+    ``launch_env`` (#1441) is extra environment for a LAUNCH only — the shared project memory
+    paths; ignored on attach.
 
     ``buf_key`` is the physical runtime key (dtach/lock/scrollback ring). ``transcript_key``
     is the logical session key for saved transcript replay; alias-backed Codex sessions need
@@ -611,9 +614,15 @@ async def run(
     env.setdefault("TERM", "xterm-256color")
     env.setdefault("COLORTERM", "truecolor")
     if launch_provider is not None:
-        from . import resource_limits
+        from . import memory, resource_limits
 
         env.update(resource_limits.thread_environment(env))
+        # Shared project memory (#1441) reaches a NEW agent process only: an attach is a dtach
+        # client, and the running agent's environment was fixed when it started. Never inherited
+        # from the app's own environment — absent unless this launch was given it.
+        for name in memory.ENV_KEYS:
+            env.pop(name, None)
+        env.update(launch_env or {})
 
     def create():
         return asyncio.create_subprocess_exec(

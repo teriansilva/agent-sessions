@@ -45,6 +45,7 @@ from .. import (
     engines,
     fsbrowse,
     handoff,
+    memory,
     missions,
     model_choice,
     native_ownership,
@@ -299,6 +300,7 @@ async def _serve_takeover(
     maintenance_admission: opencode_admission.Admission | None = None,
     launch_provider=None,
     attach_provider=None,
+    launch_env: dict[str, str] | None = None,
 ) -> None:
     """Single-active-viewer attach (#293) with the read-only fallback (#434). Claims the
     runtime-dir owner file. A non-owner is NOT inert: it streams the session **read-only**
@@ -353,6 +355,7 @@ async def _serve_takeover(
             lock=lock,
             launch_provider=launch_provider,
             attach_provider=attach_provider,
+            launch_env=launch_env,
             have=have,
             read_only_gate=read_only_gate,
             seed_key=seed_key,
@@ -831,8 +834,14 @@ def register(
             # Backstop timing (#631): mark when this fresh master started, so the finally can tell
             # whether it exited instantly and feed the bounded-relaunch guard. Only on LAUNCH — an
             # ATTACH runs no new master. Covers BOTH dispatch paths (take-over + #184) below.
+            # Shared project memory (#1441) is bound to a NEW agent process — this LAUNCH — and
+            # never to an attach: a reconnect reaches an agent whose environment is already fixed.
+            memory_env: dict[str, str] = {}
             if action == sessions.LAUNCH:
                 launch_started_at = time.monotonic()
+                memory_env = await asyncio.to_thread(
+                    memory.launch_env, transcript_key, cwd, kind="terminal"
+                )
             # Cross-engine handoff (#597): a committed handoff bound to this physical key
             # delivers its seed via webterm's PTY injector (input, never argv). ATTACH also
             # carries the key: if the launching viewer dropped before the TUI was ready, the
@@ -865,6 +874,7 @@ def register(
                     lock=lock,
                     launch_provider=prov if action == sessions.LAUNCH else None,
                     attach_provider=prov if action == sessions.ATTACH else None,
+                    launch_env=memory_env,
                     have=have,
                     fp=fp,
                     tab_id=tab_id,
@@ -928,6 +938,7 @@ def register(
                     lock=lock,
                     launch_provider=prov if action == sessions.LAUNCH else None,
                     attach_provider=prov if action == sessions.ATTACH else None,
+                    launch_env=memory_env,
                     have=have,
                     read_only_gate=read_only_gate,
                     seed_key=seed_key,

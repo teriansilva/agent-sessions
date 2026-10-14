@@ -126,6 +126,28 @@ def native_environment(config: dict) -> dict[str, str]:
     return env
 
 
+def memory_environment(config: dict) -> dict[str, str]:
+    """The shared project memory paths this generation was given (#1441), or ``{}``.
+
+    Bound by the web process at generation launch and passed explicitly — never read from this
+    process's environment. Both variables or neither, absolute paths, nothing else.
+    """
+    from .memory import ENV_KEYS
+
+    value = config.get("memory_env", {})
+    if not isinstance(value, dict):
+        raise WorkerError("invalid memory environment")
+    if value and (
+        set(value) != set(ENV_KEYS)
+        or any(
+            not isinstance(path, str) or not path.startswith("/") or "\0" in path or "\n" in path
+            for path in value.values()
+        )
+    ):
+        raise WorkerError("invalid memory environment")
+    return dict(value)
+
+
 def battlelab_session(config: dict) -> str:
     """The BattleLab session key the agent records as its own id (#1406), never the native id.
 
@@ -157,10 +179,12 @@ def child_environment(
     generation, the same construction as the unattended launch's) that the session is pinned to.
     The operator's own config and console opencode are untouched, and the app's own
     `OPENCODE_CONFIG_CONTENT` is not passed on (the environment is sanitized).
-    Every adapter's child also gets `BATTLELAB_SESSION` (`battlelab_session`).
+    Every adapter's child also gets `BATTLELAB_SESSION` (`battlelab_session`), and the shared
+    project memory paths when its generation was given them (`memory_environment`).
     """
     env = native_environment(config)
     env["BATTLELAB_SESSION"] = battlelab_session(config)
+    env.update(memory_environment(config))
     if config["adapter"] == OPENCODE:
         if not isinstance(server_password, str) or len(server_password) < 32:
             raise WorkerError("the opencode listener password is missing")
@@ -677,12 +701,15 @@ class Worker:
         cwd, model = self.config["cwd"], self.config.get("model")
         bypass = self.config.get("bypass") is True
         session = battlelab_session(self.config)
+        shell_env = memory_environment(self.config)
         if self.native_id is not None:
             await self.request(
-                self.codec.resume(self.native_id, cwd, model, bypass=bypass, session=session)
+                self.codec.resume(
+                    self.native_id, cwd, model, bypass=bypass, session=session, shell_env=shell_env
+                )
             )
             return
-        request = self.codec.create(cwd, model, bypass=bypass, session=session)
+        request = self.codec.create(cwd, model, bypass=bypass, session=session, shell_env=shell_env)
         event = await self.request(request)
         native_id = event.data["native_id"]
         await asyncio.to_thread(self.bind_created, request["id"], event)

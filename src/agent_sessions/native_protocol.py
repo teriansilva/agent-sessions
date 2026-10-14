@@ -359,10 +359,11 @@ class CodexCodec(_Codec):
         *,
         bypass: bool = False,
         session: str | None = None,
+        shell_env: dict[str, str] | None = None,
     ) -> dict:
         if self.native_id is not None:
             raise ProtocolError("native thread is already bound")
-        params = self.create_params(cwd, model, bypass=bypass, session=session)
+        params = self.create_params(cwd, model, bypass=bypass, session=session, shell_env=shell_env)
         return self._request("thread/start", params)
 
     def read(self, thread_id: str) -> dict:
@@ -380,8 +381,9 @@ class CodexCodec(_Codec):
         *,
         bypass: bool = False,
         session: str | None = None,
+        shell_env: dict[str, str] | None = None,
     ) -> dict:
-        params = self.create_params(cwd, model, bypass=bypass, session=session)
+        params = self.create_params(cwd, model, bypass=bypass, session=session, shell_env=shell_env)
         params["threadId"] = _identity(thread_id)
         # Never hydrate the full history into one frame: a long thread exceeds the frame bound
         # and could then never be resumed. BattleLab's own journal already holds what it saw.
@@ -392,7 +394,12 @@ class CodexCodec(_Codec):
 
     @staticmethod
     def create_params(
-        cwd: str, model: str | None, *, bypass: bool = False, session: str | None = None
+        cwd: str,
+        model: str | None,
+        *,
+        bypass: bool = False,
+        session: str | None = None,
+        shell_env: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         # Skip-permissions (#1339) is the structured twin of the console's
         # `--dangerously-bypass-approvals-and-sandbox`: Codex never asks and runs unsandboxed.
@@ -410,6 +417,12 @@ class CodexCodec(_Codec):
             # key merges into the operator's `set` table and outranks their config (codex 0.162,
             # start and resume). An `include_only` allowlist still wins; it is not rewritten.
             params["config"] = {"shell_environment_policy.set.BATTLELAB_SESSION": session}
+        if shell_env:
+            # The shared project memory paths (#1441) ride the same `set` table, for the same
+            # reason: an operator policy must not strip them from the agent's tool shell.
+            params.setdefault("config", {}).update(
+                {f"shell_environment_policy.set.{name}": value for name, value in shell_env.items()}
+            )
         return params
 
     def submit(self, text: str, operation_id: str, images=()) -> dict:

@@ -518,7 +518,14 @@ def _mutate_document(
                 variable_document.retain_upgrade_backup(path)
         except variable_document.IdentityError as exc:
             raise VariableError(str(exc)) from None
-        atomic_write_json(path, document, mode=0o600)
+        # Shared project memory (#1441): every agent-readable view is re-checked against the new
+        # secret inventory BEFORE this fence is released. The scopes are enumerated BEFORE the
+        # write, so a failure to enumerate them refuses the write instead of letting a stored
+        # secret settle beside views nobody checked.
+        from . import memory
+
+        with memory.secrets_changing():
+            atomic_write_json(path, document, mode=0o600)
     return result
 
 

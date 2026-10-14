@@ -434,8 +434,16 @@ def _deployed_destination(pid: str) -> str | None:
 
 
 def delete(pid: str, path: Path | None = None) -> None:
-    """Remove the entity only. Member sessions keep their (now dangling) ``project_id``
-    and revert to folder grouping on the next resolve — session files are never touched."""
+    """Remove the entity and its shared memory (#1441). Member sessions keep their (now dangling)
+    ``project_id`` and revert to folder grouping on the next resolve — session files are never
+    touched.
+
+    The memory goes FIRST, under this store's lock (the outer lock; the memory scope lock nests
+    inside it): a crash between the two leaves a project without memory, never memory without a
+    project, and a launch binding memory paths for this project either finishes before the scope
+    is removed or finds no scope at all."""
+    from . import memory
+
     path = path or _default_path()
     with _exclusive(path) as fh:
         data = _read_locked(fh)
@@ -443,6 +451,15 @@ def delete(pid: str, path: Path | None = None) -> None:
             raise ProjectError("unknown project", status=404)
         if _deployed_destination(pid) is not None:
             raise ProjectError("remove the project's playbook deployment first", status=409)
+        if memory.valid_id(pid):  # an id no memory scope can have has nothing to remove
+            try:
+                memory.delete_scope(pid)
+            except (memory.MemoryStoreError, OSError) as exc:
+                raise ProjectError(
+                    f"could not remove the project's shared memory ({exc}) — nothing was "
+                    "deleted; try again",
+                    status=500,
+                ) from None
         del data["projects"][pid]
         _rewrite_in_place(fh, data)
 

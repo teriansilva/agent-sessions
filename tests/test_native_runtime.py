@@ -843,6 +843,37 @@ def test_the_child_environment_names_the_battlelab_session_and_nothing_else(host
             native_worker.child_environment({**config, "session_key": bad}, **extra)
 
 
+@pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
+def test_the_child_environment_carries_only_validated_memory_paths(source):
+    """#1441: a generation given memory paths passes exactly those two to its agent; anything
+    else in the config refuses the spawn rather than reaching the child."""
+    from agent_sessions import native_worker
+
+    key = f"{ENGINES[source]}:{ident()}"
+    paths = {"BATTLELAB_MEMORY": "/m/notes", "BATTLELAB_MEMORY_INBOX": "/m/inbox/t"}
+    config = {"session_key": key, "adapter": KINDS[source], "home": "/h", "path": "/bin"}
+    extra = {}
+    if source == "opencode":
+        from agent_sessions.engines import opencode
+
+        extra = {"server_password": "p" * 32, "agent": opencode.mint_api_agent()}
+    env = native_worker.child_environment({**config, "memory_env": paths}, **extra)
+    assert {k: env[k] for k in paths} == paths
+    assert "BATTLELAB_MEMORY" not in native_worker.child_environment(
+        {**config, "memory_env": {}}, **extra
+    )
+    for bad in (
+        "/m/notes",
+        [],
+        {"BATTLELAB_MEMORY": "/m/notes"},
+        {**paths, "LD_PRELOAD": "/evil.so"},
+        {**paths, "BATTLELAB_MEMORY": "relative/notes"},
+        {**paths, "BATTLELAB_MEMORY_INBOX": "/m/inbox\nX=1"},
+    ):
+        with pytest.raises(native_worker.WorkerError):
+            native_worker.child_environment({**config, "memory_env": bad}, **extra)
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
 async def test_every_generation_tells_its_agent_the_battlelab_session(
@@ -1556,6 +1587,50 @@ async def test_resource_policy_is_frozen_per_generation(host, project, monkeypat
     assert len(host.launches) == 2
     assert "--property=MemoryMax=32G" in host.launches[0]
     assert "--property=MemoryMax=16G" in host.launches[1]
+
+
+@pytest.mark.anyio
+async def test_project_memory_is_bound_per_generation_never_into_a_live_one(host, project):
+    """#1441: memory reaches the NEXT worker generation after it is turned on; the live one keeps
+    the environment it started with, and every generation gets its own inbox."""
+    from agent_sessions import memory, projects
+
+    pid = projects.create("demo", folders=[str(project)]).id
+    created = await runtime.create_session("codex-api", str(project), operation_id=ident())
+    key = created["session_key"]
+
+    def config(worker):
+        return json.loads((native_state.root() / "workers" / worker / "config.json").read_text())
+
+    first = native_state.read_session(key.split(":", 1)[1])["current_worker"]
+    assert config(first)["memory_env"] == {}
+    memory.set_enabled(pid, True)
+    await runtime.probe(key)
+    assert config(first)["memory_env"] == {}  # the live generation is not touched
+    host.kill(first)
+    turn = ident()
+    await runtime.submit_turn(key, operation_id=turn, text="hello")
+    await settle(key, turn)
+    second = native_state.read_session(key.split(":", 1)[1])["current_worker"]
+    assert second != first
+    paths = config(second)["memory_env"]
+    assert Path(paths[memory.ENV_READ]).parent.name == pid
+    assert Path(paths[memory.ENV_INBOX]).is_dir()
+    [launch] = [n for n in _launches(pid) if n["kind"] == "api"]
+    assert launch["session_key"] == key
+
+
+def _launches(pid):
+    import sqlite3
+
+    from agent_sessions import memory
+
+    conn = sqlite3.connect(memory.root() / pid / "state.db")
+    conn.row_factory = sqlite3.Row
+    try:
+        return [dict(r) for r in conn.execute("SELECT * FROM launches")]
+    finally:
+        conn.close()
 
 
 class _NoTerminals:

@@ -42,7 +42,7 @@ def test_the_tripwire_refuses_the_real_store_before_the_syscall():
 
 def test_an_undo_falls_back_to_the_sandbox_never_the_real_home(monkeypatch):
     """What `monkeypatch.undo()` restores is the session pin, so the fallback is harmless."""
-    from agent_sessions import discover, metadata, missions, prefs
+    from agent_sessions import discover, memory, metadata, missions, prefs
 
     monkeypatch.undo()  # the exact mistake this backstop exists for
     sandbox = _isolation().sandbox
@@ -51,6 +51,7 @@ def test_an_undo_falls_back_to_the_sandbox_never_the_real_home(monkeypatch):
         prefs._default_path(),
         metadata._default_path(),
         discover.default_env_path(),
+        memory.root(),
     ):
         assert str(path).startswith(sandbox + os.sep), path
         assert not str(path).startswith(_REAL_HOME + os.sep + "."), path

@@ -760,6 +760,13 @@ async def dispatch(
         from . import resource_limits
 
         env.update(resource_limits.thread_environment(env))
+        # Shared project memory (#1441): never the app's own copies. The paths themselves are bound
+        # inside the launch fence, immediately before the spawn (below), so a dispatch refused by
+        # authentication or admission never mints an inbox.
+        from . import memory
+
+        for name in memory.ENV_KEYS:
+            env.pop(name, None)
         # OWNERSHIP STARTS HERE, not at `transfer()` (#898 review 5, finding 2).
         #
         # The moment `create_subprocess_exec` is entered, the lock fd may already have been
@@ -991,6 +998,9 @@ async def dispatch(
                         # starting and killing.
                         if abandoned.is_set():
                             return None, "the launch was abandoned before anything was spawned"
+                        # A new agent process: its project's memory paths if memory is on (#1441),
+                        # resolved from the dispatch's own folder. `launch_env` never raises.
+                        spawn_env = {**env, **memory.launch_env(key, cwd, kind="terminal")}
                         may_have_inherited = True
                         return (
                             _popen(  # noqa: S603 — literal argv, no shell
@@ -999,7 +1009,7 @@ async def dispatch(
                                 stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL,
                                 cwd=spawn_cwd,
-                                env=env,
+                                env=spawn_env,
                                 start_new_session=True,
                                 close_fds=True,
                                 # The dtach master inherits the lock fd, so the flock lives as

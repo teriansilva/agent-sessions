@@ -1555,3 +1555,36 @@ async def test_saved_resource_policy_reaches_the_headless_spawn(env, prov, reg, 
     assert "TasksMax=3072" in command
     assert environment["OPENBLAS_NUM_THREADS"] == "1"
     assert environment["OMP_NUM_THREADS"] == environment["RAYON_NUM_THREADS"] == "6"
+
+
+@pytest.mark.anyio
+async def test_project_memory_reaches_the_headless_spawn_only_when_on(env, prov, reg, monkeypatch):
+    """#1441: an unattended launch is a new agent process, so it is bound like an interactive one:
+    the project's memory paths when memory is on, nothing (not even the app's own copy) when off."""
+    from agent_sessions import memory, projects
+
+    monkeypatch.setenv(memory.ENV_READ, "/stale/app/copy")
+    _stub_spawn(monkeypatch)
+    _stub_started(monkeypatch)
+    original = headless_dispatch._popen
+    observed = []
+
+    def capture(argv, **kwargs):
+        observed.append(kwargs["env"])
+        return original(argv, **kwargs)
+
+    monkeypatch.setattr(headless_dispatch, "_popen", capture)
+    pid = projects.create("demo", folders=[str(env)]).id
+    off = await headless_dispatch.dispatch(registry=reg, engine="claude", cwd=str(env), brief="go")
+    memory.set_enabled(pid, True)
+    on = await headless_dispatch.dispatch(registry=reg, engine="claude", cwd=str(env), brief="go")
+    assert off.ok and on.ok and len(observed) == 2
+    assert not set(memory.ENV_KEYS) & set(observed[0])
+    assert pathlib.Path(observed[1][memory.ENV_READ]).parent.name == pid
+    assert pathlib.Path(observed[1][memory.ENV_INBOX]).is_dir()
+    # A dispatch refused before the spawn mints no inbox (#1445 review): binding is the last step.
+    refused = await headless_dispatch.dispatch(
+        registry=reg, engine="claude", cwd=str(env), brief="go", authorize=lambda epoch: "no"
+    )
+    assert not refused.ok and len(observed) == 2
+    assert len(list((memory.root() / pid / "inbox").iterdir())) == 1
