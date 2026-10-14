@@ -84,6 +84,9 @@ def register(app, *, logged_in, csrf_guard):
             raise store.StoreError("The gallery is busy; try again.", status=503) from None
         try:
             await gallery_client.refresh()
+        except gallery_client.Unreachable as exc:
+            # Not a refusal of content: the SPA shows "can't be reached" + Try again (#1440).
+            raise store.StoreError(str(exc), status=503, reason="unreachable") from None
         finally:
             slots.release()
         return response(await call(library.catalog))

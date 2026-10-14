@@ -335,13 +335,13 @@ test("an empty list says so and offers the first automation", async ({ page }) =
   await expect(page.getByTestId("automations-empty").getByRole("link", { name: /New automation/ })).toBeVisible();
 });
 
-test("Library names Automations beside Templates, Variables, Checklists, Gallery, Skills and Playbooks", async ({ page }) => {
+test("Library names Automations beside Templates, Variables, Checklists, Skills and Playbooks", async ({ page }) => {
   await mockAutomations(page, { automations: [automation()] });
   await page.goto(AUTOMATIONS_PATH);
   if ((await page.locator(".app.navOpen").count()) > 0) await page.keyboard.press("Escape");
   await page.locator('.hud-topbar [data-testid="section-menu-library"]').click();
   const menu = page.locator('[data-testid="section-menu-library-panel"]');
-  await expect(menu.locator("a[data-subsection]")).toHaveText(["Prompt Templates", "Variables", "Automations", "Checklists", "Gallery", "Skills", "Playbooks"]);
+  await expect(menu.locator("a[data-subsection]")).toHaveText(["Prompt Templates", "Variables", "Automations", "Checklists", "Skills", "Playbooks"]);
   await expect(menu.locator('a[data-subsection="automations"]')).toHaveAttribute("aria-current", "page");
 });
 

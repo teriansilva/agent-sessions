@@ -82,6 +82,8 @@ export interface GalleryComparison {
   conflicts: string[];
   changed_files: string[];
   incoming_version: string;
+  /** The version this copy was imported from (#1440: "v1.2.0 → v1.3.0"). */
+  base_version?: string;
 }
 export interface GalleryOperation {
   operation: string;

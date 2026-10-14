@@ -1,53 +1,78 @@
+/** Library → Playbooks / Skills → Browse gallery (#1440): the public, signed gallery for ONE kind,
+ *  in plain language. Review comes before adding (requirements, what's inside, every file's full
+ *  content), adding is one explicit confirmation, and every digest/signature/source fact is folded
+ *  into Technical details. The server contract is unchanged: `acknowledge` is still required,
+ *  NOREPLACE still refuses an occupied ID, and every write is still an explicit click. */
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import {
+  Link,
+  Navigate,
+  useLocation,
+  useParams,
+  useSearchParams,
+} from "react-router-dom";
 import {
   ArrowLeft,
   ArrowRight,
   ChevronRight,
-  Copy,
-  Download,
   FileText as SkillIcon,
   GitCompareArrows,
+  Plus,
   RefreshCw,
   Search,
   Workflow,
 } from "lucide-react";
-import { api } from "../lib/api";
-import { GALLERY_PATH, PLAYBOOKS_PATH, SKILLS_PATH } from "../lib/routes";
+import { ApiError, api } from "../lib/api";
+import {
+  GALLERY_SKILLS_PATH,
+  galleryEntryPath,
+  galleryPath,
+} from "../lib/routes";
 import type {
   GalleryComparison,
   GalleryEntry,
   GalleryFiles,
+  GalleryIndex,
   GalleryKind,
 } from "../types/gallery";
 import { usePlaybookRead } from "../components/playbooks/usePlaybooks";
+import { PlaybookDialog } from "../components/playbooks/PlaybookDialog";
 import { HudFrame } from "../components/hud/HudFrame";
 import {
+  Fact,
   FileRow,
   FileText,
   LeaveGuard,
   PendingOperation,
+  TechnicalDetails,
+  Verified,
 } from "../components/gallery/Shared";
+import { LandingNote, ViewTabs } from "../components/gallery/ViewTabs";
+import { freeId, LOCAL_ID, updateId } from "../components/gallery/galleryRules";
+import {
+  galleryWait,
+  useGallery,
+  type GalleryProblem,
+} from "../components/gallery/useGallery";
 import {
   beginOperation,
   errorText,
   finishOperation,
   localPath,
   ownValue,
+  settleRefused,
+  usePendingId,
 } from "../components/gallery/operations";
 import buttons from "../components/ui/actionButton.module.css";
 import styles from "../components/gallery/gallery.module.css";
 
-const KINDS = [
-  ["", "All"],
-  ["playbook", "Playbooks"],
-  ["skill", "Skills"],
-] as const;
-const COPY_ID = /^[a-z][a-z0-9-]{1,47}$/;
-const COPY_ID_HINT =
-  "A copy ID is 2–48 lowercase letters, digits or dashes, starting with a letter.";
 const plural = (n: number, one: string, many = `${one}s`) =>
   `${n} ${n === 1 ? one : many}`;
+const NOUN = { playbook: "playbooks", skill: "skills" } as const;
+const ID_HINT =
+  "2–48 lowercase letters, digits or dashes, starting with a letter.";
+const STALE =
+  "This gallery listing is out of date, so adding is paused until it refreshes.";
 
 function KindIcon({ kind }: { kind: GalleryKind }) {
   return kind === "playbook" ? (
@@ -57,161 +82,236 @@ function KindIcon({ kind }: { kind: GalleryKind }) {
   );
 }
 
+/** IDs already used by this kind's library: playbook IDs are unique across bundled and local. */
+function useTakenIds(kind: GalleryKind) {
+  const read = usePlaybookRead(
+    useCallback(
+      async () =>
+        new Set(
+          kind === "playbook"
+            ? (await api.playbooks()).playbooks.map((p) => p.id)
+            : (await api.localSkills()).skills.map((s) => s.id),
+        ),
+      [kind],
+    ),
+  );
+  return { taken: read.data, reloadTaken: read.reload };
+}
+
+/** What the listing state means to the operator, in one callout (or none). */
+function ListingState({
+  gallery,
+  hasEntries,
+}: {
+  gallery: ReturnType<typeof useGallery>;
+  hasEntries: boolean;
+}) {
+  const { problem, data, error, checking, check } = gallery;
+  const retry = (
+    <button
+      className={buttons.ghost}
+      disabled={checking}
+      onClick={() => void check()}
+    >
+      <RefreshCw size={14} aria-hidden />
+      Try again
+    </button>
+  );
+  const callout = (
+    text: string,
+    tone: "notice" | "error",
+    p?: GalleryProblem | null,
+    testid?: string,
+  ) => (
+    <div
+      className={tone === "error" ? styles.error : styles.notice}
+      role={tone === "error" ? "alert" : "status"}
+      data-testid={testid}
+    >
+      <p>{text}</p>
+      <div className={styles.actions}>{retry}</div>
+      {p?.detail && (
+        <TechnicalDetails>
+          <Fact label="Server answer">{p.detail}</Fact>
+        </TechnicalDetails>
+      )}
+    </div>
+  );
+  if (error)
+    return callout(
+      `The gallery couldn't be loaded. ${error}`,
+      "error",
+      null,
+      "gallery-load-error",
+    );
+  if (data?.state === "unavailable")
+    return callout(
+      "The gallery listing saved on this device can't be read. Your playbooks and skills are not affected.",
+      "error",
+      { kind: "refused", detail: data.error ?? "" },
+      "gallery-local-unreadable",
+    );
+  if (problem?.kind === "unreachable")
+    return callout(
+      hasEntries
+        ? "The public gallery can't be reached right now, so this is the list from the last check. Your playbooks and skills are not affected."
+        : "The public gallery can't be reached right now. Your playbooks and skills are not affected.",
+      "notice",
+      problem,
+      "gallery-unreachable",
+    );
+  if (problem?.kind === "refused")
+    return callout(
+      "The public gallery sent a listing that couldn't be verified, so nothing changed. Your playbooks and skills are not affected.",
+      "error",
+      problem,
+      "gallery-refused",
+    );
+  if (data?.state === "stale")
+    return (
+      <p
+        className={`${styles.notice} ${styles.warn}`}
+        data-testid="gallery-stale"
+      >
+        {STALE}
+      </p>
+    );
+  return null;
+}
+
 export default function ContentGallery() {
   const { digest } = useParams();
   const [query] = useSearchParams();
-  const kind = query.get("kind");
-  const id = query.get("id");
-  const target: { kind: GalleryKind; id: string } | null =
-    id && (kind === "playbook" || kind === "skill") ? { kind, id } : null;
-  const read = usePlaybookRead(useCallback(() => api.publicGallery(), []));
+  const location = useLocation();
+  // One component for both views; the route says which kind it lists.
+  const kind: GalleryKind =
+    location.pathname === GALLERY_SKILLS_PATH ||
+    location.pathname.startsWith(`${GALLERY_SKILLS_PATH}/`)
+      ? "skill"
+      : "playbook";
+  const update = query.get("update");
+  const target = update !== null && LOCAL_ID.test(update) ? update : null;
+  const gallery = useGallery();
   const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const matches =
-    read.data?.entries.filter(
-      (e) =>
-        (!filter || e.content.kind === filter) &&
-        [
-          e.content.title,
-          e.content.author,
-          e.content.publisher,
-          e.content.summary,
-        ]
-          .join(" ")
-          .toLowerCase()
-          .includes(search.toLowerCase()),
-    ) ?? [];
-  const entry = read.data?.entries.find((e) => e.digest === digest);
-  const total = read.data?.entries.length ?? 0;
-  const refresh = async () => {
-    setBusy(true);
-    setError("");
-    try {
-      await api.refreshGallery();
-      await read.reload();
-    } catch (e) {
-      setError(errorText(e));
-    } finally {
-      setBusy(false);
-    }
-  };
+  const all = gallery.data?.entries ?? [];
+  const mine = all.filter((e) => e.content.kind === kind);
+  const needle = search.trim().toLowerCase();
+  const matches = mine.filter((e) =>
+    [e.content.title, e.content.author, e.content.publisher, e.content.summary]
+      .join(" ")
+      .toLowerCase()
+      .includes(needle),
+  );
+  const entry = digest ? all.find((e) => e.digest === digest) : undefined;
+  // The kind comes from the signed entry, never the URL: an old link opened in the wrong view moves.
+  if (entry && entry.content.kind !== kind)
+    return (
+      <Navigate
+        replace
+        to={`${galleryEntryPath(entry.content.kind, entry.digest)}${location.search}`}
+        state={location.state}
+      />
+    );
+  const settled = !gallery.loading && !gallery.checking;
   return (
-    <main className={styles.page}>
+    <main className={styles.page} data-testid="content-gallery">
       <HudFrame hero />
       <div className={styles.kicker}>
-        Library // Gallery{!digest && read.data ? ` // ${total}` : ""}
+        Library // {NOUN[kind]} // gallery
+        {!digest && gallery.data ? ` // ${mine.length}` : ""}
       </div>
       {!digest && (
         <>
           <div className={styles.header}>
-            <h1>{target ? "Choose a version" : "Gallery"}</h1>
-            <button className={buttons.ghost} disabled={busy} onClick={refresh}>
+            <h1>{kind === "playbook" ? "Playbooks" : "Skills"}</h1>
+            <button
+              className={buttons.ghost}
+              disabled={gallery.checking}
+              onClick={() => void gallery.check()}
+            >
               <RefreshCw size={14} aria-hidden />
-              Check public gallery
+              {gallery.checking ? "Checking…" : "Refresh"}
             </button>
           </div>
+          <ViewTabs kind={kind} view="gallery" />
           <p className={styles.intro}>
-            Signed playbooks and skills to start from. Inspect everything, then
-            import your own editable copy. Copies land in{" "}
-            <Link to={PLAYBOOKS_PATH}>Local playbooks</Link> and{" "}
-            <Link to={SKILLS_PATH}>Local skills</Link>, and nothing runs until
-            you use it.
+            {kind === "playbook"
+              ? "Ready-made playbooks from the public gallery. Look inside any of them, then add your own editable copy. Nothing runs until you use it."
+              : "Ready-made skills from the public gallery. Look inside any of them, then add your own editable copy. Adding a skill doesn't turn it on in any agent."}
           </p>
         </>
       )}
+      <LandingNote />
       <PendingOperation />
-      {(error || read.error || read.data?.error) && (
-        <p role="alert" className={styles.error}>
-          {error || read.error || read.data?.error} Previous local content is
-          retained.
-        </p>
-      )}
-      {read.data?.state === "stale" && (
-        <p className={styles.notice}>
-          This publication has expired. Inspection remains available; new
-          imports and updates need a fresh signed publication.
-        </p>
-      )}
-      {target && !digest && (
-        <p className={styles.notice}>
-          Choose a version to compare with{" "}
-          <Link to={localPath(target.kind, target.id)}>{target.id}</Link>.
-          Comparisons only accept the same upstream content.
-        </p>
-      )}
+      <ListingState gallery={gallery} hasEntries={mine.length > 0} />
       {digest ? (
         entry ? (
           target ? (
             <Compare
-              key={`${digest}:${target.kind}:${target.id}`}
+              key={`${digest}:${target}`}
               entry={entry}
-              target={target}
+              id={target}
+              wait={galleryWait(gallery)}
             />
           ) : (
-            <Inspect key={digest} entry={entry} />
+            <Inspect
+              key={digest}
+              entry={entry}
+              listing={gallery.data}
+              wait={galleryWait(gallery)}
+            />
           )
+        ) : !settled ? (
+          <p role="status">Loading…</p>
         ) : (
-          <p>
-            {read.loading
-              ? "Loading content…"
-              : "This version is not in the accepted gallery. Check the public gallery and try again."}
-          </p>
+          <div className={styles.empty} data-testid="gallery-entry-missing">
+            <h2>This version isn't in the gallery any more.</h2>
+            <Link className={buttons.ghost} to={galleryPath(kind)}>
+              <ArrowLeft size={16} aria-hidden />
+              Browse gallery
+            </Link>
+          </div>
         )
       ) : (
         <>
-          <div className={styles.toolbar}>
-            <label className={styles.search}>
-              Search
-              <span className={styles.searchBox}>
-                <Search size={16} aria-hidden />
-                <input
-                  type="search"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Title, author, publisher…"
-                />
-              </span>
-            </label>
-            <div className={styles.segmented} role="group" aria-label="Kind">
-              {KINDS.map(([value, label]) => (
-                <button
-                  key={value}
-                  className={buttons.ghost}
-                  aria-pressed={filter === value}
-                  onClick={() => setFilter(value)}
-                >
-                  {label}
-                </button>
-              ))}
+          {!!mine.length && (
+            <div className={styles.toolbar}>
+              <label className={styles.search}>
+                Search the gallery
+                <span className={styles.searchBox}>
+                  <Search size={16} aria-hidden />
+                  <input
+                    type="search"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    placeholder="Title, author, publisher…"
+                  />
+                </span>
+              </label>
             </div>
-            {!!total && (
-              <span className={`${styles.tag} ${styles.count}`}>
-                {matches.length} of {total}
-              </span>
-            )}
-          </div>
-          {read.loading && !read.data && <p role="status">Loading gallery…</p>}
-          {read.data && !read.data.entries.length && (
-            <section className={styles.empty}>
-              <h2>No accepted gallery content yet</h2>
-              <p>
-                Check the public gallery to load its signed publication. Your
-                local library remains available.
-              </p>
-            </section>
           )}
-          {!!read.data?.entries.length && !matches.length && (
+          {!mine.length && !settled && (
+            <p role="status" data-testid="gallery-checking">
+              Checking the public gallery…
+            </p>
+          )}
+          {settled &&
+            gallery.data &&
+            !mine.length &&
+            !gallery.problem &&
+            gallery.data.state !== "unavailable" && (
+              <section className={styles.empty} data-testid="gallery-empty">
+                <h2>
+                  {all.length
+                    ? `No ${NOUN[kind]} have been published to the gallery yet.`
+                    : "Nothing has been published to the gallery yet."}
+                </h2>
+              </section>
+            )}
+          {!!mine.length && !matches.length && (
             <div className={styles.empty}>
-              <p>No gallery content matches this search.</p>
-              <button
-                className={buttons.ghost}
-                onClick={() => {
-                  setSearch("");
-                  setFilter("");
-                }}
-              >
+              <p>Nothing in the gallery matches this search.</p>
+              <button className={buttons.ghost} onClick={() => setSearch("")}>
                 Clear search
               </button>
             </div>
@@ -220,101 +320,276 @@ export default function ContentGallery() {
             {matches.map((e) => (
               <article className={styles.card} key={e.digest}>
                 <div className={styles.tag}>
-                  <KindIcon kind={e.content.kind} />
-                  {e.content.kind} // v{e.content.version}
+                  <KindIcon kind={e.content.kind} />v{e.content.version}
                 </div>
                 <h2>{e.content.title}</h2>
                 <p>{e.content.summary}</p>
                 <p className={styles.meta}>
                   By {e.content.author} · {e.content.publisher}
                 </p>
-                {!e.available && (
+                {e.available ? (
+                  <Verified />
+                ) : (
                   <span className={`${styles.tag} ${styles.withdrawn}`}>
-                    Withdrawn · inspect only
+                    Withdrawn · view only
                   </span>
                 )}
                 <Link
                   className={`${buttons.ghost} ${styles.cardAction}`}
-                  to={`${GALLERY_PATH}/${e.digest}${target ? `?kind=${target.kind}&id=${encodeURIComponent(target.id)}` : ""}`}
+                  to={galleryEntryPath(kind, e.digest)}
+                  aria-label={`View ${e.content.title}`}
                 >
-                  {target ? "Compare this version" : "Inspect complete content"}
+                  View
                   <ArrowRight size={16} aria-hidden />
                 </Link>
               </article>
             ))}
           </div>
+          <ListingFacts listing={gallery.data} />
         </>
-      )}
-      {!digest && (
-        <details className={`${styles.file} ${styles.evidence}`}>
-          <summary>
-            <ChevronRight size={16} aria-hidden />
-            <span>Publication evidence</span>
-          </summary>
-          <div className={styles.fileBody}>
-            <p>
-              Sequence {read.data?.sequence ?? "none"} ·{" "}
-              {read.data?.expires_at
-                ? `expires ${new Date(read.data.expires_at * 1000).toLocaleString()}`
-                : "not checked"}
-            </p>
-            <code>{read.data?.digest}</code>
-            <p>
-              <a
-                href="https://relay.battlelab.superstatus.io/catalogs/gallery"
-                target="_blank"
-                rel="noreferrer"
-              >
-                Open public gallery
-              </a>
-            </p>
-          </div>
-        </details>
       )}
     </main>
   );
 }
-function Inspect({ entry }: { entry: GalleryEntry }) {
-  const [id, setId] = useState(entry.content.id.slice(0, 42) + "-copy");
-  const [ack, setAck] = useState(false);
+
+function ListingFacts({ listing }: { listing: GalleryIndex | null }) {
+  return (
+    <TechnicalDetails>
+      <Fact label="Signed publication">
+        {listing?.sequence ? `Sequence ${listing.sequence}` : "None loaded yet"}
+      </Fact>
+      {listing?.expires_at && (
+        <Fact label="Valid until">
+          {new Date(listing.expires_at * 1000).toLocaleString()}
+        </Fact>
+      )}
+      {listing?.digest && (
+        <Fact label="Index SHA-256">
+          <code>{listing.digest}</code>
+        </Fact>
+      )}
+      <Fact label="Public page">
+        <a
+          href="https://relay.battlelab.superstatus.io/catalogs/gallery"
+          target="_blank"
+          rel="noreferrer"
+        >
+          Open the public gallery
+        </a>
+      </Fact>
+    </TechnicalDetails>
+  );
+}
+
+/** One file, its complete content one click away in a viewer that scrolls by itself. */
+function ReviewFile({
+  name,
+  value,
+  open,
+  onToggle,
+}: {
+  name: string;
+  value: GalleryFiles[string];
+  open: boolean;
+  onToggle: (open: boolean) => void;
+}) {
+  const lines = typeof value === "string" ? value.split("\n").length : null;
+  return (
+    <details
+      className={styles.file}
+      open={open}
+      onToggle={(e) => onToggle((e.currentTarget as HTMLDetailsElement).open)}
+    >
+      <summary>
+        <ChevronRight size={16} aria-hidden />
+        <span>{name}</span>
+        <span className={styles.state}>
+          {lines !== null && (
+            <span className={styles.lines}>{plural(lines, "line")}</span>
+          )}
+          {open ? "Hide file" : "Show file"}
+        </span>
+      </summary>
+      <div className={styles.fileBody}>
+        <FileText value={value} />
+      </div>
+    </details>
+  );
+}
+
+/** Ask for one explicit, reviewed click; re-propose a free ID when the server says it was taken,
+ *  never retrying by itself. Shared by Add and Add updated copy. */
+function useConfirmedWrite({
+  kind,
+  suggested,
+  label,
+  write,
+}: {
+  kind: GalleryKind;
+  suggested: (taken: ReadonlySet<string>) => string;
+  label: string;
+  write: (
+    id: string,
+    operation: string,
+  ) => ReturnType<typeof api.importGallery>;
+}) {
+  const { taken, reloadTaken } = useTakenIds(kind);
+  const [custom, setCustom] = useState<string | null>(null);
+  const [taking, setTaking] = useState<{ was: string; next: string } | null>(
+    null,
+  );
+  const [asking, setAsking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [done, setDone] = useState<string | null>(null);
-  const hint = useId();
-  const read = usePlaybookRead(
-    useCallback(() => api.inspectGallery(entry.digest, id), [entry.digest, id]),
+  const [done, setDone] = useState<{ id: string; durable: boolean } | null>(
+    null,
   );
+  const [pending] = usePendingId();
+  const id = taking?.next ?? custom ?? (taken ? suggested(taken) : null);
+  const idProblem =
+    custom !== null && !LOCAL_ID.test(custom)
+      ? `A local ID is ${ID_HINT}`
+      : custom !== null && taken?.has(custom)
+        ? `“${custom}” is already used. Choose another.`
+        : "";
+  async function confirm() {
+    if (!id) return;
+    setBusy(true);
+    setError("");
+    let operation: string;
+    try {
+      operation = beginOperation(label);
+    } catch (e) {
+      setError(errorText(e));
+      setBusy(false);
+      return;
+    }
+    try {
+      const value = await write(id, operation);
+      finishOperation(value);
+      if (value.state === "complete") {
+        setDone({
+          id: value.result?.id ?? id,
+          durable: value.result?.durable !== false,
+        });
+        setAsking(false);
+        setTaking(null);
+      } else {
+        // No recorded outcome: the banner above takes over, and writes stay disabled.
+        setAsking(false);
+      }
+    } catch (e) {
+      if (e instanceof ApiError && (await settleRefused(operation))) {
+        // The server answered and never recorded this attempt. If the ID is now taken, propose
+        // the next free one; the operator has to click again.
+        const now = await reloadTaken();
+        if (e.status === 409 && now?.has(id)) {
+          setTaking({ was: id, next: freeId(id.replace(/-\d+$/, ""), now) });
+          setCustom(null);
+        } else setError(errorText(e));
+      } else {
+        setAsking(false);
+        if (!(e instanceof ApiError)) setError("");
+        else setError(errorText(e));
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+  return {
+    id,
+    custom,
+    setCustom: (value: string | null) => {
+      setCustom(value);
+      setTaking(null);
+    },
+    idProblem,
+    taking,
+    asking,
+    setAsking,
+    busy,
+    error,
+    setError,
+    done,
+    pending,
+    confirm,
+  };
+}
+
+function Inspect({
+  entry,
+  listing,
+  wait,
+}: {
+  entry: GalleryEntry;
+  listing: GalleryIndex | null;
+  /** Non-empty while the current check is running or failed: a kept listing is never acted on. */
+  wait: string;
+}) {
   const c = entry.content;
-  const why = done
+  const names = Object.keys(c.files);
+  const [open, setOpen] = useState<Record<string, boolean>>(() =>
+    names.length ? { [names[0]]: true } : {},
+  );
+  const write = useConfirmedWrite({
+    kind: c.kind,
+    suggested: (taken) => freeId(c.id, taken),
+    label: c.title,
+    write: (id, operation) =>
+      api.importGallery(c.kind, id, entry.digest, operation),
+  });
+  const inspectId = write.id ?? c.id;
+  const read = usePlaybookRead(
+    useCallback(
+      () => api.inspectGallery(entry.digest, inspectId),
+      [entry.digest, inspectId],
+    ),
+  );
+  const hint = useId();
+  const idHint = useId();
+  const stale = listing?.state === "stale";
+  const why = write.done
     ? ""
-    : read.loading
-      ? "Checking this copy ID…"
-      : read.error || !read.data?.importable
-        ? ""
-        : !ack
-          ? "Tick the review box to import."
-          : "";
+    : write.pending
+      ? "Check the earlier attempt above first."
+      : wait
+        ? wait
+        : !entry.available
+          ? "Withdrawn from the gallery — view only."
+          : stale
+            ? STALE
+            : write.idProblem ||
+              (read.data && !read.data.importable
+                ? `This version can't be added: ${read.data.reason ?? "it did not validate."}`
+                : read.error
+                  ? `This version can't be checked right now: ${read.error}`
+                  : "");
+  const blocked =
+    !!why || !write.id || read.loading || !read.data?.importable || write.busy;
+  const allOpen = names.every((n) => ownValue(open, n) === true);
+  const where = NOUN[c.kind];
   return (
     <>
-      <Link className={`${buttons.ghost} ${styles.back}`} to={GALLERY_PATH}>
+      <Link
+        className={`${buttons.ghost} ${styles.back}`}
+        to={galleryPath(c.kind)}
+      >
         <ArrowLeft size={16} aria-hidden />
         Back to gallery
       </Link>
       <div className={styles.detail}>
-        <article>
+        <article className={styles.main}>
           <header className={styles.detailHead}>
             <div className={styles.tag}>
               <KindIcon kind={c.kind} />
-              {c.kind} // v{c.version}
+              {c.kind} · v{c.version}
             </div>
             <h1>{c.title}</h1>
             <p>{c.summary}</p>
             <p>
-              By {c.author} · published by {c.publisher} ·{" "}
-              <a href={c.source} target="_blank" rel="noreferrer">
-                Source
-              </a>
+              By {c.author} · published by {c.publisher}
             </p>
+            {entry.available && <Verified />}
           </header>
           <section className={styles.section}>
             <h2>Requirements</h2>
@@ -325,20 +600,25 @@ function Inspect({ entry }: { entry: GalleryEntry }) {
                 ))}
               </ul>
             ) : (
-              <p>No additional requirements declared.</p>
+              <p>Nothing extra is needed.</p>
             )}
           </section>
           {read.data?.preview && (
-            <section className={styles.section} aria-label="Inputs and workflow">
-              <h2>Inputs & workflow</h2>
-              <ul>
-                {read.data.preview.inputs.map((input) => (
-                  <li key={input.name}>
-                    {input.label ?? input.name} ({input.name}) ·{" "}
-                    {input.required ? "required" : "optional"}
-                  </li>
-                ))}
-              </ul>
+            <section className={styles.section} aria-label="What's inside">
+              <h2>What's inside</h2>
+              {!!read.data.preview.inputs.length && (
+                <>
+                  <h3>Inputs</h3>
+                  <ul>
+                    {read.data.preview.inputs.map((input) => (
+                      <li key={input.name}>
+                        {input.label ?? input.name} ·{" "}
+                        {input.required ? "required" : "optional"}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
               {read.data.preview.flows?.map((flow) => (
                 <div key={flow.id}>
                   <h3>{flow.title}</h3>
@@ -346,7 +626,9 @@ function Inspect({ entry }: { entry: GalleryEntry }) {
                     {flow.steps.map((step) => (
                       <li key={step.id}>
                         {step.title} ·{" "}
-                        {step.actor.engine ?? step.actor.label ?? step.actor.kind}
+                        {step.actor.engine ??
+                          step.actor.label ??
+                          step.actor.kind}
                         {step.after.length
                           ? ` · after ${step.after.join(", ")}`
                           : ""}
@@ -357,117 +639,188 @@ function Inspect({ entry }: { entry: GalleryEntry }) {
               ))}
             </section>
           )}
-          <section className={styles.section}>
-            <h2>Complete files</h2>
-            {Object.entries(c.files).map(([name, value]) => (
-              <FileRow key={name} name={name}>
-                <FileText value={value} />
-              </FileRow>
+          <section className={styles.section} aria-label="Files">
+            <div className={styles.sectionHead}>
+              <h2>Files</h2>
+              {names.length > 1 && (
+                <button
+                  className={buttons.ghost}
+                  onClick={() =>
+                    setOpen(Object.fromEntries(names.map((n) => [n, !allOpen])))
+                  }
+                >
+                  {allOpen ? "Collapse all" : "Expand all"}
+                </button>
+              )}
+            </div>
+            {names.map((name) => (
+              <ReviewFile
+                key={name}
+                name={name}
+                value={c.files[name]}
+                open={ownValue(open, name) === true}
+                onToggle={(value) =>
+                  setOpen((old) => ({ ...old, [name]: value }))
+                }
+              />
             ))}
           </section>
         </article>
-        <aside className={styles.side} aria-label="Import">
-          <h2>Import a copy</h2>
-          <p>
-            {c.kind === "playbook"
-              ? "Only the local playbook ID is rewritten. Flows and all other files retain their identities."
-              : "This creates inert files in your BattleLab library. You decide when and how to use the skill."}
-          </p>
-          <LeaveGuard dirty={busy} />
-          <label className={styles.field}>
-            Local copy ID
-            <input
-              disabled={busy}
-              value={id}
-              pattern="[a-z][a-z0-9-]{1,47}"
-              onChange={(e) => {
-                setId(e.target.value);
-                setAck(false);
-                setDone(null);
-              }}
-            />
-          </label>
-          <label className={styles.check}>
-            <input
-              type="checkbox"
-              disabled={busy}
-              checked={ack}
-              onChange={(e) => setAck(e.target.checked)}
-            />
-            I reviewed the complete content and requirements.
-          </label>
-          {(read.data?.reason || read.error) && (
-            <p role="alert" className={styles.error}>
-              {read.data?.reason || read.error}
-            </p>
-          )}
-          {error && (
-            <p className={styles.error} role="alert">
-              {error}
-            </p>
-          )}
-          <button
-            className={`${buttons.primary} ${styles.wide}`}
-            aria-describedby={why ? hint : undefined}
-            disabled={
-              busy ||
-              read.loading ||
-              !!read.error ||
-              !read.data?.importable ||
-              !ack ||
-              !!done
-            }
-            onClick={async () => {
-              setBusy(true);
-              setError("");
-              try {
-                const op = beginOperation();
-                const value = await api.importGallery(c.kind, id, entry.digest, op);
-                finishOperation(value);
-                if (value.state === "complete")
-                  setDone(
-                    value.result?.durable === false
-                      ? `Imported. ${value.result.durable_reason}`
-                      : "Imported an editable local copy.",
-                  );
-                else
-                  setError(value.message ?? "Check the operation before retrying.");
-              } catch (e) {
-                setError(errorText(e));
-              } finally {
-                setBusy(false);
-              }
-            }}
-          >
-            <Download size={16} aria-hidden />
-            Import editable copy
-          </button>
-          {why && (
-            <p className={styles.why} id={hint}>
-              {why}
-            </p>
-          )}
-          {done && (
+        <aside className={styles.side} aria-label="Add">
+          <LeaveGuard dirty={write.busy} />
+          {write.done ? (
             <p role="status" className={styles.done}>
-              {done} <Link to={localPath(c.kind, id)}>Open local copy</Link>
+              Added — <Link to={localPath(c.kind, write.done.id)}>Open</Link>
+              {!write.done.durable &&
+                " The disk didn't confirm the save, so check it before relying on it."}
             </p>
+          ) : (
+            <>
+              <button
+                className={`${buttons.primary} ${styles.wide}`}
+                aria-describedby={why ? hint : undefined}
+                disabled={blocked}
+                data-testid="gallery-add"
+                onClick={() => {
+                  write.setError("");
+                  write.setAsking(true);
+                }}
+              >
+                <Plus size={16} aria-hidden />
+                Add to my {where}
+              </button>
+              {why ? (
+                <p className={styles.why} id={hint}>
+                  {why}
+                </p>
+              ) : (
+                write.id && (
+                  <p className={styles.why}>
+                    Adds as <code>{write.id}</code>.
+                  </p>
+                )
+              )}
+              {write.error && !write.asking && (
+                <p className={styles.error} role="alert">
+                  {write.error}
+                </p>
+              )}
+            </>
           )}
         </aside>
+        <div className={styles.tech}>
+          <TechnicalDetails>
+            <Fact label="Content SHA-256">
+              <code>{entry.digest}</code>
+            </Fact>
+            {listing?.sequence && (
+              <Fact label="Signed publication">
+                Sequence {listing.sequence}
+                {listing.expires_at
+                  ? ` · valid until ${new Date(listing.expires_at * 1000).toLocaleString()}`
+                  : ""}
+              </Fact>
+            )}
+            <Fact label="Source">
+              <a href={c.source} target="_blank" rel="noreferrer">
+                {c.source}
+              </a>
+            </Fact>
+            {c.kind === "playbook" && (
+              <Fact label="Playbook ID">
+                Only the local playbook ID is rewritten; workflows keep their
+                identities.
+              </Fact>
+            )}
+            {!write.done && (
+              <>
+                <label className={styles.field}>
+                  Local ID
+                  <input
+                    disabled={write.busy}
+                    value={write.custom ?? write.id ?? ""}
+                    pattern="[a-z][a-z0-9-]{1,47}"
+                    aria-describedby={idHint}
+                    onChange={(e) => write.setCustom(e.target.value)}
+                  />
+                </label>
+                <p className={styles.why} id={idHint}>
+                  {ID_HINT}
+                </p>
+              </>
+            )}
+          </TechnicalDetails>
+        </div>
       </div>
+      {write.asking && write.id && (
+        <PlaybookDialog
+          tag={`Gallery // add`}
+          title={`Add ${c.title} to your ${where}?`}
+          confirmLabel={
+            write.taking
+              ? `I've reviewed it — Add as ${write.id}`
+              : "I've reviewed it — Add"
+          }
+          busy={write.busy}
+          // The gate is checked again here: the listing can go stale while the dialog is open.
+          confirmDisabled={!!wait}
+          onCancel={() => write.setAsking(false)}
+          onConfirm={() => {
+            if (!wait) void write.confirm();
+          }}
+        >
+          {wait && (
+            <p
+              className={`${styles.notice} ${styles.warn}`}
+              role="status"
+              data-testid="gallery-confirm-wait"
+            >
+              {wait}
+            </p>
+          )}
+          <p>
+            Only add it if you've checked its requirements and files. It's
+            copied into your library as editable files; nothing runs until you
+            use it.
+          </p>
+          {write.taking ? (
+            <p
+              className={`${styles.notice} ${styles.warn}`}
+              data-testid="gallery-id-taken"
+            >
+              <code>{write.taking.was}</code> was just taken. It will be added
+              as <code>{write.taking.next}</code> instead.
+            </p>
+          ) : (
+            <p>
+              Adds as <code>{write.id}</code>.
+            </p>
+          )}
+          {write.error && (
+            <p className={styles.error} role="alert">
+              {write.error}
+            </p>
+          )}
+        </PlaybookDialog>
+      )}
     </>
   );
 }
+
 function Compare({
   entry,
-  target,
+  id,
+  wait,
 }: {
   entry: GalleryEntry;
-  target: { kind: GalleryKind; id: string };
+  id: string;
+  wait: string;
 }) {
+  const kind = entry.content.kind;
   const read = usePlaybookRead(
     useCallback(
-      () => api.compareGallery(target.kind, target.id, entry.digest),
-      [target.kind, target.id, entry.digest],
+      () => api.compareGallery(kind, id, entry.digest),
+      [kind, id, entry.digest],
     ),
   );
   if (!read.data)
@@ -476,31 +829,45 @@ function Compare({
         role={read.error ? "alert" : "status"}
         className={read.error ? styles.error : styles.notice}
       >
-        {read.error ??
-          "Comparing imported base, local copy and incoming version…"}
+        {read.error ?? "Comparing your copy with the gallery version…"}
       </p>
     );
-  return <Merge initial={read.data} reload={read.reload} />;
+  return (
+    <Merge
+      initial={read.data}
+      title={entry.content.title}
+      reload={read.reload}
+      wait={wait}
+    />
+  );
 }
+
+const CHOICES = [
+  ["local", "Your edit"],
+  ["incoming", "Gallery version"],
+  ["base", "Original"],
+] as const;
+
 function Merge({
   initial,
+  title,
   reload,
+  wait,
 }: {
   initial: GalleryComparison;
+  title: string;
   reload: () => Promise<GalleryComparison | null>;
+  wait: string;
 }) {
   const [view, setView] = useState(initial);
   const [files, setFiles] = useState<GalleryFiles>(() =>
     structuredClone(initial.proposed),
   );
   const [unresolved, setUnresolved] = useState(new Set(initial.conflicts));
-  const [ack, setAck] = useState(false);
-  const [busy, setBusy] = useState(false);
+  /** Files that need the operator: real conflicts, plus any retained draft difference after a
+   *  recompare. It never shrinks when a choice is made, so a choice can be changed. */
+  const [contested, setContested] = useState(new Set(initial.conflicts));
   const [dirty, setDirty] = useState(false);
-  const [error, setError] = useState("");
-  const [done, setDone] = useState<string | null>(null);
-  const [newId, setNewId] = useState(`${initial.id.slice(0, 40)}-updated`);
-  const hint = useId();
   const live = useRef(true);
   useEffect(() => {
     live.current = true;
@@ -508,6 +875,25 @@ function Merge({
       live.current = false;
     };
   }, []);
+  const write = useConfirmedWrite({
+    kind: view.kind,
+    suggested: (taken) => updateId(view.id, view.incoming_version, taken),
+    label: `the updated ${title}`,
+    write: (newId, operation) =>
+      api.updateGallery(
+        view.kind,
+        view.id,
+        newId,
+        view.incoming_digest,
+        view.comparison,
+        files,
+        operation,
+      ),
+  });
+  const hint = useId();
+  const idHint = useId();
+  /** While "Compare again" runs, the draft is frozen: the new comparison is measured against it. */
+  const [comparing, setComparing] = useState(false);
   function choose(name: string, value: GalleryFiles[string] | undefined) {
     setFiles((old) => {
       if (value !== undefined) return { ...old, [name]: value };
@@ -521,7 +907,6 @@ function Merge({
       return next;
     });
     setDirty(true);
-    setAck(false);
   }
   const retainedDifferences = (proposal: GalleryFiles) =>
     [...new Set([...Object.keys(files), ...Object.keys(proposal)])].filter(
@@ -529,71 +914,94 @@ function Merge({
         JSON.stringify(ownValue(files, name)) !==
         JSON.stringify(ownValue(proposal, name)),
     );
-  const reviewedFiles = [...new Set([
-    ...view.changed_files,
-    ...retainedDifferences(view.proposed),
-  ])].sort();
-  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
-  const changes = reviewedFiles.length;
-  const why = done
+  const reviewedFiles = [
+    ...new Set([
+      ...view.changed_files,
+      ...retainedDifferences(view.proposed),
+      ...contested,
+    ]),
+  ].sort();
+  const quiet = reviewedFiles.filter((name) => !contested.has(name));
+  const loud = reviewedFiles.filter((name) => contested.has(name));
+  const same = (a: unknown, b: unknown) =>
+    JSON.stringify(a) === JSON.stringify(b);
+  const firstUnresolved = [...unresolved].sort()[0];
+  const why = write.done
     ? ""
-    : unresolved.size
-      ? `Choose a result for ${plural(unresolved.size, "file")} first.`
-      : !COPY_ID.test(newId)
-        ? COPY_ID_HINT
-        : newId === view.id
-          ? "Choose an ID different from the original copy."
-          : !ack
-            ? "Tick the review box to create the copy."
-            : "";
+    : write.pending
+      ? "Check the earlier attempt above first."
+      : wait
+        ? wait
+        : unresolved.size === 1
+          ? `Choose a result for ${firstUnresolved} first.`
+          : unresolved.size
+            ? `Choose a result for ${plural(unresolved.size, "file")} first.`
+            : write.idProblem ||
+              (write.id === view.id
+                ? "Choose an ID different from your current copy."
+                : "");
+  const where = NOUN[view.kind];
   return (
     <>
-      <LeaveGuard dirty={dirty || busy} />
-      <Link className={`${buttons.ghost} ${styles.back}`} to={GALLERY_PATH}>
+      <LeaveGuard dirty={(dirty && !write.done) || write.busy} />
+      <Link
+        className={`${buttons.ghost} ${styles.back}`}
+        to={localPath(view.kind, view.id)}
+      >
         <ArrowLeft size={16} aria-hidden />
-        Back to gallery
+        Back to {view.id}
       </Link>
       <header className={styles.detailHead}>
         <div className={styles.tag}>
           <GitCompareArrows size={14} aria-hidden />
-          Update // {view.kind} // v{view.incoming_version}
+          Update
         </div>
-        <h1>Compare update to {view.incoming_version}</h1>
+        <h1>Review update</h1>
+        <p className={styles.versions}>
+          {view.base_version ? `v${view.base_version} → ` : ""}v
+          {view.incoming_version}
+        </p>
         <p>
-          Updating your copy{" "}
-          <Link to={localPath(view.kind, view.id)}>{view.id}</Link>. Review the
-          imported base, your current copy and the incoming files. Choose the
-          result for each conflicting file.
+          For your copy{" "}
+          <Link to={localPath(view.kind, view.id)}>{view.id}</Link>. The update
+          is added as a new copy; your current copy stays as it is.
         </p>
       </header>
-      <div className={styles.summary}>
-        <span className={styles.tag}>{plural(changes, "file")} changed</span>
-        {unresolved.size ? (
-          <span className={styles.tag}>
+      <p className={styles.summary} data-testid="gallery-update-summary">
+        {loud.length ? (
+          <>
             <span className="hud-led attention" aria-hidden />
-            {plural(unresolved.size, "file")}{" "}
-            {unresolved.size === 1 ? "needs" : "need"} a choice
-          </span>
-        ) : changes ? (
-          <span className={styles.tag}>Every file has a result</span>
-        ) : null}
-      </div>
-      {error && (
+            {loud.length === 1
+              ? "1 file conflicts with your edits — choose a result"
+              : `${loud.length} files conflict with your edits — choose a result for each`}
+          </>
+        ) : reviewedFiles.length ? (
+          `${plural(reviewedFiles.length, "file")} change${reviewedFiles.length === 1 ? "s" : ""}, none conflict with your edits`
+        ) : (
+          "Nothing changes in the files."
+        )}
+      </p>
+      {write.error && (
         <p role="alert" className={styles.error}>
-          {error} Your draft is retained.
+          {write.error} Your choices are kept.
         </p>
       )}
-      {reviewedFiles.map((name) => {
+      {loud.map((name) => {
         const result = ownValue(files, name);
-        const local = ownValue(view.local, name);
-        const incoming = ownValue(view.incoming, name);
+        const sources = {
+          local: ownValue(view.local, name),
+          incoming: ownValue(view.incoming, name),
+          base: ownValue(view.base, name),
+        };
         const using = unresolved.has(name)
           ? null
-          : same(result, local)
-            ? "local"
-            : same(result, incoming)
-              ? "incoming"
-              : "retained";
+          : (CHOICES.find(([key]) => same(result, sources[key]))?.[0] ??
+            "edited");
+        // A draft retained across "Compare again" can match none of the three versions; keeping
+        // it must stay one explicit click, as typing into the result does.
+        const ownResult =
+          result !== undefined &&
+          !CHOICES.some(([key]) => same(result, sources[key]));
         return (
           <FileRow
             key={name}
@@ -605,24 +1013,18 @@ function Merge({
                   <span className="hud-led attention" aria-hidden />
                   choose a result
                 </>
-              ) : using === "retained" ? (
-                "using the result below"
+              ) : using === "edited" ? (
+                "using your edited result"
               ) : (
-                `using the ${using} file`
+                `using ${CHOICES.find(([key]) => key === using)![1].toLowerCase()}`
               )
             }
           >
             <div className={styles.compare}>
-              {(
-                [
-                  ["Imported base", view.base],
-                  ["Local copy", view.local],
-                  ["Incoming", view.incoming],
-                ] as const
-              ).map(([label, source]) => (
-                <div key={label}>
+              {CHOICES.map(([key, label]) => (
+                <div key={key}>
                   <h3>{label}</h3>
-                  <FileText value={ownValue(source, name)} />
+                  <FileText value={sources[key]} />
                 </div>
               ))}
             </div>
@@ -633,161 +1035,207 @@ function Merge({
                 role="group"
                 aria-label={`Versions of ${name}`}
               >
-                <button
-                  className={buttons.ghost}
-                  aria-label="Keep retained result"
-                  aria-pressed={using === "retained"}
-                  disabled={busy}
-                  onClick={() => choose(name, result)}
-                >
-                  Retained result
-                </button>
-                <button
-                  className={buttons.ghost}
-                  aria-label="Keep local file"
-                  aria-pressed={using === "local"}
-                  disabled={busy}
-                  onClick={() => choose(name, local)}
-                >
-                  Local file
-                </button>
-                <button
-                  className={buttons.ghost}
-                  aria-label="Use incoming file"
-                  aria-pressed={using === "incoming"}
-                  disabled={busy}
-                  onClick={() => choose(name, incoming)}
-                >
-                  Incoming file
-                </button>
+                {CHOICES.map(([key, label]) => (
+                  <button
+                    key={key}
+                    className={buttons.ghost}
+                    aria-pressed={using === key}
+                    disabled={write.busy || comparing || !!write.done}
+                    onClick={() => choose(name, sources[key])}
+                  >
+                    {label}
+                  </button>
+                ))}
+                {ownResult && (
+                  <button
+                    className={buttons.ghost}
+                    aria-pressed={using === "edited"}
+                    disabled={write.busy || comparing || !!write.done}
+                    onClick={() => choose(name, result)}
+                  >
+                    Keep my result
+                  </button>
+                )}
               </div>
             </div>
             {typeof result === "string" && (
               <label className={styles.field}>
-                Result for {name}
+                Result for {name} (you can edit it)
                 <textarea
-                  disabled={busy}
+                  disabled={write.busy || comparing || !!write.done}
                   value={result}
                   spellCheck={false}
                   onChange={(e) => choose(name, e.target.value)}
                 />
               </label>
             )}
-            {result === undefined && <p>This file will be absent.</p>}
-            {typeof result === "object" && <FileText value={result} />}
+            {using !== null && result === undefined && (
+              <p>This file will be removed.</p>
+            )}
           </FileRow>
         );
       })}
-      {!reviewedFiles.length && (
-        <p>The file contents match the imported base.</p>
+      {!!quiet.length && (
+        <details
+          className={`${styles.file} ${styles.quiet}`}
+          data-testid="gallery-quiet-files"
+        >
+          <summary>
+            <ChevronRight size={16} aria-hidden />
+            <span>
+              {loud.length
+                ? `${plural(quiet.length, "other file")} change${quiet.length === 1 ? "s" : ""} — no conflicts`
+                : `Show the ${plural(quiet.length, "changed file")}`}
+            </span>
+          </summary>
+          <div className={styles.fileBody}>
+            {quiet.map((name) => {
+              const result = ownValue(files, name);
+              return (
+                <FileRow
+                  key={name}
+                  name={name}
+                  state={result === undefined ? "removed" : undefined}
+                >
+                  <FileText value={result} />
+                </FileRow>
+              );
+            })}
+          </div>
+        </details>
       )}
-      <section className={styles.section} aria-label="Save as a new copy">
-        <h2>Save as a new copy</h2>
-        <p>
-          Creates a new copy. Your original and existing project references stay
-          unchanged. Choose the new copy explicitly when you are ready to use it.
-          {view.kind === "playbook" &&
-            " Only the playbook ID is rewritten; workflow identities are preserved."}
-        </p>
-        <div className={styles.saveRow}>
-          <label className={styles.field}>
-            New copy ID
-            <input
-              disabled={busy || !!done}
-              value={newId}
-              pattern="[a-z][a-z0-9-]{1,47}"
-              onChange={(e) => { setNewId(e.target.value); setAck(false); setDirty(true); }}
-            />
-          </label>
-          <label className={styles.check}>
-            <input
-              type="checkbox"
-              disabled={busy || !!done}
-              checked={ack}
-              onChange={(e) => setAck(e.target.checked)}
-            />
-            I reviewed these results and want to create a new copy.
-          </label>
-        </div>
-        {done && (
-          <p role="status" className={styles.done}>
-            Created an updated copy. Your original is unchanged.{" "}
-            <Link to={localPath(view.kind, done)}>Open new copy</Link>
+      <TechnicalDetails>
+        <Fact label="Comparison">
+          <code>{view.comparison}</code>
+        </Fact>
+        <Fact label="Incoming content SHA-256">
+          <code>{view.incoming_digest}</code>
+        </Fact>
+        <Fact label="Your copy's revision">
+          <code>{view.revision}</code>
+        </Fact>
+        {!write.done && (
+          <>
+            <label className={styles.field}>
+              New copy ID
+              <input
+                disabled={write.busy}
+                value={write.custom ?? write.id ?? ""}
+                pattern="[a-z][a-z0-9-]{1,47}"
+                aria-describedby={idHint}
+                onChange={(e) => write.setCustom(e.target.value)}
+              />
+            </label>
+            <p className={styles.why} id={idHint}>
+              {ID_HINT}
+            </p>
+          </>
+        )}
+      </TechnicalDetails>
+      <div className={styles.savebar} data-testid="gallery-savebar">
+        {write.done ? (
+          <p role="status" className={`${styles.why} ${styles.ready}`}>
+            Added the updated copy —{" "}
+            <Link to={localPath(view.kind, write.done.id)}>Open</Link>. Your
+            original is unchanged.
+            {!write.done.durable &&
+              " The disk didn't confirm the save, so check it before relying on it."}
+          </p>
+        ) : (
+          <p className={`${styles.why} ${why ? "" : styles.ready}`} id={hint}>
+            {why || (write.id ? `Adds as ${write.id}.` : "")}
           </p>
         )}
-      </section>
-      <div className={styles.savebar} data-testid="gallery-savebar">
-        <p className={`${styles.why} ${why ? "" : styles.ready}`} id={hint}>
-          {why || (done ? "" : `Ready to create ${newId}.`)}
-        </p>
         <div className={styles.actions}>
           <button
             className={buttons.ghost}
-            disabled={busy}
+            disabled={write.busy || comparing}
             onClick={async () => {
-              setBusy(true);
-              try {
-                const next = await reload();
-                if (!next && live.current)
-                  setError(
-                    "The current revision could not be loaded. Try comparing again.",
-                  );
-                if (next && live.current) {
-                  setView(next);
-                  setUnresolved(new Set([...next.conflicts, ...retainedDifferences(next.proposed)]));
-                  setAck(false);
-                  setError("");
-                  setDone(null);
-                }
-              } finally {
-                if (live.current) setBusy(false);
-              }
-            }}
-          >
-            Compare current revision again
-          </button>
-          <button
-            className={buttons.primary}
-            aria-describedby={why ? hint : undefined}
-            disabled={busy || !ack || unresolved.size > 0 || !!done || newId === view.id || !COPY_ID.test(newId)}
-            onClick={async () => {
-              setBusy(true);
-              setError("");
-              try {
-                const operation = beginOperation();
-                const result = await api.updateGallery(
-                  view.kind,
-                  view.id,
-                  newId,
-                  view.incoming_digest,
-                  view.comparison,
-                  files,
-                  operation,
+              setComparing(true);
+              const next = await reload();
+              if (!live.current) return;
+              setComparing(false);
+              if (!next) {
+                write.setError(
+                  "Your copy couldn't be compared again. Try again.",
                 );
-                finishOperation(result);
-                if (live.current) {
-                  if (result.state === "complete") {
-                    setDone(result.result?.id ?? newId);
-                    setDirty(false);
-                    if (result.result?.durable === false)
-                      setError(
-                        result.result.durable_reason ??
-                          "Inspect durable storage before further changes.",
-                      );
-                  } else setError(result.message ?? "Check operation status.");
-                }
-              } catch (e) {
-                if (live.current) setError(errorText(e));
-              } finally {
-                if (live.current) setBusy(false);
+                return;
               }
+              const differing = retainedDifferences(next.proposed);
+              setView(next);
+              setUnresolved(new Set([...next.conflicts, ...differing]));
+              setContested(new Set([...next.conflicts, ...differing]));
+              write.setError("");
             }}
           >
-            <Copy size={16} aria-hidden />
-            Create updated copy
+            {comparing ? "Comparing…" : "Compare again"}
           </button>
+          {!write.done && (
+            <button
+              className={buttons.primary}
+              aria-describedby={why ? hint : undefined}
+              disabled={!!why || !write.id || write.busy || comparing}
+              onClick={() => {
+                write.setError("");
+                write.setAsking(true);
+              }}
+            >
+              <Plus size={16} aria-hidden />
+              Add updated copy
+            </button>
+          )}
         </div>
       </div>
+      {write.asking && write.id && (
+        <PlaybookDialog
+          tag="Gallery // update"
+          title="Add the updated copy?"
+          confirmLabel={
+            write.taking
+              ? `I've reviewed it — Add as ${write.id}`
+              : "I've reviewed it — Add"
+          }
+          busy={write.busy}
+          // The gate is checked again here: the listing can go stale while the dialog is open.
+          confirmDisabled={!!wait}
+          onCancel={() => write.setAsking(false)}
+          onConfirm={() => {
+            if (!wait) void write.confirm();
+          }}
+        >
+          {wait && (
+            <p
+              className={`${styles.notice} ${styles.warn}`}
+              role="status"
+              data-testid="gallery-confirm-wait"
+            >
+              {wait}
+            </p>
+          )}
+          <p>
+            Only add it if you've checked the changes above. It's added to your{" "}
+            {where} as a new copy; <code>{view.id}</code> stays as it is.
+          </p>
+          {write.taking ? (
+            <p
+              className={`${styles.notice} ${styles.warn}`}
+              data-testid="gallery-id-taken"
+            >
+              <code>{write.taking.was}</code> was just taken. It will be added
+              as <code>{write.taking.next}</code> instead.
+            </p>
+          ) : (
+            <p>
+              Adds as <code>{write.id}</code>.
+            </p>
+          )}
+          {write.error && (
+            <p className={styles.error} role="alert">
+              {write.error}
+            </p>
+          )}
+        </PlaybookDialog>
+      )}
     </>
   );
 }

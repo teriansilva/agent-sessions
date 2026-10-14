@@ -124,6 +124,7 @@ def compare(kind, local_id, digest, *, admitted=None):
         "conflicts": conflicts,
         "changed_files": changes,
         "incoming_version": entry["content"]["version"],
+        "base_version": original["content"]["version"],
     }
 
 

@@ -5,11 +5,11 @@ import {
   ArrowRight,
   Copy,
   FileText,
-  GalleryHorizontal,
   Plus,
 } from "lucide-react";
 import { api } from "../lib/api";
-import { GALLERY_PATH, SKILLS_PATH } from "../lib/routes";
+import { GALLERY_SKILLS_PATH, SKILLS_PATH } from "../lib/routes";
+import { LandingNote, ViewTabs } from "../components/gallery/ViewTabs";
 import type { LocalSkill } from "../types/gallery";
 import { usePlaybookRead } from "../components/playbooks/usePlaybooks";
 import { HudFrame } from "../components/hud/HudFrame";
@@ -27,18 +27,16 @@ export default function SkillsLibrary() {
       {!skillId && (
         <>
           <div className={styles.header}>
-            <h1>Local skills</h1>
-            <Link className={buttons.ghost} to={GALLERY_PATH}>
-              <GalleryHorizontal size={14} aria-hidden />
-              Browse public gallery
-            </Link>
+            <h1>Skills</h1>
           </div>
+          <ViewTabs kind="skill" view="local" />
           <p className={styles.intro}>
             Editable instruction files kept in your BattleLab library. Saving here
             does not activate a skill in an agent.
           </p>
         </>
       )}
+      <LandingNote />
       <PendingOperation />
       {skillId ? <Detail key={skillId} id={skillId} /> : <List />}
     </main>
@@ -56,10 +54,10 @@ function List() {
       {read.loading && !read.data && <p role="status">Loading local skills…</p>}
       {read.data && !read.data.skills.length && (
         <section className={styles.empty}>
-          <h2>No local skills yet</h2>
+          <h2>No skills yet</h2>
           <p>
-            Inspect a skill in the <Link to={GALLERY_PATH}>public gallery</Link>,
-            then import an editable copy.
+            Skills you add from the <Link to={GALLERY_SKILLS_PATH}>gallery</Link> appear
+            here.
           </p>
         </section>
       )}
@@ -339,7 +337,7 @@ function Editor({
                       setNotice(value.result.durable === false
                         ? `Saved an edited copy. ${value.result.durable_reason}`
                         : "Saved an edited copy. Your original is unchanged.");
-                    } else setError(value.message ?? "Check operation status before retrying.");
+                    } else setError(value.message ?? "Check status above before retrying.");
                   }
                 } catch (e) {
                   if (live.current) setError(errorText(e));

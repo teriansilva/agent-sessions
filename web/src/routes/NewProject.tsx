@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useProjectPlaybook } from "../components/playbooks/useProjectPlaybook";
 import {
-  ProjectPlaybookGallery,
+  ProjectPlaybookLibrary,
   ProjectPlaybookInputs,
   ProjectPlaybookOutcome,
   ProjectPlaybookReview,
@@ -596,7 +596,7 @@ export default function NewProject() {
       );
       break;
     case "playbook":
-      body = <ProjectPlaybookGallery book={book} />;
+      body = <ProjectPlaybookLibrary book={book} />;
       break;
     case "inputs":
       body = <ProjectPlaybookInputs book={book} />;

@@ -165,6 +165,9 @@ def test_ordinary_save_preserves_origin_and_three_way_update_retains_every_base(
     assert edited["gallery_origin"] == before["gallery_origin"]
     incoming = next_version(catalog, kind)
     comparison = library.compare(kind, "my-copy", incoming["digest"])
+    # The update screen shows "v<base> → v<incoming>" (#1440).
+    assert comparison["base_version"] == before["gallery_origin"]["version"]
+    assert comparison["incoming_version"] == incoming["content"]["version"]
     assert "README.md" in comparison["conflicts"]
     assert comparison["local"]["README.md"] == "Local edit"
     assert comparison["incoming"]["README.md"] == "Upstream update"

@@ -96,7 +96,7 @@ async function setup(create = true) {
       useProjectPlaybook("/tmp/project", create, project),
     { initialProps: {} },
   );
-  await waitFor(() => expect(hook.result.current.gallery).not.toBeNull());
+  await waitFor(() => expect(hook.result.current.library).not.toBeNull());
   act(() => hook.result.current.select("demo"));
   await waitFor(() => expect(hook.result.current.selectedReady).toBe(true));
   return hook;
@@ -293,7 +293,7 @@ describe("project assignment authority and recovery", () => {
       ({ folder }: { folder: string }) => useProjectPlaybook(folder, true),
       { initialProps: { folder: "/tmp/project" } },
     );
-    await waitFor(() => expect(hook.result.current.gallery).not.toBeNull());
+    await waitFor(() => expect(hook.result.current.library).not.toBeNull());
     act(() => hook.result.current.select("demo"));
     await waitFor(() => expect(hook.result.current.selectedReady).toBe(true));
     return hook;

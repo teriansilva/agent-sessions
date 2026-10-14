@@ -57,8 +57,8 @@ export function useProjectPlaybook(
   createTarget: boolean,
   projectId?: string,
 ) {
-  const [gallery, setGallery] = useState<PlaybookList | null>(null);
-  const [galleryError, setGalleryError] = useState("");
+  const [library, setLibrary] = useState<PlaybookList | null>(null);
+  const [libraryError, setLibraryError] = useState("");
   const [id, setId] = useState<string | null>(null);
   const [detail, setDetail] = useState<PlaybookDetail | null>(null);
   const [loadError, setLoadError] = useState("");
@@ -164,12 +164,12 @@ export function useProjectPlaybook(
     },
     [],
   );
-  const reloadGallery = useCallback(async () => {
+  const reloadLibrary = useCallback(async () => {
     try {
       const data = await api.playbooks();
       if (!live.current) return;
-      setGallery(data);
-      setGalleryError("");
+      setLibrary(data);
+      setLibraryError("");
       if (!manuallySelected.current && data.default) {
         manuallySelected.current = true;
         const selected = data.playbooks.find(
@@ -182,14 +182,14 @@ export function useProjectPlaybook(
           );
       }
     } catch (e) {
-      if (live.current) setGalleryError(errorText(e));
+      if (live.current) setLibraryError(errorText(e));
     }
   }, [loadSelection]);
   useEffect(() => {
-    // The initial gallery request owns loading/default-selection state, like usePlaybookRead.
+    // The initial library read owns loading/default-selection state, like usePlaybookRead.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    void reloadGallery();
-  }, [reloadGallery]); // one initial read; explicit retries preserve the operator's selection
+    void reloadLibrary();
+  }, [reloadLibrary]); // one initial read; explicit retries preserve the operator's selection
   const manifest = detail?.documents?.["playbook.toml"] as Manifest | undefined;
   const variables = manifest?.variables ?? [];
   const bindings: PlaybookBinding[] = variables.flatMap((variable) => {
@@ -484,9 +484,9 @@ export function useProjectPlaybook(
     }
   }
   return {
-    gallery,
-    galleryError,
-    reloadGallery,
+    library,
+    libraryError,
+    reloadLibrary,
     id,
     detail,
     loading,

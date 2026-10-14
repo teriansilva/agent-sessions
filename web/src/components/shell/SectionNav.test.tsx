@@ -34,6 +34,8 @@ describe("activeSection", () => {
     ["/library/playbooks", "library"],
     ["/library/gallery", "library"],
     ["/library/gallery/abc", "library"],
+    ["/library/gallery/playbooks", "library"],
+    ["/library/gallery/skills/abc", "library"],
     ["/library/skills/my-copy", "library"],
     ["/library/galleryx", null],
     ["/library/variables", "library"],
@@ -62,7 +64,14 @@ describe("activeSection", () => {
     ["/templates/tpl_1", "templates"],
     ["/mission/checklists", "checklists"],
     ["/library/playbooks", "playbooks"],
-    ["/library/gallery/abc", "gallery"],
+    // #1440: the gallery is a view of Playbooks and Skills; old links light Playbooks.
+    ["/library/gallery", "playbooks"],
+    ["/library/gallery/abc", "playbooks"],
+    ["/library/gallery/playbooks", "playbooks"],
+    ["/library/gallery/playbooks/abc", "playbooks"],
+    ["/library/gallery/skills", "skills"],
+    ["/library/gallery/skills/abc", "skills"],
+    ["/library/gallery/skillsx", "playbooks"],
     ["/library/skills/my-copy", "skills"],
     ["/library/skillsx", null],
     ["/library/variables", "variables"],
@@ -121,7 +130,7 @@ describe("SectionNav", () => {
     );
   });
 
-  test("Library holds Gallery, Skills, Templates, Automations, Checklists and Playbooks; Missions and Dashboard have no menu (#1294)", async () => {
+  test("Library holds Templates, Variables, Automations, Checklists, Skills and Playbooks — no separate Gallery (#1294, #1440); Missions and Dashboard have no menu", async () => {
     render(
       <MemoryRouter>
         <SectionNav
@@ -149,7 +158,6 @@ describe("SectionNav", () => {
       ["Variables", "/library/variables"],
       ["Automations", "/mission/automations"],
       ["Checklists", "/mission/checklists"],
-      ["Gallery", "/library/gallery"],
       ["Skills", "/library/skills"],
       ["Playbooks", "/library/playbooks"],
     ]);

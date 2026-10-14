@@ -27,6 +27,7 @@ import {
 import { openLinksFullScreen } from "./linkMode";
 import { mockLivePermissions, openPermissions } from "./livePermissionsFixture";
 import { mockStructuredGuidance } from "./structuredGuidanceFixture";
+import { mockGalleryListing } from "./galleryFixture";
 
 const OUT = process.env.VISUAL_OUT ?? "visual-out";
 const USER = process.env.VISUAL_USER ?? "admin";
@@ -114,6 +115,11 @@ async function runPrepare(page: Page, p: VisualPath): Promise<void> {
     }
   }
   if (p.prepare === "open-first-window") await prepareOpenFirstWindow(page);
+  if (p.prepare === "gallery-confirm") {
+    const add = page.locator('[data-testid="gallery-add"]:not([disabled])');
+    await add.waitFor({ timeout: 20000 });
+    await add.click();
+  }
   if (p.prepare === "playbook-flow" || p.prepare === "playbook-step" || p.prepare === "playbook-prompts") {
     const section = page.getByRole("region", {
       name: "Flow steps",
@@ -245,6 +251,7 @@ test("visual capture", async ({ browser }, info) => {
       const page = await ctx.newPage();
       try {
         await page.setViewportSize(VIEWPORTS[vp]);
+        if (p.fixture === "gallery-listing") await mockGalleryListing(page);
         // This capture exercises the production pane with deterministic API responses, without
         // launching a vendor or changing a real conversation's permissions. The lifecycle itself
         // is covered by the real worker/IPC tests in test_api_live_permissions.py.

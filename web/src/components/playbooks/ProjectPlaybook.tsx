@@ -1,4 +1,4 @@
-/** Shared gallery cards and the existing deploy contract inside the New project wizard. */
+/** Your playbooks (the shared cards) and the existing deploy contract inside the New project wizard. */
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import {
@@ -14,14 +14,14 @@ import buttons from "../ui/actionButton.module.css";
 import styles from "./ProjectPlaybook.module.css";
 
 export type ProjectPlaybookState = ReturnType<typeof useProjectPlaybook>;
-export function ProjectPlaybookGallery({
+export function ProjectPlaybookLibrary({
   book,
 }: {
   book: ProjectPlaybookState;
 }) {
   const [search, setSearch] = useState("");
   const [source, setSource] = useState("");
-  const shown = (book.gallery?.playbooks ?? []).filter(
+  const shown = (book.library?.playbooks ?? []).filter(
     (p) =>
       (!source || p.source === source) &&
       [
@@ -38,19 +38,23 @@ export function ProjectPlaybookGallery({
     <div className={styles.root}>
       <p>
         Give this project a reviewed set of files, inputs and workflow
-        instructions. Assignment does not start agents or run probes.
+        instructions from your playbooks. Assignment does not start agents or
+        run probes.
+      </p>
+      <p className={styles.hint} data-testid="project-playbook-gallery-hint">
+        Playbooks you add from the gallery appear here.
       </p>
       {book.defaultNotice && (
         <p role="status" className={styles.warning}>
           {book.defaultNotice}
         </p>
       )}
-      {book.galleryError && (
+      {book.libraryError && (
         <div role="alert">
-          {book.galleryError}{" "}
+          {book.libraryError}{" "}
           <button
             className={buttons.ghost}
-            onClick={() => void book.reloadGallery()}
+            onClick={() => void book.reloadLibrary()}
           >
             Reload playbooks
           </button>
@@ -88,7 +92,7 @@ export function ProjectPlaybookGallery({
           </select>
         </label>
       </div>
-      {!book.gallery && !book.galleryError && (
+      {!book.library && !book.libraryError && (
         <p role="status">Loading playbooks…</p>
       )}
       {shown.map((card) => (
@@ -102,7 +106,7 @@ export function ProjectPlaybookGallery({
           )}
         </div>
       ))}
-      {book.gallery && !shown.length && (
+      {book.library && !shown.length && (
         <p>No matching playbooks. No playbook remains available.</p>
       )}
       {book.loading && <p role="status">Loading selected playbook…</p>}

@@ -1,88 +1,107 @@
 # Playbook and skill gallery
 
-**Library → Gallery** shows public, versioned playbooks and skills. Agents remain in their own
-catalog. A playbook describes a workflow; a skill contains instructions and supporting text files.
+The gallery is a public collection of ready-made playbooks and skills. You don't open it from its
+own menu entry. Each kind has a **Browse gallery** view next to your own library:
 
-Choose **Check public gallery** to fetch the latest signed publication. You can also browse the
-[public gallery](https://relay.battlelab.superstatus.io/catalogs/gallery) without an admin account.
-The app contacts only `/catalogs/gallery/v1/current.json` and the descriptor-selected
-`/catalogs/gallery/v1/releases/<sequence>-<digest>/gallery-index.json` and `.sig` on
-`https://relay.battlelab.superstatus.io`. These reads send no account credentials or cookies.
-The signed index embeds complete content; source links are never fetched automatically.
+- **Library → Playbooks** has **Your playbooks** (the ones new projects can use) and **Browse
+  gallery** (public playbooks you can add).
+- **Library → Skills** has **Your skills** and **Browse gallery** (public skills).
 
-The public page exposes complete files, author, publisher, requirements, source, content digests,
-signed publication and the catalog service's source offer. The protected admin is for authoring
-and publishing.
+A playbook describes how a repository works: its workflow, inputs and files. A skill is a set of
+instructions with supporting text files. Agents have their own catalog under Settings.
 
-## Import a copy
+Opening a Browse gallery view, or a copy that came from the gallery, checks the public gallery once
+per page load, so you never need to press a refresh button. **Refresh** is there if you want to check again. You can also browse the
+[public gallery](https://relay.battlelab.superstatus.io/catalogs/gallery) without signing in.
 
-1. Open an entry and inspect its requirements and complete files. Playbooks also show validated
-   inputs and workflow steps when this BattleLab version supports their format.
-2. Choose a local copy ID and acknowledge that you reviewed the content.
-3. Select **Import editable copy**, then **Open local copy**.
+## Add a playbook or skill
 
-An imported playbook joins your local Playbooks library. Only its local playbook ID is rewritten;
-flow and step identities are retained. You can edit it with the existing playbook editor, whose
-ordinary **Save** still edits that local playbook in place with its usual revision checks.
-The separate **Create updated copy** action described below leaves that original untouched.
-An imported skill appears under **Library → Skills**, where you can edit its files or add supporting
-text. Choose a free **New copy ID**, then **Save edited copy** to keep your changes separately.
-**Open new copy** takes you to the result; the original skill stays unchanged. The edited copy keeps
-the same imported version and source history, so its local edits can be compared with future updates.
-Saving a skill here does not activate it in any agent. Importing never runs a workflow,
-installs an agent, changes your default playbook or updates a deployed project.
+1. Choose **View** on a card. The page shows, in order:
+   - what it is and who made it;
+   - its **Requirements**;
+   - **What's inside** (inputs and workflow steps, for playbooks);
+   - its **Files**. The first file is open, and every other file shows its complete content with
+     **Show file**, or all at once with **Expand all**. A long file scrolls inside its own viewer.
+2. When you have checked the requirements and files, choose **Add to my playbooks** (or **Add to
+   my skills**). On a phone the button sits after the files; on a wide screen it stays beside them.
+3. Confirm with **I've reviewed it — Add**. The confirmation is your statement that you checked
+   it. Nothing is added before you confirm.
+4. Choose **Open** to go to your new copy.
 
-The **Gallery source** panel records where the copy came from, its imported version and whether
-you have changed it. Source and base evidence are retained separately from your editable files.
+Your copy is ordinary editable files in your library. Adding never runs a workflow, starts an
+agent, changes your default playbook or touches a project. A skill you add is not turned on in any
+agent.
 
-If someone changes the original skill's files on disk while you are editing, choose **Compare stored version**. Your
-draft edits stay in place, while files you have not edited pick up the stored changes, including
-new files. Review the comparison, then explicitly save an edited copy of that revision.
+The copy gets the entry's own name (for example `inbox-triage`), or the next free one
+(`inbox-triage-2`) if you already have that name. If the name gets taken between your click and
+the save, the confirmation stays open, says which name it will use instead, and waits for you to
+confirm again. Nothing is ever retried on its own. To pick a different name yourself, open
+**Technical details** on the entry and change **Local ID**.
 
-## Review an update
+## Keep a copy up to date
 
-Select **Compare gallery updates** from the local copy, choose a published version, and review
-three columns: **Imported base**, **Local copy**, and **Incoming**. Changes you have not edited
-locally are proposed automatically. Conflicting files require an explicit choice or a manually
-edited result. Choose a free **New copy ID**, acknowledge the results, then select
-**Create updated copy**. **Open new copy** takes you to the result.
+A copy that came from the gallery shows one line on its page, such as *From the gallery · v1.2.0 ·
+edited locally*. When the gallery has a newer version of the same entry, it also shows **Update
+available** and a **Review update** button.
 
-Your original copy, its edits and source history stay unchanged. Existing projects and the default
-selection keep using the original. Choose the new copy explicitly when you are ready to use it.
-The new copy records the selected upstream version as its base and retains the earlier source
-history. For playbooks, only the local playbook ID is rewritten; workflow identities stay the same.
+**Review update** shows the version change (for example *v1.2.0 → v1.3.0*):
 
-Copy creation checks the local revision and source you compared again before publication. If that
-check detects an edit, your draft remains on screen; compare again and review before creating the
-copy. A later edit on disk remains in the original; creating a copy never replaces that directory.
-An occupied destination ID is refused, so choose a different ID without discarding your review.
-Ordinary local edits never fetch or apply upstream updates. Previously deployed projects stay
-pinned until you update them through their separate deployment flow.
+- If none of the changed files conflict with your own edits, it says so in one line and you can
+  choose **Add updated copy** straight away. The changed files are listed under one collapsed line.
+- If a file conflicts, only that file shows **Your edit**, **Gallery version** and **Original** side
+  by side. Choose one, or type the result you want. **Add updated copy** waits until every
+  conflicting file has a result.
 
-## Expiry, failed requests and recovery
+The update is always added as a **new** copy (for example `inbox-triage-v1-3-0`). Your current copy,
+its edits, the projects using it and your default playbook stay exactly as they are. Use the new
+copy when you are ready.
 
-An expired publication remains inspectable, but new imports and updates require a fresh signed
-publication. Withdrawn versions retain their full content for inspection. Existing local copies
-remain available when the public service is offline. Saving local skill edits as a new copy works
-without a fresh public publication; it uses the source history already stored on your device.
+If the copy changed on disk while you were reviewing, adding refuses and keeps your choices on
+screen. Choose **Compare again**, check the new state, then add.
 
-If an import, update or edited-copy response is lost, use **Check operation status**. Reloading does not repeat
-the write. An uncertain result requires inspecting your local library and retained copies before
-starting another attempt. A durability warning means the content was published but its flush
-could not be confirmed; it does not mean the write was undone.
+Instead of **Update available**, a copy can show one of these:
 
-Recovery of an interrupted import or updated-copy creation requires both the new copy's source
-marker and its exact planned content. If the files have since changed and no completed outcome
-was recorded, it stays uncertain. Checking status never replaces local edits or creates another
-copy. A skill without gallery source history cannot prove an interrupted copy's identity, so it
-stays uncertain if completion was not recorded. A failed publication check leaves the destination in place for inspection. The original
-copy is unaffected. Pending operations from older in-place update implementations remain uncertain
-unless their completion was recorded.
+| You see | It means |
+|---|---|
+| *Can't check for updates right now.* | The public gallery hasn't been reached yet. |
+| *The gallery listing is out of date…* | The last listing expired. Updates wait until it refreshes. |
+| *This has been withdrawn from the gallery.* | The entry was withdrawn. Your copy keeps working. |
+| *Its gallery history can't be read…* | Its saved gallery history is damaged. Changes wait until it is restored. |
 
-Local files require a filesystem that supports user extended attributes. If source evidence is
-missing or damaged, BattleLab shows that problem and refuses edits until the matching evidence
-is restored. Keep `gallery-state`, the local playbooks directory and `skills-library` together in
-backups. Do not delete source records or reset publication floors to bypass an error.
+## When something goes wrong
+
+| You see | What to do |
+|---|---|
+| *The public gallery can't be reached right now. Your playbooks and skills are not affected.* | Nothing is broken on your side. Choose **Try again** later. If the gallery was checked before, the last list stays visible. |
+| *Nothing has been published to the gallery yet.* | There is nothing to add yet. |
+| *This gallery listing is out of date, so adding is paused until it refreshes.* | Choose **Refresh**. You can still look at everything. |
+| *The public gallery sent a listing that couldn't be verified, so nothing changed.* | The gallery's signature didn't check out, so BattleLab kept what it had. Try again later. |
+| *The gallery listing saved on this device can't be read.* | Restore the gallery state from a backup (see below). |
+| *We couldn't confirm whether adding … finished.* | The answer to an add or update was lost. Choose **Check status**. It tells you whether it was added. Adding stays paused until you check, and reloading never repeats it. |
+
+An old link to the former **Library → Gallery** page still works. It opens the matching view with a
+note that the gallery now lives in Playbooks and Skills.
+
+## Technical details
+
+Every entry, listing and copy has a collapsed **Technical details** section. It holds the content
+digests, the signed publication's sequence and expiry, the source link, the imported base of a copy
+and the ID of a pending operation. You don't need any of it day to day.
+
+How it stays safe:
+
+- BattleLab only reads `/catalogs/gallery/v1/current.json` and the matching
+  `/catalogs/gallery/v1/releases/<sequence>-<digest>/gallery-index.json` and `.sig` on
+  `https://relay.battlelab.superstatus.io`. These reads send no account credentials or cookies.
+  Source links are never fetched.
+- The listing must be signed by the installed gallery key and contains every file in full. Every
+  file is checked against its signed digest before you can view or add it.
+- Published versions never change. Withdrawn versions stay viewable but can't be added.
+- An expired listing stays viewable, but adding and updating wait for a fresh one.
+
+Local files need a filesystem with user extended attributes. Keep `gallery-state`, the local
+playbooks directory and `skills-library` together in backups, and don't delete source records or
+reset publication floors to work around an error.
 
 ## Add or publish gallery content
 

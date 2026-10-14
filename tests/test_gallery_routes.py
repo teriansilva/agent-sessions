@@ -154,6 +154,64 @@ def test_refresh_is_fixed_origin_anonymous_cookie_free_and_bounded(catalog, monk
     asyncio.run(run())
 
 
+@pytest.mark.parametrize(
+    "serve",
+    [
+        lambda request: httpx.Response(404, text="<html>404 Not Found</html>"),
+        lambda request: httpx.Response(302, headers={"Location": "https://invalid.example"}),
+        lambda request: (_ for _ in ()).throw(httpx.ConnectError("refused", request=request)),
+    ],
+    ids=["not-published", "redirect", "connection-refused"],
+)
+def test_refresh_route_reports_an_unreachable_gallery_as_503_and_keeps_the_listing(
+    auth_cfg, catalog, monkeypatch, serve
+):
+    """#1440: "can't be reached" is its own answer (503, reason=unreachable), never a 422 that
+    reads like refused content; the stored listing is untouched."""
+    record = trust.current()
+    monkeypatch.setattr(gallery_client, "_TRANSPORT", httpx.MockTransport(serve))
+    client = TestClient(create_app(auth_cfg), base_url="https://testserver")
+    client.post(
+        "/login",
+        data={"username": "marcus", "password": "hunter2"},
+        headers={"Origin": auth_cfg.origin},
+        follow_redirects=False,
+    )
+    headers = {"Origin": auth_cfg.origin, "X-CSRF-Token": client.get("/api/config").json()["csrf"]}
+    response = client.post("/api/gallery/refresh", headers=headers)
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": gallery_client.UNREACHABLE,
+        "reason": "unreachable",
+    }
+    assert response.headers["cache-control"] == "no-store"
+    assert trust.current() == record
+    assert client.get("/api/gallery").json()["state"] == "ready"
+
+
+def test_refresh_route_refuses_unverifiable_content_as_422_not_unreachable(
+    auth_cfg, catalog, monkeypatch
+):
+    monkeypatch.setattr(
+        gallery_client,
+        "_TRANSPORT",
+        httpx.MockTransport(
+            lambda request: httpx.Response(200, stream=httpx.ByteStream(b'{"sequence":"x"}'))
+        ),
+    )
+    client = TestClient(create_app(auth_cfg), base_url="https://testserver")
+    client.post(
+        "/login",
+        data={"username": "marcus", "password": "hunter2"},
+        headers={"Origin": auth_cfg.origin},
+        follow_redirects=False,
+    )
+    headers = {"Origin": auth_cfg.origin, "X-CSRF-Token": client.get("/api/config").json()["csrf"]}
+    response = client.post("/api/gallery/refresh", headers=headers)
+    assert response.status_code == 422
+    assert "reason" not in response.json()
+
+
 @pytest.mark.parametrize("limit", [1024, contract.MAX_BYTES, 16384])
 def test_encoded_responses_are_refused_before_reading_or_decoding(limit):
     compressed = gzip.compress(b"x" * (contract.MAX_BYTES * 2))

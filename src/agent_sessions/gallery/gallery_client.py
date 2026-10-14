@@ -12,15 +12,18 @@ from . import contract, trust
 
 BASE = "https://relay.battlelab.superstatus.io/catalogs/gallery/v1"
 _TRANSPORT = None
+UNREACHABLE = "The public gallery can't be reached right now."
+
+
+class Unreachable(contract.GalleryError):
+    """The origin did not answer with a publication (unlike content that fails verification)."""
 
 
 async def _get(client, url, limit):
     client.cookies.clear()
     async with client.stream("GET", url) as response:
         if response.status_code != 200:
-            raise contract.GalleryError(
-                "The public gallery is unavailable; previous content was retained."
-            )
+            raise Unreachable(UNREACHABLE)
         if response.headers.get("content-encoding", "identity").strip().lower() != "identity":
             raise contract.GalleryError("Encoded gallery responses are not supported.")
         body = bytearray()
@@ -67,6 +70,4 @@ async def refresh():
                 signature = await _get(client, url + ".sig", 16384)
         return await _finish(trust.accept, data, signature, selected)
     except (httpx.HTTPError, TimeoutError):
-        raise contract.GalleryError(
-            "Gallery check failed or timed out; previous content was retained."
-        ) from None
+        raise Unreachable(UNREACHABLE) from None

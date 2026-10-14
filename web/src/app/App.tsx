@@ -77,6 +77,8 @@ import {
   NEW_PROJECT_PATH,
   PLAYBOOKS_PATH,
   GALLERY_PATH,
+  GALLERY_PLAYBOOKS_PATH,
+  GALLERY_SKILLS_PATH,
   SKILLS_PATH,
   PLAYBOOK_NEW_PATH,
   TEMPLATES_PATH,
@@ -130,6 +132,10 @@ const Dashboard = lazyWithReload(
 );
 const PlaybookEditor = lazyWithReload(() => import("../routes/PlaybookEditor"), "playbook-editor");
 const ContentGallery = lazyWithReload(() => import("../routes/ContentGallery"), "content-gallery");
+const LegacyGalleryRedirect = lazyWithReload(
+  () => import("../routes/LegacyGalleryRedirect"),
+  "legacy-gallery-redirect",
+);
 const SkillsLibrary = lazyWithReload(() => import("../routes/SkillsLibrary"), "skills-library");
 const Variables = lazyWithReload(() => import("../routes/Variables"), "variables");
 const Playbooks = lazyWithReload(() => import("../routes/Playbooks"), "playbooks");
@@ -345,6 +351,8 @@ function Layout() {
     location.pathname === DASHBOARD_PATH ||
     location.pathname === PLAYBOOKS_PATH ||
     location.pathname.startsWith(`${PLAYBOOKS_PATH}/`) ||
+    location.pathname === GALLERY_PLAYBOOKS_PATH ||
+    location.pathname.startsWith(`${GALLERY_PLAYBOOKS_PATH}/`) ||
     location.pathname === VARIABLES_PATH ||
     location.pathname === TEMPLATES_PATH ||
     location.pathname.startsWith(`${TEMPLATES_PATH}/`);
@@ -773,7 +781,17 @@ function Layout() {
                   <Route path={DASHBOARD_PATH} element={<Dashboard />} />
                   {/* Ask's old page (#1171): now the dashboard with the sidebar open (#1294). */}
                   <Route path={ASK_PATH} element={<AskRedirect />} />
-                  <Route path={`${GALLERY_PATH}/:digest?`} element={<ContentGallery />} />
+                  {/* #1440: the public gallery is a view inside Playbooks and Skills; the old
+                      `/library/gallery[/<digest>][?kind=&id=]` links redirect into it. */}
+                  <Route
+                    path={`${GALLERY_PLAYBOOKS_PATH}/:digest?`}
+                    element={<ContentGallery key="playbook" />}
+                  />
+                  <Route
+                    path={`${GALLERY_SKILLS_PATH}/:digest?`}
+                    element={<ContentGallery key="skill" />}
+                  />
+                  <Route path={`${GALLERY_PATH}/:digest?`} element={<LegacyGalleryRedirect />} />
                   <Route path={`${SKILLS_PATH}/:skillId?`} element={<SkillsLibrary />} />
                   <Route path={PLAYBOOK_NEW_PATH} element={<PlaybookEditor />} />
                   <Route path={`${PLAYBOOKS_PATH}/:playbookId/edit`} element={<PlaybookEditor />} />

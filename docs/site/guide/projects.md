@@ -61,7 +61,8 @@ hidden while it is open. It asks, one step at a time:
    project.
 3. **Colour**: one of the presets, or none, with a preview of the session-list row and the map
    cluster. The wizard preselects the first preset no other project uses.
-4. **Playbook**: choose a shared gallery card or **No playbook**. A usable configured default is
+4. **Playbook**: choose one of your playbooks (**Library → Playbooks → Your playbooks**: the
+   bundled ones, the ones you created and the ones you added from the gallery) or **No playbook**. A usable configured default is
    preselected; a missing default is explained. Local unsigned playbooks ask for your trust.
 5. **Inputs**, when a playbook is selected: enter project values, use saved values or defaults,
    and review step assignments. A secret requires an explicit value or global reference. Values
@@ -93,8 +94,8 @@ lost response is reconciled, never treated as proof that nothing happened. After
 new review when no operation is interrupted. **Review removal of this playbook** shows the inverse
 file changes and restored bindings before confirmation; the project and its folders stay.
 
-Playbooks that write secret-reference files need an existing project ID before review. The gallery
-explains that limitation and keeps **No playbook** usable. Shared collection selectors and saved
+Playbooks that write secret-reference files need an existing project ID before review. The playbook
+step explains that limitation and keeps **No playbook** usable. Shared collection selectors and saved
 API-profile controls are separate integrations; their absence does not prevent project creation.
 
 When it is done you can start a session in the new project, plan a mission in it, see it on the

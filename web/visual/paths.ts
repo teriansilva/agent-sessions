@@ -27,7 +27,7 @@ export type VisualPath = {
   /** Needs the seeded `must_change` account / fixtures (Phase 2). Skipped until seeded. */
   seeded?: boolean;
   /** Synthetic native activity in the real shared pane; no agent is launched. */
-  fixture?: "structured-guidance";
+  fixture?: "structured-guidance" | "gallery-listing";
   /** An interaction to run after `goto`, before `waitFor` (#1109): the consolidated window
    *  chrome only exists on an OPEN window, and a capture that only visits a route cannot show
    *  it. The one shipped step opens the first session chip as a window. */
@@ -41,7 +41,8 @@ export type VisualPath = {
     | "project-playbooks"
     | "project-playbook-inputs"
     | "playbook-step"
-    | "playbook-prompts";
+    | "playbook-prompts"
+    | "gallery-confirm";
 };
 
 /** Screen formats — every area is captured at each (the operator asked for several). */
@@ -211,6 +212,67 @@ export const VISUAL_PATHS: VisualPath[] = [
       selector: '[data-testid="playbook-card-forge-workflow"]',
       timeoutMs: 12000,
     },
+  },
+  // #1440: the public gallery's Browse views. The capture host has no signed listing (the trust
+  // root is the installed release key, never a seeded one), so these show the state operators see
+  // until a publication exists: the plain "can't be reached" / "nothing published" callout. The
+  // populated entry, confirmation and update states are pinned by e2e/content-gallery.spec.ts.
+  {
+    group: "authed",
+    path: "/library/gallery/playbooks",
+    name: "gallery-playbooks",
+    description:
+      "Playbooks → Browse gallery — public playbooks, or the plain unreachable / nothing-published state",
+    requireAuth: "admin",
+    waitFor: {
+      selector:
+        '[data-testid="gallery-unreachable"], [data-testid="gallery-empty"], [data-testid="gallery-refused"], [data-testid="content-gallery"] article',
+      timeoutMs: 45000,
+    },
+  },
+  {
+    group: "authed",
+    path: "/library/gallery/skills",
+    name: "gallery-skills",
+    description:
+      "Skills → Browse gallery — public skills, or the plain unreachable / nothing-published state",
+    requireAuth: "admin",
+    waitFor: {
+      selector:
+        '[data-testid="gallery-unreachable"], [data-testid="gallery-empty"], [data-testid="gallery-refused"], [data-testid="content-gallery"] article',
+      timeoutMs: 45000,
+    },
+  },
+  // The populated states, from a browser-side listing (`e2e/galleryFixture.ts`): no trust root is
+  // overridden; the server never sees this listing.
+  {
+    group: "authed",
+    path: "/library/gallery/playbooks",
+    name: "gallery-playbooks-listed",
+    description: "Playbooks → Browse gallery with a listing — cards, Verified, View",
+    requireAuth: "admin",
+    fixture: "gallery-listing",
+    waitFor: { selector: '[data-testid="content-gallery"] article', timeoutMs: 20000 },
+  },
+  {
+    group: "authed",
+    path: `/library/gallery/playbooks/${"f".repeat(64)}`,
+    name: "gallery-entry",
+    description:
+      "Gallery entry — requirements, what's inside and every file before Add, Technical details folded",
+    requireAuth: "admin",
+    fixture: "gallery-listing",
+    waitFor: { selector: '[data-testid="gallery-add"]:not([disabled])', timeoutMs: 20000 },
+  },
+  {
+    group: "authed",
+    path: `/library/gallery/playbooks/${"f".repeat(64)}`,
+    name: "gallery-confirm",
+    description: "Gallery entry — the one confirmation: \"I've reviewed it — Add\"",
+    requireAuth: "admin",
+    fixture: "gallery-listing",
+    prepare: "gallery-confirm",
+    waitFor: { selector: "dialog[open]", timeoutMs: 20000 },
   },
   {
     group: "authed",

@@ -258,8 +258,19 @@ async function getJsonWithDetail<T>(path: string): Promise<T> {
 // CSRF token for mutations, fetched once via /api/config and cached. The browser
 // adds the Origin header on same-origin POSTs; the server checks both.
 let csrfToken = "";
+let csrfLoaded: () => void = () => {};
+const csrfKnown = new Promise<void>((resolve) => {
+  csrfLoaded = resolve;
+});
 export function setCsrfToken(token: string): void {
   csrfToken = token;
+  if (token) csrfLoaded();
+}
+/** Resolves once the first CSRF token is known. A POST a page issues by itself on mount (the
+ *  gallery's automatic check, #1440) waits for it rather than racing ConfigProvider's first read
+ *  and being refused as forbidden. */
+export function csrfReady(): Promise<void> {
+  return csrfKnown;
 }
 
 async function postJson<T>(path: string, body?: unknown): Promise<T> {

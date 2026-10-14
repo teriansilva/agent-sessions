@@ -1,8 +1,11 @@
-/** Library's bundle gallery and detail. Mutations retain the revision the operator saw. */
-import { PLAYBOOK_NEW_PATH } from "../lib/routes";
+/** Library → Playbooks: your playbooks (bundled + local — what projects use) and one playbook's
+ *  detail. The public gallery is the sibling Browse view (#1440). Mutations retain the revision the
+ *  operator saw. */
+import { GALLERY_PLAYBOOKS_PATH, PLAYBOOK_NEW_PATH } from "../lib/routes";
 import { useCallback, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { HudFrame } from "../components/hud/HudFrame";
+import { LandingNote, ViewTabs } from "../components/gallery/ViewTabs";
 import { PlaybookCard } from "../components/playbooks/PlaybookCard";
 import { PlaybookDetailPage } from "../components/playbooks/PlaybookDetail";
 import { usePlaybookRead } from "../components/playbooks/usePlaybooks";
@@ -15,16 +18,17 @@ export default function Playbooks() {
   return (
     <main className={styles.page} data-testid="playbooks-page">
       <HudFrame hero />
+      <LandingNote />
       {playbookId ? (
         <PlaybookDetailPage key={playbookId} id={playbookId} />
       ) : (
-        <Gallery />
+        <Library />
       )}
     </main>
   );
 }
 
-function Gallery() {
+function Library() {
   const read = useCallback(() => api.playbooks(), []);
   const { data, error, loading, reload } = usePlaybookRead(read);
   const [search, setSearch] = useState("");
@@ -60,9 +64,11 @@ function Gallery() {
         Library // playbooks{data ? ` // ${rows.length}` : ""}
       </div>
       <div className={styles.header}><h1>Playbooks</h1><Link className={buttons.primary} to={PLAYBOOK_NEW_PATH}>New playbook</Link></div>
+      <ViewTabs kind="playbook" view="local" />
       <p className={styles.intro}>
         How a repository works: its flow of agents, the checklist that ends each
-        step, and the files, templates and variables a project is given.
+        step, and the files, templates and variables a project is given. New
+        projects choose from these.
       </p>
       <div className={styles.filters}>
         <label>
@@ -120,7 +126,8 @@ function Gallery() {
         <div className={styles.empty}>
           <h2>No playbooks on this host.</h2>
           <p>
-            Playbooks from installed bundles and your local library will appear
+            Playbooks from installed bundles, the ones you create and the ones
+            you add from the <Link to={GALLERY_PLAYBOOKS_PATH}>gallery</Link> appear
             here.
           </p>
         </div>

@@ -37,10 +37,21 @@ export const TEMPLATES_PATH = "/templates";
 /** Library → shared variable definitions, values and collections (#1390). */
 export const VARIABLES_PATH = "/library/variables";
 
-/** Library → Playbooks: bundle gallery and detail (#1192). */
+/** The public gallery (#1440): one Browse view per kind, inside Library → Playbooks and → Skills.
+ *  A playbook/skill ID (`[a-z][a-z0-9-]{1,47}`) never equals a kind segment plus a digest, and the
+ *  bare prefix and `/library/gallery/<digest>[?kind=&id=]` are only old links, redirected by
+ *  `LegacyGalleryRedirect`. */
 export const GALLERY_PATH = "/library/gallery";
+export const GALLERY_PLAYBOOKS_PATH = `${GALLERY_PATH}/playbooks`;
+export const GALLERY_SKILLS_PATH = `${GALLERY_PATH}/skills`;
+export const galleryPath = (kind: "playbook" | "skill") =>
+  kind === "playbook" ? GALLERY_PLAYBOOKS_PATH : GALLERY_SKILLS_PATH;
+export const galleryEntryPath = (kind: "playbook" | "skill", digest: string) =>
+  `${galleryPath(kind)}/${digest}`;
+/** Review an update of local copy `id` to the entry `digest` (a new copy; the original stays). */
+export const galleryUpdatePath = (kind: "playbook" | "skill", digest: string, id: string) =>
+  `${galleryEntryPath(kind, digest)}?update=${encodeURIComponent(id)}`;
 export const SKILLS_PATH = "/library/skills";
-export const galleryComparePath = (kind: "playbook" | "skill", id: string) => `${GALLERY_PATH}?kind=${kind}&id=${encodeURIComponent(id)}`;
 
 export const PLAYBOOKS_PATH = "/library/playbooks";
 export function playbookPath(id: string): string {

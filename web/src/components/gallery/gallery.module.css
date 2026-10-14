@@ -287,8 +287,19 @@
 .detail {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
-  gap: 32px;
+  /* Review first, then the action, then the folded facts (#1440): on one column the Add button
+   * follows the Files, never the title; on two it rides beside the content. */
+  grid-template-areas:
+    "main side"
+    "tech side";
+  gap: 0 32px;
   align-items: start;
+}
+.main {
+  grid-area: main;
+}
+.tech {
+  grid-area: tech;
 }
 .detailHead h1 {
   margin: 6px 0 4px;
@@ -322,6 +333,7 @@
   font-size: 14px;
 }
 .side {
+  grid-area: side;
   position: sticky;
   top: 0;
   padding: 16px 0 16px 24px;
@@ -388,6 +400,68 @@
   color: var(--text-1);
   background: var(--surface-2);
   border: 1px solid var(--line);
+}
+
+.sectionHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.sectionHead h2 {
+  margin: 0;
+}
+.lines {
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* ── Plain trust and state marks (#1440): an LED plus words, never colour alone. ── */
+.verified,
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  align-self: flex-start;
+  font: 11px var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.badge {
+  color: var(--warn-text);
+}
+.warn {
+  border-left-color: var(--status-degraded);
+}
+.versions {
+  font: 600 15px var(--font-mono);
+}
+.page p.versions {
+  color: var(--text-1);
+}
+
+/* ── Technical details: label / value rows, folded by default. ── */
+.facts {
+  display: grid;
+  gap: 10px;
+}
+.fact {
+  display: grid;
+  grid-template-columns: minmax(120px, 200px) minmax(0, 1fr);
+  gap: 4px 16px;
+  font-size: 13px;
+}
+.fact > span {
+  font: 11px var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  padding-top: 2px;
+}
+.fact > div {
+  color: var(--text-1);
 }
 
 /* ── Three-way compare. ── */
@@ -462,7 +536,23 @@
   color: var(--text-1);
 }
 
-/* Gallery source of a local copy: one tag line, two ghosts, the evidence folded away. */
+/* Gallery source of a local copy: one line, the badge, one action, the evidence folded away. */
+.originLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+.page p.originLine,
+.originLine {
+  color: var(--text-1);
+}
+.originLine > svg {
+  color: var(--accent);
+}
+.quiet {
+  margin-top: 12px;
+}
 .origin {
   margin: 12px 0 20px;
   padding: 12px 0;
@@ -504,6 +594,10 @@
 @media (max-width: 960px) {
   .detail {
     grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "main"
+      "side"
+      "tech";
     gap: 8px;
   }
   .side {
@@ -523,6 +617,12 @@
   }
   .count {
     margin-left: 0;
+  }
+  .fact {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .lines {
+    display: none;
   }
   .segmented {
     display: flex;

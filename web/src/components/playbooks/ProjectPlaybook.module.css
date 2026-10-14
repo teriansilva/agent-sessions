@@ -105,3 +105,9 @@
     grid-template-columns: 1fr;
   }
 }
+/* Where gallery playbooks come from (#1440): a quiet line, no navigation away mid-wizard. */
+.hint {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-2);
+}

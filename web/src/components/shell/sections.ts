@@ -30,7 +30,6 @@ import {
   TerminalSquare,
   Network,
   Workflow,
-  GalleryHorizontal,
   FileText,
   type LucideIcon,
 } from "lucide-react";
@@ -44,6 +43,7 @@ import {
   MISSION_PATH,
   PLAYBOOKS_PATH,
   GALLERY_PATH,
+  GALLERY_SKILLS_PATH,
   SKILLS_PATH,
   SESSIONS_PATH,
   TEMPLATES_PATH,
@@ -53,8 +53,8 @@ import {
 export type SectionId = "ask" | "sessions" | "mission" | "library";
 
 /** An entry inside a section's sub-menu: Sessions has the session view and its map; Library has
- *  the public gallery and local skills, templates, variables, automations, checklists and playbooks
- *  (#1294). */
+ *  templates, variables, automations, checklists, skills and playbooks (#1294). Skills and
+ *  Playbooks each hold their own Browse gallery view (#1440). */
 export type SubsectionId =
   | "sessions"
   | "map"
@@ -63,7 +63,6 @@ export type SubsectionId =
   | "automations"
   | "checklists"
   | "playbooks"
-  | "gallery"
   | "skills";
 
 export interface Subsection {
@@ -114,7 +113,6 @@ export const SECTIONS: Section[] = [
       { id: "variables", label: "Variables", Icon: Braces, to: VARIABLES_PATH },
       { id: "automations", label: "Automations", Icon: CalendarClock, to: AUTOMATIONS_PATH },
       { id: "checklists", label: "Checklists", Icon: ListChecks, to: CHECKLISTS_PATH },
-      { id: "gallery", label: "Gallery", Icon: GalleryHorizontal, to: GALLERY_PATH },
       { id: "skills", label: "Skills", Icon: FileText, to: SKILLS_PATH },
       { id: "playbooks", label: "Playbooks", Icon: Workflow, to: PLAYBOOKS_PATH },
     ],
@@ -151,8 +149,12 @@ export function activeSubsection(pathname: string): SubsectionId | null {
     return "automations";
   if (pathname === VARIABLES_PATH) return "variables";
   if (pathname === CHECKLISTS_PATH) return "checklists";
-  if (pathname === GALLERY_PATH || pathname.startsWith(`${GALLERY_PATH}/`)) return "gallery";
+  // The public gallery is a view of Skills / Playbooks (#1440); its old bare and digest links
+  // land on Playbooks, so they light that entry while they redirect.
   if (pathname === SKILLS_PATH || pathname.startsWith(`${SKILLS_PATH}/`)) return "skills";
+  if (pathname === GALLERY_SKILLS_PATH || pathname.startsWith(`${GALLERY_SKILLS_PATH}/`))
+    return "skills";
+  if (pathname === GALLERY_PATH || pathname.startsWith(`${GALLERY_PATH}/`)) return "playbooks";
   if (pathname === PLAYBOOKS_PATH || pathname.startsWith(`${PLAYBOOKS_PATH}/`)) return "playbooks";
   return null;
 }

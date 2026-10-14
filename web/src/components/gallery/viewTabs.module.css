@@ -1,0 +1,74 @@
+/* Library view tabs (#1440): two underlined links on one rule. The accent marks the current view
+ * (selection, not state); tokens only, no radius (docs/design.md §5, §9). */
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin: 12px 0 4px;
+  border-bottom: 1px solid var(--line);
+}
+.tabs .tab {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 14px;
+  margin-bottom: -1px;
+  border-bottom: 2px solid transparent;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  text-decoration: none;
+}
+.tabs .tab:hover {
+  color: var(--text-1);
+  background: var(--row-hover);
+}
+.tabs .tab[aria-current="page"] {
+  color: var(--text-1);
+  border-bottom-color: var(--accent);
+}
+.tabs .tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+@media (max-width: 800px) {
+  .tabs .tab {
+    flex: 1 1 0;
+    justify-content: center;
+  }
+}
+
+/* The note an old gallery link lands with: the neutral callout, with its own dismiss. */
+.note {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 0;
+  padding: 6px 6px 6px 14px;
+  border-left: 2px solid var(--line-strong);
+  background: var(--surface-2);
+  color: var(--text-2);
+  line-height: 1.6;
+}
+.note span {
+  flex: 1 1 auto;
+}
+.note button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.note button:hover {
+  color: var(--text-1);
+  background: var(--row-hover);
+}
+.note button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}

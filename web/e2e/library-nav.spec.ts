@@ -1,7 +1,8 @@
-/** Library: Templates, Variables, Automations, Checklists, Gallery, Skills and Playbooks, under one section.
+/** Library: Templates, Variables, Automations, Checklists, Skills and Playbooks, under one section.
+ *  The public gallery is a view inside Skills and Playbooks, not an entry of its own (#1440).
  *
  *  Library is a split control like Sessions: the label goes to Templates (its first child), and
- *  its chevron opens a menu naming all seven. Checklists and Automations moved here from Missions
+ *  its chevron opens a menu naming all six. Checklists and Automations moved here from Missions
  *  but kept their `/mission/...` URLs, so on their routes LIBRARY is the section that lights up,
  *  not Missions. The old Settings address for checklists still redirects. A real browser, because
  *  the menu is a portalled popover in the top bar and "where am I" is `aria-current` on laid-out
@@ -39,7 +40,7 @@ test.beforeEach(async ({ page }) => {
   );
 });
 
-test("Library names Templates, Variables, Automations, Checklists, Gallery, Skills and Playbooks; Missions has no menu", async ({
+test("Library names Templates, Variables, Automations, Checklists, Skills and Playbooks; Missions has no menu", async ({
   page,
 }) => {
   await page.goto(MISSION_PATH);
@@ -52,7 +53,6 @@ test("Library names Templates, Variables, Automations, Checklists, Gallery, Skil
     "Variables",
     "Automations",
     "Checklists",
-    "Gallery",
     "Skills",
     "Playbooks",
   ]);
@@ -99,7 +99,7 @@ test("Variables has a Library entry and its own screen", async ({ page }) => {
   await expect(again.locator('a[data-subsection="variables"]')).toHaveAttribute("aria-current", "page");
 });
 
-test("Playbooks has a Library entry and its gallery", async ({ page }) => {
+test("Playbooks has a Library entry, your playbooks and a Browse gallery tab", async ({ page }) => {
   await page.route("**/api/playbooks", (r) => r.fulfill({ json: { playbooks: [], default: null, recovery_total: 0 } }));
   await page.goto(MISSION_PATH);
   const menu = await libraryMenu(page);
@@ -109,6 +109,8 @@ test("Playbooks has a Library entry and its gallery", async ({ page }) => {
   await expect(pg.getByRole("heading", { level: 1, name: "Playbooks" })).toBeVisible();
   await expect(pg).toContainText("No playbooks on this host.");
   await expect(pg.getByLabel("Search playbooks")).toBeVisible();
+  await expect(pg.getByRole("link", { name: "Your playbooks" })).toHaveAttribute("aria-current", "page");
+  await expect(pg.getByRole("link", { name: "Browse gallery" })).toBeVisible();
 });
 
 test("the old Settings address redirects, and Settings no longer lists Checklists", async ({
