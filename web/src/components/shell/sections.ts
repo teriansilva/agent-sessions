@@ -21,6 +21,7 @@
  */
 import {
   BookMarked,
+  Brain,
   Braces,
   CalendarClock,
   Crosshair,
@@ -40,6 +41,7 @@ import {
   DASHBOARD_PATH,
   LEGACY_MISSION_PATH,
   MAP_PATH,
+  MEMORY_PATH,
   MISSION_PATH,
   PLAYBOOKS_PATH,
   GALLERY_PATH,
@@ -60,6 +62,7 @@ export type SubsectionId =
   | "map"
   | "templates"
   | "variables"
+  | "memory"
   | "automations"
   | "checklists"
   | "playbooks"
@@ -111,6 +114,7 @@ export const SECTIONS: Section[] = [
     children: [
       { id: "templates", label: "Prompt Templates", Icon: BookMarked, to: TEMPLATES_PATH },
       { id: "variables", label: "Variables", Icon: Braces, to: VARIABLES_PATH },
+      { id: "memory", label: "Memory", Icon: Brain, to: MEMORY_PATH },
       { id: "automations", label: "Automations", Icon: CalendarClock, to: AUTOMATIONS_PATH },
       { id: "checklists", label: "Checklists", Icon: ListChecks, to: CHECKLISTS_PATH },
       { id: "skills", label: "Skills", Icon: FileText, to: SKILLS_PATH },
@@ -148,6 +152,7 @@ export function activeSubsection(pathname: string): SubsectionId | null {
   if (pathname === AUTOMATIONS_PATH || pathname.startsWith(`${AUTOMATIONS_PATH}/`))
     return "automations";
   if (pathname === VARIABLES_PATH) return "variables";
+  if (pathname === MEMORY_PATH) return "memory";
   if (pathname === CHECKLISTS_PATH) return "checklists";
   // The public gallery is a view of Skills / Playbooks (#1440); its old bare and digest links
   // land on Playbooks, so they light that entry while they redirect.

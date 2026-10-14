@@ -37,6 +37,9 @@ export const TEMPLATES_PATH = "/templates";
 /** Library → shared variable definitions, values and collections (#1390). */
 export const VARIABLES_PATH = "/library/variables";
 
+/** Library → Memory: each project's shared notebook that agent sessions read and add to (#1441). */
+export const MEMORY_PATH = "/library/memory";
+
 /** The public gallery (#1440): one Browse view per kind, inside Library → Playbooks and → Skills.
  *  A playbook/skill ID (`[a-z][a-z0-9-]{1,47}`) never equals a kind segment plus a digest, and the
  *  bare prefix and `/library/gallery/<digest>[?kind=&id=]` are only old links, redirected by

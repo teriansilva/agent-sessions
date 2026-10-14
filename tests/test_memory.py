@@ -477,7 +477,8 @@ def test_a_launch_without_memory_strips_the_apps_own_copies(monkeypatch, tmp_pat
 
 # ---- boundaries ----------------------------------------------------------------------------------
 
-# Who may reach the store. Memory is never a system prompt, never evidence and never sent to a
+# Who may reach the store: the launch seams, the loop, project deletion and the Memory page's
+# routes. Memory is never a system prompt, never evidence and never sent to a
 # model: no prompt, review, mission-judge or checklist module may import it.
 ALLOWED_IMPORTERS = {
     "headless_dispatch.py",
@@ -487,6 +488,7 @@ ALLOWED_IMPORTERS = {
     "native_worker.py",
     "projects.py",
     "webterm.py",
+    "routes/memory.py",
     "routes/terminal.py",
     "template_vars.py",
 }
@@ -500,12 +502,19 @@ def test_only_the_launch_seams_the_loop_and_project_deletion_import_memory():
             continue
         tree = ast.parse(path.read_text())
         for node in ast.walk(tree):
-            names = []
             if isinstance(node, ast.ImportFrom):
-                names = [a.name for a in node.names] + [node.module or ""]
+                # `from . import memory` / `from .. import memory` (the package root) or
+                # `from .memory import …` — never `from .routes import memory` (the routes).
+                package_root = node.level and not node.module
+                hit = (package_root and any(a.name == "memory" for a in node.names)) or (
+                    (node.module or "").split(".")[-1] == "memory"
+                    and "routes" not in (node.module or "")
+                )
             elif isinstance(node, ast.Import):
-                names = [a.name for a in node.names]
-            if any(n == "memory" or n.endswith(".memory") for n in names):
+                hit = any(a.name.endswith("agent_sessions.memory") for a in node.names)
+            else:
+                continue
+            if hit:
                 found.add(rel)
     assert found == ALLOWED_IMPORTERS
 

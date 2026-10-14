@@ -481,6 +481,8 @@ def _view_files(conn: sqlite3.Connection, known: list[str] | None) -> dict[str, 
         index.append("")
     files = {}
     for r in rows:
+        if _carries_secret(r, known):
+            continue  # neither its file nor its index line — export reads this, too
         fname = f"{r['slug']}.md"
         when = time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime(r["updated"]))
         files[fname] = (
@@ -1232,6 +1234,22 @@ def _withheld(text: str, known: list[str]) -> str:
     return ""
 
 
+def _note_text(r) -> str:
+    """Every string a note shows anywhere — its slug and file name (the view, the export, the page's
+    ids and links), name, description, type and body. The one input to every secret decision about
+    a stored note, so no surface judges a narrower set of fields than another."""
+    slug = r["slug"]
+    return "\n".join((slug, f"{slug}.md", r["name"], r["description"], r["type"], r["body"]))
+
+
+def _carries_secret(r, known: list[str]) -> bool:
+    """Whether a stored note now holds a value stored as a secret, in any field it shows."""
+    from . import template_secrets
+
+    text = _note_text(r)
+    return bool(known) and template_secrets.redact_text(text, known) != text
+
+
 def _one_line(value: str, limit: int) -> str:
     return " ".join(value.split())[:limit]
 
@@ -1378,8 +1396,7 @@ def _render(pid: str, conn: sqlite3.Connection, *, withdraw: bool = False) -> No
         now = time.time()
         with _txn(conn):
             for r in conn.execute("SELECT * FROM notes").fetchall():
-                text = f"{r['name']}\n{r['description']}\n{r['body']}"
-                if template_secrets.redact_text(text, known) != text:
+                if _carries_secret(r, known):
                     conn.execute(
                         "INSERT INTO quarantine(digest, token, filename, body, reason, size, at)"
                         " VALUES(?,?,?,?,?,?,?)",
@@ -1410,3 +1427,411 @@ def _render(pid: str, conn: sqlite3.Connection, *, withdraw: bool = False) -> No
                 _write_at(nfd, name, text)
         finally:
             os.close(nfd)
+
+
+# ---- the operator's view and actions (the Memory page, #1441 P2) ---------------------------------
+
+_LINK_RE = re.compile(r"\[\[([a-z0-9][a-z0-9-]{0,63})\]\]")
+_MASK = "████████ (withheld)"
+_MASK_NAME = "████████ (withheld name)"
+
+
+def _project(pid: str):
+    from . import projects
+
+    entity = projects.load().get(pid)
+    if entity is None:
+        raise MemoryStoreError("unknown project", 404)
+    return entity
+
+
+def _session(key: str | None, kind: str | None) -> dict:
+    """Who wrote it — a label, never authority (any same-UID process can write any inbox). A
+    late-id launch's placeholder is followed to the real session when the app has bound it."""
+    from . import metadata
+
+    if not key:
+        return {"key": "", "engine": "", "kind": kind or "", "resolved": False}
+    real = key
+    with contextlib.suppress(Exception):
+        real = metadata.resolve_key(key)
+    engine, _, native = real.partition(":")
+    resolved = bool(native) and not native.startswith("new-")
+    return {
+        "key": real if resolved else "",
+        "engine": engine,
+        "kind": kind or "",
+        "resolved": resolved,
+    }
+
+
+def _inventory() -> list[str] | None:
+    """The stored-secret inventory, or None when it cannot be read (every caller then masks)."""
+    from . import template_secrets
+
+    try:
+        return template_secrets.redaction_values()
+    except template_secrets.RedactionUnavailable:
+        return None
+
+
+def _mask(text: str, known: list[str] | None) -> str:
+    """What the operator may see of a quarantined item: nothing of its content.
+
+    Line-by-line masking was tried and does not converge — a stored value or a credential that
+    spans lines leaks through whichever line the per-line check misses. An item is quarantined
+    BECAUSE something in it is withheld, so its content is withheld whole; the operator releases it
+    by writing replacement text, which passes the same withhold check (`release_quarantined`)."""
+    return _MASK
+
+
+def _safe_name(name: str, known: list[str] | None) -> str:
+    """A file name as the operator may see it: the same withhold check as the content — a name
+    holding a stored secret or a credential shape is shown masked. Actions use opaque ids."""
+    if known is None or _withheld(name, known):
+        return _MASK_NAME
+    return _display_name(name)
+
+
+def _pending(pid: str) -> list[dict]:
+    """Inbox files not yet taken in, and claims a pass has not yet settled (listed, never read)."""
+    out = []
+    with contextlib.suppress(OSError), _dirfd(_scope(pid) / "inbox") as ifd:
+        for token in sorted(os.listdir(ifd)):
+            if not _TOKEN_RE.fullmatch(token):
+                continue
+            try:
+                tfd = os.open(token, _DIR_FLAGS, dir_fd=ifd)
+            except OSError:
+                continue
+            try:
+                for name in sorted(os.listdir(tfd)):
+                    st = None if name.startswith(".") else _lstat_at(tfd, name)
+                    if st is not None and not stat.S_ISDIR(st.st_mode):
+                        out.append(
+                            {
+                                "token": token,
+                                "filename": name[:255],
+                                "size": st.st_size,
+                                "at": st.st_mtime,
+                            }
+                        )
+            finally:
+                os.close(tfd)
+    with contextlib.suppress(OSError), _dirfd(_scope(pid) / "claims") as cfd:
+        for name in sorted(os.listdir(cfd)):
+            parsed, st = _parse_claim(name), _lstat_at(cfd, name)
+            if parsed is not None and st is not None and not stat.S_ISDIR(st.st_mode):
+                out.append(
+                    {
+                        "token": parsed[0],
+                        "filename": parsed[1][:255],
+                        "size": st.st_size,
+                        "at": st.st_mtime,
+                    }
+                )
+    return out
+
+
+def overview() -> list[dict]:
+    """Every live project with its memory state, for the page's project list."""
+    from . import projects
+
+    out = []
+    for entity in sorted(projects.load().values(), key=lambda p: p.name.lower()):
+        if entity.archived:
+            continue
+        row = {
+            "id": entity.id,
+            "name": entity.name,
+            "color": entity.color,
+            "enabled": False,
+            "notes": 0,
+            "pending": 0,
+            "quarantined": 0,
+            "last_write": None,
+        }
+        if _exists(entity.id):
+            conn = _connect(entity.id)
+            try:
+                row["enabled"] = _enabled(conn)
+                row["notes"] = conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
+                row["quarantined"] = conn.execute("SELECT COUNT(*) FROM quarantine").fetchone()[0]
+                row["last_write"] = conn.execute("SELECT MAX(updated) FROM notes").fetchone()[0]
+            finally:
+                conn.close()
+            row["pending"] = len(_pending(entity.id))
+        out.append(row)
+    return out
+
+
+def view(pid: str) -> dict:
+    """One project's memory for the page: notes with their writer and links, the trays, and the
+    paragraph the operator pastes into the project's instruction file."""
+    pid = _pid(pid)
+    entity = _project(pid)
+    out = {
+        "project": {"id": entity.id, "name": entity.name, "color": entity.color},
+        "enabled": False,
+        "notes": [],
+        "pending": [],
+        "refused": [],
+        "quarantine": [],
+        # Notes not shown because they hold a value now stored as a secret (or the secret check
+        # could not run): the reason, and how many.
+        "withheld": {"notes": 0, "reason": ""},
+        "instructions": INSTRUCTION_PARAGRAPH,
+        "limits": {
+            "note_bytes": ENTRY_MAX_BYTES,
+            "notes": SCOPE_MAX_NOTES,
+            "inbox_files": INBOX_MAX_PENDING,
+        },
+    }
+    if not _exists(pid):
+        return out
+    # Under the secret writers' fence, like every agent-readable render: the inventory this response
+    # is judged against cannot change before it is built. A note that holds a stored secret is
+    # withheld from the page exactly as from the agents' view — including when an earlier
+    # re-check could only WITHDRAW the view and left the note in the store.
+    with _fenced():
+        return _view_locked(pid, out)
+
+
+def _view_locked(pid: str, out: dict) -> dict:
+    known = _inventory()  # one read: every field below is judged against the same set
+    conn = _connect(pid)
+    try:
+        out["enabled"] = _enabled(conn)
+        launches = {
+            r["token"]: (r["session_key"], r["kind"])
+            for r in conn.execute("SELECT token, session_key, kind FROM launches")
+        }
+        rows = conn.execute("SELECT * FROM notes ORDER BY updated DESC").fetchall()
+        slugs = {r["slug"] for r in rows if known is not None and not _carries_secret(r, known)}
+        for r in rows:
+            if r["slug"] not in slugs:
+                out["withheld"]["notes"] += 1
+                out["withheld"]["reason"] = (
+                    "the secret check could not run"
+                    if known is None
+                    else "they hold a value now stored as a secret"
+                )
+                continue
+            out["notes"].append(
+                {
+                    "slug": r["slug"],
+                    "name": r["name"],
+                    "description": r["description"],
+                    "type": r["type"],
+                    "body": r["body"],
+                    "size": len(r["body"].encode()),
+                    "created": r["created"],
+                    "updated": r["updated"],
+                    "session": _session(*launches.get(r["token"], (None, None))),
+                    "links": sorted({m for m in _LINK_RE.findall(r["body"]) if m in slugs}),
+                }
+            )
+        for r in conn.execute("SELECT * FROM refused ORDER BY id DESC"):
+            out["refused"].append(
+                {
+                    "filename": _safe_name(r["filename"], known),
+                    "reason": r["reason"],
+                    "size": r["size"],
+                    "at": r["at"],
+                    "session": _session(*launches.get(r["token"], (None, None))),
+                }
+            )
+        for r in conn.execute("SELECT * FROM quarantine ORDER BY id DESC"):
+            out["quarantine"].append(
+                {
+                    "id": r["id"],
+                    "filename": _safe_name(r["filename"], known),
+                    "reason": r["reason"],
+                    "size": r["size"],
+                    "at": r["at"],
+                    "masked": _mask(r["body"], known),
+                    "session": _session(*launches.get(r["token"], (None, None))),
+                }
+            )
+    finally:
+        conn.close()
+    for p in _pending(pid):
+        p["filename"] = _safe_name(p["filename"], known)
+        p["session"] = _session(*launches.get(p.pop("token"), (None, None)))
+        out["pending"].append(p)
+    return out
+
+
+def _checked(text: str) -> None:
+    """An operator edit passes the same withhold check as an agent's note (fail closed). Callers
+    hold the fence (`_fenced`) across this check, their commit and the re-published view."""
+    from . import template_secrets
+
+    try:
+        known = template_secrets.redaction_values()
+    except template_secrets.RedactionUnavailable as exc:
+        raise MemoryStoreError(
+            f"secret check unavailable — nothing was saved ({exc})", 503
+        ) from None
+    reason = _withheld(text, known)
+    if reason:
+        raise MemoryStoreError(f"not saved: it {reason}", 422)
+    if len(text.encode()) > ENTRY_MAX_BYTES:
+        raise MemoryStoreError(f"a note is at most {ENTRY_MAX_BYTES // 1024} KiB", 422)
+
+
+def update_note(pid: str, slug: str, fields: dict) -> None:
+    """Edit a note's name, description, type or body. Its slug (file name) stays."""
+    pid = _pid(pid)
+    if not isinstance(slug, str) or not _SLUG_RE.fullmatch(slug):
+        raise MemoryStoreError("not a note", 404)
+    if (
+        not isinstance(fields, dict)
+        or not fields
+        or set(fields) - {"name", "description", "type", "body"}
+    ):
+        raise MemoryStoreError("edit name, description, type or body", 422)
+    if any(not isinstance(v, str) for v in fields.values()):
+        raise MemoryStoreError("every field is text", 422)
+    if "type" in fields and fields["type"] not in TYPES:
+        raise MemoryStoreError(f"type is one of {', '.join(TYPES)}", 422)
+    # Fence, then scope lock: the one order (see `_fenced`); the check, the commit and the
+    # re-published view all see one secret inventory.
+    with _fenced(), _scope_lock(pid):
+        if not _exists(pid):
+            raise MemoryStoreError("not a note", 404)
+        conn = _connect(pid)
+        try:
+            row = conn.execute("SELECT * FROM notes WHERE slug=?", (slug,)).fetchone()
+            if row is None:
+                raise MemoryStoreError("not a note", 404)
+            new = dict(row)
+            new.update(fields)
+            new["name"] = _one_line(_CONTROL.sub("", new["name"]), 120) or slug
+            new["description"] = _one_line(_CONTROL.sub("", new["description"]), 160)
+            new["body"] = _CONTROL.sub("", new["body"].replace("\r\n", "\n")).strip()
+            if not new["body"]:
+                raise MemoryStoreError("a note needs a body", 422)
+            with _txn(conn):
+                _checked(f"{new['name']}\n{new['description']}\n{new['body']}")
+                conn.execute(
+                    "UPDATE notes SET name=?, description=?, type=?, body=?, updated=?"
+                    " WHERE slug=?",
+                    (new["name"], new["description"], new["type"], new["body"], time.time(), slug),
+                )
+            _render(pid, conn)
+        finally:
+            conn.close()
+
+
+def delete_quarantined(pid: str, qid: int) -> None:
+    """Drop a quarantined item. Its source's receipt stays, so the file is never taken in again."""
+    pid = _pid(pid)
+    with _scope_lock(pid):
+        if not _exists(pid):
+            raise MemoryStoreError("no such item", 404)
+        conn = _connect(pid)
+        try:
+            with _txn(conn):
+                row = conn.execute("SELECT digest FROM quarantine WHERE id=?", (qid,)).fetchone()
+                if row is None:
+                    raise MemoryStoreError("no such item", 404)
+                # A dropped item's source is a tombstone, never trimmed: it is not taken in again.
+                conn.execute(
+                    "INSERT OR REPLACE INTO receipts(digest, outcome, at) VALUES(?, 'deleted', ?)",
+                    (row["digest"], time.time()),
+                )
+                conn.execute("DELETE FROM quarantine WHERE id=?", (qid,))
+        finally:
+            conn.close()
+
+
+def release_quarantined(pid: str, qid: int, text: str) -> str:
+    """Take a quarantined item in as a note once the operator's edit passes the check. Returns
+    the note's slug. The operator writes replacement text (nothing of the item is ever shown), and
+    it passes the same withhold check, original file name included."""
+    pid = _pid(pid)
+    if not isinstance(text, str):
+        raise MemoryStoreError("text is required", 422)
+    text = _CONTROL.sub("", text.replace("\r\n", "\n"))
+    with _fenced(), _scope_lock(pid):
+        if not _exists(pid):
+            raise MemoryStoreError("no such item", 404)
+        conn = _connect(pid)
+        try:
+            row = conn.execute("SELECT * FROM quarantine WHERE id=?", (qid,)).fetchone()
+            if row is None:
+                raise MemoryStoreError("no such item", 404)
+            # The original file name too: a note without a heading is named after it.
+            _checked(f"{row['filename']}\n{text}")
+            note = parse_note(text, row["filename"])
+            if note is None:
+                raise MemoryStoreError("a note needs a body", 422)
+            exists = conn.execute(
+                "SELECT created FROM notes WHERE slug=?", (note["slug"],)
+            ).fetchone()
+            full = conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
+            if exists is None and full >= SCOPE_MAX_NOTES:
+                raise MemoryStoreError(f"memory is full ({SCOPE_MAX_NOTES} notes)", 409)
+            now = time.time()
+            digest = hashlib.sha256(text.encode()).hexdigest()
+            with _txn(conn):
+                conn.execute(
+                    "INSERT OR REPLACE INTO notes(slug, name, description, type, body, digest,"
+                    " token, created, updated) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (
+                        note["slug"],
+                        note["name"],
+                        note["description"],
+                        note["type"],
+                        note["body"],
+                        digest,
+                        row["token"],
+                        exists["created"] if exists else now,
+                        now,
+                    ),
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO receipts(digest, outcome, at) VALUES(?, 'note', ?)",
+                    (digest, now),
+                )
+                # A version like any other: deleting the name later tombstones it too.
+                conn.execute(
+                    "INSERT OR IGNORE INTO versions(slug, digest) VALUES(?, ?)",
+                    (note["slug"], digest),
+                )
+                conn.execute("DELETE FROM quarantine WHERE id=?", (qid,))
+            _render(pid, conn)
+            return note["slug"]
+        finally:
+            conn.close()
+
+
+def export_zip(pid: str) -> bytes:
+    """The read view as a zip of markdown files. Quarantine and refusals are never included."""
+    import io
+    import zipfile
+
+    pid = _pid(pid)
+    _project(pid)
+    buf = io.BytesIO()
+    # The fence spans the inventory read, the filter and the zip: a secret stored meanwhile waits.
+    with _fenced(), zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        if _exists(pid):
+            from . import template_secrets
+
+            try:
+                known: list[str] | None = template_secrets.redaction_values()
+            except template_secrets.RedactionUnavailable as exc:
+                raise MemoryStoreError(
+                    f"secret check unavailable — nothing exported ({exc})", 503
+                ) from None
+            conn = _connect(pid)
+            try:
+                # `_view_files` leaves out every note holding a stored secret in any field it shows.
+                files = _view_files(conn, known)
+            finally:
+                conn.close()
+            for name, text in sorted(files.items()):
+                zf.writestr(f"memory/{name}", text)
+    return buf.getvalue()

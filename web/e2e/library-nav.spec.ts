@@ -40,7 +40,7 @@ test.beforeEach(async ({ page }) => {
   );
 });
 
-test("Library names Templates, Variables, Automations, Checklists, Skills and Playbooks; Missions has no menu", async ({
+test("Library names Templates, Variables, Memory, Automations, Checklists, Skills and Playbooks; Missions has no menu", async ({
   page,
 }) => {
   await page.goto(MISSION_PATH);
@@ -51,6 +51,7 @@ test("Library names Templates, Variables, Automations, Checklists, Skills and Pl
   await expect(menu.locator("a[data-subsection]")).toHaveText([
     "Prompt Templates",
     "Variables",
+    "Memory",
     "Automations",
     "Checklists",
     "Skills",

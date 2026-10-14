@@ -130,7 +130,7 @@ describe("SectionNav", () => {
     );
   });
 
-  test("Library holds Templates, Variables, Automations, Checklists, Skills and Playbooks — no separate Gallery (#1294, #1440); Missions and Dashboard have no menu", async () => {
+  test("Library holds Templates, Variables, Memory, Automations, Checklists, Skills and Playbooks — no separate Gallery (#1294, #1440); Missions and Dashboard have no menu", async () => {
     render(
       <MemoryRouter>
         <SectionNav
@@ -156,12 +156,13 @@ describe("SectionNav", () => {
     expect(items.map((i) => [i.textContent, i.getAttribute("href")])).toEqual([
       ["Prompt Templates", "/templates"],
       ["Variables", "/library/variables"],
+      ["Memory", "/library/memory"],
       ["Automations", "/mission/automations"],
       ["Checklists", "/mission/checklists"],
       ["Skills", "/library/skills"],
       ["Playbooks", "/library/playbooks"],
     ]);
-    expect(items[3]).toHaveAttribute("aria-current", "page");
+    expect(items[4]).toHaveAttribute("aria-current", "page");
   });
 
   test("Sessions points at the last session route, not always at the landing", () => {

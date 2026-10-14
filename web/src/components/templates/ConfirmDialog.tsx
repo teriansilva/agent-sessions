@@ -18,6 +18,7 @@ export function ConfirmDialog({
   children,
   cancelLabel = "Cancel",
   confirmLabel,
+  confirmDisabled = false,
   danger = false,
   busy = false,
   onCancel,
@@ -30,6 +31,8 @@ export function ConfirmDialog({
   children?: ReactNode;
   cancelLabel?: string;
   confirmLabel: string;
+  /** Keeps the confirm action off until the dialog's own condition holds (e.g. a typed name). */
+  confirmDisabled?: boolean;
   danger?: boolean;
   busy?: boolean;
   onCancel: () => void;
@@ -97,7 +100,7 @@ export function ConfirmDialog({
             type="button"
             className={`${styles.confirm} ${danger ? styles.danger : ""}`}
             onClick={onConfirm}
-            disabled={busy}
+            disabled={busy || confirmDisabled}
           >
             {confirmLabel}
           </button>

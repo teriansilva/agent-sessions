@@ -78,6 +78,7 @@ from .routes import handoff as handoff_routes
 from .routes import history as history_routes
 from .routes import link as link_routes
 from .routes import maintenance as maintenance_routes
+from .routes import memory as memory_routes
 from .routes import missions as missions_routes
 from .routes import playbooks as playbooks_routes
 from .routes import prompts as prompts_routes
@@ -691,6 +692,8 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     # Instruction templates (#905 P1): its own store off /api/config, images via /api/uploads.
     templates_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
     variables_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
+    # Shared project memory (#1441): the Memory page's reads, toggle, edits, clear and export.
+    memory_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
     # Playbooks (#1191): the gallery across sources + versioned authoring of `local` playbooks.
     playbooks_routes.register(
         app, logged_in=_logged_in, csrf_guard=_csrf_guard, signing_key=cfg.secret_key

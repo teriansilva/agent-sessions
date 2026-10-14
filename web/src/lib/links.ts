@@ -5,6 +5,9 @@
 /** The documentation site's home. */
 export const DOCS_HOME_URL = "https://docs.battlelabos.com/";
 
+/** The shared-memory guide, with the table of which agents can reach it (#1441). */
+export const MEMORY_GUIDE_URL = `${DOCS_HOME_URL}guide/memory#which-agents-can-reach-it`;
+
 /** The public source repository (the GitHub mirror). */
 export const SOURCE_URL = "https://github.com/teriansilva/agent-sessions";
 

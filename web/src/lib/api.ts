@@ -7,6 +7,7 @@ import type { DeploymentReceipt, DeploymentRemoval, DeploymentReview, Deployment
 // Mutations (later) attach the CSRF token + are origin-checked server-side.
 import type { AuthoringSchema, DirectPrompt, Files, PromptComparison, Variable } from "../components/playbooks/playbookDraft";
 import type { PluginCatalog, PluginReview, PluginOperation, PluginAction } from "../types/plugins";
+import type { MemoryProject, MemoryView, NoteEdit } from "../types/memory";
 import type { PlaybookDetail, PlaybookFleet, PlaybookFleetResult, PlaybookFleetReview, PlaybookList, PlaybookVerify, PlaybookWriteResult } from "../types/playbooks";
 import {
   AUTOMATION_ORIGINS_API,
@@ -956,6 +957,20 @@ export const api = {
   dismissSuggestion: (id: string) => postVoid(`/api/templates/suggestions/${enc(id)}/dismiss`),
   writeTemplate: (request: string, signal?: AbortSignal) =>
     mutateJson<{ template: TemplateDraft }>("POST", "/api/templates/write", { request }, signal),
+  /** Shared project memory (#1441): one notebook per project, read and added to by its agents. */
+  memoryProjects: () => getJsonWithDetail<{ projects: MemoryProject[] }>("/api/memory"),
+  memory: (pid: string) => getJsonWithDetail<MemoryView>(`/api/memory/${enc(pid)}`),
+  ingestMemory: (pid: string) => mutateJson<Record<string, unknown>>("POST", `/api/memory/${enc(pid)}/ingest`, {}),
+  setMemoryEnabled: (pid: string, enabled: boolean) =>
+    mutateJson<{ enabled: boolean }>("PUT", `/api/memory/${enc(pid)}/enabled`, { enabled }),
+  editMemoryNote: (pid: string, slug: string, edit: NoteEdit) =>
+    mutateJson<{ slug: string }>("PATCH", `/api/memory/${enc(pid)}/notes/${enc(slug)}`, edit),
+  deleteMemoryNote: (pid: string, slug: string) => deleteVoid(`/api/memory/${enc(pid)}/notes/${enc(slug)}`),
+  clearMemory: (pid: string) => postVoid(`/api/memory/${enc(pid)}/clear`),
+  releaseQuarantined: (pid: string, id: number, text: string) =>
+    mutateJson<{ slug: string }>("PATCH", `/api/memory/${enc(pid)}/quarantine/${id}`, { text }),
+  dropQuarantined: (pid: string, id: number) => deleteVoid(`/api/memory/${enc(pid)}/quarantine/${id}`),
+  memoryExportUrl: (pid: string) => `/api/memory/${enc(pid)}/export`,
   /** Shared Library (#1390): metadata and scoped values remain in the existing store. */
   variables: () => getJsonWithDetail<SharedVariablesResponse>("/api/variables"),
   enableSharedVariables: () => mutateJson<Pick<SharedVariablesResponse, "variables" | "collections">>("POST", "/api/variables/migrate", {}),

@@ -83,6 +83,7 @@ import {
   PLAYBOOK_NEW_PATH,
   TEMPLATES_PATH,
   VARIABLES_PATH,
+  MEMORY_PATH,
 } from "../lib/routes";
 import { SETTINGS_PATH } from "../routes/settingsTabs";
 import { OperatorMenu } from "../components/shell/OperatorMenu";
@@ -138,6 +139,7 @@ const LegacyGalleryRedirect = lazyWithReload(
 );
 const SkillsLibrary = lazyWithReload(() => import("../routes/SkillsLibrary"), "skills-library");
 const Variables = lazyWithReload(() => import("../routes/Variables"), "variables");
+const Memory = lazyWithReload(() => import("../routes/Memory"), "memory");
 const Playbooks = lazyWithReload(() => import("../routes/Playbooks"), "playbooks");
 // The New project wizard (#1187). Lazy like the others.
 const NewProject = lazyWithReload(
@@ -354,6 +356,7 @@ function Layout() {
     location.pathname === GALLERY_PLAYBOOKS_PATH ||
     location.pathname.startsWith(`${GALLERY_PLAYBOOKS_PATH}/`) ||
     location.pathname === VARIABLES_PATH ||
+    location.pathname === MEMORY_PATH ||
     location.pathname === TEMPLATES_PATH ||
     location.pathname.startsWith(`${TEMPLATES_PATH}/`);
   /** Which of the five work sections the current route belongs to, `null` on Settings (#1058).
@@ -799,6 +802,7 @@ function Layout() {
                   <Route path={`${PLAYBOOKS_PATH}/:playbookId`} element={<Playbooks />} />
                   <Route path={NEW_PROJECT_PATH} element={<NewProject />} />
                   <Route path={VARIABLES_PATH} element={<Variables />} />
+                  <Route path={MEMORY_PATH} element={<Memory />} />
                   <Route path="/templates" element={<Templates />} />
                   <Route path="/templates/new" element={<TemplateEditor />} />
                   <Route path="/templates/:id" element={<TemplateEditor />} />
