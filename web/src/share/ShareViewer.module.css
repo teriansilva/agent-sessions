@@ -298,10 +298,84 @@
   object-fit: contain;
   border: 1px solid var(--border);
 }
+.wait {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  margin-top: 8px;
+  font: 12px var(--font-mono);
+  color: var(--text-2);
+  min-width: 0;
+}
+.waitText {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.waitText b {
+  color: var(--text-1);
+  font-weight: 600;
+}
+.backgroundRow {
+  margin: 0;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.bars {
+  flex: none;
+}
+.bars span {
+  display: inline-block;
+  width: 10px;
+  height: 3px;
+  background: var(--accent);
+  margin-right: 3px;
+  vertical-align: middle;
+  opacity: 0.35;
+  animation: pulse 1.2s infinite;
+}
+.bars span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.bars span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes pulse {
+  50% {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bars span {
+    animation: none;
+    opacity: 0.7;
+  }
+}
+.activity {
+  margin: 0 0 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  font-size: 12px;
+  color: var(--text-2);
+  min-width: 0;
+}
+.activity > summary {
+  padding: 11px 12px;
+  min-height: 44px;
+  box-sizing: border-box;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.activity > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.activityFailed {
+  color: var(--danger-text);
+}
 .tools {
   list-style: none;
-  margin: 0 0 8px;
-  padding: 0;
+  margin: 0;
+  padding: 0 12px 12px;
   display: flex;
   flex-direction: column;
   gap: 4px;

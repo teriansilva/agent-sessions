@@ -53,6 +53,22 @@ function who(turn: PublicTurn): string {
   return turn.author?.via === "public_link" ? `${turn.author.name} · via public link` : "Operator";
 }
 
+/** The operator pane's working animation. */
+function Bars() {
+  return (
+    <span className={styles.bars} aria-hidden="true">
+      <span />
+      <span />
+      <span />
+    </span>
+  );
+}
+
+function toolCount(n: number, truncated: boolean): string {
+  const s = n === 1 ? "" : "s";
+  return `${truncated ? "Latest " : ""}${n} command${s} & tool${s}`;
+}
+
 /** The first queued message: the only one Send now can push ahead (the worker refuses any other,
  *  #1451) — so it is the only one offered. */
 function queueHead(turns: PublicTurn[]): string | null {
@@ -207,9 +223,12 @@ export function ApiView({
     void act(() => publicApi.sendNow(csrf, turnId)).finally(() => setPushing(null));
   };
 
-  const working = snap?.state === "running" || !!snap?.active_turn;
   const turns = snap?.turns ?? [];
   const head = queueHead(turns);
+  // Background work shows as its own row only when no turn shows it already: a turn the agent
+  // runs for itself carries its own steps (#1438), as in the operator pane.
+  const background = !!snap?.background && !snap.active_turn && !turns.some((t) => t.state === "running");
+  const working = snap?.state === "running" || !!snap?.active_turn || background;
 
   return (
     <>
@@ -309,22 +328,54 @@ export function ApiView({
                     {own && label && t.state !== "running" ? ` · ${label}` : ""}
                   </p>
                   {tools.length > 0 && (
-                    <ul className={styles.tools}>
-                      {tools.map((tool, i) => (
-                        <li key={i} className={styles.tool}>
-                          <span className={styles.toolName}>{tool.name}</span>
-                          {tool.summary && <span className={styles.toolSummary}> · {tool.summary}</span>}
-                        </li>
-                      ))}
-                      {t.tools_truncated && <li className={styles.tool}>… more steps not shown</li>}
-                    </ul>
+                    // Folded behind one line, as in the operator's pane: the reply is what a
+                    // visitor reads; the steps are a tap away.
+                    <details className={styles.activity} data-testid="share-activity">
+                      <summary>
+                        {toolCount(tools.length, t.tools_truncated)}
+                        {t.state === "running" && " · working"}
+                        {tools.some((tool) => /failed|error/i.test(tool.outcome ?? "")) && (
+                          <span className={styles.activityFailed}> · failed steps</span>
+                        )}
+                      </summary>
+                      <ul className={styles.tools}>
+                        {tools.map((tool, i) => (
+                          <li key={i} className={styles.tool}>
+                            <span className={styles.toolName}>{tool.name}</span>
+                            {tool.summary && <span className={styles.toolSummary}> · {tool.summary}</span>}
+                          </li>
+                        ))}
+                        {t.tools_truncated && <li className={styles.tool}>… more steps not shown</li>}
+                      </ul>
+                    </details>
                   )}
                   {t.reply && <Markdown text={t.reply} />}
+                  {t.state === "running" && (
+                    <div className={styles.wait} role="status" data-testid="share-working">
+                      <Bars />
+                      <span className={styles.waitText}>
+                        Working
+                        {tools.length > 0 && (
+                          <>
+                            {" · "}
+                            <b>{tools[tools.length - 1].name}</b>
+                            {tools[tools.length - 1].summary && ` ${tools[tools.length - 1].summary}`}
+                          </>
+                        )}
+                      </span>
+                    </div>
+                  )}
                 </div>
               )}
             </section>
           );
         })}
+        {background && (
+          <div className={`${styles.wait} ${styles.backgroundRow}`} role="status" data-testid="share-background-work">
+            <Bars />
+            <span className={styles.waitText}>A background task is running</span>
+          </div>
+        )}
         {(snap?.pending_requests ?? []).map((q) => (
           <section key={q.request_id} className={styles.approval} data-testid="share-approval">
             <p className={styles.tag}>Approval needed</p>

@@ -48,6 +48,8 @@ class FakeServer {
   turnBodies: { body: Json; csrf: string | undefined }[] = [];
   revision = 3;
   running = false;
+  /** A background task on the worker, no turn running (#1430). */
+  background = false;
   turns: Json[] = [
     {
       turn_id: "t1",
@@ -111,6 +113,7 @@ class FakeServer {
       images: true,
       can_send: this.visitorRow()?.share.mode === "send",
       mission_held: false,
+      background: this.background,
     };
   }
 }
@@ -446,7 +449,14 @@ test("view link with a password: create, open in a fresh context, unlock, watch;
   const transcript = visitor.getByTestId("share-transcript");
   await expect(transcript).toContainText("Login bounces between /login and / after the cookie refresh.");
   await expect(transcript).toContainText("Operator");
-  await expect(transcript).toContainText("src/auth/middleware.py · 212 lines");
+  // The agent's commands & tools are folded behind one line, as in the operator's pane: the reply
+  // reads without scrolling past them, and a tap opens them.
+  const activity = transcript.getByTestId("share-activity");
+  await expect(activity.locator("summary")).toHaveText("1 command & tool");
+  const step = activity.getByText("src/auth/middleware.py · 212 lines");
+  await expect(step).toBeHidden();
+  await activity.locator("summary").click();
+  await expect(step).toBeVisible();
   await expect(visitor.getByTestId("share-view-only")).toBeVisible();
   await expect(visitor.getByTestId("share-composer")).toHaveCount(0);
   await expect(visitor.getByText(TITLE)).toBeVisible();
@@ -657,5 +667,62 @@ test("two links in one browser: a page never shows the other link's conversation
   await expect(first.getByTestId("share-transcript")).toContainText("B-ONLY conversation");
   await expect(first.getByTestId("share-transcript")).not.toContainText("Find out why.");
   expect(await first.evaluate(() => (window as unknown as { __mixed: boolean }).__mixed)).toBe(false);
+  await ctx.close();
+});
+
+test("the agent at work: the working animation with its latest step, and a background task (#1404)", async ({
+  page,
+  browser,
+}, testInfo) => {
+  const server = new FakeServer();
+  server.running = true;
+  server.turns = [
+    {
+      ...server.turns[0],
+      state: "running",
+      reply: null,
+      tools: [
+        { name: "read", outcome: "ok", summary: "src/auth/middleware.py · 212 lines" },
+        { name: "bash", outcome: null, summary: "grep -rn Path=/api src/auth" },
+      ],
+    },
+  ];
+  await operatorSetup(page, server, "dark");
+  const dialog = await openDialog(page);
+  await dialog.getByRole("button", { name: /Create public link/ }).click();
+  const link = await dialog.getByTestId("share-url").inputValue();
+
+  const ctx = await visitorContext(browser, testInfo, server);
+  const visitor = await ctx.newPage();
+  await visitor.goto(link);
+  const transcript = visitor.getByTestId("share-transcript");
+  // The steps stay folded; the working row animates and names the step running now.
+  const working = transcript.getByTestId("share-working");
+  await expect(working).toBeVisible();
+  await expect(working).toHaveText("Working · bash grep -rn Path=/api src/auth");
+  const bar = working.locator('[aria-hidden="true"] > span').first();
+  await expect(bar).toBeVisible();
+  expect(await bar.evaluate((el) => getComputedStyle(el).animationName)).toMatch(/pulse/);
+  await expect(transcript.getByTestId("share-activity").locator("summary")).toHaveText("2 commands & tools · working");
+  await expect(transcript.getByText("src/auth/middleware.py · 212 lines")).toBeHidden();
+  await expect(transcript.getByTestId("share-background-work")).toHaveCount(0);
+  await noHorizontalOverflow(visitor);
+
+  // The turn ends; a background task keeps the agent busy: its own row, and the status says so.
+  server.running = false;
+  server.background = true;
+  server.turns = [{ ...server.turns[0], state: "completed", reply: "Found it." }];
+  server.revision += 1;
+  const background = transcript.getByTestId("share-background-work");
+  await expect(background).toBeVisible({ timeout: 15_000 });
+  await expect(background).toHaveText("A background task is running");
+  await expect(transcript.getByTestId("share-working")).toHaveCount(0);
+  await expect(visitor.getByText("WORKING", { exact: true })).toBeVisible();
+
+  // It finishes: the row goes, the status is idle again.
+  server.background = false;
+  server.revision += 1;
+  await expect(background).toHaveCount(0, { timeout: 15_000 });
+  await expect(visitor.getByText("IDLE", { exact: true })).toBeVisible();
   await ctx.close();
 });

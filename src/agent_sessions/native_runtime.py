@@ -1257,6 +1257,7 @@ def project(
     native_id = record.get("native_id")
     model_effective = None
     background = False
+    background_worker: str | None = None  # the worker that reported `background`
     background_turn: tuple[str | None, str] | None = None  # (target, the worker that minted it)
     cwd = journal.header.get("cwd")
     # A removed message (#1447) is not part of the conversation: it never takes a slot in the
@@ -1350,7 +1351,7 @@ def project(
         elif kind == "model" and data.get("model_effective"):
             model_effective = data["model_effective"]
         elif kind == "background":
-            background = bool(data.get("active"))
+            background, background_worker = bool(data.get("active")), item["worker_id"]
             if "background_turn" in data:
                 background_turn = (data["background_turn"], item["worker_id"])
                 if open_agent is not None:
@@ -1388,6 +1389,7 @@ def project(
         elif turn is None:
             if kind == "turn_completed":
                 background = bool(data.get("background_active"))
+                background_worker = item["worker_id"]
             continue
         elif kind == "text":
             if data["text"] and turn["reply_ts"] is None:
@@ -1449,6 +1451,7 @@ def project(
                 if turn["reply_ts"] is None:
                     turn["reply_ts"] = item.get("ts")
             background = bool(data.get("background_active"))
+            background_worker = item["worker_id"]
             for key, value in list(pending.items()):
                 if value.get("operation_id") == turn["turn_id"]:
                     pending.pop(key)
@@ -1589,7 +1592,9 @@ def project(
         "native": {
             "native_id": native_id,
             "worker": live_worker,
-            "background_active": background,
+            # Only the live worker's own report: an exited or replaced generation's task ended
+            # with it, so its last `active` would show an idle replacement busy forever.
+            "background_active": background and background_worker == live_worker,
             # Only the live worker's own turn is a Send now target (#1427): a target minted by an
             # exited or replaced generation names a turn nothing can stop any more.
             "background_turn": background_turn[0]

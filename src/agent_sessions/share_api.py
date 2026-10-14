@@ -241,6 +241,12 @@ def project(snapshot: dict, authors: dict[str, dict], r: _Redactor, share_id: st
         "pending_requests": [_request(q, r) for q in snapshot.get("pending_requests") or []],
         "read_only": bool(snapshot.get("read_only")),
         "images": bool(snapshot.get("images")),
+        # A background task runs on a live worker (#1430): one bit, derived here so `native`
+        # itself (worker and native ids) never reaches the visitor.
+        "background": bool(
+            (snapshot.get("native") or {}).get("worker")
+            and (snapshot.get("native") or {}).get("background_active")
+        ),
     }
 
 

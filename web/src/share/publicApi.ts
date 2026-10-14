@@ -82,6 +82,8 @@ export interface PublicSnapshot {
   images: boolean;
   can_send: boolean;
   mission_held: boolean;
+  /** A background task runs with no turn running (#1430). */
+  background?: boolean;
 }
 
 export interface PublicEventPage {

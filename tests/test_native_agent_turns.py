@@ -315,6 +315,29 @@ def test_an_own_turn_cut_off_by_a_worker_crash_is_failed_not_done(conversation, 
         assert crashed["status"] == "failed" and "worker ended" in crashed["reason"]
 
 
+def test_background_work_belongs_to_the_worker_that_reported_it(conversation, monkeypatch):
+    """Hermes on #1460: a replaced generation's last `background(active)` must not show the idle
+    replacement busy — not in the operator's snapshot, not as the public link's `background`."""
+    root, sid, binding = conversation
+    at(monkeypatch, T0)
+    task = {"kind": "background", "data": {"task_id": "task-1", "state": "running", "active": True}}
+    journal.append_events(root, binding, [task])
+    successor = replace(binding, worker_id=str(uuid.uuid4()), connection_id=str(uuid.uuid4()))
+
+    def views(live):
+        view = snapshot(root, sid, binding, live=live)
+        public = share_api.project(view, {}, share_api._Redactor([]), "share-1")
+        return view["native"]["background_active"], public["background"]
+
+    assert views("self") == (True, True)
+    assert views(successor.worker_id) == (False, False)
+    assert views(None) == (False, False)
+    # The replacement's own report counts.
+    journal.append_events(root, successor, [task])
+    assert views(successor.worker_id) == (True, True)
+    assert views(binding.worker_id) == (False, False)
+
+
 def test_settled_history_still_ages_out_behind_own_turns(conversation, monkeypatch):
     """Only live work is kept past the window: inputs that settled without a completion (a
     steer, a refusal) are history and age out like any other turn."""

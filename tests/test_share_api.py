@@ -100,7 +100,9 @@ def test_the_projection_is_an_allowlist():
         "pending_requests",
         "read_only",
         "images",
+        "background",
     }
+    assert view["background"] is False
     flat = repr(view)
     for leak in (
         "secret-project/x.py",  # the error `reason`
@@ -135,6 +137,17 @@ def test_the_projection_is_an_allowlist():
         }
     ]
     assert "reason" not in t1 and "operation_id" not in t1
+
+
+def test_background_work_is_one_bit_and_needs_a_live_worker():
+    r = share_api._Redactor([])
+    snap = _operator_snapshot()
+    snap["native"] = {"native_id": "abc", "worker": "w-uuid", "background_active": True}
+    view = share_api.project(snap, {}, r, "s1")
+    assert view["background"] is True
+    assert "w-uuid" not in repr(view) and "native_id" not in repr(view)
+    snap["native"] = {"native_id": "abc", "worker": None, "background_active": True}
+    assert share_api.project(snap, {}, r, "s1")["background"] is False
 
 
 def test_events_carry_cursors_and_kinds_only():
