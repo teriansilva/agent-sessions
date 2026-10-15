@@ -1374,7 +1374,7 @@ function askState(over: Json): Json {
 }
 
 for (const theme of ["dark", "light"] as const) {
-  test(`Approve always offers the request's own grants with their breadth and sends one (${theme}) (#1339)`, async ({
+  test(`a session grant and a persistent one are each one click, with their breadth on hover (${theme})`, async ({
     page,
   }) => {
     await setup(page, theme);
@@ -1391,23 +1391,15 @@ for (const theme of ["dark", "light"] as const) {
     const card = page.getByTestId("structured-request");
     await expect(card).toBeVisible();
     await expect(card.getByTestId("structured-risk")).toHaveCount(0);
-    const toggle = card.getByTestId("structured-always");
-    await expect(toggle).toHaveAttribute("aria-expanded", "false");
-    await toggle.click();
-    await expect(toggle).toHaveAttribute("aria-expanded", "true");
-    const options = card.getByTestId("structured-always-option");
-    await expect(options).toHaveText([ALWAYS_PERSIST.label, ALWAYS_SESSION.label]);
-    await expect(card).toContainText("BattleLab never adds or widens one");
+    // No list to open: each grant is its own button, named by how long it lasts.
+    const grants = card.getByTestId("structured-always");
+    await expect(grants).toHaveText(["Approve for session", "Approve always"]);
+    await expect(grants.nth(0)).toHaveAttribute("title", ALWAYS_SESSION.label);
+    await expect(grants.nth(1)).toHaveAttribute("title", ALWAYS_PERSIST.label);
+    await expect(grants.nth(1)).not.toHaveAttribute("aria-expanded");
     await noOverflow(page);
     await targets(page, card);
-    // Opening moves focus into the grants; Escape closes them and returns it to the toggle.
-    await expect(options.first()).toBeFocused();
-    await page.keyboard.press("Escape");
-    await expect(options).toHaveCount(0);
-    await expect(toggle).toBeFocused();
-    await page.keyboard.press("Enter");
-    await expect(options.first()).toBeFocused();
-    await options.first().click();
+    await grants.nth(1).click();
     await expect(page.getByTestId("structured-request")).toHaveCount(0);
     expect(decided).toMatchObject({ request_id: "7", turn_id: TURN, decision: "always", grant: ALWAYS_PERSIST.id });
   });
@@ -1443,9 +1435,10 @@ for (const theme of ["dark", "light"] as const) {
     await page.goto(URL_PATH);
     const card = page.getByTestId("structured-request");
     await expect(card.getByTestId("structured-risk")).toContainText("force-pushes over remote history");
-    await card.getByTestId("structured-always").click();
-    const option = card.getByTestId("structured-always-option");
-    await expect(option).toHaveText(grant.label);
+    // One proposed grant is one click (no list to pick from); its scope stays on hover.
+    const option = card.getByTestId("structured-always");
+    await expect(option).toHaveAttribute("title", grant.label);
+    await expect(option).not.toHaveAttribute("aria-expanded");
     const rows = page.getByTestId("structured-tool");
     await expect(rows.nth(0).getByTestId("structured-risk")).toContainText("deletes files recursively");
     await expect(rows.nth(1).getByTestId("structured-risk")).toHaveText("not classified");
@@ -1489,10 +1482,9 @@ for (const theme of ["dark", "light"] as const) {
         : "not classified";
       const mark = card.getByTestId("structured-risk");
       await expect(mark).toBeVisible();
-      await card.getByTestId("structured-always").click();
-      const option = card.getByTestId("structured-always-option");
-      await expect(option).toContainText("Allow access to `/srv/data` · this session only");
-      await expect(option).toContainText(note);
+      const option = card.getByTestId("structured-always");
+      await expect(option).toHaveAttribute("title", /Allow access to `\/srv\/data` · this session only/);
+      await expect(option).toHaveAttribute("title", new RegExp(note));
       await expect(mark).toBeVisible();
       await targets(page, card);
       await noOverflow(page);

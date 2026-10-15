@@ -56,11 +56,9 @@ for (const theme of ["dark", "light"] as const) {
       return (Math.max(fg, bg) + .05) / (Math.min(fg, bg) + .05);
     });
     expect(ratio).toBeGreaterThanOrEqual(4.5);
-    await always.click();
-    await expect(page.getByTestId("structured-always-option")).toBeVisible();
-    await expect(page.getByTestId("structured-always-option")).toContainText("for the rest of this session");
-    await page.keyboard.press("Escape");
-    await expect(always).toBeFocused();
+    // The fixture proposes one grant: no list to open, its scope is on hover.
+    await expect(always).toHaveAttribute("title", /for the rest of this session/);
+    await expect(always).not.toHaveAttribute("aria-expanded");
   });
 
   test(`existing-session permissions are reachable in the map's single chrome (${theme})`, async ({ page }, info) => {
@@ -101,15 +99,12 @@ for (const theme of ["dark", "light"] as const) {
 
 test("uncertain containment survives reload and retries the same operation", async ({ page }) => {
   const attempts = await setup(page, "dark", "codex-api", true);
-  await page.getByTestId("structured-always").click();
-  await expect(page.getByTestId("structured-always-option")).toBeEnabled();
   const dialog = await openPermissions(page);
   await dialog.getByRole("button", { name: "Stop turn & enable" }).click();
   await expect(dialog.getByRole("alert")).toContainText("not confirmed");
   await dialog.getByRole("button", { name: "Close", exact: true }).click();
   const approval = page.getByTestId("structured-request");
   for (const button of await approval.getByRole("button").all()) await expect(button).toBeDisabled();
-  await expect(page.getByTestId("structured-always-option")).toBeDisabled();
   await page.reload();
   await expect(page.getByTestId("structured-bypass")).toHaveCount(0);
   for (const button of await page.getByTestId("structured-request").getByRole("button").all()) {

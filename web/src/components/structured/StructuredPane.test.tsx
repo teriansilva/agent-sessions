@@ -453,7 +453,11 @@ test.each([false, true])("a permission change disables approval controls and ope
     pending_requests: [{
       request_id: "7", turn_id: t.turn_id, kind: "command", complete: true,
       choices: ["approve", "reject"], payload: { command: "ls" },
-      always: [{ id: "g0123456789abcdef", label: "For this session", scope: "session" }],
+      // Two of one scope, so the list opens (otherwise each grant is its own button).
+      always: [
+        { id: "g0123456789abcdef", label: "Always, saved to this project", scope: "persistent" },
+        { id: "gfedcba9876543210", label: "Always, saved to every project", scope: "persistent" },
+      ],
     }],
   });
   vi.mocked(api.structuredSnapshot).mockResolvedValue(before);
@@ -465,7 +469,7 @@ test.each([false, true])("a permission change disables approval controls and ope
     await screen.findByRole("button", { name: /Retry “Approve once”/ });
   } else {
     await user.click(within(card).getByTestId("structured-always"));
-    expect(within(card).getByTestId("structured-always-option")).toBeEnabled();
+    expect(within(card).getAllByTestId("structured-always-option")[0]).toBeEnabled();
   }
   vi.mocked(api.structuredSnapshot).mockResolvedValue({
     ...before, permission_change: { state: "stopping", operation_id: crypto.randomUUID() },
@@ -1146,20 +1150,63 @@ const PERSIST = {
 };
 const SESSION = { id: "gfedcba9876543210", scope: "session", label: "Allow `cat x` for the rest of this session" };
 
-test("Approve always lists only the snapshot's grants, with breadth, and sends the chosen id (#1339)", async () => {
+test("a session grant and a persistent one are each one click, labelled by how long they last", async () => {
   const t = pendingWith({ always: [PERSIST, SESSION], risk: { level: "none", reasons: [] } });
   vi.mocked(api.structuredDecide).mockResolvedValue({});
   const user = userEvent.setup();
   renderPane();
   const card = await screen.findByTestId("structured-request");
   expect(within(card).queryByTestId("structured-risk")).toBeNull(); // "none" is never labelled safe
+  expect(within(card).getAllByRole("button").map((b) => b.textContent)).toEqual([
+    "Approve once",
+    "Approve for session",
+    "Approve always",
+    "Reject",
+    "Reject and stop the turn",
+  ]);
+  const [session, persist] = within(card).getAllByTestId("structured-always");
+  expect(session).toHaveAttribute("title", SESSION.label);
+  expect(persist).toHaveAttribute("title", PERSIST.label);
+  expect(persist).not.toHaveAttribute("aria-expanded");
+  // The full labels stay reachable without hover, in Details.
+  expect(within(card).getByText(/and any command starting with it/)).toBeInTheDocument();
+  await user.click(persist);
+  expect(within(card).queryByTestId("structured-always-option")).toBeNull();
+  await vi.waitFor(() => expect(api.structuredDecide).toHaveBeenCalledTimes(1));
+  const [, body] = vi.mocked(api.structuredDecide).mock.calls[0];
+  expect(body).toMatchObject({ turn_id: t.turn_id, request_id: "7", decision: "always", grant: PERSIST.id });
+});
+
+test("two grants of one scope still open the list and send the chosen id (#1339)", async () => {
+  const project = { ...PERSIST, id: "g1111111111111111", label: "Always allow `cat` · saved to this project" };
+  const t = pendingWith({ always: [PERSIST, project] });
+  vi.mocked(api.structuredDecide).mockResolvedValue({});
+  const user = userEvent.setup();
+  renderPane();
+  const card = await screen.findByTestId("structured-request");
   const toggle = within(card).getByTestId("structured-always");
   expect(toggle).toHaveAttribute("aria-expanded", "false");
   await user.click(toggle);
   const options = within(card).getAllByTestId("structured-always-option");
-  expect(options.map((o) => o.textContent)).toEqual([PERSIST.label, SESSION.label]);
-  expect(options[0]).toHaveTextContent("and any command starting with it");
-  await user.click(options[0]);
+  expect(options.map((o) => o.textContent)).toEqual([PERSIST.label, project.label]);
+  await user.click(options[1]);
+  await vi.waitFor(() => expect(api.structuredDecide).toHaveBeenCalledTimes(1));
+  const [, body] = vi.mocked(api.structuredDecide).mock.calls[0];
+  expect(body).toMatchObject({ turn_id: t.turn_id, request_id: "7", decision: "always", grant: project.id });
+});
+
+test("one proposed grant: Approve always sends it in one click, no list to pick from", async () => {
+  const t = pendingWith({ always: [PERSIST] });
+  vi.mocked(api.structuredDecide).mockResolvedValue({});
+  const user = userEvent.setup();
+  renderPane();
+  const card = await screen.findByTestId("structured-request");
+  const always = within(card).getByTestId("structured-always");
+  expect(always).toHaveTextContent(/^Approve always$/);
+  expect(always).not.toHaveAttribute("aria-expanded");
+  expect(always).toHaveAttribute("title", PERSIST.label);
+  await user.click(always);
+  expect(within(card).queryByTestId("structured-always-option")).toBeNull();
   await vi.waitFor(() => expect(api.structuredDecide).toHaveBeenCalledTimes(1));
   const [, body] = vi.mocked(api.structuredDecide).mock.calls[0];
   expect(body).toMatchObject({ turn_id: t.turn_id, request_id: "7", decision: "always", grant: PERSIST.id });

@@ -2,6 +2,7 @@
  *  renders these answers, and the tests pin them. */
 import type {
   StructuredAgentTurn,
+  StructuredGrant,
   StructuredRequest,
   StructuredSnapshot,
   StructuredTurn,
@@ -252,8 +253,8 @@ export function reviewOnly(req: StructuredRequest): boolean {
   return !req.choices.includes("approve");
 }
 
-/** The button text for one server-offered choice. "Approve always" (#1339) lists only the
- *  snapshot's own `always` grants; the view invents none. */
+/** The button text for one server-offered choice. "Approve always" (#1339) offers only the
+ *  snapshot's own `always` grants, as buttons or a list (`inlineGrants`); the view invents none. */
 export function choiceLabel(choice: string, req: StructuredRequest): string {
   const tool = req.kind !== "command" && req.kind !== "file_change";
   if (choice === "approve") return tool ? "Allow once" : "Approve once";
@@ -261,6 +262,23 @@ export function choiceLabel(choice: string, req: StructuredRequest): string {
   if (choice === "reject") return req.kind === "file_change" ? "Decline" : tool ? "Deny" : "Reject";
   if (choice === "cancel") return "Reject and stop the turn";
   return choice;
+}
+
+/** The grants a card offers as their own one-click buttons, session-long first; null when they
+ *  need the list instead. A button is named only by how long its grant lasts (the command is
+ *  already on the card), so that has to tell them apart: one grant, or Codex's session + exec
+ *  policy pair. Two of one scope still open the list, where each full label is the choice. */
+export function inlineGrants(always: StructuredGrant[]): StructuredGrant[] | null {
+  const scopes = always.map((g) => g.scope);
+  if (always.length === 1) return always;
+  if (always.length !== 2 || !scopes.includes("session") || !scopes.includes("persistent")) return null;
+  return always[0].scope === "session" ? always : [always[1], always[0]];
+}
+
+/** The button text for one inline grant. */
+export function grantChoiceLabel(grant: StructuredGrant, req: StructuredRequest): string {
+  if (grant.scope !== "session") return choiceLabel("always", req);
+  return req.kind !== "command" && req.kind !== "file_change" ? "Allow for session" : "Approve for session";
 }
 
 /** The operation id for a send: reused while the text is the same (a retry after an unknown

@@ -71,6 +71,8 @@ import {
   backgroundWorking,
   choiceLabel,
   cutBySendNow,
+  grantChoiceLabel,
+  inlineGrants,
   ordinal,
   queuePositions,
   interruptTarget,
@@ -202,6 +204,7 @@ function RequestCard({
 }) {
   const mine = deciding?.key === requestKey(req) ? deciding : null;
   const always = req.choices.includes("approve") ? (req.always ?? []) : [];
+  const inline = inlineGrants(always);
   const [alwaysOpen, setAlwaysOpen] = useState(false);
   // Focus moves INTO the grants when they open and back to the toggle on Escape (#1339).
   const alwaysToggle = useRef<HTMLButtonElement>(null);
@@ -215,7 +218,7 @@ function RequestCard({
   const decidedGrant = mine?.grant ? always.find((g) => g.id === mine.grant) : undefined;
   const mineLabel = mine
     ? mine.decision === "always" && decidedGrant
-      ? `${choiceLabel("always", req)}: ${decidedGrant.label}`
+      ? `${inline ? grantChoiceLabel(decidedGrant, req) : choiceLabel("always", req)}: ${decidedGrant.label}`
       : choiceLabel(mine.decision, req)
     : "";
   const summary = requestSummary(req, folder);
@@ -286,6 +289,26 @@ function RequestCard({
               </button>
             );
             if (choice !== "approve" || always.length === 0) return [button];
+            // Each inline grant is one click; its full label rides on hover and in Details.
+            if (inline) {
+              return [
+                button,
+                ...inline.map((g) => (
+                  <button
+                    key={g.id}
+                    type="button"
+                    className={chat.send}
+                    title={g.label}
+                    data-testid="structured-always"
+                    data-scope={g.scope}
+                    disabled={readOnly || !!mine}
+                    onClick={() => onDecide(req, "always", g.id)}
+                  >
+                    {grantChoiceLabel(g, req)}
+                  </button>
+                )),
+              ];
+            }
             return [
               button,
               <button
@@ -338,6 +361,18 @@ function RequestCard({
                 </dd>
               </div>
             ))}
+            {inline && (
+              <div className={styles.kvRow} data-testid="structured-field" data-field="grants">
+                <dt>Standing grants</dt>
+                <dd>
+                  {inline.map((g) => (
+                    <p key={g.id}>
+                      <b>{grantChoiceLabel(g, req)}:</b> {g.label}
+                    </p>
+                  ))}
+                </dd>
+              </div>
+            )}
           </dl>
           <p className={styles.ids}>
             {[`request ${req.request_id}`, ...ids, req.payload_digest ? `digest ${req.payload_digest.slice(0, 8)}…` : null]
@@ -346,7 +381,7 @@ function RequestCard({
           </p>
         </div>
       </details>
-      {alwaysOpen && !mine && always.length > 0 && (
+      {alwaysOpen && !mine && !inline && always.length > 0 && (
         <ul
           ref={alwaysList}
           className={styles.alwaysList}
