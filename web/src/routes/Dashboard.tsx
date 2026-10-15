@@ -19,7 +19,6 @@ import {
   KpiStrip,
   MissionsTile,
   QuotaTile,
-  RecentSessionsTile,
   RunningTile,
 } from "../components/dashboard/Tiles";
 import d from "../components/dashboard/Dashboard.module.css";
@@ -42,8 +41,9 @@ import { MISSION_PATH, NEW_PROJECT_PATH, SESSIONS_PATH } from "../lib/routes";
 import { coerceRecentWindowDays } from "../lib/recentWindow";
 import styles from "./Ask.module.css";
 
-/** The BattleLab dashboard (#1123): RECENT WORK and NEEDS YOU (#1086), active agents, missions,
- *  quota.
+/** The BattleLab dashboard: overview cards, NEEDS YOU, running sessions, missions and quota.
+ *  RECENT WORK is opt-in (#1467): opening it mounts and revalidates its retained snapshot; closing
+ *  it retires its reads. Session history has one link instead of another list of the same sessions.
  *
  *  **Ask is not on this page (#1294).** It is the right-hand sidebar the corner icon opens on every
  *  route; the head row's Ask button opens the same sidebar, and that is all the dashboard holds of
@@ -55,7 +55,7 @@ export default function Dashboard() {
   const refreshConfig = useConfigRefresh();
   const { openAsk } = useAskPanel();
 
-  // ONE window for both sections: the stored preference, changed from either picker.
+  // ONE window for Needs you and Recent work: the stored preference, changed in the recap.
   const stored = coerceRecentWindowDays(cfg?.pulse?.window_days);
   const [windowDays, setWindowDays] = useState(stored);
   const [synced, setSynced] = useState(stored);
@@ -99,6 +99,7 @@ export default function Dashboard() {
     QUOTA_POLL_MS,
   );
   const [recentRefreshing, setRecentRefreshing] = useState(false);
+  const [recentOpen, setRecentOpen] = useState(false);
   // #1223: the bar runs while any PAINTED source re-reads — a cold source shows its own skeleton,
   // and is not "refreshing" anything. It stays until the last of them settles.
   const revalidating =
@@ -108,7 +109,7 @@ export default function Dashboard() {
     // NEEDS YOU keeps its list through a failed read (`error` WITH data), so its gate is "is a
     // list painted", not "was the last read ok" — a Retry over it is a refresh (review 5407).
     (needsRefreshing && state.data !== null) ||
-    recentRefreshing;
+    (recentOpen && recentRefreshing);
   const running = (
     <RunningTile res={sessions} retry={() => void retrySessions()} />
   );
@@ -236,11 +237,35 @@ export default function Dashboard() {
             <div className={d.cols}>
               <div>
                 {needs}
-                {recent}
-                <RecentSessionsTile
-                  res={sessions}
-                  retry={() => void retrySessions()}
-                />
+                <button
+                  type="button"
+                  id="dashboard-recent-toggle"
+                  className={d.recentToggle}
+                  aria-expanded={recentOpen}
+                  aria-controls="dashboard-details-content"
+                  onClick={() => setRecentOpen((open) => !open)}
+                  data-testid="dashboard-details-toggle"
+                >
+                  Recent work
+                  <ChevronDown size={14} aria-hidden="true" />
+                </button>
+                <div
+                  id="dashboard-details-content"
+                  role="region"
+                  aria-labelledby="dashboard-recent-toggle"
+                  hidden={!recentOpen}
+                >
+                  {recentOpen ? recent : null}
+                </div>
+                <div className={d.history}>
+                  <Link
+                    className={d.go}
+                    to={SESSIONS_PATH}
+                    data-testid="dashboard-sessions-history"
+                  >
+                    All sessions →
+                  </Link>
+                </div>
               </div>
               <div>
                 {running}

@@ -2,8 +2,9 @@
  *  desktop and mobile, both themes. API mocked. What is pinned is what the issue asks for:
  *  every tile loads and fails ON ITS OWN (a failing tile never blanks the page), a failed read is
  *  never drawn as "0", the quota tile lists only quotas that were read (an unconfigured, stale or
- *  refused agent is left off) and says when a pace runs out, counts open exactly what they count, the phone keeps agent · project under each recent session, and asking opens
- *  the conversation on Ask's own page, from which the back arrow returns here (#1171). */
+ *  refused agent is left off) and says when a pace runs out, counts open exactly what they count,
+ *  Recent work is optional, history has a single All sessions link, and running sessions keep
+ *  agent · project metadata on a phone. Ask opens the shared sidebar (#1294). */
 import { expect, test, type Page } from "@playwright/test";
 
 import { ASK_STREAM, fulfillAsk } from "./askStream";
@@ -268,6 +269,49 @@ async function mockAll(
   });
 }
 
+test("focused dashboard shows decisions and running sessions before optional details", async ({
+  page,
+}) => {
+  await mockAll(page);
+  let recapReads = 0;
+  let usageReads = 0;
+  let missionReads = 0;
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "GET" && path === "/api/agents/usage") {
+      usageReads++;
+    }
+    if (request.method() === "GET" && path === "/api/missions") {
+      missionReads++;
+    }
+    if (request.method() === "GET" && path === "/api/pulse/recap") {
+      recapReads++;
+    }
+  });
+  await page.goto("/dashboard");
+  await expect(page.getByTestId("needs-you")).toBeVisible();
+  await expect(page.getByTestId("dash-running")).toBeVisible();
+  await expect(page.getByTestId("running-row")).toHaveCount(2);
+  await expect(page.getByTestId("dash-kpis").getByRole("button")).toHaveCount(4);
+  await expect(page.getByTestId("dash-quota")).toBeVisible();
+  await expect(page.getByTestId("quota-row")).toHaveCount(2);
+  await expect(page.getByTestId("dash-missions")).toBeVisible();
+  await expect(page.getByTestId("mission-row")).toHaveCount(3);
+  expect(usageReads).toBeGreaterThan(0);
+  expect(missionReads).toBeGreaterThan(0);
+  await expect(page.getByTestId("dash-recent")).toHaveCount(0);
+  await expect(page.getByTestId("recent-session-row")).toHaveCount(0);
+  const details = page.getByTestId("dashboard-details-toggle");
+  await expect(details).toHaveAttribute("aria-expanded", "false");
+  await expect(details).toHaveText("Recent work");
+  await expect(page.getByTestId("recent-work")).toHaveCount(0);
+  expect(recapReads).toBe(0);
+  await details.click();
+  await expect(details).toHaveAttribute("aria-expanded", "true");
+  await expect(page.getByTestId("recent-work")).toBeVisible();
+  await expect.poll(() => recapReads).toBeGreaterThan(0);
+});
+
 test("every tile renders its own read, and the strip counts what the tiles show", async ({
   page,
 }) => {
@@ -288,10 +332,13 @@ test("every tile renders its own read, and the strip counts what the tiles show"
   await expect(
     page.getByTestId("dash-missions").getByTestId("mission-row"),
   ).toHaveCount(3);
-  // Latest by last activity, in the order the server sorted them.
-  const recent = page.getByTestId("recent-session-row");
-  await expect(recent.first()).toContainText("Newest session");
-  await expect(recent.nth(1)).toContainText("Needs you");
+  const running = page.getByTestId("running-row");
+  await expect(running.first()).toContainText("session a");
+  await expect(running.first()).toContainText("claude · Alpha · working");
+  await expect(running.nth(1)).toContainText("codex · Alpha · live, idle");
+  await expect(
+    page.getByTestId("dashboard-page").getByRole("link", { name: /all sessions/i }),
+  ).toHaveCount(1);
 });
 
 test("plan quota: the strip names the LOWEST plan window; tokens/manual never compete", async ({
@@ -525,16 +572,58 @@ test("New is a menu — session, mission, project — that opens on screen and g
   }
 });
 
-test("on a phone, a recent session keeps agent · project under its title", async ({
+test("on a phone, a running session keeps agent · project under its title", async ({
   page,
 }, info) => {
   test.skip(info.project.name !== "mobile", "phone layout");
   await mockAll(page);
   await page.goto("/dashboard");
-  const row = page.getByTestId("recent-session-row").first();
-  await expect(
-    row.locator("td").first().getByText("claude · Alpha"),
-  ).toBeVisible();
+  const row = page.getByTestId("running-row").first();
+  const title = row.getByText("session a", { exact: true });
+  const metadata = row.getByText("claude · Alpha · working", { exact: false });
+  await expect(title).toBeVisible();
+  await expect(metadata).toBeVisible();
+  const titleBox = (await title.boundingBox())!;
+  const metadataBox = (await metadata.boundingBox())!;
+  expect(metadataBox.y).toBeGreaterThanOrEqual(titleBox.y + titleBox.height);
+});
+
+test("Recent work opens and closes with the keyboard while focus stays on its button", async ({
+  page,
+}) => {
+  await mockAll(page);
+  await page.goto("/dashboard");
+  const toggle = page.getByTestId("dashboard-details-toggle");
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(toggle).toHaveAttribute("aria-controls", /.+/);
+  expect((await toggle.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  await toggle.focus();
+  await page.keyboard.press("Enter");
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await expect(page.getByTestId("recent-work")).toBeVisible();
+  await expect(toggle).toBeFocused();
+  await page.keyboard.press("Space");
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByTestId("recent-work")).not.toBeVisible();
+  await expect(toggle).toBeFocused();
+});
+
+test("All sessions opens the session history without expanding Recent work", async ({
+  page,
+}) => {
+  await mockAll(page);
+  await page.goto("/dashboard");
+  const history = page
+    .getByTestId("dashboard-page")
+    .getByRole("link", { name: /all sessions/i });
+  await expect(page.getByTestId("dashboard-details-toggle")).toHaveAttribute(
+    "aria-expanded",
+    "false",
+  );
+  await expect(history).toHaveAttribute("href", "/");
+  expect((await history.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  await history.click();
+  await expect(page).toHaveURL(/\/$/);
 });
 
 for (const theme of ["dark", "light"] as const) {
@@ -563,23 +652,19 @@ test("long agent-authored titles and project names never overflow the page sidew
         ...DASH,
         live: {
           ...DASH.live,
-          rows: [liveRow(A, { title: long, state_line: long })],
-        },
-        recent: {
-          total: 1,
           rows: [
-            {
-              ...DASH.recent.rows[0],
+            liveRow(A, {
               title: long,
+              state_line: long,
               project: { id: "p", name: long },
-            },
+            }),
           ],
         },
       },
     },
   });
   await page.goto("/dashboard");
-  await expect(page.getByTestId("recent-session-row")).toHaveCount(1);
+  await expect(page.getByTestId("running-row")).toHaveCount(1);
   const pane = page.getByTestId("dashboard-pane");
   const [scroll, client] = await pane.evaluate((el) => [
     el.scrollWidth,

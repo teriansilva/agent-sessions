@@ -1,6 +1,6 @@
 /** ASK as the home for sessions without a mission (#1086 Phase 3): RECENT WORK, NEEDS YOU and the
- *  details dialog on the dashboard, and the needs-you marker on Ask's answers (its own page in
- *  #1171, the right-hand sidebar since #1294).
+ *  details dialog on the dashboard (RECENT WORK opens on demand), and the needs-you marker on
+ *  Ask's answers (its own page in #1171, the right-hand sidebar since #1294).
  *
  *  Real browser, API mocked. What is pinned is what the operator relies on: Approve names what it
  *  does and approves exactly that decision; the EDITED text is what is sent; opening details opens
@@ -183,6 +183,7 @@ test("RECENT WORK previews the latest four, oldest first, and Show more opens th
   await mockShell(page);
   await mockNeedsYou(page);
   await page.goto("/dashboard");
+  await page.getByTestId("dashboard-details-toggle").click();
   const preview = page.getByTestId("recent-work").getByTestId("recent-work-entry");
   await expect(preview).toHaveCount(4);
   // The LATEST four (2..5), shown oldest first.
@@ -527,6 +528,7 @@ test("a failed read for a NEW window is shown as a failure, never as the old win
     r.fulfill({ status: 500, json: { detail: "boom" } }),
   );
   await page.goto("/dashboard");
+  await page.getByTestId("dashboard-details-toggle").click();
   const recent = page.getByTestId("recent-work");
   await expect(recent.getByTestId("recent-work-entry")).toHaveCount(4);
   await recent.getByText("3", { exact: true }).click();
@@ -542,6 +544,7 @@ test("the Show more dialog follows a window change, and a failed read there is a
     r.fulfill({ status: 500, json: { detail: "boom" } }),
   );
   await page.goto("/dashboard");
+  await page.getByTestId("dashboard-details-toggle").click();
   await page.getByTestId("recent-work-more").click();
   const dialog = page.getByTestId("recent-work-dialog");
   await expect(dialog.getByTestId("recent-work-entry")).toHaveCount(6);
@@ -568,6 +571,7 @@ test("a slow refresh for the old window never leaves the new window 'updating…
     return r.fulfill({ json: RECAP }).catch(() => {});
   });
   await page.goto("/dashboard");
+  await page.getByTestId("dashboard-details-toggle").click();
   const recent = page.getByTestId("recent-work");
   await expect(recent.getByText("updating…")).toBeVisible();
   await recent.getByText("3", { exact: true }).click();

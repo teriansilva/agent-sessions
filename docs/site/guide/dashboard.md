@@ -16,7 +16,7 @@ Four numbers, each a link to the tile or section it counts:
 |---|---|
 | **Active agents** | Sessions with a live agent, and how many of them are working, broken down per agent. |
 | **Missions** | Missions that are active or waiting for your review. |
-| **Needs you** | Sessions no mission holds that are waiting on you, the same list as [Needs you](#needs-you-and-ask) below. |
+| **Needs you** | Sessions no mission holds that are waiting on you, the same list as [Needs you](#needs-you-and-recent-work) below. |
 | **Plan quota — lowest left** | The agent plan with the least quota left, and when it resets. Only agents whose plan quota the tile lists count here; see *All agents* in [Settings](/guide/settings). |
 
 A number that could not be read shows **—** and *couldn't read*, never a guess. A count that might be
@@ -36,16 +36,20 @@ wrong is worse than no count.
   and no limit set, one whose quota could not be read for over an hour, and one whose vendor refuses
   the account are left off. They all still appear under *All agents* in
   [Settings](/guide/settings), which is where you set a limit.
-- **Most recent sessions**: your latest sessions, each tagged *Needs you*, *In flight*, *Recently
-  active* or *Idle*, with a link to the full list.
+
+The overview cards and the Running sessions, Missions and Quota panels stay visible. Session
+history has one **All sessions** link below Needs you, rather than another list of the same sessions.
 
 Sessions refresh every 30 seconds, missions every minute and quota every five minutes. A refresh that
 fails keeps the last figures and says so, with a **Retry**.
 
 ## Needs you and recent work
 
-Your recent work and the **Needs you** list with its actions (approve, reply, dismiss) sit among the
-tiles; how each behaves is on the [Ask](/guide/ask) page.
+The **Needs you** list with its actions (approve, reply, dismiss) is always visible. **Recent work**
+is collapsed beneath it: open it to read the recap and choose its time window. The recap is loaded
+only when opened. Closing it retires its in-flight read; opening it again shows its last successful
+snapshot immediately and refreshes it. A failed read says so; close and reopen to try again.
+How the list and recap behave is on the [Ask](/guide/ask) page.
 
 ## Asking
 
@@ -64,11 +68,13 @@ opens it, and so does the speech-bubble icon beside the notification bell. See [
 
 ## On a phone
 
-The Dashboard is one column: the strip first, then Needs you and the other tiles.
+The Dashboard is one column: the overview cards first, then Needs you, the collapsed Recent work
+control and All sessions link, followed by Running sessions, Missions and Quota.
 
 ## What it does not do
 
 - It never starts, stops or changes anything by itself. Opening the page only reads.
-- It keeps no copy of your data: close it and nothing is retained.
+- Its last successful reads are retained in memory while you navigate within the app. They are
+  never saved to browser storage and do not survive a reload or logout.
 - It is not a replacement for [Mission control](/guide/missions), which is still where mission work
   is steered.

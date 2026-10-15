@@ -3,8 +3,10 @@
  *  Real browser, desktop + mobile, API mocked. Every read of the dashboard sits behind a GATE the
  *  spec opens by hand, so the return visit can be observed while its reads are still in flight and
  *  then released one source at a time — which is what proves the bar belongs to the LAST applicable
- *  refresh, not the first. Navigation is in-app (pushState + popstate), never a reload: retention
- *  lives above the router for the page's lifetime and is deliberately not persisted. */
+ *  refresh, not the first. RECENT WORK is mounted only while its disclosure is open: its retained
+ *  snapshot revalidates on each opening, and closing retires pending snapshot and AI reads.
+ *  Navigation is in-app (pushState + popstate), never a reload: retention lives above the router
+ *  for the page's lifetime and is deliberately not persisted. */
 import { expect, test, type Page, type Route } from "@playwright/test";
 
 const NOW = Math.floor(Date.now() / 1000);
@@ -12,6 +14,29 @@ const A = "claude:aaaaaaaa-0000-4000-8000-00000000000a";
 
 type Source = "sessions" | "missions" | "quota" | "needs" | "recap";
 const SOURCES: Source[] = ["sessions", "missions", "quota", "needs", "recap"];
+const EAGER_SOURCES = SOURCES.filter((src) => src !== "recap");
+
+function recap(text = "Shipped the retained dashboard", stale = false) {
+  return {
+    window_days: 1,
+    source: "local",
+    generated_at: NOW,
+    stale,
+    configured: true,
+    error: null,
+    entries: [
+      {
+        session_key: A,
+        ts: NOW - 600,
+        text,
+        engine: "claude",
+        title: "retention",
+        project: { id: "p1", name: "Alpha" },
+        session_recap: "",
+      },
+    ],
+  };
+}
 
 const BODIES: Record<Source, (url: URL) => unknown> = {
   sessions: () => ({
@@ -87,25 +112,7 @@ const BODIES: Record<Source, (url: URL) => unknown> = {
     facets: { engines: [], projects: [] },
     window_days: 1,
   }),
-  recap: () => ({
-    window_days: 1,
-    source: "local",
-    generated_at: NOW,
-    stale: false,
-    configured: true,
-    error: null,
-    entries: [
-      {
-        session_key: A,
-        ts: NOW - 600,
-        text: "Shipped the retained dashboard",
-        engine: "claude",
-        title: "retention",
-        project: { id: "p1", name: "Alpha" },
-        session_recap: "",
-      },
-    ],
-  }),
+  recap: () => recap(),
 };
 
 /** One gate per source. While `held`, every request to it waits until `release` — which answers
@@ -113,22 +120,26 @@ const BODIES: Record<Source, (url: URL) => unknown> = {
 class Gates {
   held = new Set<Source>();
   never = new Set<Source>();
+  bodies: Partial<Record<Source, (url: URL) => unknown>> = {};
   private waiting = new Map<Source, Array<(fail: boolean) => void>>();
   count = new Map<Source, number>();
 
   async answer(src: Source, route: Route) {
     this.count.set(src, (this.count.get(src) ?? 0) + 1);
     if (this.never.has(src)) return; // never answered: the source stays cold
+    // Capture each request's answer before its gate: late reads retain their old snapshot even
+    // when the next opening has already asked for newer data.
+    const url = new URL(route.request().url());
+    const body = (this.bodies[src] ?? BODIES[src])(url);
     let fail = false;
     if (this.held.has(src)) {
       fail = await new Promise<boolean>((res) => {
         this.waiting.set(src, [...(this.waiting.get(src) ?? []), res]);
       });
     }
-    const url = new URL(route.request().url());
     return fail
       ? route.fulfill({ status: 500, json: { detail: "down" } })
-      : route.fulfill({ json: BODIES[src](url) });
+      : route.fulfill({ json: body });
   }
 
   holdAll() {
@@ -143,6 +154,13 @@ class Gates {
 
   pending(src: Source) {
     return (this.waiting.get(src) ?? []).length;
+  }
+
+  releaseOne(src: Source, newest = false) {
+    const waiting = this.waiting.get(src) ?? [];
+    const resolve = newest ? waiting.pop() : waiting.shift();
+    resolve?.(false);
+    if (waiting.length === 0) this.waiting.delete(src);
   }
 }
 
@@ -199,10 +217,25 @@ async function navigateInApp(page: Page, path: string) {
 }
 
 const bar = (page: Page) => page.getByTestId("dashboard-refresh-bar");
+const toggle = (page: Page) => page.getByTestId("dashboard-details-toggle");
+
+async function openRecentWork(page: Page) {
+  await expect(toggle(page)).toHaveAttribute("aria-expanded", "false");
+  await toggle(page).click();
+  await expect(toggle(page)).toHaveAttribute("aria-expanded", "true");
+}
+
+async function closeRecentWork(page: Page) {
+  await toggle(page).click();
+  await expect(toggle(page)).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator("#dashboard-details-content")).toBeHidden();
+  await expect(page.getByTestId("recent-work")).toHaveCount(0);
+}
 
 async function firstVisitSettled(page: Page) {
   await expect(page.getByTestId("kpi-agents")).toContainText("7");
   await expect(page.getByTestId("kpi-needs")).toContainText("2");
+  await openRecentWork(page);
   await expect(page.getByText("Shipped the retained dashboard")).toBeVisible();
   await expect(page.getByRole("progressbar")).toHaveCount(0);
 }
@@ -226,6 +259,7 @@ test("coming back paints the last dashboard at once, and the bar stays until the
   await firstVisitSettled(page);
 
   await leaveAndReturnHeld(page, gates);
+  await openRecentWork(page);
   // Painted at once — no skeleton — while every source re-reads behind it.
   await expect(page.getByTestId("kpi-agents")).toContainText("7");
   await expect(page.getByTestId("kpi-needs")).toContainText("2");
@@ -319,4 +353,135 @@ test("a Retry over a failed warm NEEDS YOU read shows the bar until it settles (
   gates.release("needs");
   await expect(bar(page)).toHaveAttribute("data-active", "false");
   await expect(page.getByTestId("needs-you-refresh-error")).toHaveCount(0);
+});
+
+test("Recent work stays closed on return; eager reads settle the bar before its retained recap revalidates on opening", async ({
+  page,
+}) => {
+  const gates = new Gates();
+  await mock(page, gates);
+  await page.goto("/dashboard");
+  await expect(page.getByTestId("kpi-agents")).toContainText("7");
+  await expect(page.getByTestId("kpi-missions")).toContainText("1 active");
+  await expect(page.getByTestId("kpi-quota")).toContainText("18%");
+  await expect(toggle(page)).toHaveAttribute("aria-expanded", "false");
+  expect(gates.count.get("recap") ?? 0).toBe(0);
+  await firstVisitSettled(page);
+
+  await leaveAndReturnHeld(page, gates);
+  await expect(toggle(page)).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByTestId("recent-work")).toHaveCount(0);
+  expect(gates.count.get("recap")).toBe(1);
+  expect(gates.pending("recap")).toBe(0);
+  for (const src of EAGER_SOURCES)
+    await expect.poll(() => gates.pending(src)).toBeGreaterThan(0);
+  await expect(bar(page)).toHaveAttribute("data-active", "true");
+
+  for (const src of EAGER_SOURCES) gates.release(src);
+  await expect(bar(page)).toHaveAttribute("data-active", "false");
+  // Hidden recap is still held but was never requested, so it cannot keep the page refreshing.
+  expect(gates.pending("recap")).toBe(0);
+
+  await openRecentWork(page);
+  await expect(page.getByText("Shipped the retained dashboard")).toBeVisible();
+  await expect.poll(() => gates.pending("recap")).toBe(1);
+  await expect(bar(page)).toHaveAttribute("data-active", "true");
+  gates.release("recap");
+  await expect(bar(page)).toHaveAttribute("data-active", "false");
+});
+
+test("closing a warm recap reread clears the bar, and its late snapshot cannot replace a newer opening or its retained data", async ({
+  page,
+}) => {
+  const gates = new Gates();
+  await mock(page, gates);
+  await page.goto("/dashboard");
+  await firstVisitSettled(page);
+  await closeRecentWork(page);
+
+  gates.bodies.recap = () => recap("Retired recap snapshot");
+  gates.held.add("recap");
+  await openRecentWork(page);
+  await expect.poll(() => gates.pending("recap")).toBe(1);
+  await expect(bar(page)).toHaveAttribute("data-active", "true");
+  await closeRecentWork(page);
+  await expect(bar(page)).toHaveAttribute("data-active", "false");
+
+  gates.bodies.recap = () => recap("Newest recap snapshot");
+  await openRecentWork(page);
+  await expect.poll(() => gates.pending("recap")).toBe(2);
+  gates.releaseOne("recap", true); // The new opening answers before the retired one.
+  await expect(page.getByText("Newest recap snapshot")).toBeVisible();
+  await expect(bar(page)).toHaveAttribute("data-active", "false");
+
+  const retiredResponse = page.waitForResponse(/\/api\/pulse\/recap(\?.*)?$/);
+  gates.releaseOne("recap");
+  await (await retiredResponse).finished();
+  await expect(page.getByText("Retired recap snapshot")).toHaveCount(0);
+  await expect(page.getByText("Newest recap snapshot")).toBeVisible();
+
+  await closeRecentWork(page);
+  await openRecentWork(page);
+  await expect.poll(() => gates.pending("recap")).toBe(1);
+  // The next opening paints the newest retained snapshot while its new request is still held.
+  await expect(page.getByText("Newest recap snapshot")).toBeVisible();
+  await expect(page.getByText("Retired recap snapshot")).toHaveCount(0);
+  await expect(bar(page)).toHaveAttribute("data-active", "true");
+  gates.release("recap");
+  await expect(bar(page)).toHaveAttribute("data-active", "false");
+});
+
+test("closing during an AI recap refresh retires its answer without holding the bar or overwriting a later opening", async ({
+  page,
+}) => {
+  const gates = new Gates();
+  await mock(page, gates);
+  let releaseAi = () => {};
+  const aiGate = new Promise<void>((resolve) => {
+    releaseAi = resolve;
+  });
+  let aiRequests = 0;
+  await page.route(/\/api\/pulse\/recap(\?.*)?$/, async (route) => {
+    if (route.request().method() !== "POST")
+      return gates.answer("recap", route);
+    aiRequests++;
+    await aiGate;
+    return route.fulfill({ json: recap("Retired AI recap") });
+  });
+  await page.goto("/dashboard");
+  await firstVisitSettled(page);
+  await closeRecentWork(page);
+
+  gates.bodies.recap = () => recap("Snapshot awaiting AI", true);
+  await openRecentWork(page);
+  await expect.poll(() => aiRequests).toBe(1);
+  await expect(page.getByTestId("recent-work")).toContainText("updating…");
+  // The follow-on AI call has its own indicator, never the dashboard snapshot refresh bar.
+  await expect(bar(page)).toHaveAttribute("data-active", "false");
+  await closeRecentWork(page);
+  await expect(bar(page)).toHaveAttribute("data-active", "false");
+
+  gates.bodies.recap = () => recap("Snapshot after reopening");
+  await openRecentWork(page);
+  await expect(page.getByText("Snapshot after reopening")).toBeVisible();
+  const retiredResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      /\/api\/pulse\/recap(\?.*)?$/.test(response.url()),
+  );
+  releaseAi();
+  await (await retiredResponse).finished();
+  await expect(page.getByText("Retired AI recap")).toHaveCount(0);
+  await expect(page.getByText("Snapshot after reopening")).toBeVisible();
+  await expect(bar(page)).toHaveAttribute("data-active", "false");
+  expect(aiRequests).toBe(1);
+
+  await closeRecentWork(page);
+  gates.held.add("recap");
+  await openRecentWork(page);
+  await expect.poll(() => gates.pending("recap")).toBe(1);
+  await expect(page.getByText("Snapshot after reopening")).toBeVisible();
+  await expect(page.getByText("Retired AI recap")).toHaveCount(0);
+  gates.release("recap");
+  await expect(bar(page)).toHaveAttribute("data-active", "false");
 });

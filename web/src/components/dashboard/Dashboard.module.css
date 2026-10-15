@@ -1,4 +1,5 @@
-/* The BattleLab dashboard (#1123): the tiles around Ask's sections. HUD vocabulary (docs/design.md):
+/* The BattleLab dashboard: overview cards, live work and quota, with Recent work on demand (#1467).
+ * HUD vocabulary (docs/design.md):
  * flat square panels, no radius except LEDs, no gradients, mono uppercase callsigns, status colour
  * ONLY for state (LEDs, bands, quota bars), `--accent` only for brand / primary. Tokens only. Every
  * control is ≥ 44px tall. The section chrome itself is Ask's (`AskHome.module.css`). */
@@ -407,6 +408,26 @@
 .headBtn {
   composes: ghost from "../ui/actionButton.module.css";
   text-decoration: none;
+}
+.recentToggle {
+  composes: ghost from "../ui/actionButton.module.css";
+  width: 100%;
+  justify-content: space-between;
+  margin-bottom: 14px;
+  font-family: var(--font-mono);
+  text-align: left;
+}
+.recentToggle[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+.history {
+  display: flex;
+  justify-content: flex-end;
+}
+@media (max-width: 800px) {
+  .history {
+    justify-content: flex-start;
+  }
 }
 /* New's menu — the section sub-menu's panel and rows (SectionNav.module.css). */
 .menuWrap {

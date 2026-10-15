@@ -71,6 +71,18 @@ const SPA_MOUNTED = {
 export const VISUAL_PATHS: VisualPath[] = [
   {
     group: "authed",
+    path: "/dashboard",
+    name: "dashboard",
+    description: "Dashboard — overview and quota retained, Recent work collapsed",
+    requireAuth: "admin",
+    waitFor: {
+      selector:
+        '[data-testid="dashboard-page"]:has([data-testid="dash-quota"]):not(:has([data-testid="tile-loading"])):has([data-testid="needs-you-empty"], [data-testid="needs-you-row"], [data-testid="needs-you-error"])',
+      timeoutMs: 12000,
+    },
+  },
+  {
+    group: "authed",
     path: "/projects/new",
     name: "new-project-playbooks",
     description: "New project — shared playbook gallery and explicit No playbook choice",
