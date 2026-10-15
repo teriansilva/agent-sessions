@@ -216,6 +216,9 @@ class _Codec:
     # Send now against a turn the agent runs for itself (#1427): always an interrupt, since a
     # steered reply would land in a turn no operator message owns. None: no such turn exists.
     send_now_background: str | None = None
+    # `submit_now` cuts a turn the agent runs for itself, so a message Send now selected need not
+    # wait behind one (#1475). False: it is written like any other message.
+    submit_now_cuts_own_turn = False
 
     def __init__(self) -> None:
         # A turn the agent runs that no operator command owns, and its Send now target: minted
@@ -247,6 +250,11 @@ class _Codec:
         self.operation_id = _uuid(operation_id)
         self._consumed.clear()
         self.native_turn_id = None
+
+    def submit_now(self, text: str, operation_id: str, images=()) -> dict:
+        """The message a Send now selected, written once the turn it cut has ended (#1475). An
+        agent with no queue of its own to jump sends it like any other."""
+        return self.submit(text, operation_id, images)
 
     def _remember(self, request_id: Any, payload: dict[str, Any]) -> str:
         key = _approval_key(request_id)
@@ -915,6 +923,7 @@ class ClaudeCodec(_Codec):
 
     ADAPTER = "claude-stream-json"
     send_now_background = "interrupt"
+    submit_now_cuts_own_turn = True
 
     def __init__(self, session_id: str) -> None:
         super().__init__()
@@ -1007,6 +1016,13 @@ class ClaudeCodec(_Codec):
             "client_composed": True,
         }
 
+    def submit_now(self, text: str, operation_id: str, images=()) -> dict:
+        """Ahead of the CLI's own queue (#1475). The interrupt that preceded this leaves a gap in
+        which the CLI starts whatever it queued for itself, a task notification first. Its queue
+        takes `now` before `next` and cuts a turn it has just started for it (captured: before
+        any output; the notification stays in the history the message is answered with)."""
+        return {**self.submit(text, operation_id, images), "priority": "now"}
+
     def interrupt(self) -> dict:
         if self.operation_id is None:
             raise ProtocolError("no correlated native turn to interrupt")
@@ -1054,6 +1070,11 @@ class ClaudeCodec(_Codec):
             return []
         # Out of order, unknown or unexpected: this generation can no longer fence its output.
         self._distrust()
+        if command is not None and command == self.operation_id and state == "started":
+            # Even out of order, the operator's input starting means the agent's own turn is
+            # over (one turn at a time): never leave it running beside a message that runs
+            # (#1475 review), which the pane would read as the message still waiting.
+            return self._agent_turn(False)
         return []
 
     def _distrust(self) -> None:

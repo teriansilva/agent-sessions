@@ -241,6 +241,8 @@ class Worker:
         self.effects = asyncio.Lock()
         self.queued: list[dict] = []
         self.priority_turn: str | None = None
+        # Queued messages a Send now promoted: each goes ahead of the agent's own queue (#1475).
+        self.sent_now: set[str] = set()
         self.priority_requests: dict[str, tuple[str, str, str, str]] = {}
         self.queue_wake = asyncio.Event()
         self.ready = asyncio.Event()
@@ -464,6 +466,24 @@ class Worker:
     def busy(self) -> bool:
         return bool(self.queued) or self.native_busy()
 
+    def _sent_now_cuts(self) -> bool:
+        """Does the head, a message Send now selected, go now although the agent runs a turn of
+        its own (#1475)? That turn may have started in the gap after the interrupt, before this
+        dispatch; the message's `priority: "now"` cuts it, which is what Send now asked for. Only
+        once the lifecycle is proved (the fence tells that turn's output from the message's) and
+        with nothing else of the operator's in flight: no turn, no pending control, no approval."""
+        codec = self.codec
+        return (
+            bool(self.queued)
+            and self.queued[0]["operation_id"] in self.sent_now
+            and codec.submit_now_cuts_own_turn
+            and getattr(codec, "lifecycle_proven", False)
+            and codec.operation_id is None
+            and not self.priority_requests
+            and not getattr(codec, "_steers", None)
+            and not codec._approvals
+        )
+
     async def idle_watch(self) -> None:
         """Exit when nothing is running; a later turn resumes the history in a new generation."""
         while not self.done.is_set():
@@ -486,6 +506,7 @@ class Worker:
         if selected is not None:
             self.queued.remove(selected)
             self.queued.insert(0, selected)
+            self.sent_now.add(operation_id)
 
     async def handle_events(self, events) -> None:
         self.last_activity = time.monotonic()
@@ -559,7 +580,7 @@ class Worker:
                 self.queue_wake.clear()
                 retry = False
                 async with self.effects:
-                    while self.queued and not self.dispatch_busy():
+                    while self.queued and (not self.dispatch_busy() or self._sent_now_cuts()):
                         if self.terminated or self.closing or self.done.is_set():
                             return
                         # Completion must be durable before the following turn can start.
@@ -572,7 +593,9 @@ class Worker:
                             with self.queued_admission():
                                 admitted = True
                                 self.queued.pop(0)
-                                await self.handoff("submit", params, queued=True)
+                                now = params["operation_id"] in self.sent_now
+                                self.sent_now.discard(params["operation_id"])
+                                await self.handoff("submit", params, queued=True, now=now)
                         except (native_state.LockBusy, storage.LockBusy):
                             if admitted:
                                 raise
@@ -585,6 +608,7 @@ class Worker:
                             if admitted:
                                 raise
                             self.queued.pop(0)
+                            self.sent_now.discard(params["operation_id"])
                             await asyncio.to_thread(
                                 native_journal.record_handoff,
                                 self.journal_root,
@@ -985,6 +1009,7 @@ class Worker:
                     )
                 elif params["mode"] == "steer":
                     self.queued.remove(queued)
+                    self.sent_now.discard(queued["operation_id"])
                     delivered = await self.handoff("steer", queued, queued=True)
                     receipt = await asyncio.to_thread(
                         native_journal.record_handoff,
@@ -1074,6 +1099,7 @@ class Worker:
             if not fresh:
                 return self.receipt(request, receipt)
             self.queued.remove(queued)
+            self.sent_now.discard(params["queued_turn_id"])
             await asyncio.to_thread(
                 native_journal.record_handoff,
                 self.journal_root,
@@ -1109,9 +1135,11 @@ class Worker:
             and codec.background_turn == turn_id
         )
 
-    async def handoff(self, action: str, params: dict, *, receipt=None, queued=False) -> dict:
+    async def handoff(
+        self, action: str, params: dict, *, receipt=None, queued=False, now=False
+    ) -> dict:
         try:
-            frame = self.frame(action, params)
+            frame = self.frame(action, params, now=now)
         except native_protocol.ProtocolError:
             frame = None
         if frame is None:
@@ -1156,7 +1184,7 @@ class Worker:
                 self.stop_child()
         return receipt
 
-    def frame(self, action: str, params: dict) -> dict | None:
+    def frame(self, action: str, params: dict, *, now: bool = False) -> dict | None:
         if action in {"submit", "steer"}:
             images = ()
             text = params["text"]
@@ -1166,7 +1194,13 @@ class Worker:
                     text, images = native_attachments.prepare(text, params["attachments"])
                 except native_attachments.AttachmentError as exc:
                     raise native_protocol.ProtocolError(str(exc)) from None
-            method = self.codec.steer if action == "steer" else self.codec.submit
+            method = (
+                self.codec.steer
+                if action == "steer"
+                else self.codec.submit_now
+                if now
+                else self.codec.submit
+            )
             return method(text, params["operation_id"], images)
         if action == "decide":
             return self.codec.decide(

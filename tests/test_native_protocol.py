@@ -1434,6 +1434,87 @@ def test_claude_an_interrupted_input_ends_its_cycle_with_cancelled():
     assert codec.lifecycle_proven
 
 
+def test_claude_submit_now_goes_ahead_of_the_clis_own_queue_and_others_do_not():
+    """#1475: only the message Send now selected carries `priority: "now"`."""
+    codec = ClaudeCodec(SESSION)
+    plain = codec.submit("go", OPERATION)
+    assert "priority" not in plain
+    codec.operation_id = None
+    now = codec.submit_now("go", NEXT)
+    assert now["priority"] == "now"
+    assert {k: v for k, v in now.items() if k not in {"priority", "uuid"}} == {
+        k: v for k, v in plain.items() if k != "uuid"
+    }
+    assert now["uuid"] == codec.operation_id == NEXT
+    codex = codex_session()
+    assert "priority" not in json.dumps(codex.submit_now("go", OPERATION))
+
+
+def test_claude_a_send_now_message_cuts_the_notification_turn_the_cli_had_just_started():
+    """Captured from the real CLI (#1475, `claude` 2.1.300): after the interrupt, the CLI started
+    a turn for its queued task notification; the message written with `priority: "now"` cut it
+    before any output (its own result, origin task-notification, `aborted_streaming`) and ran.
+    The cut turn ends interrupted, and the reply is the message's own."""
+    codec = ClaudeCodec(SESSION)
+    _operator_turn(codec, OPERATION, "one")
+    assert codec.lifecycle_proven
+    codec.submit_now("Reply with exactly: B-ANSWER", NEXT)
+    events = []
+    for frame in (
+        {"type": "system", "subtype": "init", "session_id": SESSION},
+        {"type": "system", "subtype": "status", "status": "requesting", "session_id": SESSION},
+        _life(NEXT, "queued"),
+        {
+            **_result("", origin={"kind": "task-notification", "producer": "session-task"}),
+            "subtype": "error_during_execution",
+            "is_error": True,
+            "terminal_reason": "aborted_streaming",
+        },
+        _life(NEXT, "started"),
+        {
+            "type": "system",
+            "subtype": "status",
+            "status": "requesting",
+            "session_id": SESSION,
+            "user_message_uuids": [NEXT],
+        },
+        _say("B-ANSWER"),
+        _result("B-ANSWER", origin={"kind": "human"}, user_message_uuid=NEXT),
+        _life(NEXT, "completed"),
+    ):
+        events += codec.feed(frame)
+    own = [e.data for e in events if e.kind == "background" and "background_turn" in e.data]
+    assert [d["state"] for d in own] == ["running", "interrupted"]
+    assert own[0]["background_turn"] and own[1]["background_turn"] is None
+    assert _agent_text(events) == {}
+    assert _owner_text(events) == {NEXT: "B-ANSWER"}
+    (completed,) = [e for e in events if e.kind == "turn_completed"]
+    assert completed.data["operation_id"] == NEXT and completed.data["state"] == "completed"
+    assert codec.lifecycle_proven and not codec.unowned_turn
+
+
+def test_claude_an_out_of_order_start_still_ends_the_agents_own_turn():
+    """#1475 review: `started` with no `queued` before it is an anomaly (the fence is lost), but
+    the operator's input starting still means the agent's own turn is over. Left running, the
+    pane would read the running message as waiting behind it."""
+    codec = ClaudeCodec(SESSION)
+    _operator_turn(codec, OPERATION, "one")
+    codec.submit("go", NEXT)
+    events = codec.feed(
+        {"type": "system", "subtype": "status", "status": "requesting", "session_id": SESSION}
+    )
+    assert codec.unowned_turn
+    events += codec.feed(_life(NEXT, "started"))
+    assert not codec.unowned_turn and codec.background_turn is None
+    assert not codec.lifecycle_proven
+    own = [e.data for e in events if e.kind == "background" and "background_turn" in e.data]
+    assert [d["state"] for d in own] == ["running", "completed"]
+    events = codec.feed(_say("two")) + codec.feed(
+        _result("two", origin={"kind": "human"}, user_message_uuid=NEXT)
+    )
+    assert _owner_text(events) == {NEXT: "two"}
+
+
 @pytest.mark.parametrize("ending,state", [("completed", "failed"), ("cancelled", "interrupted")])
 def test_claude_an_input_ended_without_its_result_completes_visibly(ending, state):
     codec = ClaudeCodec(SESSION)

@@ -265,3 +265,109 @@ async def test_send_now_reaches_the_agents_own_turn_before_output_on_the_current
     _, turn = await settle(key, nxt)
     assert turn["reply"] == "echo:two"
     assert "notified" not in "".join(await _replies(key))
+
+
+# --- #1475: Send now while the CLI holds a notification of its own ------------------------------
+
+
+async def _send_now_with_a_notification_queued(work, *, cli: str = "honours", seen_first=False):
+    """The operator's case (#1475): a task's notification waits in the CLI's own queue behind
+    the reply Send now cuts, and the CLI starts it before it reads the message. ``cli``: how the
+    CLI treats `priority` — `honours`, `ignores` it, or `rejects` the input carrying it."""
+    (work / "notify-after-turn").write_text("")
+    if seen_first:  # the worker reads the agent's turn starting before it dispatches
+        (work / "late-interrupt-ack").write_text("")
+    if cli != "honours":
+        (work / f"{cli[:-1]}-priority").write_text("")
+    key = await _with_running_task(work, lifecycle=True)
+    (work / "hold-notification-start").write_text("")
+    reply = ident()
+    await runtime.submit_turn(key, operation_id=reply, text="HANG")
+    await settle(key, reply, state=("running",))
+    (work / "release-bg-task").write_text("")
+    await _task_completed(key)  # the notification is queued in the CLI, behind the reply
+    nxt = ident()
+    await runtime.submit_turn(key, operation_id=nxt, text="two")
+    assert await _state(key, nxt) == "queued"
+    await runtime.send_now(key, operation_id=ident(), turn_id=reply, queued_turn_id=nxt)
+    return key, reply, nxt
+
+
+def _writes_of(work, operation) -> list[dict]:
+    return [
+        f["frame"]
+        for f in frames(work)
+        if f["frame"].get("type") == "user" and f["frame"].get("uuid") == operation
+    ]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("seen_first", [False, True], ids=["dispatched-first", "turn-seen-first"])
+async def test_send_now_goes_ahead_of_the_notification_the_cli_queued_for_itself(
+    host,  # noqa: F811
+    project,  # noqa: F811
+    seen_first,
+):
+    """The message is written with `priority: "now"`: the CLI cuts the notification turn it
+    started in the gap, and the message runs. What that turn had already said stays its own
+    (interrupted), never the message's reply. Whichever the worker sees first, the dispatch or
+    the agent's turn starting, the message never waits behind that turn (#1475 review)."""
+    key, reply, nxt = await _send_now_with_a_notification_queued(project, seen_first=seen_first)
+    _, turn = await settle(key, nxt)  # release-notification is never created
+    assert turn["state"] == "completed" and turn["reply"] == "echo:two"
+    assert await _state(key, reply) == "interrupted"
+    assert "notified" not in "".join(await _replies(key))
+    own = [t for t in (await runtime.snapshot(key))["turns"] if t["kind"] == "agent"]
+    assert [(t["state"], t["reply"]) for t in own][-1] == ("interrupted", "notified")
+    assert [f.get("priority") for f in _writes_of(project, nxt)] == ["now"]
+
+
+@pytest.mark.anyio
+async def test_a_cli_that_ignores_priority_keeps_todays_order_and_never_resends(
+    host,  # noqa: F811
+    project,  # noqa: F811
+):
+    """Hermes on #1475: a CLI that ignores `priority` runs its notification first, as before.
+    The message is written once, waits (the pane's waiting state: the operator's turn active,
+    the agent's own running) and is answered after; nothing is replayed."""
+    key, _, nxt = await _send_now_with_a_notification_queued(project, cli="ignores")
+    for _ in range(100):
+        snap = await runtime.snapshot(key)
+        own = [t for t in snap["turns"] if t["kind"] == "agent"]
+        if snap["active_turn"] == nxt and own and own[-1]["state"] == "running":
+            break
+        await asyncio.sleep(0.05)
+    else:
+        raise AssertionError(f"the message never waited behind the agent's turn: {snap}")
+    await asyncio.sleep(0.5)
+    assert await _state(key, nxt) not in {"completed", "failed", "interrupted"}
+    (project / "release-notification").write_text("")
+    _, turn = await settle(key, nxt)
+    assert turn["reply"] == "echo:two"
+    assert "notified" not in "".join(await _replies(key))
+    assert len(_writes_of(project, nxt)) == 1
+
+
+@pytest.mark.anyio
+async def test_a_cli_that_rejects_the_priority_input_is_never_sent_it_again(
+    host,  # noqa: F811
+    project,  # noqa: F811
+):
+    """Hermes on #1475: a CLI that refused the input carrying `priority` never ran it. The
+    handoff stays the one recorded write: BattleLab does not resend a message by itself, not
+    even after the agent's own turn ends and the session is idle again."""
+    key, _, nxt = await _send_now_with_a_notification_queued(project, cli="rejects")
+    for _ in range(100):
+        if _writes_of(project, nxt):
+            break
+        await asyncio.sleep(0.05)
+    (project / "release-notification").write_text("")
+    for _ in range(100):  # the agent's own turn ends: nothing else is running
+        own = [t for t in (await runtime.snapshot(key))["turns"] if t["kind"] == "agent"]
+        if own and own[-1]["state"] != "running":
+            break
+        await asyncio.sleep(0.05)
+    await asyncio.sleep(1.0)
+    assert [f.get("priority") for f in _writes_of(project, nxt)] == ["now"]
+    assert await _state(key, nxt) not in {"completed", "failed", "interrupted"}
+    assert "echo:two" not in "".join(await _replies(key))

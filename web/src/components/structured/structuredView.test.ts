@@ -16,6 +16,7 @@ import {
   reviewOnly,
   runningAgentTurn,
   sendNowTarget,
+  waitingBehindOwnTurn,
 } from "./structuredView";
 
 function req(over: Partial<StructuredRequest>): StructuredRequest {
@@ -165,12 +166,34 @@ describe("a turn the agent runs for itself (#1438)", () => {
   });
 
   test("Esc stops the operator turn running now, else the agent's own, else nothing", () => {
-    expect(interruptTarget(snap([op("running"), own("running")], {}, "op-1"))).toBe("op-1");
+    expect(interruptTarget(snap([own("completed"), op("running")], {}, "op-1"))).toBe("op-1");
     expect(interruptTarget(snap([op("awaiting_approval")], {}, "op-1"))).toBe("op-1");
     expect(interruptTarget(snap([op("completed"), own("running")]))).toBe("own-1");
     expect(interruptTarget(snap([op("completed"), own("running")], { interrupt_own: false }))).toBeNull();
     expect(interruptTarget(snap([op("completed"), own("completed")]))).toBeNull();
     expect(interruptTarget(null)).toBeNull();
+  });
+
+  test("a sent message the agent's own turn runs ahead of is waiting: nothing to interrupt or send past (#1475)", () => {
+    const waiting = snap([op("completed", "op-0"), op("running"), own("running")], { send_now: "interrupt" }, "op-1");
+    expect(waitingBehindOwnTurn(waiting)).toBe(true);
+    expect(interruptTarget(waiting)).toBeNull();
+    expect(sendNowTarget(waiting)).toBeNull();
+    expect(ownTurnInterruptible(waiting, own("running"))).toBe(false);
+    // The message starts: the codec ends the agent's turn, and Esc / Send now come back.
+    const started = snap([op("completed", "op-0"), op("running"), own("completed")], { send_now: "interrupt" }, "op-1");
+    expect(waitingBehindOwnTurn(started)).toBe(false);
+    expect(interruptTarget(started)).toBe("op-1");
+    expect(sendNowTarget(started)).toEqual({ turnId: "op-1", mode: "interrupt" });
+    // No message sent: the agent's own turn alone is no wait, and stays interruptible.
+    expect(waitingBehindOwnTurn(snap([op("completed"), own("running")]))).toBe(false);
+    // A message already answering or working has started: Interrupt stays, whatever else runs.
+    const answering = snap([op("running"), own("running")], { send_now: "interrupt" }, "op-1");
+    (answering.turns[0] as { reply: string }).reply = "Got it";
+    expect(waitingBehindOwnTurn(answering)).toBe(false);
+    expect(interruptTarget(answering)).toBe("op-1");
+    // An exited worker runs no turn of its own, so nothing waits behind one.
+    expect(waitingBehindOwnTurn(snap([op("running"), own("running")], { worker: null }, "op-1"))).toBe(false);
   });
 
   test("is never mistaken for a message someone sent", () => {

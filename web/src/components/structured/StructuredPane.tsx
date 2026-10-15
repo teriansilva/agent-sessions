@@ -90,6 +90,7 @@ import {
   messageTimestamp,
   sendNowTarget,
   turnStateLabel,
+  waitingBehindOwnTurn,
 } from "./structuredView";
 
 /** While a turn runs, the event cursor is read this often; a change re-reads the snapshot. */
@@ -543,6 +544,7 @@ function AgentTurnView({
   turn,
   agent,
   interruptible,
+  ahead,
   readOnly,
   live,
   stopping,
@@ -551,6 +553,8 @@ function AgentTurnView({
   turn: StructuredAgentTurn;
   agent: string;
   interruptible: boolean;
+  /** The operator's message waits behind this turn in the agent's own queue (#1475). */
+  ahead: boolean;
   readOnly: boolean;
   live: boolean;
   stopping: boolean;
@@ -621,6 +625,10 @@ function AgentTurnView({
               {!stopping && <EscHint />}
             </button>
           </div>
+        ) : ahead ? (
+          <p className={styles.ownNote} data-testid="structured-agent-ahead">
+            Your message is next — it starts when this turn ends.
+          </p>
         ) : (
           <p className={styles.ownNote} data-testid="structured-agent-no-interrupt">
             This agent can’t be interrupted from here — Stop ends the worker.
@@ -673,6 +681,7 @@ function TurnView({
   canRemove,
   queuePosition,
   cutOff,
+  waiting,
 }: {
   folder?: string;
   turn: StructuredTurn;
@@ -697,6 +706,8 @@ function TurnView({
   queuePosition?: number;
   /** It settled interrupted because Send now stopped it (#1442). */
   cutOff?: boolean;
+  /** Sent, but the agent runs a turn of its own first (#1475): not running, not interruptible. */
+  waiting?: boolean;
 }) {
   const active = turn.state === "running" || turn.state === "awaiting_approval";
   const failed = ["failed", "interrupted", "uncertain", "unavailable"].includes(turn.state);
@@ -839,7 +850,12 @@ function TurnView({
       )}
       {turn.state === "delivering" && <div className={chat.wait} role="status">Awaiting agent acknowledgement</div>}
       {turn.state === "delivered" && <div className={chat.wait} role="status">Added to the active turn</div>}
-      {active && (
+      {active && waiting && (
+        <div className={chat.wait} role="status" data-testid="structured-waiting-own-turn">
+          Waiting · {agent} is finishing a turn of its own first
+        </div>
+      )}
+      {active && !waiting && (
         <div className={chat.wait} data-testid="structured-working">
           <span className={chat.bars} aria-hidden="true">
             <span />
@@ -2129,6 +2145,7 @@ export function StructuredPane({
               turn={t}
               agent={agent}
               interruptible={ownTurnInterruptible(snap, t)}
+              ahead={waitingBehindOwnTurn(snap)}
               readOnly={readOnly}
               live={!!snap?.native?.worker}
               stopping={interrupting || stoppingNow === t.turn_id}
@@ -2151,6 +2168,7 @@ export function StructuredPane({
             sendingNow={sendingNow === t.turn_id}
             queuePosition={positions.get(t.turn_id)}
             cutOff={cutBySendNow(snap, t)}
+            waiting={t.turn_id === snap?.active_turn && waitingBehindOwnTurn(snap)}
             sendNowDisabled={permissionPending || !!sendingNow || !!recoveringSendNow || operatorTurns(snap).some((q) => q.state === "queued" && q.delivery === "interrupting")}
             alwaysSendNow={alwaysSendNow}
             onAlwaysSendNow={turnOnAlwaysSendNow}

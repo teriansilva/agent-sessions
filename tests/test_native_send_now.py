@@ -154,6 +154,11 @@ async def test_send_now_reuses_queued_message_and_preserves_remaining_order(host
     writes = input_frames(project)
     assert len(writes) == 3
     assert "urgent guidance" in str(writes[1]) and "later queued" in str(writes[2])
+    # #1475: on Claude only the message Send now selected goes ahead of the CLI's own queue;
+    # the first message and the one that waited its turn are ordinary FIFO writes.
+    assert [f.get("priority") for f in writes] == (
+        [None, "now", None] if source == "claude" else [None, None, None]
+    )
 
 
 @pytest.mark.anyio

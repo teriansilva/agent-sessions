@@ -45,6 +45,18 @@ export function runningAgentTurn(snap: StructuredSnapshot | null): StructuredAge
   return last?.state === "running" ? last : null;
 }
 
+/** The operator's message is with the agent but has not started: the agent runs a turn of its own
+ *  first, one it took from its own queue ahead of the message (#1475). Only then can both be
+ *  live at once, since the message's start ends any turn of the agent's own. Nothing is offered to
+ *  interrupt: the message is not running yet, and the agent's interrupt stops whatever runs when
+ *  it arrives (its own turn now, the message the moment that turn ends). */
+export function waitingBehindOwnTurn(snap: StructuredSnapshot | null): boolean {
+  if (!snap?.active_turn || !runningAgentTurn(snap)) return false;
+  // A message that already shows its reply or work has started, whatever a stale record says.
+  const active = operatorTurns(snap).find((t) => t.turn_id === snap.active_turn);
+  return !!active && !active.reply && active.tools.length === 0;
+}
+
 /** Can Interrupt (and Esc) stop this turn the agent runs for itself? Only the live worker's own
  *  target, from a worker that takes the request directly (#1438). */
 export function ownTurnInterruptible(snap: StructuredSnapshot | null, turn: StructuredAgentTurn): boolean {
@@ -61,6 +73,7 @@ export function ownTurnInterruptible(snap: StructuredSnapshot | null, turn: Stru
 export function interruptTarget(snap: StructuredSnapshot | null): string | null {
   if (!snap) return null;
   if (snap.active_turn) {
+    if (waitingBehindOwnTurn(snap)) return null;
     const active = operatorTurns(snap).find((t) => t.turn_id === snap.active_turn);
     return active && (active.state === "running" || active.state === "awaiting_approval") ? active.turn_id : null;
   }
@@ -88,6 +101,7 @@ export function sendNowTarget(
   snap: StructuredSnapshot | null,
 ): { turnId: string; mode: "steer" | "interrupt" } | null {
   if (!snap) return null;
+  if (snap.active_turn && waitingBehindOwnTurn(snap)) return null;
   if (snap.active_turn) return snap.native?.send_now ? { turnId: snap.active_turn, mode: snap.native.send_now } : null;
   const native = snap.native;
   if (native?.background_turn && native.send_now_background === "interrupt") {

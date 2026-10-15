@@ -345,7 +345,7 @@ def claude():
     # notification turn the agent starts for itself framed by nothing.
     turn = threading.Lock()
     # The notification turn in flight, if any: an interrupt stops IT (#1427 Send now).
-    note = {"active": False, "cancel": threading.Event()}
+    note = {"active": False, "cancel": threading.Event(), "queued": False}
     hanging = {"uuid": None}  # an operator input whose turn never ended by itself (`HANG`)
 
     def lifecycle(command, state):
@@ -372,7 +372,15 @@ def claude():
                 "session_id": session,
             }
         )
+        if os.path.exists("notify-after-turn"):
+            # Like the real CLI (#1475): a notification arriving during an operator turn waits in
+            # the CLI's own queue and runs when that turn ends, ahead of the next input.
+            note["queued"] = True
+            deadline = time.monotonic() + 30
+            while hanging["uuid"] and time.monotonic() < deadline:
+                time.sleep(0.01)
         with turn:
+            note["queued"] = False
             note["active"] = True
             note["cancel"].clear()
             send(
@@ -443,7 +451,15 @@ def claude():
     for frame in stream:
         kind = frame.get("type")
         if kind == "user":
+            if frame.get("priority") is not None and os.path.exists("reject-priority"):
+                continue  # a CLI that refuses the field: the input is never taken (#1475)
             lifecycle(frame.get("uuid"), "queued")
+            if (
+                frame.get("priority") == "now"
+                and note["active"]
+                and not os.path.exists("ignore-priority")
+            ):
+                note["cancel"].set()  # the real CLI cuts the turn it runs for itself (#1475)
             with turn:
                 lifecycle(frame.get("uuid"), "started")
                 finished = claude_turn(frame, stream, session, notification_turn)
@@ -514,16 +530,19 @@ def claude():
                 if os.path.exists("finish-after-refusal"):
                     send(completed)
                 continue
-            send(
-                {
-                    "type": "control_response",
-                    "response": {
-                        "subtype": "success",
-                        "request_id": frame["request_id"],
-                        "response": {},
-                    },
-                }
-            )
+            ack = {
+                "type": "control_response",
+                "response": {
+                    "subtype": "success",
+                    "request_id": frame["request_id"],
+                    "response": {},
+                },
+            }
+            # `late-interrupt-ack` (#1475 review): the worker reads the agent's own turn starting
+            # BEFORE it may dispatch, the order a loaded host produces; the real CLI acks first.
+            late = os.path.exists("late-interrupt-ack")
+            if not late:
+                send(ack)
             wait_cancel()
             aborted = {
                 "type": "result",
@@ -547,6 +566,13 @@ def claude():
             if os.path.exists("emit-lifecycle") and hanging["uuid"]:
                 lifecycle(hanging["uuid"], "cancelled")
             hanging["uuid"] = None
+            # The CLI starts what it queued for itself before it reads the next input (#1475).
+            deadline = time.monotonic() + 10
+            while note["queued"] and not note["active"] and time.monotonic() < deadline:
+                time.sleep(0.01)
+            if late:
+                time.sleep(0.3)  # its opening frames are read first
+                send(ack)
 
 
 def claude_turn(frame, stream, session, notification_turn):
