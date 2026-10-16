@@ -366,6 +366,9 @@ class Manifest:
     probe_kind: str = "terminal"
     #: `[api]` (#1275): a protocol kind/source, never commands, credentials or permission flags.
     api: Api | None = None
+    #: `memory.kind` (#1471): a member of `kinds.MEMORY_SOURCE_KINDS`, or "none". The agent's own
+    #: memory store, which the Memory page can import from — read only.
+    memory_kind: str = "none"
 
     @property
     def id(self) -> str:
@@ -827,6 +830,12 @@ def parse(doc: Any, *, source: str = "", digest: str | None = None) -> Manifest:
         probe_kind = r.str("kind", one_of=kinds.PROBE_KINDS)
         r.done()
 
+    memory_kind = "none"
+    r = top.table("memory", required=False)
+    if r is not None:
+        memory_kind = r.str("kind", one_of=frozenset(kinds.MEMORY_SOURCE_KINDS))
+        r.done()
+
     verify = top.strs("verify", one_of=kinds.VERIFY_CHECKS, max_items=len(kinds.VERIFY_CHECKS))
     top.done()
 
@@ -858,6 +867,7 @@ def parse(doc: Any, *, source: str = "", digest: str | None = None) -> Manifest:
         instructions=instructions,
         probe_kind=probe_kind,
         api=api,
+        memory_kind=memory_kind,
     )
     _cross_check(m)
     return m
@@ -922,6 +932,12 @@ def _instructions(top: _Reader) -> tuple[str, ...]:
 
 def _cross_check(m: Manifest) -> None:
     caps = m.capabilities
+    if m.memory_kind != "none":
+        need = kinds.MEMORY_SOURCE_KINDS[m.memory_kind]
+        if m.store is None or m.store.layout not in need or "sessions" not in m.store.paths:
+            raise ManifestError(
+                "memory.kind", f"{m.memory_kind!r} reads a {'/'.join(need)} store with sessions"
+            )
     if m.identity.kind == "terminal":
         for c in sorted(kinds.AGENT_ONLY_CAPABILITIES):
             if caps.get(c):

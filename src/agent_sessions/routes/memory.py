@@ -25,7 +25,7 @@ async def _run(fn: Callable, *args):
     except memory.MemoryStoreError as exc:
         raise _err(exc.status, str(exc)) from None
     except template_secrets.RedactionUnavailable as exc:
-        raise _err(503, f"secret check unavailable — inbox files are kept ({exc})") from None
+        raise _err(503, f"secret check unavailable — nothing was taken in ({exc})") from None
 
 
 def _ok(payload, status: int = 200) -> JSONResponse:
@@ -54,6 +54,24 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         # The page asks for a pass when it opens, so what it shows is never 30 s stale.
         await _run(memory.view, pid)  # 404 for anything that is not a live project
         return _ok(await _run(memory.ingest, pid))
+
+    @app.get("/api/memory/{pid}/import")
+    async def memory_import_preview(pid: str, _user: str = Depends(logged_in)) -> JSONResponse:
+        # The agent memory stores found for the project's folders (#1471). Read only.
+        return _ok(await _run(memory.import_preview, pid))
+
+    @app.post("/api/memory/{pid}/import")
+    async def memory_import(
+        pid: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        # Opaque source ids from a fresh preview — a path is never accepted (#1471).
+        body = await _json_object(request)
+        if set(body) != {"sources"}:
+            raise _err(422, 'send {"sources": [id, …]}')
+        return _ok(await _run(memory.import_notes, pid, body["sources"]))
 
     @app.put("/api/memory/{pid}/enabled")
     async def memory_enable(

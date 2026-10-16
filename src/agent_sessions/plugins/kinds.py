@@ -163,6 +163,14 @@ STORE_LAYOUTS = frozenset(
         "battlelab-chat",  # chat runtime: BattleLab's own per-session JSONL (#1209)
     }
 )
+#: `memory.kind` (#1471) — an agent's OWN memory store that BattleLab may READ to import into a
+#: project's shared memory, mapped to the store layouts it can read (the reader locates it through
+#: that store's manifest paths, never a literal). Read-only by construction: no kind writes.
+MEMORY_SOURCE_KINDS = {
+    # Claude Code's auto-memory: `<store>/<sessions>/<cwd-slug>/memory/*.md` beside the transcripts
+    # whose recorded `cwd` says which folder it belongs to.
+    "claude-auto-memory": ("claude-projects",),
+}
 #: Named auxiliary paths a store may declare under its root (`store.paths`).
 STORE_PATH_NAMES = frozenset({"db", "log", "sessions", "archive", "index"})
 

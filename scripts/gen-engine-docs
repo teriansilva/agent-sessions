@@ -208,6 +208,7 @@ def manifest_vocab() -> str:
         ("`session_id.mint`", _vals(kinds.MINT_KINDS)),
         ("`store.layout`", _vals(kinds.STORE_LAYOUTS)),
         ("`store.paths` names", _vals(kinds.STORE_PATH_NAMES)),
+        ("`memory.kind` (reads that store layout)", _vals(kinds.MEMORY_SOURCE_KINDS)),
         ("`launch.resume.kind`", _vals(kinds.RESUME_KINDS)),
         ("`launch.new.kind`", _vals(kinds.NEW_KINDS)),
         ("resume `flag`", _vals(kinds.RESUME_FLAGS)),

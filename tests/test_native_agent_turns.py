@@ -427,3 +427,95 @@ def test_an_own_turns_messages_stay_apart_as_paragraphs(conversation, monkeypatc
     )
     (turn,) = snapshot(root, sid, binding)["turns"]
     assert turn["reply"] == "Review is in.\n\nApplying it now."
+
+
+def quiet(root, sid, binding, monkeypatch, t, *, end="completed"):
+    """An own turn that recorded nothing: its start and (optionally) its end only."""
+    target = str(uuid.uuid4())
+    at(monkeypatch, t)
+    events = [background(target)] + ([background(None, end)] if end else [])
+    journal.append_events(root, binding, events)
+    return target
+
+
+def test_an_own_turn_that_recorded_nothing_is_not_shown_once_it_ended(conversation, monkeypatch):
+    """#1438 follow-up, found live: 200 of 202 own turns on the operator's install were empty
+    (before workers recorded output, or quiet). Each was an empty header taking a window slot."""
+    root, sid, binding = conversation
+    first = operator(root, sid, binding, monkeypatch, T0, "one")
+    quiet(root, sid, binding, monkeypatch, T0 + 1)
+    spoke = agent(root, sid, binding, monkeypatch, T0 + 2, "said something")
+    view = snapshot(root, sid, binding)
+    assert [t["turn_id"] for t in view["turns"]] == [first, spoke]
+    assert view["omitted_turns"] == 0  # not a turn at all, so nothing was "omitted"
+
+
+def test_a_quiet_own_turn_still_shows_while_it_runs(conversation, monkeypatch):
+    root, sid, binding = conversation
+    running = quiet(root, sid, binding, monkeypatch, T0, end=None)
+    (turn,) = snapshot(root, sid, binding)["turns"]
+    assert turn["turn_id"] == running and turn["state"] == "running"
+    # …and once its worker is gone with nothing recorded, there is nothing to show.
+    assert snapshot(root, sid, binding, live=str(uuid.uuid4()))["turns"] == []
+
+
+def test_quiet_own_turns_never_crowd_history_out_of_the_window(conversation, monkeypatch):
+    root, sid, binding = conversation
+    ops = [operator(root, sid, binding, monkeypatch, T0 + i, f"op {i}") for i in range(3)]
+    for i in range(60):
+        quiet(root, sid, binding, monkeypatch, T0 + 10 + i)
+    view = snapshot(root, sid, binding, max_turns=structured_runtime.SNAPSHOT_TURNS)
+    assert [t["turn_id"] for t in view["turns"]] == ops
+
+
+@pytest.mark.parametrize("blank", ["", "   \n\t  "])
+def test_an_ended_own_turn_with_only_empty_text_is_not_shown(conversation, monkeypatch, blank):
+    """Hermes on #1452 (review 6284): Claude's assistant text-block conversion can emit an indexed
+    `text` event with `text: ""` (or whitespace). It contributes neither a reply nor a tool, so
+    once the own turn ends it must not project an empty `agent` row."""
+    root, sid, binding = conversation
+    first = operator(root, sid, binding, monkeypatch, T0, "one")
+    target = str(uuid.uuid4())
+    at(monkeypatch, T0 + 1)
+    journal.append_events(
+        root,
+        binding,
+        [background(target), own(target, blank), background(None, "completed")],
+    )
+    spoke = agent(root, sid, binding, monkeypatch, T0 + 2, "real reply")
+    view = snapshot(root, sid, binding)
+    assert [t["turn_id"] for t in view["turns"]] == [first, spoke]
+    assert view["omitted_turns"] == 0
+
+
+def test_a_colliding_operator_id_never_resurrects_a_quiet_own_turn(conversation, monkeypatch):
+    """Hermes on #1452 (review 6284): `_operations` shares its key namespace between caller-chosen
+    `operation_id` and `agent_turn`. A later operator turn reusing a completed quiet own turn's
+    UUID must never resurrect the empty own turn."""
+    root, sid, binding = conversation
+    colliding = quiet(root, sid, binding, monkeypatch, T0)
+    assert snapshot(root, sid, binding)["turns"] == []
+    at(monkeypatch, T0 + 1)
+    claim = request(binding, revision=journal.read(root, sid).revision)
+    claim["params"]["operation_id"] = colliding
+    journal.claim(root, claim)
+    journal.record_handoff(root, binding, colliding, "sent")
+    journal.append_events(
+        root,
+        binding,
+        [
+            event(colliding, "operator reply"),
+            {
+                "kind": "turn_completed",
+                "data": {
+                    "operation_id": colliding,
+                    "native_turn_id": "native-turn-1",
+                    "state": "completed",
+                    "error": "",
+                },
+            },
+        ],
+    )
+    (only,) = snapshot(root, sid, binding)["turns"]
+    assert only["kind"] == "operator" and only["turn_id"] == colliding
+    assert only["reply"] == "operator reply"

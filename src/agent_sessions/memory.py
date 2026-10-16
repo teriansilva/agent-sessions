@@ -58,6 +58,7 @@ import contextlib
 import errno
 import fcntl
 import hashlib
+import json
 import logging
 import os
 import re
@@ -77,7 +78,10 @@ ENV_INBOX = "BATTLELAB_MEMORY_INBOX"
 ENV_KEYS = (ENV_READ, ENV_INBOX)
 
 ENTRY_MAX_BYTES = 4096
-SCOPE_MAX_NOTES = 200
+# What the operator may write (an edit, a released item) and an imported note may be (#1471). An
+# agent's inbox note stays at `ENTRY_MAX_BYTES`.
+OPERATOR_MAX_BYTES = 32 * 1024
+SCOPE_MAX_NOTES = 1000
 INBOX_MAX_PENDING = 20
 QUARANTINE_MAX_ITEMS = 20
 QUARANTINE_MAX_BYTES = 64 * 1024
@@ -239,6 +243,10 @@ CREATE TABLE IF NOT EXISTS versions(slug TEXT NOT NULL, digest TEXT NOT NULL,
     PRIMARY KEY(slug, digest));
 CREATE TABLE IF NOT EXISTS launches(
     token TEXT PRIMARY KEY, session_key TEXT NOT NULL, kind TEXT NOT NULL, at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS imports(
+    source TEXT NOT NULL, file TEXT NOT NULL, slug TEXT NOT NULL, digest TEXT NOT NULL,
+    base TEXT NOT NULL, state TEXT NOT NULL, reason TEXT NOT NULL, at REAL NOT NULL,
+    PRIMARY KEY(source, file));
 """
 
 
@@ -778,7 +786,9 @@ def _finish_clear(pid: str, conn: sqlite3.Connection) -> None:
             " UNION SELECT digest, 'deleted', ? FROM quarantine",
             (now, now, now),
         )
-        for table in ("notes", "quarantine", "refused", "versions"):
+        # `imports` too: Clear means start over, so a later import takes everything in again —
+        # the one deliberate exception to "a deleted note stays deleted" (#1471).
+        for table in ("notes", "quarantine", "refused", "versions", "imports"):
             conn.execute(f"DELETE FROM {table}")  # noqa: S608 — fixed names
         _set_meta(conn, "clearing", "0")
 
@@ -807,6 +817,11 @@ def delete_note(pid: str, slug: str) -> None:
                 )
                 conn.execute("DELETE FROM versions WHERE slug=?", (slug,))
                 conn.execute("DELETE FROM notes WHERE slug=?", (slug,))
+                # An imported note stays deleted however its source file changes later.
+                conn.execute(
+                    "UPDATE imports SET state='deleted', at=? WHERE slug=? AND state='note'",
+                    (now, slug),
+                )
         finally:
             conn.close()
     publish(pid)
@@ -1676,8 +1691,8 @@ def _checked(text: str) -> None:
     reason = _withheld(text, known)
     if reason:
         raise MemoryStoreError(f"not saved: it {reason}", 422)
-    if len(text.encode()) > ENTRY_MAX_BYTES:
-        raise MemoryStoreError(f"a note is at most {ENTRY_MAX_BYTES // 1024} KiB", 422)
+    if len(text.encode()) > OPERATOR_MAX_BYTES:
+        raise MemoryStoreError(f"a note is at most {OPERATOR_MAX_BYTES // 1024} KiB", 422)
 
 
 def update_note(pid: str, slug: str, fields: dict) -> None:
@@ -1835,3 +1850,329 @@ def export_zip(pid: str) -> bytes:
             for name, text in sorted(files.items()):
                 zf.writestr(f"memory/{name}", text)
     return buf.getvalue()
+
+
+# ---- importing an agent's own memory (#1471) -----------------------------------------------------
+#
+# An import reads an agent's OWN memory store (found through the manifests, `memory_sources`) and
+# takes each file in through the same withhold check as an inbox note. Its identity is
+# `(source, file)` in the `imports` table, never the note's name:
+#
+# - new file → judged and added; a slug already taken is added BESIDE (`slug-2`), never over;
+# - unchanged file (same digest) → skipped, whatever its last outcome;
+# - changed at the source → updates its note only while the note is still exactly as the import
+#   left it (`base`, a hash of its fields); a note the operator edited is kept ("kept your edit");
+# - its note deleted here → `deleted`: never taken in again;
+# - Clear wipes `imports` with everything else: start over.
+#
+# A HELD or REFUSED file never enters the review trays: those are bounded, and an import could
+# evict what agents left there for review. Its identity row records the reason instead (the
+# preview lists every one, name masked), nothing of its text is stored, and it is judged again
+# only when the source file changes — the fix is made in the source.
+#
+# Every outcome is counted, and the counts are conserved: for a readable source,
+# files = imported + updated + unchanged + kept_edits + skipped_deleted + held + refused + left_out.
+
+IMPORT_OUTCOMES = (
+    "imported",
+    "updated",
+    "unchanged",
+    "kept_edits",
+    "skipped_deleted",
+    "held",
+    "refused",
+    "left_out",
+)
+
+
+def _content(r) -> str:
+    """A hash of what a note says — how an import tells its own text from an operator's edit."""
+    return hashlib.sha256(
+        "\0".join((r["name"], r["description"], r["type"], r["body"])).encode()
+    ).hexdigest()
+
+
+def _import_token(source_key: str) -> str:
+    """The writer an imported note is attributed to: one per source, shaped like a launch token."""
+    return "m" + hashlib.sha256(source_key.encode()).hexdigest()[:32]
+
+
+def _free_slug(conn: sqlite3.Connection, slug: str) -> str:
+    if not conn.execute("SELECT 1 FROM notes WHERE slug=?", (slug,)).fetchone():
+        return slug
+    for i in range(2, 1000):
+        cand = f"{slug[:58].rstrip('-')}-{i}"
+        if not conn.execute("SELECT 1 FROM notes WHERE slug=?", (cand,)).fetchone():
+            return cand
+    return f"note-{secrets.token_hex(4)}"
+
+
+def import_preview(pid: str) -> dict:
+    """The agent memory stores found for a project's folders, the last import's result, and
+    every source file currently held back or refused (its name masked like any tray name)."""
+    from . import memory_sources, projects
+
+    pid = _pid(pid)
+    _project(pid)
+    sources = memory_sources.discover(pid, projects.load(), agent_max=ENTRY_MAX_BYTES)
+    paths = {s.key: s.path for s in sources}
+    out: dict = {"sources": [s.public() for s in sources], "last": None, "held": []}
+    if not _exists(pid):
+        return out
+    with _fenced():
+        known = _inventory()
+        conn = _connect(pid)
+        try:
+            raw = _meta(conn, "last_import", "")
+            rows = conn.execute(
+                "SELECT source, file, state, reason, at FROM imports"
+                " WHERE reason != '' AND state != 'deleted' ORDER BY at DESC, file"
+            ).fetchall()
+        finally:
+            conn.close()
+    if raw:
+        with contextlib.suppress(ValueError):
+            out["last"] = json.loads(raw)
+    for r in rows:
+        out["held"].append(
+            {
+                "source": paths.get(r["source"], ""),
+                "file": _safe_name(r["file"], known),
+                "reason": r["reason"],
+                "refused": r["state"] == "refused",
+                "at": r["at"],
+            }
+        )
+    return out
+
+
+def import_notes(pid: str, source_ids: object) -> dict:
+    """Import the chosen sources. Returns per-source outcomes and their totals (see above).
+
+    A source is named by the opaque id of a FRESH discovery — never by a path. The files are read
+    first, through checked descriptors; the judging and the commit run under the secret writers'
+    fence and then the scope lock (the one order), against one secret inventory."""
+    from . import memory_sources, metadata, projects, template_secrets
+
+    pid = _pid(pid)
+    if (
+        not isinstance(source_ids, list)
+        or not source_ids
+        or len(source_ids) > 16
+        or not all(isinstance(x, str) for x in source_ids)
+    ):
+        raise MemoryStoreError("choose one or more sources", 422)
+    _project(pid)
+    found = {
+        s.id: s for s in memory_sources.discover(pid, projects.load(), agent_max=ENTRY_MAX_BYTES)
+    }
+    if any(x not in found for x in source_ids):
+        raise MemoryStoreError("a source is no longer there — open the list again", 409)
+    chosen = [found[x] for x in dict.fromkeys(source_ids)]
+    # The scope is created only under the project index's lock, for a project still in it (the
+    # order `projects.delete` uses: index, then scope). A deletion that removes the scope later is
+    # seen at the commit below, which runs under the scope lock and needs the scope to exist — so an
+    # import never recreates memory for a deleted project. The generation taken here is the clear
+    # fence: a clear that lands while the files are read voids this import, as it voids an ingest.
+    with projects.locked_index() as index:
+        if pid not in index:
+            raise MemoryStoreError("unknown project", 404)
+        with _scope_lock(pid):
+            if not _exists(pid):
+                _create_scope(pid)
+            conn = _connect(pid)
+            try:
+                if _meta(conn, "clearing", "0") == "1":
+                    _finish_clear(pid, conn)  # an interrupted clear completes before anything new
+                generation = _generation(conn)
+            finally:
+                conn.close()
+    # Read before the fence: a slow disk never holds the fence the secret writers wait on.
+    reads: list[tuple[memory_sources.Source, list[memory_sources.Item] | None, str]] = []
+    for src in chosen:
+        if src.state != "ok":
+            reads.append((src, None, src.reason))
+            continue
+        try:
+            reads.append((src, memory_sources.read(src), ""))
+        except OSError as exc:
+            reads.append((src, None, str(exc) or "could not be read"))
+    # The commit holds the project index's lock (outermost; `projects.delete` and `update` take
+    # it), then the fence, then the scope lock, and finally `metadata.locked_index()` across the
+    # transaction. Under them, each source's attribution is established once more — AFTER its
+    # files were read, against the CURRENT projects and session assignments (THE resolver): an
+    # agent writes memory only after its transcript records the folder it runs in, so a session
+    # from elsewhere that wrote anything read here is on disk by now; and a folder released, given
+    # to another project, or a session assigned elsewhere meanwhile no longer counts. Discovery
+    # before the read was only a preview.
+    with projects.locked_index() as index, _fenced(), _scope_lock(pid):
+        if index.get(pid) is None or not _exists(pid):
+            raise MemoryStoreError(
+                "the project was deleted while importing — nothing taken in", 409
+            )
+        for i, (src, items, _why) in enumerate(reads):
+            if items is not None:
+                lost = src.recheck(index)
+                if lost:
+                    reads[i] = (src, None, lost)
+        conn = _connect(pid)
+        try:
+            if _generation(conn) != generation or _meta(conn, "clearing", "0") == "1":
+                raise MemoryStoreError(
+                    "memory was cleared while importing — nothing taken in; import again", 409
+                )
+            known = template_secrets.redaction_values()
+            now = time.time()
+            results = []
+            with metadata.locked_index() as current_meta, _txn(conn):
+                try:
+                    meta = current_meta()
+                    meta_err = ""
+                except metadata.MetadataUnreadable as exc:
+                    meta = None
+                    meta_err = str(exc)
+                for i, (src, items, _why) in enumerate(reads):
+                    if items is not None:
+                        lost = meta_err or src.recheck(index, meta)
+                        if lost:
+                            reads[i] = (src, None, lost)
+                for src, items, why in reads:
+                    out: dict = {
+                        "id": src.id,
+                        "label": src.label,
+                        "path": src.path,
+                        "relation": src.relation,
+                    }
+                    if items is None:
+                        out.update(state="unavailable", reason=why)
+                        results.append(out)
+                        continue
+                    counts = dict.fromkeys(IMPORT_OUTCOMES, 0)
+                    token = _import_token(src.key)
+                    conn.execute(
+                        "INSERT OR REPLACE INTO launches(token, session_key, kind, at)"
+                        " VALUES(?, ?, 'import', ?)",
+                        (token, src.engine, now),
+                    )
+                    for item in items:
+                        counts[_import_one(conn, src, token, item, known, now)] += 1
+                    out.update(state="ok", files=len(items), **counts)
+                    results.append(out)
+                totals = dict.fromkeys(IMPORT_OUTCOMES, 0)
+                for r in results:
+                    for k in IMPORT_OUTCOMES:
+                        totals[k] += r.get(k, 0)
+                summary = {
+                    "at": now,
+                    "sources": results,
+                    "totals": totals,
+                    "unavailable": sum(1 for r in results if r["state"] != "ok"),
+                }
+                _set_meta(conn, "last_import", json.dumps(summary))
+            _render(pid, conn)
+        finally:
+            conn.close()
+    return summary
+
+
+def _import_one(conn, src, token: str, item, known: list[str], now: float) -> str:
+    """Judge and store one source file; the outcome it counts as. Every change at the source is
+    JUDGED first — so a change that must be held or refused is reported as such even when the
+    operator's edit of the note is what stays."""
+    from . import memory_sources
+
+    row = conn.execute(
+        "SELECT * FROM imports WHERE source=? AND file=?", (src.key, item.name)
+    ).fetchone()
+    if row is not None and row["state"] == "deleted":
+        return "skipped_deleted"
+    digest = (
+        hashlib.sha256(item.data).hexdigest() if item.data is not None else "unread:" + item.stamp
+    )
+    if row is not None and row["digest"] == digest:
+        return "unchanged"  # whatever it was last time — a held file waits for a change
+    note_row = (
+        conn.execute("SELECT * FROM notes WHERE slug=?", (row["slug"],)).fetchone()
+        if row is not None and row["state"] == "note"
+        else None
+    )
+    note, outcome, reason = _verdict(item, known)
+    if note is None:
+        return _held(conn, src.key, item.name, digest, outcome, reason, now, note_row, row)
+    if note_row is not None and _content(note_row) != row["base"]:
+        # The operator's edit wins over a change at the source. The change itself was safe, so
+        # nothing about it stays listed as held.
+        _record_import(conn, src.key, item.name, row["slug"], digest, row["base"], "note", "", now)
+        return "kept_edits"
+    note["type"] = memory_sources.note_type(src.kind, note.pop("text")) or note["type"]
+    if note_row is not None:
+        slug = note_row["slug"]
+        conn.execute(
+            "UPDATE notes SET name=?, description=?, type=?, body=?, digest=?, updated=?"
+            " WHERE slug=?",
+            (note["name"], note["description"], note["type"], note["body"], digest, now, slug),
+        )
+        outcome = "updated"
+    else:
+        if conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0] >= SCOPE_MAX_NOTES:
+            return "left_out"  # nothing recorded: the next import, after space is made, takes it
+        slug = _free_slug(conn, note["slug"])
+        conn.execute(
+            "INSERT INTO notes(slug, name, description, type, body, digest, token, created,"
+            " updated) VALUES(?,?,?,?,?,?,?,?,?)",
+            (
+                slug,
+                note["name"],
+                note["description"],
+                note["type"],
+                note["body"],
+                digest,
+                token,
+                now,
+                now,
+            ),
+        )
+        outcome = "imported"
+    conn.execute("INSERT OR IGNORE INTO versions(slug, digest) VALUES(?, ?)", (slug, digest))
+    fresh = conn.execute("SELECT * FROM notes WHERE slug=?", (slug,)).fetchone()
+    _record_import(conn, src.key, item.name, slug, digest, _content(fresh), "note", "", now)
+    return outcome
+
+
+def _verdict(item, known: list[str]) -> tuple[dict | None, str, str]:
+    """``(note, "", "")`` for a file that may be taken in (the note carries its ``text`` for the
+    type mapping), else ``(None, outcome, reason)``."""
+    if item.data is None:
+        return None, "refused", item.reason
+    try:
+        text = item.data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None, "refused", "not UTF-8 text"
+    text = _CONTROL.sub("", text.replace("\r\n", "\n").replace("\r", "\n"))
+    reason = _withheld(f"{item.name}\n{text}", known)
+    if reason:
+        return None, "held", reason
+    note = parse_note(text, item.name)
+    if note is None:
+        return None, "refused", "empty note"
+    note["text"] = text
+    return note, "", ""
+
+
+def _held(conn, source, name, digest, outcome, reason, now, note_row, row) -> str:
+    """Record a held or refused file on its identity — never in a review tray, never its text. A
+    held or refused CHANGE of an imported note leaves the note as it was and keeps its identity
+    (slug, base), so deleting the note still tombstones the file."""
+    if note_row is not None:
+        _record_import(conn, source, name, row["slug"], digest, row["base"], "note", reason, now)
+    else:
+        _record_import(conn, source, name, "", digest, "", outcome, reason, now)
+    return outcome
+
+
+def _record_import(conn, source, name, slug, digest, base, state, reason, now) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO imports(source, file, slug, digest, base, state, reason, at)"
+        " VALUES(?,?,?,?,?,?,?,?)",
+        (source, name, slug, digest, base, state, reason, now),
+    )

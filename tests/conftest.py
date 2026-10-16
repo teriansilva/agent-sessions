@@ -41,6 +41,12 @@ import pytest
 # The real home, from the passwd database — `$HOME` is monkeypatched all over the suite.
 _REAL_HOME = pwd.getpwuid(os.getuid()).pw_dir
 
+# A suite run INSIDE a BattleLab session with shared memory on inherits that session's memory
+# variables (#1471); the app scrubs them at `create_app`, but tests that never build an app would
+# see them. They are never the suite's own.
+for _k in ("BATTLELAB_MEMORY", "BATTLELAB_MEMORY_INBOX"):
+    os.environ.pop(_k, None)
+
 # Store env var → sub-path under the sandbox (mirroring the production default layout). Values
 # derived from `AGENT_SESSIONS_HOME` (the env file, `2fa.json`, plugins, update progress) are
 # covered by pinning that one and are NOT pinned separately: tests that move the app home expect

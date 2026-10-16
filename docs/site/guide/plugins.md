@@ -192,6 +192,7 @@ Every value a manifest may choose, generated from the kinds this build ships:
 | `session_id.mint` | `adopt`, `pinned` |
 | `store.layout` | `antigravity-cli`, `battlelab-chat`, `claude-projects`, `codex-rollouts`, `gemini-tmp`, `kimi-code`, `opencode-sqlite`, `shell-records` |
 | `store.paths` names | `archive`, `db`, `index`, `log`, `sessions` |
+| `memory.kind` (reads that store layout) | `claude-auto-memory` |
 | `launch.resume.kind` | `flag`, `fresh`, `positional-dir`, `subcommand` |
 | `launch.new.kind` | `bare`, `cwd-flag`, `pin-flag`, `positional-dir` |
 | resume `flag` | `--conversation`, `--resume`, `--session`, `-S` |

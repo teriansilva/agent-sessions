@@ -67,8 +67,8 @@ New notes are taken in every 30 seconds, and whenever the page opens.
   value you stored as a secret variable, isn't taken in. It goes to *Quarantine*, where nothing of its
   content is shown: you can rewrite the note without the withheld value, or delete it. If the secret check
   itself is unavailable, nothing is taken in until it is. Your own edits are held to the same rule.
-- **Bounded.** A note is at most 4 KiB, a project holds at most 200 notes, and an inbox at most 20
-  waiting files.
+- **Bounded.** A note an agent leaves is at most 4 KiB; one you write, release or import is at most
+  32 KiB. A project holds at most 1000 notes, and an inbox at most 20 waiting files.
 - **A shared notebook is a shared channel.** Any agent in the project can read what another wrote,
   which is why memory is opt-in, visible and bounded, and why the paragraph calls notes hints, not
   instructions. Memory is never part of a system prompt.

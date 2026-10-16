@@ -45,6 +45,10 @@ owns_transcript = true
 [transcript]
 kind = "claude-jsonl"
 
+# Claude Code's own auto-memory, which the Memory page can import from — read only (#1471).
+[memory]
+kind = "claude-auto-memory"
+
 [usage]
 source = "plan"
 kind = "claude-cli-probe"

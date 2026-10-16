@@ -279,6 +279,9 @@ def _default_path() -> Path:
     )
 
 
+_held_exclusive = threading.local()
+
+
 @contextmanager
 def _exclusive(path: Path):
     """Open the file (creating it + parents if needed) with an exclusive flock.
@@ -286,16 +289,29 @@ def _exclusive(path: Path):
     The yielded handle is opened in r+ mode so callers can read-then-write in
     place under the lock. **Don't** ``os.replace`` the file inside this block —
     ``fcntl.flock`` is per-inode, so a replace would break the mutex for any
-    waiting writer (its handle is bound to the old inode).
+    waiting writer (its handle is bound to the old inode). Re-entrant within the
+    same thread so a caller holding :func:`locked_index` never deadlocks if an
+    in-thread hook calls :func:`patch`.
     """
+    held = getattr(_held_exclusive, "handles", None)
+    if held is None:
+        held = _held_exclusive.handles = {}
+    key = str(path.resolve())
+    existing = held.get(key)
+    if existing is not None:
+        existing.seek(0)
+        yield existing
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     path.touch(exist_ok=True)
     fh = path.open("r+")
     try:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        held[key] = fh
         fh.seek(0)
         yield fh
     finally:
+        held.pop(key, None)
         try:
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
         finally:
@@ -596,6 +612,35 @@ def load(path: Path | None = None) -> dict[str, SessionMeta]:
     if not raw:
         return {}
     return _index_from_raw(raw)
+
+
+@contextmanager
+def locked_index(path: Path | None = None):
+    """Hold the sidecar's exclusive flock and yield a reader returning the current
+    ``dict[str, SessionMeta]`` from the authoritative on-disk bytes (never ``_raw_cache``).
+
+    Every writer goes through ``patch()`` / ``set_alias()`` under this same flock, so a
+    caller that re-checks session attribution inside this block sees any assignment that
+    has already committed and blocks any concurrent write until its commit finishes.
+    Raises :class:`MetadataUnreadable` if the sidecar on disk does not parse as an object.
+    """
+    path = path or _default_path()
+    with _exclusive(path) as fh:
+
+        def current() -> dict[str, SessionMeta]:
+            fh.seek(0)
+            body = fh.read()
+            if not body.strip():
+                return {}
+            try:
+                raw = json.loads(body)
+            except json.JSONDecodeError as e:
+                raise MetadataUnreadable(f"the sidecar did not parse ({e})") from e
+            if not isinstance(raw, dict):
+                raise MetadataUnreadable("the sidecar is not an object")
+            return _index_from_raw(raw)
+
+        yield current
 
 
 def _index_from_raw(raw: dict, *, normalized: bool = False) -> dict[str, SessionMeta]:

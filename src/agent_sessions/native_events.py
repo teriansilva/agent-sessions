@@ -52,6 +52,7 @@ class Events(Sequence):
         self._offsets = array("Q")
         self._lengths = array("I")
         self._operations: dict[str | None, array] = {}
+        self._agent_turns: set[str] = set()
         self._global = array("Q")
 
     def __len__(self):
@@ -79,6 +80,7 @@ class Events(Sequence):
         result._offsets = self._offsets[:]
         result._lengths = self._lengths[:]
         result._operations = {key: indexes[:] for key, indexes in self._operations.items()}
+        result._agent_turns = set(self._agent_turns)
         result._global = self._global[:]
         return result
 
@@ -108,8 +110,24 @@ class Events(Sequence):
             # An own turn's output (#1438) is indexed by its agent turn, so one bounded read
             # serves either kind. Only the index is shared: the projection attributes by FIELD,
             # so an operation id equal to an agent turn's never moves output between them.
-            operation = event["data"].get("operation_id") or event["data"].get("agent_turn")
+            data = event["data"]
+            operation = data.get("operation_id") or data.get("agent_turn")
             self._operations.setdefault(operation, array("Q")).append(index)
+            if "agent_turn" in data and (
+                event["kind"] == "tool"
+                or (
+                    event["kind"] == "text"
+                    and not data.get("partial")
+                    and bool(data.get("text", "").strip())
+                )
+            ):
+                self._agent_turns.add(data["agent_turn"])
+
+    def recorded(self, agent_turn: str) -> bool:
+        """Did own turn ``agent_turn`` (#1438) record attributable, displayable output (a tool or
+        non-blank settled text)? Scoped to ``agent_turn`` so a colliding ``operation_id`` or an
+        empty text block never counts."""
+        return agent_turn in self._agent_turns
 
     def for_operations(self, operations: set[str]):
         indexes = [self._global]
@@ -133,6 +151,8 @@ class Events(Sequence):
             + sum(
                 sys.getsizeof(key) + sys.getsizeof(value) for key, value in self._operations.items()
             )
+            + sys.getsizeof(self._agent_turns)
+            + sum(sys.getsizeof(key) for key in self._agent_turns)
         )
 
     @property

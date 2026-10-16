@@ -1233,7 +1233,9 @@ def _mark_unreachable(gen: Generation) -> None:
 
 def _paragraph(text: str, block: str) -> str:
     """Append one agent message to a reply, a blank line apart so Markdown keeps them apart."""
-    if text and block.strip() and not text.endswith("\n\n"):
+    if not block.strip():
+        return text
+    if text and not text.endswith("\n\n"):
         text += "\n\n"
     return (text + block)[-SNAPSHOT_TEXT:]
 
@@ -1307,14 +1309,30 @@ def project(
     # shows what a full one would. Ordered by journal position, never by a wall clock.
     starts, settled = [], set()
     tasks, ended_tasks = {}, set()
+    ended: set[str] = set()  # agent turns whose end (or a later start, or a new worker) was seen
+    last: tuple[str, str] | None = None  # (agent turn, the worker that minted it)
     for item in journal.events.for_operations(set()):
         kind, data = item["event"]["kind"], item["event"]["data"]
         if kind == "background" and data.get("task_id") and item["worker_id"] == live_worker:
             _observe_task(tasks, ended_tasks, data, item["ts"])
-        if kind == "background" and data.get("background_turn"):
-            starts.append((item["cursor"], data["background_turn"]))
+        if kind == "background" and "background_turn" in data:
+            if last is not None:
+                ended.add(last[0])
+            last = (data["background_turn"], item["worker_id"]) if data["background_turn"] else None
+            if data["background_turn"]:
+                starts.append((item["cursor"], data["background_turn"]))
         elif kind == "turn_completed" and data.get("operation_id"):
             settled.add(data["operation_id"])
+    if last is not None and last[1] != live_worker:
+        ended.add(last[0])
+    # An own turn that ended having recorded nothing has nothing to show (#1438 follow-up): every
+    # own turn before workers recorded output, and quiet ones since, would be an empty header
+    # taking a slot in the window. A running one always shows — it is what is happening now.
+    starts = [
+        (cursor, agent)
+        for cursor, agent in starts
+        if agent not in ended or journal.events.recorded(agent)
+    ]
     timeline = sorted(
         [(journal.operations[op].claimed_revision, 0, op) for op in submits]
         + [(cursor, 1, agent) for cursor, agent in starts],

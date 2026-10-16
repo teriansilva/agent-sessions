@@ -206,6 +206,10 @@ def _writable_by_others(st: os.stat_result, src: int | str | None = None) -> boo
     return bool(st.st_mode & 0o020) and not _group_is_private(st.st_gid)
 
 
+#: Public for readers outside plugins (`memory_sources`, #1471): the same rule, one place.
+writable_by_others = _writable_by_others
+
+
 def _check_dir_st(st: os.stat_result, src: int | str, where: str, *, last: bool) -> None:
     if not stat.S_ISDIR(st.st_mode):
         raise ProvenanceError(f"{where} is not a plain directory")
