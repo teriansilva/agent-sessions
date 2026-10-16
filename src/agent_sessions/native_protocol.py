@@ -9,7 +9,8 @@ Wire shapes are based on Codex app-server 0.159.3's generated v2 schemas and the
 Claude Agent SDK's stream-JSON control protocol. Claude CLI 2.1.248 or later is
 required for client_composed (verbatim input); the complete reviewed argv requires
 2.1.287 or later, matching the CLI help used here. Explicit session_id and human
-origin are supported SDK input fields.
+origin are supported SDK input fields. Background task observations retain only bounded display
+metadata; their state does not add turn ownership or interrupt authority.
 Native sandbox/settings govern tools within an admitted turn; this codec does
 not install per-tool authority hooks. No SDK implementation is vendored.
 """
@@ -34,6 +35,15 @@ MAX_TEXT = 20_000
 MAX_INPUT_TEXT = 200_000
 MAX_PENDING = 128
 MAX_RESULTS = 1024
+# Display observations (#1461), shared with the closed IPC schema. Native task payloads and
+# output-file paths never cross that boundary; a cut text value visibly ends with an ellipsis.
+TASK_METADATA_LIMITS = {
+    "description": 1000,
+    "task_type": 128,
+    "last_tool_name": 128,
+    "summary": 2000,
+}
+TERMINAL_TASK_STATES = frozenset({"completed", "failed", "stopped", "killed"})
 _ID = re.compile(r"[A-Za-z0-9_.:-]{1,256}\Z", re.ASCII)
 _MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}\Z", re.ASCII)
 #: A reasoning level (#1407): the grammar `native_models` lists and a create admits.
@@ -1287,12 +1297,23 @@ class ClaudeCodec(_Codec):
                 if len(self._background) >= MAX_PENDING and task_id not in self._background:
                     raise ProtocolError("native background task capacity exceeded")
                 self._background.add(task_id)
+            # A task_updated patch is sparse: without status it says nothing about a paused
+            # task's state. Keep the existing state/active semantics for dispatch, and carry the
+            # explicit display state separately. Never copy an arbitrary patch or output path.
+            source = patch if subtype == "task_updated" and isinstance(patch, dict) else frame
+            metadata = {}
+            for field, limit in TASK_METADATA_LIMITS.items():
+                value = source.get(field)
+                if isinstance(value, str) and value:
+                    metadata[field] = value if len(value) <= limit else value[: limit - 1] + "…"
             return [
                 _event(
                     "background",
                     task_id=task_id,
                     state=state or "running",
                     active=bool(self._background),
+                    task_state=state or ("running" if subtype == "task_started" else ""),
+                    **metadata,
                 )
             ]
         if kind == "system" and subtype == "session_state_changed":

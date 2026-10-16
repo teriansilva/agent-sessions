@@ -335,7 +335,17 @@ def test_background_work_belongs_to_the_worker_that_reported_it(conversation, mo
     # The replacement's own report counts.
     journal.append_events(root, successor, [task])
     assert views(successor.worker_id) == (True, True)
-    assert views(binding.worker_id) == (False, False)
+    # `_live_worker` selects the current generation. Passing the replaced worker as live
+    # contradicts that caller contract; report arrival order cannot choose a replacement.
+    inactive = {
+        "kind": "background",
+        "data": {"task_id": "task-1", "state": "completed", "active": False},
+    }
+    journal.append_events(root, binding, [inactive])
+    assert views(successor.worker_id) == (True, True)
+    journal.append_events(root, successor, [inactive])
+    assert views(successor.worker_id) == (False, False)
+    assert views(None) == (False, False)
 
 
 def test_settled_history_still_ages_out_behind_own_turns(conversation, monkeypatch):

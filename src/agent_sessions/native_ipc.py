@@ -26,7 +26,7 @@ import uuid
 from dataclasses import dataclass
 
 from . import native_attachments
-from .native_protocol import ProtocolError, validate_text
+from .native_protocol import TASK_METADATA_LIMITS, ProtocolError, validate_text
 from .structured_types import normalize_context
 
 PROTOCOL = 1
@@ -477,7 +477,8 @@ _EVENT_FIELDS = {
     # once it has ended.
     "background": (
         {"state"},
-        {"native_turn_id", "task_id", "active", "native_state", "background_turn"},
+        {"native_turn_id", "task_id", "active", "native_state", "background_turn", "task_state"}
+        | TASK_METADATA_LIMITS.keys(),
     ),
     "response": (_RPC, set()),
     "error": ({"message"}, _COMMON | _RPC | {"native_will_retry"}),
@@ -525,6 +526,8 @@ def _event(value):
             out[key] = _boolean(item)
         elif key == "payload_digest":
             out[key] = _digest(item)
+        elif kind == "background" and key in TASK_METADATA_LIMITS:
+            out[key] = _text(item, TASK_METADATA_LIMITS[key])
         elif key == "omitted_turns":
             out[key] = _integer(item)
         elif key == "choices":
@@ -553,7 +556,7 @@ def _event(value):
                 else 128
                 if key == "action"
                 else 64
-                if key in {"state", "native_state"}
+                if key in {"state", "native_state", "task_state"}
                 else MAX_EVENT_TEXT,
             )
     if kind in {"text", "tool"} and (

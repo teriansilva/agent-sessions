@@ -64,6 +64,7 @@ import type {
 } from "../../types/api";
 import chat from "../chat/ChatPane.module.css";
 import { Markdown } from "./Markdown";
+import { BackgroundWork } from "./BackgroundWork";
 import { autoSendNowHead, useAlwaysSendNow } from "./alwaysSendNow";
 import { PermissionsDialog } from "./PermissionsDialog";
 import styles from "./StructuredPane.module.css";
@@ -491,22 +492,6 @@ function RequestQueue({ requests, render }: {
       </div>;
     })}
   </div>;
-}
-
-/** The agent works with no turn running (#1430) — a background task, since a turn it runs for
- *  itself shows as that turn (#1438). Not a turn: nothing here is interruptible. */
-function BackgroundWork() {
-  return (
-    <div className={`${chat.wait} ${styles.taskRow}`} role="status" data-testid="structured-background-work">
-      <span className={chat.bars} aria-hidden="true">
-        <span />
-        <span />
-        <span />
-      </span>
-      A background task is running
-      <span className={styles.ownNote}>Not a turn: there is nothing to interrupt. Stop ends the worker.</span>
-    </div>
-  );
 }
 
 /** The `Esc` beside an Interrupt button; shown only with a fine pointer (CSS). */
@@ -1086,6 +1071,8 @@ export function StructuredPane({
 
   // The cursor loop: cheap reads of the journal's revision; a change re-reads the snapshot.
   const active = isActive(snap);
+  // Task progress reads live without changing the turn-active predicate used by Send (#1461).
+  const pollingActive = active || backgroundWorking(snap);
   useEffect(() => {
     let alive = true;
     let timer: ReturnType<typeof setTimeout>;
@@ -1101,7 +1088,7 @@ export function StructuredPane({
         // A changed journal re-reads at once. Lifecycle facts that write no journal record — a
         // worker's idle exit, the client turning read only — are picked up by a full re-read
         // every idle tick and every 5th active tick (Hermes on #1315).
-        if (page.revision !== cursor.current || !active || ticks % 5 === 0) await load();
+        if (page.revision !== cursor.current || !pollingActive || ticks % 5 === 0) await load();
       } catch (e) {
         if (!alive) return;
         if (e instanceof ApiError && e.status === 409) await load();
@@ -1113,15 +1100,15 @@ export function StructuredPane({
       if (alive)
         timer = setTimeout(
           tick,
-          backoff || (active ? STRUCTURED_ACTIVE_POLL_MS : STRUCTURED_IDLE_POLL_MS),
+          backoff || (pollingActive ? STRUCTURED_ACTIVE_POLL_MS : STRUCTURED_IDLE_POLL_MS),
         );
     };
-    timer = setTimeout(tick, active ? STRUCTURED_ACTIVE_POLL_MS : STRUCTURED_IDLE_POLL_MS);
+    timer = setTimeout(tick, pollingActive ? STRUCTURED_ACTIVE_POLL_MS : STRUCTURED_IDLE_POLL_MS);
     return () => {
       alive = false;
       clearTimeout(timer);
     };
-  }, [key, active, load]);
+  }, [key, pollingActive, load]);
 
   useLayoutEffect(() => {
     const el = logRef.current;
@@ -2025,6 +2012,10 @@ export function StructuredPane({
   // Where the background-task row goes: above the first queued message, else last (-1: none).
   const firstQueued = turns.findIndex((t) => !isAgentTurn(t) && t.state === "queued");
   const backgroundAt = !backgroundWorking(snap) ? -1 : firstQueued === -1 ? turns.length : firstQueued;
+  // One keyed list keeps the task panel's DOM (including focus and open Details) when a
+  // queued message moves it from the transcript tail to before the queue (#1461).
+  const conversation: (StructuredTurn | StructuredAgentTurn | null)[] = [...turns];
+  if (backgroundAt >= 0) conversation.splice(backgroundAt, 0, null);
   const pending = snap?.pending_requests ?? [];
   return (
     <div className={`${chat.pane} ${styles.pane}`} data-testid="structured-pane" onKeyDown={onPaneKey}>
@@ -2136,10 +2127,10 @@ export function StructuredPane({
         {snap && snap.omitted_turns > 0 && (
           <p className={chat.notice}>{snap.omitted_turns} earlier turns are not shown.</p>
         )}
-        {turns.map((t, i) => (
+        {conversation.map((t) => t === null ? (
+          <BackgroundWork key="background" native={snap?.native} />
+        ) : (
           <Fragment key={t.turn_id}>
-          {/* Above the first queued message: that work is what it waits behind. */}
-          {i === backgroundAt && <BackgroundWork />}
           {isAgentTurn(t) ? (
             <AgentTurnView
               turn={t}
@@ -2179,7 +2170,6 @@ export function StructuredPane({
           )}
           </Fragment>
         ))}
-        {backgroundAt === turns.length && <BackgroundWork />}
         {recoveringSendNow && (
           <div className={styles.queued} data-testid="structured-send-now-recovery">
             <div className={styles.queueRow}>

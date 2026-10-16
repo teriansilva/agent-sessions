@@ -5,6 +5,8 @@ private worker config, launches the fixed systemd service, pins its invocation, 
 the worker over the private socket. Reads (snapshot/events) come straight from the durable
 journal, so a browser or web restart observes everything without the worker's help.
 Response start times come from the first recorded non-empty text, never observation time.
+Background task display metadata is folded only from the live worker's journal observations;
+it never supplies a turn, an interrupt target or a dispatch decision.
 
 Lifecycle facts this module relies on (see ``docs/invariants/native-runtime.md``):
 
@@ -1243,6 +1245,38 @@ def _journal(prov, session_id: str) -> native_journal.Journal:
         raise NativeError(404 if exc.code == "unavailable" else 503, exc.detail) from None
 
 
+def _observe_task(tasks: dict, ended: set[str], data: dict, ts: float) -> None:
+    """Merge one live worker's task observation (#1461), independently of execution state.
+
+    Terminal ids stay ended for this generation, so a late sparse/progress frame cannot revive
+    them. Journal order chooses observations; their timestamps are labels, never ordering keys.
+    """
+    task_id = data["task_id"]
+    state = data.get("task_state", data["state"])
+    if state in native_protocol.TERMINAL_TASK_STATES:
+        ended.add(task_id)
+        tasks.pop(task_id, None)
+        return
+    if task_id in ended:
+        return
+    if task_id not in tasks:
+        if len(tasks) >= native_protocol.MAX_PENDING:
+            return
+        tasks[task_id] = {
+            "task_id": task_id,
+            "state": state or "unknown",
+            "started_at": ts,
+            "updated_at": ts,
+        }
+    task = tasks[task_id]
+    task["updated_at"] = ts
+    if state:
+        task["state"] = state
+    for field in native_protocol.TASK_METADATA_LIMITS:
+        if data.get(field):
+            task[field] = data[field]
+
+
 def project(
     journal: native_journal.Journal,
     record: dict,
@@ -1272,8 +1306,11 @@ def project(
     # target. They share ONE display window with operator turns, newest first, so a bounded read
     # shows what a full one would. Ordered by journal position, never by a wall clock.
     starts, settled = [], set()
+    tasks, ended_tasks = {}, set()
     for item in journal.events.for_operations(set()):
         kind, data = item["event"]["kind"], item["event"]["data"]
+        if kind == "background" and data.get("task_id") and item["worker_id"] == live_worker:
+            _observe_task(tasks, ended_tasks, data, item["ts"])
         if kind == "background" and data.get("background_turn"):
             starts.append((item["cursor"], data["background_turn"]))
         elif kind == "turn_completed" and data.get("operation_id"):
@@ -1351,7 +1388,8 @@ def project(
         elif kind == "model" and data.get("model_effective"):
             model_effective = data["model_effective"]
         elif kind == "background":
-            background, background_worker = bool(data.get("active")), item["worker_id"]
+            if item["worker_id"] == live_worker:
+                background, background_worker = bool(data.get("active")), item["worker_id"]
             if "background_turn" in data:
                 background_turn = (data["background_turn"], item["worker_id"])
                 if open_agent is not None:
@@ -1387,7 +1425,7 @@ def project(
             ]:
                 pending.pop(exact)
         elif turn is None:
-            if kind == "turn_completed":
+            if kind == "turn_completed" and item["worker_id"] == live_worker:
                 background = bool(data.get("background_active"))
                 background_worker = item["worker_id"]
             continue
@@ -1450,8 +1488,9 @@ def project(
                 turn["reply"] = data["text"]
                 if turn["reply_ts"] is None:
                     turn["reply_ts"] = item.get("ts")
-            background = bool(data.get("background_active"))
-            background_worker = item["worker_id"]
+            if item["worker_id"] == live_worker:
+                background = bool(data.get("background_active"))
+                background_worker = item["worker_id"]
             for key, value in list(pending.items()):
                 if value.get("operation_id") == turn["turn_id"]:
                     pending.pop(key)
@@ -1595,6 +1634,7 @@ def project(
             # Only the live worker's own report: an exited or replaced generation's task ended
             # with it, so its last `active` would show an idle replacement busy forever.
             "background_active": background and background_worker == live_worker,
+            "background_tasks": list(tasks.values()),
             # Only the live worker's own turn is a Send now target (#1427): a target minted by an
             # exited or replaced generation names a turn nothing can stop any more.
             "background_turn": background_turn[0]

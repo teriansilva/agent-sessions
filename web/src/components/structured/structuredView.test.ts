@@ -109,12 +109,14 @@ test("the agent working with no operator turn running is shown, never doubled (#
     ({ active_turn, turns: [], native: { native_id: "n", worker: "w", background_active } }) as unknown as StructuredSnapshot;
   expect(backgroundWorking(null)).toBe(false);
   expect(backgroundWorking(snap(null, true))).toBe(true);
+  expect(isActive(snap(null, true))).toBe(false); // task polling never changes turn admission
   expect(backgroundWorking(snap(null, false))).toBe(false);
   expect(backgroundWorking(snap("op", true))).toBe(false); // the operator turn shows its own
   // A stale flag from a worker that has exited claims nothing.
   const exited = snap(null, true);
   exited.native!.worker = null;
   expect(backgroundWorking(exited)).toBe(false);
+  expect(isActive(exited)).toBe(false);
 });
 
 test("Send now targets the operator turn, else the agent's own turn its worker can interrupt (#1427)", () => {

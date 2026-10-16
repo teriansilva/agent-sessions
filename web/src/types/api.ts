@@ -1422,6 +1422,19 @@ export interface StructuredModelList {
   reason: string | null;
 }
 
+/** A live worker's reported background task (#1461). Times are journal observations, never
+ *  native start/end authority or evidence of continuous work. Optional strings are bounded. */
+export interface StructuredBackgroundTask {
+  task_id: string;
+  state: string;
+  description?: string;
+  task_type?: string;
+  last_tool_name?: string;
+  summary?: string;
+  started_at: number;
+  updated_at: number;
+}
+
 export interface StructuredSnapshot {
   session_key: string;
   revision: number;
@@ -1451,6 +1464,8 @@ export interface StructuredSnapshot {
     native_id: string | null;
     worker: string | null;
     background_active: boolean;
+    /** Active task observations scoped to this live worker; absent on older servers. */
+    background_tasks?: StructuredBackgroundTask[];
     /** Advertised by this running worker, absent on older workers. */
     send_now?: "steer" | "interrupt";
     /** A turn the agent runs for itself (a task notification) that Send now can interrupt
