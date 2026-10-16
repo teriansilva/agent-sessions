@@ -15,7 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { ClipboardEvent as ReactClipboardEvent, KeyboardEvent } from "react";
+import type { ClipboardEvent as ReactClipboardEvent, KeyboardEvent, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { engineInfo, engineLabel, isAgent, useEngineRoster } from "../../app/engineRoster";
 import { isNewSessionPlaceholder } from "../../app/sessionsStore";
@@ -66,6 +66,7 @@ import chat from "../chat/ChatPane.module.css";
 import { Markdown } from "./Markdown";
 import { BackgroundWork } from "./BackgroundWork";
 import { autoSendNowHead, useAlwaysSendNow } from "./alwaysSendNow";
+import { conversationGroups, type ConversationGroup } from "./conversationOrder";
 import { PermissionsDialog } from "./PermissionsDialog";
 import styles from "./StructuredPane.module.css";
 import {
@@ -527,6 +528,7 @@ function ToolList({ tools, label }: { tools: StructuredTool[]; label: string }) 
  *  never the worker. */
 function AgentTurnView({
   turn,
+  beforeReply,
   agent,
   interruptible,
   ahead,
@@ -536,6 +538,7 @@ function AgentTurnView({
   onInterrupt,
 }: {
   turn: StructuredAgentTurn;
+  beforeReply?: ReactNode;
   agent: string;
   interruptible: boolean;
   /** The operator's message waits behind this turn in the agent's own queue (#1475). */
@@ -588,6 +591,7 @@ function AgentTurnView({
       ) : (
         ended && <p className={`${styles.ownNote} ${styles.activityFailed}`}>{ended}</p>
       )}
+      {beforeReply}
       {turn.reply && (
         <div className={`${chat.txt} ${styles.ownReply}`} data-testid="structured-agent-reply">
           <Markdown text={turn.reply_truncated ? `${turn.reply}…` : turn.reply} />
@@ -647,6 +651,7 @@ function MessageHeader({ speaker, title, kind, ts }: {
 function TurnView({
   folder,
   turn,
+  beforeReply,
   agent,
   requests,
   deciding,
@@ -670,6 +675,8 @@ function TurnView({
 }: {
   folder?: string;
   turn: StructuredTurn;
+  /** Acknowledged additions to this turn, after its activity/approvals and before its reply. */
+  beforeReply?: ReactNode;
   agent: string;
   requests: StructuredRequest[];
   deciding: Record<string, Deciding>;
@@ -776,6 +783,7 @@ function TurnView({
           interrupting={interrupting}
         />
       )} />
+      {beforeReply}
       {turn.reply && (
         <div className={`${chat.turn} ${chat.asst} ${styles.reply}`} data-testid="structured-reply">
           <MessageHeader speaker={agent} kind="assistant" ts={turn.reply_ts} />
@@ -2008,15 +2016,44 @@ export function StructuredPane({
   }
 
   const turns = snap?.turns ?? [];
+  const groups = conversationGroups(turns);
   const positions = queuePositions(snap);
   // Where the background-task row goes: above the first queued message, else last (-1: none).
-  const firstQueued = turns.findIndex((t) => !isAgentTurn(t) && t.state === "queued");
-  const backgroundAt = !backgroundWorking(snap) ? -1 : firstQueued === -1 ? turns.length : firstQueued;
+  const firstQueued = groups.findIndex(({ turn: t }) => !isAgentTurn(t) && t.state === "queued");
+  const backgroundAt = !backgroundWorking(snap) ? -1 : firstQueued === -1 ? groups.length : firstQueued;
   // One keyed list keeps the task panel's DOM (including focus and open Details) when a
   // queued message moves it from the transcript tail to before the queue (#1461).
-  const conversation: (StructuredTurn | StructuredAgentTurn | null)[] = [...turns];
+  const conversation: (ConversationGroup | null)[] = [...groups];
   if (backgroundAt >= 0) conversation.splice(backgroundAt, 0, null);
   const pending = snap?.pending_requests ?? [];
+  const renderTurn = (t: StructuredTurn, beforeReply?: ReactNode) => (
+    <TurnView
+      key={t.turn_id}
+      beforeReply={beforeReply}
+      turn={t}
+      folder={snap?.cwd}
+      agent={agent}
+      requests={pending.filter((r) => r.turn_id === t.turn_id)}
+      deciding={deciding}
+      readOnly={readOnly}
+      approvalsDisabled={permissionPending}
+      onDecide={(r, c, g) => void decide(r, c, g)}
+      onInterrupt={(tid) => void interrupt(tid)}
+      interrupting={interrupting || stoppingNow === t.turn_id}
+      onSendNow={(tid) => void sendNow(tid)}
+      sendNowMode={sendNowTarget(snap)?.mode}
+      sendingNow={sendingNow === t.turn_id}
+      queuePosition={positions.get(t.turn_id)}
+      cutOff={cutBySendNow(snap, t)}
+      waiting={t.turn_id === snap?.active_turn && waitingBehindOwnTurn(snap)}
+      sendNowDisabled={permissionPending || !!sendingNow || !!recoveringSendNow || operatorTurns(snap).some((q) => q.state === "queued" && q.delivery === "interrupting")}
+      alwaysSendNow={alwaysSendNow}
+      onAlwaysSendNow={turnOnAlwaysSendNow}
+      onRemove={(tid) => void removeQueued(tid)}
+      removing={removing === t.turn_id}
+      canRemove={!!snap?.native?.withdraw}
+    />
+  );
   return (
     <div className={`${chat.pane} ${styles.pane}`} data-testid="structured-pane" onKeyDown={onPaneKey}>
       {header}
@@ -2127,49 +2164,29 @@ export function StructuredPane({
         {snap && snap.omitted_turns > 0 && (
           <p className={chat.notice}>{snap.omitted_turns} earlier turns are not shown.</p>
         )}
-        {conversation.map((t) => t === null ? (
-          <BackgroundWork key="background" native={snap?.native} />
-        ) : (
-          <Fragment key={t.turn_id}>
-          {isAgentTurn(t) ? (
-            <AgentTurnView
-              turn={t}
-              agent={agent}
-              interruptible={ownTurnInterruptible(snap, t)}
-              ahead={waitingBehindOwnTurn(snap)}
-              readOnly={readOnly}
-              live={!!snap?.native?.worker}
-              stopping={interrupting || stoppingNow === t.turn_id}
-              onInterrupt={(tid) => void interrupt(tid)}
-            />
-          ) : (
-          <TurnView
-            turn={t}
-            folder={snap?.cwd}
-            agent={agent}
-            requests={pending.filter((r) => r.turn_id === t.turn_id)}
-            deciding={deciding}
-            readOnly={readOnly}
-            approvalsDisabled={permissionPending}
-            onDecide={(r, c, g) => void decide(r, c, g)}
-            onInterrupt={(tid) => void interrupt(tid)}
-            interrupting={interrupting || stoppingNow === t.turn_id}
-            onSendNow={(tid) => void sendNow(tid)}
-            sendNowMode={sendNowTarget(snap)?.mode}
-            sendingNow={sendingNow === t.turn_id}
-            queuePosition={positions.get(t.turn_id)}
-            cutOff={cutBySendNow(snap, t)}
-            waiting={t.turn_id === snap?.active_turn && waitingBehindOwnTurn(snap)}
-            sendNowDisabled={permissionPending || !!sendingNow || !!recoveringSendNow || operatorTurns(snap).some((q) => q.state === "queued" && q.delivery === "interrupting")}
-            alwaysSendNow={alwaysSendNow}
-            onAlwaysSendNow={turnOnAlwaysSendNow}
-            onRemove={(tid) => void removeQueued(tid)}
-            removing={removing === t.turn_id}
-            canRemove={!!snap?.native?.withdraw}
-          />
-          )}
-          </Fragment>
-        ))}
+        {conversation.map((group) => {
+          if (group === null) return (
+            <BackgroundWork key="background" native={snap?.native} />
+          );
+          const { turn: t, additions } = group;
+          return (
+            <Fragment key={t.turn_id}>
+              {isAgentTurn(t) ? (
+                <AgentTurnView
+                  beforeReply={additions.map((added) => renderTurn(added))}
+                  turn={t}
+                  agent={agent}
+                  interruptible={ownTurnInterruptible(snap, t)}
+                  ahead={waitingBehindOwnTurn(snap)}
+                  readOnly={readOnly}
+                  live={!!snap?.native?.worker}
+                  stopping={interrupting || stoppingNow === t.turn_id}
+                  onInterrupt={(tid) => void interrupt(tid)}
+                />
+              ) : renderTurn(t, additions.map((added) => renderTurn(added)))}
+            </Fragment>
+          );
+        })}
         {recoveringSendNow && (
           <div className={styles.queued} data-testid="structured-send-now-recovery">
             <div className={styles.queueRow}>
