@@ -9,7 +9,12 @@ import { operatorTurns, sendNowTarget } from "./structuredView";
 export const ALWAYS_SEND_NOW_KEY = "agent-sessions.always-send-now";
 const EVENT = "agent-sessions:always-send-now";
 
+/** The choice made on this page when storage refused to keep it (private mode, quota): it
+ *  holds until the page goes, instead of a re-read of storage silently undoing it. */
+let pageOnly: boolean | null = null;
+
 export function readAlwaysSendNow(): boolean {
+  if (pageOnly !== null) return pageOnly;
   try {
     return localStorage.getItem(ALWAYS_SEND_NOW_KEY) === "1";
   } catch {
@@ -17,12 +22,13 @@ export function readAlwaysSendNow(): boolean {
   }
 }
 
-function writeAlwaysSendNow(on: boolean): void {
+export function writeAlwaysSendNow(on: boolean): void {
   try {
     if (on) localStorage.setItem(ALWAYS_SEND_NOW_KEY, "1");
     else localStorage.removeItem(ALWAYS_SEND_NOW_KEY);
+    pageOnly = null;
   } catch {
-    // Storage refused (private mode, quota): the toggle still holds for this page.
+    pageOnly = on;
   }
   window.dispatchEvent(new Event(EVENT));
 }

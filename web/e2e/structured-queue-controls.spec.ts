@@ -151,3 +151,25 @@ test("a message being steered into the turn offers no Remove", async ({ page }) 
   await expect(first).toContainText("Awaiting agent acknowledgement");
   await expect(first.getByRole("button", { name: "Remove this queued message" })).toHaveCount(0);
 });
+
+test("Always send now holds for the page when the browser refuses to store it", async ({ page }) => {
+  // Private browsing / a full quota: storing this preference throws (other keys still work, so
+  // the rest of the app loads as usual).
+  await page.addInitScript(() => {
+    const setItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key: string, value: string) {
+      if (key === "agent-sessions.always-send-now") throw new DOMException("quota", "QuotaExceededError");
+      return setItem.call(this, key, value);
+    };
+  });
+  const fixture = await queue(page, "claude-api", "interrupt");
+  await row(page, "Only inspect the files.").getByRole("button", { name: "Always send now", exact: true }).click();
+  await expect.poll(() => fixture.calls.length).toBe(1);
+  const chip = page.getByTestId("structured-always-send-now");
+  await expect(chip).toBeVisible();
+  fixture.state.revision++; // a re-read must not switch it back off
+  await page.waitForTimeout(1_500);
+  await expect(chip).toBeVisible();
+  await chip.click();
+  await expect(chip).toHaveCount(0);
+});

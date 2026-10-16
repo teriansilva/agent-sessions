@@ -1,6 +1,6 @@
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import type { StructuredSnapshot, StructuredTurn } from "../../types/api";
-import { ALWAYS_SEND_NOW_KEY, autoSendNowHead, readAlwaysSendNow } from "./alwaysSendNow";
+import { ALWAYS_SEND_NOW_KEY, autoSendNowHead, readAlwaysSendNow, writeAlwaysSendNow } from "./alwaysSendNow";
 
 const turn = (turn_id: string, state: string, over: Partial<StructuredTurn> = {}) =>
   ({ turn_id, state, text: turn_id, tools: [], ...over }) as unknown as StructuredTurn;
@@ -14,7 +14,11 @@ function snap(turns: StructuredTurn[], over: Partial<StructuredSnapshot> = {}): 
   } as unknown as StructuredSnapshot;
 }
 
-afterEach(() => localStorage.clear());
+afterEach(() => {
+  vi.restoreAllMocks();
+  writeAlwaysSendNow(false);
+  localStorage.clear();
+});
 
 test("the first queued message is sent next, only while Send now is offered", () => {
   const turns = [turn("a", "running"), turn("q1", "queued"), turn("q2", "queued")];
@@ -37,5 +41,22 @@ test("never while another selection is in flight, and never a refused one again"
 test("the preference is off unless this device turned it on", () => {
   expect(readAlwaysSendNow()).toBe(false);
   localStorage.setItem(ALWAYS_SEND_NOW_KEY, "1");
+  expect(readAlwaysSendNow()).toBe(true);
+});
+
+test("when storage refuses the write, the choice still holds for this page", () => {
+  const refused = () => {
+    throw new DOMException("quota", "QuotaExceededError");
+  };
+  vi.spyOn(Storage.prototype, "setItem").mockImplementation(refused);
+  vi.spyOn(Storage.prototype, "removeItem").mockImplementation(refused);
+  writeAlwaysSendNow(true);
+  expect(readAlwaysSendNow()).toBe(true); // a re-read (the change event) must not undo it
+  writeAlwaysSendNow(false);
+  expect(readAlwaysSendNow()).toBe(false);
+  // Once storage works again it is the source of truth.
+  vi.restoreAllMocks();
+  writeAlwaysSendNow(true);
+  expect(localStorage.getItem(ALWAYS_SEND_NOW_KEY)).toBe("1");
   expect(readAlwaysSendNow()).toBe(true);
 });
