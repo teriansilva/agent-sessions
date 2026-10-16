@@ -79,12 +79,9 @@ test("pick an agent tile and a project, override and reset the folder, start (#1
 
   await expect(project.radio("p-1")).toBeChecked(); // the starred project
   await expect(launchFolder(page)).toHaveAttribute("data-path", "/home/u/claude/agent-sessions");
-  await expect(page.getByText(/default folder for “agent-sessions”/i)).toBeVisible();
-  await page.getByRole("group", { name: "Project folders" }).getByRole("button", { name: "~/claude/agent-sessions/web" }).click();
-  await expect(launchFolder(page)).toHaveAttribute("data-path", "/home/u/claude/agent-sessions/web");
-  await expect(page.getByText("Just for this session")).toBeVisible();
-  await page.getByRole("button", { name: /use project default/i }).click();
-  await expect(launchFolder(page)).toHaveAttribute("data-path", "/home/u/claude/agent-sessions");
+  // ONE line under the project list, no Folder section (#1473).
+  await expect(launchFolder(page)).toContainText("Starts in ~/claude/agent-sessions · project default");
+  await expect(page.getByRole("heading", { name: "Folder" })).toHaveCount(0);
 
   await project.selectOption("p-2");
   await expect(launchFolder(page)).toHaveAttribute("data-path", "/home/u/claude/payments-api");
@@ -209,6 +206,68 @@ test("Ctrl+Enter while the folder picker is still loading does not start a sessi
   release();
 });
 
+test("a wide pane puts agent and project side by side; a narrow one stacks them (#1473)", async ({ page }, info) => {
+  await mockBackend(page);
+  if (info.project.name === "desktop") await page.setViewportSize({ width: 1700, height: 1000 });
+  await page.goto("/");
+  await expect(projectPicker(page).radio("p-1")).toBeChecked();
+  const agentBox = (await page.getByRole("radiogroup", { name: "Agent" }).boundingBox())!;
+  const projectBox = (await page.getByRole("radiogroup", { name: "Project" }).boundingBox())!;
+  if (info.project.name === "desktop") {
+    expect(projectBox.x).toBeGreaterThan(agentBox.x + agentBox.width - 1); // right of it
+    expect(Math.abs(projectBox.y - agentBox.y)).toBeLessThan(120); // same band, not below
+  } else {
+    expect(projectBox.y).toBeGreaterThan(agentBox.y + agentBox.height - 1); // stacked
+  }
+  await expect(page.getByRole("button", { name: /start session/i })).toBeInViewport();
+});
+
+test("an API agent starts at the stored skip-permissions default (#1473)", async ({ page }) => {
+  await mockBackend(page); // agent_defaults.bypass = true
+  await page.goto("/");
+  await agentPicker(page).selectOption("codex-api");
+  const skip = page.getByRole("checkbox", { name: /skip permission prompts/i });
+  await expect(skip).toBeChecked();
+  await expect(page.getByTestId("api-bypass-warning")).toBeVisible();
+  await expect(page.getByTestId("new-session-summary")).toContainText("skips permission prompts");
+});
+
+test("the folder line: override for this session, back to the project default (Hermes on #1473)", async ({ page }) => {
+  await mockBackend(page);
+  await page.route(/\/api\/fs\/dirs(\?.*)?$/, (r) => {
+    const path = new URL(r.request().url()).searchParams.get("path") || "/home/u";
+    return r.fulfill({
+      json:
+        path === "/home/u"
+          ? { path, home: "/home/u", dirs: [{ name: "scratch", path: "/home/u/scratch" }] }
+          : { path, home: "/home/u", dirs: [] },
+    });
+  });
+  await page.goto("/");
+  await expect(projectPicker(page).radio("p-1")).toBeChecked();
+  await expect(launchFolder(page)).toContainText("Starts in ~/claude/agent-sessions · project default");
+  await page.getByRole("button", { name: /choose folder/i }).click();
+  await page.getByRole("button", { name: "Home" }).click();
+  await page.getByRole("button", { name: "scratch" }).click();
+  await page.getByRole("button", { name: /^Select/ }).click();
+  await expect(launchFolder(page)).toHaveAttribute("data-path", "/home/u/scratch");
+  await expect(launchFolder(page)).toContainText("Starts in ~/scratch · just this session");
+  await page.getByRole("button", { name: /use project default/i }).click();
+  await expect(launchFolder(page)).toHaveAttribute("data-path", "/home/u/claude/agent-sessions");
+  await expect(page.getByRole("button", { name: /start session/i })).toBeEnabled();
+});
+
+test("a project with no folder and no global default says so, and Start waits (Hermes on #1473)", async ({ page }) => {
+  await mockBackend(page, {
+    projects: [{ ...PROJECTS[0], folders: [], default_folder: "" }],
+  });
+  await page.goto("/");
+  await expect(projectPicker(page).radio("p-1")).toBeChecked();
+  await expect(launchFolder(page)).toContainText("“agent-sessions” has no default folder — choose one for this session.");
+  await expect(launchFolder(page)).toHaveAttribute("data-path", "");
+  await expect(page.getByRole("button", { name: /start session/i })).toBeDisabled();
+});
+
 // Captures for review (#1436): both themes on both projects, the console default and an API
 // client. Written to the test output dir — no pixel assertion, the checks above are the gate.
 for (const theme of ["dark", "light"] as const) {
@@ -220,7 +279,20 @@ for (const theme of ["dark", "light"] as const) {
     await expect(page.getByRole("button", { name: /start session/i })).toBeEnabled();
     await page.screenshot({ path: info.outputPath(`new-session-${theme}.png`) });
     await agentPicker(page).selectOption("codex-api");
-    await page.getByRole("group", { name: "Project folders" }).getByRole("button", { name: "~/claude/agent-sessions/web" }).click();
     await page.screenshot({ path: info.outputPath(`new-session-${theme}-api.png`), fullPage: true });
+    if (info.project.name === "mobile") {
+      // The lower half on a phone (Hermes on #1473): the folder line and the skip control, in view.
+      // Scroll the form's own pane to its end: the sticky Start bar overlaps the line otherwise.
+      await launchFolder(page).evaluate((el) => {
+        let p: HTMLElement | null = el.parentElement;
+        while (p && getComputedStyle(p).overflowY !== "auto") p = p.parentElement;
+        p?.scrollTo(0, p.scrollHeight);
+      });
+      await page.screenshot({ path: info.outputPath(`new-session-${theme}-lower.png`) });
+    }
+    if (info.project.name === "desktop") {
+      await page.setViewportSize({ width: 1700, height: 1000 });
+      await page.screenshot({ path: info.outputPath(`new-session-${theme}-wide.png`) });
+    }
   });
 }

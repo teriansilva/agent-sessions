@@ -70,6 +70,9 @@ async function setup(page: Page, theme: "dark" | "light", engines = ["codex-api"
         overview_expanded: [],
         projects_hidden: [],
         theme,
+        // Guarded unless a test says otherwise: an API agent's skip choice starts at the stored
+        // default (#1473), and these specs pin the guarded create path.
+        agent_defaults: { bypass: false },
       },
     }),
   );

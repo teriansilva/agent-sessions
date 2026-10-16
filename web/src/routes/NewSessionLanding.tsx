@@ -34,7 +34,7 @@ import { shortCwd } from "../lib/format";
 import { useProjectPicker } from "../app/useProjectPicker";
 import {
   AgentTiles,
-  FolderCard,
+  FolderLine,
   ProjectList,
   type FolderState,
 } from "../components/newSession/NewSessionControls";
@@ -121,12 +121,11 @@ export function NewSessionLanding() {
   const [bypassChoice, setConsoleBypass] = useState<boolean | null>(
     restore.draft?.bypassChoice ?? null,
   );
-  // An API client's skip choice is SEPARATE and BOUND to the engine it was ticked for (#1339,
-  // Hermes on #1341): a console choice never carries into an API client, switching agents always
-  // starts guarded, and it is never restored from a draft — only a tick on this form, for this
-  // client, skips its prompts. The tick is never restored or replayed — not on reload, not for a
-  // retry (Hermes on #1341, rounds 1–2): an unresolved create is resolved by ASKING THE SERVER
-  // below, never by re-sending a skip the operator did not just tick.
+  // An API client's skip choice is SEPARATE and BOUND to the engine it was made for (#1339,
+  // Hermes on #1341): a console choice never carries into an API client, switching agents drops
+  // it (back to the stored default, #1473), and it is never restored from a draft. It is never
+  // replayed — not on reload, not for a retry (Hermes on #1341, rounds 1–2): an unresolved create
+  // is resolved by ASKING THE SERVER below, never by re-sending a skip.
   const [apiBypassChoice, setApiBypassChoice] = useState<{ engine: string; value: boolean } | null>(
     null,
   );
@@ -173,10 +172,17 @@ export function NewSessionLanding() {
   const isApi = runtimeOf(engine) === "api";
   const apiSource = engineInfo(engine)?.api?.source ?? "";
   const apiCanBypass = isApi && engineInfo(engine)?.api?.can_bypass === true;
-  // An API client starts GUARDED unless ticked on this form (#1339): the operator approved the
-  // option, not a default-on posture, so the stored console default does not apply to it.
+  // An API client follows the SAME stored default as a console agent (#1473, operator
+  // decision superseding #1339's "unticked by default"): the form's own choice, bound to the engine
+  // it was made for, wins for this one create. Only a client whose adapter maps it can skip at all.
+  // FAIL CLOSED (adopted from #1457): until a loaded config SAYS the default is on (`=== true` —
+  // the server always sends the stored boolean), an API client starts guarded. A missing or
+  // late config can never turn a Start already on screen into a skip.
   const bypass = isApi
-    ? apiBypassChoice?.engine === engine && apiBypassChoice.value
+    ? apiCanBypass &&
+      (apiBypassChoice?.engine === engine
+        ? apiBypassChoice.value
+        : config?.agent_defaults?.bypass === true)
     : (bypassChoice ?? config?.agent_defaults?.bypass ?? true);
   const setBypass = (value: boolean) =>
     isApi ? setApiBypassChoice({ engine, value }) : setConsoleBypass(value);
@@ -362,12 +368,17 @@ export function NewSessionLanding() {
   // create put it in the picker's cache (`api.createProject`).
   const unconfirmedChoice =
     !!projectChoice && picker.failed && !entities.some((p) => p.id === projectChoice);
+  // A skip-capable API agent waits for the config (Hermes on #1473): its skip choice starts at the
+  // stored default, so until that is known the box would read guarded and then flip — Start must
+  // only ever send what the screen has settled on.
+  const awaitingConfig = isApi && apiCanBypass && !config;
   const canStart = Boolean(
     engine &&
       cwd &&
       mintKnown &&
       !awaitingDefaults &&
       !awaitingProjects &&
+      !awaitingConfig &&
       !unconfirmedChoice,
   );
 
@@ -504,8 +515,8 @@ export function NewSessionLanding() {
       chatStarting.current = false;
       if (mounted.current) {
         setStartingChat(false);
-        // One tick authorizes ONE create (Hermes on #1341, review 5876): after any skip attempt,
-        // whatever its outcome, a further skip create needs a fresh tick.
+        // A choice on this form covers ONE create (Hermes on #1341, review 5876): after any skip
+        // attempt, whatever its outcome, the form falls back to the stored default (#1473).
         if (attempt.bypass) setApiBypassChoice(null);
       }
     }
@@ -560,9 +571,6 @@ export function NewSessionLanding() {
     setProjectChoice(id);
     setCwdOverride(null);
   };
-  // A project folder chip: its default folder is "no override", anything else is one.
-  const pickProjectFolder = (folder: string) =>
-    setCwdOverride(folder === projectCwd ? null : folder);
 
   // Ctrl/⌘+Enter starts — but only with focus INSIDE the form (#1437 review). A document-wide
   // listener fired from the sidebar, the top bar or a dialog beside the form, launching an agent
@@ -601,6 +609,10 @@ export function NewSessionLanding() {
         </div>
         <h1>Start a new session</h1>
 
+        {/* Two columns on a wide screen (#1473): what runs on the left, where it runs on
+            the right, Start across both. One column below 1100px, in the same reading order. */}
+        <div className={styles.columns}>
+        <div className={styles.column}>
         {(engines.length > 1 || unavailable.length > 0) && (
           <section className={styles.section} aria-labelledby="new-session-agent-head">
             <h2 id="new-session-agent-head" className={styles.sectionHead}>
@@ -615,7 +627,7 @@ export function NewSessionLanding() {
               onChange={(id) => {
                 setEngineChoice(id);
                 setModelChoice(null); // a model belongs to the engine it was chosen for
-                setApiBypassChoice(null); // a skip tick never survives an agent change (Hermes 5913)
+                setApiBypassChoice(null); // a skip choice never survives an agent change (Hermes 5913)
               }}
             />
           </section>
@@ -724,6 +736,8 @@ export function NewSessionLanding() {
           </p>
         )}
 
+        </div>
+        <div className={styles.column}>
         {/* Project FIRST (#448): it owns the default launch folder below. */}
         <section className={styles.section} aria-labelledby="new-session-project-head">
           <h2 id="new-session-project-head" className={styles.sectionHead}>
@@ -743,20 +757,14 @@ export function NewSessionLanding() {
             onNewProject={(e) => void openWizard(e)}
             onChange={chooseProject}
           />
-        </section>
 
-        {/* Folder BELOW the project (#448): prefilled from the project's default, overridable. */}
-        <section className={styles.section} aria-labelledby="new-session-folder-head">
-          <h2 id="new-session-folder-head" className={styles.sectionHead}>
-            Folder
-          </h2>
-          <FolderCard
+          {/* Where it starts (#448): the project's default folder, overridable for this session —
+              one line, since each project row already shows its folder (#1473). */}
+          <FolderLine
             cwd={cwd}
             state={folderState}
             projectName={selectedProject?.name ?? ""}
-            folders={selectedProject?.folders ?? []}
             onChoose={openPicker}
-            onPick={pickProjectFolder}
             onReset={() => setCwdOverride(null)}
           />
         </section>
@@ -801,6 +809,8 @@ export function NewSessionLanding() {
             <p>Dismissing keeps it in your session list.</p>
           </div>
         )}
+        </div>
+        </div>
 
         <p className={styles.hint}>
           …or open an existing session from the list.
@@ -814,6 +824,8 @@ export function NewSessionLanding() {
           <p className={styles.summary} data-testid="new-session-summary">
             {awaitingProjects ? (
               "Checking projects…"
+            ) : awaitingConfig ? (
+              "Loading your settings…"
             ) : unconfirmedChoice ? (
               "Couldn’t confirm the project you chose — pick it again once your projects load, or choose another."
             ) : engine && cwd ? (

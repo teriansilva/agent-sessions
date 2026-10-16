@@ -4,6 +4,9 @@
   height: 100%;
   padding: 24px;
   overflow-y: auto; /* short screens scroll instead of the card overflowing the pane */
+  /* The two-column switch follows the PANE's width, not the window's: the sidebar and the map
+   * window both make the pane narrower than the viewport (#1473). */
+  container: new-session / inline-size;
 }
 .card {
   /* Plain centered content — NOT a second framed box. The frosted-glass window is the pane
@@ -247,4 +250,29 @@
   flex: none;
   min-height: 44px;
   padding: 0 22px;
+}
+
+/* Two columns on a wide pane (#1473): agent on the left, project + where it starts on
+ * the right, Start across both. A single 560px column left most of a big screen empty. */
+.columns {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.column {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+@container new-session (min-width: 880px) {
+  .card {
+    max-width: 1120px;
+  }
+  .columns {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 32px;
+    align-items: start;
+  }
 }

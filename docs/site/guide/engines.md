@@ -180,7 +180,8 @@ restore the attachments. After an update, an older running API session may need 
 a new message to resume before document attachments become available.
 
 **Skip permission prompts.** New session offers the same toggle for the Codex, Claude and OpenCode API
-clients, unticked by default. A session started with it ticked never asks: Codex
+clients, starting at your **Settings → Agents → Permission bypass** default, as a terminal agent
+does. A session started with it ticked never asks: Codex
 runs with no approvals and no sandbox, Claude in its `bypassPermissions` mode, and OpenCode with an
 agent whose tool rules allow every action. The session header shows SKIP PERMISSIONS, and reopening
 the conversation keeps the choice. Such a session

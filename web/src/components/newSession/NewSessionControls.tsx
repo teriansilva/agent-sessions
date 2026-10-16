@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { engineInfo, engineLabel } from "../../app/engineRoster";
-import { pathBase, shortCwd } from "../../lib/format";
+import { shortCwd } from "../../lib/format";
 import type { ProjectPickerEntity } from "../../lib/projectPickerStore";
 import type { UnavailableClient } from "../../types/api";
 import styles from "./NewSessionControls.module.css";
@@ -253,47 +253,39 @@ export type FolderState =
   | "global-default"
   | "none";
 
-export function FolderCard({
+/** Where the session starts — ONE line under the project list (#1473). The project rows
+ *  already show each project's folder, so this only says what applies and offers the override; a
+ *  full folder section repeated the row above it and cost a screenful on a phone. */
+export function FolderLine({
   cwd,
   state,
   projectName,
-  folders,
   onChoose,
-  onPick,
   onReset,
 }: {
   cwd: string;
   state: FolderState;
   projectName: string;
-  /** The selected project's own folders, offered as one-tap picks when it has more than one. */
-  folders: string[];
   onChoose: (e: MouseEvent<HTMLButtonElement>) => void;
-  onPick: (folder: string) => void;
   onReset: () => void;
 }) {
+  const note =
+    state === "project-default"
+      ? "project default"
+      : state === "override"
+        ? "just this session"
+        : state === "global-default"
+          ? projectName
+            ? `“${projectName}” has no default folder · your global default`
+            : "your global default"
+          : null;
   return (
-    <div className={styles.group}>
-      <div className={styles.folder} data-testid="launch-folder" data-path={cwd}>
-        <span className={styles.folderBase} title={cwd || undefined}>
-          {cwd ? pathBase(cwd) : "No folder"}
-        </span>
-        <span className={styles.folderParent}>
-          {cwd ? shortCwd(cwd).slice(0, -pathBase(cwd).length) || "/" : "Choose where it starts"}
-        </span>
-        <button type="button" className={styles.choose} onClick={onChoose}>
-          Choose folder…
-        </button>
-      </div>
-      {state === "project-default" ? (
-        <p className={styles.note}>
-          <span className={styles.mark} aria-hidden="true" />
-          Default folder for “{projectName}”
-        </p>
-      ) : state === "override" ? (
-        <p className={styles.note}>
-          <span className={styles.mark} aria-hidden="true" />
-          Just for this session
-          {projectName && (
+    <div className={styles.folderLine} data-testid="launch-folder" data-path={cwd}>
+      {cwd ? (
+        <p className={styles.folderText}>
+          Starts in <code title={cwd}>{shortCwd(cwd)}</code>
+          {note && <span className={styles.folderNote}> · {note}</span>}
+          {state === "override" && projectName && (
             <>
               {" · "}
               <button type="button" className={styles.linkButton} onClick={onReset}>
@@ -302,12 +294,6 @@ export function FolderCard({
             </>
           )}
         </p>
-      ) : state === "global-default" ? (
-        <p className={styles.note}>
-          {projectName
-            ? `“${projectName}” has no default folder · using your global default`
-            : "Your global default folder"}
-        </p>
       ) : (
         <p className={styles.error} role="status">
           {projectName
@@ -315,22 +301,9 @@ export function FolderCard({
             : "Choose a folder for this session."}
         </p>
       )}
-      {folders.length > 1 && (
-        <div className={styles.chips} role="group" aria-label="Project folders">
-          {folders.map((f) => (
-            <button
-              key={f}
-              type="button"
-              className={styles.chip}
-              aria-pressed={f === cwd}
-              title={f}
-              onClick={() => onPick(f)}
-            >
-              {shortCwd(f)}
-            </button>
-          ))}
-        </div>
-      )}
+      <button type="button" className={styles.choose} onClick={onChoose}>
+        Choose folder…
+      </button>
     </div>
   );
 }

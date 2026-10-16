@@ -92,7 +92,7 @@ project. Measured with each agent's real CLI (October 2026):
 | Kimi Code (terminal) | default | yes | yes |
 | Antigravity (terminal) | skip permissions | yes | yes |
 | Antigravity (terminal) | guarded | asks | asks |
-| Claude, Codex, OpenCode (API sessions) | skip permissions | yes | yes |
+| Claude, Codex, OpenCode (API sessions) | skip permissions (BattleLab's default) | yes | yes |
 | Claude, Codex, OpenCode (API sessions) | guarded | asks (an approval card) | asks |
 
 *Asks* means the agent requests your approval first. Gemini CLI could not be measured here.

@@ -49,6 +49,10 @@ vi.mock("../components/FolderPickerModal", () => ({
 
 const mockEntities = vi.mocked(api.projectPickerEntities);
 
+/** A stored "skip permission prompts" default of OFF. The API skip choice follows the stored default
+ *  (#1473), so the tests that pin the GUARDED create path say so explicitly. */
+const GUARDED: Partial<AppConfig> = { agent_defaults: { bypass: false } };
+
 // The pickers are native radio groups (#1436). These read and drive them by VALUE, the way the
 // old selects were driven, so a test names an engine or project id — never a display label.
 const radioIn = (group: HTMLElement, value: string) =>
@@ -639,7 +643,7 @@ test("agents are grouped Console vs API; an unavailable client is listed, disabl
   );
 });
 
-test("an API client offers Skip permission prompts, unticked, only when its adapter maps it (#1339)", async () => {
+test("an API client's Skip permission prompts follows the stored default, only when its adapter maps it (#1473)", async () => {
   setRoster(FIXTURE);
   const user = userEvent.setup();
   const view = renderLanding(["claude", "codex-api"], {
@@ -653,17 +657,40 @@ test("an API client offers Skip permission prompts, unticked, only when its adap
   expect(screen.queryByTestId("new-session-api-about")).toBeNull();
   expect(screen.getByRole("radio", { name: /codex — api/i })).toHaveAccessibleName(/via codex cli/i);
   const skip = screen.getByRole("checkbox", { name: /skip permission prompts/i });
-  // Guarded by default: the console default does not apply to an API client (#1339).
-  expect(skip).not.toBeChecked();
-  expect(screen.queryByTestId("api-bypass-warning")).toBeNull();
-  await user.click(skip);
+  // …and so does the API client now (operator decision on #1473, superseding #1339's
+  // "unticked by default"), with the warning saying what that means.
+  expect(skip).toBeChecked();
   expect(screen.getByTestId("api-bypass-warning")).toHaveTextContent("Fixed for this session");
+  await user.click(skip);
+  expect(screen.queryByTestId("api-bypass-warning")).toBeNull();
   view.unmount();
-  // A client whose adapter has not mapped it (the server says so) offers no toggle at all.
+  // A stored default of OFF starts the API client guarded too.
+  const off = renderLanding(["claude", "codex-api"], { ...GUARDED, default_project: "/d" });
+  await chooseAgent(user, "codex-api");
+  expect(screen.getByRole("checkbox", { name: /skip permission prompts/i })).not.toBeChecked();
+  off.unmount();
+  // A client whose adapter has not mapped it (the server says so) offers no toggle at all, and
+  // never skips — whatever the stored default says.
   setRoster(withApi(FIXTURE, "codex-api", { can_bypass: false }));
-  renderLanding(["claude", "codex-api"], { default_project: "/d" });
+  renderLanding(["claude", "codex-api"], { default_project: "/d", agent_defaults: { bypass: true } });
   await chooseAgent(user, "codex-api");
   expect(screen.queryByRole("checkbox", { name: /skip permission prompts/i })).toBeNull();
+});
+
+test("with the stored default on, an API create SKIPS: create, then start (#1473)", async () => {
+  setRoster(FIXTURE);
+  sessionStorage.clear();
+  const user = userEvent.setup();
+  vi.mocked(api.structuredCreate)
+    .mockReset()
+    .mockResolvedValueOnce({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
+  renderLanding(["codex-api"], { default_project: "/d", agent_defaults: { bypass: true } });
+  await chooseProject(user, "");
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await vi.waitFor(() => expect(api.structuredStart).toHaveBeenCalledTimes(1));
+  expect(vi.mocked(api.structuredCreate).mock.calls[0][4]).toBe(true);
+  // A skip create keeps no client recovery slot (Hermes 5913) — unchanged by the new default.
+  expect(sessionStorage.getItem("battlelab.pendingStructuredCreate")).toBeNull();
 });
 
 test("a console skip choice never carries into an API client (Hermes on #1341)", async () => {
@@ -673,11 +700,10 @@ test("a console skip choice never carries into an API client (Hermes on #1341)",
   vi.mocked(api.structuredCreate)
     .mockReset()
     .mockResolvedValueOnce({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
-  renderLanding(["claude", "codex-api"], { default_project: "/d" });
+  renderLanding(["claude", "codex-api"], { ...GUARDED, default_project: "/d" });
   await chooseProject(user, "");
   const consoleSkip = screen.getByRole("checkbox", { name: /skip permission prompts/i });
-  await user.click(consoleSkip); // off…
-  await user.click(consoleSkip); // …and explicitly on again, for the console agent
+  await user.click(consoleSkip); // explicitly on, for the console agent (the stored default is off)
   expect(consoleSkip).toBeChecked();
   await chooseAgent(user, "codex-api");
   expect(screen.getByRole("checkbox", { name: /skip permission prompts/i })).not.toBeChecked();
@@ -697,7 +723,7 @@ test("an API skip tick is never restored from a draft and never survives an agen
     projectChoice: null,
     cwdOverride: null,
   };
-  renderLanding(["claude", "codex-api"], { default_project: "/d" }, { restoreDraft: draft });
+  renderLanding(["claude", "codex-api"], { ...GUARDED, default_project: "/d" }, { restoreDraft: draft });
   const skip = await screen.findByRole("checkbox", { name: /skip permission prompts/i });
   expect(skip).not.toBeChecked(); // a draft's (console) choice is not an API tick
   await user.click(skip);
@@ -714,7 +740,7 @@ test("a lost skip create keeps no client slot: the error points at the session l
   sessionStorage.clear();
   const user = userEvent.setup();
   vi.mocked(api.structuredCreate).mockReset().mockRejectedValueOnce(new TypeError("response lost"));
-  const first = renderLanding(["codex-api"], { default_project: "/d" });
+  const first = renderLanding(["codex-api"], { ...GUARDED, default_project: "/d" });
   await chooseProject(user, "");
   await user.click(screen.getByRole("checkbox", { name: /skip permission prompts/i }));
   await user.click(screen.getByRole("button", { name: /start session/i }));
@@ -723,7 +749,7 @@ test("a lost skip create keeps no client slot: the error points at the session l
   );
   expect(sessionStorage.getItem("battlelab.pendingStructuredCreate")).toBeNull();
   first.unmount(); // the page reloads
-  renderLanding(["codex-api"], { default_project: "/d" });
+  renderLanding(["codex-api"], { ...GUARDED, default_project: "/d" });
   await findProjects();
   expect(api.structuredSnapshot).not.toHaveBeenCalled();
   expect(screen.queryByTestId("api-recovered-create")).toBeNull();
@@ -738,7 +764,7 @@ test("a lost skip create on the same form: the next create is a new, guarded one
     .mockReset()
     .mockRejectedValueOnce(new TypeError("response lost"))
     .mockRejectedValueOnce(new TypeError("response lost"));
-  renderLanding(["codex-api"], { default_project: "/d" });
+  renderLanding(["codex-api"], { ...GUARDED, default_project: "/d" });
   await chooseProject(user, "");
   await user.click(screen.getByRole("checkbox", { name: /skip permission prompts/i }));
   await user.click(screen.getByRole("button", { name: /start session/i }));
@@ -762,13 +788,13 @@ test("a lost skip create the server never made is forgotten: the next start is g
     .mockReset()
     .mockRejectedValueOnce(new TypeError("response lost"))
     .mockResolvedValueOnce({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
-  const first = renderLanding(["codex-api"], { default_project: "/d" });
+  const first = renderLanding(["codex-api"], { ...GUARDED, default_project: "/d" });
   await chooseProject(user, "");
   await user.click(screen.getByRole("checkbox", { name: /skip permission prompts/i }));
   await user.click(screen.getByRole("button", { name: /start session/i }));
   await screen.findByTestId("start-error");
   first.unmount();
-  renderLanding(["codex-api"], { default_project: "/d" }); // the lookup 404s (beforeEach)
+  renderLanding(["codex-api"], { ...GUARDED, default_project: "/d" }); // the lookup 404s (beforeEach)
   await chooseProject(user, "");
   await vi.waitFor(() =>
     expect(sessionStorage.getItem("battlelab.pendingStructuredCreate")).toBeNull(),
@@ -789,7 +815,7 @@ test("a fresh API form is still guarded when the pending create was guarded (#13
     "battlelab.pendingStructuredCreate",
     JSON.stringify({ engine: "codex-api", cwd: "/d", id: "x", bypass: false }),
   );
-  renderLanding(["codex-api"], { default_project: "/d" });
+  renderLanding(["codex-api"], { ...GUARDED, default_project: "/d" });
   expect(await screen.findByRole("checkbox", { name: /skip permission prompts/i })).not.toBeChecked();
   expect(screen.queryByTestId("api-recovered-create")).toBeNull();
   sessionStorage.clear();
@@ -812,7 +838,7 @@ test.each([
   } else {
     vi.mocked(api.structuredCreate).mockRejectedValueOnce(new ApiError(422, "refused"));
   }
-  renderLanding(["codex-api"], { default_project: "/d" });
+  renderLanding(["codex-api"], { ...GUARDED, default_project: "/d" });
   await chooseProject(user, "");
   await user.click(screen.getByRole("button", { name: /start session/i })); // guarded
   await screen.findByTestId("start-error");
@@ -879,14 +905,14 @@ test("dismissing a found attempt permits a fresh guarded create after reload (#1
   sessionStorage.setItem("battlelab.pendingStructuredCreate", JSON.stringify({ engine: "opencode-api", cwd: "/d", id: "previous-id" }));
   vi.mocked(api.structuredSnapshot).mockResolvedValue({ native: null } as never);
   vi.mocked(api.structuredCreate).mockReset().mockRejectedValue(new TypeError("response lost"));
-  const first = renderLanding(["opencode-api"], { default_project: "/d" });
+  const first = renderLanding(["opencode-api"], { ...GUARDED, default_project: "/d" });
   await user.click(await screen.findByRole("button", { name: "Dismiss reminder" }));
   expect(screen.queryByTestId("api-recovered-create")).toBeNull();
   expect(sessionStorage.getItem("battlelab.pendingStructuredCreate")).toBeNull();
   expect(api.structuredCreate).not.toHaveBeenCalled();
   expect(api.structuredStart).not.toHaveBeenCalled();
   first.unmount();
-  renderLanding(["opencode-api"], { default_project: "/d" });
+  renderLanding(["opencode-api"], { ...GUARDED, default_project: "/d" });
   await chooseProject(user, "");
   expect(screen.queryByTestId("api-recovered-create")).toBeNull();
   expect(api.structuredSnapshot).toHaveBeenCalledTimes(1);
@@ -923,7 +949,7 @@ test("a recovered attempt cannot be dismissed while its guarded retry is in flig
   vi.mocked(api.structuredSnapshot).mockResolvedValue({} as never);
   let reject!: (reason: unknown) => void;
   vi.mocked(api.structuredCreate).mockReset().mockImplementation(() => new Promise((_, r) => { reject = r; }));
-  renderLanding(["codex-api"], { default_project: "/d" });
+  renderLanding(["codex-api"], { ...GUARDED, default_project: "/d" });
   const dismiss = await screen.findByRole("button", { name: "Dismiss reminder" });
   await chooseProject(user, "");
   await user.click(screen.getByRole("button", { name: /start session/i }));
@@ -945,7 +971,7 @@ test("a newer create hides the older reminder while the form stays mounted (#137
   vi.mocked(api.structuredSnapshot).mockResolvedValue({} as never);
   let reject!: (reason: unknown) => void;
   vi.mocked(api.structuredCreate).mockReset().mockImplementation(() => new Promise((_, r) => { reject = r; }));
-  renderLanding(["codex-api"], { default_project: "/new" });
+  renderLanding(["codex-api"], { ...GUARDED, default_project: "/new" });
   await screen.findByTestId("api-recovered-create");
   await chooseProject(user, "");
   await user.click(screen.getByRole("button", { name: /start session/i }));
@@ -969,7 +995,7 @@ test("opening a recovered session during its retry preserves the identity if the
   vi.mocked(api.structuredCreate).mockReset()
     .mockImplementationOnce(() => new Promise((_, r) => { reject = r; }))
     .mockRejectedValue(new TypeError("response lost again"));
-  const first = renderLanding(["opencode-api"], { default_project: "/d" });
+  const first = renderLanding(["opencode-api"], { ...GUARDED, default_project: "/d" });
   const open = await screen.findByRole("link", { name: "Open previous session" });
   await chooseProject(user, "");
   await user.click(screen.getByRole("button", { name: /start session/i }));
@@ -978,7 +1004,7 @@ test("opening a recovered session during its retry preserves the identity if the
   reject(new TypeError("response lost"));
   await new Promise((r) => setTimeout(r, 0));
   first.unmount();
-  renderLanding(["opencode-api"], { default_project: "/d" });
+  renderLanding(["opencode-api"], { ...GUARDED, default_project: "/d" });
   await chooseProject(user, "");
   await user.click(screen.getByRole("button", { name: /start session/i }));
   await screen.findByTestId("start-error");
@@ -1021,7 +1047,7 @@ test("a skip create is launched only after its response arrived: create, THEN st
     order.push("start");
     return {} as never;
   });
-  renderLanding(["codex-api"], { default_project: "/d" });
+  renderLanding(["codex-api"], { ...GUARDED, default_project: "/d" });
   await chooseProject(user, "");
   await user.click(screen.getByRole("checkbox", { name: /skip permission prompts/i }));
   await user.click(screen.getByRole("button", { name: /start session/i }));
@@ -1037,7 +1063,7 @@ test("a guarded create never calls start (#1339)", async () => {
   vi.mocked(api.structuredCreate)
     .mockReset()
     .mockResolvedValueOnce({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
-  renderLanding(["codex-api"], { default_project: "/d" });
+  renderLanding(["codex-api"], { ...GUARDED, default_project: "/d" });
   await chooseProject(user, "");
   await user.click(screen.getByRole("button", { name: /start session/i }));
   await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
@@ -1052,7 +1078,7 @@ test("one tick authorizes one create: after a lost skip attempt the next create 
     .mockReset()
     .mockRejectedValueOnce(new TypeError("response lost"))
     .mockResolvedValueOnce({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
-  renderLanding(["codex-api"], { default_project: "/d" });
+  renderLanding(["codex-api"], { ...GUARDED, default_project: "/d" });
   await chooseProject(user, "");
   await user.click(screen.getByRole("checkbox", { name: /skip permission prompts/i }));
   await user.click(screen.getByRole("button", { name: /start session/i }));
@@ -1082,7 +1108,7 @@ test.each([
     .mockImplementationOnce(() => new Promise((r) => (release = () => r(undefined as never))).then(settle));
   vi.mocked(api.structuredCreate).mockReset().mockRejectedValueOnce(new TypeError("response lost"));
   const user = userEvent.setup();
-  renderLanding(["codex-api"], { default_project: "/d" });
+  renderLanding(["codex-api"], { ...GUARDED, default_project: "/d" });
   await chooseProject(user, "");
   await user.click(screen.getByRole("button", { name: /start session/i })); // a NEW, guarded create
   await screen.findByTestId("start-error");
@@ -1104,7 +1130,7 @@ test("a retry reuses the id only for the same mode: switching it is a new create
     .mockReset()
     .mockRejectedValueOnce(new TypeError("response lost"))
     .mockResolvedValueOnce({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
-  renderLanding(["codex-api"], { default_project: "/d" });
+  renderLanding(["codex-api"], { ...GUARDED, default_project: "/d" });
   await chooseProject(user, "");
   await user.click(screen.getByRole("button", { name: /start session/i }));
   await screen.findByTestId("start-error");
@@ -1124,7 +1150,7 @@ test("starting an API client creates it on the server — single-flight, retry r
     .mockReset()
     .mockRejectedValueOnce(new TypeError("network"))
     .mockResolvedValueOnce({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
-  renderLanding(["codex-api"], { default_project: "/d" });
+  renderLanding(["codex-api"], { ...GUARDED, default_project: "/d" });
   await chooseProject(user, "");
   const startBtn = screen.getByRole("button", { name: /start session/i });
   await user.click(startBtn);
@@ -1146,12 +1172,12 @@ test("an unresolved API create survives a reload: Start after remount reuses the
     .mockReset()
     .mockRejectedValueOnce(new TypeError("response lost"))
     .mockResolvedValueOnce({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
-  const first = renderLanding(["codex-api"], { default_project: "/d" });
+  const first = renderLanding(["codex-api"], { ...GUARDED, default_project: "/d" });
   await chooseProject(user, "");
   await user.click(screen.getByRole("button", { name: /start session/i }));
   await screen.findByTestId("start-error");
   first.unmount(); // the page reloads
-  renderLanding(["codex-api"], { default_project: "/d" });
+  renderLanding(["codex-api"], { ...GUARDED, default_project: "/d" });
   await chooseProject(user, "");
   await user.click(screen.getByRole("button", { name: /start session/i }));
   await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
@@ -1166,7 +1192,7 @@ test("an API client offers the models its own CLI reports and creates on the cho
   vi.mocked(api.structuredCreate)
     .mockReset()
     .mockResolvedValue({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
-  renderLanding(["codex-api"], { default_project: "/d" });
+  renderLanding(["codex-api"], { ...GUARDED, default_project: "/d" });
   await chooseProject(user, "");
   const select = await screen.findByRole("combobox", { name: "Model" });
   expect(api.structuredModels).toHaveBeenCalledWith("codex-api");
@@ -1265,7 +1291,7 @@ const LEVELS = {
 const DEFAULTS = (model: string, effort: string | null) => ({
   agent_defaults: {
     default_engine: null,
-    bypass: true,
+    bypass: false, // these pin model/effort on the GUARDED create
     session_defaults: { "codex-api": { model, effort } },
   },
   default_project: "/d",
@@ -1451,17 +1477,19 @@ test("a folderless project with a global default starts there, with no error cop
   renderLanding(["claude"], { default_project: "/legacy" });
   await findProjects();
   expect(launchFolder()).toBe("/legacy");
-  expect(screen.getByText(/“Scratch” has no default folder · using your global default/)).toBeInTheDocument();
+  expect(screen.getByTestId("launch-folder")).toHaveTextContent(
+    /Starts in \/legacy · “Scratch” has no default folder · your global default/,
+  );
   expect(screen.queryByText(/choose one for this session/i)).toBeNull();
   expect(screen.getByRole("button", { name: /start session/i })).toBeEnabled();
 });
 
-test("a folderless project with no global default: “No folder”, Start disabled until one is chosen (#1436)", async () => {
+test("a folderless project with no global default asks for a folder; Start waits for one (#1436)", async () => {
   const user = userEvent.setup();
   mockEntities.mockResolvedValue({ projects: [FOLDERLESS] });
   renderLanding(["claude"]);
   await findProjects();
-  expect(screen.getByTestId("launch-folder")).toHaveTextContent("No folder");
+  expect(launchFolder()).toBe("");
   expect(screen.getByText(/“Scratch” has no default folder — choose one/)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: /start session/i })).toBeDisabled();
   await user.click(screen.getByRole("button", { name: /choose folder/i }));
@@ -1470,31 +1498,28 @@ test("a folderless project with no global default: “No folder”, Start disabl
   expect(screen.getByRole("button", { name: /start session/i })).toBeEnabled();
 });
 
-test("a project's other folders are one-tap picks; “use project default” undoes an override (#1436)", async () => {
+test("the folder line says what applies; “use project default” undoes an override (#1473)", async () => {
   const user = userEvent.setup();
-  mockEntities.mockResolvedValue({
-    projects: [{ ...ENTITIES[0], folders: ["/a", "/a/web"], default_folder: "/a" }],
-  });
   renderLanding(["claude"]);
   await findProjects();
-  expect(screen.getByText(/default folder for “Alpha”/i)).toBeInTheDocument();
-  const chips = within(screen.getByRole("group", { name: "Project folders" }));
-  await user.click(chips.getByRole("button", { name: "/a/web" }));
-  expect(launchFolder()).toBe("/a/web");
-  expect(chips.getByRole("button", { name: "/a/web" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByTestId("launch-folder")).toHaveTextContent(/Starts in \/a · project default/);
+  await user.click(screen.getByRole("button", { name: /choose folder/i }));
+  await user.click(screen.getByRole("button", { name: "stub-pick" }));
+  expect(screen.getByTestId("launch-folder")).toHaveTextContent(/Starts in \/picked · just this session/);
   await user.click(screen.getByRole("button", { name: /use project default/i }));
   expect(launchFolder()).toBe("/a");
 });
 
-test("the folder card shows the folder's name over its parent (#1436)", async () => {
+test("the folder is ONE line under the project list — no separate Folder section (#1473)", async () => {
   mockEntities.mockResolvedValue({
     projects: [{ ...ENTITIES[0], folders: ["/home/u/claude/agent-sessions"], default_folder: "/home/u/claude/agent-sessions" }],
   });
   renderLanding(["claude"]);
   await findProjects();
-  const card = screen.getByTestId("launch-folder");
-  expect(card).toHaveTextContent("agent-sessions~/claude/");
-  expect(card).toHaveAttribute("data-path", "/home/u/claude/agent-sessions");
+  expect(screen.queryByRole("heading", { name: "Folder" })).toBeNull();
+  const line = screen.getByTestId("launch-folder");
+  expect(line).toHaveTextContent("Starts in ~/claude/agent-sessions");
+  expect(line).toHaveAttribute("data-path", "/home/u/claude/agent-sessions");
 });
 
 test("more than six projects get a filter, and / focuses it (#1436)", async () => {
@@ -1736,4 +1761,63 @@ test("while the folder picker is opening, focus still on its trigger: Ctrl+Enter
   expect(navigateMock).not.toHaveBeenCalledWith(expect.stringMatching(/^\/s\//), expect.anything());
   await user.keyboard("/");
   expect(screen.getByRole("searchbox", { name: "Filter projects" })).not.toHaveFocus();
+});
+
+test("fail closed: with no stored default in the config, an API agent starts guarded (#1473, from #1457)", async () => {
+  setRoster(FIXTURE);
+  sessionStorage.clear();
+  const user = userEvent.setup();
+  vi.mocked(api.structuredCreate)
+    .mockReset()
+    .mockResolvedValueOnce({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
+  // No `agent_defaults` at all — an older server, or a config that has not said anything yet.
+  renderLanding(["claude", "codex-api"], { default_project: "/d" });
+  // The console agent keeps its own documented fallback (on)…
+  expect(await screen.findByRole("checkbox", { name: /skip permission prompts/i })).toBeChecked();
+  await chooseAgent(user, "codex-api");
+  // …but an API agent skips only on a default the config actually states.
+  expect(screen.getByRole("checkbox", { name: /skip permission prompts/i })).not.toBeChecked();
+  await chooseProject(user, "");
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledTimes(1));
+  expect(vi.mocked(api.structuredCreate).mock.calls[0][4]).toBe(false);
+  expect(api.structuredStart).not.toHaveBeenCalled();
+});
+
+test("a skip-capable API agent waits for the config: no Start until the default is known, then it sends what shows (Hermes on #1473)", async () => {
+  setRoster(FIXTURE);
+  sessionStorage.clear();
+  const user = userEvent.setup();
+  vi.mocked(api.structuredCreate)
+    .mockReset()
+    .mockResolvedValueOnce({ session_key: "codex-api:5b0d2c1e-8f3a-4c7d-9e21-6a4b3c2d1e0f" } as never);
+  const tree = (config: AppConfig | null) => (
+    <ConfigCtx.Provider value={config}>
+      <MemoryRouter
+        initialEntries={[
+          { pathname: "/", state: { restoreDraft: { ...DRAFT, engineChoice: "codex-api", projectChoice: "", cwdOverride: "/d" } } },
+        ]}
+      >
+        <Routes>
+          <Route path="/" element={<NewSessionLanding />} />
+        </Routes>
+      </MemoryRouter>
+    </ConfigCtx.Provider>
+  );
+  // The config has not arrived: the API agent shows guarded, and Start waits for the real default.
+  const view = render(tree(null));
+  await findProjects();
+  expect(screen.getByRole("checkbox", { name: /skip permission prompts/i })).not.toBeChecked();
+  expect(screen.getByRole("button", { name: /start session/i })).toBeDisabled();
+  expect(screen.getByTestId("new-session-summary")).toHaveTextContent("Loading your settings…");
+  await user.keyboard("{Control>}{Enter}{/Control}");
+  expect(api.structuredCreate).not.toHaveBeenCalled();
+  // It arrives, ON: the box shows it, and only now can Start send it.
+  view.rerender(
+    tree({ csrf: "x", new_session_engines: ["codex-api"], terminal_backend: "ws", agent_defaults: { bypass: true } }),
+  );
+  expect(screen.getByRole("checkbox", { name: /skip permission prompts/i })).toBeChecked();
+  await user.click(screen.getByRole("button", { name: /start session/i }));
+  await vi.waitFor(() => expect(api.structuredCreate).toHaveBeenCalledTimes(1));
+  expect(vi.mocked(api.structuredCreate).mock.calls[0][4]).toBe(true);
 });
