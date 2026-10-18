@@ -175,14 +175,14 @@ test("the mic chip is hidden when the browser has no SpeechRecognition (#483)", 
   ).not.toBeInTheDocument();
 });
 
-test("the mic chip carries the icon AND a 'Push to talk' label (#483/#738)", () => {
+test("the mic chip carries the icon AND a 'Talk' label (#483/#738)", () => {
   // Was an icon-only invariant (#483). Deliberately inverted in #738: a bare icon cannot say "hold
   // me", so the label is now part of the contract — this test exists to stop it drifting back or
   // changing wording by accident.
   installSpeech();
   renderCompose();
   const mic = screen.getByRole("button", { name: /start voice input/i });
-  expect(mic.textContent).toMatch(/push to talk/i);
+  expect(mic.textContent).toMatch(/^Talk$/);
   expect(mic.querySelector("svg")).not.toBeNull(); // icon kept alongside the label
   expect(mic).toHaveAttribute(
     "aria-label",

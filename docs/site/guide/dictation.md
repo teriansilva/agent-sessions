@@ -1,6 +1,6 @@
 # Dictation
 
-Dictation is push-to-talk into the [compose bar](/guide/terminal): press and hold, speak, release.
+Dictation is push-to-talk into the [compose bar](/guide/terminal): press and hold **Talk**, speak, release.
 It exists because typing a paragraph of instruction on a phone keyboard is the slowest part of
 using BattleLab from a phone.
 

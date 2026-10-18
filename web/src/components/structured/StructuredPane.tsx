@@ -13,6 +13,7 @@ import {
   Square,
   SquareDashedBottom,
   X,
+  Zap,
 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ClipboardEvent as ReactClipboardEvent, KeyboardEvent, ReactNode } from "react";
@@ -2271,25 +2272,30 @@ export function StructuredPane({
             disabled={readOnly || notStarted || permissionPending}
           />
         </div>
-        <div className={compose.row}>
-          <KeyBar actions={keyActions} />
-          <span className={compose.spacer} role="status">
+        <div className={`${compose.row} ${styles.composeRow}`}>
+          <div className={styles.composeTools}>
+            <KeyBar actions={keyActions} />
+            {!readOnly && (alwaysSendNow || snap?.native?.send_now) && (
+              <button
+                type="button"
+                className={styles.alwaysChip}
+                aria-pressed={alwaysSendNow}
+                title={alwaysSendNow
+                  ? "Always send now is on. Click to queue messages again."
+                  : snap?.native?.send_now === "steer"
+                    ? "Send each queued message into the current turn while the agent works."
+                    : "Stop the current reply and send each queued message while the agent works."}
+                onClick={() => setAlwaysSendNow(!alwaysSendNow)}
+                data-testid="structured-always-send-now"
+              >
+                <Zap size={14} aria-hidden />
+                Always send now
+              </button>
+            )}
+          </div>
+          <span className={`${compose.spacer} ${styles.composeNote}`} role="status">
             {dictNote}
           </span>
-          {!readOnly && alwaysSendNow && (
-            <button
-              type="button"
-              className={styles.alwaysChip}
-              aria-pressed="true"
-              title="Messages sent while the agent works are sent now. Turn off to queue them again."
-              onClick={() => setAlwaysSendNow(false)}
-              data-testid="structured-always-send-now"
-            >
-              <span className={styles.alwaysMark} aria-hidden />
-              Always send now
-              <span className={styles.alwaysOff}>Turn off</span>
-            </button>
-          )}
           {!readOnly && snap && dictSupported && (
             <button
               type="button"
@@ -2321,7 +2327,7 @@ export function StructuredPane({
               {...micHandlers}
             >
               <Mic size={16} aria-hidden />
-              <span className={compose.micLabel}>Push to talk</span>
+              <span className={compose.micLabel}>Talk</span>
             </button>
           )}
           <button

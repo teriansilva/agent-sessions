@@ -27,7 +27,8 @@ cancels the send, but the current reply still stops.
 
 **Always send now** sends the message now and keeps doing that for every message you send while
 the agent works, so you don't have to press Send now each time. The message box says what Send
-will do, and **Always send now · Turn off** beside it switches back to queueing. The setting
+will do. The compact **Always send now** toggle beside the composer’s tools is highlighted
+while active; click it again to switch back to queueing. The setting
 belongs to this browser and acts while the session is open in it; with no BattleLab tab open,
 messages queue as usual. On Claude and opencode each new message stops the reply in progress.
 

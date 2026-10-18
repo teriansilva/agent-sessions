@@ -178,8 +178,8 @@ test("the command topbar names every work section, Library last, the map under S
       ]),
   ).toEqual([
     ["Dashboard", "/dashboard"],
-    ["Sessions", "/"],
     ["Missions", "/mission"],
+    ["Sessions", "/"],
     ["Library", "/templates"],
   ]);
   // The map is one click away behind the Sessions chevron.

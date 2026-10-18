@@ -10,6 +10,7 @@
    * terminal (the flex:1 sibling) rather than pushing the action row off-screen (#7). */
   max-height: 50dvh;
   overflow-y: auto;
+  container: composer / inline-size;
 }
 .fields {
   display: flex;
@@ -207,6 +208,19 @@
   font-weight: 600;
   cursor: pointer;
 }
+/* Both session composers share Talk/Send geometry and typography (#1478). The mic keeps its
+ * hold/release behavior and recording colors; only its label and dimensions match Send. */
+.send,
+.mic {
+  flex: 0 0 auto;
+  justify-content: center;
+  min-width: 88px;
+  height: 36px;
+  padding: 0 12px;
+  font: inherit;
+  font-weight: 600;
+  letter-spacing: normal;
+}
 .send:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 84%, #fff);
 }
@@ -218,7 +232,8 @@
   cursor: default;
 }
 @media (pointer: coarse), (max-width: 800px) {
-  .send {
+  .send,
+  .mic {
     height: 44px;
   }
 }
@@ -233,13 +248,12 @@
    doesn't flex. Idle inherits the amber hover/active; recording (.micOn) switches to the recording-
    red LED with a slow pulse ring. --rec is a local recording-red (NOT the brand accent or a status
    LED), darkened on the light theme for contrast. */
-/* #738: no longer the 34px icon-only chip — it carries "Push to talk", because a bare icon can't
-   say "hold me". `touch-action`/`user-select`/`-webkit-touch-callout` keep a long press a HOLD
+/* The Talk label stays alongside the icon; its title and accessible name explain the hold.
+   `touch-action`/`user-select`/`-webkit-touch-callout` keep a long press a HOLD
    rather than a text-selection drag or an iOS callout. Width is intrinsic and the label text never
    changes between states: a control being physically held must not resize under the finger. */
 .mic {
   gap: 6px;
-  padding: 0 10px;
   touch-action: none;
   user-select: none;
   -webkit-user-select: none;

@@ -1,9 +1,22 @@
 .landing {
   display: flex;
+  flex-direction: column;
   width: 100%;
   height: 100%;
+  overflow: hidden;
+}
+.form {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.scroll {
+  display: flex;
+  flex: 1;
+  min-height: 0;
   padding: 24px;
-  overflow-y: auto; /* short screens scroll instead of the card overflowing the pane */
+  overflow-y: auto;
   /* The two-column switch follows the PANE's width, not the window's: the sidebar and the map
    * window both make the pane narrower than the viewport (#1473). */
   container: new-session / inline-size;
@@ -213,17 +226,15 @@
   color: var(--text-muted);
 }
 
-/* What Start will do, next to Start (#1436). The bar sticks to the bottom of the scrolling pane at
- * every width, so Start is never below the fold — on a phone or on a short laptop screen. The
- * negative margins pull it over the pane's own 24px padding, so it sits flush with the edge. */
+/* A full-width footer OUTSIDE the form's scroll area (#1478). No outer margin: the bar meets
+ * the pane's left, right and bottom edges even when the centered form is shorter than the pane.
+ * Its height is reserved, so scrolling the last field into view never puts it behind Start. */
 .startBar {
-  position: sticky;
-  bottom: -24px;
-  z-index: 1;
+  flex: none;
   display: flex;
   align-items: center;
   gap: 12px;
-  margin: 0 -24px -24px;
+  margin: 0;
   padding: 12px 24px calc(16px + env(safe-area-inset-bottom, 0px));
   border-top: 1px solid var(--border);
   background: var(--panel);
@@ -253,7 +264,7 @@
 }
 
 /* Two columns on a wide pane (#1473): agent on the left, project + where it starts on
- * the right, Start across both. A single 560px column left most of a big screen empty. */
+ * the right. The separate Start footer spans the pane below the scrolling form. */
 .columns {
   display: flex;
   flex-direction: column;

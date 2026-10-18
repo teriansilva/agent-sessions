@@ -10,6 +10,8 @@
  *  bar and the drawer render from the same array, so the next section is one entry rather than
  *  three edits that can disagree.
  *
+ *  Dashboard leads, followed by Missions, Sessions and Library (#1478).
+ *
  *  **The map is a view OF sessions (#1069)**: it lives in `children` of Sessions, which the bar
  *  paints as a sub-menu behind a chevron. The Sessions label itself still goes to the last session
  *  in one click — a sub-menu must not tax the common case to host the rare one. Ask is not here at
@@ -92,6 +94,7 @@ export const SECTIONS: Section[] = [
   // The dashboard (#1123). The id stays `ask` so nothing keyed on it churns; Ask itself is no
   // longer a destination but the right-hand sidebar the corner icon opens (#1294).
   { id: "ask", label: "Dashboard", Icon: LayoutDashboard, to: DASHBOARD_PATH },
+  { id: "mission", label: "Missions", Icon: Crosshair, to: MISSION_PATH, beta: true },
   {
     id: "sessions",
     label: "Sessions",
@@ -102,7 +105,6 @@ export const SECTIONS: Section[] = [
       { id: "map", label: "Sessions map", Icon: Network, to: MAP_PATH },
     ],
   },
-  { id: "mission", label: "Missions", Icon: Crosshair, to: MISSION_PATH, beta: true },
   // LIBRARY (#1294): what work is started FROM — templates, automations, the checklists that say
   // what "done" means, and playbooks (#1096). Checklists and automations keep their
   // `/mission/...` URLs: the server links automation-failure notifications to `automationPath()`.

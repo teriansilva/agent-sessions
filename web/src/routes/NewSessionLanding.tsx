@@ -575,7 +575,7 @@ export function NewSessionLanding() {
   // Ctrl/⌘+Enter starts — but only with focus INSIDE the form (#1437 review). A document-wide
   // listener fired from the sidebar, the top bar or a dialog beside the form, launching an agent
   // the operator never asked for (and Ctrl+Enter on a link is the browser's background-tab
-  // gesture). The folder picker renders outside the card, so it never reaches here. A held key's
+  // gesture). The folder picker renders outside the form, so it never reaches here. A held key's
   // auto-repeat is ignored: the console path has no in-flight guard of its own.
   const onFormKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     if (e.key !== "Enter" || !(e.ctrlKey || e.metaKey) || e.repeat || e.defaultPrevented) return;
@@ -600,7 +600,9 @@ export function NewSessionLanding() {
 
   return (
     <div className={styles.landing}>
-      <div className={styles.card} data-new-session-form onKeyDown={onFormKeyDown}>
+      <div className={styles.form} data-new-session-form onKeyDown={onFormKeyDown}>
+        <div className={styles.scroll}>
+        <div className={styles.card}>
         <div className={styles.brandHero}>
           <div className={styles.wordmark}>
             Battle<b>Lab</b>
@@ -610,7 +612,7 @@ export function NewSessionLanding() {
         <h1>Start a new session</h1>
 
         {/* Two columns on a wide screen (#1473): what runs on the left, where it runs on
-            the right, Start across both. One column below 1100px, in the same reading order. */}
+            the right. A narrower pane stacks them; Start stays in the pane's footer. */}
         <div className={styles.columns}>
         <div className={styles.column}>
         {(engines.length > 1 || unavailable.length > 0) && (
@@ -820,6 +822,8 @@ export function NewSessionLanding() {
             {startError}
           </p>
         )}
+        </div>
+        </div>
         <div className={styles.startBar}>
           <p className={styles.summary} data-testid="new-session-summary">
             {awaitingProjects ? (

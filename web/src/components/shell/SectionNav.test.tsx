@@ -111,7 +111,7 @@ describe("SectionNav", () => {
       </MemoryRouter>,
     );
     const top = SECTIONS.map((s) => s.label);
-    expect(top).toEqual(["Dashboard", "Sessions", "Missions", "Library"]);
+    expect(top).toEqual(["Dashboard", "Missions", "Sessions", "Library"]);
     const nav = screen.getByTestId("section-nav");
     expect(
       within(nav)

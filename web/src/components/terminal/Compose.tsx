@@ -1226,7 +1226,7 @@ export const Compose = forwardRef<
             {...dict.micHandlers}
           >
             <Mic size={16} />
-            <span className={styles.micLabel}>Push to talk</span>
+            <span className={styles.micLabel}>Talk</span>
           </button>
         )}
         {open ? (

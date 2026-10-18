@@ -61,12 +61,14 @@ export function KeyBar({ actions }: { actions: KeyAction[] }) {
       }
       const w = widthsRef.current;
       if (!w.length) return;
-      const total = w.reduce((a, b) => a + b, 0);
+      // There is no gap AFTER the last control. Counting one hid the last tool even when
+      // the whole group fit its intrinsic width beside Always send now (#1478).
+      const total = w.reduce((a, b) => a + b, 0) - GAP;
       if (total <= avail) {
         setVisible(w.length);
         return;
       }
-      const moreW = (moreRef.current?.offsetWidth ?? 34) + GAP;
+      const moreW = moreRef.current?.offsetWidth ?? 34;
       let used = moreW;
       let fit = 0;
       for (const bw of w) {

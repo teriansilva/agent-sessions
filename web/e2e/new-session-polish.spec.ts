@@ -3,7 +3,7 @@ import { mockRoster } from "./roster";
 import { agentPicker, launchFolder, projectPicker } from "./newSessionForm";
 
 // #1436: the polished New session form, in a real browser on the desktop AND mobile projects —
-// what jsdom cannot show: the tiles really are ≥44px and clickable, the sticky Start bar is on
+// what jsdom cannot show: the tiles really are ≥44px and clickable, the Start footer is on
 // screen without scrolling on a phone, the cached project list paints with no layout shift on a
 // second visit, and the keyboard (arrow keys, Ctrl+Enter) drives the native radios.
 
@@ -108,7 +108,7 @@ test("every tile, row and the Start button are ≥44px tall (#1436, design §8)"
   expect(start!.height).toBeGreaterThanOrEqual(44);
 });
 
-test("Start is on screen without scrolling — sticky on a phone (#1436)", async ({ page }) => {
+test("Start is on screen without scrolling on a phone (#1436)", async ({ page }) => {
   await mockBackend(page);
   await page.goto("/");
   await expect(projectPicker(page).radio("p-1")).toBeChecked();
@@ -282,7 +282,7 @@ for (const theme of ["dark", "light"] as const) {
     await page.screenshot({ path: info.outputPath(`new-session-${theme}-api.png`), fullPage: true });
     if (info.project.name === "mobile") {
       // The lower half on a phone (Hermes on #1473): the folder line and the skip control, in view.
-      // Scroll the form's own pane to its end: the sticky Start bar overlaps the line otherwise.
+      // Scroll the form above the fixed footer to reveal the remaining controls.
       await launchFolder(page).evaluate((el) => {
         let p: HTMLElement | null = el.parentElement;
         while (p && getComputedStyle(p).overflowY !== "auto") p = p.parentElement;
@@ -296,3 +296,39 @@ for (const theme of ["dark", "light"] as const) {
     }
   });
 }
+
+// #1478: the footer fills the pane, including the spare space below a short form.
+test("Start footer stays flush with the pane while the form scrolls", async ({ page }, info) => {
+  await mockBackend(page);
+  if (info.project.name === "desktop") await page.setViewportSize({ width: 1700, height: 1100 });
+  await page.goto("/");
+  const start = page.getByRole("button", { name: "Start session", exact: true });
+  await expect(start).toBeEnabled();
+  const footer = page.getByTestId("new-session-summary").locator("..");
+  const pane = page.locator(".terminal-pane");
+  const flush = async () => {
+    const f = (await footer.boundingBox())!, p = (await pane.boundingBox())!;
+    expect(Math.abs(f.x - p.x)).toBeLessThanOrEqual(2);
+    expect(Math.abs(f.width - p.width)).toBeLessThanOrEqual(4);
+    expect(Math.abs(f.y + f.height - p.y - p.height)).toBeLessThanOrEqual(2);
+    await expect(start).toBeInViewport();
+  };
+  await flush();
+  await page.setViewportSize({ width: info.project.name === "desktop" ? 1280 : 320, height: 480 });
+  await flush();
+  await page.getByRole("button", { name: /choose folder/i }).scrollIntoViewIfNeeded();
+  await flush();
+  const skip = page.getByRole("checkbox", { name: /skip permission prompts/i });
+  await skip.scrollIntoViewIfNeeded();
+  const s = (await skip.boundingBox())!, f = (await footer.boundingBox())!;
+  expect(s.y + s.height).toBeLessThanOrEqual(f.y);
+  // The phone's home-indicator inset belongs INSIDE the footer, never an outer gap.
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Emulation.setSafeAreaInsetsOverride", { insets: { bottom: 24 } });
+  await expect(footer).toHaveCSS("padding-bottom", "40px");
+  await flush();
+  await skip.scrollIntoViewIfNeeded();
+  expect((await skip.boundingBox())!.y + (await skip.boundingBox())!.height)
+    .toBeLessThanOrEqual((await footer.boundingBox())!.y);
+  await page.screenshot({ path: info.outputPath("footer-short.png") });
+});

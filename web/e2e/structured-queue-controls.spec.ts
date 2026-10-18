@@ -69,7 +69,7 @@ for (const [engine, mode] of clients) {
     expect(fixture.calls[0]).toMatchObject({ turn_id: ACTIVE, queued_turn_id: QUEUED });
     const chip = page.getByTestId("structured-always-send-now");
     await expect(chip).toBeVisible();
-    expect((await chip.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    expect((await chip.boundingBox())!.height).toBeGreaterThanOrEqual(testInfo.project.name === "mobile" ? 44 : 32);
     await expect(page.getByRole("textbox", { name: /^Message / })).toHaveAttribute("placeholder",
       mode === "steer" ? /sends now, into the current turn/ : /sends now, stopping the current reply/);
     await page.screenshot({ path: testInfo.outputPath("always-on.png") });
@@ -84,7 +84,7 @@ for (const [engine, mode] of clients) {
     expect(fixture.calls[1]).toMatchObject({ turn_id: QUEUED, queued_turn_id: LATER });
     // Turned off: a message queued now waits for a click again.
     await chip.click();
-    await expect(chip).toHaveCount(0);
+    await expect(chip).toHaveAttribute("aria-pressed", "false");
     queued.state = "completed";
     later.state = "running";
     delete later.delivery;
@@ -104,7 +104,8 @@ test("Always send now stays on across a reload, per device", async ({ page }) =>
   await expect(page.getByTestId("structured-always-send-now")).toBeVisible();
   await page.reload();
   await expect(page.getByTestId("structured-always-send-now")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Always send now", exact: true })).toHaveCount(0);
+  await expect(page.getByTestId("structured-always-send-now")).toHaveAttribute("aria-pressed", "true");
+  await expect(row(page, "Only inspect the files.").getByRole("button", { name: "Always send now", exact: true })).toHaveCount(0);
 });
 
 test("a refused automatic Send now is not retried until the conversation moves", async ({ page }) => {
@@ -167,9 +168,11 @@ test("Always send now holds for the page when the browser refuses to store it", 
   await expect.poll(() => fixture.calls.length).toBe(1);
   const chip = page.getByTestId("structured-always-send-now");
   await expect(chip).toBeVisible();
+  await expect(chip).toHaveAttribute("aria-pressed", "true");
   fixture.state.revision++; // a re-read must not switch it back off
   await page.waitForTimeout(1_500);
-  await expect(chip).toBeVisible();
+  await expect(chip).toHaveAttribute("aria-pressed", "true");
   await chip.click();
-  await expect(chip).toHaveCount(0);
+  await expect(chip).toBeVisible();
+  await expect(chip).toHaveAttribute("aria-pressed", "false");
 });

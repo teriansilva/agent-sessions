@@ -82,28 +82,40 @@
 }
 .remove:hover:not(:disabled) { color: var(--text); border-color: var(--text-muted); }
 .alwaysSendNow:disabled, .remove:disabled { opacity: 0.5; cursor: default; }
-/* The composer's "Always send now · Turn off" chip: on while shown; a press turns it off. */
+/* Composer tools stay together on the left; at narrow pane widths they get their own row so
+ * the preference never crowds Talk/Send. A container query also covers narrow map windows. */
+.composeRow { flex-wrap: wrap; }
+.composeTools { display: flex; flex: 1; min-width: 0; align-items: center; gap: 6px; }
+.composeTools > :first-child { flex: 0 1 auto; }
+.composeNote { margin-left: auto; }
+@container composer (max-width: 480px) {
+  .composeTools { flex-basis: 100%; }
+}
+/* A compact, persistent icon/text toggle beside the tools. Color and aria-pressed expose the
+ * state without a second "Turn off" label; the same click switches it in either direction. */
 .alwaysChip {
-  min-height: 44px;
+  flex: none;
+  height: 32px;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 12px;
-  background: var(--bg-2);
-  border: 1px solid var(--accent);
-  color: var(--brand);
-  font: 600 11px var(--font-mono);
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
+  gap: 6px;
+  padding: 0 8px;
+  background: color-mix(in srgb, var(--bg-2) 55%, transparent);
+  border: 1px solid var(--line);
+  color: var(--text-2);
+  font: 11px var(--font-mono);
+  white-space: nowrap;
   cursor: pointer;
 }
-.alwaysMark { width: 6px; height: 6px; background: var(--accent); flex: none; }
-.alwaysOff {
-  color: var(--text-muted);
-  font-weight: 400;
-  text-transform: none;
-  border-left: 1px solid var(--line-strong);
-  padding-left: 8px;
+.alwaysChip:hover { border-color: var(--accent); }
+.alwaysChip[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 15%, var(--panel));
+  color: var(--brand);
+}
+@media (pointer: coarse), (max-width: 800px) {
+  .alwaysChip,
+  .composeTools button { height: 44px; }
 }
 .activity > summary:focus-visible, .sendNow:focus-visible, .alwaysSendNow:focus-visible,
 .remove:focus-visible, .alwaysChip:focus-visible {

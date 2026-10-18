@@ -235,8 +235,8 @@ test("press-and-hold records; releasing stops capture but still lands the tail (
     await page.getByRole("button", { name: /open compose box/i }).click();
   }
   await expect(mic).toBeVisible();
-  // The chip now says what it is — a bare icon can't tell you to hold it.
-  await expect(mic).toContainText(/push to talk/i);
+  // Talk stays labelled; the accessible name and title explain the hold gesture.
+  await expect(mic).toHaveText("Talk");
 
   const textarea = page.getByPlaceholder(/Type here/i);
   await expect(textarea).toHaveValue("");
@@ -277,8 +277,7 @@ test("press-and-hold records; releasing stops capture but still lands the tail (
 
   // The labelled chip must not wrap the action bar — it shares the row with the key chips, which
   // collapse into the "…" overflow instead (#234). One row, both viewports.
-  const bar = page.locator("button", { hasText: /push to talk/i }).first();
-  const box = await bar.boundingBox();
+  const box = await mic.boundingBox();
   const send = await page.getByRole("button", { name: /^send/i }).boundingBox();
   expect(box).not.toBeNull();
   expect(send).not.toBeNull();
