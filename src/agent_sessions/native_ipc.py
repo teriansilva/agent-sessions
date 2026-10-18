@@ -25,7 +25,7 @@ import secrets
 import uuid
 from dataclasses import dataclass
 
-from . import native_attachments
+from . import native_attachments, native_questions
 from .native_protocol import TASK_METADATA_LIMITS, ProtocolError, validate_text
 from .structured_types import normalize_context
 
@@ -303,9 +303,11 @@ def _params(action, value, *, immutable=False):
     # turn journaled before #1332 Phase 3 still reads (and replays) exactly as it was written.
     # `grant` (#1339) is present only on an `always` decision: the id of one proposed standing
     # grant the request itself proposed. Older records never carry it.
+    # `reply_to` (#1463): the async question an answer is bound to, part of its identity, so the
+    # journal admits it only while that question is still open. Older records never carry it.
     optional = (
         (keys[action] & {"actor"} if immutable else set())
-        | ({"attachments"} if action == "submit" else set())
+        | ({"attachments", "reply_to"} if action == "submit" else set())
         | ({"grant"} if action == "decide" else set())
     )
     _object(value, required, optional)
@@ -447,7 +449,9 @@ _EVENT_FIELDS = {
     # #1438: output of a turn the agent runs for itself names its `agent_turn` (the minted
     # `background_turn`) INSTEAD of an operation: the journal binds every `operation_id` to an
     # operator submit, and an own turn is none. Exactly one of the two is present.
-    "text": ({"text", "partial", "truncated"}, _COMMON | {"item_id", "agent_turn"}),
+    # `questions` (#1463): an async question's options, as display text. Optional, so a journal
+    # written before it reads unchanged.
+    "text": ({"text", "partial", "truncated"}, _COMMON | {"item_id", "agent_turn", "questions"}),
     "tool": (
         {"item_id"},
         _COMMON | {"agent_turn", "tool", "state", "summary", "output", "completed"},
@@ -536,6 +540,11 @@ def _event(value):
             out[key] = [_choice(choice, {"approve", "reject", "cancel"}) for choice in item]
             if len(set(out[key])) != len(out[key]):
                 raise IPCError("duplicate private IPC approval choices")
+        elif key == "questions":
+            try:
+                out[key] = native_questions.validate_async(item)
+            except native_questions.QuestionError:
+                raise IPCError("invalid private IPC questions") from None
         elif key == "turns":
             if type(item) is not list or len(item) > 50:
                 raise IPCError("private IPC observed turns exceed their bound")

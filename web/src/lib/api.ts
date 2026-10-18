@@ -693,6 +693,9 @@ export const api = {
     text: string,
     expected_revision: number | undefined,
     attachments: string[] = [],
+    /** The async question this message answers (#1463); the server admits it only while that
+     *  question is still open. Omitted otherwise, so an ordinary turn's body is unchanged. */
+    reply_to?: string,
   ) =>
     mutateJson<{ state?: string }>("POST", `${structuredPath(key)}/turns`, {
       operation_id,
@@ -700,6 +703,7 @@ export const api = {
       expected_revision,
       // Upload names (#1332 Phase 3); omitted when none, so a text turn's body is unchanged.
       ...(attachments.length ? { attachments } : {}),
+      ...(reply_to ? { reply_to } : {}),
     }),
   structuredDecide: (
     key: string,

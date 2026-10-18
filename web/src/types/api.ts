@@ -1342,6 +1342,13 @@ export interface StructuredTool {
   risk?: StructuredRisk;
 }
 
+/** A question the agent asked with fixed options (#1463): its own words, display text only.
+ *  Codex's async question — it is not waiting, so the operator's next message is the answer. */
+export interface StructuredQuestion {
+  title: string;
+  options: string[];
+}
+
 export interface StructuredTurn {
   /** An operator submission; absent on older servers (#1438). */
   kind?: "operator";
@@ -1368,6 +1375,10 @@ export interface StructuredTurn {
   /** Who sent it through a public link (#1404 P2) — a self-chosen name, not a verified identity.
    *  Absent or null for the operator's own turns. */
   author?: { name: string; via: "public_link" } | { name: null; via: "unknown" } | null;
+  /** The newest question the agent asked in this turn, with its options (#1463). */
+  questions?: StructuredQuestion[];
+  /** That question's id, which an answer names as its `reply_to`; present with `questions`. */
+  question_id?: string;
 }
 
 /** A turn the agent ran for itself — a scheduled wake-up, a task notification (#1438). Nobody
@@ -1386,6 +1397,10 @@ export interface StructuredAgentTurn {
   reason?: string;
   tools: StructuredTool[];
   tools_truncated: boolean;
+  /** The newest question the agent asked in this turn, with its options (#1463). */
+  questions?: StructuredQuestion[];
+  /** That question's id, which an answer names as its `reply_to`; present with `questions`. */
+  question_id?: string;
 }
 
 /** One exact pending request. `payload` is the COMPLETE request the decision answers; `choices`

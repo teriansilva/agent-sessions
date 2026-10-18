@@ -1,0 +1,140 @@
+/* An agent's question with fixed options (#1463). Tokens only; boxes stay square (design §2),
+   every target is ≥44px (§8). The amber rule marks something waiting on the operator, as the
+   composer's focus does — it is the brand accent, not a status. */
+.block {
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--accent);
+  background: var(--panel);
+  padding: 12px;
+  min-width: 0;
+}
+.head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font: 700 11px var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.mark {
+  width: 6px;
+  height: 6px;
+  background: var(--accent);
+  flex: none;
+}
+.count {
+  font-weight: 400;
+}
+.question {
+  border: 0;
+  margin: 12px 0 0;
+  padding: 0;
+  min-width: 0;
+}
+.question + .question {
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+.title {
+  padding: 0;
+  margin-bottom: 8px;
+  font-weight: 700;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.tag {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 1px 6px;
+  border: 1px solid var(--line-strong);
+  font: 400 11px var(--font-mono);
+  color: var(--text);
+}
+.options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-2);
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.option input {
+  margin: 3px 0 0;
+  flex: none;
+  accent-color: var(--accent);
+}
+.option b {
+  display: block;
+}
+.option small {
+  display: block;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.on {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface-2));
+}
+.option:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.question:disabled .option {
+  cursor: default;
+  opacity: 0.6;
+}
+.otherRow {
+  display: block;
+  margin-top: 8px;
+}
+.other {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  margin-top: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+.other:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.note {
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+.status {
+  margin: 10px 0 0;
+  font: 12px var(--font-mono);
+  color: var(--text-muted);
+  border-left: 2px solid var(--status-unknown);
+  padding-left: 8px;
+}
+@media (max-width: 480px) {
+  .actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 8px;
+  }
+}

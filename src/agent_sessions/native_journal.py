@@ -441,6 +441,30 @@ def _target(journal, session_key):
         raise JournalError("conflict", "native journal belongs to another client")
 
 
+def _question_open(journal: Journal, question_id: str, worker_id: str) -> bool:
+    """An async question still takes an answer (#1463): it is the newest question the agent
+    asked, and no operator message will reach the agent after it before this one. Codex reads
+    the next message as the answer, so one claimed since, or one still waiting in the queue,
+    has answered it or moved on. A message removed before it was sent (#1447) is neither, and
+    nor is one left queued by a stopped worker: it will never run.
+
+    Checked inside the claim transaction, so two tabs, a retry and a late lost write serialize:
+    exactly one answer is admitted, and never after a newer question.
+    """
+    asked = journal.events.last_question
+    if asked is None or asked[1] != question_id:
+        return False
+    removed = withdrawn(journal)
+    return not any(
+        op.request["action"] == "submit"
+        and op.operation_id not in removed
+        and (
+            op.claimed_revision > asked[0] or (op.handoff == "queued" and op.worker_id == worker_id)
+        )
+        for op in journal.operations.values()
+    )
+
+
 def claim(root: Path, request: dict, *, queued: bool = False) -> tuple[bool, dict]:
     """Return (newly_claimed, receipt), fsynced before a caller may write native stdin.
 
@@ -468,6 +492,12 @@ def claim(root: Path, request: dict, *, queued: bool = False) -> tuple[bool, dic
             return [], (False, previous.receipt())
         if params["expected_revision"] != journal.revision:
             raise JournalError("conflict", "native conversation revision changed")
+        if "reply_to" in params and not _question_open(
+            journal, params["reply_to"], checked["worker_id"]
+        ):
+            raise JournalError(
+                "conflict", "that question was already answered or a newer one was asked"
+            )
         if queued:
             waiting = [
                 op.request

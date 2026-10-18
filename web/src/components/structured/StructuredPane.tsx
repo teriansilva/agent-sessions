@@ -71,6 +71,7 @@ import { conversationGroups, type ConversationGroup } from "./conversationOrder"
 import { PermissionsDialog } from "./PermissionsDialog";
 import styles from "./StructuredPane.module.css";
 import {
+  answerText,
   backgroundWorking,
   choiceLabel,
   cutBySendNow,
@@ -91,10 +92,12 @@ import {
   requestSummary,
   reviewOnly,
   messageTimestamp,
+  openQuestionTurn,
   sendNowTarget,
   turnStateLabel,
   waitingBehindOwnTurn,
 } from "./structuredView";
+import { ChoiceQuestions } from "./Questions";
 
 /** While a turn runs, the event cursor is read this often; a change re-reads the snapshot. */
 export const STRUCTURED_ACTIVE_POLL_MS = 1_000;
@@ -141,6 +144,18 @@ interface Deciding {
 function requestKey(req: StructuredRequest): string {
   return `${req.turn_id}\u0000${req.request_id}\u0000${req.payload_digest ?? ""}`;
 }
+
+/** An async question's answer (#1463) while its outcome is open. Bound to the question it
+ *  answers, so a Retry resends the identical operation and the server can refuse it once that
+ *  question has closed. */
+type HeldAnswer = {
+  session: string;
+  question: string;
+  id: string;
+  text: string;
+  phase: "sending" | "unknown" | "refused";
+  message?: string;
+};
 
 function Patch({ files }: { files: { path: string; diff: string }[] }) {
   return (
@@ -537,6 +552,7 @@ function AgentTurnView({
   live,
   stopping,
   onInterrupt,
+  question,
 }: {
   turn: StructuredAgentTurn;
   beforeReply?: ReactNode;
@@ -548,6 +564,8 @@ function AgentTurnView({
   live: boolean;
   stopping: boolean;
   onInterrupt: (turnId: string) => void;
+  /** The question block when this turn's question is still open (#1463). */
+  question?: ReactNode;
 }) {
   const running = turn.state === "running";
   const latest = turn.tools[turn.tools.length - 1];
@@ -598,6 +616,7 @@ function AgentTurnView({
           <Markdown text={turn.reply_truncated ? `${turn.reply}…` : turn.reply} />
         </div>
       )}
+      {question}
       {turn.state === "failed" && turn.reason && (
         <p className={`${styles.ownNote} ${styles.activityFailed}`} role="alert">{turn.reason}</p>
       )}
@@ -673,6 +692,7 @@ function TurnView({
   queuePosition,
   cutOff,
   waiting,
+  question,
 }: {
   folder?: string;
   turn: StructuredTurn;
@@ -701,6 +721,8 @@ function TurnView({
   cutOff?: boolean;
   /** Sent, but the agent runs a turn of its own first (#1475): not running, not interruptible. */
   waiting?: boolean;
+  /** The question block when this turn's question is still open (#1463). */
+  question?: ReactNode;
 }) {
   const active = turn.state === "running" || turn.state === "awaiting_approval";
   const failed = ["failed", "interrupted", "uncertain", "unavailable"].includes(turn.state);
@@ -793,6 +815,7 @@ function TurnView({
           </div>
         </div>
       )}
+      {question}
       {turn.state === "queued" && (
         <div className={styles.queued} data-testid="structured-queued">
           <div className={styles.queueRow}>
@@ -1195,6 +1218,16 @@ export function StructuredPane({
   // draft has settled, as the terminal composer does (Hermes on #908) — never a half sentence.
   const sendAfterDictation = useRef(false);
 
+  // An async question's answer (#1463) is an ordinary message with its own operation id, so it
+  // never takes the composer's draft or pictures with it. It names the question it answers
+  // (`reply_to`), and the server admits it only while that question is still open, inside the
+  // journal claim. A Retry therefore resends the identical operation: it replays the original,
+  // or it is refused once the question closed. It can never answer a newer question or answer
+  // twice, so nothing here fences the composer or survives a reload.
+  // It is shown only on its own question while that question is open, so once its message is
+  // in the conversation, or a newer question or another message closed it, it simply goes away.
+  const [answer, setAnswer] = useState<HeldAnswer | null>(null);
+
   const send = async () => {
     if (!dict.settled()) {
       sendAfterDictation.current = true;
@@ -1259,6 +1292,32 @@ export function StructuredPane({
         setSendError(
           "The message may not have reached BattleLab. Sending it again is safe — it will not be duplicated.",
         );
+      }
+    } finally {
+      sending.current = false;
+      setBusy(false);
+    }
+  };
+
+  const sendAnswer = async (attempt: { question: string; id: string; text: string }) => {
+    if (busy || readOnly || permissionPending || notStarted || !snap || sending.current) return;
+    if (!attempt.text.trim()) return;
+    sending.current = true;
+    setBusy(true);
+    setAnswer({ session: key, ...attempt, phase: "sending" });
+    try {
+      // No revision expectation: Codex keeps working, and the question binding is the check.
+      await api.structuredSubmit(key, attempt.id, attempt.text, undefined, [], attempt.question);
+      setAnswer(null);
+      await load();
+    } catch (e) {
+      const s = await load();
+      if (operatorTurns(s ?? null).some((t) => t.turn_id === attempt.id)) {
+        setAnswer(null);
+      } else if (definite(e)) {
+        setAnswer({ session: key, ...attempt, phase: "refused", message: detail(e, "refused") });
+      } else {
+        setAnswer({ session: key, ...attempt, phase: "unknown" });
       }
     } finally {
       sending.current = false;
@@ -2019,6 +2078,66 @@ export function StructuredPane({
   const turns = snap?.turns ?? [];
   const groups = conversationGroups(turns);
   const positions = queuePositions(snap);
+  const questionTurn = openQuestionTurn(snap);
+  const questionFor = (t: {
+    turn_id: string;
+    questions?: { title: string; options: string[] }[];
+    question_id?: string;
+  }) => {
+    if (t.turn_id !== questionTurn || !t.questions?.length || !t.question_id) return undefined;
+    const questions = t.questions;
+    const question = t.question_id;
+    // An answer in flight, or one whose outcome is unknown, holds this question: its only action
+    // is the identical Retry, so a different pick can't race it.
+    const mine = answer?.session === key && answer.question === question ? answer : null;
+    const holding = mine?.phase === "sending" || mine?.phase === "unknown";
+    return (
+      <ChoiceQuestions
+        key={`${t.turn_id}:${question}`}
+        heading={`${agent} asks · it keeps working meanwhile`}
+        questions={questions.map((q) => ({ title: q.title, options: q.options.map((label) => ({ label })) }))}
+        disabled={readOnly || permissionPending || notStarted || busy || holding}
+        submitLabel={questions.length > 1 ? "Send answers" : "Send answer"}
+        onSubmit={(answers) =>
+          void sendAnswer({
+            question,
+            id: uuid(),
+            text: answerText(questions, answers.map((a) => a.selected[0])),
+          })
+        }
+        status={
+          mine && (
+            <>
+              <p className={styles.pendingDecision} role="status" data-testid="structured-question-status">
+                {mine.phase === "sending"
+                  ? `Sending “${mine.text}”…`
+                  : mine.phase === "unknown"
+                    ? `“${mine.text}” may not have reached BattleLab. Retrying sends the same message.`
+                    : `Not sent: ${mine.message}`}
+              </p>
+              {mine.phase === "unknown" && (
+                <button
+                  type="button"
+                  className={`${chat.ghost} ${styles.inline}`}
+                  disabled={readOnly || permissionPending || busy}
+                  onClick={() => void sendAnswer({ question: mine.question, id: mine.id, text: mine.text })}
+                  data-testid="structured-question-retry"
+                >
+                  Retry answer
+                </button>
+              )}
+            </>
+          )
+        }
+        hint={(answers) => {
+          const text = answerText(questions, answers.map((a) => a.selected[0]));
+          return answers.every((a) => a.selected.length)
+            ? `Sent as your next message, after earlier turns: “${text}”. Or type your own answer below.`
+            : "Pick an option, or type your own answer below.";
+        }}
+      />
+    );
+  };
   // Where the background-task row goes: above the first queued message, else last (-1: none).
   const firstQueued = groups.findIndex(({ turn: t }) => !isAgentTurn(t) && t.state === "queued");
   const backgroundAt = !backgroundWorking(snap) ? -1 : firstQueued === -1 ? groups.length : firstQueued;
@@ -2053,6 +2172,7 @@ export function StructuredPane({
       onRemove={(tid) => void removeQueued(tid)}
       removing={removing === t.turn_id}
       canRemove={!!snap?.native?.withdraw}
+      question={questionFor(t)}
     />
   );
   return (
@@ -2183,6 +2303,7 @@ export function StructuredPane({
                   live={!!snap?.native?.worker}
                   stopping={interrupting || stoppingNow === t.turn_id}
                   onInterrupt={(tid) => void interrupt(tid)}
+                  question={questionFor(t)}
                 />
               ) : renderTurn(t, additions.map((added) => renderTurn(added)))}
             </Fragment>

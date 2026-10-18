@@ -261,6 +261,24 @@ def codex():
                 )
                 reply = next(stream)
                 answer = "approved:" + reply["result"]["decision"]
+            if text == "ASKASYNC":
+                # Codex 0.162's async question (#1463): it is not waiting for the answer.
+                send(
+                    {
+                        "method": "item/completed",
+                        "params": {
+                            "threadId": thread,
+                            "turnId": turn,
+                            "item": {
+                                "id": f"call-{turn}",
+                                "type": "agentMessage",
+                                "text": "Which channel?",
+                                "delivery": "async",
+                                "questions": [{"title": "Which channel?", "options": ["main"]}],
+                            },
+                        },
+                    }
+                )
             if text.startswith("ASKJSON:"):
                 send(
                     {

@@ -54,6 +54,9 @@ class Events(Sequence):
         self._operations: dict[str | None, array] = {}
         self._agent_turns: set[str] = set()
         self._global = array("Q")
+        # (cursor, item id) of the newest settled question the agent asked (#1463): what an
+        # answer's `reply_to` must still name when it is claimed.
+        self.last_question: tuple[int, str] | None = None
 
     def __len__(self):
         return len(self.cursors)
@@ -82,6 +85,7 @@ class Events(Sequence):
         result._operations = {key: indexes[:] for key, indexes in self._operations.items()}
         result._agent_turns = set(self._agent_turns)
         result._global = self._global[:]
+        result.last_question = self.last_question
         return result
 
     def append(self, item: dict):
@@ -97,6 +101,12 @@ class Events(Sequence):
         self._offsets.append(offset)
         self._lengths.append(len(raw))
         event = item["event"]
+        if (
+            event["kind"] == "text"
+            and event["data"].get("questions")
+            and event["data"].get("item_id")
+        ):
+            self.last_question = (item["cursor"], event["data"]["item_id"])
         # These affect session state even when their turn is outside the display window.
         if event["kind"] in {
             "session",

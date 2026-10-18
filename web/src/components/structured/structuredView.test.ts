@@ -1,11 +1,18 @@
 import { describe, expect, test } from "vitest";
-import type { StructuredRequest, StructuredSnapshot } from "../../types/api";
+import type {
+  StructuredAgentTurn,
+  StructuredRequest,
+  StructuredSnapshot,
+  StructuredTurn,
+} from "../../types/api";
 import {
+  answerText,
   backgroundWorking,
   choiceLabel,
   cutBySendNow,
   interruptTarget,
   isActive,
+  openQuestionTurn,
   operationFor,
   operatorTurns,
   ordinal,
@@ -235,5 +242,34 @@ describe("Send now keeps the queue's order (#1442)", () => {
     expect(cutBySendNow(snap([cut, op("q", "failed", { delivery_turn_id: "t" })]), cut)).toBe(false);
     const done = op("t", "completed");
     expect(cutBySendNow(snap([done, op("q", "running", { delivery_turn_id: "t" })]), done)).toBe(false);
+  });
+});
+
+describe("openQuestionTurn / answerText (#1463)", () => {
+  const it = test;
+  const q = [{ title: "Isolate?", options: ["Yes", "No"] }];
+  const op = (id: string, extra = {}) =>
+    ({ kind: "operator", turn_id: id, operation_id: id, state: "completed", text: "x", reply: "",
+      text_truncated: false, reply_truncated: false, reason: null, tools: [], tools_truncated: false, ...extra }) as StructuredTurn;
+  const agentTurn = (id: string, extra = {}) =>
+    ({ kind: "agent", turn_id: id, state: "completed", reply: "", reply_truncated: false, tools: [],
+      tools_truncated: false, ...extra }) as StructuredAgentTurn;
+  const snapOf = (turns: (StructuredTurn | StructuredAgentTurn)[]) => ({ turns }) as unknown as StructuredSnapshot;
+
+  it("is the newest turn with questions while no operator message follows it", () => {
+    expect(openQuestionTurn(snapOf([op("a", { questions: q })]))).toBe("a");
+    expect(openQuestionTurn(snapOf([op("a", { questions: q }), agentTurn("b")]))).toBe("a");
+    expect(openQuestionTurn(snapOf([op("a"), agentTurn("b", { questions: q })]))).toBe("b");
+  });
+
+  it("closes once a later operator message exists, queued or not", () => {
+    expect(openQuestionTurn(snapOf([op("a", { questions: q }), op("b", { state: "queued" })]))).toBeNull();
+    expect(openQuestionTurn(snapOf([op("a"), op("b")]))).toBeNull();
+    expect(openQuestionTurn(null)).toBeNull();
+  });
+
+  it("sends the option itself for one question, one line per question for several", () => {
+    expect(answerText(q, ["Yes"])).toBe("Yes");
+    expect(answerText([...q, { title: "Channel?" }], ["No", "main"])).toBe("Isolate?: No\nChannel?: main");
   });
 });

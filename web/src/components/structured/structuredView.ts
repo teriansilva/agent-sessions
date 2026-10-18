@@ -359,3 +359,26 @@ export function cutBySendNow(snap: StructuredSnapshot | null, turn: StructuredTu
     )
   );
 }
+
+/** The turn whose question still takes an answer from its buttons (#1463): the newest turn
+ *  carrying `questions`, while no operator message follows it. The agent reads the next message as
+ *  the answer, so a later one (queued included) has already answered it or moved on. */
+export function openQuestionTurn(snap: StructuredSnapshot | null): string | null {
+  const turns = snap?.turns ?? [];
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const t = turns[i];
+    if (t.questions?.length) return t.turn_id;
+    if (!isAgentTurn(t)) return null;
+  }
+  return null;
+}
+
+/** The message that answers an async question: the chosen option's own words for one question,
+ *  one `title: option` line per question for several. */
+export function answerText(
+  questions: readonly { title: string }[],
+  picks: readonly (string | undefined)[],
+): string {
+  if (questions.length === 1) return picks[0] ?? "";
+  return questions.map((q, i) => `${q.title}: ${picks[i] ?? ""}`).join("\n");
+}

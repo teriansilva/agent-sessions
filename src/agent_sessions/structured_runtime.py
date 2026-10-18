@@ -382,6 +382,11 @@ def _turn(turn: dict, text_budget: list[int] | None = None) -> dict:
         "tools": list(turn.get("tools") or [])[-64:],
         "tools_truncated": len(turn.get("tools") or []) > 64,
         "usage": turn.get("usage"),
+        **(
+            {"questions": turn["questions"], "question_id": turn["question_id"]}
+            if turn.get("questions")
+            else {}
+        ),
     }
 
 
@@ -401,6 +406,11 @@ def _agent_turn(turn: dict, bounded) -> dict:
         **({"reason": turn["reason"]} if turn.get("reason") else {}),
         "tools": list(turn.get("tools") or [])[-64:],
         "tools_truncated": len(turn.get("tools") or []) > 64,
+        **(
+            {"questions": turn["questions"], "question_id": turn["question_id"]}
+            if turn.get("questions")
+            else {}
+        ),
     }
 
 
@@ -532,8 +542,10 @@ async def submit_turn(
     context: dict | None = None,
     attachments: list[str] | None = None,
     execution_admission: ExecutionGuard | None = None,
+    reply_to: str | None = None,
 ) -> dict:
-    """``attachments``: upload names (#1332 Phase 3), admitted here before anything durable."""
+    """``attachments``: upload names (#1332 Phase 3), admitted here before anything durable.
+    ``reply_to``: the async question this message answers (#1463), native clients only."""
     engine, native = _key(session_key)
     adapter = _adapter(engine, "submit")
     try:
@@ -553,6 +565,12 @@ async def submit_turn(
             )
         except native_attachments.AttachmentError as exc:
             raise StructuredError(422, str(exc)) from None
+    if reply_to is not None:
+        if not isinstance(adapter, _NativeAdapter):
+            raise StructuredError(422, "this client asks no questions to answer")
+        if not isinstance(reply_to, str):
+            raise StructuredError(422, "reply_to must be a question id")
+        uploaded["reply_to"] = reply_to
     await adapter.submit(
         engine,
         native,

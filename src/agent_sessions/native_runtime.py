@@ -1461,6 +1461,11 @@ def project(
             else:
                 # Each settled text block is its own message: without a break, "…done.Next…".
                 turn["reply"] = _paragraph(turn["reply"], data["text"])
+            if data.get("questions") and data.get("item_id"):
+                # The newest question the agent asked in this turn (#1463), and the id an
+                # answer names as its `reply_to`.
+                turn["questions"] = data["questions"]
+                turn["question_id"] = data["item_id"]
         elif kind == "tool":
             entry = {
                 "name": data.get("tool") or "tool",
@@ -1794,8 +1799,11 @@ async def submit(
     attachments: list[dict] | None = None,
     execution_admission=None,
     idempotent: bool = True,
+    reply_to: str | None = None,
 ) -> dict:
-    """``attachments``: files/pictures already admitted by ``native_attachments.admit``."""
+    """``attachments``: files/pictures already admitted by ``native_attachments.admit``.
+    ``reply_to``: the async question this message answers (#1463); the journal admits it only
+    while that question is still open."""
     if execution_admission is not None:
         raise NativeError(
             409, "native clients cannot enforce caller authority across processes yet"
@@ -1813,7 +1821,12 @@ async def submit(
     params = {"text": text, "context": context or {}}
     if attachments:
         params["attachments"] = attachments
-    immutable = native_ipc.normalize_immutable_request({"action": "submit", "params": params})
+    if reply_to is not None:
+        params["reply_to"] = reply_to
+    try:
+        immutable = native_ipc.normalize_immutable_request({"action": "submit", "params": params})
+    except native_ipc.IPCError as exc:
+        raise NativeError(422, str(exc)) from None
     try:
         native_protocol.validate_text(
             native_attachments.text_with_files(text, immutable["params"].get("attachments") or []),

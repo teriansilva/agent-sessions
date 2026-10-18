@@ -212,3 +212,17 @@ async def test_snapshot_is_bounded_and_preserves_explicit_unknown_outcome(endpoi
 def test_correlation_cannot_carry_authority_or_unbounded_nested_data(context):
     with pytest.raises(ValueError):
         normalize_context(context)
+
+
+@pytest.mark.anyio
+async def test_reply_to_is_for_native_clients_only(endpoint, tmp_path):
+    """An answer bound to an async question (#1463) exists only where native clients ask one."""
+    chat_api.configure()
+    created = await runtime.create_session(
+        chat_api.ENGINE, str(tmp_path), operation_id=str(uuid.uuid4())
+    )
+    with pytest.raises(runtime.StructuredError, match="asks no questions") as refused:
+        await runtime.submit_turn(
+            created["session_key"], operation_id=str(uuid.uuid4()), text="a", reply_to="q"
+        )
+    assert refused.value.status == 422

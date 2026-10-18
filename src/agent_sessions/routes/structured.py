@@ -13,7 +13,9 @@ mission correlation is ever read from a browser (mission callers use the facade 
   its create reserved and launched nothing. Idempotent.
 * ``GET  /api/structured/sessions/{key}`` — bounded snapshot (turns, exact pending requests).
 * ``GET  /api/structured/sessions/{key}/events?after=&limit=`` — durable journal cursor page.
-* ``POST /api/structured/sessions/{key}/turns {operation_id, text, expected_revision?}``
+* ``POST /api/structured/sessions/{key}/turns {operation_id, text, expected_revision?,
+  reply_to?}`` — ``reply_to``: the async question this message answers (#1463), admitted only
+  while that question is still open.
 * ``POST /api/structured/sessions/{key}/decisions {decision_id, turn_id, request_id, decision,
   grant?, expected_revision?}`` — one exact pending request: approve / reject / cancel, or
   ``always`` with the id of one proposed standing grant the snapshot offers (#1339).
@@ -172,7 +174,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
     ) -> JSONResponse:
         body = await _json(
             request,
-            {"operation_id", "text", "expected_revision", "attachments"},
+            {"operation_id", "text", "expected_revision", "attachments", "reply_to"},
             {"operation_id", "text"},
         )
         out = await _run(
@@ -183,6 +185,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
                 expected_revision=_revision(body.get("expected_revision")),
                 # Upload names (#1332 Phase 3); the facade admits each before anything durable.
                 attachments=body.get("attachments"),
+                reply_to=body.get("reply_to"),
             )
         )
         return JSONResponse(out, status_code=202 if out.get("state") == "running" else 200)

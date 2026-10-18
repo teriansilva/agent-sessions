@@ -258,6 +258,31 @@ async def test_create_submit_replay_and_reconnect_observe_one_native_write(host,
 
 
 @pytest.mark.anyio
+async def test_an_async_answer_is_admitted_once_and_only_while_its_question_is_open(host, project):
+    """#1463: the real worker carries `reply_to` into the journal claim, which admits one
+    answer while its question is open; a retry replays it and anything else is a 409."""
+    engine = ENGINES["codex"]
+    key = (await runtime.create_session(engine, str(project), operation_id=ident()))["session_key"]
+    ask = ident()
+    await runtime.submit_turn(key, operation_id=ask, text="ASKASYNC")
+    _, asked = await settle(key, ask)
+    assert asked["questions"] == [{"title": "Which channel?", "options": ["main"]}]
+    question = asked["question_id"]
+    with pytest.raises(runtime.StructuredError, match="already answered") as unknown:
+        await runtime.submit_turn(key, operation_id=ident(), text="main", reply_to="call-other")
+    assert unknown.value.status == 409
+    answer = ident()
+    first = await runtime.submit_turn(key, operation_id=answer, text="main", reply_to=question)
+    replay = await runtime.submit_turn(key, operation_id=answer, text="main", reply_to=question)
+    assert replay["turn_id"] == first["turn_id"] == answer
+    with pytest.raises(runtime.StructuredError, match="already answered") as second:
+        await runtime.submit_turn(key, operation_id=ident(), text="main", reply_to=question)
+    assert second.value.status == 409
+    snap, _ = await settle(key, answer)
+    assert [t["turn_id"] for t in snap["turns"] if t.get("text") == "main"] == [answer]
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
 async def test_native_crash_is_uncertain_never_resent_and_the_next_turn_resumes(
     host, project, source

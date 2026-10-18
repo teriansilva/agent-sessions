@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
 
+from . import native_questions
+
 CODEX_MIN_VERSION = (0, 159, 3)
 CLAUDE_MIN_VERSION = (2, 1, 287)
 MAX_FRAME_BYTES = 1_048_576
@@ -867,6 +869,13 @@ class CodexCodec(_Codec):
             if not isinstance(kind, str):
                 raise ProtocolError("native item kind must be a string")
             if kind == "agentMessage":
+                # An async question (#1463) carries its options as data. Codex is not waiting
+                # for them: the operator's next message is the answer.
+                questions = (
+                    native_questions.async_questions(item.get("questions"))
+                    if method == "item/completed" and item.get("delivery") == "async"
+                    else None
+                )
                 return [
                     _event(
                         "text",
@@ -876,6 +885,7 @@ class CodexCodec(_Codec):
                         partial=method == "item/started",
                         truncated=isinstance(item.get("text"), str)
                         and len(item["text"]) > MAX_TEXT,
+                        **({"questions": questions} if questions else {}),
                     )
                 ]
             if kind in {
