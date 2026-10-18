@@ -1879,7 +1879,9 @@ def _successor_startup_only(
     generation, which was not live when the send began (``prior``).
 
     Such a generation has run no turn: what it journals before the claim (initialization,
-    session facts, background state) is no activity the operator missed. A claim, a handoff,
+    session facts, background state) is no activity the operator missed. Nor is a worker
+    diagnostic bound to no operation or action — a history frame dropped as oversized while
+    the native session loads: the snapshot shows it on no turn. A claim, a handoff,
     conversation content, or any record by another generation — the idled-out one's last
     background reports included — keeps the refusal."""
     if successor == prior:
@@ -1887,9 +1889,15 @@ def _successor_startup_only(
     start = bisect.bisect_right(journal.events.cursors, after)
     newer = journal.events[start:]
     return len(newer) == journal.revision - after and all(
-        event["worker_id"] == successor and event["event"]["kind"] in _STARTUP_EVENTS
-        for event in newer
+        event["worker_id"] == successor and _startup_record(event["event"]) for event in newer
     )
+
+
+def _startup_record(event: dict) -> bool:
+    if event["kind"] in _STARTUP_EVENTS:
+        return True
+    data = event.get("data") or {}
+    return event["kind"] == "error" and not data.get("operation_id") and not data.get("action")
 
 
 async def _existing_generation_call(session_id: str, action: str, params: dict) -> dict:

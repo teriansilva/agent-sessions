@@ -750,14 +750,14 @@ async def test_a_turn_sent_at_the_seen_revision_survives_its_own_worker_relaunch
 def test_only_a_successors_startup_records_keep_an_explicit_expectation(tmp_path):
     def journal(*events):
         j = native_journal.Journal({}, revision=10, events=native_events.Events(tmp_path))
-        for cursor, (worker, kind) in enumerate(events, 11):
+        for cursor, (worker, kind, *data) in enumerate(events, 11):
             j.events.append(
                 {
                     "cursor": cursor,
                     "worker_id": worker,
                     "connection_id": "c",
                     "ts": 0.0,
-                    "event": {"kind": kind, "data": {}},
+                    "event": {"kind": kind, "data": data[0] if data else {}},
                 }
             )
             j.revision = cursor
@@ -776,6 +776,15 @@ def test_only_a_successors_startup_records_keep_an_explicit_expectation(tmp_path
     # Conversation content is never startup, whoever wrote it.
     assert not ok(journal(("new", "text")), 10, None, "new")
     assert not ok(journal(("new", "approval")), 10, None, "new")
+    # A worker diagnostic bound to no operation is startup noise: opencode's session/load
+    # replays history, and an oversized replay frame is journaled as a bare error. Without
+    # this, every send that relaunched such a session was refused with 409.
+    dropped = journal(("new", "initialized"), ("new", "error"), ("new", "session"))
+    assert ok(dropped, 10, None, "new")
+    # An error that names an operation or an action belongs to a turn: still activity.
+    assert not ok(journal(("new", "error", {"operation_id": "op"})), 10, None, "new")
+    assert not ok(journal(("new", "error", {"action": "turn/start"})), 10, None, "new")
+    assert not ok(journal(("old", "error")), 10, None, "new")
     # A record that is no observation (a claim, a handoff) has no event: refused.
     claimed = journal(("new", "session"))
     claimed.revision += 1
