@@ -283,6 +283,52 @@ async def test_an_async_answer_is_admitted_once_and_only_while_its_question_is_o
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("leave", ["dispatch", "send_now"])
+async def test_a_queued_answer_is_not_sent_once_a_newer_question_was_asked(host, project, leave):
+    """#1463: an answer waiting behind Codex's turn leaves the queue only for the question it was
+    admitted for; one asked meanwhile settles it not-sent instead of being answered by it."""
+    engine = ENGINES["codex"]
+    key = (await runtime.create_session(engine, str(project), operation_id=ident()))["session_key"]
+    ask = ident()
+    await runtime.submit_turn(key, operation_id=ask, text="ASKTWICE")
+    for _ in range(400):
+        turn = next(t for t in (await runtime.snapshot(key))["turns"] if t["turn_id"] == ask)
+        if turn.get("question_id"):
+            break
+        await asyncio.sleep(0.05)
+    first = turn["question_id"]
+    answer = ident()
+    queued = await runtime.submit_turn(key, operation_id=answer, text="yes", reply_to=first)
+    assert queued["state"] == "queued"
+    (project / "ask-again").touch()
+    for _ in range(400):
+        turn = next(t for t in (await runtime.snapshot(key))["turns"] if t["turn_id"] == ask)
+        if turn.get("question_id") != first:
+            break
+        await asyncio.sleep(0.05)
+    second = turn["question_id"]
+    assert second and second != first
+    if leave == "send_now":
+        # Steering into the running turn is a way out of the queue too (independent review).
+        with pytest.raises(runtime.StructuredError, match="not applied"):
+            await runtime.send_now(key, operation_id=ident(), turn_id=ask, queued_turn_id=answer)
+    (project / "release-queued-turn").touch()
+    _, settled = await settle(key, answer)
+    assert settled["state"] == "failed" and "not sent" in settled["reason"]
+    texts = [
+        "".join(i.get("text", "") for i in f["frame"]["params"]["input"])
+        for f in frames(project)
+        if f["frame"].get("method") in {"turn/start", "turn/steer"}
+    ]
+    assert "yes" not in texts
+    # The newer question is still open: its own answer goes through.
+    again = ident()
+    await runtime.submit_turn(key, operation_id=again, text="yes", reply_to=second)
+    _, delivered = await settle(key, again)
+    assert delivered["state"] == "completed"
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("source", ["codex", "claude", "opencode"])
 async def test_native_crash_is_uncertain_never_resent_and_the_next_turn_resumes(
     host, project, source

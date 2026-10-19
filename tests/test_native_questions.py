@@ -317,3 +317,70 @@ def test_the_ipc_boundary_bounds_reply_to(conversation):
         native_ipc.validate_request(
             journal_tests.request(binding, action="interrupt", reply_to="q1")
         )
+
+
+# The first message DISPATCHED after the question is its answer: one queued before the question
+# but sent after it closes it, one never sent does not (independent review of #1464).
+
+
+def _queued_behind_running(conversation):
+    root, sid, binding = conversation
+    binding = replace(binding, adapter="codex-app-server")
+    running = journal_tests.request(binding, context={})
+    journal.claim(root, running)
+    journal.record_handoff(root, binding, running["params"]["operation_id"], "sent")
+    waiting = journal_tests.request(binding, revision=journal.read(root, sid).revision, context={})
+    journal.claim(root, waiting, queued=True)
+    op = running["params"]["operation_id"]
+    journal.append_events(root, binding, [_text(op, "Pick", questions=ASKED, item_id="q1")])
+    return root, sid, binding, waiting["params"]["operation_id"]
+
+
+def test_a_message_queued_before_the_question_but_sent_after_it_closes_it(conversation):
+    root, sid, binding, waiting = _queued_behind_running(conversation)
+    journal.record_handoff(root, binding, waiting, "uncertain")
+    journal.record_handoff(root, binding, waiting, "sent")
+    _refused(root, _answer(root, sid, binding))
+
+
+@pytest.mark.parametrize("queued", [True, False])
+def test_a_message_that_was_never_sent_does_not_close_it(conversation, queued):
+    root, sid, binding, _ = _asked(conversation)
+    refused = journal_tests.request(
+        binding, revision=journal.read(root, sid).revision, text="lost", context={}
+    )
+    journal.claim(root, refused, queued=queued)
+    # Refused before any write, or removed from the queue (#1447): it never reached Codex.
+    journal.record_handoff(root, binding, refused["params"]["operation_id"], "not_sent")
+    assert journal.claim(root, _answer(root, sid, binding))[0]
+
+
+def test_a_queued_answer_is_current_until_a_newer_question_is_asked(conversation):
+    root, sid, binding, op = _asked(conversation)
+    answer = _answer(root, sid, binding)
+    assert journal.claim(root, answer, queued=True)[0]
+    answer_id = answer["params"]["operation_id"]
+    # A message queued BEHIND the answer does not take its place.
+    behind = journal_tests.request(
+        binding, revision=journal.read(root, sid).revision, text="later", context={}
+    )
+    journal.claim(root, behind, queued=True)
+    assert journal.answer_current(journal.read(root, sid), answer_id)
+    later = [{"title": "And the channel?", "options": ["main"]}]
+    journal.append_events(root, binding, [_text(op, "Again", questions=later, item_id="q2")])
+    assert not journal.answer_current(journal.read(root, sid), answer_id)
+
+
+def test_an_answer_is_not_current_once_another_message_reached_the_agent(conversation):
+    root, sid, binding, _ = _asked(conversation)
+    answer = _answer(root, sid, binding)
+    assert journal.claim(root, answer, queued=True)[0]
+    # Defensive: only the queue head can be sent now, so no live path does this today.
+    other = journal_tests.request(
+        binding, revision=journal.read(root, sid).revision, text="mine", context={}
+    )
+    journal.claim(root, other, queued=True)
+    journal.record_handoff(root, binding, other["params"]["operation_id"], "uncertain")
+    assert not journal.answer_current(journal.read(root, sid), answer["params"]["operation_id"])
+    # An ordinary message has no question to be current for.
+    assert journal.answer_current(journal.read(root, sid), other["params"]["operation_id"])

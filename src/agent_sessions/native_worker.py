@@ -590,6 +590,8 @@ class Worker:
                         params = self.queued[0]
                         admitted = False
                         try:
+                            if not await self._answer_current(params):
+                                raise WorkerError("its question was answered or replaced")
                             with self.queued_admission():
                                 admitted = True
                                 self.queued.pop(0)
@@ -1008,15 +1010,30 @@ class Worker:
                         "not_sent",
                     )
                 elif params["mode"] == "steer":
+                    # Asked BEFORE the message leaves the queue: a failed read leaves it queued.
+                    current = await self._answer_current(queued)
                     self.queued.remove(queued)
                     self.sent_now.discard(queued["operation_id"])
-                    delivered = await self.handoff("steer", queued, queued=True)
+                    if current:
+                        delivered = await self.handoff("steer", queued, queued=True)
+                        handoff = delivered["handoff"]
+                    else:
+                        # Steering leaves the queue too: an answer whose question was replaced
+                        # meanwhile is never read as the reply to the newer one (#1463).
+                        await asyncio.to_thread(
+                            native_journal.record_handoff,
+                            self.journal_root,
+                            self.binding,
+                            queued["operation_id"],
+                            "not_sent",
+                        )
+                        handoff = "not_sent"
                     receipt = await asyncio.to_thread(
                         native_journal.record_handoff,
                         self.journal_root,
                         self.binding,
                         params["operation_id"],
-                        delivered["handoff"],
+                        handoff,
                     )
                 else:
                     self.priority_turn = params["turn_id"]
@@ -1061,6 +1078,17 @@ class Worker:
         if previous.request != native_ipc.immutable_request(request):
             return self.error(request, "conflict", "native operation UUID binds another request")
         return self.receipt(request, previous.receipt())
+
+    async def _answer_current(self, params: dict) -> bool:
+        """May this queued message leave the queue now (#1463)? An async question's answer goes
+        only to the question it was admitted for; a newer one asked while it waited is not its.
+        Asked on EVERY way out of the queue (FIFO dispatch and Send now's steer), after a flush,
+        so a question the agent just asked is in the journal read."""
+        if "reply_to" not in params:
+            return True
+        self.flush()
+        journal = await asyncio.to_thread(native_journal.read, self.journal_root, self.session_id)
+        return native_journal.answer_current(journal, params["operation_id"])
 
     def _queue_head(self, queued: dict) -> bool:
         """Is ``queued`` the first message waiting (#1442)? Checked before the claim and again

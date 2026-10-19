@@ -115,6 +115,10 @@ class Operation:
     # Where the claim sits in the journal; never advanced. Orders it among the agent's own turns
     # (#1438) by the journal itself, not a wall clock that can step backwards.
     claimed_revision: int = 0
+    # Where it left for the agent: the claim itself, or a queued message's first handoff out of
+    # the queue. `None` while queued, and forever for one settled `not_sent` from the queue. An
+    # async question's answer is the first message dispatched after it (#1463).
+    dispatched_revision: int | None = None
 
     def receipt(self):
         return {
@@ -314,6 +318,7 @@ def _fold_lines(journal: Journal, lines: list[bytes], first_cursor: int) -> None
                     ts=record["ts"],
                     handoff="queued" if kind == "native_queued" else "uncertain",
                     claimed_revision=cursor,
+                    dispatched_revision=None if kind == "native_queued" else cursor,
                 )
             elif kind == "native_handoff":
                 _fields(
@@ -326,6 +331,11 @@ def _fold_lines(journal: Journal, lines: list[bytes], first_cursor: int) -> None
                 ):
                     raise JournalError("unavailable", "native handoff has no matching claim")
                 _transition(operation, record["handoff"])
+                if operation.dispatched_revision is None and record["handoff"] in {
+                    "uncertain",
+                    "sent",
+                }:
+                    operation.dispatched_revision = cursor
                 operation.handoff = record["handoff"]
                 operation.ever_sent |= record["handoff"] == "sent"
                 operation.recorded_revision = cursor
@@ -441,28 +451,53 @@ def _target(journal, session_key):
         raise JournalError("conflict", "native journal belongs to another client")
 
 
+def _replies(journal: Journal, asked: int, worker_id: str, exclude: str | None = None):
+    """Operator messages that reach (or will reach) the agent after the question at ``asked``:
+    dispatched after it, or still waiting in the live worker's queue. Codex reads the first of
+    them as the answer. One settled ``not_sent`` (refused, or removed before it was sent, #1447)
+    never reached it; one left queued by a stopped worker never will."""
+    for op in journal.operations.values():
+        if op.request["action"] != "submit" or op.operation_id == exclude:
+            continue
+        if op.handoff == "not_sent":
+            continue
+        if op.dispatched_revision is not None:
+            if op.dispatched_revision > asked:
+                yield op
+        elif op.handoff == "queued" and op.worker_id == worker_id:
+            yield op
+
+
 def _question_open(journal: Journal, question_id: str, worker_id: str) -> bool:
     """An async question still takes an answer (#1463): it is the newest question the agent
-    asked, and no operator message will reach the agent after it before this one. Codex reads
-    the next message as the answer, so one claimed since, or one still waiting in the queue,
-    has answered it or moved on. A message removed before it was sent (#1447) is neither, and
-    nor is one left queued by a stopped worker: it will never run.
+    asked, and no operator message reaches the agent after it ahead of this one.
 
     Checked inside the claim transaction, so two tabs, a retry and a late lost write serialize:
-    exactly one answer is admitted, and never after a newer question.
+    exactly one answer is admitted. A queued answer is checked again when it leaves the queue
+    (``answer_current``), so a question asked meanwhile is never answered by it.
     """
     asked = journal.events.last_question
     if asked is None or asked[1] != question_id:
         return False
-    removed = withdrawn(journal)
-    return not any(
-        op.request["action"] == "submit"
-        and op.operation_id not in removed
-        and (
-            op.claimed_revision > asked[0] or (op.handoff == "queued" and op.worker_id == worker_id)
-        )
-        for op in journal.operations.values()
+    return next(_replies(journal, asked[0], worker_id), None) is None
+
+
+def answer_current(journal: Journal, operation_id: str) -> bool:
+    """A claimed answer may still be delivered (#1463): its question is still the newest one,
+    and no other message reached the agent after it. The worker asks this as a queued answer
+    leaves the queue; a ``False`` settles it ``not_sent`` rather than answer a newer question."""
+    op = journal.operations.get(operation_id)
+    asked = journal.events.last_question
+    if op is None or "reply_to" not in op.request["params"]:
+        return True
+    if asked is None or asked[1] != op.request["params"]["reply_to"]:
+        return False
+    dispatched = (
+        o
+        for o in _replies(journal, asked[0], op.worker_id, exclude=operation_id)
+        if o.dispatched_revision is not None
     )
+    return next(dispatched, None) is None
 
 
 def claim(root: Path, request: dict, *, queued: bool = False) -> tuple[bool, dict]:

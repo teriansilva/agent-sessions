@@ -261,6 +261,29 @@ def codex():
                 )
                 reply = next(stream)
                 answer = "approved:" + reply["result"]["decision"]
+            if text == "ASKTWICE":
+                # Two async questions; the second only once the test creates `ask-again`, and the
+                # turn ends after `release-queued-turn` (#1463).
+                for n in (1, 2):
+                    if n == 2:
+                        _wait_file("ask-again", 10)
+                    send(
+                        {
+                            "method": "item/completed",
+                            "params": {
+                                "threadId": thread,
+                                "turnId": turn,
+                                "item": {
+                                    "id": f"call-{turn}-{n}",
+                                    "type": "agentMessage",
+                                    "text": f"Question {n}?",
+                                    "delivery": "async",
+                                    "questions": [{"title": f"Question {n}?", "options": ["yes"]}],
+                                },
+                            },
+                        }
+                    )
+                _wait_file("release-queued-turn", 10)
             if text == "ASKASYNC":
                 # Codex 0.162's async question (#1463): it is not waiting for the answer.
                 send(
