@@ -770,6 +770,8 @@ export const api = {
       decision: string;
       /** Only with `decision: "always"` (#1339): one offered grant id. */
       grant?: string;
+      /** Only with `decision: "answer"` (#1463): one answer per question, in order. */
+      answers?: ({ selected: string[] } | { other: string })[];
     },
   ) => mutateJson<unknown>("POST", `${structuredPath(key)}/decisions`, body),
   structuredInterrupt: (key: string, operation_id: string, turn_id: string) =>

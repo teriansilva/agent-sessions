@@ -597,10 +597,13 @@ async def decide(
     user: str,
     expected_revision: int | None = None,
     grant: str | None = None,
+    answers: list | None = None,
     execution_admission: ExecutionGuard | None = None,
 ) -> dict:
     engine, native = _key(session_key)
     adapter = _adapter(engine, "decide")
+    if answers is not None and not isinstance(adapter, _NativeAdapter):
+        raise StructuredError(422, "this client's requests take no answer")
     result = await adapter.decide(
         engine,
         native,
@@ -612,6 +615,8 @@ async def decide(
         expected_revision=expected_revision,
         # A standing grant (#1339) only ever travels with an `always` decision.
         **({"grant": grant} if grant is not None else {}),
+        # An agent question's answer (#1463) only ever travels with an `answer` decision.
+        **({"answers": answers} if answers is not None else {}),
         execution_admission=execution_admission,
     )
     return {"session_key": f"{engine}:{native}", "decision_id": decision_id, **result}

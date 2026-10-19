@@ -72,6 +72,7 @@ import { PermissionsDialog } from "./PermissionsDialog";
 import styles from "./StructuredPane.module.css";
 import {
   answerText,
+  answerWire,
   backgroundWorking,
   choiceLabel,
   cutBySendNow,
@@ -86,6 +87,8 @@ import {
   ownTurnInterruptible,
   operationFor,
   requestIds,
+  questionPreview,
+  requestQuestions,
   sendIdentity,
   requestRows,
   requestTitle,
@@ -135,11 +138,17 @@ interface Deciding {
   decision: string;
   /** With `decision: "always"` (#1339): the one offered grant it sends. */
   grant?: string;
+  /** With `decision: "answer"` (#1463): the exact answers it sends, frozen with its id, so a retry
+   *  can only resend them. */
+  answers?: Answers;
   decision_id: string;
   /** `sending` — awaiting the server; `sent` — accepted, awaiting the agent (the next snapshot
    *  settles it); `unknown` — no answer came back, so it may or may not have landed. */
   phase: "sending" | "sent" | "unknown";
 }
+
+type Answers = ({ selected: string[] } | { other: string })[];
+type OnDecide = (req: StructuredRequest, choice: string, grant?: string, answers?: Answers) => void;
 
 function requestKey(req: StructuredRequest): string {
   return `${req.turn_id}\u0000${req.request_id}\u0000${req.payload_digest ?? ""}`;
@@ -202,6 +211,96 @@ export function RiskMark({ risk }: { risk?: StructuredRisk | null }) {
   );
 }
 
+/** Claude's `AskUserQuestion` (#1463): the agent's question with its options, answered, skipped
+ *  or stopped — never approved. A decision in flight freezes the choices with its exact answers. */
+function QuestionRequest({
+  req,
+  questions,
+  agent,
+  deciding,
+  readOnly,
+  interrupting,
+  onDecide,
+}: {
+  req: StructuredRequest;
+  questions: NonNullable<ReturnType<typeof requestQuestions>>;
+  agent: string;
+  deciding: Deciding | null;
+  readOnly: boolean;
+  interrupting: boolean;
+  onDecide: OnDecide;
+}) {
+  const mine = deciding?.key === requestKey(req) ? deciding : null;
+  const answerLabel = (a: Answers | undefined) =>
+    (a ?? []).map((x) => ("other" in x ? x.other : x.selected.join(", "))).join(" · ");
+  const mineText = mine?.decision === "answer" ? `“${answerLabel(mine.answers)}”` : `“${choiceLabel(mine?.decision ?? "", req)}”`;
+  return (
+    <div data-testid="structured-request" data-kind={req.kind}>
+      <ChoiceQuestions
+        key={requestKey(req)}
+        testId="structured-ask"
+        heading={requestTitle(req, agent)}
+        questions={questions}
+        allowOther
+        disabled={readOnly || !!mine}
+        submitLabel={questions.length > 1 ? "Send answers" : "Send answer"}
+        onSubmit={(answers) => onDecide(req, "answer", undefined, answers.map(answerWire))}
+        status={
+          mine && (
+            <p className={styles.pendingDecision} role="status" data-testid="structured-deciding">
+              {mine.phase === "sending"
+                ? `Sending ${mineText}…`
+                : mine.phase === "sent"
+                  ? `${mineText} sent — waiting for ${agent} to take it.`
+                  : `${mineText} may not have reached BattleLab. Retrying sends the same ${mine.decision === "answer" ? "answer" : "decision"}.`}
+            </p>
+          )
+        }
+        actions={
+          mine?.phase === "unknown" ? (
+            <button
+              type="button"
+              className={chat.send}
+              disabled={readOnly}
+              data-testid="structured-ask-retry"
+              onClick={() => onDecide(req, mine.decision, undefined, mine.answers)}
+            >
+              Retry {mineText}
+            </button>
+          ) : (
+            req.choices
+              .filter((c) => c === "reject" || c === "cancel")
+              .map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  className={chat.ghost}
+                  disabled={readOnly || !!mine || (c === "cancel" && interrupting)}
+                  onClick={() => onDecide(req, c)}
+                >
+                  {choiceLabel(c, req)}
+                </button>
+              ))
+          )
+        }
+        hint={() =>
+          req.choices.includes("reject")
+            ? `Skip question tells ${agent} you didn’t answer; it carries on with its own judgement.`
+            : null
+        }
+      />
+      {/* The complete request the answer goes back with (Hermes #6477): an answer returns the
+          original input, so nothing in it may be hidden behind the picker. */}
+      <details className={styles.requestDetails} data-testid="structured-ask-details">
+        <summary>Details</summary>
+        <div className={styles.detailsScroll}>
+          <pre className={styles.json}>{JSON.stringify(req.payload ?? null, null, 2)}</pre>
+        </div>
+      </details>
+    </div>
+  );
+}
+
 function RequestCard({
   req,
   agent,
@@ -219,7 +318,7 @@ function RequestCard({
   agent: string;
   deciding: Deciding | null;
   readOnly: boolean;
-  onDecide: (req: StructuredRequest, choice: string, grant?: string) => void;
+  onDecide: OnDecide;
 }) {
   const mine = deciding?.key === requestKey(req) ? deciding : null;
   const always = req.choices.includes("approve") ? (req.always ?? []) : [];
@@ -241,6 +340,8 @@ function RequestCard({
       : choiceLabel(mine.decision, req)
     : "";
   const summary = requestSummary(req, folder);
+  // A question BattleLab can't offer as choices still reads as a question, not as JSON (#1463).
+  const preview = questionPreview(req);
   const rows = requestRows(req);
   const ids = requestIds(req);
   const declineOnly = reviewOnly(req);
@@ -260,11 +361,37 @@ function RequestCard({
           <RiskMark risk={req.risk} />
         </p>
       )}
+      {preview ? (
+        <div className={styles.actionSummary} data-testid="structured-question-preview">
+          <p className={styles.why}>
+            {agent} asked this, but BattleLab can’t offer it as choices (its questions or options
+            repeat, or aren’t in a shape it can answer exactly). Skip it and {agent} carries on with
+            its own judgement, or stop the turn and answer in a message.
+          </p>
+          {preview.map((q, i) => (
+            <div key={i} className={styles.previewQuestion}>
+              <p>
+                {q.header && <span className={styles.previewTag}>{q.header}</span>}
+                <b>{q.title}</b>
+              </p>
+              <ul>
+                {q.options.map((o, j) => (
+                  <li key={j}>
+                    {o.label}
+                    {o.description && <small> — {o.description}</small>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+      ) : (
       <div className={styles.actionSummary}>
         <code className={styles.actionText}>{summary.action}</code>
         {summary.folder && <p className={styles.requestFolder}>{summary.folder}</p>}
         {summary.reason && <p className={styles.requestReason}>{summary.reason}</p>}
       </div>
+      )}
       {rows.filter((row) => row.kind === "patch" && row.files).map((row) => (
         <div className={styles.actionSummary} key={row.key}><Patch files={row.files!} /></div>
       ))}
@@ -703,7 +830,7 @@ function TurnView({
   deciding: Record<string, Deciding>;
   readOnly: boolean;
   approvalsDisabled: boolean;
-  onDecide: (req: StructuredRequest, choice: string, grant?: string) => void;
+  onDecide: OnDecide;
   onInterrupt: (turnId: string) => void;
   interrupting: boolean;
   onSendNow: (turnId: string) => void;
@@ -793,7 +920,18 @@ function TurnView({
           <ToolList tools={turn.tools} label="What the agent did" />
         </details>
       )}
-      <RequestQueue requests={requests} render={(r) => (
+      <RequestQueue requests={requests} render={(r) => requestQuestions(r) ? (
+        <QuestionRequest
+          key={requestKey(r)}
+          req={r}
+          questions={requestQuestions(r)!}
+          agent={agent}
+          deciding={deciding[requestKey(r)] ?? null}
+          readOnly={readOnly || approvalsDisabled}
+          interrupting={interrupting}
+          onDecide={onDecide}
+        />
+      ) : (
         <RequestCard
           key={requestKey(r)}
           req={r}
@@ -1325,14 +1463,18 @@ export function StructuredPane({
     }
   };
 
-  const decide = async (req: StructuredRequest, choice: string, grant?: string) => {
+  const decide = async (req: StructuredRequest, choice: string, grant?: string, answers?: Answers) => {
     if (readOnly || permissionPending) return;
     const reqKey = requestKey(req);
     const decidingNow = deciding[reqKey];
     if (decidingNow && decidingNow.phase !== "unknown") return;
-    // A retry reuses the id only for the SAME decision and grant (#1339): the server binds both.
+    // A retry reuses the id only for the SAME decision, grant and answers (#1339, #1463): the
+    // server binds all three.
     const decision_id =
-      decidingNow?.key === reqKey && decidingNow.decision === choice && decidingNow.grant === grant
+      decidingNow?.key === reqKey &&
+      decidingNow.decision === choice &&
+      decidingNow.grant === grant &&
+      JSON.stringify(decidingNow.answers) === JSON.stringify(answers)
         ? decidingNow.decision_id
         : uuid();
     const next: Deciding = {
@@ -1340,6 +1482,7 @@ export function StructuredPane({
       request_id: req.request_id,
       decision: choice,
       ...(grant ? { grant } : {}),
+      ...(answers ? { answers } : {}),
       decision_id,
       phase: "sending",
     };
@@ -1352,6 +1495,7 @@ export function StructuredPane({
         request_id: req.request_id,
         decision: choice,
         ...(grant ? { grant } : {}),
+        ...(answers ? { answers } : {}),
       });
       setDeciding((all) => ({ ...all, [reqKey]: { ...next, phase: "sent" } })); // settled by the next snapshot, not by this answer
       await load();
@@ -2157,7 +2301,7 @@ export function StructuredPane({
       deciding={deciding}
       readOnly={readOnly}
       approvalsDisabled={permissionPending}
-      onDecide={(r, c, g) => void decide(r, c, g)}
+      onDecide={(r, c, g, a) => void decide(r, c, g, a)}
       onInterrupt={(tid) => void interrupt(tid)}
       interrupting={interrupting || stoppingNow === t.turn_id}
       onSendNow={(tid) => void sendNow(tid)}

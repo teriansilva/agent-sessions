@@ -198,12 +198,20 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         _csrf: None = Depends(csrf_guard),
     ) -> JSONResponse:
         fields = {"decision_id", "turn_id", "request_id", "decision"}
-        body = await _json(request, fields | {"expected_revision", "grant"}, fields)
+        body = await _json(request, fields | {"expected_revision", "grant", "answers"}, fields)
         for name in ("turn_id", "request_id", "decision"):
             if not isinstance(body[name], str):
                 raise HTTPException(status_code=422, detail=f"{name} must be a string")
         if "grant" in body and not isinstance(body["grant"], str):
             raise HTTPException(status_code=422, detail="grant must be a string")
+        # An agent question's answer (#1463): only with `answer`; its shape and the offered
+        # options are checked by the runtime and again by the worker.
+        if ("answers" in body) != (body["decision"] == "answer"):
+            raise HTTPException(
+                status_code=422, detail="answers go with an answer decision, and only with one"
+            )
+        if "answers" in body and not isinstance(body["answers"], list):
+            raise HTTPException(status_code=422, detail="answers must be a list")
         return JSONResponse(
             await _run(
                 structured_runtime.decide(
@@ -215,6 +223,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
                     user=_user,
                     expected_revision=_revision(body.get("expected_revision")),
                     grant=body.get("grant"),
+                    answers=body.get("answers"),
                 )
             )
         )

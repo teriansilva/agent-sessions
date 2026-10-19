@@ -65,3 +65,123 @@ def validate_async(value: Any) -> list[dict]:
     if async_questions(value) != value:
         raise QuestionError("invalid native questions")
     return value
+
+
+# ---- Claude `AskUserQuestion` (a held callback the operator answers) --------------------------
+#
+# Claude Code sends it as `can_use_tool` with `requires_user_interaction: true`, in every permission
+# mode, and takes the answer as `allow` with the original input plus `answers: {<question text>:
+# <label>[, <label>…] | <own words>}` (captured, tests/fixtures/claude_ask_user_question.*). The
+# map is keyed by the question's OWN text, so it is used exactly as sent: a question set whose texts
+# would need cleaning, or that repeats one, is not offered as choices at all.
+
+ASK_TOOL = "AskUserQuestion"
+CLAUDE_MAX_QUESTIONS = 4
+OTHER_MAX = 2000
+#: What the question card shows of a header and of an option's description (structuredView's
+#: `display` caps). Longer text could hide a condition past the cut while the option stays
+#: answerable, so such a question is not offered as choices at all (Hermes #6477).
+HEADER_MAX = 64
+DESCRIPTION_MAX = 500
+
+
+def _shown_length(text: str) -> int:
+    """Length as the card counts it: JavaScript slices UTF-16 units, so a character outside the
+    BMP (an emoji) is two of them, not one code point (independent review of #1487)."""
+    return len(text.encode("utf-16-le", "surrogatepass")) // 2
+
+
+#: Claude Code's own picker joins a multi-select answer the same way.
+JOIN = ", "
+
+
+def _exact(value: Any, cap: int) -> bool:
+    return isinstance(value, str) and bool(value.strip()) and value == _clean(value, cap)
+
+
+def claude_questions(tool_input: Any) -> list[dict] | None:
+    """The questions of an ``AskUserQuestion`` input, exactly as sent, or ``None`` when they can't
+    be answered safely as choices (malformed, oversized, or repeated questions or labels)."""
+    questions = tool_input.get("questions") if isinstance(tool_input, dict) else None
+    if not isinstance(questions, list) or not 1 <= len(questions) <= CLAUDE_MAX_QUESTIONS:
+        return None
+    seen: set[str] = set()
+    for q in questions:
+        if not isinstance(q, dict) or not _exact(q.get("question"), TITLE_MAX):
+            return None
+        if q["question"] in seen:
+            return None
+        seen.add(q["question"])
+        # Header and description are display text only (cleaned where shown), never a key, and
+        # shown whole: nothing the operator answers may sit past the card's cut.
+        header = q.get("header", "")
+        if not isinstance(header, str) or _shown_length(header) > HEADER_MAX:
+            return None
+        if not isinstance(q.get("multiSelect", False), bool):
+            return None
+        options = q.get("options")
+        if not isinstance(options, list) or not 1 <= len(options) <= MAX_OPTIONS:
+            return None
+        labels: set[str] = set()
+        for o in options:
+            if not isinstance(o, dict) or not _exact(o.get("label"), OPTION_MAX):
+                return None
+            description = o.get("description", "")
+            if not isinstance(description, str) or _shown_length(description) > DESCRIPTION_MAX:
+                return None
+            if o["label"] in labels:
+                return None
+            labels.add(o["label"])
+    return questions
+
+
+def answer_shape(value: Any) -> list[dict]:
+    """The decision's ``answers``, by shape alone: one ``{"selected": [label, …]}`` or
+    ``{"other": text}`` per question. Which labels are offered is checked against the request."""
+    if not isinstance(value, list) or not 1 <= len(value) <= CLAUDE_MAX_QUESTIONS:
+        raise QuestionError("answers must give one answer per question")
+    for entry in value:
+        if not isinstance(entry, dict) or len(entry) != 1:
+            raise QuestionError("each answer is either selected options or the operator's words")
+        if "selected" in entry:
+            selected = entry["selected"]
+            if (
+                not isinstance(selected, list)
+                or not 1 <= len(selected) <= MAX_OPTIONS
+                or any(not isinstance(s, str) or len(s) > OPTION_MAX for s in selected)
+                or len(set(selected)) != len(selected)
+            ):
+                raise QuestionError("selected must list distinct options")
+        elif "other" in entry:
+            other = entry["other"]
+            if not isinstance(other, str) or not other.strip() or len(other) > OTHER_MAX:
+                raise QuestionError("an own answer must be 1-2000 characters")
+            if _CTRL.sub("", other) != other:
+                raise QuestionError("an own answer must not carry control characters")
+        else:
+            raise QuestionError("each answer is either selected options or the operator's words")
+    return value
+
+
+def claude_answers(tool_input: Any, answers: Any) -> dict[str, str]:
+    """Claude's ``answers`` map for this request, or :class:`QuestionError`. Labels must be the
+    request's own, exactly one unless the question is multi-select."""
+    questions = claude_questions(tool_input)
+    if questions is None:
+        raise QuestionError("this question can't be answered as choices")
+    answer_shape(answers)
+    if len(answers) != len(questions):
+        raise QuestionError("answers must give one answer per question")
+    out: dict[str, str] = {}
+    for q, a in zip(questions, answers, strict=True):
+        if "other" in a:
+            out[q["question"]] = a["other"]
+            continue
+        offered = [o["label"] for o in q["options"]]
+        if any(label not in offered for label in a["selected"]):
+            raise QuestionError("that option was not offered")
+        if len(a["selected"]) != 1 and not q.get("multiSelect", False):
+            raise QuestionError("that question takes one option")
+        # Offered order, so the same choices always make the same answer.
+        out[q["question"]] = JOIN.join(label for label in offered if label in a["selected"])
+    return out

@@ -305,14 +305,18 @@ def _params(action, value, *, immutable=False):
     # grant the request itself proposed. Older records never carry it.
     # `reply_to` (#1463): the async question an answer is bound to, part of its identity, so the
     # journal admits it only while that question is still open. Older records never carry it.
+    # `answers` (#1463) only on an `answer` decision: an agent question's chosen options or the
+    # operator's own words. Older records never carry it.
     optional = (
         (keys[action] & {"actor"} if immutable else set())
         | ({"attachments", "reply_to"} if action == "submit" else set())
-        | ({"grant"} if action == "decide" else set())
+        | ({"grant", "answers"} if action == "decide" else set())
     )
     _object(value, required, optional)
     if action == "decide" and (value.get("decision") == "always") != ("grant" in value):
         raise IPCError("a standing grant goes with an always decision, and only with one")
+    if action == "decide" and (value.get("decision") == "answer") != ("answers" in value):
+        raise IPCError("answers go with an answer decision, and only with one")
     out = {}
     for key, item in value.items():
         if key.endswith("worker_id") or key in {
@@ -344,9 +348,14 @@ def _params(action, value, *, immutable=False):
         elif key == "payload_digest":
             out[key] = _digest(item)
         elif key == "decision":
-            out[key] = _choice(item, {"approve", "reject", "cancel", "always"})
+            out[key] = _choice(item, {"approve", "reject", "cancel", "always", "answer"})
         elif key == "mode":
             out[key] = _choice(item, {"steer", "interrupt"})
+        elif key == "answers":
+            try:
+                out[key] = native_questions.answer_shape(item)
+            except native_questions.QuestionError:
+                raise IPCError("invalid private IPC answers") from None
         elif key == "grant":
             from .native_grants import valid_grant_id
 
@@ -537,7 +546,12 @@ def _event(value):
         elif key == "choices":
             if type(item) is not list or not 1 <= len(item) <= 3:
                 raise IPCError("invalid private IPC approval choices")
-            out[key] = [_choice(choice, {"approve", "reject", "cancel"}) for choice in item]
+            # `answer` (#1463): an agent question, which is never approved.
+            out[key] = [
+                _choice(choice, {"approve", "reject", "cancel", "answer"}) for choice in item
+            ]
+            if "answer" in out[key] and "approve" in out[key]:
+                raise IPCError("a question is answered, never approved")
             if len(set(out[key])) != len(out[key]):
                 raise IPCError("duplicate private IPC approval choices")
         elif key == "questions":

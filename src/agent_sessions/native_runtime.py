@@ -49,6 +49,7 @@ from . import (
     native_journal,
     native_ownership,
     native_protocol,
+    native_questions,
     native_state,
     risk_marks,
 )
@@ -1594,10 +1595,16 @@ def project(
                 "payload_digest": approval["payload_digest"],
                 # Approve is offered only for a request presented COMPLETELY (a file change's
                 # patch, a permission prompt's whole context); declining needs no review.
+                # Never for an agent question (#1463), whatever the worker offered: an approve
+                # sends it no answers, and a worker from before #1463 still offers one.
                 "choices": [
                     c
                     for c in approval["choices"]
-                    if c != "approve" or approval.get("complete") is True
+                    if c != "approve"
+                    or (
+                        approval.get("complete") is True
+                        and approval["tool"] != native_questions.ASK_TOOL
+                    )
                 ],
                 "complete": approval.get("complete") is True,
                 # #1339: the standing grants the request itself proposed, each labelled with what
@@ -1684,7 +1691,10 @@ def _settle_agent(agent: dict | None, state: str) -> None:
 
 def _offered(adapter: str | None, approval: dict, cwd: str | None) -> dict:
     """What a pending request may be answered with beyond once (#1339), derived only from the
-    journaled request as presented. Incomplete requests get no grant."""
+    journaled request as presented. Incomplete requests get no grant, and an agent question
+    (#1463) neither grants nor runs anything, so it has no grant and no risk."""
+    if approval.get("tool") == native_questions.ASK_TOOL:
+        return {"always": [], "risk": None}
     if approval.get("complete") is not True:
         payload = _payload(approval["summary"])
         risk = native_grants.derive(adapter or "", approval.get("tool"), payload, cwd)["risk"]
@@ -1955,16 +1965,24 @@ async def decide(
     decision_id: str,
     expected_revision: int | None = None,
     grant: str | None = None,
+    answers: list | None = None,
     execution_admission=None,
 ) -> dict:
     if execution_admission is not None:
         raise NativeError(
             409, "native clients cannot enforce caller authority across processes yet"
         )
-    if decision not in {"approve", "reject", "cancel", "always"}:
-        raise NativeError(422, "decision must be approve, always, reject or cancel")
+    if decision not in {"approve", "reject", "cancel", "always", "answer"}:
+        raise NativeError(422, "decision must be approve, always, answer, reject or cancel")
     if (decision == "always") != (grant is not None):
         raise NativeError(422, "a standing grant goes with an always decision, and only with one")
+    if (decision == "answer") != (answers is not None):
+        raise NativeError(422, "answers go with an answer decision, and only with one")
+    if answers is not None:
+        try:
+            native_questions.answer_shape(answers)
+        except native_questions.QuestionError as exc:
+            raise NativeError(422, str(exc)) from None
     if grant is not None and not native_grants.valid_grant_id(grant):
         raise NativeError(422, "grant must be one of the offered grant ids")
     if not isinstance(user, str) or not user or len(user) > 128:
@@ -1983,7 +2001,8 @@ async def decide(
             params["turn_id"],
             recorded_actor,
             params.get("grant"),
-        ) != (request_id, decision, turn_id, user, grant):
+            params.get("answers"),
+        ) != (request_id, decision, turn_id, user, grant, answers):
             raise NativeError(409, "decision id already used for a different decision")
         return {
             "turn_id": turn_id,
@@ -2004,10 +2023,17 @@ async def decide(
     )
     if approval is None:
         raise NativeError(409, "that approval is no longer pending")
+    if decision in {"approve", "always"} and approval["kind"] == native_questions.ASK_TOOL:
+        # Independently of the offered choices: a worker launched before #1463 still offers
+        # approve for a question, and would send Claude the input without answers.
+        raise NativeError(409, "an agent question is answered, skipped or stopped, not approved")
     if decision == "always":
         # Only a grant this snapshot itself offers (#1339): client-proposed, never invented or
-        # altered. The worker re-derives it before writing anything.
-        if grant not in {c["id"] for c in approval["always"]}:
+        # altered. The worker re-derives it before writing anything. Never for a request that
+        # can't be approved — an agent question (#1463) grants nothing.
+        if "approve" not in approval["choices"] or grant not in {
+            c["id"] for c in approval["always"]
+        }:
             raise NativeError(409, "that standing grant is not offered for this request")
     elif decision not in approval["choices"]:
         raise NativeError(
@@ -2016,6 +2042,16 @@ async def decide(
             if decision == "approve"
             else "that decision is not offered for this request",
         )
+    if decision == "answer":
+        # The question as journaled and shown (#1463): only its own options, one unless it is
+        # multi-select. The worker checks again against the request it holds.
+        payload = approval.get("payload")
+        try:
+            if approval["kind"] != native_questions.ASK_TOOL or not isinstance(payload, dict):
+                raise native_questions.QuestionError("this request takes no answer")
+            native_questions.claude_answers(payload.get("input"), answers)
+        except native_questions.QuestionError as exc:
+            raise NativeError(409, str(exc)) from None
     event = next(
         e["event"]["data"]
         for e in reversed(first.events)
@@ -2034,6 +2070,7 @@ async def decide(
         "approval_connection_id": event["connection_id"],
         "actor": user,  # who decided is part of the decision's durable identity
         **({"grant": grant} if grant is not None else {}),
+        **({"answers": answers} if answers is not None else {}),
     }
     immutable = native_ipc.normalize_immutable_request({"action": "decide", "params": params})
 

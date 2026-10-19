@@ -40,7 +40,14 @@ import sys
 import time
 from pathlib import Path
 
-from . import native_attachments, native_ipc, native_journal, native_protocol, native_state
+from . import (
+    native_attachments,
+    native_ipc,
+    native_journal,
+    native_protocol,
+    native_questions,
+    native_state,
+)
 
 EXIT_REFUSED = 3
 EXIT_FAILED = 4
@@ -898,6 +905,21 @@ class Worker:
                         )
                     except native_protocol.ProtocolError as exc:
                         return self.error(request, "unsupported", str(exc))
+                if params["decision"] in {"approve", "always"} and (
+                    pending.get("kind") == native_questions.ASK_TOOL
+                ):
+                    return self.error(
+                        request,
+                        "unsupported",
+                        "an agent question is answered, skipped or stopped, not approved",
+                    )
+                if params["decision"] == "answer":
+                    # An agent question's answer (#1463), checked HERE against the request this
+                    # connection holds, independently of the server that relayed it.
+                    try:
+                        self.codec.check_answer(params["request_id"], params.get("answers"))
+                    except native_protocol.ProtocolError as exc:
+                        return self.error(request, "unsupported", str(exc))
                 if (
                     params["decision"] in {"approve", "always"}
                     and pending.get("complete") is not True
@@ -1236,6 +1258,7 @@ class Worker:
                 params["decision"],
                 grant=params.get("grant"),
                 cwd=self.config["cwd"],
+                answers=params.get("answers"),
             )
         if action == "interrupt":
             # Any target but the operator turn running NOW goes to `interrupt_background`, which

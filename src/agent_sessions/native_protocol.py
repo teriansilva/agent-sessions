@@ -293,6 +293,7 @@ class _Codec:
         if (
             item is None
             or item.get("complete") is not True
+            or item.get("kind") == native_questions.ASK_TOOL  # a question grants nothing (#1463)
             or not native_grants.valid_grant_id(grant)
         ):
             raise ProtocolError("that standing grant is not offered for this request")
@@ -302,12 +303,18 @@ class _Codec:
             raise ProtocolError("that standing grant is not offered for this request")
         return match["grant"]
 
-    def _decision(self, request_id: str, decision: str) -> dict[str, Any]:
+    def check_answer(self, request_id: str, answers: Any) -> dict[str, str]:
+        """An agent question's answer (#1463), checked against the request this connection holds.
+        Only a client whose protocol takes one overrides this."""
+        raise ProtocolError("this agent's requests take no answer")
+
+    def _decision(self, request_id: str, decision: str, *, answer: bool = False) -> dict[str, Any]:
         if not isinstance(decision, str) or decision not in {
             "approve",
             "reject",
             "cancel",
             "always",
+            *({"answer"} if answer else ()),
         }:
             raise ProtocolError("unsupported permission decision")
         item = self._approvals.get(request_id)
@@ -508,8 +515,16 @@ class CodexCodec(_Codec):
         )
 
     def decide(
-        self, request_id: str, decision: str, *, grant: str | None = None, cwd: str | None = None
+        self,
+        request_id: str,
+        decision: str,
+        *,
+        grant: str | None = None,
+        cwd: str | None = None,
+        answers: Any = None,
     ) -> dict:
+        if answers is not None:
+            raise ProtocolError("this agent's requests take no answer")
         # `always` (#1339): the exact `acceptWithExecpolicyAmendment` object / `acceptForSession`
         # the request itself listed, re-derived before anything is consumed.
         native = self._always(request_id, grant, cwd) if decision == "always" else None
@@ -1138,9 +1153,40 @@ class ClaudeCodec(_Codec):
             "response": {"subtype": "success", "request_id": request_id, "response": response},
         }
 
+    def check_answer(self, request_id: str, answers: Any) -> dict[str, str]:
+        item = self._approvals.get(request_id)
+        if item is None or item.get("kind") != native_questions.ASK_TOOL:
+            raise ProtocolError("only an agent question takes an answer")
+        try:
+            return native_questions.claude_answers(item["input"], answers)
+        except native_questions.QuestionError as exc:
+            raise ProtocolError(str(exc)) from None
+
     def decide(
-        self, request_id: str, decision: str, *, grant: str | None = None, cwd: str | None = None
+        self,
+        request_id: str,
+        decision: str,
+        *,
+        grant: str | None = None,
+        cwd: str | None = None,
+        answers: Any = None,
     ) -> dict:
+        item = self._approvals.get(request_id)
+        asks = item is not None and item.get("kind") == native_questions.ASK_TOOL
+        if (decision == "answer") != (answers is not None):
+            raise ProtocolError("an answer goes with an answer decision, and only with one")
+        # A question is never approved as if it were a permission (#1463): approving it sends
+        # Claude no answers ("The user did not answer the questions"), and grants nothing.
+        if asks and decision in {"approve", "always"}:
+            raise ProtocolError("an agent question is answered, skipped or stopped, not approved")
+        if decision == "answer":
+            # Checked against the request held here before anything is consumed.
+            reply = self.check_answer(request_id, answers)
+            pending = self._decision(request_id, decision, answer=True)
+            return self._response(
+                pending["id"],
+                {"behavior": "allow", "updatedInput": {**pending["input"], "answers": reply}},
+            )
         # `always` (#1339): allow with the ORIGINAL input plus exactly the one proposed
         # suggestion the prompt itself carried, re-derived before anything is consumed.
         suggestion = self._always(request_id, grant, cwd) if decision == "always" else None
@@ -1225,7 +1271,16 @@ class ClaudeCodec(_Codec):
                 tool=tool_name,
                 summary=_summary(presented),
                 complete=True,
-                choices=["approve", "reject", "cancel"],
+                # An agent question (#1463) is answered, skipped or stopped — never approved. One
+                # BattleLab can't answer exactly (malformed, repeated questions or labels) can
+                # still be skipped.
+                choices=(
+                    ["answer", "reject", "cancel"]
+                    if native_questions.claude_questions(original_input) is not None
+                    else ["reject", "cancel"]
+                )
+                if tool_name == native_questions.ASK_TOOL
+                else ["approve", "reject", "cancel"],
             )
         ]
 
@@ -1780,8 +1835,16 @@ class OpencodeAcpCodec(_Codec):
         return out
 
     def decide(
-        self, request_id: str, decision: str, *, grant: str | None = None, cwd: str | None = None
+        self,
+        request_id: str,
+        decision: str,
+        *,
+        grant: str | None = None,
+        cwd: str | None = None,
+        answers: Any = None,
     ) -> dict:
+        if answers is not None:
+            raise ProtocolError("this agent's requests take no answer")
         if decision not in {*_ONCE, "always"}:
             raise ProtocolError("unsupported permission decision")
         selected = self._always(request_id, grant, cwd) if decision == "always" else None

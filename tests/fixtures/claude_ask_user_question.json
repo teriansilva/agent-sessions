@@ -1,0 +1,24 @@
+{
+  "type": "control_request",
+  "request_id": "f11f6716-7e5b-40fe-b7aa-f5ffea737538",
+  "request": {
+    "subtype": "can_use_tool",
+    "tool_name": "AskUserQuestion",
+    "display_name": "AskUserQuestion",
+    "input": {
+      "questions": [
+        {
+          "question": "Do you prefer red or blue?",
+          "header": "Color",
+          "options": [
+            {"label": "Red", "description": "Choose red"},
+            {"label": "Blue", "description": "Choose blue"}
+          ],
+          "multiSelect": false
+        }
+      ]
+    },
+    "tool_use_id": "toolu_01X5XfhKXBctqPcyZoUPnTbN",
+    "requires_user_interaction": true
+  }
+}

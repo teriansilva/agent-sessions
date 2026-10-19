@@ -231,7 +231,58 @@ export function requestIds(req: StructuredRequest): string[] {
     .map((k) => `${humanize(k)} ${String(obj[k])}`);
 }
 
+/** Claude's `AskUserQuestion` (#1463): a question for the operator, never a permission. */
+export const QUESTION_TOOL = "AskUserQuestion";
+
+export function isQuestion(req: StructuredRequest): boolean {
+  return req.kind === QUESTION_TOOL;
+}
+
+// eslint-disable-next-line no-control-regex -- stripping control bytes is the point
+const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f]/g;
+const display = (value: unknown, cap: number) =>
+  typeof value === "string" ? value.replace(CONTROL, "").trim().slice(0, cap) : "";
+
+/** The questions a request offers as choices, as display text — only when the server offers
+ *  `answer`, i.e. they can be answered exactly. Labels stay verbatim: they are what is sent. */
+export function requestQuestions(req: StructuredRequest) {
+  if (!req.choices.includes("answer")) return null;
+  const questions = questionPreview(req);
+  return questions?.length ? questions : null;
+}
+
+/** A question request read as text, answerable or not (#1463): what the card shows instead of
+ *  raw JSON when BattleLab can't offer it as choices. Display only. */
+export function questionPreview(req: StructuredRequest) {
+  if (!isQuestion(req)) return null;
+  const questions = object(object(req.payload).input).questions;
+  // No rows to show is still a question: the card explains it, never prints raw JSON.
+  if (!Array.isArray(questions)) return [];
+  return questions.map((raw) => {
+    const q = object(raw);
+    return {
+      title: String(q.question ?? ""),
+      header: display(q.header, 64) || undefined,
+      multi: q.multiSelect === true,
+      options: (Array.isArray(q.options) ? q.options : []).map((o) => ({
+        label: String(object(o).label ?? ""),
+        description: display(object(o).description, 500) || undefined,
+      })),
+    };
+  });
+}
+
+/** One answer as the decide route takes it: the chosen labels, or the operator's own words. */
+export function answerWire(a: { selected: string[]; other?: string }) {
+  return a.other?.trim() ? { other: a.other } : { selected: [...a.selected] };
+}
+
 export function requestTitle(req: StructuredRequest, agent: string): string {
+  if (isQuestion(req)) {
+    return req.choices.includes("answer")
+      ? `${agent} is waiting for your answer`
+      : `${agent} asks a question BattleLab can’t show as choices`;
+  }
   if (req.kind === "command") return `${agent} asks to run a command`;
   if (req.kind === "file_change") return `${agent} proposes a file change`;
   const payload = object(req.payload);
@@ -270,6 +321,11 @@ export function reviewOnly(req: StructuredRequest): boolean {
 /** The button text for one server-offered choice. "Approve always" (#1339) offers only the
  *  snapshot's own `always` grants, as buttons or a list (`inlineGrants`); the view invents none. */
 export function choiceLabel(choice: string, req: StructuredRequest): string {
+  if (isQuestion(req)) {
+    if (choice === "answer") return "Send answer";
+    if (choice === "reject") return "Skip question";
+    if (choice === "cancel") return "Stop the turn";
+  }
   const tool = req.kind !== "command" && req.kind !== "file_change";
   if (choice === "approve") return tool ? "Allow once" : "Approve once";
   if (choice === "always") return tool ? "Allow always" : "Approve always";

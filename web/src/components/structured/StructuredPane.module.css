@@ -601,3 +601,25 @@
   font: 12px var(--font-mono);
   color: var(--warn-text);
 }
+/* A question BattleLab can't offer as choices, read as text (#1463). */
+.previewQuestion {
+  margin: 0 12px 10px;
+  overflow-wrap: anywhere;
+}
+.previewQuestion p {
+  margin: 0 0 4px;
+}
+.previewQuestion ul {
+  margin: 0;
+  padding-left: 20px;
+}
+.previewQuestion small {
+  color: var(--text-muted);
+}
+.previewTag {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 1px 6px;
+  border: 1px solid var(--line-strong);
+  font: 400 11px var(--font-mono);
+}

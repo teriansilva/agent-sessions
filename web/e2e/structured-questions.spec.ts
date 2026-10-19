@@ -334,3 +334,176 @@ test("#1463: a second tab's answer to the same question is refused by the server
   const answers = first.state.turns.filter((t) => ASKED.options.includes(t.text as string));
   expect(answers.map((t) => t.text)).toEqual([ASKED.options[0]]);
 });
+
+// #1463 Phase 2: Claude's AskUserQuestion is a held callback. It is answered (the chosen labels or
+// the operator's own words), skipped or stopped — never approved — with Skip permissions on or off.
+const TURN = "11111111-2222-4333-8444-555555555555";
+const ASK = {
+  question: "Which colour scheme should the public share page use?",
+  header: "Theme",
+  options: [
+    { label: "Follow the visitor's system", description: "Light or dark from prefers-color-scheme" },
+    { label: "Always dark", description: "Matches the operator's app" },
+    { label: "Always light", description: "Best for printing" },
+  ],
+  multiSelect: false,
+};
+
+function askRequest(questions: Json[] = [ASK], choices = ["answer", "reject", "cancel"]): Json {
+  return {
+    request_id: "s:perm-7", turn_id: TURN, kind: "AskUserQuestion", item_id: "toolu_7",
+    payload_digest: "a".repeat(64), choices, complete: true, always: [], risk: null,
+    summary: JSON.stringify({ tool_name: "AskUserQuestion", input: { questions } }),
+    payload: { tool_name: "AskUserQuestion", input: { questions }, requires_user_interaction: true },
+  };
+}
+
+async function claudeAsks(page: Page, opts: { bypass?: boolean; theme?: string; request?: Json } = {}) {
+  const fixture = await mockStructuredGuidance(page, "claude-api", "interrupt", opts.theme ?? "dark");
+  const { state } = fixture;
+  Object.assign(state, { state: "awaiting_approval", bypass: opts.bypass ?? true });
+  state.turns = [{ ...state.turns[0], turn_id: TURN, operation_id: TURN, state: "awaiting_approval",
+    text: "Pick a colour scheme for the share page.", reply: "", attachments: [], tools: [] }];
+  state.pending_requests = [opts.request ?? askRequest()];
+  const decisions: Json[] = [];
+  let reply: "ok" | "lost" = "ok";
+  await page.route(new RegExp(`/api/structured/sessions/claude-api(?::|%3A)${ID}/decisions$`), (r) => {
+    const body = r.request().postDataJSON() as Json;
+    decisions.push(body);
+    if (reply === "lost") return r.abort("failed");
+    state.pending_requests = [];
+    state.revision++;
+    return r.fulfill({ json: { decision: body.decision, handoff: "sent" } });
+  });
+  await page.goto(`/s/claude-api/${ID}`);
+  return { ...fixture, decisions, reply: (r: typeof reply) => { reply = r; } };
+}
+
+const ask = (page: Page) => page.getByTestId("structured-ask");
+const askOptions = (page: Page) => page.getByTestId("structured-ask-option");
+const askSend = (page: Page) => page.getByTestId("structured-ask-send");
+
+for (const bypass of [true, false]) {
+  for (const theme of ["dark", "light"]) {
+    test(`#1463: Claude's question shows its options and Send answer answers it (${bypass ? "skip permissions" : "guarded"}, ${theme})`, async ({ page }, testInfo) => {
+      const { decisions } = await claudeAsks(page, { bypass, theme });
+      await expect(ask(page)).toBeVisible();
+      await expect(ask(page)).toContainText("waiting for your answer");
+      await expect(ask(page)).toContainText("Theme");
+      await expect(askOptions(page)).toHaveCount(3);
+      await expect(ask(page)).toContainText("Matches the operator's app");
+      // A question is never offered as an approval.
+      await expect(page.getByRole("button", { name: /allow|approve/i })).toHaveCount(0);
+      for (const option of await askOptions(page).all()) {
+        expect((await option.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+      }
+      await askOptions(page).nth(1).click();
+      await page.screenshot({ path: testInfo.outputPath(`ask-${bypass ? "skip" : "guarded"}-${theme}.png`), fullPage: true });
+      await askSend(page).click();
+      await expect.poll(() => decisions.length).toBe(1);
+      expect(decisions[0]).toMatchObject({
+        turn_id: TURN, request_id: "s:perm-7", decision: "answer",
+        answers: [{ selected: ["Always dark"] }],
+      });
+      expect(decisions[0].grant).toBeUndefined();
+      await expect(ask(page)).toHaveCount(0);
+    });
+  }
+}
+
+test("#1463: own words replace the options; Skip question declines with no answers", async ({ page }) => {
+  const { decisions, state } = await claudeAsks(page);
+  await askOptions(page).first().click();
+  await page.getByTestId("structured-ask-other").fill("Dark, with a light print stylesheet");
+  await askSend(page).click();
+  await expect.poll(() => decisions.length).toBe(1);
+  expect(decisions[0].answers).toEqual([{ other: "Dark, with a light print stylesheet" }]);
+  // The next question is a new callback: its own request id.
+  state.pending_requests = [{ ...askRequest(), request_id: "s:perm-8" }];
+  state.revision++;
+  await expect(ask(page)).toBeVisible();
+  await page.getByRole("button", { name: "Skip question" }).click();
+  await expect.poll(() => decisions.length).toBe(2);
+  expect(decisions[1].decision).toBe("reject");
+  expect(decisions[1].answers).toBeUndefined();
+});
+
+test("#1463: several questions and a multi-select — Send waits for every answer", async ({ page }) => {
+  const scope = { question: "Which surfaces should the release cover?", header: "Scope", multiSelect: true,
+    options: [{ label: "Web app", description: "" }, { label: "Docs site", description: "" }, { label: "Landing page", description: "" }] };
+  const channel = { question: "Which channel ships it first?", header: "Channel", multiSelect: false,
+    options: [{ label: "main", description: "" }, { label: "stable", description: "" }] };
+  const { decisions } = await claudeAsks(page, { request: askRequest([scope, channel]) });
+  await expect(askOptions(page)).toHaveCount(5);
+  await askOptions(page).nth(2).click();
+  await askOptions(page).nth(0).click();
+  await expect(askSend(page)).toBeDisabled();
+  await expect(ask(page)).toContainText("1 of 2 answered");
+  await expect(ask(page)).toContainText("Answer “Channel” to send.");
+  await askOptions(page).nth(4).click();
+  await askSend(page).click();
+  await expect.poll(() => decisions.length).toBe(1);
+  expect(decisions[0].answers).toEqual([{ selected: ["Landing page", "Web app"] }, { selected: ["stable"] }]);
+});
+
+test("#1463: an uncertain answer freezes the choices; Retry resends the identical decision", async ({ page }) => {
+  const { decisions, reply } = await claudeAsks(page);
+  reply("lost");
+  await askOptions(page).nth(1).click();
+  await askSend(page).click();
+  await expect(page.getByTestId("structured-deciding")).toContainText("may not have reached BattleLab");
+  // Frozen: no other option, no own words, no second decision can be picked now.
+  await expect(askOptions(page).nth(2).locator("input")).toBeDisabled();
+  await expect(page.getByTestId("structured-ask-other")).toBeDisabled();
+  reply("ok");
+  await page.getByTestId("structured-ask-retry").click();
+  await expect.poll(() => decisions.length).toBe(2);
+  expect(decisions[1]).toEqual(decisions[0]);
+  expect(decisions[1].decision_id).toBe(decisions[0].decision_id);
+  await expect(ask(page)).toHaveCount(0);
+});
+
+test("#1463: an answerable question shows the complete request under Details (Hermes #6477)", async ({ page }) => {
+  const request = askRequest();
+  (request.payload as Json).decision_reason = "Picked for the signed release only";
+  await claudeAsks(page, { request });
+  const details = page.getByTestId("structured-ask-details");
+  await expect(ask(page)).toBeVisible();
+  await details.getByText("Details").click();
+  // Everything the answer goes back with, not just the question rows.
+  await expect(details).toContainText("Picked for the signed release only");
+  await expect(details).toContainText("requires_user_interaction");
+  await expect(details).toContainText(ASK.options[2].description);
+});
+
+test("#1463: a question with no readable questions still gets the explanation, not raw JSON (Hermes #6473)", async ({ page }) => {
+  const request = askRequest([], ["reject", "cancel"]);
+  (request.payload as Json).input = {};
+  request.summary = JSON.stringify({ tool_name: "AskUserQuestion", input: {} });
+  await claudeAsks(page, { request });
+  const card = page.getByTestId("structured-request");
+  await expect(page.getByTestId("structured-question-preview")).toContainText("can’t offer it as choices");
+  await expect(card).not.toContainText("tool_name");
+  await expect(card.getByRole("button", { name: "Skip question" })).toBeVisible();
+  await expect(card.getByRole("button", { name: /allow|approve/i })).toHaveCount(0);
+});
+
+test("#1463: a question BattleLab can't show as choices can be skipped, never approved", async ({ page }) => {
+  const { decisions } = await claudeAsks(page, {
+    request: askRequest([ASK, ASK], ["reject", "cancel"]),
+  });
+  const card = page.getByTestId("structured-request");
+  await expect(card).toContainText("can’t show as choices");
+  await expect(askOptions(page)).toHaveCount(0);
+  // Read as a question, not as raw JSON (operator, 2026-10-15: "hard to read").
+  const preview = page.getByTestId("structured-question-preview");
+  await expect(preview).toContainText(ASK.question);
+  await expect(preview).toContainText("Always dark");
+  await expect(preview).toContainText("Matches the operator's app");
+  await expect(preview).not.toContainText('"label"');
+  await page.screenshot({ path: test.info().outputPath("ask-fallback.png"), fullPage: true });
+  await expect(card.getByRole("button", { name: /allow|approve/i })).toHaveCount(0);
+  await card.getByRole("button", { name: "Skip question" }).click();
+  await expect.poll(() => decisions.length).toBe(1);
+  expect(decisions[0].decision).toBe("reject");
+});

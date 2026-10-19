@@ -7,6 +7,7 @@ import type {
 } from "../../types/api";
 import {
   answerText,
+  answerWire,
   backgroundWorking,
   choiceLabel,
   cutBySendNow,
@@ -19,7 +20,10 @@ import {
   ownTurnInterruptible,
   queuePositions,
   requestIds,
+  questionPreview,
+  requestQuestions,
   requestRows,
+  requestTitle,
   reviewOnly,
   runningAgentTurn,
   sendNowTarget,
@@ -271,5 +275,51 @@ describe("openQuestionTurn / answerText (#1463)", () => {
   it("sends the option itself for one question, one line per question for several", () => {
     expect(answerText(q, ["Yes"])).toBe("Yes");
     expect(answerText([...q, { title: "Channel?" }], ["No", "main"])).toBe("Isolate?: No\nChannel?: main");
+  });
+});
+
+describe("Claude's AskUserQuestion (#1463)", () => {
+  const ask = (choices: string[], questions: unknown = [
+    { question: "Pick?", header: "H\u0007dr", multiSelect: true,
+      options: [{ label: "A, b", description: "x".repeat(600) }, { label: "C" }] },
+  ]) => ({
+    request_id: "s:1", turn_id: "t", kind: "AskUserQuestion", choices,
+    payload: { input: { questions } },
+  }) as StructuredRequest;
+
+  test("offers its questions only when the server offers an answer", () => {
+    const qs = requestQuestions(ask(["answer", "reject", "cancel"]))!;
+    expect(qs).toHaveLength(1);
+    expect(qs[0]).toMatchObject({ title: "Pick?", header: "Hdr", multi: true });
+    // Labels are sent back verbatim; descriptions are display text, capped.
+    expect(qs[0].options.map((o) => o.label)).toEqual(["A, b", "C"]);
+    expect(qs[0].options[0].description).toHaveLength(500);
+    expect(requestQuestions(ask(["reject", "cancel"]))).toBeNull();
+    expect(requestQuestions({ ...ask(["answer"]), kind: "Bash" })).toBeNull();
+  });
+
+  test("a question with no rows to show is still read as a question, never raw JSON (Hermes #6473)", () => {
+    const missing = { ...ask(["reject", "cancel"]), payload: { input: {} } } as StructuredRequest;
+    expect(questionPreview(missing)).toEqual([]);
+    for (const questions of [null, [], "Pick: a, b", { question: "Pick?" }]) {
+      expect(questionPreview(ask(["reject", "cancel"], questions))).toEqual([]);
+      expect(requestQuestions(ask(["answer", "reject", "cancel"], questions))).toBeNull();
+    }
+    expect(questionPreview({ ...ask(["reject"]), kind: "Bash" })).toBeNull();
+  });
+
+  test("is answered, skipped or stopped — the labels say so", () => {
+    const req = ask(["answer", "reject", "cancel"]);
+    expect(choiceLabel("answer", req)).toBe("Send answer");
+    expect(choiceLabel("reject", req)).toBe("Skip question");
+    expect(choiceLabel("cancel", req)).toBe("Stop the turn");
+    expect(requestTitle(req, "Claude")).toBe("Claude is waiting for your answer");
+    expect(requestTitle(ask(["reject", "cancel"]), "Claude")).toMatch(/can’t show as choices/);
+  });
+
+  test("own words win over picked options on the wire", () => {
+    expect(answerWire({ selected: ["C"] })).toEqual({ selected: ["C"] });
+    expect(answerWire({ selected: [], other: "mine" })).toEqual({ other: "mine" });
+    expect(answerWire({ selected: ["C"], other: "  " })).toEqual({ selected: ["C"] });
   });
 });
