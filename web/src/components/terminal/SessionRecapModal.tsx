@@ -25,7 +25,7 @@ import { useEngineRoster } from "../../app/engineRoster";
  *  age, and turned the recap into an ordered TIMELINE instead of one pre-wrapped paragraph.
  *
  *  All text here is model-derived DATA. The recap's steps are split on newlines and run through
- *  `inlineMarkup`, which maps a two-token subset (`**bold**`, `` `code` ``) onto React elements
+ *  `inlineMarkup`, which maps a tiny subset (`**bold**`, `*italic*`, `` `code` ``) onto React elements
  *  and leaves everything else literal — there is no html sink anywhere in this component.
  *  "Review now" refreshes in place via `POST /api/sessions/{id}/review` (the sidebar/store
  *  catches up on its own poll).

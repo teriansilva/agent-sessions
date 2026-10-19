@@ -53,6 +53,36 @@
   font-size: 0.7rem;
 }
 
+/* An answer's markdown, through `blockMarkup` — the enumerated subset, no html sink. Quiet
+ * structure at the answer's own size: blocks spaced like paragraphs, lists indented, code in mono. */
+.md p,
+.md ul,
+.md ol,
+.md pre {
+  margin: 0 0 8px;
+}
+.md :is(p, ul, ol, pre):last-child {
+  margin-bottom: 0;
+}
+.md ul,
+.md ol {
+  padding-left: 20px;
+}
+.md li + li {
+  margin-top: 2px;
+}
+.md code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+.md pre {
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-0);
+  overflow-x: auto;
+  white-space: pre;
+}
+
 /* A session row carries two ways in, so its title gives up some basis to keep both on the line in
  * the 440px sidebar; it still wraps them under the title on a phone. */
 .matchBody.matchBody {

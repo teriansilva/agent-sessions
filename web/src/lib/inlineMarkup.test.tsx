@@ -3,7 +3,7 @@ import { expect, test } from "vitest";
 import { inlineMarkup } from "./inlineMarkup";
 
 /** #744: the recap's inline formatter. The point of these tests is the NEGATIVE space — the
- *  subset is two tokens wide and everything else must survive as literal text, because the input
+ *  subset is three tokens wide and everything else must survive as literal text, because the input
  *  is a model's summary of a transcript neither it nor we control. */
 
 function html(text: string): string {
@@ -65,4 +65,37 @@ test("unbalanced or empty markers stay literal — no empty elements (#744)", ()
 // construction so an unclosed marker can only ever affect its own step.
 test("a token cannot span a newline (#744)", () => {
   expect(html("**one\ntwo**")).toBe("**one\ntwo**");
+});
+
+test("maps *italic* to <em> — stress in an answer's sentence", () => {
+  expect(html("What I *can't* do: start a session.")).toBe(
+    "What I <em>can't</em> do: start a session.",
+  );
+  expect(html("*whole line*")).toBe("<em>whole line</em>");
+  expect(html("(*aside*), then **bold** and *x*.")).toBe(
+    "(<em>aside</em>), then <strong>bold</strong> and <em>x</em>.",
+  );
+  expect(html("*<b>hi</b>*")).toBe("<em>&lt;b&gt;hi&lt;/b&gt;</em>");
+});
+
+test("a code span inside an italic stays code", () => {
+  expect(html("*Note: run `npm ci` first.*")).toBe(
+    "<em>Note: run <code>npm ci</code> first.</em>",
+  );
+  expect(html("the *`foo`* fn")).toBe("the <em><code>foo</code></em> fn");
+});
+
+// A star is arithmetic, a glob or a footnote far more often than it is emphasis in this app's text.
+test("stars that are not emphasis stay literal", () => {
+  expect(html("2 * 3 * 4")).toBe("2 * 3 * 4");
+  expect(html("a*b*c")).toBe("a*b*c");
+  expect(html("*foo*bar")).toBe("*foo*bar");
+  // Each whitespace guard on its own: a space after the opening star, before the closing one.
+  expect(html("a * b*")).toBe("a * b*");
+  expect(html("rm *.log *.tmp")).toBe("rm *.log *.tmp");
+  expect(html("src/*.ts and lib/*.ts")).toBe("src/*.ts and lib/*.ts");
+  expect(html("* not a list here *")).toBe("* not a list here *");
+  expect(html("*unclosed italic")).toBe("*unclosed italic");
+  expect(html("*one\ntwo*")).toBe("*one\ntwo*");
+  expect(html("`*not em*`")).toBe("<code>*not em*</code>");
 });

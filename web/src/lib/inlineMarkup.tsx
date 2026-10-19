@@ -1,9 +1,11 @@
 import type { ReactNode } from "react";
 
-/** Inline formatter for MODEL-DERIVED text (#744) — currently the session brief's chronological
- *  recap. It maps a deliberately tiny markdown subset onto React elements:
+/** Inline formatter for MODEL-DERIVED text (#744) — the session brief's chronological recap, and
+ *  (through `blockMarkup`) the NEEDS YOU last words and Ask's answers. It maps a deliberately tiny
+ *  markdown subset onto React elements:
  *
  *    `**bold**`   → <strong>   (the step's leading action verb)
+ *    `*italic*`   → <em>       (stress in a sentence — "what I *can't* do")
  *    `` `code` `` → <code>     (file names, commands, identifiers)
  *
  *  Everything else stays a plain string. That is the whole design: there is NO html sink here —
@@ -18,6 +20,14 @@ import type { ReactNode } from "react";
  *  Tokens are single-line by construction (`[^*\n]` / `` [^`\n] ``): an unclosed `**` or backtick
  *  can't run away and swallow the rest of the recap. */
 const TOKEN = /(\*\*[^*\n]+\*\*|`[^`\n]+`)/g;
+/** `*italic*` is flanked like CommonMark's: the opening star is followed by a non-space and the
+ *  closing one preceded by one; the opening star follows no word character, star or `/`, and the
+ *  closing one precedes no word character or star — so `2 * 3 * 4`, `a*b*c` and globs like
+ *  `src/*.ts … lib/*.ts` stay literal. The flank before the opening star
+ *  is CAPTURED (group 2) rather than looked behind: lookbehind is a SyntaxError on older Safari,
+ *  and this module loads with the app shell. */
+const ITALIC = /(^|[^\w*/])(\*[^\s*](?:[^*\n]*[^\s*])?\*)(?![\w*])/g;
+const ANY = new RegExp(`${TOKEN.source}|${ITALIC.source}`, "g");
 
 export function inlineMarkup(text: string): ReactNode[] {
   // Walk the actual MATCHES rather than splitting and re-sniffing the pieces: a leftover plain
@@ -27,15 +37,20 @@ export function inlineMarkup(text: string): ReactNode[] {
   const out: ReactNode[] = [];
   let cursor = 0;
   let key = 0;
-  for (const m of text.matchAll(TOKEN)) {
-    const at = m.index;
+  for (const m of text.matchAll(ANY)) {
+    // An italic match starts at its flank character, which stays plain text.
+    const token = m[1] ?? m[3];
+    const at = m.index + (m[1] ? 0 : m[2].length);
     if (at > cursor) out.push(text.slice(cursor, at));
-    const token = m[0];
     out.push(
       token.startsWith("`") ? (
         <code key={key++}>{token.slice(1, -1)}</code>
-      ) : (
+      ) : token.startsWith("**") ? (
         <strong key={key++}>{token.slice(2, -2)}</strong>
+      ) : (
+        // An italic can hold a code span (`*run `npm ci` first*`); its content has no star, so
+        // only `code` can match inside.
+        <em key={key++}>{inlineMarkup(token.slice(1, -1))}</em>
       ),
     );
     cursor = at + token.length;

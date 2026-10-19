@@ -58,3 +58,15 @@ test("an instant text — an answer read back from a kept conversation (#1443) �
   expect(el).not.toHaveAttribute("data-revealing");
   expect(el).toHaveTextContent(TEXT);
 });
+
+test("a markup formats the text — whole, and while it is still writing itself out", async () => {
+  motion(false);
+  const md = (t: string) => <b>{t}</b>;
+  render(<RevealText text={TEXT} testId="t" markup={md} />);
+  const el = screen.getByTestId("t");
+  // Mid-reveal, both the accessible copy and the painted partial go through it.
+  expect(el.querySelector(".sr-only b")).toHaveTextContent(TEXT);
+  expect(el.querySelector('[aria-hidden="true"] b')).not.toBeNull();
+  await waitFor(() => expect(el).not.toHaveAttribute("data-revealing"), { timeout: 3000 });
+  expect(el.querySelector(":scope > b")).toHaveTextContent(TEXT);
+});

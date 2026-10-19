@@ -7,7 +7,7 @@ import { inlineMarkup } from "./inlineMarkup";
  *
  *    `- ` / `* ` / `+ ` lines → <ul><li>     `1. ` / `1) ` lines → <ol><li>
  *    `# …` … `###### …`       → <strong> line      ``` fences      → <pre><code>
- *    blank line               → paragraph break    inline          → `inlineMarkup` (bold, code)
+ *    blank line               → paragraph break    inline          → `inlineMarkup` (bold, italic, code)
  *
  *  Same rule as `inlineMarkup` (#744): there is NO html sink — no `dangerouslySetInnerHTML`, no
  *  markdown library — so a link, an image, raw HTML or anything else outside the subset stays the

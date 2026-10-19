@@ -74,6 +74,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { MAP_PATH, useMapWindows } from "../../app/workspaceWindows";
 import { ACTION_RESOLVED_EVENT, announceActionResolved } from "../../lib/actionEvents";
 import { api } from "../../lib/api";
+import { blockMarkup } from "../../lib/blockMarkup";
 import { useIsMobile } from "../../lib/useIsMobile";
 import { missionLink } from "../../lib/missionLink";
 import { settingsPath } from "../../routes/settingsTabs";
@@ -605,10 +606,11 @@ export function AskConsole({
                   {t.answer !== null ? (
                     <>
                       <RevealText
-                        className={`${styles.eventText} ${a.text}`}
+                        className={`${styles.eventText} ${a.text} ${a.md}`}
                         text={t.answer}
                         testId="ask-answer"
                         instant={!t.live}
+                        markup={blockMarkup}
                       />
                       {/* Missions first, then sessions — each group labelled only when there
                           are missions, so a sessions-only answer reads as it did before #1069. */}

@@ -10,8 +10,12 @@
  *
  *  The full text is always in the accessible tree: the partial copy is painted for the eye and
  *  hidden from assistive tech, so a screen reader never reads half a sentence.
+ *
+ *  `markup` formats the text (Ask's answers pass `blockMarkup`, so a model's lists, bold and code
+ *  read as such). The partial copy goes through it too, so the structure grows in place rather than
+ *  jumping from raw text when the reveal ends; `blockMarkup` is built to take a cut-off text.
  */
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 
 /** How long a reveal takes, whatever the frame rate. Counting FRAMES instead froze a reveal
  *  mid-sentence on a loaded machine, where frames arrive seconds apart. */
@@ -33,11 +37,13 @@ export function RevealText({
   className,
   testId,
   instant = false,
+  markup = (t) => t,
 }: {
   text: string;
   className?: string;
   testId?: string;
   instant?: boolean;
+  markup?: (text: string) => ReactNode;
 }) {
   const reduce = instant || reducedMotion();
   const [rev, setRev] = useState(() => ({
@@ -80,11 +86,11 @@ export function RevealText({
       data-revealing={done ? undefined : "true"}
     >
       {done ? (
-        text
+        markup(text)
       ) : (
         <>
-          <span className="sr-only">{text}</span>
-          <span aria-hidden="true">{text.slice(0, shown)}</span>
+          <div className="sr-only">{markup(text)}</div>
+          <div aria-hidden="true">{markup(text.slice(0, shown))}</div>
         </>
       )}
     </div>
