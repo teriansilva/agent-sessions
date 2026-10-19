@@ -9,6 +9,13 @@ export const THEME_IDS = ["dark", "light"] as const;
 export type ThemeId = (typeof THEME_IDS)[number];
 export const DEFAULT_THEME: ThemeId = "dark";
 
+/** What the operator CHOSE (#1494), as opposed to the mode in force. `system` follows the
+ *  device's `prefers-color-scheme` and switches live; it is never written to `data-theme`,
+ *  which only ever carries a resolved `dark`/`light` — so tokens.css and every consumer of
+ *  `ThemeId` (the xterm theme, the API-session palettes) never meet a third value. */
+export const THEME_CHOICES = [...THEME_IDS, "system"] as const;
+export type ThemeChoice = (typeof THEME_CHOICES)[number];
+
 /** The 16-colour ANSI palette a theme ships (#473). xterm.js only themes these 16 base
  *  slots via `ITheme` — 256-colour / truecolor output passes through untouched — but the
  *  16 are what agent CLIs colourise with (secondary text, paths, SHAs, ✓ markers), so
@@ -151,6 +158,25 @@ export function xtermTheme(id: ThemeId): XtermTheme {
     selectionBackground: t.selectionBackground,
     ...t.ansi,
   };
+}
+
+export function isThemeChoice(v: unknown): v is ThemeChoice {
+  return (
+    typeof v === "string" && (THEME_CHOICES as readonly string[]).includes(v)
+  );
+}
+
+/** Narrow any input to a valid choice, falling back to the default. The trust boundary for the
+ *  stored value (localStorage, /api/config) — a legacy `royal` still lands on dark. */
+export function coerceThemeChoice(v: unknown): ThemeChoice {
+  return isThemeChoice(v) ? v : DEFAULT_THEME;
+}
+
+/** The mode a choice puts in force. `prefersDark` is the device's answer, asked by the caller
+ *  (matchMedia) so this stays pure. */
+export function resolveTheme(choice: ThemeChoice, prefersDark: boolean): ThemeId {
+  if (choice === "system") return prefersDark ? "dark" : "light";
+  return choice;
 }
 
 export function isThemeId(v: unknown): v is ThemeId {

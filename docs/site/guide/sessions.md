@@ -134,7 +134,7 @@ already have instead of starting another copy.
   other BattleLab tab open, the link just opens where it landed.
 - **Full screen or map.** On a desktop, a session link asks whether to open it **full screen** or
   **in the map**, and *Remember my choice* makes that the answer from then on. Change or reset it
-  in Settings → Appearance → Opening links. A phone always opens full screen, and a mission link
+  in Settings → Appearance → Interface → Opening links. A phone always opens full screen, and a mission link
   always opens in Missions.
 - **Share link.** The session's actions and the mission's **⋯** menu carry **Share link**: the
   system share sheet where the device has one, otherwise the link is copied.

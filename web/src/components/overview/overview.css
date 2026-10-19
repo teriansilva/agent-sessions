@@ -89,7 +89,7 @@
   cursor: pointer;
 }
 .tr-ov-group-head:hover .tr-ov-path {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .tr-ov-group.collapsed .tr-ov-group-head {
   border-bottom: 0; /* header-only box */
@@ -195,7 +195,7 @@
   cursor: pointer;
 }
 .tr-ov-mkproj:hover {
-  color: var(--accent);
+  color: var(--accent-text);
   border-color: var(--border);
   background: var(--row-hover);
 }
@@ -379,7 +379,7 @@
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--eng, var(--accent));
+  color: var(--eng, var(--accent-text));
 }
 
 /* The chip's session-menu ⋯ (#968). An absolutely-positioned HIT SQUARE anchored to the chip's
@@ -415,7 +415,7 @@
 }
 .tr-ov-chip:hover .tr-ov-kebab,
 .tr-ov-kebab:focus-visible {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .tr-ov-kebab:hover .tr-ov-kebab-glyph,
 .tr-ov-kebab[aria-expanded="true"] .tr-ov-kebab-glyph {
@@ -570,7 +570,7 @@
   align-items: center;
   min-height: 32px;
   padding: 0 10px;
-  color: var(--accent);
+  color: var(--accent-text);
   border: 1px solid var(--line-strong);
   text-decoration: none;
 }
@@ -641,7 +641,7 @@
   height: 18px;
   font-size: 10px;
   line-height: 1;
-  color: var(--accent);
+  color: var(--accent-text);
   background: var(--bg);
   border: 1px solid var(--accent-soft);
 }
@@ -666,7 +666,7 @@
   padding: 5px 9px;
 }
 .tr-ov-wins b {
-  color: var(--accent);
+  color: var(--accent-text);
   font-weight: 700;
   /* Tabular, so the count stepping 9 → 10 doesn't shift the toolbar under the pointer. */
   font-variant-numeric: tabular-nums;

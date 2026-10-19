@@ -120,14 +120,14 @@ test("Settings and Help live in the operator menu, not as their own topbar icons
 });
 
 // #357/#956: the Settings links keep pointing at the canonical bare /settings entry; on desktop
-// the route shell replace-redirects to the first section, so every Settings navigation lands on
+// the route shell replace-redirects to the default section, so every Settings navigation lands on
 // a section URL.
-test("choosing Settings in the operator menu lands on the first settings section (#357, #1085)", async () => {
+test("choosing Settings in the operator menu lands on Appearance → Interface (#357, #1085, #1494)", async () => {
   render(<App />);
   const menu = await openOperatorMenu();
   await userEvent.click(within(menu).getByRole("menuitem", { name: "Settings" }));
   expect(
-    await screen.findByRole("link", { name: "Appearance" }),
+    await screen.findByRole("link", { name: "Interface" }),
   ).toHaveAttribute("aria-current", "page");
   expect(window.location.pathname).toBe("/settings/appearance");
 });

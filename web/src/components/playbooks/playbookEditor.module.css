@@ -98,7 +98,7 @@
   min-height: 44px;
   display: inline-flex;
   align-items: center;
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .actions {
   display: flex;

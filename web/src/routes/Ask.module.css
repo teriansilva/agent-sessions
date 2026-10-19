@@ -28,7 +28,7 @@
   font-size: 1.15rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .sub {
@@ -47,5 +47,5 @@
   overflow-y: auto;
 }
 .placeholder a {
-  color: var(--accent);
+  color: var(--accent-text);
 }

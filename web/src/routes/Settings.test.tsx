@@ -16,7 +16,7 @@ import { OverviewPrefsProvider } from "../app/OverviewPrefsContext";
 import { api } from "../lib/api";
 import type { AgentUsageResponse, AppConfig, EngineInfo } from "../types/api";
 import fixture from "../test/roster.fixture.json";
-import type { ThemeId } from "../theme/themes";
+import type { ThemeChoice } from "../theme/themes";
 import { ThemeCtx } from "../theme/themeStore";
 import { AccentCtx } from "../theme/accentStore";
 import { Settings } from "./Settings";
@@ -103,7 +103,7 @@ function LocationProbe() {
 /** Mounts Settings under the real route shapes (#357): bare /settings and /settings/:tab —
  *  both render the component; the bare/unknown forms replace-redirect to the first tab. */
 function renderSettings(
-  theme: ThemeId = "dark",
+  theme: ThemeChoice = "dark",
   accent = "#ffb000",
   initialPath = "/settings",
   authMode: "single-user" | "none" = "single-user",
@@ -130,7 +130,9 @@ function renderSettings(
           } as AppConfig
         }
       >
-        <ThemeCtx.Provider value={{ theme, setTheme }}>
+        <ThemeCtx.Provider
+          value={{ theme: theme === "system" ? "dark" : theme, choice: theme, setTheme }}
+        >
           <AccentCtx.Provider value={{ accent, setAccent }}>
             <OverviewPrefsProvider>
               <Routes>
@@ -344,12 +346,12 @@ beforeEach(() => {
 
 // ---- Settings navigation: sections, routing + deep links (#956) ----
 
-test("bare /settings redirects to the first section on desktop (canonical /settings/:section)", async () => {
+test("bare /settings redirects to Appearance → Interface on desktop (canonical /settings/:section)", async () => {
   renderSettings("dark", "#ffb000", "/settings");
   expect(screen.getByTestId("location")).toHaveTextContent(
     "/settings/appearance",
   );
-  expect(screen.getByRole("link", { name: "Appearance" })).toHaveAttribute(
+  expect(screen.getByRole("link", { name: "Interface" })).toHaveAttribute(
     "aria-current",
     "page",
   );
@@ -362,7 +364,7 @@ test("an unknown section falls back to the first section (no 404)", async () => 
     "/settings/appearance",
   );
   expect(
-    screen.getByRole("heading", { name: "Appearance" }),
+    screen.getByRole("heading", { name: "Interface" }),
   ).toBeInTheDocument();
   await flushFetches();
 });
@@ -374,7 +376,7 @@ test("the sidebar lists every section, grouped, in registry order — one curren
   expect(links.map((l) => sectionLabel(l))).toEqual(
     SETTINGS_SECTIONS.map((s) => s.label),
   );
-  for (const group of ["General", "AI", "System", "About"]) {
+  for (const group of ["General", "Appearance", "AI", "System", "About"]) {
     expect(within(nav).getByRole("list", { name: group })).toBeInTheDocument();
   }
   expect(
@@ -400,7 +402,7 @@ test("clicking a section navigates to its URL and swaps the page", async () => {
   ).toBeInTheDocument();
   // The previous page's content is gone.
   expect(
-    screen.queryByRole("heading", { name: "Appearance" }),
+    screen.queryByRole("heading", { name: "Interface" }),
   ).not.toBeInTheDocument();
 });
 
@@ -429,7 +431,8 @@ test("the page names its group and section in a crumb, not a second heading", as
 // Every existing settings control still has a home (#357 zero-behavioural-change guarantee, kept
 // through the #956 split): each section renders its cards.
 test.each([
-  ["appearance", ["Appearance"]],
+  ["appearance", ["Interface", "Mode", "Accent"]],
+  ["terminal-appearance", ["Terminal sessions", "Terminal font", "Terminal text size"]],
   ["session-defaults", ["Session defaults"]],
   ["projects", ["Projects", "Session overview"]],
   ["ai-endpoint", ["Connection", "Model"]],
@@ -460,7 +463,7 @@ test.each([
 test("the registry and the pages agree: every section id renders something", () => {
   // A registry entry with no body in Settings.tsx would be a nav link to a blank page.
   // Resources has its own submenu, separate from Host (#1386).
-  expect(SETTINGS_SECTIONS).toHaveLength(19);
+  expect(SETTINGS_SECTIONS).toHaveLength(20);
 });
 
 // ---- Usage analytics (#1009) ----------------------------------------------------------------
@@ -677,10 +680,10 @@ test("phone: an unknown section lands on the index, not the first section", asyn
 
 // ---- Appearance tab ----
 
-test("renders the themes and the theme radios", async () => {
+test("renders the mode radios, Match device included (#1494)", async () => {
   renderSettings();
   expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
-  for (const label of ["Dark", "Light"]) {
+  for (const label of ["Dark", "Light", "Match device"]) {
     expect(
       screen.getByRole("radio", { name: new RegExp(label) }),
     ).toBeInTheDocument();
@@ -705,6 +708,38 @@ test("picking a theme calls setTheme with its id", async () => {
   const { setTheme } = renderSettings("light");
   await userEvent.click(screen.getByRole("radio", { name: /Dark/ }));
   expect(setTheme).toHaveBeenCalledWith("dark");
+  await userEvent.click(screen.getByRole("radio", { name: /Match device/ }));
+  expect(setTheme).toHaveBeenCalledWith("system");
+  await flushFetches();
+});
+
+test("Match device is the checked card when the CHOICE is system, whatever mode it resolved to (#1494)", async () => {
+  renderSettings("system");
+  expect(screen.getByRole("radio", { name: /Match device/ })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+  expect(screen.getByRole("radio", { name: /Dark/ })).toHaveAttribute(
+    "aria-checked",
+    "false",
+  );
+  await flushFetches();
+});
+
+test("the picker offers 16 accents and names the active one; a custom hex reads Custom (#1494)", async () => {
+  renderSettings("dark", "#ffb000");
+  const group = screen.getByRole("radiogroup", { name: "Accent" });
+  expect(within(group).getAllByRole("radio")).toHaveLength(16);
+  expect(screen.getByTestId("accent-name")).toHaveTextContent("Amber · default");
+  expect(screen.getByRole("button", { name: "Reset" })).toBeDisabled();
+  await flushFetches();
+});
+
+test("a custom accent is named Custom and Reset returns to the default (#1494)", async () => {
+  const { setAccent } = renderSettings("dark", "#123456");
+  expect(screen.getByTestId("accent-name")).toHaveTextContent("Custom");
+  await userEvent.click(screen.getByRole("button", { name: "Reset" }));
+  expect(setAccent).toHaveBeenCalledWith("#ffb000");
   await flushFetches();
 });
 
@@ -1675,7 +1710,7 @@ test("Session overview: a name seeded after /api/config resolves is shown on the
   };
   const tree = (cfg: AppConfig | null) => (
     <MemoryRouter initialEntries={["/settings/projects"]}>
-      <ThemeCtx.Provider value={{ theme: "dark", setTheme: vi.fn() }}>
+      <ThemeCtx.Provider value={{ theme: "dark", choice: "dark", setTheme: vi.fn() }}>
         <ConfigCtx.Provider value={cfg}>
           <OverviewPrefsProvider>
             <Routes>
@@ -1843,7 +1878,7 @@ test("Folder discovery: shows configured roots/exclusions and removing a root pe
     };
     render(
       <MemoryRouter initialEntries={["/settings/projects"]}>
-        <ThemeCtx.Provider value={{ theme: "dark", setTheme: vi.fn() }}>
+        <ThemeCtx.Provider value={{ theme: "dark", choice: "dark", setTheme: vi.fn() }}>
           <ConfigCtx.Provider value={cfg}>
             <OverviewPrefsProvider>
               <Routes>
@@ -1887,7 +1922,7 @@ test("Folder discovery: picking a root through the folder picker commits it (#46
     };
     render(
       <MemoryRouter initialEntries={["/settings/projects"]}>
-        <ThemeCtx.Provider value={{ theme: "dark", setTheme: vi.fn() }}>
+        <ThemeCtx.Provider value={{ theme: "dark", choice: "dark", setTheme: vi.fn() }}>
           <ConfigCtx.Provider value={cfg}>
             <OverviewPrefsProvider>
               <Routes>
@@ -1927,7 +1962,7 @@ function renderProjectsTab(config: Partial<AppConfig> = {}) {
   };
   render(
     <MemoryRouter initialEntries={["/settings/projects"]}>
-      <ThemeCtx.Provider value={{ theme: "dark", setTheme: vi.fn() }}>
+      <ThemeCtx.Provider value={{ theme: "dark", choice: "dark", setTheme: vi.fn() }}>
         <ConfigCtx.Provider value={cfg}>
           <OverviewPrefsProvider>
             <Routes>
@@ -1968,7 +2003,7 @@ test("Default project: the card is gone — the star in Projects owns it now (#6
 function projectsTree(cfg: AppConfig) {
   return (
     <MemoryRouter initialEntries={["/settings/projects"]}>
-      <ThemeCtx.Provider value={{ theme: "dark", setTheme: vi.fn() }}>
+      <ThemeCtx.Provider value={{ theme: "dark", choice: "dark", setTheme: vi.fn() }}>
         <ConfigCtx.Provider value={cfg}>
           <OverviewPrefsProvider>
             <Routes>
@@ -2041,7 +2076,7 @@ test.each([
           { pathname: "/settings/appearance", state: returnTo && { returnTo } },
         ]}
       >
-        <ThemeCtx.Provider value={{ theme: "dark", setTheme: vi.fn() }}>
+        <ThemeCtx.Provider value={{ theme: "dark", choice: "dark", setTheme: vi.fn() }}>
           <OverviewPrefsProvider>
             <Routes>
               <Route path="/settings/:tab" element={<Settings />} />
@@ -2063,7 +2098,7 @@ test("the #155 returnTo survives the bare-/settings redirect and tab switches", 
         { pathname: "/settings", state: { returnTo: "/s/claude/x" } },
       ]}
     >
-      <ThemeCtx.Provider value={{ theme: "dark", setTheme: vi.fn() }}>
+      <ThemeCtx.Provider value={{ theme: "dark", choice: "dark", setTheme: vi.fn() }}>
         <OverviewPrefsProvider>
           <Routes>
             <Route path="/settings" element={<Settings />} />
@@ -2086,6 +2121,43 @@ test("the #155 returnTo survives the bare-/settings redirect and tab switches", 
   expect(
     screen.getByRole("link", { name: "Back to sessions" }),
   ).toHaveAttribute("href", "/s/claude/x");
+});
+
+test("the returnTo survives Interface's in-page link to Terminal sessions (#1494)", async () => {
+  render(
+    <MemoryRouter
+      initialEntries={[
+        { pathname: "/settings/appearance", state: { returnTo: "/s/claude/x" } },
+      ]}
+    >
+      <ThemeCtx.Provider value={{ theme: "dark", choice: "dark", setTheme: vi.fn() }}>
+        <OverviewPrefsProvider>
+          <Routes>
+            <Route path="/settings" element={<Settings />} />
+            <Route path="/settings/:tab" element={<Settings />} />
+          </Routes>
+          <LocationProbe />
+        </OverviewPrefsProvider>
+      </ThemeCtx.Provider>
+    </MemoryRouter>,
+  );
+  // The link INSIDE the page, not the sidebar's — the sidebar already forwarded state.
+  const page = screen.getByRole("region", { name: "Interface" });
+  await userEvent.click(within(page).getByRole("link", { name: "Terminal sessions" }));
+  expect(screen.getByTestId("location")).toHaveTextContent("/settings/terminal-appearance");
+  expect(
+    screen.getByRole("link", { name: "Back to sessions" }),
+  ).toHaveAttribute("href", "/s/claude/x");
+});
+
+test("each Appearance radio group is one Tab stop: the checked radio (#1494)", async () => {
+  renderSettings("light", "#c02020");
+  const modes = within(screen.getByRole("radiogroup", { name: "Mode" })).getAllByRole("radio");
+  expect(modes.map((r) => r.getAttribute("tabindex"))).toEqual(["-1", "0", "-1"]);
+  const accents = within(screen.getByRole("radiogroup", { name: "Accent" })).getAllByRole("radio");
+  expect(accents.filter((r) => r.getAttribute("tabindex") === "0")).toHaveLength(1);
+  expect(accents.find((r) => r.getAttribute("tabindex") === "0")).toHaveAccessibleName("Signal Red");
+  await flushFetches();
 });
 
 // ---- About tab ----
@@ -2476,7 +2548,7 @@ test("a session_list_order save refreshes the shared config (#548)", async () =>
   const refresh = vi.fn();
   render(
     <MemoryRouter initialEntries={["/settings/session-defaults"]}>
-      <ThemeCtx.Provider value={{ theme: "dark", setTheme: vi.fn() }}>
+      <ThemeCtx.Provider value={{ theme: "dark", choice: "dark", setTheme: vi.fn() }}>
         <AccentCtx.Provider value={{ accent: "#ffb000", setAccent: vi.fn() }}>
           <ConfigRefreshCtx.Provider value={refresh}>
             <OverviewPrefsProvider>
@@ -2501,7 +2573,7 @@ test("a failed session_list_order save does NOT refresh the config (#548)", asyn
   vi.mocked(api.setPrefs).mockRejectedValueOnce(new Error("nope"));
   render(
     <MemoryRouter initialEntries={["/settings/session-defaults"]}>
-      <ThemeCtx.Provider value={{ theme: "dark", setTheme: vi.fn() }}>
+      <ThemeCtx.Provider value={{ theme: "dark", choice: "dark", setTheme: vi.fn() }}>
         <AccentCtx.Provider value={{ accent: "#ffb000", setAccent: vi.fn() }}>
           <ConfigRefreshCtx.Provider value={refresh}>
             <OverviewPrefsProvider>

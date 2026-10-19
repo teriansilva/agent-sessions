@@ -34,6 +34,12 @@
   --on-accent: #120c00; /* ink ON the (light) amber accent — AA, locked by contrast.test */
   --accent-soft: color-mix(in srgb, var(--accent) 55%, transparent);
   --accent-glow: color-mix(in srgb, var(--accent) 22%, transparent);
+  /* The accent as TEXT (#1494): links and accent-coloured words. --accent is a fill colour (ink
+     on it is --on-accent); as text a pale accent — Ice, Yellow, Sky — vanishes on light. Here,
+     the DEFAULT amber's value per mode: itself on dark (it already holds AA), mixed toward
+     --text-1 on light. A custom accent gets its own value inline from accentTextFor() in
+     theme/accent.ts — the accent itself where it holds AA, else the least mix that does. */
+  --accent-text: var(--accent);
   /* Semantic status — INDEPENDENT of the brand accent; never substitute the accent for these. */
   --status-up: #3fbf6f;
   --status-degraded: #f59e0b;
@@ -199,6 +205,7 @@
   --surface-3: #dfe1e4;
   --accent: #ffb000;
   --on-accent: #120c00;
+  --accent-text: #825e0e; /* accentTextFor(#ffb000, light) — pinned by contrast.test */
   --brand: #8a5a00; /* darker amber for the wordmark on light — readable */
   --brand-soft: #5e3d00;
   --badge-bg: #efe3c8;

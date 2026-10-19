@@ -339,7 +339,25 @@ export const VISUAL_PATHS: VisualPath[] = [
     path: "/settings",
     name: "settings",
     description:
-      "Settings — tabbed shell, Appearance tab (theme + accent + compose) (#109/#211/#357)",
+      "Settings — lands on Appearance → Interface (mode cards + 16 accents) (#109/#211/#357/#1494)",
+    requireAuth: "admin",
+    waitFor: SPA_MOUNTED,
+  },
+  {
+    group: "authed",
+    // Explicit, not just `/settings`: on a phone the bare route is the section INDEX, so only
+    // this entry captures the Interface page at the mobile formats (#1494).
+    path: "/settings/appearance",
+    name: "settings-appearance",
+    description: "Settings — Appearance → Interface (mode cards, 16 accents, hex field) (#1494)",
+    requireAuth: "admin",
+    waitFor: SPA_MOUNTED,
+  },
+  {
+    group: "authed",
+    path: "/settings/terminal-appearance",
+    name: "settings-terminal-appearance",
+    description: "Settings — Appearance → Terminal sessions (font + text size) (#1494)",
     requireAuth: "admin",
     waitFor: SPA_MOUNTED,
   },

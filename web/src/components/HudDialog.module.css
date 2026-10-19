@@ -68,7 +68,7 @@
 }
 .close:hover,
 .close:focus-visible {
-  color: var(--accent);
+  color: var(--accent-text);
   border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
 }
 

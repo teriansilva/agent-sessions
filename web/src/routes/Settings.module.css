@@ -260,7 +260,7 @@
   line-height: 1.5;
 }
 
-/* Theme picker */
+/* Card picker — the Opening links options (#1494 moved the mode cards to Appearance.module.css) */
 .themes {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -285,19 +285,6 @@
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent) inset;
 }
-.swatch {
-  height: 30px;
-  border-radius: 0;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-}
-/* Fixed preview swatches — show each theme's identity regardless of the active theme.
-   BattleLab HUD palette: ground + phosphor-amber accent (#211). */
-.sw_dark {
-  background: linear-gradient(120deg, #0d0e10 50%, #ffb000 50%);
-}
-.sw_light {
-  background: linear-gradient(120deg, #e7e8ea 50%, #ffb000 50%);
-}
 .themeName {
   font-weight: 700;
   font-size: 13px;
@@ -307,7 +294,6 @@
   color: var(--text-muted);
 }
 
-/* Accent picker (#211 Phase 2): preset dots + a native colour input + a free-text hex. */
 .subhead {
   margin: 18px 0 2px;
   font-family: var(--font-mono, ui-monospace, monospace);
@@ -317,69 +303,7 @@
   text-transform: uppercase;
   color: var(--text-2, var(--text));
 }
-.accents {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-  margin-top: 10px;
-}
-.accentDot {
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  background: var(--dot);
-  cursor: pointer;
-  /* Selected ring uses the chosen accent itself so the active dot reads at a glance. */
-  box-shadow: 0 0 0 2px var(--panel);
-}
-.accentDot.active {
-  box-shadow:
-    0 0 0 2px var(--panel),
-    0 0 0 4px var(--accent);
-}
-.accentDot:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-.accentCustom {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  border: 1px dashed var(--border);
-  cursor: pointer;
-  overflow: hidden;
-}
 /* The native colour well fills the round label so it reads as one more preset dot. */
-.accentCustom input[type="color"] {
-  width: 150%;
-  height: 150%;
-  margin: -25%;
-  padding: 0;
-  border: none;
-  background: none;
-  cursor: pointer;
-}
-.accentHex {
-  width: 9ch;
-  padding: 5px 8px;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 12.5px;
-  text-transform: lowercase;
-  color: var(--text);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 0;
-}
-.accentHex:focus-visible {
-  outline: none;
-  border-color: var(--accent);
-}
 
 /* About */
 .brandLine {
@@ -1079,7 +1003,7 @@
   font-weight: 700;
   letter-spacing: 0.1em;
   padding: 1px 6px;
-  color: var(--accent);
+  color: var(--accent-text);
   border: 1px solid var(--accent);
 }
 .aiModelRow {
@@ -1907,7 +1831,7 @@
   border-right: 0;
 }
 .stepNum {
-  color: var(--brand, var(--accent));
+  color: var(--brand, var(--accent-text));
 }
 .endpointPlain {
   margin: 0 0 18px;

@@ -1,7 +1,7 @@
 # Settings
 
-Settings lives at `/settings`, one page per section, in four groups: **General · AI · System ·
-About**. On a desktop the groups and their sections are a sidebar; on a phone they are an index you
+Settings lives at `/settings`, one page per section, in six groups: **General · Appearance · AI ·
+Agents · System · About**. On a desktop the groups and their sections are a sidebar; on a phone they are an index you
 tap into. Every section has its own address, `/settings/<section>` — the id is shown beside each
 heading below — so a link can open exactly the page it means. An old `/settings/ai-review` link
 still works: it lands on Endpoint & model, or on the prompt it named.
@@ -10,22 +10,10 @@ Preferences are server-side state, not browser state: they live in
 `~/.config/agent-sessions/prefs.json` (override with `AGENT_SESSIONS_PREFS`), so they follow you
 between the desktop and the phone. That file is deliberately separate from the install root's `env`
 — reinstalling replaces releases, not your preferences. The terminal font and text size are the
-exception: they are saved per device, so a phone and a desktop can differ.
+exception, along with the rest of Appearance: those are saved per device, so a phone and a desktop
+can differ. A device with no choice of its own starts from the last one saved anywhere.
 
 ## General
-
-### Appearance · `appearance`
-
-- **Theme** — dark or light.
-- **Accent** — the brand colour on buttons, highlights and the terminal cursor: amber (`#ffb000`)
-  by default, a preset, or a custom colour.
-- **Terminal font** — one face for every engine, because they all share one terminal. Faces this
-  device does not have are greyed out rather than quietly falling back.
-- **Terminal text size** — decides how many columns the agent lays out against. Smaller text means
-  a wider terminal, which is what a column-laid-out interface like opencode needs on a phone.
-- **Opening links** — how a session link from outside the app opens on this device: *Ask each
-  time*, *Full screen* or *In map*. Desktop only; *Ask each time* resets a remembered choice. See
-  [Opening links](/guide/sessions#opening-links).
 
 ### Session defaults · `session-defaults`
 
@@ -44,6 +32,34 @@ exception: they are saved per device, so a phone and a desktop can differ.
 
 These visibility controls are easy to confuse and do genuinely different things;
 [Projects](/guide/projects) has the table.
+
+## Appearance
+
+How things look, split by what is being styled. `/settings` opens on Interface.
+
+### Interface · `appearance`
+
+How BattleLab itself looks: the frame, menus, buttons and panels.
+
+- **Mode**: **Dark**, **Light**, or **Match device**, which follows your operating system's
+  light/dark setting and switches the moment it changes, open terminals included. Each card shows a
+  miniature of the app in that mode.
+- **Accent**: the brand colour on buttons, highlights, selection and the terminal cursor. Amber
+  (`#ffb000`) by default. Pick one of 16 presets, or a custom colour from the colour well or a hex
+  value. **Reset** returns to amber.
+- **Opening links**: how a session link from outside the app opens on this device: *Ask each
+  time*, *Full screen* or *In map*. Desktop only; *Ask each time* resets a remembered choice. See
+  [Opening links](/guide/sessions#opening-links).
+
+### Terminal sessions · `terminal-appearance`
+
+How every terminal looks. Every CLI agent and the plain shell share one terminal, so each of these
+is one choice.
+
+- **Terminal font**: one face for every engine. Faces this device does not have are greyed out
+  rather than quietly falling back.
+- **Terminal text size**: decides how many columns the agent lays out against. Smaller text means
+  a wider terminal, which is what a column-laid-out interface like opencode needs on a phone.
 
 ## AI
 

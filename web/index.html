@@ -33,6 +33,10 @@
         try {
           var s = localStorage.getItem("tr-theme");
           if (s === "dark" || s === "light") t = s;
+          // "Match device" (#1494): resolve to the OS answer here too, so data-theme only ever
+          // carries dark/light and a light-OS device doesn't flash dark before the bundle.
+          else if (s === "system" && window.matchMedia)
+            t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
         } catch (e) {}
         // Always pin a valid data-theme so <html> never renders attribute-less or with an
         // unknown value; "dark" is the default (also matches the bare :root tokens).

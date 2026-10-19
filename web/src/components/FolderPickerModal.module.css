@@ -48,7 +48,7 @@
   gap: 3px;
   background: transparent;
   border: 0;
-  color: var(--accent, #ffb000);
+  color: var(--accent-text);
   cursor: pointer;
   padding: 2px 3px;
   font: inherit;

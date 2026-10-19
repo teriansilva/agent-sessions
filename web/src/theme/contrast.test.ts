@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { expect, test } from "vitest";
+import { ACCENT_PRESETS, ACCENT_TEXT_GROUNDS, accentTextFor, DEFAULT_ACCENT } from "./accent";
 
 // Parses the SHIPPED palette (tokens.css) and enforces WCAG-AA contrast on each theme, so a
 // future palette tweak can't silently drop below readable. Dark is the bare `:root` default;
@@ -395,3 +396,41 @@ for (const [name, selector] of Object.entries(THEMES)) {
     }
   });
 }
+
+// ---------------------------------------------------------------- accent as text (#1494)
+//
+// `--accent-text` is what a link or any other accent-coloured WORD uses. tokens.css carries the
+// DEFAULT amber's value per mode; a custom accent gets accentTextFor()'s value inline. Both are
+// checked here, for every accent the picker offers, against the shipped grounds.
+
+test("the grounds accentTextFor() measures against ARE tokens.css's", () => {
+  const root = block(":root {");
+  const light = block(':root[data-theme="light"]');
+  for (const [mode, b] of [["dark", root], ["light", light]] as const) {
+    expect(ACCENT_TEXT_GROUNDS[mode].text).toBe(token(b, "text-1"));
+    expect([...ACCENT_TEXT_GROUNDS[mode].grounds]).toEqual(
+      ["bg-0", "bg-1", "bg-2", "surface-3"].map((n) => token(b, n)),
+    );
+  }
+});
+
+test("tokens.css's --accent-text is accentTextFor(the default amber) in each mode", () => {
+  // Dark: amber already holds AA, so the token is the accent itself — dark is untouched.
+  expect(accentTextFor(DEFAULT_ACCENT, "dark")).toBe(DEFAULT_ACCENT);
+  expect(rawToken(block(":root {"), "accent-text")).toBe("var(--accent)");
+  expect(token(block(':root[data-theme="light"]'), "accent-text")).toBe(
+    accentTextFor(DEFAULT_ACCENT, "light"),
+  );
+});
+
+for (const mode of ["dark", "light"] as const)
+  test(`${mode}: accent-as-text holds AA for all 16 presets on every ground, and keeps a passing accent as is`, () => {
+    expect(ACCENT_PRESETS).toHaveLength(16);
+    for (const p of ACCENT_PRESETS) {
+      const c = accentTextFor(p.hex, mode);
+      const raw = ACCENT_TEXT_GROUNDS[mode].grounds.every((g) => ratio(p.hex, g) >= 4.5);
+      if (raw) expect(c, p.label).toBe(p.hex);
+      for (const g of ACCENT_TEXT_GROUNDS[mode].grounds)
+        expect(ratio(c, g), `${p.label} on ${g}`).toBeGreaterThanOrEqual(4.5);
+    }
+  });

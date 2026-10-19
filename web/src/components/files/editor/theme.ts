@@ -153,7 +153,7 @@ export const battlelabTheme = EditorView.theme({
   },
   ".cm-button:hover": {
     borderColor: "var(--accent)",
-    color: "var(--accent)",
+    color: "var(--accent-text)",
   },
   ".cm-button:active": {
     backgroundImage: "none",

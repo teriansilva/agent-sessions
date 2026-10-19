@@ -42,7 +42,7 @@
   color: var(--text-muted);
 }
 .md a {
-  color: var(--accent);
+  color: var(--accent-text);
   text-decoration: underline;
   text-underline-offset: 2px;
 }

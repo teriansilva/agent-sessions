@@ -11,6 +11,7 @@ export const SETTINGS_PATH = "/settings";
 
 export const SETTINGS_GROUPS = [
   { id: "general", label: "General" },
+  { id: "appearance", label: "Appearance" },
   { id: "ai", label: "AI" },
   { id: "agents", label: "Agents" },
   { id: "system", label: "System" },
@@ -20,9 +21,12 @@ export const SETTINGS_GROUPS = [
 export type SettingsGroupId = (typeof SETTINGS_GROUPS)[number]["id"];
 
 export const SETTINGS_SECTIONS = [
-  { id: "appearance", label: "Appearance", group: "general" },
   { id: "session-defaults", label: "Session defaults", group: "general" },
   { id: "projects", label: "Projects", group: "general" },
+  // APPEARANCE (#1494): split by WHAT is being styled. Interface keeps the `appearance` id so
+  // every existing `/settings/appearance` link (Opening links, bookmarks) still lands on it.
+  { id: "appearance", label: "Interface", group: "appearance" },
+  { id: "terminal-appearance", label: "Terminal sessions", group: "appearance" },
   { id: "ai-endpoint", label: "Endpoint & model", group: "ai" },
   { id: "ai-session-review", label: "Session review", group: "ai" },
   { id: "ai-auto-sort", label: "Auto-sort", group: "ai" },
@@ -51,8 +55,9 @@ export const SETTINGS_SECTIONS = [
 export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]["id"];
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 
-export const DEFAULT_SETTINGS_SECTION: SettingsSectionId =
-  SETTINGS_SECTIONS[0].id;
+/** Where `/settings` lands. Named, not "the first entry": Appearance moved out of General into
+ *  its own group (#1494), and the landing page should not move with it. */
+export const DEFAULT_SETTINGS_SECTION: SettingsSectionId = "appearance";
 
 export function isSettingsSection(
   id: string | undefined,

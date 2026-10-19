@@ -162,7 +162,7 @@
   align-items: center;
   border: 0;
   background: transparent;
-  color: var(--brand, var(--accent));
+  color: var(--brand, var(--accent-text));
   font-family: var(--font-mono);
   font-size: 0.68rem;
   text-decoration: none;

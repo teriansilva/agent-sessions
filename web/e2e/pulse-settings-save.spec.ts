@@ -118,7 +118,7 @@ test("a saved scan setting flashes Saved. and survives leaving + reopening the p
   await expect(page.getByText("Saved.")).toBeVisible();
 
   // Leaving the page unmounts the panel; coming back re-seeds it from the config context.
-  await openSection(page, "Appearance");
+  await openSection(page, "Interface");
   await openSection(page, "Mission control");
   await expect(page.getByLabel("Scan depth")).toHaveValue("slow");
 });

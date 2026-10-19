@@ -89,7 +89,7 @@
   font-weight: 400;
 }
 .user .who {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .txt {
   font-size: 14px;

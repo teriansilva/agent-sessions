@@ -161,7 +161,7 @@
   padding: 0 6px;
   border: 0;
   background: transparent;
-  color: var(--accent);
+  color: var(--accent-text);
   font: inherit;
   cursor: pointer;
 }
@@ -194,7 +194,7 @@
   display: inline-flex;
   align-items: center;
   min-height: 44px;
-  color: var(--accent);
+  color: var(--accent-text);
   text-decoration: underline;
   text-underline-offset: 3px;
 }

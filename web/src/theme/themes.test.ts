@@ -1,6 +1,10 @@
-import { expect, test } from "vitest";
+import { describe, expect, test } from "vitest";
 import {
   coerceTheme,
+  coerceThemeChoice,
+  isThemeChoice,
+  resolveTheme,
+  THEME_CHOICES,
   DEFAULT_THEME,
   isThemeId,
   THEME_IDS,
@@ -146,4 +150,27 @@ test("light ANSI palette holds WCAG AA (>=4.5:1) on the light terminal ground (#
       `light ansi.${k} on ${t.background}`,
     ).toBeGreaterThanOrEqual(4.5);
   }
+});
+
+describe("theme choice (#1494)", () => {
+  test("the choices are the two modes plus system, mirroring prefs.THEMES", () => {
+    expect([...THEME_CHOICES]).toEqual(["dark", "light", "system"]);
+  });
+
+  test("coerceThemeChoice keeps system and still migrates royal to dark", () => {
+    expect(coerceThemeChoice("system")).toBe("system");
+    expect(coerceThemeChoice("light")).toBe("light");
+    expect(coerceThemeChoice("royal")).toBe("dark");
+    expect(coerceThemeChoice(null)).toBe(DEFAULT_THEME);
+    expect(isThemeChoice("system")).toBe(true);
+    // A choice is not a mode: system must never pass as something data-theme can carry.
+    expect(isThemeId("system")).toBe(false);
+  });
+
+  test("resolveTheme follows the device only for system", () => {
+    expect(resolveTheme("system", true)).toBe("dark");
+    expect(resolveTheme("system", false)).toBe("light");
+    expect(resolveTheme("dark", false)).toBe("dark");
+    expect(resolveTheme("light", true)).toBe("light");
+  });
 });

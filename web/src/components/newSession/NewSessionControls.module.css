@@ -188,7 +188,7 @@
 .star {
   flex: none;
   margin-left: auto;
-  color: var(--accent);
+  color: var(--accent-text);
   font-size: 12px;
 }
 .rowFolder + .star {
@@ -209,7 +209,7 @@
   min-height: 44px;
   padding: 0 12px 0 32px;
   font-size: 13px;
-  color: var(--accent);
+  color: var(--accent-text);
   text-decoration: none;
 }
 .newProject:hover {
@@ -277,7 +277,7 @@
   border: 0;
   background: none;
   font: inherit;
-  color: var(--accent);
+  color: var(--accent-text);
   text-decoration: underline;
   text-underline-offset: 3px;
   cursor: pointer;

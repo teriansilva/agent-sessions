@@ -224,7 +224,7 @@
   margin-top: 4px;
 }
 .link {
-  color: var(--accent);
+  color: var(--accent-text);
   text-decoration: none;
 }
 .link:hover {
@@ -520,7 +520,7 @@ textarea.control {
   color: var(--text-1);
 }
 .sectionNum {
-  color: var(--accent);
+  color: var(--accent-text);
   margin-right: 8px;
 }
 :global(:root[data-theme="light"]) .sectionNum {
@@ -728,7 +728,7 @@ textarea.control {
 }
 .dialogClose:hover,
 .dialogClose:focus-visible {
-  color: var(--accent);
+  color: var(--accent-text);
   border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
   outline: none;
 }
@@ -842,7 +842,7 @@ textarea.control {
   letter-spacing: 0.08em;
   line-height: 15px;
   text-transform: uppercase;
-  color: var(--accent);
+  color: var(--accent-text);
   overflow: hidden;
 }
 :global(:root[data-theme="light"]) .originBadge {

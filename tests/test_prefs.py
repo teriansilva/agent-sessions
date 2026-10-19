@@ -41,6 +41,13 @@ def test_set_and_get_round_trip(tmp_path):
     assert prefs.get_theme(p) == "light"
 
 
+def test_system_theme_round_trips(tmp_path):
+    # "Match device" (#1494) is stored as the choice itself; the client resolves it.
+    p = tmp_path / "prefs.json"
+    assert prefs.set_theme("system", p) == "system"
+    assert prefs.get_theme(p) == "system"
+
+
 def test_invalid_theme_coerced_to_default(tmp_path):
     p = tmp_path / "prefs.json"
     assert prefs.set_theme("neon", p) == "dark"
@@ -123,6 +130,18 @@ def test_set_theme_endpoint_persists(auth_cfg, tmp_home):
     assert r.status_code == 200
     assert r.json() == {"theme": "dark"}
     assert c.get("/api/config").json()["theme"] == "dark"
+
+
+def test_set_theme_system_endpoint_persists(auth_cfg, tmp_home):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = c.post(
+        "/api/prefs",
+        json={"theme": "system"},
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 200
+    assert c.get("/api/config").json()["theme"] == "system"
 
 
 def test_set_theme_unknown_422(auth_cfg, tmp_home):

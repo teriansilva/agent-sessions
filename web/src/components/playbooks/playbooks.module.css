@@ -159,7 +159,7 @@
   display: inline-flex;
   align-items: center;
   min-height: 44px;
-  color: var(--accent);
+  color: var(--accent-text);
   margin-bottom: 12px;
 }
 .detailGrid {

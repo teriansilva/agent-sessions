@@ -131,7 +131,7 @@
 }
 
 .btns button:hover {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .btns button:focus-visible,

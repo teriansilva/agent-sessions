@@ -148,11 +148,11 @@
 }
 .iconBtn:hover:not(:disabled) {
   background: var(--row-hover);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .iconBtn:focus-visible {
   outline: none;
-  color: var(--accent);
+  color: var(--accent-text);
   box-shadow: 0 0 0 2px var(--accent);
 }
 .iconBtn:disabled {
@@ -166,7 +166,7 @@
   flex: none;
   display: inline-flex;
   align-items: center;
-  color: var(--accent, #ffb000);
+  color: var(--accent-text);
 }
 .editRow {
   display: flex;
@@ -329,7 +329,7 @@
  * than a raw accent that would wash out on light — theme-adaptive and token-based (no hardcoded
  * hex, so a custom accent still cascades). */
 .summaryTag {
-  color: color-mix(in srgb, var(--accent) 64%, var(--text));
+  color: color-mix(in srgb, var(--accent-text) 64%, var(--text));
   font-weight: 600;
   white-space: pre; /* keep the tag's own spacing/emoji intact within the single-line summary */
 }
@@ -462,7 +462,7 @@
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--accent);
+  color: var(--accent-text);
   border: 1px solid var(--accent-soft);
   padding: 0 4px;
   line-height: 15px;

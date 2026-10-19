@@ -1,0 +1,277 @@
+/* Settings → Appearance pages (#1494). Shared shell classes (section, hint, subhead) stay in
+   Settings.module.css; this file holds the pickers the three appearance pages add. */
+
+/* ---- Mode cards: a miniature of the app per mode ---------------------------------------- */
+.modes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 8px;
+}
+.mode {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+.mode:hover {
+  border-color: var(--accent);
+}
+.mode.on {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+.mode:focus-visible,
+.swatch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.modePreview {
+  display: flex;
+  height: 96px;
+  overflow: hidden;
+  border-bottom: 1px solid var(--border);
+}
+.modeLabel {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 8px 10px;
+}
+.modeText {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.modeName {
+  font-weight: 700;
+  font-size: 13px;
+}
+.modeDesc {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+/* The radio dot is a dot, so it may be round (design: only LEDs/dots are). */
+.radio {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--text-3);
+  border-radius: 50%;
+}
+.on .radio {
+  border-color: var(--accent);
+}
+.on .radio::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* The miniature. Its ground is the card's OWN mode (fixed values mirroring tokens.css), so a
+   card shows its mode whichever is in force; the accent bits follow the live accent. */
+.mini {
+  --m-bg: #0d0e10;
+  --m-side: #131418;
+  --m-panel: #131418;
+  --m-line: #25282e;
+  --m-strong: #e8e9ec;
+  --m-mute: #6f747d;
+  flex: 1;
+  display: flex;
+  min-width: 0;
+  background: var(--m-bg);
+}
+.mini_light {
+  --m-bg: #e7e8ea;
+  --m-side: #f2f3f5;
+  --m-panel: #ffffff;
+  --m-line: #c9ccd2;
+  --m-strong: #14161a;
+  --m-mute: #9a9ea6;
+}
+.miniSide {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 26%;
+  padding: 8px 6px;
+  background: var(--m-side);
+  border-right: 1px solid var(--m-line);
+}
+.miniMain {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px;
+}
+.miniPanel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px;
+  background: var(--m-panel);
+  border: 1px solid var(--m-line);
+}
+.miniFoot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: auto;
+}
+.bar {
+  display: block;
+  height: 4px;
+  background: var(--m-mute);
+}
+.barStrong {
+  background: var(--m-strong);
+}
+.barAccent {
+  background: var(--accent);
+}
+.miniCta {
+  width: 34%;
+  height: 10px;
+  margin-left: auto;
+  background: var(--accent);
+}
+
+/* ---- Accent swatches -------------------------------------------------------------------- */
+.swatches {
+  display: grid;
+  grid-template-columns: repeat(8, 44px);
+  gap: 8px;
+  margin-top: 8px;
+}
+.swatch {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: var(--dot);
+  cursor: pointer;
+}
+.swatch.on {
+  box-shadow:
+    0 0 0 2px var(--panel),
+    0 0 0 4px var(--text);
+}
+/* The check takes the ink computed for THIS swatch (onAccentFor), so it reads on every colour. */
+.swatch.on::after {
+  content: "\2713";
+  font-weight: 700;
+  font-size: 16px;
+  color: var(--dot-ink);
+}
+.customRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+.well {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border: 1px dashed var(--text-3);
+  cursor: pointer;
+  overflow: hidden;
+}
+/* The native colour well fills the square, so it reads as one more swatch. */
+.well input[type="color"] {
+  width: 150%;
+  height: 150%;
+  margin: -25%;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+/* Sized for the whole value: `#rrggbb` is 7 characters of mono plus padding. The old 9ch box
+   with 8px padding clipped the last digit (#1494). */
+.hex {
+  box-sizing: border-box;
+  width: calc(7ch + 28px);
+  height: 44px;
+  padding: 0 12px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 13px;
+  text-transform: lowercase;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 0;
+}
+.hex:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+}
+.reset {
+  height: 44px;
+  padding: 0 14px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  cursor: pointer;
+}
+.reset:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.chosen {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.moved {
+  margin: 20px 0 0;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  border: 1px solid var(--line);
+}
+/* A link is TEXT, so it takes the AA-safe accent (#1494) — the raw accent is a fill colour. */
+.moved a {
+  color: var(--accent-text);
+}
+
+@media (max-width: 800px) {
+  .modePreview {
+    height: 72px;
+  }
+  .modeDesc {
+    display: none;
+  }
+  .swatches {
+    grid-template-columns: repeat(auto-fill, 44px);
+    gap: 10px;
+  }
+}

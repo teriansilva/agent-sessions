@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useConfig } from "../app/config";
 import { api } from "../lib/api";
@@ -10,6 +10,7 @@ import {
   storeAccent,
 } from "./applyAccent";
 import { AccentCtx } from "./accentStore";
+import { useTheme } from "./themeStore";
 
 /** Owns the active brand accent. Mirrors ThemeProvider (#172): the initial value is the
  *  device cache (already applied pre-paint by the inline boot script). On a brand-new device
@@ -24,9 +25,12 @@ export function AccentProvider({ children }: { children: ReactNode }) {
 
   // Keep the inline custom properties in sync with state (covers StrictMode remounts + any
   // path where state was set without applying).
-  useEffect(() => {
-    applyAccent(accent);
-  }, [accent]);
+  // Layout effect: --accent-text depends on the RESOLVED mode (#1494), so a mode flip (or Match
+  // device following the OS) must re-derive it before the frame paints, not after.
+  const { theme } = useTheme();
+  useLayoutEffect(() => {
+    applyAccent(accent, theme);
+  }, [accent, theme]);
 
   // One-time seed from the server when no *valid* local choice exists yet.
   useEffect(() => {

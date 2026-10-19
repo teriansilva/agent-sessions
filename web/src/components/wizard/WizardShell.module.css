@@ -87,7 +87,7 @@ button.railItem:focus-visible {
   border-left-color: var(--accent);
 }
 .current .num {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .todo {
   color: var(--text-3);

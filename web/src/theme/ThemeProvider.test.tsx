@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
 import { ConfigCtx } from "../app/config";
@@ -125,4 +125,60 @@ test("first load on a fresh device still seeds from the server (#172)", async ()
     expect(document.documentElement.dataset.theme).toBe("light"),
   );
   expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe("light"); // now cached locally
+});
+
+/** A controllable `prefers-color-scheme: dark` media query (#1494). */
+function fakeDeviceScheme(dark: boolean) {
+  const listeners = new Set<() => void>();
+  const mq = {
+    matches: dark,
+    addEventListener: (_: string, fn: () => void) => listeners.add(fn),
+    removeEventListener: (_: string, fn: () => void) => listeners.delete(fn),
+  };
+  const spy = vi.spyOn(window, "matchMedia").mockImplementation(
+    () => mq as unknown as MediaQueryList,
+  );
+  return {
+    flip(next: boolean) {
+      mq.matches = next;
+      listeners.forEach((fn) => fn());
+    },
+    restore: () => spy.mockRestore(),
+  };
+}
+
+function ChoiceHarness() {
+  const { theme, choice, setTheme } = useTheme();
+  return (
+    <button type="button" onClick={() => setTheme("system")}>
+      {`${choice}:${theme}`}
+    </button>
+  );
+}
+
+test("Match device resolves from the OS and follows it live; data-theme never says system (#1494)", async () => {
+  if (!window.matchMedia) window.matchMedia = (() => ({})) as never;
+  const device = fakeDeviceScheme(false);
+  try {
+    render(
+      <ConfigCtx.Provider value={null}>
+        <ThemeProvider>
+          <ChoiceHarness />
+        </ThemeProvider>
+      </ConfigCtx.Provider>,
+    );
+    expect(screen.getByRole("button")).toHaveTextContent("dark:dark");
+
+    await userEvent.click(screen.getByRole("button"));
+    expect(screen.getByRole("button")).toHaveTextContent("system:light");
+    expect(document.documentElement.dataset.theme).toBe("light");
+    expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe("system");
+    expect(api.setTheme).toHaveBeenCalledWith("system");
+
+    act(() => device.flip(true));
+    expect(screen.getByRole("button")).toHaveTextContent("system:dark");
+    expect(document.documentElement.dataset.theme).toBe("dark");
+  } finally {
+    device.restore();
+  }
 });

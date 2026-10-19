@@ -198,7 +198,7 @@ function wrap(node: ReactNode) {
   // Terminal uses useNavigate (gate Cancel → new session, #293), so it needs a Router context.
   return (
     <MemoryRouter>
-      <ThemeCtx.Provider value={{ theme: "dark", setTheme: () => {} }}>
+      <ThemeCtx.Provider value={{ theme: "dark", choice: "dark", setTheme: () => {} }}>
         {node}
       </ThemeCtx.Provider>
     </MemoryRouter>
@@ -517,7 +517,7 @@ function renderTerminal(
 ) {
   return render(
     <MemoryRouter>
-      <ThemeCtx.Provider value={{ theme: "dark", setTheme: () => {} }}>
+      <ThemeCtx.Provider value={{ theme: "dark", choice: "dark", setTheme: () => {} }}>
         <SessionsCtx.Provider
           value={{
             sessions,

@@ -317,7 +317,7 @@
 }
 .restartBtn:hover,
 .restartBtn:focus-visible {
-  color: var(--accent);
+  color: var(--accent-text);
   border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
 }
 .restartBtn:disabled {
@@ -363,7 +363,7 @@
   letter-spacing: 0.08em;
   text-transform: lowercase;
   white-space: nowrap;
-  color: var(--accent);
+  color: var(--accent-text);
   background: color-mix(in srgb, var(--bg-0) 88%, transparent);
   border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
   box-shadow: 0 0 12px var(--accent-glow);
@@ -380,7 +380,7 @@
   cursor: pointer;
 }
 .histPillError .histRetry {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .histSpin {
   width: 10px;
@@ -513,7 +513,7 @@
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--accent);
+  color: var(--accent-text);
   border: 1px solid var(--accent-soft);
   padding: 0 4px;
   line-height: 15px;
@@ -570,7 +570,7 @@
   font-size: 9px;
   font-weight: 600;
   line-height: 15px;
-  color: color-mix(in srgb, var(--accent) 64%, var(--text));
+  color: color-mix(in srgb, var(--accent-text) 64%, var(--text));
   border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
   padding: 0 4px;
   overflow: hidden;

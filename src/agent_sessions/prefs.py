@@ -32,11 +32,13 @@ from urllib.parse import urlsplit
 
 from .atomicjson import atomic_write_json, json_write_lock, read_json_doc
 
-# Mirror of web/src/theme/themes.ts THEME_IDS. Kept in sync by
+# Mirror of web/src/theme/themes.ts THEME_CHOICES. Kept in sync by
 # tests/test_prefs.py (server) + the SPA registry test (client).
 # `royal` is retired (#211): coerce_theme maps it (any unknown value) → DEFAULT_THEME = dark,
 # so a persisted legacy `royal` migrates cleanly instead of stranding on an invalid theme.
-THEMES: tuple[str, ...] = ("dark", "light")
+# `system` (#1494) is a CHOICE, not a palette: the client resolves it to dark/light from the
+# device's prefers-color-scheme, so the server only stores and returns it.
+THEMES: tuple[str, ...] = ("dark", "light", "system")
 DEFAULT_THEME = "dark"
 
 # Compose box default state on load. "auto" keeps the device heuristic (expanded on touch,

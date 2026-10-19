@@ -38,7 +38,7 @@
   color: var(--text-muted);
 }
 .toggle small.summaryOn {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .chev {
   flex: none;

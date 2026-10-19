@@ -6,23 +6,28 @@
 // no-flash cache (read synchronously at boot — see the inline script in index.html and
 // `bootAccent` below); server-side per-user persistence is layered on by AccentProvider.
 
-import { coerceAccent, DEFAULT_ACCENT, onAccentFor } from "./accent";
+import { accentTextFor, coerceAccent, DEFAULT_ACCENT, onAccentFor } from "./accent";
+import { prefersDark, readStoredTheme } from "./applyTheme";
+import { resolveTheme, type ThemeId } from "./themes";
 
 export const ACCENT_STORAGE_KEY = "tr-accent";
 
-/** Set the inline `--accent` + `--on-accent` overrides on <html>. The default accent is
- *  left to index.css (clear the inline props) so the unmodified app stays pixel-identical
- *  to the static stylesheet; a custom accent sets both props. */
-export function applyAccent(hex: string): void {
+/** Set the inline `--accent`, `--on-accent` and `--accent-text` overrides on <html>. The default
+ *  accent is left to tokens.css (clear the inline props) so the unmodified app stays
+ *  pixel-identical to the static stylesheet; a custom accent sets all three. `--accent-text` is
+ *  mode-dependent (#1494), so `mode` is the RESOLVED mode in force. */
+export function applyAccent(hex: string, mode: ThemeId = "dark"): void {
   const accent = coerceAccent(hex);
   const root = document.documentElement;
   if (accent === DEFAULT_ACCENT) {
     root.style.removeProperty("--accent");
     root.style.removeProperty("--on-accent");
+    root.style.removeProperty("--accent-text");
     return;
   }
   root.style.setProperty("--accent", accent);
   root.style.setProperty("--on-accent", onAccentFor(accent));
+  root.style.setProperty("--accent-text", accentTextFor(accent, mode));
 }
 
 /** The accent cached on this device, or the default. Never throws. */
@@ -46,5 +51,5 @@ export function storeAccent(hex: string): void {
  *  (which runs pre-paint); belt-and-suspenders call from main.tsx in case the inline
  *  script was stripped (e.g. a strict CSP). */
 export function bootAccent(): void {
-  applyAccent(readStoredAccent());
+  applyAccent(readStoredAccent(), resolveTheme(readStoredTheme(), prefersDark()));
 }

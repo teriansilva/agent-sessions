@@ -195,7 +195,7 @@
   font-size: 0.68rem;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .groupHead span {
   font-family: var(--font-mono);
@@ -383,7 +383,7 @@
 
 /* --- footer ----------------------------------------------------------------------- */
 .proj {
-  color: var(--accent);
+  color: var(--accent-text);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   /* A long project name must not push `Open session` off the row at 320px. */
@@ -417,7 +417,7 @@
 }
 .jump {
   margin-left: auto;
-  color: var(--accent);
+  color: var(--accent-text);
   text-decoration: none;
   padding: 4px 0;
   min-height: 30px;
@@ -554,7 +554,7 @@
   color: var(--status-degraded);
 }
 .degraded a {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 /* --- #1060 P3: the session's own menu, answerable from the card -----------------------------------

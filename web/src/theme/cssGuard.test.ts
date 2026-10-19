@@ -130,6 +130,9 @@ const PURPLE_ALLOWED: Record<string, readonly string[]> = {
   // it, so it is their content, not app chrome.
   // It moved to `lib/projectColors.ts` with the shared picker (#1187).
   "lib/projectColors.ts": ["#c792ea"],
+  // The Violet accent preset (#1494). An accent is the one colour the operator picks for the chrome,
+  // so it is theirs to make purple; it applies only when chosen, and the default stays amber.
+  "theme/accent.ts": ["#8b5cf6"],
 };
 
 const allowed = (at: string, hex: string) =>
@@ -160,5 +163,25 @@ describe("no hard-coded purple outside tokens.css (#948)", () => {
       .filter(({ at, m }) => isPurple(m[0]) && !allowed(at, m[0]))
       .map(({ at, m }) => `${at} ${m[0]}`);
     expect(hits).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------
+// The accent is a fill, not a text colour (#1494)
+// ---------------------------------------------------------------------------------------------------
+
+/** `--accent` is sized as a FILL: with the pale presets (Ice, Yellow, Sky) it is ~1.1–1.9:1 as text
+ *  on the light ground. Text — the `color` property — reads `--accent-text`, which accentTextFor()
+ *  keeps at AA for every preset in both modes. Fills, borders, outlines and shadows keep the raw
+ *  accent. */
+describe("no text colour reads the raw --accent (#1494)", () => {
+  // The raw accent ANYWHERE in a `color` value: directly, as a var() fallback
+  // (`var(--brand, var(--accent))`), or inside a color-mix — each paints raw-accent text somewhere.
+  const RAW_TEXT = /(?<![-\w])color:[^;{}\n]*var\(\s*--accent\s*[,)]/g;
+  test("in stylesheets", () => {
+    expect(findings(CSS, cssSource, RAW_TEXT).map(({ at }) => at)).toEqual([]);
+  });
+  test("in inline styles set from code", () => {
+    expect(findings(CODE, codeSource, RAW_TEXT).map(({ at }) => at)).toEqual([]);
   });
 });

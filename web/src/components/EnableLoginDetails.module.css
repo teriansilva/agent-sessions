@@ -21,7 +21,7 @@
   content: "▸";
   display: inline-block;
   margin-right: 8px;
-  color: var(--accent);
+  color: var(--accent-text);
   transition: transform 0.12s ease;
 }
 .details[open] .summary::before {

@@ -55,7 +55,7 @@
 }
 .tag svg {
   flex: none;
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .header {
   display: flex;
@@ -548,7 +548,7 @@
   color: var(--text-1);
 }
 .originLine > svg {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .quiet {
   margin-top: 12px;

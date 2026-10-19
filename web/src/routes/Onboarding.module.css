@@ -145,7 +145,7 @@
 }
 .step.done .stepDot {
   border-color: var(--accent);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .step.cur .stepDot {
   border-color: var(--accent);
@@ -283,7 +283,7 @@
   flex: 1;
   min-width: 0;
   background: var(--bg-1);
-  color: var(--accent);
+  color: var(--accent-text);
   border: 1px dashed var(--line-strong);
   border-radius: 0;
   padding: 8px 11px;

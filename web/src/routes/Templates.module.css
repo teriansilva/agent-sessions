@@ -33,7 +33,7 @@
   font-size: 1.15rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .sl,
 .meta {
@@ -200,7 +200,7 @@
 }
 .chipOn {
   border-color: var(--accent);
-  color: var(--accent);
+  color: var(--accent-text);
   background: var(--glass-strong);
 }
 .chipN {
@@ -208,7 +208,7 @@
   margin-left: 4px;
 }
 .chipOn .chipN {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 /* --- cards -------------------------------------------------------------------- */
@@ -282,7 +282,7 @@
   text-decoration: none;
 }
 .cname a:hover {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .cdesc {
   margin: 0;
@@ -346,11 +346,11 @@
 }
 .act:hover,
 .act:focus-visible {
-  color: var(--accent);
+  color: var(--accent-text);
   border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
 }
 .actUse {
-  color: var(--accent);
+  color: var(--accent-text);
   border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
 }
 .actDanger:hover,
@@ -426,7 +426,7 @@
   margin-top: 0;
 }
 .lbl .tok {
-  color: var(--accent);
+  color: var(--accent-text);
   text-transform: none;
   letter-spacing: 0.04em;
 }
@@ -549,7 +549,7 @@
 }
 .fields td.tokCell input {
   font-family: var(--font-mono);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .reqHint {
   display: none;
@@ -586,7 +586,7 @@
 }
 /* A secret field's kind select wears the accent: it changes how the template is sent. */
 .kindSecret {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .libVal,
 .libMissing {
@@ -629,7 +629,7 @@
   padding: 0 4px;
 }
 .addRow:hover {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .iconBtn {
   display: inline-flex;
@@ -705,7 +705,7 @@
   border-radius: 0;
 }
 .imAdd:hover {
-  color: var(--accent);
+  color: var(--accent-text);
   border-color: var(--accent);
 }
 .imAdd:disabled {
@@ -745,7 +745,7 @@
 .previewToggle {
   background: transparent;
   border: 0;
-  color: var(--accent);
+  color: var(--accent-text);
   font: inherit;
   font-family: var(--font-mono);
   font-size: 10px;
@@ -961,7 +961,7 @@
   cursor: pointer;
 }
 .retry:hover {
-  color: var(--accent);
+  color: var(--accent-text);
   border-color: var(--accent);
 }
 @media (max-width: 800px) {

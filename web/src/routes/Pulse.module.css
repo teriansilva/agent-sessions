@@ -33,7 +33,7 @@
   font-size: 1.15rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .window {
   font-family: var(--font-mono);
@@ -141,7 +141,7 @@
   background: var(--accent-glow);
 }
 .bannerIcon {
-  color: var(--accent);
+  color: var(--accent-text);
   flex: 0 0 auto;
   margin-top: 1px;
 }
@@ -299,7 +299,7 @@
   align-items: center;
   gap: 3px;
   font-size: 0.74rem;
-  color: var(--accent);
+  color: var(--accent-text);
   text-decoration: none;
 }
 .jump:hover {
@@ -382,7 +382,7 @@
   color: var(--text-2);
 }
 .askIcon {
-  color: var(--accent);
+  color: var(--accent-text);
   align-self: center;
 }
 .askSub {
@@ -510,7 +510,7 @@
   color: var(--text-3);
 }
 .askHint a {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 /* Filters (#754). Chips carry counts from the UNFILTERED set, so one never disappears because
@@ -560,7 +560,7 @@
 }
 .chipOn {
   border-color: var(--accent);
-  color: var(--accent);
+  color: var(--accent-text);
   background: var(--glass-strong);
 }
 .chipN {
@@ -568,7 +568,7 @@
   margin-left: 4px;
 }
 .chipOn .chipN {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .clearFilters {
   margin-left: auto;

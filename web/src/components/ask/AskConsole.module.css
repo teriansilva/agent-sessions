@@ -149,7 +149,7 @@
   font-size: 1rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .sp {
   flex: 1;
@@ -203,7 +203,7 @@
   color: var(--text-2);
 }
 .needsEndpoint a {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 /* #1171: the pending answer. A scan block sweeps a hairline track — brand accent, not a status
@@ -243,7 +243,7 @@
 .step::after {
   content: "▍";
   margin-left: 4px;
-  color: var(--accent);
+  color: var(--accent-text);
   animation: askBlink 1s steps(1) infinite;
 }
 .elapsed {

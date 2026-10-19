@@ -112,7 +112,7 @@ export function OpenLinkDialog({
         <p className={dlg.help}>
           Change or reset it in{" "}
           <Link to={settingsPath("appearance", "opening-links")} onClick={onCancel}>
-            Settings → Appearance → Opening links
+            Settings → Appearance → Interface → Opening links
           </Link>
           .
         </p>

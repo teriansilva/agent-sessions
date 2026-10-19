@@ -1,4 +1,4 @@
-import { beforeEach, expect, test } from "vitest";
+import { beforeEach, expect, test, vi } from "vitest";
 import {
   applyTheme,
   bootTheme,
@@ -41,4 +41,20 @@ test("bootTheme applies the device-cached theme", () => {
   storeTheme("dark");
   bootTheme();
   expect(document.documentElement.dataset.theme).toBe("dark");
+});
+
+test("system is stored as the choice and booted as the resolved mode (#1494)", () => {
+  storeTheme("system");
+  expect(readStoredTheme()).toBe("system");
+  // jsdom ships no matchMedia; give spyOn something to wrap.
+  if (!window.matchMedia) window.matchMedia = (() => ({})) as never;
+  const spy = vi
+    .spyOn(window, "matchMedia")
+    .mockImplementation(() => ({ matches: false }) as MediaQueryList);
+  try {
+    bootTheme();
+    expect(document.documentElement.dataset.theme).toBe("light");
+  } finally {
+    spy.mockRestore();
+  }
 });

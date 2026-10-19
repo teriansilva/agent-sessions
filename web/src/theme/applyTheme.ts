@@ -3,7 +3,13 @@
 // no-flash cache (read synchronously at boot — see the inline script in index.html and
 // `bootTheme` below); server-side per-user persistence is layered on in a later PR.
 
-import { coerceTheme, DEFAULT_THEME, type ThemeId } from "./themes";
+import {
+  coerceThemeChoice,
+  DEFAULT_THEME,
+  resolveTheme,
+  type ThemeChoice,
+  type ThemeId,
+} from "./themes";
 
 export const THEME_STORAGE_KEY = "tr-theme";
 
@@ -13,17 +19,31 @@ export function applyTheme(id: ThemeId): void {
   document.documentElement.dataset.theme = id;
 }
 
-/** The theme cached on this device, or the default. Never throws (private-mode/storage
- *  disabled → default). */
-export function readStoredTheme(): ThemeId {
+/** The media query `system` follows (#1494). Mirrored by the inline boot script in index.html
+ *  and by share/main.tsx. */
+export const PREFERS_DARK_QUERY = "(prefers-color-scheme: dark)";
+
+/** The device's colour-scheme answer. A browser without matchMedia (or a test environment)
+ *  answers dark, the BattleLab default. */
+export function prefersDark(): boolean {
   try {
-    return coerceTheme(localStorage.getItem(THEME_STORAGE_KEY));
+    return window.matchMedia?.(PREFERS_DARK_QUERY).matches ?? true;
+  } catch {
+    return true;
+  }
+}
+
+/** The theme choice cached on this device, or the default. Never throws (private-mode/storage
+ *  disabled → default). */
+export function readStoredTheme(): ThemeChoice {
+  try {
+    return coerceThemeChoice(localStorage.getItem(THEME_STORAGE_KEY));
   } catch {
     return DEFAULT_THEME;
   }
 }
 
-export function storeTheme(id: ThemeId): void {
+export function storeTheme(id: ThemeChoice): void {
   try {
     localStorage.setItem(THEME_STORAGE_KEY, id);
   } catch {
@@ -35,5 +55,5 @@ export function storeTheme(id: ThemeId): void {
  *  (which runs pre-paint); this is the belt-and-suspenders call from main.tsx in case the
  *  inline script was stripped (e.g. a strict CSP). */
 export function bootTheme(): void {
-  applyTheme(readStoredTheme());
+  applyTheme(resolveTheme(readStoredTheme(), prefersDark()));
 }

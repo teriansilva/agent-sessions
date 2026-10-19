@@ -19,16 +19,16 @@
 }
 .trigger:hover {
   background: var(--row-hover);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .trigger:focus-visible {
   outline: none;
-  color: var(--accent);
+  color: var(--accent-text);
   box-shadow: 0 0 0 2px var(--accent);
 }
 .trigger[aria-expanded="true"] {
   background: var(--row-hover);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .scrim {
@@ -111,7 +111,7 @@
   color: var(--text);
 }
 .item:hover:not([aria-disabled]) .itemIcon {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .item:focus-visible,
 .item:focus {
@@ -120,7 +120,7 @@
   color: var(--text);
 }
 .item:focus .itemIcon {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .item[aria-disabled] {
   opacity: 0.4;

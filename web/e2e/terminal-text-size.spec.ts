@@ -252,7 +252,7 @@ test("the size survives a reload, per device (#859)", async ({ page }) => {
 test("Settings' stepper meets the 44px touch floor and disables at the clamps (#859)", async ({
   page,
 }) => {
-  await page.goto(settingsPath("appearance"));
+  await page.goto(settingsPath("terminal-appearance"));
   const smaller = page.getByRole("button", { name: /smaller terminal text/i });
   const bigger = page.getByRole("button", { name: /bigger terminal text/i });
   await expect(smaller).toBeVisible();
@@ -285,7 +285,7 @@ test("Settings' stepper meets the 44px touch floor and disables at the clamps (#
 test("the stepper is reachable and operable by keyboard (#859)", async ({
   page,
 }) => {
-  await page.goto(settingsPath("appearance"));
+  await page.goto(settingsPath("terminal-appearance"));
   const smaller = page.getByRole("button", { name: /smaller terminal text/i });
   await smaller.focus();
   await expect(smaller).toBeFocused();

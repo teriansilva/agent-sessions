@@ -107,7 +107,7 @@
 .moreKey:hover,
 .toggle:hover,
 .mic:hover:not(:disabled) {
-  color: var(--accent);
+  color: var(--accent-text);
   border-color: var(--accent-soft);
   background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
@@ -168,7 +168,7 @@
   cursor: pointer;
 }
 .keyMenu button:hover {
-  color: var(--accent);
+  color: var(--accent-text);
   background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 .keyMenuIcon {

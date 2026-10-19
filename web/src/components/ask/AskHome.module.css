@@ -80,7 +80,7 @@
 .seg label:has(input:checked) {
   position: relative;
   border-color: var(--accent);
-  color: var(--brand, var(--accent));
+  color: var(--brand, var(--accent-text));
 }
 .seg label:has(input:focus-visible) {
   outline: 2px solid var(--accent);

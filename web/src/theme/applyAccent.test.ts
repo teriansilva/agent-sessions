@@ -1,5 +1,5 @@
 import { beforeEach, expect, test } from "vitest";
-import { DEFAULT_ACCENT } from "./accent";
+import { accentTextFor, DEFAULT_ACCENT } from "./accent";
 import {
   ACCENT_STORAGE_KEY,
   applyAccent,
@@ -58,4 +58,15 @@ test("bootAccent applies the device-cached accent", () => {
   expect(document.documentElement.style.getPropertyValue("--accent")).toBe(
     "#3b82f6",
   );
+});
+
+test("--accent-text follows the mode for a custom accent, and clears with the default (#1494)", () => {
+  applyAccent("#dbe4ee", "light"); // Ice: unreadable raw on light → mixed toward the ink
+  const s = document.documentElement.style;
+  expect(s.getPropertyValue("--accent-text")).toBe(accentTextFor("#dbe4ee", "light"));
+  expect(s.getPropertyValue("--accent-text")).not.toBe("#dbe4ee");
+  applyAccent("#dbe4ee", "dark"); // Ice already holds AA on dark → the accent itself
+  expect(s.getPropertyValue("--accent-text")).toBe("#dbe4ee");
+  applyAccent(DEFAULT_ACCENT, "light");
+  expect(s.getPropertyValue("--accent-text")).toBe(""); // tokens.css carries the default per mode
 });

@@ -346,7 +346,7 @@
   color: var(--text-3);
 }
 .rowIconDir {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .rowName {
   min-width: 0;
@@ -694,7 +694,7 @@
   cursor: pointer;
 }
 .linkBtn:hover {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .linkBtn:focus-visible {
   outline: 2px solid var(--accent);
@@ -1044,7 +1044,7 @@
 .sendFlash,
 .sendFlash:hover {
   border-color: var(--accent);
-  color: var(--accent);
+  color: var(--accent-text);
   background: color-mix(in srgb, var(--accent) 14%, transparent);
   opacity: 1;
 }
@@ -1124,7 +1124,7 @@
 }
 .queueClose:hover,
 .queueClose:focus-visible {
-  color: var(--accent);
+  color: var(--accent-text);
   outline: none;
 }
 .queueRefusal {
@@ -1173,7 +1173,7 @@
   color: var(--git-add-fg);
 }
 .qBusy {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .qWarn {
   color: var(--git-mod-fg);
@@ -1233,7 +1233,7 @@
 }
 .ctrlBtn:hover:not(:disabled) {
   border-color: var(--accent);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .ctrlBtn:focus-visible {
   outline: 1px solid var(--accent);
@@ -1345,7 +1345,7 @@
 }
 .branchTrigger:hover,
 .branchTrigger:focus-visible {
-  color: var(--accent);
+  color: var(--accent-text);
   outline: none;
 }
 .branchTrigger:focus-visible {
@@ -1365,7 +1365,7 @@
 /* A disabled control keeps its TITLE, which carries the refusal reason — greying it out without
  * saying why is the failure mode this panel exists to avoid. */
 /* Amber on the primary action only, so the tab keeps one accent surface — but FILLED, not
- * amber text. Measured: `color: var(--accent)` on the light theme's ground is 1.83:1, nowhere
+ * amber text. Measured: `color: var(--accent-text)` on the light theme's ground is 1.83:1, nowhere
  * near the 4.5 AA floor, because the accent is a light hue and the token is theme-shared
  * (`index.css` says so directly: "Dark can use the status hues directly; light cannot"). The
  * design system's own answer for a primary surface is the CTA pair, which is ~11:1 on both. */
@@ -1396,7 +1396,7 @@
 .groupBtn:hover:not(:disabled),
 .groupBtn:focus-visible {
   border-color: var(--line-strong);
-  color: var(--accent);
+  color: var(--accent-text);
   outline: none;
 }
 .groupBtn:disabled {
@@ -1422,7 +1422,7 @@
 }
 .rowAct:hover:not(:disabled),
 .rowAct:focus-visible {
-  color: var(--accent);
+  color: var(--accent-text);
   background: var(--row-hover);
   outline: none;
 }
@@ -1532,7 +1532,7 @@
 /* The matched run. `mark` paints a yellow ground by default, which is not this palette. */
 .menuHit {
   background: transparent;
-  color: var(--accent);
+  color: var(--accent-text);
 }
 @media (pointer: coarse) {
   .menuSearch {
@@ -1818,7 +1818,7 @@
 }
 .logSha {
   flex: none;
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .logSubject {
   flex: 1 1 auto;
