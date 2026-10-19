@@ -1,5 +1,5 @@
 /* Existing memory (#1471): the card sits with the agent instructions and uses the page's tokens. */
-.card { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; padding: 12px; background: var(--panel); border: 1px solid var(--border); }
+.card { display: flex; flex-direction: column; gap: 8px; padding: 14px; background: var(--panel); border: 1px solid var(--border); }
 .eyebrow { margin: 0; color: var(--text-2); font: 11px var(--font-mono); letter-spacing: .08em; text-transform: uppercase; font-weight: 400; }
 .muted, .small, .result { color: var(--text-2); font-size: 12px; line-height: 1.55; margin: 0; }
 .muted { font-size: 13px; }

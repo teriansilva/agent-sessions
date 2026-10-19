@@ -132,7 +132,7 @@ function Canvas({ notes, selected, onSelect }: Props) {
         }}
       >
         <Background variant={BackgroundVariant.Lines} gap={48} color="var(--line)" />
-        <Controls showInteractive={false} />
+        <Controls showInteractive={false} position="bottom-right" />
       </ReactFlow>
       <div className={styles.legend}>
         <span><i className={styles.solid} /> wrote</span>

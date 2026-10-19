@@ -191,13 +191,33 @@ export default function Memory() {
 
   const errorView = error ? <div className={styles.error} role="alert">{message(error)}</div> : null;
 
-  const switchView = view && project && (
-    <div className={styles.switchRow}>
-      <button type="button" role="switch" aria-checked={view.enabled} aria-label={`Shared memory for ${project.name}`} className={styles.switch} disabled={busy} onClick={toggle}>
-        <span className={styles.knob} aria-hidden="true" />
-        <span className={styles.switchLabel}>{view.enabled ? "ON" : "OFF"}</span>
-      </button>
-      <span className={styles.hint}>{view.enabled ? "Sessions already running join after a restart." : "Off by default. Turning it on reaches new sessions only."}</span>
+
+  // The selected project's bar: what it is, whether it's on, and what can be done to it — over the
+  // graph, so the switch and Clear are next to the notes they act on, not in the project rail.
+  const projectBar = view && project && (
+    <div className={styles.projectBar} aria-label={`Project ${project.name}`} role="group">
+      <div className={styles.projectMain}>
+        <div className={styles.projectTitle}>
+          {!mobile && <>
+            <span className={styles.swatch} style={{ background: project.color || "var(--engine-slate)" }} aria-hidden="true" />
+            <h2>{project.name}</h2>
+            <span className={styles.meta}>{notes.length} / {view.limits.notes} notes</span>
+          </>}
+          <button type="button" role="switch" aria-checked={view.enabled} aria-label={`Shared memory for ${project.name}`} className={styles.switch} disabled={busy} onClick={toggle}>
+            <span className={styles.knob} aria-hidden="true" />
+            <span className={styles.switchLabel}>{view.enabled ? "ON" : "OFF"}</span>
+          </button>
+        </div>
+        <span className={styles.hint}>{view.enabled ? "Sessions already running join after a restart." : "Off by default. Turning it on reaches new sessions only."}</span>
+      </div>
+      <div className={styles.barActions}>
+        {!mobile && <div className={styles.seg} role="group" aria-label="View">
+          <button type="button" aria-pressed={shown === "graph"} onClick={() => setMode("graph")}>Graph</button>
+          <button type="button" aria-pressed={shown === "list"} onClick={() => setMode("list")}>List</button>
+        </div>}
+        <a className={buttons.ghost} href={api.memoryExportUrl(view.project.id)} download><Download size={14} aria-hidden="true" /> Export</a>
+        <button type="button" className={`${buttons.ghost} ${styles.dangerButton}`} disabled={busy} onClick={e => pid && setConfirm({ kind: "clear", pid, returnTo: e.currentTarget })}>Clear…</button>
+      </div>
     </div>
   );
 
@@ -218,6 +238,7 @@ export default function Memory() {
     </section>
   );
 
+  const emptyText = query || typeFilter || agent ? "No notes match." : "No notes yet. Agents add them by writing into their inbox.";
   const list = (
     <section className={styles.list} aria-label="Notes">
       <label className={styles.search}><Search size={16} aria-hidden="true" /><input aria-label="Search notes" placeholder="Search notes" value={query} onChange={e => setQuery(e.target.value)} /></label>
@@ -240,7 +261,7 @@ export default function Memory() {
           </span>
         </button>
       ))}
-      {visible.length === 0 && <p className={styles.empty}>{query || typeFilter || agent ? "No notes match." : "No notes yet. Agents add them by writing into their inbox."}</p>}
+      {visible.length === 0 && <p className={styles.empty}>{emptyText}</p>}
     </section>
   );
 
@@ -330,16 +351,6 @@ export default function Memory() {
     <div className={styles.page}>
       <header className={styles.head}>
         <div><div className={styles.eyebrow}>Library / Shared memory</div><h1>Memory</h1></div>
-        {view && (
-          <div className={styles.actions}>
-            {!mobile && <div className={styles.seg} role="group" aria-label="View">
-              <button type="button" aria-pressed={shown === "graph"} onClick={() => setMode("graph")}>Graph</button>
-              <button type="button" aria-pressed={shown === "list"} onClick={() => setMode("list")}>List</button>
-            </div>}
-            <a className={buttons.ghost} href={api.memoryExportUrl(view.project.id)} download><Download size={14} aria-hidden="true" /> Export</a>
-            <button type="button" className={`${buttons.ghost} ${styles.dangerButton}`} disabled={busy} onClick={e => pid && setConfirm({ kind: "clear", pid, returnTo: e.currentTarget })}>Clear…</button>
-          </div>
-        )}
       </header>
       {statusText && <p className={styles.status} role="status">{statusText}</p>}
       {view && view.withheld.notes > 0 && (
@@ -359,24 +370,25 @@ export default function Memory() {
                   {projects.map(p => <option key={p.id} value={p.id}>{p.name}{p.enabled ? ` · ${p.notes}` : " · off"}</option>)}
                 </select>
               </label>
-            ) : projects.map(p => (
+            ) : <>
+              <h2 className={styles.eyebrow}>Projects</h2>
+              {projects.map(p => (
               <button key={p.id} type="button" className={styles.project} aria-pressed={p.id === pid} disabled={busy} onClick={() => setParams({ project: p.id })}>
                 <span className={styles.swatch} style={{ background: p.color || "var(--engine-slate)" }} aria-hidden="true" />
                 <span className={styles.projectName}>{p.name}</span>
                 <span className={styles.count}>{p.enabled ? p.notes : "—"}</span>
                 <span className={styles.onoff} data-on={p.enabled}>{p.enabled ? "ON" : "OFF"}</span>
               </button>
-            ))}
-            {switchView}
-            {!mobile && importCard}
-            {!mobile && instructions}
+              ))}
+            </>}
           </nav>
           <main className={styles.main}>
             {!view && !error && <p className={styles.empty}>Loading notes…</p>}
+            {projectBar}
             {view && (offState ? (
               <>
                 {offState}
-                {/* The desktop rail carries the paragraph; on a phone the off state must, too —
+                {/* The desktop side column carries the paragraph; on a phone the off state must, too —
                     it's what the operator pastes before turning memory on. */}
                 {mobile && importCard}
                 {mobile && instructions}
@@ -396,7 +408,8 @@ export default function Memory() {
                 )}
                 {mobile && current ? inspector : (
                   <>
-                    {shown === "graph" && (
+                    {shown === "graph" && visible.length === 0 && <div className={styles.graphEmpty}><p>{emptyText}</p></div>}
+                    {shown === "graph" && visible.length > 0 && (
                       <div className={styles.graph}>
                         <Suspense fallback={<p className={styles.empty}>Loading graph…</p>}>
                           <MemoryGraph notes={visible} selected={selected} onSelect={s => { setSelected(s); setDraft(null); }} />
@@ -412,8 +425,12 @@ export default function Memory() {
               </>
             ))}
           </main>
-          {!mobile && view && !offState && (
-            <div className={styles.side}>{inspector ?? <p className={styles.empty}>Select a note to see who wrote it and what it links to.</p>}</div>
+          {!mobile && view && (
+            <div className={styles.side}>
+              {!offState && (inspector ?? <p className={styles.placeholder}>Select a note to see who wrote it and what it links to.</p>)}
+              {importCard}
+              {instructions}
+            </div>
           )}
         </div>
       )}

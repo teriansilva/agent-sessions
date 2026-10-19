@@ -397,3 +397,48 @@ for (const theme of ["dark", "light"] as const) {
     expect(await contrastFailures(page)).toEqual([]);
   });
 }
+
+/** Layout polish: on a wide desktop (the operator's 2135×1094) the page uses the width it has.
+ *  The project rail is navigation only; the selected project's switch and actions sit in a bar over
+ *  the graph; the graph fills the height; the existing-memory card and the agent paragraph sit in
+ *  the right column beside it, and an empty project says so where the graph would be. */
+test.describe("wide desktop layout", () => {
+  test.use({ viewport: { width: 2135, height: 1094 } });
+
+  test("the page spans the screen, the graph fills the height, setup sits beside the graph", async ({ page, isMobile }) => {
+    test.skip(isMobile, "a wide-desktop layout fact");
+    await mockMemory(page);
+    await page.goto(MEMORY_PATH);
+    const graph = page.getByTestId("memory-graph");
+    await expect(graph.getByTestId("memory-node-typed-ids")).toBeVisible();
+    const main = (await page.locator("main").last().boundingBox())!;
+    const rail = (await page.getByRole("navigation", { name: "Projects" }).boundingBox())!;
+    const g = (await graph.boundingBox())!;
+    const card = (await page.getByRole("region", { name: "Existing memory" }).boundingBox())!;
+    const paragraph = (await page.getByRole("region", { name: "Agent instructions" }).boundingBox())!;
+    const sw = (await page.getByRole("switch", { name: "Shared memory for agent-sessions" }).boundingBox())!;
+    // The rail's left edge to the right column's right edge covers most of the screen.
+    expect(card.x + card.width - rail.x, "layout width").toBeGreaterThanOrEqual(2135 * 0.88);
+    expect(g.height, "graph height").toBeGreaterThanOrEqual(620);
+    expect(card.x, "existing memory beside the graph").toBeGreaterThanOrEqual(g.x + g.width);
+    expect(paragraph.x, "agent paragraph beside the graph").toBeGreaterThanOrEqual(g.x + g.width);
+    expect(sw.x, "the switch belongs to the project bar, over the graph").toBeGreaterThanOrEqual(main.x);
+    await expect(page.getByRole("navigation", { name: "Projects" }).getByRole("region")).toHaveCount(0);
+    // The graph's legend never covers its zoom controls.
+    const legend = (await graph.getByText("Reads aren't drawn").locator("..").boundingBox())!;
+    const controls = (await page.locator(".react-flow__controls").boundingBox())!;
+    const overlap = legend.x < controls.x + controls.width && controls.x < legend.x + legend.width
+      && legend.y < controls.y + controls.height && controls.y < legend.y + legend.height;
+    expect(overlap, "legend overlaps the zoom controls").toBe(false);
+    expect(await contrastFailures(page)).toEqual([]);
+  });
+
+  test("a project with no notes says so where the graph would be", async ({ page, isMobile }) => {
+    test.skip(isMobile, "a wide-desktop layout fact");
+    await mockMemory(page, { notes: [], pending: [], refused: [], quarantine: [] });
+    await page.goto(MEMORY_PATH);
+    await expect(page.getByRole("switch", { name: "Shared memory for agent-sessions" })).toBeVisible();
+    await expect(page.getByText("No notes yet.", { exact: false }).first()).toBeVisible();
+    await expect(page.getByTestId("memory-graph")).toHaveCount(0);
+  });
+});
