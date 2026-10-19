@@ -485,7 +485,13 @@ def _mutate_document(
     # revisions inside it right before byte one (#1090, Hermes on #1105).
     from . import session_input
 
-    with session_input.mutation_fence(), json_write_lock(path):
+    # The registration fence too (#1443): a secret stored here becomes part of the redaction set at
+    # one instant relative to every fenced redacting writer, never in the middle of one.
+    with (
+        session_input.mutation_fence(),
+        template_secrets.registration_fence(),
+        json_write_lock(path),
+    ):
         original: dict = {}
         records, damaged = _read(path, document=original)
         if damaged and not (repair_references and _repairable_references(original, records)):

@@ -124,7 +124,7 @@ EXPECTED_DEFAULT_SHA = {
     # #1088: the objective judge — quotes verified verbatim, confidence against the floor.
     "mission_judge": "604e82e9d100c1dc",
     # #1443: the Ask conversation — read-only tools, guarded.
-    "ask_orchestrator": "94544353e9576d2f",
+    "ask_orchestrator": "f96a1d714278e1e3",
 }
 
 

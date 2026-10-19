@@ -1,0 +1,256 @@
+/* Ask's cards (#1443 Phase 2) — the reviewed mockup's `.card` family, on the app's tokens. A raised
+ * surface inside the turn: square, 1px rule, no colour of its own. The one filled control is the
+ * effect; state is an LED plus a word, never colour alone (docs/design.md). */
+
+.card {
+  margin-top: 10px;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-2);
+}
+.edgeWarn {
+  border-left: 3px solid var(--status-degraded);
+}
+.edgeBad {
+  border-left: 3px solid var(--status-down);
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.k {
+  color: var(--text-3);
+  font-weight: 600;
+}
+.st {
+  margin-left: auto;
+  font-weight: 600;
+  color: var(--text-3);
+  letter-spacing: 0.08em;
+}
+
+.body {
+  padding: 10px;
+}
+.muted {
+  opacity: 0.72;
+}
+.lead {
+  margin: 0 0 8px;
+  font-size: 0.95rem;
+  line-height: 1.45;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 5px 10px;
+  margin: 0;
+  font-size: 0.85rem;
+}
+.kv dt {
+  padding-top: 3px;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.kv dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-1);
+}
+
+.blockLabel {
+  margin: 10px 0 4px;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+/* The nudge's exact bytes, verbatim: mono, inset well, nothing elided. */
+.verbatim {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.55;
+  color: var(--text-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.note {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin-top: 8px;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--text-2);
+}
+.note svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--text-3);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px;
+  border-top: 1px solid var(--line);
+}
+.cta,
+.ghost,
+.opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 0 14px;
+  cursor: pointer;
+}
+.cta {
+  border: 0;
+  background: var(--cta-bg-1);
+  color: var(--cta-text);
+  font-weight: 700;
+  font-size: 0.85rem;
+}
+.ghost {
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.opt {
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text-1);
+  font-size: 0.85rem;
+}
+.opt:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.cta:disabled,
+.ghost:disabled,
+.opt:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+/* design.md §8: focus is a 2px accent reticle, never the UA ring. */
+.cta:focus-visible,
+.ghost:focus-visible,
+.opt:focus-visible,
+.freeRow input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.opts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.freeRow {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+.freeRow input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-3);
+  color: var(--text-1);
+  font-size: 0.85rem;
+}
+
+/* The outcome row replaces the actions once decided. */
+.outcome {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--line);
+}
+.led {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.led_ok {
+  background: var(--status-up);
+}
+.led_warn {
+  background: var(--status-degraded);
+}
+.led_bad {
+  background: var(--status-down);
+}
+.led_neutral {
+  background: var(--status-unknown);
+}
+.ow {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.ow_ok {
+  color: var(--ok-text);
+}
+.ow_warn {
+  color: var(--warn-text);
+}
+.ow_bad {
+  color: var(--danger-text);
+}
+.ow_neutral {
+  color: var(--text-2);
+}
+.od {
+  flex: 1 1 140px;
+  min-width: 0;
+  font-size: 0.82rem;
+  color: var(--text-2);
+}
+
+/* ≤800px: actions stack full width at the 44px floor (design.md); cards take the column. */
+@media (max-width: 800px) {
+  .actions {
+    flex-direction: column;
+  }
+  .actions > * {
+    width: 100%;
+    justify-content: center;
+  }
+  .kv {
+    grid-template-columns: 64px minmax(0, 1fr);
+  }
+}

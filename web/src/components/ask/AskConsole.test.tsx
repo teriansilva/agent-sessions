@@ -35,6 +35,7 @@ import { api, ApiError } from "../../lib/api";
 import type {
   AskConversation,
   AskConversationTurn,
+  AskProposalCard,
   AskStoredMatch,
   AskStoredMissionMatch,
   AskTurnEvent,
@@ -53,6 +54,8 @@ vi.mock("../../lib/api", async () => {
       askConversation: vi.fn(),
       askNewConversation: vi.fn(),
       askMessageStream: vi.fn(),
+      approveAction: vi.fn(),
+      rejectAction: vi.fn(),
     },
   };
 });
@@ -111,9 +114,10 @@ function conversation(id: string, turns: AskConversationTurn[] = []): AskConvers
 
 /** The server settles every question with `result`. */
 function answerWith(result: Result) {
-  vi.mocked(api.askMessageStream).mockImplementation(async (_id, body) =>
-    turnOf(body.text, body.turnId, result),
-  );
+  vi.mocked(api.askMessageStream).mockImplementation(async (_id, body) => ({
+    ...turnOf(body.text, body.turnId, result),
+    answers: body.answers ?? null,
+  }));
 }
 
 function twoConversations() {
@@ -136,6 +140,8 @@ beforeEach(() => {
   vi.mocked(api.askConversations).mockReset();
   vi.mocked(api.askConversation).mockReset();
   vi.mocked(api.askNewConversation).mockReset();
+  vi.mocked(api.approveAction).mockReset();
+  vi.mocked(api.rejectAction).mockReset();
   vi.mocked(api.askConversations).mockResolvedValue({ conversations: [], configured: true });
   vi.mocked(api.askNewConversation).mockResolvedValue(conversation(CID));
   vi.mocked(api.askConversation).mockResolvedValue(conversation(CID));
@@ -852,4 +858,350 @@ test("a refresh that reorders the open switcher: Enter opens the focused convers
   );
   await userEvent.keyboard("{Enter}");
   expect(api.askConversation).not.toHaveBeenCalledWith(OTHER);
+});
+
+// --- #1443 Phase 2: asking back and nudges ---------------------------------------------------
+
+const QID = "5e5e5e5e-0000-4000-8000-000000000001";
+const AID = "a".repeat(32);
+
+function askedTurn(answered = false, allowText = true): AskConversationTurn {
+  return {
+    ...turnOf("start something", "t-ask", { answer: "Which project?" }),
+    ask: {
+      question_id: QID,
+      question: "Which project?",
+      options: ["api", "web"],
+      allow_text: allowText,
+      answered,
+    },
+  };
+}
+
+function nudge(over: Partial<AskProposalCard> = {}): AskProposalCard {
+  return {
+    action_id: AID,
+    kind: "nudge",
+    key: "claude:abc",
+    title: "api rebase",
+    text: "Rebase onto main, then run the tests.",
+    state: "proposed",
+    projection: "actionable",
+    can_approve: true,
+    can_reject: true,
+    detail: "",
+    ...over,
+  };
+}
+
+function withConversation(turns: AskConversationTurn[]) {
+  vi.mocked(api.askConversations).mockResolvedValue({
+    conversations: [{ id: CID, title: "x", created_at: 1, updated_at: 2 }],
+    configured: true,
+  });
+  vi.mocked(api.askConversation).mockResolvedValue(conversation(CID, turns));
+}
+
+test("a question card answers by OPTION INDEX — the server sends the reply it stored", async () => {
+  withConversation([askedTurn()]);
+  answerWith({ answer: "ok, web" });
+  mount(<AskConsole configured />);
+  const card = await screen.findByTestId("ask-question");
+  expect(within(card).getByText("Which project?", { selector: "p" })).toBeInTheDocument();
+  await userEvent.click(within(card).getByRole("button", { name: "web" }));
+  await screen.findByText("ok, web");
+  const [id, body] = vi.mocked(api.askMessageStream).mock.calls[0];
+  expect(id).toBe(CID);
+  expect(body).toMatchObject({ text: "", answers: QID, option: 1 });
+  // The settled answer names the question, so its card reads Answered without a reload.
+  expect(within(card).getByText("Answered")).toBeInTheDocument();
+  for (const b of within(card).getAllByTestId("ask-question-option")) expect(b).toBeDisabled();
+});
+
+test("free text answers when the question allows it", async () => {
+  withConversation([askedTurn()]);
+  answerWith({ answer: "noted" });
+  mount(<AskConsole configured />);
+  const card = await screen.findByTestId("ask-question");
+  await userEvent.type(within(card).getByTestId("ask-question-text"), "the docs one");
+  await userEvent.click(within(card).getByRole("button", { name: "Answer" }));
+  await screen.findByText("noted");
+  expect(vi.mocked(api.askMessageStream).mock.calls[0][1]).toMatchObject({
+    text: "the docs one",
+    answers: QID,
+  });
+  expect(vi.mocked(api.askMessageStream).mock.calls[0][1]).not.toHaveProperty("option");
+});
+
+test("an answered question offers nothing more, and a question without free text has no box", async () => {
+  withConversation([askedTurn(true, false)]);
+  mount(<AskConsole configured />);
+  const card = await screen.findByTestId("ask-question");
+  expect(within(card).getByText("Answered")).toBeInTheDocument();
+  for (const b of within(card).getAllByTestId("ask-question-option")) expect(b).toBeDisabled();
+  expect(within(card).queryByTestId("ask-question-text")).toBeNull();
+});
+
+test("a nudge card shows the exact text; Send posts the approve route and the card reads the outcome back", async () => {
+  const turn = { ...turnOf("tell it to rebase", "t-n", { answer: "Proposed." }), proposals: [nudge()] };
+  withConversation([turn]);
+  mount(<AskConsole configured />);
+  const card = await screen.findByTestId("ask-nudge");
+  expect(within(card).getByTestId("ask-nudge-text")).toHaveTextContent(
+    "Rebase onto main, then run the tests.",
+  );
+  vi.mocked(api.approveAction).mockResolvedValue({} as never);
+  vi.mocked(api.askConversation).mockResolvedValue(
+    conversation(CID, [
+      { ...turn, proposals: [nudge({ state: "delivered", projection: "settled", can_approve: false, can_reject: false })] },
+    ]),
+  );
+  await userEvent.click(within(card).getByRole("button", { name: "Send to api rebase" }));
+  expect(api.approveAction).toHaveBeenCalledWith(AID);
+  const outcome = await screen.findByTestId("ask-nudge-outcome");
+  expect(outcome).toHaveTextContent("Delivered");
+  expect(outcome).toHaveTextContent("That is not the agent having done it.");
+  expect(screen.queryByTestId("ask-nudge-send")).toBeNull();
+});
+
+test("a refused approve (409 out of date) is an outcome the card reads back, not an error", async () => {
+  const turn = { ...turnOf("tell it", "t-n", { answer: "Proposed." }), proposals: [nudge()] };
+  withConversation([turn]);
+  mount(<AskConsole configured />);
+  const card = await screen.findByTestId("ask-nudge");
+  vi.mocked(api.approveAction).mockRejectedValue(new ApiError(409, "the screen moved"));
+  vi.mocked(api.askConversation).mockResolvedValue(
+    conversation(CID, [
+      { ...turn, proposals: [nudge({ state: "stale", projection: "settled", can_approve: false, can_reject: false })] },
+    ]),
+  );
+  await userEvent.click(within(card).getByTestId("ask-nudge-send"));
+  expect(await screen.findByTestId("ask-nudge-outcome")).toHaveTextContent(
+    "Out of date",
+  );
+  expect(screen.getByTestId("ask-nudge-outcome")).toHaveTextContent("nothing was sent");
+});
+
+test("Dismiss posts the reject route", async () => {
+  const turn = { ...turnOf("tell it", "t-n", { answer: "Proposed." }), proposals: [nudge()] };
+  withConversation([turn]);
+  vi.mocked(api.rejectAction).mockResolvedValue({} as never);
+  mount(<AskConsole configured />);
+  await userEvent.click(await screen.findByTestId("ask-nudge-dismiss"));
+  expect(api.rejectAction).toHaveBeenCalledWith(AID);
+  expect(api.approveAction).not.toHaveBeenCalled();
+});
+
+test("a card whose ledger could not be read offers no control and says why", async () => {
+  const turn = {
+    ...turnOf("tell it", "t-n", { answer: "Proposed." }),
+    proposals: [nudge({ state: null, projection: "unknown", can_approve: false, can_reject: false })],
+  };
+  withConversation([turn]);
+  mount(<AskConsole configured />);
+  expect(await screen.findByTestId("ask-nudge-outcome")).toHaveTextContent("Status unavailable");
+  expect(screen.queryByTestId("ask-nudge-send")).toBeNull();
+});
+
+// --- Hermes round 1 on #1489 -------------------------------------------------------------------
+
+test("an open card follows a decision taken elsewhere (the app's action-resolved event)", async () => {
+  const { ACTION_RESOLVED_EVENT } = await import("../../lib/actionEvents");
+  const turn = { ...turnOf("tell it", "t-n", { answer: "Proposed." }), proposals: [nudge()] };
+  withConversation([turn]);
+  mount(<AskConsole configured />);
+  await screen.findByTestId("ask-nudge-send");
+  vi.mocked(api.askConversation).mockResolvedValue(
+    conversation(CID, [
+      { ...turn, proposals: [nudge({ state: "rejected", projection: "settled", can_approve: false, can_reject: false })] },
+    ]),
+  );
+  act(() => {
+    window.dispatchEvent(new CustomEvent(ACTION_RESOLVED_EVENT));
+  });
+  expect(await screen.findByTestId("ask-nudge-outcome")).toHaveTextContent("Dismissed");
+  expect(screen.queryByTestId("ask-nudge-send")).toBeNull();
+});
+
+test("an open card is re-read on a timer, so an expiry reaches it", async () => {
+  // A short REAL interval rather than fake timers: Testing Library's own polling runs on the
+  // faked clock too, which made this flaky on a loaded CI runner (#1489).
+  const turn = { ...turnOf("tell it", "t-n", { answer: "Proposed." }), proposals: [nudge()] };
+  withConversation([turn]);
+  mount(<AskConsole configured cardPollMs={40} />);
+  await screen.findByTestId("ask-nudge-send");
+  vi.mocked(api.askConversation).mockResolvedValue(
+    conversation(CID, [
+      { ...turn, proposals: [nudge({ state: "expired", projection: "settled", can_approve: false, can_reject: false })] },
+    ]),
+  );
+  expect(
+    await screen.findByTestId("ask-nudge-outcome", {}, { timeout: 5000 }),
+  ).toHaveTextContent("Expired");
+});
+
+test("a decided card stops re-reading", async () => {
+  const turn = {
+    ...turnOf("tell it", "t-n", { answer: "Proposed." }),
+    proposals: [nudge({ state: "delivered", projection: "settled", can_approve: false, can_reject: false })],
+  };
+  withConversation([turn]);
+  mount(<AskConsole configured cardPollMs={20} />);
+  await screen.findByTestId("ask-nudge-outcome");
+  const reads = vi.mocked(api.askConversation).mock.calls.length;
+  await new Promise((r) => setTimeout(r, 200)); // ten intervals' worth
+  expect(vi.mocked(api.askConversation).mock.calls.length).toBe(reads);
+});
+
+test("an answer that failed leaves its question open to answer again", async () => {
+  withConversation([askedTurn()]);
+  answerWith({ answer: "", status: "failed", detail: "rate limited" });
+  mount(<AskConsole configured />);
+  const card = await screen.findByTestId("ask-question");
+  await userEvent.click(within(card).getByRole("button", { name: "web" }));
+  await screen.findByTestId("ask-error");
+  expect(within(card).getByText("Waiting for you")).toBeInTheDocument();
+  expect(within(card).getAllByTestId("ask-question-option")[0]).toBeEnabled();
+});
+
+// --- Hermes round 2 on #1489 -------------------------------------------------------------------
+
+test("a decision that settles after a switch never blanks the conversation now on screen", async () => {
+  vi.mocked(api.askConversations).mockResolvedValue({
+    conversations: [
+      { id: CID, title: "a", created_at: 1, updated_at: 3 },
+      { id: OTHER, title: "b", created_at: 1, updated_at: 2 },
+    ],
+    configured: true,
+  });
+  const aTurn = { ...turnOf("tell it", "t-a", { answer: "Proposed." }), proposals: [nudge()] };
+  const approve = deferred<never>();
+  const bRead = deferred<AskConversation>();
+  vi.mocked(api.askConversation).mockImplementation(async (id) =>
+    id === CID ? conversation(CID, [aTurn]) : bRead.promise,
+  );
+  vi.mocked(api.approveAction).mockReturnValue(approve.promise);
+  mount(<AskConsole configured />);
+  await userEvent.click(await screen.findByTestId("ask-nudge-send"));
+  await userEvent.click(screen.getByTestId("ask-switcher"));
+  await userEvent.click(screen.getAllByTestId("ask-switcher-item")[1]);
+  await waitFor(() => expect(api.askConversation).toHaveBeenCalledWith(OTHER));
+  // A's decision settles while B's read is still out…
+  await act(async () => approve.resolve({} as never));
+  // …and B's read still lands.
+  await act(async () =>
+    bRead.resolve(conversation(OTHER, [turnOf("b q", "t-b", { answer: "B's answer" })])),
+  );
+  expect(await screen.findByText("B's answer")).toBeInTheDocument();
+  expect(vi.mocked(api.askConversation).mock.calls.filter(([id]) => id === CID)).toHaveLength(1);
+});
+
+test("a card whose ledger could not be read keeps re-reading until it can", async () => {
+  const turn = {
+    ...turnOf("tell it", "t-n", { answer: "Proposed." }),
+    proposals: [nudge({ state: null, projection: "unknown", can_approve: false, can_reject: false })],
+  };
+  withConversation([turn]);
+  mount(<AskConsole configured cardPollMs={40} />);
+  expect(await screen.findByTestId("ask-nudge-outcome")).toHaveTextContent("Status unavailable");
+  vi.mocked(api.askConversation).mockResolvedValue(
+    conversation(CID, [{ ...turn, proposals: [nudge()] }]),
+  );
+  expect(await screen.findByTestId("ask-nudge-send", {}, { timeout: 5000 })).toBeEnabled();
+});
+
+test("an approved-but-not-yet-sent message can still be dismissed", async () => {
+  const turn = {
+    ...turnOf("tell it", "t-n", { answer: "Proposed." }),
+    proposals: [nudge({ state: "approved", projection: "in_flight_revocable", can_approve: false, can_reject: true })],
+  };
+  withConversation([turn]);
+  vi.mocked(api.rejectAction).mockResolvedValue({} as never);
+  mount(<AskConsole configured />);
+  expect(await screen.findByTestId("ask-nudge-outcome")).toHaveTextContent("Queued");
+  expect(screen.queryByTestId("ask-nudge-send")).toBeNull();
+  await userEvent.click(screen.getByTestId("ask-nudge-dismiss"));
+  expect(api.rejectAction).toHaveBeenCalledWith(AID);
+});
+
+test("a message being typed (claimed) offers nothing", async () => {
+  const turn = {
+    ...turnOf("tell it", "t-n", { answer: "Proposed." }),
+    proposals: [nudge({ state: "claimed", projection: "in_flight_locked", can_approve: false, can_reject: false })],
+  };
+  withConversation([turn]);
+  mount(<AskConsole configured />);
+  expect(await screen.findByTestId("ask-nudge-outcome")).toHaveTextContent("Sending");
+  expect(screen.queryByTestId("ask-nudge-dismiss")).toBeNull();
+});
+
+// --- Hermes round 3 on #1489 -------------------------------------------------------------------
+
+test("a turn that staged a proposal and then failed still shows the live card", async () => {
+  const turn = {
+    ...turnOf("tell it", "t-n", { answer: "", status: "failed", detail: "the endpoint refused" }),
+    proposals: [nudge()],
+  };
+  withConversation([turn]);
+  mount(<AskConsole configured />);
+  expect(await screen.findByTestId("ask-error")).toHaveTextContent("the endpoint refused");
+  expect(screen.getByTestId("ask-nudge-send")).toBeEnabled();
+});
+
+test("a free-text answer that failed keeps its draft to retry", async () => {
+  withConversation([askedTurn()]);
+  answerWith({ answer: "", status: "failed", detail: "rate limited" });
+  mount(<AskConsole configured />);
+  const card = await screen.findByTestId("ask-question");
+  await userEvent.type(within(card).getByTestId("ask-question-text"), "the docs one");
+  await userEvent.click(within(card).getByRole("button", { name: "Answer" }));
+  await screen.findByTestId("ask-error");
+  expect(within(card).getByTestId("ask-question-text")).toHaveValue("the docs one");
+});
+
+function geometry(el: HTMLElement, scrollHeight: number, clientHeight: number) {
+  Object.defineProperty(el, "scrollHeight", { configurable: true, value: scrollHeight });
+  Object.defineProperty(el, "clientHeight", { configurable: true, value: clientHeight });
+}
+
+test("a background re-read never pulls someone reading earlier turns to the bottom", async () => {
+  const { ACTION_RESOLVED_EVENT } = await import("../../lib/actionEvents");
+  const turn = { ...turnOf("tell it", "t-n", { answer: "Proposed." }), proposals: [nudge()] };
+  withConversation([turn]);
+  mount(<AskConsole configured />);
+  await screen.findByTestId("ask-nudge-send");
+  const pane = screen.getByTestId("ask-pane");
+  geometry(pane, 1000, 200);
+  pane.scrollTop = 100; // reading earlier turns
+  fireEvent.scroll(pane);
+  const reads = vi.mocked(api.askConversation).mock.calls.length;
+  act(() => {
+    window.dispatchEvent(new CustomEvent(ACTION_RESOLVED_EVENT));
+  });
+  await waitFor(() =>
+    expect(vi.mocked(api.askConversation).mock.calls.length).toBeGreaterThan(reads),
+  );
+  await act(async () => {});
+  expect(pane.scrollTop).toBe(100);
+});
+
+test("…while someone already at the bottom keeps following it", async () => {
+  const { ACTION_RESOLVED_EVENT } = await import("../../lib/actionEvents");
+  const turn = { ...turnOf("tell it", "t-n", { answer: "Proposed." }), proposals: [nudge()] };
+  withConversation([turn]);
+  mount(<AskConsole configured />);
+  await screen.findByTestId("ask-nudge-send");
+  const pane = screen.getByTestId("ask-pane");
+  geometry(pane, 1000, 200);
+  pane.scrollTop = 800; // at the bottom
+  fireEvent.scroll(pane);
+  geometry(pane, 1300, 200); // the re-read grows the thread
+  const reads = vi.mocked(api.askConversation).mock.calls.length;
+  act(() => {
+    window.dispatchEvent(new CustomEvent(ACTION_RESOLVED_EVENT));
+  });
+  await waitFor(() =>
+    expect(vi.mocked(api.askConversation).mock.calls.length).toBeGreaterThan(reads),
+  );
+  await waitFor(() => expect(pane.scrollTop).toBe(1300));
 });

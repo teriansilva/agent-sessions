@@ -490,7 +490,7 @@ async function streamMissionMessage(
  *  stops watching; it never cancels the turn. */
 async function streamAskTurn(
   id: string,
-  body: { turnId: string; text: string },
+  body: { turnId: string; text: string; answers?: string; option?: number },
   onEvent: (ev: AskTurnEvent) => void,
   signal?: AbortSignal,
 ): Promise<AskConversationTurn> {
@@ -499,7 +499,12 @@ async function streamAskTurn(
     method: "POST",
     credentials: "same-origin",
     headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
-    body: JSON.stringify({ turn_id: body.turnId, text: body.text }),
+    body: JSON.stringify({
+      turn_id: body.turnId,
+      text: body.text,
+      ...(body.answers ? { answers: body.answers } : {}),
+      ...(body.option !== undefined ? { option: body.option } : {}),
+    }),
     ...(signal ? { signal } : {}),
   });
   if (r.status === 401 || r.status === 403) await authGate(r);

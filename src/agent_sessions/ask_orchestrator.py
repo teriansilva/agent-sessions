@@ -1,4 +1,4 @@
-"""Ask as a conversation that can look things up (#1443 Phase 1 — read-only).
+"""Ask as a conversation that can look things up, ask back and propose (#1443 Phases 1–2a).
 
 One turn is a bounded tool loop over the configured AI endpoint: the model may call READ tools —
 find sessions, a session's status, the missions, one mission's status, the projects, the agents —
@@ -9,9 +9,10 @@ so the answer survives a reload or a client that went away.
 the registered-prompt check and template-secret redaction apply, and no outbound-HTTP site is
 added. The system prompt is ``prompts.effective("ask_orchestrator")``, a GUARDED prompt.
 
-**No write tool exists in this phase.** :data:`TOOLS` holds read tools only, pinned by a test, so a
-proposal cannot appear before the phases that add proposals (with their operator-tap cards) ship.
-:data:`MAX_PROPOSALS_PER_TURN` is enforced on any tool whose kind is ``proposal`` all the same.
+**Nothing here sends.** :data:`TOOLS` is pinned by name AND kind: read tools, ``ask_operator`` (ends
+the turn on a stored question) and ``propose_nudge`` (Phase 2: stages a ledger action that starts
+``proposed`` whatever the tier; only the operator's tap on its card delivers it, through the
+existing approve route). :data:`MAX_PROPOSALS_PER_TURN` bounds proposals per turn.
 
 **Model output picks, the server resolves.** A session key is accepted only when this turn's own
 tools returned it (and it parses); a mission id only when this turn's tools returned it. Anything
@@ -41,10 +42,20 @@ import json
 import logging
 import os
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from . import ask_store, engines, mission_plan, missions, prompts, pulse_chat, review
+from . import (
+    ask_store,
+    engines,
+    mission_plan,
+    missions,
+    prompts,
+    pulse_chat,
+    review,
+    template_secrets,
+)
 
 log = logging.getLogger(__name__)
 
@@ -129,6 +140,12 @@ class _Turn:
     matches: dict[str, dict] = field(default_factory=dict)
     mission_matches: dict[str, dict] = field(default_factory=dict)
     proposals: int = 0
+    #: Sessions VISIBLY working right now (`actuator.busy_keys`), snapshotted when the turn began.
+    busy_keys: set[str] = field(default_factory=set)
+    #: The question this turn answers (`ask_operator`, #1443 Phase 2): ``{"question", ...}``.
+    answering: dict | None = None
+    #: The question this turn ends on, once `ask_operator` has been called.
+    asked: dict | None = None
     _catalog: list[dict] | None = None
 
     async def catalog(self) -> list[dict]:
@@ -406,6 +423,252 @@ async def _list_agents(turn: _Turn, args: dict) -> tuple[dict, dict]:
     return {"agents": rows}, {"count": len(rows)}
 
 
+# ---- asking back and nudging (#1443 Phase 2) ---------------------------------------------------
+
+
+async def _ask_operator(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    """End the turn on a bounded question. The options are the reply texts the server will send
+    on the operator's behalf, so they are fixed here and stored; the client picks one by index."""
+    if turn.asked is not None:
+        raise _ToolRefused("refused: this turn already asks one question", "already_asked")
+    question = _str_arg(args, "question", ask_store.QUESTION_MAX)
+    raw = args.get("options") or []
+    if not isinstance(raw, list) or len(raw) > ask_store.OPTIONS_MAX:
+        raise _ToolRefused(
+            f"options must be a list of at most {ask_store.OPTIONS_MAX} strings", "bad_arguments"
+        )
+    options: list[str] = []
+    for o in raw:
+        if not isinstance(o, str) or not o.strip() or len(o.strip()) > ask_store.OPTION_MAX:
+            raise _ToolRefused(
+                f"each option must be a non-empty string of at most {ask_store.OPTION_MAX} "
+                "characters",
+                "bad_arguments",
+            )
+        if o.strip() not in options:
+            options.append(o.strip())
+    allow_text = args.get("allow_text") is True
+    if not options and not allow_text:
+        raise _ToolRefused("give options, allow a free-text answer, or both", "bad_arguments")
+    turn.asked = {
+        "question_id": str(uuid.uuid4()),
+        "question": question,
+        "options": options,
+        "allow_text": allow_text,
+    }
+    return {"asked": True, "note": "Your turn ends here; the operator answers next."}, {
+        "count": len(options)
+    }
+
+
+def _nudge_refusal(turn: _Turn, key: str, card: dict | None) -> tuple[str, str, dict] | None:
+    """Every gate a nudge must pass, read off the loop. Returns ``(message, code, {})`` for the
+    first that fails, or None with the facts stored on ``card`` for the record. Blocking."""
+    from . import automation, metadata, orchestrator, orchestrator_ledger, prefs, session_input
+
+    cfg = prefs.get_automation_policy("session")
+    if not cfg.get("enabled") or cfg.get("autonomy") not in ("suggest", "yolo"):
+        return (
+            "session assistance is off or observe-only, so Ask cannot propose a message — the "
+            "operator can turn it on (Suggest) under Settings → Automation",
+            "scope_disabled",
+            {},
+        )
+    if card is None:
+        return (
+            "that session is not available — archived, excluded, or outside the roots",
+            "not_available",
+            {},
+        )
+    if card.get("engine") not in engines.orchestrator_input_engines():
+        return ("that agent does not take input from Ask", "not_actuable", {})
+    held = None
+    with contextlib.suppress(Exception):
+        held = missions.all_active_memberships().get(key)
+    if held:
+        # Phase 2 stops at the mission line (#1472 is reshaping how missions drive sessions).
+        return (
+            "a mission holds that session — the operator can message it from the mission's "
+            "own console",
+            "mission_held",
+            {},
+        )
+    try:
+        grant = automation.capture_candidates([key], None).get(key)
+    except Exception:  # noqa: BLE001 — unreadable ownership authorizes nothing
+        grant = None
+    if grant is None:
+        return ("Ask cannot confirm who owns that session right now", "not_available", {})
+    meta = metadata.load().get(key) or metadata.load().get(grant["physical_key"])
+    if meta is not None and meta.orchestrator_excluded:
+        return (
+            "that session is excluded from automation — the operator opted it out",
+            "excluded",
+            {},
+        )
+    for a in orchestrator_ledger.live_actions():
+        if a.get("session_id") == key:
+            return (
+                "that session already has a decision waiting — see Needs you",
+                "pending",
+                {},
+            )
+    phys = grant["physical_key"]
+    if key in turn.busy_keys or phys in turn.busy_keys:
+        return ("that session is working right now — ask again when it stops", "working", {})
+    if not session_input.is_live(phys):
+        return ("that session is not running, so nothing can be typed into it", "not_live", {})
+    screen = orchestrator.observed_screen(phys)
+    if screen.get("permission") is not None:
+        return (
+            "that session is showing a permission dialog — only the operator answers those, "
+            "from Needs you or the terminal",
+            "permission_dialog",
+            {},
+        )
+    card["_nudge"] = {
+        "cfg": cfg,
+        "grant": grant,
+        "precondition": orchestrator.precondition_for(phys),
+    }
+    return None
+
+
+async def _propose_nudge(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    """Stage a message for one session no mission holds. It is a ledger `answer` action that
+    starts `proposed` WHATEVER the tier — only the operator's tap on its card delivers it, through
+    the existing approve route and `actuator.deliver`."""
+    from . import handoff, orchestrator_ledger
+
+    key = _known_key(turn, args)
+    raw = _str_arg(args, "text", ask_store.NUDGE_MAX)
+    # THE SAME NORMALIZATION DELIVERY APPLIES (`actuator.render` → `handoff.sanitize_seed`: control
+    # bytes stripped, trimmed), applied HERE — so the text the card shows as "verbatim", the text
+    # stored, and the text typed are one string, never a display of bytes that will not be sent.
+    try:
+        text = handoff.sanitize_seed(raw)
+    except handoff.HandoffError:
+        raise _ToolRefused(
+            "refused: nothing typeable is left in that text", "bad_arguments"
+        ) from None
+    # A credential must never become a stored effect: text the store boundary would change is
+    # refused before anything is written anywhere.
+    if await asyncio.to_thread(ask_store.guard_text, text, ask_store.NUDGE_MAX) != text:
+        raise _ToolRefused(
+            "refused: that text contains a secret or looks like a credential — Ask will not "
+            "send it; the operator can type it themselves",
+            "credential",
+        )
+    card = next((dict(c) for c in await turn.catalog() if c.get("id") == key), None)
+    refusal = await asyncio.to_thread(_nudge_refusal, turn, key, card)
+    if refusal is not None:
+        raise _ToolRefused(f"refused: {refusal[0]}", refusal[1])
+    assert card is not None
+    facts = card["_nudge"]
+    now = time.time()
+    project = card.get("project") or {}
+    rec = {
+        "id": uuid.uuid4().hex,
+        # ALWAYS a proposal: Ask never gets yolo (#1443, out of scope). The tier is recorded, not
+        # obeyed — the operator's tap is the only way this is delivered.
+        "state": "proposed",
+        "ts": now,
+        "expires_at": now + int(facts["cfg"]["proposal_ttl_minutes"]) * 60,
+        "tier": facts["cfg"]["autonomy"],
+        "source": "ask",
+        "session_id": key,
+        "engine": card.get("engine", ""),
+        "title": str(card.get("title") or "")[: pulse_chat.TITLE_MAX],
+        "project": str(project.get("name") or "")[: pulse_chat.PROJECT_MAX],
+        "project_id": project.get("id") or "",
+        "verb": "answer",
+        "answer": text,
+        "confidence": 1.0,
+        "rationale": "Proposed from Ask",
+        "evidence": "none",
+        "authority": facts["grant"],
+        "precondition": facts["precondition"],
+    }
+    # CARD FIRST, ACTION SECOND. The two stores cannot commit together, so the order decides what
+    # a failure between them leaves behind: a card whose action never existed reads "no longer
+    # tracked" and offers nothing, while an action whose card never existed would sit approvable
+    # in Needs you with no card where it was promised. Only the first is acceptable.
+    try:
+        await _append(
+            turn.cid,
+            {
+                "type": "proposal",
+                "turn_id": turn.turn_id,
+                "action_id": rec["id"],
+                "kind": "nudge",
+                "key": key,
+                "title": rec["title"],
+                "text": text,
+            },
+        )
+    except Exception:
+        raise _ToolRefused(
+            "refused: the proposal could not be recorded; nothing was proposed or sent",
+            "not_recorded",
+        ) from None
+    refused_secret = {"v": False}
+
+    def clean_at_write(r: dict) -> bool:
+        # THE SECRET CHECK AT THE WRITE: inside the ledger's own lock, against the secrets known
+        # NOW — one registered while the eligibility checks ran is caught here, not missed.
+        try:
+            ok = ask_store.guard_text(r["answer"], ask_store.NUDGE_MAX) == r["answer"]
+        except Exception:  # noqa: BLE001 — redaction that cannot run authorizes nothing
+            ok = False
+        refused_secret["v"] = not ok
+        return ok
+
+    def fenced_append() -> list[dict]:
+        # The registration fence held across the guard AND the write (`template_secrets`): a
+        # secret registered meanwhile lands before the guard runs or after the record exists.
+        with template_secrets.registration_fence():
+            kept, _dropped = orchestrator_ledger.append_batch_for_free_sessions(
+                [rec], record_guard=clean_at_write
+            )
+        return kept
+
+    try:
+        kept = await asyncio.to_thread(fenced_append)
+    except Exception:
+        # AMBIGUOUS: the record may have been written before the failure (a directory fsync after
+        # the file's own). Whether this was proposed is decided by reading the ledger for THIS id,
+        # never inferred from the exception — a live action must never be reported as refused.
+        try:
+            landed = await asyncio.to_thread(orchestrator_ledger.get, rec["id"])
+        except Exception:  # noqa: BLE001 — an unreadable ledger answers nothing either way
+            landed = None
+        if landed is None:
+            raise _ToolRefused(
+                "refused: the proposal could not be confirmed as recorded; check Needs you "
+                "before asking again",
+                "uncertain",
+            ) from None
+        kept = [landed]
+    if not kept:
+        if refused_secret["v"]:
+            raise _ToolRefused(
+                "refused: that text contains a secret or looks like a credential — Ask will not "
+                "send it; the operator can type it themselves",
+                "credential",
+            )
+        raise _ToolRefused(
+            "refused: that session already has a decision waiting — see Needs you", "pending"
+        )
+    return (
+        {
+            "proposed": True,
+            "note": "The operator now sees a card with this exact text and decides. Nothing has "
+            "been sent; never say it was.",
+        },
+        {"keys": [key], "count": 1},
+    )
+
+
 _KEY_PROP = {"key": {"type": "string", "description": "a session key a tool returned"}}
 
 TOOLS: dict[str, Tool] = {
@@ -463,6 +726,42 @@ TOOLS: dict[str, Tool] = {
             "read",
             _spec("list_projects", "The operator's projects, by index and name.", {}, []),
             _list_projects,
+        ),
+        Tool(
+            "ask_operator",
+            "ends_turn",
+            _spec(
+                "ask_operator",
+                "Ask the operator ONE question when a detail you need is missing or ambiguous, "
+                "instead of guessing. Offer up to four short options (each is the exact reply "
+                "the operator can pick) and/or allow a free-text answer. Ends your turn.",
+                {
+                    "question": {"type": "string"},
+                    "options": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "maxItems": ask_store.OPTIONS_MAX,
+                    },
+                    "allow_text": {"type": "boolean"},
+                },
+                ["question"],
+            ),
+            _ask_operator,
+        ),
+        Tool(
+            "propose_nudge",
+            "proposal",
+            _spec(
+                "propose_nudge",
+                "Propose a message to type into one session NO mission holds. Nothing is sent: "
+                "the operator sees a card with the exact text and approves or dismisses it.",
+                {
+                    **_KEY_PROP,
+                    "text": {"type": "string", "description": "exactly what to type"},
+                },
+                ["key", "text"],
+            ),
+            _propose_nudge,
         ),
         Tool(
             "list_agents",
@@ -610,6 +909,23 @@ async def _append(cid: str, *records: dict) -> None:
     await asyncio.to_thread(ask_store.append, cid, *records)
 
 
+def _user_content(turn: _Turn) -> str:
+    if turn.answering is None:
+        return turn.question
+    return f"Answering your question \"{turn.answering['question']}\": {turn.question}"
+
+
+def _asked_records(turn: _Turn) -> list[dict]:
+    """The records a turn that ended on a question settles with: the question card, and the
+    question as the assistant's text so the next turn's history replays it."""
+    q = turn.asked or {}
+    return [
+        {"type": "question", "turn_id": turn.turn_id, **q},
+        _assistant(turn, q.get("question", "")),
+        _status(turn, "done"),
+    ]
+
+
 async def run_turn(turn: _Turn) -> list[dict]:
     """The turn itself. Writes tool records as it goes; RETURNS the records that settle it."""
 
@@ -626,7 +942,7 @@ async def run_turn(turn: _Turn) -> list[dict]:
         {"role": "system", "content": prompts.effective("ask_orchestrator")},
         # Stored user/assistant text only; the pinned sanitizer gates the role at the sink.
         *pulse_chat.bound_history(history),
-        {"role": "user", "content": turn.question},
+        {"role": "user", "content": _user_content(turn)},
     ]
     for round_no in range(MAX_TOOL_ROUNDS + 1):
         last = round_no == MAX_TOOL_ROUNDS
@@ -686,6 +1002,10 @@ async def run_turn(turn: _Turn) -> list[dict]:
                     call["function"]["arguments"],
                     call["id"],
                 )
+                if turn.asked is not None:
+                    # A question ends the turn, and the calls after it in the same reply are
+                    # never run: nothing is staged while Ask waits for the operator's detail.
+                    break
                 result, stored, meta = await _call(turn, name, args)
                 convo.append({"role": "tool", "tool_call_id": cid, "content": result})
                 await _append(
@@ -699,6 +1019,9 @@ async def run_turn(turn: _Turn) -> list[dict]:
                         "meta": {**meta, "rounds": round_no + 1},
                     },
                 )
+            if turn.asked is not None:
+                # `ask_operator` ends the turn: the operator holds the next move.
+                return _asked_records(turn)
             continue
         if not isinstance(content, str) or not content.strip():
             if calls:
@@ -780,6 +1103,11 @@ def turn_views(records: list[dict]) -> list[dict]:
                 "matches": [],
                 "mission_matches": [],
                 "tools": [],
+                # #1443 Phase 2: the question this turn ends on, the nudges it proposed, and the
+                # question this turn ANSWERS.
+                "ask": None,
+                "proposals": [],
+                "answers": r.get("answers"),
             }
             order.append(tid)
             continue
@@ -799,7 +1127,53 @@ def turn_views(records: list[dict]) -> list[dict]:
             t["tools"].append(
                 {"name": r.get("name"), "outcome": "refused" if meta.get("error") else "ok"}
             )
-    return [turns[t] for t in order]
+        elif kind == "question":
+            t["ask"] = {
+                "question_id": r.get("question_id"),
+                "question": r.get("question") or "",
+                "options": r.get("options") or [],
+                "allow_text": bool(r.get("allow_text")),
+                "answered": False,
+            }
+        elif kind == "proposal":
+            t["proposals"].append(
+                {
+                    "action_id": r.get("action_id"),
+                    "kind": r.get("kind"),
+                    "key": r.get("key"),
+                    "title": r.get("title") or "",
+                    "text": r.get("text") or "",
+                }
+            )
+    out = [turns[t] for t in order]
+    # Only a SETTLED answer answers: a failed or still-running one leaves the question open, so
+    # the operator can answer again after a timeout or an interruption.
+    answered = {t["answers"] for t in out if t.get("answers") and t.get("status") == "done"}
+    for t in out:
+        if t["ask"] is not None:
+            t["ask"]["answered"] = t["ask"]["question_id"] in answered
+    return out
+
+
+def with_live(views: list[dict]) -> list[dict]:
+    """Each proposal card's LIVE state, read from the ledger it lives in — never a copy kept here,
+    so the card can only ever say what the delivery path says (`project_for_operator`'s contract:
+    no control the backend would refuse). An unreadable ledger is `unknown`, not `gone`.
+    Blocking."""
+    from . import orchestrator_ledger as ledger
+
+    if not any(t.get("proposals") for t in views):
+        return views
+    status, latest = ledger.latest_by_id_checked()
+    for t in views:
+        for p in t.get("proposals") or []:
+            rec = latest.get(p["action_id"]) if status == "ok" else None
+            p.update(
+                ledger.project_for_operator(rec.get("state") if rec else None, known=status == "ok")
+            )
+            detail = (rec or {}).get("detail") or (rec or {}).get("reason") or ""
+            p["detail"] = str(detail)[: ask_store.DETAIL_MAX]
+    return views
 
 
 def _view_of(records: list[dict], turn_id: str) -> dict | None:
@@ -832,7 +1206,8 @@ async def _settle(turn: _Turn, lock_fd: int) -> dict:
         except ask_store.StoreRefused as e:
             await _append(turn.cid, _status(turn, "failed", str(e)))
         stored = await asyncio.to_thread(ask_store.read, turn.cid)
-        return _view_of(stored, turn.turn_id) or {}
+        view = _view_of(stored, turn.turn_id) or {}
+        return (await asyncio.to_thread(with_live, [view]))[0] if view else view
     finally:
         async with _lock(turn.cid):
             running = _RUNNING.get(turn.cid)
@@ -883,8 +1258,43 @@ def _settle_stale_locked(cid: str) -> list[dict]:
     return records
 
 
+def _resolve_answer(
+    records: list[dict], text: str, answers: str | None, option: int | None
+) -> tuple[str, dict | None]:
+    """``(text, answering)`` for a message. An answer to an `ask_operator` question names it; an
+    OPTION is resolved to the reply text the server stored with the question — the client picks
+    an index and can never make an option say something else."""
+    if answers is None:
+        if option is not None:
+            raise TurnError(422, "an option needs the question it answers")
+        return text, None
+    q = next(
+        (r for r in records if r.get("type") == "question" and r.get("question_id") == answers),
+        None,
+    )
+    if q is None:
+        raise TurnError(422, "that question is not in this conversation")
+    if option is not None:
+        options = q.get("options") or []
+        if not 0 <= option < len(options):
+            raise TurnError(422, "that option is not one the question offered")
+        text = options[option]
+    elif not q.get("allow_text"):
+        raise TurnError(422, "pick one of the question's options")
+    if not text:
+        raise TurnError(422, "the answer is empty")
+    return text, {"question_id": answers, "question": q.get("question") or ""}
+
+
 async def begin(
-    cid: str, turn_id: str, text: str, *, working_keys: set[str]
+    cid: str,
+    turn_id: str,
+    text: str,
+    *,
+    working_keys: set[str],
+    busy_keys: set[str] | None = None,
+    answers: str | None = None,
+    option: int | None = None,
 ) -> tuple[asyncio.Task | None, dict | None]:
     """Start a turn, or find the one this ``turn_id`` already names.
 
@@ -897,6 +1307,12 @@ async def begin(
     has room — is taken again after the cross-process turn lock is held, on a fresh read: the
     first look is only a fast path, and another process may have run and settled this very id in
     between."""
+    answering = None
+    if answers is not None or option is not None:
+        # A question record never changes once written, so resolving outside the lock is exact.
+        text, answering = _resolve_answer(
+            await asyncio.to_thread(ask_store.read, cid), text, answers, option
+        )
     qd = await asyncio.to_thread(ask_store.question_digest, text)
     async with _lock(cid):
         records = await asyncio.to_thread(
@@ -925,13 +1341,19 @@ async def begin(
             if existing is not None:
                 os.close(lock_fd)
                 return None, existing
+            if answering is not None and any(
+                t.get("answers") == answering["question_id"] and t.get("status") == "done"
+                for t in turn_views(records)
+            ):
+                # One SETTLED answer per question, decided under the turn lock: a stale tab cannot
+                # answer it again. A failed answer does not count, so a retry after it is admitted.
+                raise TurnError(409, "that question was already answered")
             if len(turn_views(records)) >= ask_store.MAX_TURNS:
                 raise TurnError(409, "this conversation is full — start a new one")
-            await _append(
-                cid,
-                {"type": "user", "turn_id": turn_id, "text": text, "qd": qd},
-                {"type": "status", "turn_id": turn_id, "status": "pending"},
-            )
+            user: dict = {"type": "user", "turn_id": turn_id, "text": text, "qd": qd}
+            if answering is not None:
+                user["answers"] = answering["question_id"]
+            await _append(cid, user, {"type": "status", "turn_id": turn_id, "status": "pending"})
         except BaseException:
             with contextlib.suppress(OSError):
                 os.close(lock_fd)
@@ -941,6 +1363,8 @@ async def begin(
             turn_id=turn_id,
             question=text,
             working_keys=working_keys,
+            busy_keys=set(busy_keys or ()),
+            answering=answering,
             progress=lambda ev: _broadcast(cid, ev),
         )
         task = asyncio.get_running_loop().create_task(_settle(turn, lock_fd), name=f"ask:{cid}")

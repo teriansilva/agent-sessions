@@ -91,7 +91,18 @@ META_IDS_MAX = 20
 PINNING_PROPOSAL_STATES = frozenset({"deciding", "creating"})
 
 TURN_STATUSES = frozenset({"pending", "done", "failed"})
-RECORD_TYPES = frozenset({"conversation", "user", "assistant", "tool", "status"})
+RECORD_TYPES = frozenset(
+    {"conversation", "user", "assistant", "tool", "status", "question", "proposal"}
+)
+
+# Asking back (#1443 Phase 2): a question card's bounds.
+QUESTION_MAX = 300
+OPTION_MAX = 120
+OPTIONS_MAX = 4
+#: A nudge's text — the orchestrator's own `answer` cap, so the ledger never cuts what was shown.
+NUDGE_MAX = 800
+_ACTION_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+PROPOSAL_KINDS = frozenset({"nudge"})
 
 
 class StoreRefused(Exception):
@@ -231,6 +242,35 @@ def _admit(rec: dict, secrets: list[str]) -> dict:
         if not (isinstance(qd, str) and _DIGEST_RE.match(qd)):
             raise ValueError("a question needs its digest")
         out["qd"] = qd
+        answers = rec.get("answers")
+        if answers is not None:
+            if not valid_turn_id(answers):
+                raise ValueError("malformed question id")
+            out["answers"] = answers
+    elif kind == "question":
+        out["turn_id"] = _turn_id(rec)
+        qid = rec.get("question_id")
+        if not valid_turn_id(qid):
+            raise ValueError("malformed question id")
+        out["question_id"] = qid
+        out["question"] = text(rec.get("question"), QUESTION_MAX)
+        options = rec.get("options") or []
+        if not isinstance(options, list) or len(options) > OPTIONS_MAX:
+            raise ValueError("malformed question options")
+        out["options"] = [text(o, OPTION_MAX) for o in options]
+        out["allow_text"] = rec.get("allow_text") is True
+    elif kind == "proposal":
+        out["turn_id"] = _turn_id(rec)
+        aid, key, pkind = rec.get("action_id"), rec.get("key"), rec.get("kind")
+        if not (isinstance(aid, str) and _ACTION_ID_RE.match(aid)):
+            raise ValueError("malformed action id")
+        if not (isinstance(key, str) and _KEY_RE.match(key)):
+            raise ValueError("malformed proposal session key")
+        if pkind not in PROPOSAL_KINDS:
+            raise ValueError("unknown proposal kind")
+        out.update(action_id=aid, key=key, kind=pkind)
+        out["title"] = text(rec.get("title"), TITLE_MAX)
+        out["text"] = text(rec.get("text"), NUDGE_MAX)
     elif kind == "status":
         out["turn_id"] = _turn_id(rec)
         status = rec.get("status")
@@ -364,20 +404,23 @@ def append(cid: str, *records: dict) -> list[dict]:
     in every case before a byte is written."""
     if not records:
         return []
-    try:
-        secrets = template_secrets.redaction_values()
-    except template_secrets.RedactionUnavailable as e:
-        raise StoreRefused(f"{e} — nothing was stored") from None
-    admitted = [_admit(r, secrets) for r in records]
-    try:
-        fd = os.open(_path(cid), os.O_RDWR | os.O_APPEND | os.O_CLOEXEC | os.O_NOFOLLOW)
-    except FileNotFoundError:
-        raise ConversationNotFound(cid) from None
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        _write_all(fd, _records_bytes(admitted))
-    finally:
-        os.close(fd)
+    # Snapshot, admission and write under ONE hold of the registration fence: a secret registered
+    # concurrently is known either before the snapshot (redacted here) or only after the write.
+    with template_secrets.registration_fence():
+        try:
+            secrets = template_secrets.redaction_values()
+        except template_secrets.RedactionUnavailable as e:
+            raise StoreRefused(f"{e} — nothing was stored") from None
+        admitted = [_admit(r, secrets) for r in records]
+        try:
+            fd = os.open(_path(cid), os.O_RDWR | os.O_APPEND | os.O_CLOEXEC | os.O_NOFOLLOW)
+        except FileNotFoundError:
+            raise ConversationNotFound(cid) from None
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            _write_all(fd, _records_bytes(admitted))
+        finally:
+            os.close(fd)
     return admitted
 
 

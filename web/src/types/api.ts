@@ -897,6 +897,37 @@ export interface AskStoredMissionMatch {
   why: string;
 }
 
+/** A question Ask stopped to ask (#1443 Phase 2). Options are the server's stored replies; an
+ *  answer sends the option's INDEX. */
+export interface AskQuestionCard {
+  question_id: string;
+  question: string;
+  options: string[];
+  allow_text: boolean;
+  answered: boolean;
+}
+
+/** A message Ask proposed for a session (#1443 Phase 2), with the ledger action's LIVE state —
+ *  `projection` / `can_*` are `project_for_operator`'s contract, never derived here. */
+export interface AskProposalCard {
+  action_id: string;
+  kind: "nudge";
+  key: string;
+  title: string;
+  text: string;
+  state: string | null;
+  projection:
+    | "actionable"
+    | "in_flight_revocable"
+    | "in_flight_locked"
+    | "settled"
+    | "historical"
+    | "unknown";
+  can_approve: boolean;
+  can_reject: boolean;
+  detail: string;
+}
+
 /** One question and what became of it. `status` is the server's: a `pending` turn is still
  *  running there (or in another tab), whatever this page is doing. */
 export interface AskConversationTurn {
@@ -910,6 +941,11 @@ export interface AskConversationTurn {
   matches: AskStoredMatch[];
   mission_matches: AskStoredMissionMatch[];
   tools: { name: string; outcome: "ok" | "refused" }[];
+  /** The question this turn ended on (#1443 Phase 2). */
+  ask?: AskQuestionCard | null;
+  proposals?: AskProposalCard[];
+  /** The question this turn answers. */
+  answers?: string | null;
 }
 
 export interface AskConversation {

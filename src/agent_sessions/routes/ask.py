@@ -40,7 +40,7 @@ def _conversation_body(cid: str, records: list[dict]) -> dict:
     return {
         "id": cid,
         "title": title,
-        "turns": ask_orchestrator.turn_views(records),
+        "turns": ask_orchestrator.with_live(ask_orchestrator.turn_views(records)),
         "running": ask_orchestrator.running(cid),
     }
 
@@ -90,18 +90,28 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             return _missing(cid)
         except ask_store.StoreRefused as e:
             return _refused(e)
-        return JSONResponse(_conversation_body(cid, records), headers={"Cache-Control": "no-store"})
+        body = await asyncio.to_thread(_conversation_body, cid, records)
+        return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
-    async def _message_body(request: Request) -> tuple[str, str] | JSONResponse:
+    async def _message_body(request: Request) -> tuple | JSONResponse:
         body: object = None
         with contextlib.suppress(Exception):
             body = await request.json()
         if not isinstance(body, dict):
             return JSONResponse({"detail": "body must be a JSON object"}, status_code=422)
         turn_id, text = body.get("turn_id"), body.get("text")
+        answers, option = body.get("answers"), body.get("option")
         if not ask_store.valid_turn_id(turn_id):
             return JSONResponse({"detail": "turn_id (a UUID) is required"}, status_code=422)
-        if not isinstance(text, str) or not text.strip():
+        if answers is not None and not ask_store.valid_turn_id(answers):
+            return JSONResponse({"detail": "answers must be a question id"}, status_code=422)
+        if option is not None and (isinstance(option, bool) or not isinstance(option, int)):
+            return JSONResponse({"detail": "option must be an index"}, status_code=422)
+        if option is not None and answers is None:
+            return JSONResponse({"detail": "an option needs the question it answers"}, 422)
+        if option is not None and (text is None or text == ""):
+            text = ""  # the server resolves the option to its stored reply
+        elif not isinstance(text, str) or not text.strip():
             return JSONResponse({"detail": "text (string) is required"}, status_code=422)
         text = text.strip()
         if len(text) > ask_orchestrator.QUERY_MAX:
@@ -109,7 +119,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 {"detail": f"text too long (max {ask_orchestrator.QUERY_MAX} chars)"},
                 status_code=422,
             )
-        return turn_id, text  # type: ignore[return-value]
+        return turn_id, text, answers, option  # type: ignore[return-value]
 
     async def _begin(cid: str, request: Request):
         """``(task, settled view)`` or the JSONResponse that refuses the turn."""
@@ -118,10 +128,16 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         parsed = await _message_body(request)
         if isinstance(parsed, JSONResponse):
             return parsed
-        turn_id, text = parsed
+        turn_id, text, answers, option = parsed
         try:
             return await ask_orchestrator.begin(
-                cid, turn_id, text, working_keys=actuator.working_keys(registry)
+                cid,
+                turn_id,
+                text,
+                working_keys=actuator.working_keys(registry),
+                busy_keys=actuator.busy_keys(registry),
+                answers=answers,
+                option=option,
             )
         except ask_store.ConversationNotFound:
             return _missing(cid)
@@ -144,6 +160,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         if task is not None:
             # Shielded: a client that goes away ends this wait, never the turn.
             view = await asyncio.shield(task)
+        else:
+            view = (await asyncio.to_thread(ask_orchestrator.with_live, [view]))[0]
         return JSONResponse({"turn": view})
 
     async def _watch(cid: str, task: asyncio.Task) -> AsyncIterator[str]:
@@ -187,6 +205,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         if isinstance(started, JSONResponse):
             return started
         task, view = started
+        if task is None:
+            view = (await asyncio.to_thread(ask_orchestrator.with_live, [view]))[0]
 
         async def settled() -> AsyncIterator[str]:
             yield _ndjson({"type": "turn", "status": 200, "turn": view})

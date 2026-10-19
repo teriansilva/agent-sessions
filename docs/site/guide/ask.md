@@ -84,7 +84,16 @@ opens the Dashboard with the sidebar open.
   *Searching 140 sessions…*, *Checking against 3 transcripts…*, *Reading a session's status…*,
   with the seconds so far.
 - Ask can look up a session's live state and screen, your missions and their objectives, your
-  projects and your agents to answer. It only reads: it cannot start, stop or message anything.
+  projects and your agents to answer.
+- When it needs a detail, Ask **asks you back**: one question with a few answers to tap, and
+  sometimes a box for your own words. You can also just send a new message instead.
+- Ask can **propose a message** to a session no mission holds ("tell the rebase session to run
+  the tests"). It shows you the exact text on a card and sends nothing until you tap **Send to …**.
+  Just before typing, it checks the session's screen is still the one it saw; if the screen moved
+  on, nothing is sent and the card says *Out of date*. *Delivered* means the terminal accepted the
+  text, not that the agent acted on it. The same decision also appears in Needs you. Sending
+  needs Session assistance on (Suggest or YOLO) in Settings; Ask never sends on its own, whatever
+  the autonomy level. A mission's sessions are messaged from that mission's own console.
 - An answer that names a session needing you carries the same *Needs you* marker and ⓘ as the
   list, whatever the list's filter.
 

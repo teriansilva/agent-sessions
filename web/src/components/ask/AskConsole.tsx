@@ -72,6 +72,7 @@ import {
 import { Link, useNavigate } from "react-router-dom";
 
 import { MAP_PATH, useMapWindows } from "../../app/workspaceWindows";
+import { ACTION_RESOLVED_EVENT, announceActionResolved } from "../../lib/actionEvents";
 import { api } from "../../lib/api";
 import { useIsMobile } from "../../lib/useIsMobile";
 import { missionLink } from "../../lib/missionLink";
@@ -79,12 +80,15 @@ import { settingsPath } from "../../routes/settingsTabs";
 import type {
   AskConversationSummary,
   AskConversationTurn,
+  AskProposalCard,
+  AskQuestionCard,
   AskStoredMatch,
   AskStoredMissionMatch,
   AskTurnEvent,
 } from "../../types/api";
 
 import styles from "../pulse/mission.module.css";
+import { NudgeCard, QuestionCard } from "./AskCards";
 import { AskComposer } from "./AskComposer";
 import { mapBatch, matchRoute, matchSeed } from "./askMatches";
 import a from "./AskConsole.module.css";
@@ -111,10 +115,24 @@ export interface AskTurn {
   /** Its answer arrived while this page watched — the only answer that writes itself out. One read
    *  back from the server is history and shows at once. */
   live?: boolean;
+  /** The question this turn ended on, and the nudges it proposed (#1443 Phase 2). */
+  ask: AskQuestionCard | null;
+  proposals: AskProposalCard[];
 }
 
 /** How often a turn this page is not streaming is read again until it settles. */
 const POLL_MS = 2000;
+/** How often a conversation with an undecided or in-flight card is read again, so a decision
+ *  taken elsewhere (Needs you, another tab) or a proposal's expiry reaches the card. */
+export const CARD_POLL_MS = 15_000;
+/** Projections that can still change on their own — including `unknown`, an unreadable ledger
+ *  that recovers without anyone acting. */
+const LIVE_PROJECTIONS = new Set([
+  "actionable",
+  "in_flight_revocable",
+  "in_flight_locked",
+  "unknown",
+]);
 
 function fromServer(t: AskConversationTurn): AskTurn {
   return {
@@ -129,6 +147,8 @@ function fromServer(t: AskConversationTurn): AskTurn {
     missions: t.mission_matches ?? [],
     step: null,
     pending: t.status === "pending",
+    ask: t.ask ?? null,
+    proposals: t.proposals ?? [],
   };
 }
 
@@ -179,6 +199,7 @@ export function AskConsole({
   onDetails,
   onClose,
   closeRef,
+  cardPollMs = CARD_POLL_MS,
 }: {
   /** False when no AI endpoint is configured. Ask has no local fallback, so the control is
    *  disabled and says why. */
@@ -191,6 +212,8 @@ export function AskConsole({
   onClose?: () => void;
   /** The ✕ itself: the mobile drawer moves focus to it on open, as the bell's drawer does. */
   closeRef?: RefObject<HTMLButtonElement | null>;
+  /** How often undecided cards are re-read; a test shortens it rather than faking the clock. */
+  cardPollMs?: number;
 }) {
   const [turns, setTurns] = useState<AskTurn[]>([]);
   const [cid, setCid] = useState<string | null>(null);
@@ -263,6 +286,9 @@ export function AskConsole({
 
   /** Show conversation `id` as the server has it. */
   const load = useCallback(async (id: string) => {
+    // A read for a conversation that is not on screen would only advance the generation and
+    // fence off the read the screen IS waiting for — and its answer would be dropped anyway.
+    if (!current(id)) return;
     const g = ++gen.current;
     const fresh = () => current(id) && g === gen.current;
     try {
@@ -324,8 +350,24 @@ export function AskConsole({
 
   const busy = streaming || turns.some((t) => t.pending);
 
+  // A card offers Send / Dismiss only while the LEDGER does. A decision taken elsewhere (Needs
+  // you, the bell, another tab) or the proposal's TTL can settle it under an open card, so while
+  // any card is undecided or in flight the conversation is read again: on the app's own
+  // action-resolved event at once, and on a timer for everything that event cannot see.
+  const cardsLive = turns.some((t) => t.proposals.some((p) => LIVE_PROJECTIONS.has(p.projection)));
+  useEffect(() => {
+    if (!cardsLive || streaming || !cid) return;
+    const timer = window.setInterval(() => void load(cid), cardPollMs);
+    const onResolved = () => void load(cid);
+    window.addEventListener(ACTION_RESOLVED_EVENT, onResolved);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener(ACTION_RESOLVED_EVENT, onResolved);
+    };
+  }, [cardsLive, streaming, cid, load, cardPollMs]);
+
   const ask = useCallback(
-    async (q: string) => {
+    async (q: string, reply?: { answers: string; option?: number }) => {
       if (!q || busy || !configured) return;
       const turnId = newTurnId();
       gen.current++; // a read already in flight must not land over this turn
@@ -341,6 +383,8 @@ export function AskConsole({
         missions: [],
         step: null,
         pending: true,
+        ask: null,
+        proposals: [],
       };
       setTurns((prev) => [...prev, optimistic]);
       const update = (fn: (t: AskTurn) => AskTurn) =>
@@ -365,7 +409,13 @@ export function AskConsole({
         }
         const settled = await api.askMessageStream(
           id,
-          { turnId, text: q },
+          {
+            turnId,
+            // An option is sent by INDEX: the server answers with the reply it stored.
+            text: reply?.option !== undefined ? "" : q,
+            ...(reply ? { answers: reply.answers } : {}),
+            ...(reply?.option !== undefined ? { option: reply.option } : {}),
+          },
           (ev) => {
             if (current(id)) update((t) => applyEvent(t, ev));
           },
@@ -375,11 +425,19 @@ export function AskConsole({
         if (ctl.signal.aborted) return;
         if (current(id)) {
           const done: AskTurn = { ...fromServer(settled), live: true };
-          // Upsert: whatever a read did meanwhile, the settled turn is shown.
+          // Upsert: whatever a read did meanwhile, the settled turn is shown. A turn that answers
+          // a question marks that question answered — as the server derives it on the next read.
+          // Only a SETTLED answer answers — a failed one leaves the question open to try again.
+          const answered = settled.status === "done" ? (settled.answers ?? null) : null;
           setTurns((prev) =>
-            prev.some((t) => t.id === turnId)
+            (prev.some((t) => t.id === turnId)
               ? prev.map((t) => (t.id === turnId ? done : t))
-              : [...prev, done],
+              : [...prev, done]
+            ).map((t) =>
+              answered && t.ask?.question_id === answered && !t.ask.answered
+                ? { ...t, ask: { ...t.ask, answered: true } }
+                : t,
+            ),
           );
           if (!title) setTitle(settled.question);
           if (loadedFor.current !== id) void load(id);
@@ -414,13 +472,45 @@ export function AskConsole({
     [busy, configured, load, refreshList, title],
   );
 
+  /** A nudge card's decision goes to the SAME routes every decision uses; the card then reads
+   *  the ledger's own verdict back (a 409 "out of date" is an outcome, not an error). */
+  const [deciding, setDeciding] = useState<ReadonlySet<string>>(new Set());
+  const decide = useCallback(
+    async (actionId: string, approve: boolean) => {
+      const id = cidRef.current;
+      setDeciding((s) => new Set(s).add(actionId));
+      try {
+        await (approve ? api.approveAction(actionId) : api.rejectAction(actionId));
+        // Everything else showing this decision (the bell, Needs you) hears it at once.
+        announceActionResolved(null);
+      } catch {
+        /* the re-read below shows what the ledger says happened */
+      } finally {
+        setDeciding((s) => {
+          const n = new Set(s);
+          n.delete(actionId);
+          return n;
+        });
+        // Only the conversation still on screen is re-read: a decision that settles after the
+        // operator switched away must not disturb the one they are now reading.
+        if (id && cidRef.current === id) void load(id);
+      }
+    },
+    [load],
+  );
+
   /** The newest turn is where the operator is looking: keep the thread scrolled to it, as a chat
-   *  does, whenever a turn is added or answered. */
+   *  does — when a turn is added, the conversation changes, or the operator was already at the
+   *  bottom. A BACKGROUND re-read (cards, polling) never pulls someone reading earlier turns away. */
   const paneRef = useRef<HTMLDivElement | null>(null);
+  const atBottom = useRef(true);
+  const shown = useRef<{ cid: string | null; count: number }>({ cid: null, count: 0 });
   useLayoutEffect(() => {
     const el = paneRef.current;
-    if (el && turns.length) el.scrollTop = el.scrollHeight;
-  }, [turns]);
+    const moved = shown.current.cid !== cid || shown.current.count !== turns.length;
+    shown.current = { cid, count: turns.length };
+    if (el && turns.length && (moved || atBottom.current)) el.scrollTop = el.scrollHeight;
+  }, [turns, cid]);
 
   return (
     <div className={`${styles.threadCol} ${a.col}`} data-testid="ask-col">
@@ -466,7 +556,15 @@ export function AskConsole({
           </button>
         ) : null}
       </header>
-      <div className={styles.pane} ref={paneRef} data-testid="ask-pane">
+      <div
+        className={styles.pane}
+        ref={paneRef}
+        data-testid="ask-pane"
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 40;
+        }}
+      >
         {turns.length === 0 ? (
           <div className={`${a.measure} ${a.intro}`} data-testid="ask-empty">
             <p className={a.greeting}>
@@ -652,6 +750,31 @@ export function AskConsole({
                       {t.error}
                     </div>
                   ) : null}
+                  {/* Cards are the server's records, not part of the answer text: a turn that
+                      staged a proposal and then failed still shows the live decision. */}
+                  {t.ask ? (
+                    <QuestionCard
+                      ask={t.ask}
+                      disabled={busy || !configured}
+                      onAnswer={(r) =>
+                        "option" in r
+                          ? void ask(t.ask!.options[r.option], {
+                              answers: t.ask!.question_id,
+                              option: r.option,
+                            })
+                          : void ask(r.text, { answers: t.ask!.question_id })
+                      }
+                    />
+                  ) : null}
+                  {t.proposals.map((p) => (
+                    <NudgeCard
+                      key={p.action_id}
+                      p={p}
+                      deciding={deciding.has(p.action_id)}
+                      onApprove={() => void decide(p.action_id, true)}
+                      onDismiss={() => void decide(p.action_id, false)}
+                    />
+                  ))}
                 </article>
               </div>
             ))}

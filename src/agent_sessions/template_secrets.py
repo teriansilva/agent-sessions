@@ -35,6 +35,7 @@ once at send time joins the set in memory for ``TYPED_TTL_S`` and is lost on res
 from __future__ import annotations
 
 import base64
+import contextlib
 import errno
 import hashlib
 import hmac
@@ -69,6 +70,23 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b
 
 _lock = threading.Lock()
 _typed: dict[str, float] = {}
+#: THE REGISTRATION FENCE (#1443, Hermes on #1489). A secret becomes KNOWN in one of two ways —
+#: typed once (`register_typed`) or stored (the template-variable store's write, which holds this
+#: fence around its publish) — and a writer that redacts against the known set holds the same
+#: fence across its snapshot AND its write. So a secret registered "during" such a write lands
+#: strictly before it (and is redacted) or strictly after it (the record was clean when written);
+#: re-checking later only moves the window, a shared lock closes it. Re-entrant, process-wide.
+#: Lock order: `session_input.mutation_fence` → this → any store's own file lock.
+_registration = threading.RLock()
+
+
+@contextlib.contextmanager
+def registration_fence():
+    """Hold the registration fence (see `_registration`)."""
+    with _registration:
+        yield
+
+
 _stored_cache: tuple[object, frozenset[str]] | None = None
 
 
@@ -384,7 +402,7 @@ def retire(values: list[str]) -> None:
 def register_typed(values: list[str]) -> None:
     """Add values typed once at send time to the redaction set, in memory, for ``TYPED_TTL_S``."""
     until = time.time() + TYPED_TTL_S
-    with _lock:
+    with _registration, _lock:
         for v in values:
             if len(v) >= SECRET_MIN:
                 _typed[v] = until

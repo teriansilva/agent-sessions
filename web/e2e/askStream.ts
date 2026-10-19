@@ -22,6 +22,15 @@ export interface FakeTurn {
   matches: { id: string; title: string; why: string }[];
   mission_matches: { id: string; title: string; state: string; why: string }[];
   tools: { name: string; outcome: string }[];
+  ask?: {
+    question_id: string;
+    question: string;
+    options: string[];
+    allow_text: boolean;
+    answered: boolean;
+  } | null;
+  proposals?: Record<string, unknown>[];
+  answers?: string | null;
 }
 
 export interface FakeConversation {
@@ -52,7 +61,12 @@ function summary(c: FakeConversation) {
 }
 
 function body(c: FakeConversation) {
-  return { ...summary(c), turns: c.turns, running: false };
+  // As the server derives it: a question is answered once a later turn names it.
+  const answered = new Set(c.turns.map((t) => t.answers).filter(Boolean));
+  const turns = c.turns.map((t) =>
+    t.ask ? { ...t, ask: { ...t.ask, answered: answered.has(t.ask.question_id) } } : t,
+  );
+  return { ...summary(c), turns, running: false };
 }
 
 /** Install the fake conversation routes. `seed` conversations are listed newest-updated first. */
@@ -127,8 +141,12 @@ export function fulfillAsk(
   result: Record<string, unknown>,
   before: Record<string, unknown>[] = [],
 ): Promise<void> {
-  const req = route.request().postDataJSON() as { turn_id: string; text: string };
-  const turn = turnOf(req.text, result, req.turn_id);
+  const req = route.request().postDataJSON() as {
+    turn_id: string;
+    text: string;
+    answers?: string;
+    option?: number;
+  };
   const id = /\/(ask_[0-9a-f]{32})\/message\/stream$/.exec(
     new URL(route.request().url()).pathname,
   )?.[1];
@@ -140,6 +158,13 @@ export function fulfillAsk(
   }
   const fake = page ? fakes.get(page) : undefined;
   const c = fake?.conversations.find((x) => x.id === id);
+  // As the server does: an option is answered with the reply text the question stored.
+  let text = req.text;
+  if (req.answers && req.option !== undefined) {
+    const q = c?.turns.find((t) => t.ask?.question_id === req.answers)?.ask;
+    text = q?.options[req.option] ?? text;
+  }
+  const turn = { ...turnOf(text, result, req.turn_id), answers: req.answers ?? null };
   if (c) {
     c.turns = [...c.turns.filter((t) => t.turn_id !== turn.turn_id), turn];
     c.updated_at = ++clock;

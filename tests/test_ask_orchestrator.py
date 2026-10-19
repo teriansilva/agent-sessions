@@ -248,16 +248,19 @@ def test_the_store_is_private():
 # ---- the tool list ---------------------------------------------------------------------------
 
 
-def test_no_write_tool_is_registered_in_phase_one():
-    assert set(ask_orchestrator.TOOLS) == {
-        "find_sessions",
-        "session_status",
-        "list_missions",
-        "mission_status",
-        "list_projects",
-        "list_agents",
+def test_the_tool_list_and_each_tools_kind_are_pinned():
+    """Phase 2 (#1443) adds asking back and ONE proposal kind — a nudge, which only stages a card.
+    Nothing here launches, dispatches or sends; a new tool or kind has to say so here."""
+    assert {n: t.kind for n, t in ask_orchestrator.TOOLS.items()} == {
+        "find_sessions": "read",
+        "session_status": "read",
+        "list_missions": "read",
+        "mission_status": "read",
+        "list_projects": "read",
+        "ask_operator": "ends_turn",
+        "propose_nudge": "proposal",
+        "list_agents": "read",
     }
-    assert {t.kind for t in ask_orchestrator.TOOLS.values()} == {"read"}
     names = [s["function"]["name"] for s in ask_orchestrator.tool_specs()]
     assert names == list(ask_orchestrator.TOOLS)
 
@@ -608,6 +611,26 @@ def test_the_worst_case_conversation_fits_the_read_cap():
             "text": big,
             "matches": [{"id": key, "title": big, "why": big}] * 99,
             "mission_matches": [{"id": M1, "title": big, "state": "done", "why": big}] * 99,
+        },
+        *(
+            {
+                "type": "proposal",
+                "turn_id": tid,
+                "action_id": "a" * 32,
+                "kind": "nudge",
+                "key": key,
+                "title": big,
+                "text": big,
+            }
+            for _ in range(ask_orchestrator.MAX_PROPOSALS_PER_TURN)
+        ),
+        {
+            "type": "question",
+            "turn_id": tid,
+            "question_id": tid,
+            "question": big,
+            "options": [big] * ask_store.OPTIONS_MAX,
+            "allow_text": True,
         },
         {"type": "status", "turn_id": tid, "status": "failed", "detail": big},
     ]
