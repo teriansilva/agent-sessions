@@ -275,3 +275,87 @@
     gap: 10px;
   }
 }
+
+/* ---- Terminal colour schemes (#1494 P2) ------------------------------------------------- */
+.schemes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 8px;
+}
+.scheme {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+.scheme:hover {
+  border-color: var(--accent);
+}
+.scheme.on {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+.scheme:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* The sample paints in the SCHEME's colours (inline), in the terminal's own mono stack. */
+.schemeSample {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 10px;
+  font: 11px/1.45 var(--font-mono, ui-monospace, monospace);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.ansiStrip {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+}
+.ansiStrip i {
+  display: block;
+  height: 7px;
+}
+.schemeLabel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--border);
+}
+.schemeName {
+  font-weight: 700;
+  font-size: 12.5px;
+  min-width: 0;
+}
+.tag {
+  margin-left: auto;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+/* A measured fact about the scheme, not a state of the app — so plain muted text, never a
+   status colour (design §3). */
+.schemeNote {
+  padding: 0 10px 8px 32px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+@media (max-width: 800px) {
+  .schemes {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  }
+}

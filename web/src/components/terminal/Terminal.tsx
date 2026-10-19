@@ -67,7 +67,8 @@ import {
 } from "../../theme/termSize";
 import { useTermFont } from "../../theme/termFontStore";
 import { useTermSize } from "../../theme/termSizeStore";
-import { xtermTheme } from "../../theme/themes";
+import { useTermScheme } from "../../theme/termSchemeStore";
+import { xtermThemeFor } from "../../theme/termSchemes";
 import { useTheme } from "../../theme/themeStore";
 import { Compose, type ComposeHandle, type TemplateDraft } from "./Compose";
 import { draftSessionKey } from "../../lib/draftSessionKey";
@@ -240,6 +241,8 @@ export function Terminal({
   const refitSoonRef = useRef<() => void>(() => {});
   const { theme } = useTheme();
   const { accent } = useAccent();
+  // The colour scheme (#1494 P2), resolved against the RESOLVED mode (`theme` is never `system`).
+  const { scheme } = useTermScheme();
   const { size: termFontSize, setSize: setTermFontSize } = useTermSize();
   // The size the socket effect reads when CONSTRUCTING xterm. A ref, not a dep: a fresh
   // terminal must open at the current size, but a size *change* must never re-key the
@@ -475,7 +478,7 @@ export function Terminal({
       scrollback: 50000,
       // #866: the FACE is its own axis too (theme/termFont.ts), no longer a theme field.
       fontFamily: termFontFamilyRef.current,
-      theme: { ...xtermTheme(theme), cursor: accent },
+      theme: { ...xtermThemeFor(scheme, theme), cursor: accent },
       // #617: on macOS xterm's `shouldForceSelection` is `altKey && macOptionClickForcesSelection`
       // (Shift is inert there), so without this NO modifier — synthetic or real — can select while
       // the agent owns the mouse. We only ever synthesize Alt ourselves (see lib/termSelect); the
@@ -1681,11 +1684,11 @@ export function Terminal({
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
-    term.options.theme = { ...xtermTheme(theme), cursor: accent };
+    term.options.theme = { ...xtermThemeFor(scheme, theme), cursor: accent };
     term.options.fontFamily = termFontFamily;
     term.options.fontSize = termFontSize;
     refitSoonRef.current();
-  }, [theme, accent, termFontSize, termFontFamily]);
+  }, [theme, scheme, accent, termFontSize, termFontFamily]);
 
   const text = statusText(status);
   // #284: use the server-resolved display title only (manual rename → AI title → meaningful

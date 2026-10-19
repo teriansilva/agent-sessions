@@ -56,6 +56,12 @@ How BattleLab itself looks: the frame, menus, buttons and panels.
 How every terminal looks. Every CLI agent and the plain shell share one terminal, so each of these
 is one choice.
 
+- **Colour scheme**: the ground, the text and the 16 ANSI colours agents paint with. **BattleLab**
+  (the default, today's terminal), Solarized, Gruvbox, Catppuccin, One and GitHub follow the mode
+  and switch with it. Dracula, Nord and Tokyo Night are dark only and stay dark in light mode.
+  A card marked *Some colours low contrast* has at least one of its six main colours under 3:1
+  on its own ground. That is measured, not a judgement, and it applies to BattleLab's dark
+  variant too. The cursor always takes your accent.
 - **Terminal font**: one face for every engine. Faces this device does not have are greyed out
   rather than quietly falling back.
 - **Terminal text size**: decides how many columns the agent lays out against. Smaller text means

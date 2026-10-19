@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { onRadioGroupKeyDown, rovingTabIndex } from "../lib/radioArrows";
 import { isFontAvailable } from "../theme/fontAvailable";
 import {
   coerceTermFontFamily,
@@ -15,6 +16,10 @@ import {
   TERM_FONT_SIZE_MIN,
 } from "../theme/termSize";
 import { useTermSize } from "../theme/termSizeStore";
+import { useTermScheme } from "../theme/termSchemeStore";
+import { lowContrast, resolveTermScheme, TERM_SCHEMES } from "../theme/termSchemes";
+import { useTheme } from "../theme/themeStore";
+import a from "./Appearance.module.css";
 import styles from "./Settings.module.css";
 
 /** Settings → Appearance → Terminal sessions (#1494). Everything about how the terminal looks —
@@ -22,6 +27,8 @@ import styles from "./Settings.module.css";
  *  per device. The font and size controls moved here unchanged from the old Appearance page;
  *  their invariants (docs/invariants/terminal-text-size.md, #866) are untouched. */
 export function AppearanceTerminal() {
+  const { theme } = useTheme();
+  const { scheme, setScheme } = useTermScheme();
   const { size: termFontSize, setSize: setTermFontSize } = useTermSize();
   const { family: termFontFamily, setFamily: setTermFontFamily } = useTermFont();
   // Availability is measured ONCE per mount, not per render: the answer cannot change without
@@ -131,6 +138,76 @@ export function AppearanceTerminal() {
         The look of every terminal. Every CLI agent and the plain shell share one terminal, so
         each of these is one choice, saved per device.
       </p>
+
+      <h3 className={styles.subhead} id="termscheme-h">
+        Colour scheme
+      </h3>
+      <p className={styles.hint}>
+        The ground, the text and the 16 ANSI colours agents paint with. &ldquo;Follows mode&rdquo;
+        schemes switch between their dark and light variants with Interface &rarr; Mode. The
+        cursor always takes your accent.
+      </p>
+      <div
+        className={a.schemes}
+        role="radiogroup"
+        aria-labelledby="termscheme-h"
+        onKeyDown={onRadioGroupKeyDown}
+      >
+        {TERM_SCHEMES.map((sch, i) => {
+          // Each card shows the variant the terminal would paint RIGHT NOW (the resolved mode).
+          const t = resolveTermScheme(sch.id, theme);
+          const on = scheme === sch.id;
+          const low = lowContrast(t);
+          return (
+            <button
+              key={sch.id}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              tabIndex={rovingTabIndex(on, i, true)}
+              aria-describedby={low ? `termscheme-low-${sch.id}` : undefined}
+              className={on ? `${a.scheme} ${a.on}` : a.scheme}
+              onClick={() => setScheme(sch.id)}
+            >
+              <span
+                className={a.schemeSample}
+                style={{ background: t.background, color: t.foreground }}
+                aria-hidden="true"
+              >
+                <span>
+                  <span style={{ color: t.ansi.green }}>~/app</span>{" "}
+                  <span style={{ color: t.ansi.blue }}>main</span> $ npm test
+                </span>
+                <span>
+                  <span style={{ color: t.ansi.brightGreen }}>&#10003;</span> 214 passed{" "}
+                  <span style={{ color: t.ansi.brightBlack }}>(3.1 s)</span>
+                </span>
+                <span>
+                  <span style={{ color: t.ansi.red }}>&#10007;</span> 1 failed{" "}
+                  <span style={{ color: t.ansi.yellow }}>warn</span>{" "}
+                  <span style={{ color: t.ansi.magenta }}>x.ts</span>{" "}
+                  <span style={{ color: t.ansi.cyan }}>#42</span>
+                </span>
+              </span>
+              <span className={a.ansiStrip} aria-hidden="true">
+                {Object.values(t.ansi).map((c, i) => (
+                  <i key={i} style={{ background: c }} />
+                ))}
+              </span>
+              <span className={a.schemeLabel}>
+                <span className={a.radio} aria-hidden="true" />
+                <span className={a.schemeName}>{sch.label}</span>
+                <span className={a.tag}>{sch.light ? "Follows mode" : "Dark only"}</span>
+              </span>
+              {low && (
+                <span className={a.schemeNote} id={`termscheme-low-${sch.id}`}>
+                  Some colours low contrast
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
 
       <h3 className={styles.subhead} id="termfont-h">
         Terminal font

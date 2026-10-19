@@ -432,7 +432,7 @@ test("the page names its group and section in a crumb, not a second heading", as
 // through the #956 split): each section renders its cards.
 test.each([
   ["appearance", ["Interface", "Mode", "Accent"]],
-  ["terminal-appearance", ["Terminal sessions", "Terminal font", "Terminal text size"]],
+  ["terminal-appearance", ["Terminal sessions", "Colour scheme", "Terminal font", "Terminal text size"]],
   ["session-defaults", ["Session defaults"]],
   ["projects", ["Projects", "Session overview"]],
   ["ai-endpoint", ["Connection", "Model"]],

@@ -199,7 +199,7 @@ export function AppearanceInterface() {
       <OpeningLinksSetting />
 
       <p className={a.moved}>
-        The terminal font and text size are under{" "}
+        The terminal&rsquo;s colours, font and size are under{" "}
         <Link to={settingsPath("terminal-appearance")} state={location.state}>
           Terminal sessions
         </Link>

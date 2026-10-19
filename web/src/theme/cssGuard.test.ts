@@ -133,6 +133,14 @@ const PURPLE_ALLOWED: Record<string, readonly string[]> = {
   // The Violet accent preset (#1494). An accent is the one colour the operator picks for the chrome,
   // so it is theirs to make purple; it applies only when chosen, and the default stays amber.
   "theme/accent.ts": ["#8b5cf6"],
+  // Third-party terminal colour schemes (#1494 P2), at their published values — same reason as the
+  // ANSI palette above: magenta is a colour a program asks for by number. Catppuccin Mocha's ground
+  // (#1e1e2e) is violet-tinted by design. All of them paint only a terminal the operator chose
+  // that scheme for, never the chrome.
+  "theme/termSchemes.ts": [
+    "#1e1e2e", "#8250df", "#a475f9", "#a626a4", "#b48ead", "#bb9af7", "#bc8cff",
+    "#bd93f9", "#c678dd", "#d2a8ff", "#d6acff", "#ea76cb", "#f5c2e7", "#ff92df",
+  ],
 };
 
 const allowed = (at: string, hex: string) =>

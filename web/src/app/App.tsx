@@ -38,6 +38,7 @@ import { ButtonGlitch } from "../components/hud/ButtonGlitch";
 import { DataFlowCanvas } from "../components/hud/DataFlowCanvas";
 import { AccentProvider } from "../theme/AccentProvider";
 import { TermFontProvider } from "../theme/TermFontProvider";
+import { TermSchemeProvider } from "../theme/TermSchemeProvider";
 import { TermSizeProvider } from "../theme/TermSizeProvider";
 import { ThemeProvider } from "../theme/ThemeProvider";
 import { useIsMobile } from "../lib/useIsMobile";
@@ -918,6 +919,7 @@ export default function App() {
         <AccentProvider>
           <TermSizeProvider>
             <TermFontProvider>
+              <TermSchemeProvider>
               <OverviewPrefsProvider>
                 {/* ABOVE the router for the same reason (#1007), and with the same split: the
                   map's last SUCCESSFUL COMPLETE result is retained here, so re-entering
@@ -939,6 +941,7 @@ export default function App() {
                   </DashboardRetentionProvider>
                 </OverviewSessionsProvider>
               </OverviewPrefsProvider>
+              </TermSchemeProvider>
             </TermFontProvider>
           </TermSizeProvider>
         </AccentProvider>

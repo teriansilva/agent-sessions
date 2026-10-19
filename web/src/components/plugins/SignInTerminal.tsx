@@ -7,7 +7,8 @@ import { isPasteShortcut } from "../../lib/termKeys";
 import { useTheme } from "../../theme/themeStore";
 import { useTermSize } from "../../theme/termSizeStore";
 import { useTermFont } from "../../theme/termFontStore";
-import { xtermTheme } from "../../theme/themes";
+import { useTermScheme } from "../../theme/termSchemeStore";
+import { xtermThemeFor } from "../../theme/termSchemes";
 import s from "./PluginSetup.module.css";
 
 /** No session, persistence, logging or reconnect. Unmount closes this one sign-in attempt. */
@@ -17,10 +18,11 @@ export function SignInTerminal({ operation, onClose }: { operation: string; onCl
   const refitSoon = useRef<() => void>(() => {});
   const close = useRef(onClose);
   const { theme } = useTheme();
+  const { scheme } = useTermScheme();
   const { size } = useTermSize();
   const { family } = useTermFont();
-  const initial = useRef({ theme, size, family });
-  useEffect(() => { close.current = onClose; initial.current = { theme, size, family }; });
+  const initial = useRef({ theme, scheme, size, family });
+  useEffect(() => { close.current = onClose; initial.current = { theme, scheme, size, family }; });
   useEffect(() => {
     let socket: WebSocket | null = null;
     let term: Terminal | null = null;
@@ -45,7 +47,7 @@ export function SignInTerminal({ operation, onClose }: { operation: string; onCl
     const start = setTimeout(() => {
       if (!alive || !host) return;
       term = new Terminal({ fontSize: initial.current.size, fontFamily: initial.current.family,
-        theme: xtermTheme(initial.current.theme), scrollback: 200, screenReaderMode: true });
+        theme: xtermThemeFor(initial.current.scheme, initial.current.theme), scrollback: 200, screenReaderMode: true });
       terminal.current = term;
       const fit = new FitAddon();
       term.loadAddon(fit);
@@ -88,10 +90,10 @@ export function SignInTerminal({ operation, onClose }: { operation: string; onCl
   }, [operation]);
   useEffect(() => {
     if (!terminal.current) return;
-    terminal.current.options.theme = xtermTheme(theme);
+    terminal.current.options.theme = xtermThemeFor(scheme, theme);
     terminal.current.options.fontSize = size;
     terminal.current.options.fontFamily = family;
     refitSoon.current();
-  }, [theme, size, family]);
+  }, [theme, scheme, size, family]);
   return <div ref={node} className={s.terminal} aria-label="Temporary vendor sign-in terminal" />;
 }

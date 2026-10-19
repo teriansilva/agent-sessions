@@ -1,0 +1,7 @@
+{
+  "_comment": "Appearance ids the client and server must agree on (#1494). Read by tests/test_prefs.py and web/src/theme/*.test.ts.",
+  "term_schemes": {
+    "default": "battlelab",
+    "ids": ["battlelab", "solarized", "gruvbox", "catppuccin", "one", "github", "dracula", "nord", "tokyonight"]
+  }
+}

@@ -114,6 +114,8 @@ def _preflight_prefs(payload: dict) -> None:
         payload["term_font_family"]
     ):
         raise bad("invalid term_font_family")
+    if "term_scheme" in payload and payload["term_scheme"] not in prefs.TERM_SCHEMES:
+        raise bad("unknown term_scheme")
     if "compose_default" in payload and payload["compose_default"] not in prefs.COMPOSE_DEFAULTS:
         raise bad("unknown compose_default")
     if (
@@ -686,6 +688,9 @@ def register(
                 # Terminal font FAMILY (#866). Same seeding contract as the size above: the
                 # device cache wins, this only seeds a device that has never chosen.
                 "term_font_family": prefs.get_term_font_family(),
+                # Terminal colour scheme (#1494 P2). Same seeding contract as the font: the device
+                # cache wins, this only seeds a device that has never chosen.
+                "term_scheme": prefs.get_term_scheme(),
                 # Compose box default state on load: auto (device heuristic) | open | collapsed.
                 # Per-user; the terminal applies it when mounting Compose.
                 "compose_default": prefs.get_compose_default(),
@@ -909,6 +914,10 @@ def register(
             if not prefs.is_valid_term_font_family(payload["term_font_family"]):
                 raise HTTPException(status_code=422, detail="invalid term_font_family")
             out["term_font_family"] = prefs.set_term_font_family(payload["term_font_family"])
+        if "term_scheme" in payload:
+            if payload["term_scheme"] not in prefs.TERM_SCHEMES:
+                raise HTTPException(status_code=422, detail="unknown term_scheme")
+            out["term_scheme"] = prefs.set_term_scheme(payload["term_scheme"])
         if "compose_default" in payload:
             if payload["compose_default"] not in prefs.COMPOSE_DEFAULTS:
                 raise HTTPException(status_code=422, detail="unknown compose_default")

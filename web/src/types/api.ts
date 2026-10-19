@@ -1180,6 +1180,9 @@ export interface AppConfig {
    *  with no local choice; the localStorage cache wins over it. Absent on older servers
    *  (→ client default: the system monospace stack). */
   term_font_family?: string;
+  /** Terminal colour scheme id (#1494 P2). Seeds a device with no local choice; the localStorage
+   *  cache wins over it. Absent on older servers (→ client default "battlelab"). */
+  term_scheme?: string;
   /** Compose box default on load: "auto" (device heuristic) | "open" | "collapsed". */
   compose_default?: "auto" | "open" | "collapsed" | string;
   /** Session-list sort order (#506): "recent_activity" (newest update first, default) or

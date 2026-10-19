@@ -41,6 +41,22 @@ from .atomicjson import atomic_write_json, json_write_lock, read_json_doc
 THEMES: tuple[str, ...] = ("dark", "light", "system")
 DEFAULT_THEME = "dark"
 
+# Terminal colour schemes (#1494 P2). Mirror of web/src/theme/termSchemes.ts TERM_SCHEME_IDS;
+# both are pinned to tests/fixtures/appearance_ids.json. The palettes themselves live client-side —
+# the server only stores which one a device last chose, to seed a device that has none.
+TERM_SCHEMES: tuple[str, ...] = (
+    "battlelab",
+    "solarized",
+    "gruvbox",
+    "catppuccin",
+    "one",
+    "github",
+    "dracula",
+    "nord",
+    "tokyonight",
+)
+DEFAULT_TERM_SCHEME = "battlelab"
+
 # Compose box default state on load. "auto" keeps the device heuristic (expanded on touch,
 # collapsed to the bar on desktop); "open"/"collapsed" force it the same on every device.
 COMPOSE_DEFAULTS: tuple[str, ...] = ("auto", "open", "collapsed")
@@ -507,6 +523,22 @@ def set_accent(accent: str, path: Path | None = None) -> str:
     """Persist the brand accent, normalized to lowercase #rrggbb (invalid input → default).
     Preserves other keys (e.g. theme)."""
     return _set("accent", coerce_accent(accent), path)
+
+
+def coerce_term_scheme(value: object) -> str:
+    """Narrow any input to a known terminal scheme id, falling back to the default (#1494)."""
+    return value if isinstance(value, str) and value in TERM_SCHEMES else DEFAULT_TERM_SCHEME
+
+
+def get_term_scheme(path: Path | None = None) -> str:
+    """The persisted terminal colour scheme, or the default when unset/unreadable/unknown."""
+    return coerce_term_scheme(_load(path or _default_path()).get("term_scheme"))
+
+
+def set_term_scheme(scheme: object, path: Path | None = None) -> str:
+    """Persist the terminal colour scheme (unknown → default). The route 422s an unknown id
+    first, so a bad value never reaches here over HTTP. Preserves other keys."""
+    return _set("term_scheme", coerce_term_scheme(scheme), path)
 
 
 def get_term_font_size(path: Path | None = None) -> int:

@@ -941,6 +941,10 @@ export const api = {
     postJson<{ term_font_family: string }>("/api/prefs", {
       term_font_family: family,
     }),
+  /** Persist the terminal colour scheme id (#1494 P2). CSRF-guarded; an unknown id is a 422,
+   *  so callers send a value from `coerceTermScheme`. */
+  setTermScheme: (scheme: string) =>
+    postJson<{ term_scheme: string }>("/api/prefs", { term_scheme: scheme }),
   /** Persist a partial set of UI preferences (e.g. overview lists, #144). CSRF-guarded. */
   /** `mutateJson`, not `postJson`, so a rejection carries the server's `detail` (#834):
    *  /api/prefs is the one mutation whose 422 text is a real answer — "ai_review.base_url

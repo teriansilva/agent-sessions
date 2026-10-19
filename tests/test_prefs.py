@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from agent_sessions import prefs
@@ -1127,3 +1128,60 @@ def test_a_fully_valid_multi_key_payload_still_writes_every_key(auth_cfg, tmp_ho
     assert cfg["theme"] == "light"
     assert cfg["accent"] == "#00aaff"
     assert cfg["term_font_size"] == 16
+
+
+# ---- terminal colour scheme (#1494 P2) -------------------------------------------------------
+
+_APPEARANCE_IDS = json.loads(
+    (Path(__file__).parent / "fixtures" / "appearance_ids.json").read_text()
+)
+
+
+def test_term_schemes_match_the_shared_fixture():
+    # The SPA's TERM_SCHEME_IDS is pinned to the same file (termSchemes.test.ts), so an id added
+    # on one side only fails one of the two suites.
+    fx = _APPEARANCE_IDS["term_schemes"]
+    assert list(prefs.TERM_SCHEMES) == fx["ids"]
+    assert prefs.DEFAULT_TERM_SCHEME == fx["default"]
+
+
+def test_term_scheme_default_and_round_trip(tmp_path):
+    p = tmp_path / "prefs.json"
+    assert prefs.get_term_scheme(p) == "battlelab"
+    assert prefs.set_term_scheme("nord", p) == "nord"
+    assert prefs.get_term_scheme(p) == "nord"
+
+
+@pytest.mark.parametrize("bad", ["neon", "", None, 3, ["nord"], {"id": "nord"}, "Nord"])
+def test_term_scheme_read_falls_back_to_default(tmp_path, bad):
+    # Lenient on read: a malformed stored value is the default, never a throw.
+    p = tmp_path / "prefs.json"
+    p.write_text(json.dumps({"term_scheme": bad}))
+    assert prefs.get_term_scheme(p) == "battlelab"
+
+
+def test_term_scheme_endpoint_persists_and_seeds_config(auth_cfg, tmp_home):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = c.post(
+        "/api/prefs",
+        json={"term_scheme": "solarized"},
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"term_scheme": "solarized"}
+    assert c.get("/api/config").json()["term_scheme"] == "solarized"
+
+
+@pytest.mark.parametrize("bad", ["neon", 3, None, ["nord"]])
+def test_term_scheme_endpoint_rejects_unknown_without_half_writing(auth_cfg, tmp_home, bad):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    r = c.post(
+        "/api/prefs",
+        json={"theme": "light", "term_scheme": bad},
+        headers={"X-CSRF-Token": csrf, "Origin": auth_cfg.origin},
+    )
+    assert r.status_code == 422
+    # Preflight: the valid key in the same payload was not written either.
+    assert c.get("/api/config").json()["theme"] == "dark"
