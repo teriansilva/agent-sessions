@@ -105,3 +105,36 @@ test("edit, delete and clear go through the real store", async ({ page }) => {
   expect(view.notes).toEqual([]);
   expect(view.quarantine).toEqual([]);
 });
+
+test("existing Claude Code memory is found, imported through the real store, and a credential is held back (#1471)", async ({ page }) => {
+  // A Claude-shaped store for the project's folder, exactly where the claude manifest locates it:
+  // one session whose recorded `cwd` IS the folder, and its auto-memory beside it.
+  const dir = join(stack.home, ".claude", "projects", stack.repo.replace(/[^A-Za-z0-9]/g, "-"));
+  mkdirSync(join(dir, "memory"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(dir, "11111111-1111-4111-8111-111111111111.jsonl"), JSON.stringify({ type: "user", cwd: stack.repo }) + "\n", { mode: 0o600 });
+  writeFileSync(join(dir, "memory", "MEMORY.md"), "- [Release](release.md)\n", { mode: 0o600 });
+  writeFileSync(join(dir, "memory", "release.md"), "---\nname: Releases come from a tag\ndescription: how we ship\nmetadata:\n  type: reference\n---\n\nTag it, then watch the deploy.\n", { mode: 0o600 });
+  writeFileSync(join(dir, "memory", "creds.md"), `---\nname: The deploy key\n---\n\ntoken=ghp_${"b".repeat(36)}\n`, { mode: 0o600 });
+
+  await page.goto(`${base()}/library/memory?project=${pid}`);
+  if (page.viewportSize()!.width <= 800) await page.getByRole("tab", { name: /Trays/ }).click();
+  const card = page.getByRole("region", { name: "Existing memory" });
+  await expect(card).toContainText("Claude Code keeps 2 notes in 1 place for this project's folders.");
+  await card.getByRole("button", { name: "Import existing memory…" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Import 2 notes" }).click();
+  await expect(card.getByRole("status")).toContainText("2 notes from 1 place: 1 taken in, 1 held back.");
+  await card.getByText("Held back from import · 1").click();
+  await expect(card).toContainText("creds.md");
+  await expect(page.locator("body")).not.toContainText("ghp_");
+
+  const view = await (await page.request.get(`${base()}/api/memory/${pid}`)).json();
+  expect(view.notes.map((n: { slug: string; type: string; session: { kind: string } }) => [n.slug, n.type, n.session.kind]))
+    .toEqual([["releases-come-from-a-tag", "reference", "import"]]);
+  expect(view.quarantine).toEqual([]); // a held import is never a tray item
+  // A repeat import: nothing changed, and the held file is still held — the line says so.
+  await card.getByRole("button", { name: "Import again…" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Import 2 notes" }).click();
+  await expect(card.getByRole("status")).toContainText(
+    "2 notes from 1 place: 2 unchanged. 1 file is held back — fix it in Claude Code's memory, then import again.",
+  );
+});

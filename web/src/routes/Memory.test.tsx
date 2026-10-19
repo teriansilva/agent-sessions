@@ -23,6 +23,8 @@ vi.mock("../lib/api", async importOriginal => {
       clearMemory: vi.fn(),
       editMemoryNote: vi.fn(),
       memoryExportUrl: (pid: string) => `/api/memory/${pid}/export`,
+      memoryImportPreview: vi.fn(async () => ({ sources: [], last: null, held: [] })),
+      importMemory: vi.fn(),
     },
   };
 });
@@ -337,6 +339,37 @@ describe("Memory page — destructive actions and filters (#1453 review 2)", () 
     await act(async () => saved.resolve({}));
     await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeEnabled()); // A's Save finished
     expect(screen.getByRole("textbox", { name: "Name" })).toHaveValue("beta note B");
+  });
+
+  test("an import preview for A that settles after B is selected never shows under B (#1471)", async () => {
+    vi.mocked(api.memoryProjects).mockResolvedValue(two as never);
+    vi.mocked(api.memory).mockImplementation(async id =>
+      (id === "p-a" ? viewOf("p-a", "alpha") : viewOf("p-b", "beta")) as never,
+    );
+    const late = deferred<unknown>();
+    const store = (files: number) => ({
+      sources: [{ id: "s", engine: "claude", label: "Claude Code", path: "~/m", relation: "this folder", files, over_agent_size: 0, over_cap: 0, beyond_max_files: 0, state: "ok", reason: "" }],
+      last: null, held: [],
+    });
+    vi.mocked(api.memoryImportPreview).mockImplementation(id => (id === "p-a" ? late.promise : Promise.resolve(store(7))) as never);
+    const router = renderAt("/library/memory?project=p-a");
+    await waitFor(() => expect(api.memoryImportPreview).toHaveBeenCalledWith("p-a"));
+    await act(() => router.navigate("/library/memory?project=p-b"));
+    expect(await screen.findByText(/keeps/)).toHaveTextContent("Claude Code keeps 7 notes in 1 place");
+    await act(async () => late.resolve(store(999)));
+    expect(screen.getByText(/keeps/)).toHaveTextContent("7 notes");
+    expect(screen.queryByText(/999/)).toBeNull();
+  });
+
+  test("an imported note says it was imported, not that its session is unresolved", async () => {
+    vi.mocked(api.memoryProjects).mockResolvedValue({ projects: [two.projects[0]] } as never);
+    const imported = { ...note("imp", "from claude memory"), session: { key: "", engine: "claudex", kind: "import", resolved: false } };
+    vi.mocked(api.memory).mockResolvedValue(viewOf("p-a", "alpha", [imported] as never) as never);
+    renderAt("/library/memory?project=p-a");
+    await userEvent.click(await screen.findByRole("button", { name: "List" }));
+    const row = await screen.findByRole("button", { name: /from claude memory/ });
+    expect(row).toHaveTextContent("imported");
+    expect(row).not.toHaveTextContent("unresolved");
   });
 
   test("notes held back for a secret are counted, never shown", async () => {

@@ -7,7 +7,7 @@ import type { DeploymentReceipt, DeploymentRemoval, DeploymentReview, Deployment
 // Mutations (later) attach the CSRF token + are origin-checked server-side.
 import type { AuthoringSchema, DirectPrompt, Files, PromptComparison, Variable } from "../components/playbooks/playbookDraft";
 import type { PluginCatalog, PluginReview, PluginOperation, PluginAction } from "../types/plugins";
-import type { MemoryProject, MemoryView, NoteEdit } from "../types/memory";
+import type { ImportPreview, ImportResult, MemoryProject, MemoryView, NoteEdit } from "../types/memory";
 import type { PlaybookDetail, PlaybookFleet, PlaybookFleetResult, PlaybookFleetReview, PlaybookList, PlaybookVerify, PlaybookWriteResult } from "../types/playbooks";
 import {
   AUTOMATION_ORIGINS_API,
@@ -1031,6 +1031,12 @@ export const api = {
     mutateJson<{ slug: string }>("PATCH", `/api/memory/${enc(pid)}/quarantine/${id}`, { text }),
   dropQuarantined: (pid: string, id: number) => deleteVoid(`/api/memory/${enc(pid)}/quarantine/${id}`),
   memoryExportUrl: (pid: string) => `/api/memory/${enc(pid)}/export`,
+  /** The agent memory stores found for a project's folders, the last import, and what it held
+   *  back (#1471). Read only. */
+  memoryImportPreview: (pid: string) => getJsonWithDetail<ImportPreview>(`/api/memory/${enc(pid)}/import`),
+  /** Import the chosen sources — by their opaque ids from a fresh preview, never a path. */
+  importMemory: (pid: string, sources: string[]) =>
+    mutateJson<ImportResult>("POST", `/api/memory/${enc(pid)}/import`, { sources }),
   /** Shared Library (#1390): metadata and scoped values remain in the existing store. */
   variables: () => getJsonWithDetail<SharedVariablesResponse>("/api/variables"),
   enableSharedVariables: () => mutateJson<Pick<SharedVariablesResponse, "variables" | "collections">>("POST", "/api/variables/migrate", {}),

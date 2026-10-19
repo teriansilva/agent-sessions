@@ -38,7 +38,7 @@ function NoteCard({ data }: NodeProps<NoteNode>) {
       <strong className={styles.title}>{note.name}</strong>
       <span className={styles.meta}>
         {note.session.engine ? engineName(note.session.engine) : "unknown"}
-        {note.session.resolved ? "" : " (unresolved)"} · {relTime(note.updated)}
+        {note.session.kind === "import" ? " (imported)" : note.session.resolved ? "" : " (unresolved)"} · {relTime(note.updated)}
       </span>
       <Handle type="source" position={Position.Right} isConnectable={false} />
     </div>
@@ -50,7 +50,7 @@ function SessionCard({ data }: NodeProps<SessionNode>) {
   return (
     <div className={styles.session} data-testid="memory-session-node" style={{ color: engineColor(session.engine) }}>
       <span className={styles.engine}>
-        {engineName(session.engine) || "unknown"} · {session.key ? session.key.split(":")[1]?.slice(0, 8) : "session unresolved"}
+        {engineName(session.engine) || "unknown"} · {session.key ? session.key.split(":")[1]?.slice(0, 8) : session.kind === "import" ? "its own memory" : "session unresolved"}
       </span>
       <span className={styles.kind}>
         {(session.kind || "agent").toUpperCase()} · {notes} {notes === 1 ? "NOTE" : "NOTES"}

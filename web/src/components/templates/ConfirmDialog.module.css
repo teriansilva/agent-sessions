@@ -20,6 +20,11 @@
   border-radius: 0;
   padding: 15px 18px 16px;
   box-shadow: 0 14px 44px rgba(0, 0, 0, 0.5);
+  /* Never taller than the screen: the head and the actions stay put and a long body scrolls
+     between them, so the confirm button is always reachable (Hermes on #1484). */
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - 40px);
 }
 
 .head {
@@ -61,6 +66,9 @@
   color: var(--text-1);
 }
 .body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
   font-size: 12.5px;
   line-height: 1.5;
   color: var(--text-2);
@@ -130,6 +138,7 @@
     border-right: 0;
     border-bottom: 0;
     padding-bottom: calc(16px + env(safe-area-inset-bottom, 0));
+    max-height: 100dvh;
   }
   .actions {
     justify-content: stretch;

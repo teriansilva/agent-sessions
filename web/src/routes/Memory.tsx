@@ -8,6 +8,7 @@ import { useIsMobile } from "../lib/useIsMobile";
 import { useConfig } from "../app/config";
 import type { MemoryNote, MemoryProject, MemorySession, MemoryView, NoteEdit, NoteType } from "../types/memory";
 import { ConfirmDialog } from "../components/templates/ConfirmDialog";
+import { ImportCard } from "../components/memory/ImportCard";
 import { linkedFrom, TYPE_ORDER, TYPE_TAG } from "../components/memory/memoryGraph";
 import { MEMORY_GUIDE_URL } from "../lib/links";
 import buttons from "../components/ui/actionButton.module.css";
@@ -34,7 +35,9 @@ const message = (e: unknown) => (e instanceof Error ? e.message : "The request f
 function Writer({ session }: { session: MemorySession }) {
   const name = session.engine ? engineName(session.engine) : "unknown agent";
   const to = session.key ? sessionPathFromKey(session.key) : null;
-  const label = `${name} · ${session.kind || "agent"}${session.resolved ? "" : " · session unresolved"}`;
+  const label = session.kind === "import"
+    ? `${name} · imported`  // taken in from the agent's own memory (#1471): no session wrote it here
+    : `${name} · ${session.kind || "agent"}${session.resolved ? "" : " · session unresolved"}`;
   return to ? <Link to={to} className={styles.writer}>{label}</Link> : <span className={styles.writer}>{label}</span>;
 }
 
@@ -198,6 +201,12 @@ export default function Memory() {
     </div>
   );
 
+  // Existing memory (#1471): one card per project — `key` drops everything it held when the
+  // project changes, so a late answer for one project never shows under another.
+  const importCard = view && pid && (
+    <ImportCard key={pid} pid={pid} projectName={view.project.name} disabled={busy} onImported={refresh} />
+  );
+
   const instructions = view && (
     <section className={styles.instructions} aria-label="Agent instructions">
       <h2 className={styles.eyebrow}>Agent instructions</h2>
@@ -227,7 +236,7 @@ export default function Memory() {
           <span className={styles.tag} data-type={n.type}>{TYPE_TAG[n.type]}</span>
           <span className={styles.rowText}>
             <span className={styles.rowName}>{n.name}</span>
-            <span className={styles.meta}>{n.session.engine ? engineName(n.session.engine) : "unknown"} · {n.session.kind || "agent"}{n.session.resolved ? "" : " · unresolved"} · {relTime(n.updated)}</span>
+            <span className={styles.meta}>{n.session.engine ? engineName(n.session.engine) : "unknown"} · {n.session.kind === "import" ? "imported" : `${n.session.kind || "agent"}${n.session.resolved ? "" : " · unresolved"}`} · {relTime(n.updated)}</span>
           </span>
         </button>
       ))}
@@ -359,6 +368,7 @@ export default function Memory() {
               </button>
             ))}
             {switchView}
+            {!mobile && importCard}
             {!mobile && instructions}
           </nav>
           <main className={styles.main}>
@@ -368,6 +378,7 @@ export default function Memory() {
                 {offState}
                 {/* The desktop rail carries the paragraph; on a phone the off state must, too —
                     it's what the operator pastes before turning memory on. */}
+                {mobile && importCard}
                 {mobile && instructions}
                 {/* Turning memory off keeps what was held: it must stay inspectable and droppable. */}
                 {trays > 0 && traysView}
@@ -394,6 +405,7 @@ export default function Memory() {
                     )}
                     {shown === "list" && list}
                     {(shown === "trays" || !mobile) && traysView}
+                    {mobile && shown === "trays" && importCard}
                     {mobile && shown === "trays" && instructions}
                   </>
                 )}

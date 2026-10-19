@@ -12,6 +12,7 @@ const NOW = Date.now() / 1000;
 const CLAUDE = { key: "claude:11111111-1111-4111-8111-111111111111", engine: "claude", kind: "terminal", resolved: true };
 const CODEX_API = { key: "codex-api:22222222-2222-4222-8222-222222222222", engine: "codex-api", kind: "api", resolved: true };
 const UNRESOLVED = { key: "", engine: "codex", kind: "terminal", resolved: false };
+const IMPORTED = { key: "", engine: "claude", kind: "import", resolved: false };
 
 function initialView() {
   return {
@@ -33,8 +34,23 @@ function initialView() {
 
 type Call = { method: string; path: string; body: unknown };
 
+/** The import preview (#1471): one store for this folder, one for a subfolder, one that can't be read. */
+function initialImport() {
+  const source = { engine: "claude", label: "Claude Code", over_cap: 0, beyond_max_files: 0, state: "ok", reason: "" };
+  return {
+    sources: [
+      { ...source, id: "s-here", path: "~/.claude/projects/-home-marcus-claude-agent-sessions/memory", relation: "this folder", files: 201, over_agent_size: 25 },
+      { ...source, id: "s-web", path: "~/.claude/projects/-home-marcus-claude-agent-sessions-web/memory", relation: "a subfolder session", files: 2, over_agent_size: 0 },
+      { ...source, id: "s-mixed", path: "~/.claude/projects/-home-marcus-claude-agent-sessions-old/memory", relation: "", files: 0, over_agent_size: 0, state: "unavailable", reason: "not all of its sessions belong to this project" },
+    ],
+    last: null as null | Record<string, unknown>,
+    held: [] as Record<string, unknown>[],
+  };
+}
+
 async function mockMemory(page: Page, start: Partial<ReturnType<typeof initialView>> = {}) {
   const view = { ...initialView(), ...start };
+  const imp = initialImport();
   const calls: Call[] = [];
   await page.route("**/api/memory**", async route => {
     const req = route.request();
@@ -55,6 +71,17 @@ async function mockMemory(page: Page, start: Partial<ReturnType<typeof initialVi
       ] } });
     }
     if (path === `/api/memory/${PID}` && method === "GET") return route.fulfill({ json: view });
+    if (path === `/api/memory/${PID}/import` && method === "GET") return route.fulfill({ json: imp });
+    if (path === `/api/memory/${PID}/import` && method === "POST") {
+      const totals = { imported: 156, updated: 0, unchanged: 0, kept_edits: 0, skipped_deleted: 0, held: 43, refused: 2, left_out: 0 };
+      imp.last = { at: NOW, sources: [{ id: "s-here", label: "Claude Code", path: imp.sources[0].path, relation: "this folder", state: "ok", files: 201, ...totals }], totals, unavailable: 0 };
+      imp.held = [
+        { source: imp.sources[0].path, file: "nextcloud-share-credentials.md", reason: "looks like a credential", refused: false, at: NOW },
+        { source: imp.sources[0].path, file: "whole-runbook.md", reason: "larger than 32 KiB", refused: true, at: NOW },
+      ];
+      view.notes.unshift({ slug: "deploy-and-verify", name: "Deploy and verify", description: "prod via a v* tag", type: "reference", body: "Prod deploys from a v* tag.", size: 26, created: NOW, updated: NOW, session: IMPORTED, links: [] });
+      return route.fulfill({ json: imp.last });
+    }
     if (path === `/api/memory/${PID}/ingest`) return route.fulfill({ json: { notes: 0, quarantined: 0, refused: 0, dropped: 0 } });
     if (path === `/api/memory/${PID}/enabled`) { view.enabled = body.enabled; return route.fulfill({ json: body }); }
     if (path === `/api/memory/${PID}/clear`) { view.notes = []; view.quarantine = []; view.pending = []; return route.fulfill({ status: 204 }); }
@@ -174,6 +201,79 @@ test("a new project, memory off: the paragraph to paste is on screen and copies,
   expect(await page.evaluate(() => navigator.clipboard.readText())).toContain("$BATTLELAB_MEMORY_INBOX");
 });
 
+test("existing memory: choose, import, report — and what was held back is a list to fix at the source, not a tray", async ({ page, isMobile }) => {
+  const calls = await mockMemory(page);
+  await page.goto(MEMORY_PATH);
+  if (isMobile) await page.getByRole("tab", { name: "Trays · 3" }).click();
+  const card = page.getByRole("region", { name: "Existing memory" });
+  await expect(card).toContainText("Claude Code keeps 203 notes in 2 places for this project's folders. 1 place couldn't be read.");
+  await card.getByRole("button", { name: "Import existing memory…" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText("not all of its sessions belong to this project");
+  const boxes = dialog.getByRole("checkbox");
+  await expect(boxes.nth(0)).toBeChecked();
+  await expect(boxes.nth(1)).not.toBeChecked();
+  await expect(boxes.nth(2)).toBeDisabled();
+  if (isMobile) {
+    const small = await dialog.locator("label").evaluateAll(els => els.map(el => el.getBoundingClientRect().height).filter(h => h < 44));
+    expect(small, "source rows under 44px").toEqual([]);
+  }
+  await dialog.getByRole("button", { name: "Import 201 notes" }).click();
+  await expect(dialog).toBeHidden();
+  await expect.poll(() => calls.find(c => c.method === "POST" && c.path.endsWith("/import"))?.body).toEqual({ sources: ["s-here"] });
+  await expect(card.getByRole("status")).toContainText("201 notes from 1 place: 156 taken in, 43 held back, 2 refused. 45 files are held back — fix them in Claude Code's memory, then import again.");
+  await card.getByText("Held back from import · 2").click();
+  await expect(card).toContainText("nextcloud-share-credentials.md");
+  await expect(card).toContainText("refused: larger than 32 KiB");
+  await expect(card.getByRole("button", { name: /Rewrite|Take in/ })).toHaveCount(0);
+  // The agent trays are untouched: an import's held files are not quarantine items.
+  await expect(page.getByRole("region", { name: "Trays" })).toContainText("Quarantine · 1");
+  await expect(page.getByRole("region", { name: "Trays" })).toContainText("Refused · 1");
+  if (!isMobile) {
+    await page.getByRole("button", { name: "List" }).click();
+    const row = page.getByRole("button", { name: /Deploy and verify/ });
+    await expect(row).toContainText("· imported");
+    await expect(row).not.toContainText("unresolved");
+    await page.getByRole("group", { name: "View" }).getByRole("button", { name: "Graph" }).click();
+    const writer = page.getByTestId("memory-session-node").filter({ hasText: "IMPORT" });
+    await expect(writer).toContainText("its own memory");
+    await expect(writer).not.toContainText("unresolved");
+  }
+});
+
+test("a short phone with more places than one import takes: the confirm stays reachable and 16 go", async ({ page, isMobile }) => {
+  test.skip(!isMobile, "the bottom sheet's height is a phone fact");
+  await page.setViewportSize({ width: 360, height: 560 });
+  const calls = await mockMemory(page);
+  const many = Array.from({ length: 20 }, (_, i) => ({
+    id: `s${i}`, engine: "claude", label: "Claude Code", path: `~/.claude/projects/-home-marcus-claude-agent-sessions-${i}/memory`,
+    relation: "this folder", files: 1, over_agent_size: 0, over_cap: 0, beyond_max_files: 0, state: "ok", reason: "",
+  }));
+  await page.route(`**/api/memory/${PID}/import`, route =>
+    route.request().method() === "GET" ? route.fulfill({ json: { sources: many, last: null, held: [] } }) : route.fallback());
+  await page.goto(MEMORY_PATH);
+  await page.getByRole("tab", { name: "Trays · 3" }).click();
+  await page.getByRole("region", { name: "Existing memory" }).getByRole("button", { name: "Import existing memory…" }).click();
+  const dialog = page.getByRole("dialog");
+  const confirm = dialog.getByRole("button", { name: "Import 16 notes" });
+  await expect(confirm).toBeVisible();
+  const box = (await confirm.boundingBox())!;
+  expect(box.y + box.height, "the confirm button is on screen").toBeLessThanOrEqual(560);
+  // A sheet taller than the screen loses its TOP (it is anchored to the bottom): the title and
+  // the first places must be reachable as well as the confirm button.
+  await expect(dialog.getByRole("heading", { name: /Import existing memory/ })).toBeInViewport();
+  const first = dialog.getByRole("checkbox").first();
+  await first.scrollIntoViewIfNeeded();
+  await expect(first).toBeInViewport();
+  const last = dialog.getByRole("checkbox").last();
+  await last.scrollIntoViewIfNeeded();
+  await expect(last).toBeInViewport();
+  await expect(last).toBeDisabled(); // the 17th+ wait for a second run
+  await expect(dialog.getByRole("note")).toContainText("at most 16 places");
+  await confirm.click();
+  await expect.poll(() => (calls.find(c => c.method === "POST" && c.path.endsWith("/import"))?.body as { sources: string[] } | undefined)?.sources.length).toBe(16);
+});
+
 test("mobile: every control is a real touch target and nothing scrolls sideways", async ({ page, isMobile }) => {
   test.skip(!isMobile, "touch-target and overflow rules are mobile layout facts");
   await mockMemory(page);
@@ -249,6 +349,31 @@ async function contrastFailures(page: Page) {
 }
 
 for (const theme of ["dark", "light"] as const) {
+  test(`${theme} theme: the import card and dialog are captured and meet WCAG AA contrast`, async ({ page, isMobile }, testInfo) => {
+    await mockMemory(page);
+    await page.addInitScript(t => localStorage.setItem("tr-theme", t), theme);
+    await page.goto(MEMORY_PATH);
+    await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+    if (isMobile) await page.getByRole("tab", { name: "Trays · 3" }).click();
+    const card = page.getByRole("region", { name: "Existing memory" });
+    await expect(card).toContainText("Claude Code keeps 203 notes");
+    await card.getByRole("button", { name: "Import existing memory…" }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    const vp = isMobile ? "mobile" : "desktop";
+    const shot = (name: string) => testInfo.outputPath(`memory-import-${name}-${theme}-${vp}.png`);
+    await page.screenshot({ path: shot("dialog") });
+    await testInfo.attach(`memory-import-dialog-${theme}-${vp}`, { path: shot("dialog"), contentType: "image/png" });
+    expect(await contrastFailures(page)).toEqual([]);
+    await dialog.getByRole("button", { name: "Import 201 notes" }).click();
+    await expect(card.getByRole("status")).toBeVisible();
+    await card.getByText("Held back from import · 2").click();
+    await card.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: shot("result") });
+    await testInfo.attach(`memory-import-result-${theme}-${vp}`, { path: shot("result"), contentType: "image/png" });
+    expect(await contrastFailures(page)).toEqual([]);
+  });
+
   test(`${theme} theme: captured, and every visible text meets WCAG AA contrast`, async ({ page, isMobile }, testInfo) => {
     await mockMemory(page);
     await page.addInitScript(t => localStorage.setItem("tr-theme", t), theme);
