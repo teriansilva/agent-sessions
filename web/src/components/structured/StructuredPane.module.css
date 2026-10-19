@@ -570,9 +570,11 @@
   font-size: 11px;
   margin-right: 4px;
 }
+/* No rule of its own: the block's left rule already marks the turn, and a second one beside it
+   read as a doubled line. */
 .ownReply {
-  border-left: 1px solid var(--line);
-  padding-left: 14px;
+  border-left: 0;
+  padding-left: 0;
 }
 .ownControls { display: flex; flex-wrap: wrap; gap: 8px; }
 .ownNote {

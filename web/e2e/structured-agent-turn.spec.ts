@@ -200,6 +200,25 @@ test("#1438: a finished own turn keeps its reply, activity collapsed", async ({ 
   await expect(button(page)).toHaveCount(0);
 });
 
+test("the agent's own turn has one left rule — the reply inside it draws none of its own", async ({ page }) => {
+  await ownTurn(page, "dark", {
+    state: "completed",
+    reply: "Hermes asked for a mobile mockup; I added it and edited the issue.",
+  }, { background_turn: null, background_active: false });
+  const reply = page.getByTestId("structured-agent-reply");
+  await expect(reply).toBeVisible();
+  const style = await reply.evaluate((el) => {
+    const s = getComputedStyle(el);
+    return { width: s.borderLeftWidth, line: s.borderLeftStyle, pad: s.paddingLeft };
+  });
+  expect(style.line === "none" || style.width === "0px").toBe(true);
+  expect(style.pad).toBe("0px");
+  // Its text lines up with the block's header rather than sitting indented under a second rule.
+  const head = await block(page).locator("> :first-child").boundingBox();
+  const text = await reply.boundingBox();
+  expect(Math.abs(text!.x - head!.x)).toBeLessThanOrEqual(1);
+});
+
 test("#1438: only a background task — a generic row, distinct from a turn, nothing to interrupt", async ({ page }) => {
   await ownTurn(page, "dark", { state: "completed" }, { background_turn: null, background_active: true });
   const row = page.getByTestId("structured-background-work");
