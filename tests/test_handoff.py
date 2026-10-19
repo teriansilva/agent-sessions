@@ -2519,3 +2519,155 @@ def test_ws_handoff_launches_in_the_decided_cwd_mint_own_id_model(
     with _ws_connect(c, auth_cfg, key, f"new=1&cwd={cwd}") as ws:
         ws.receive_text()
     assert captured["spawns"] == 1
+
+
+# ---- a guarded seed (#1443 Phase 3a, Hermes round 2 on #1491) ------------------------------------
+
+
+def test_a_guarded_seed_carrying_a_known_secret_is_withheld_never_typed(tmp_home):
+    from agent_sessions import template_secrets, webterm
+
+    secret = "purple-monkey-dishwasher-tag"
+    h = handoff.create_handle(
+        "", "claude", "dispatch", f"Deploy with {secret}", cwd="/tmp", guard_secrets=True
+    )
+    key = handoff.commit(h)["id"]
+    template_secrets.register_typed([secret])
+    r, w = os.pipe()
+    try:
+        assert webterm._deliver_seed(w, key, None) is False
+        os.set_blocking(r, False)
+        with pytest.raises(BlockingIOError):
+            os.read(r, 65536)  # not one byte
+        # Consumed: no later attach can type it either, and the launch learns nothing was typed.
+        assert handoff.claim_seed(key) is None
+        assert handoff.retire_seed(key) == "zero_write"
+    finally:
+        os.close(r)
+        os.close(w)
+
+
+def test_a_guarded_clean_seed_is_typed_and_an_unguarded_seed_is_unchanged(tmp_home):
+    from agent_sessions import template_secrets, webterm
+
+    template_secrets.register_typed(["purple-monkey-dishwasher-tag"])
+    guarded = handoff.commit(
+        handoff.create_handle("", "claude", "dispatch", "CLEAN", cwd="/tmp", guard_secrets=True)
+    )["id"]
+    # Every other seed path keeps today's behaviour: no check at delivery.
+    plain = handoff.commit(
+        handoff.create_handle("", "claude", "quick", "has purple-monkey-dishwasher-tag", cwd="/tmp")
+    )["id"]
+    r, w = os.pipe()
+    try:
+        assert webterm._deliver_seed(w, guarded, None) is True
+        assert os.read(r, 65536) == b"\x1b[200~CLEAN\x1b[201~\r"
+        assert webterm._deliver_seed(w, plain, None) is True
+        assert b"purple-monkey" in os.read(r, 65536)
+    finally:
+        os.close(r)
+        os.close(w)
+
+
+def test_a_secret_registered_during_a_guarded_write_waits_for_it(tmp_home):
+    """The registration fence is held across the whole write: a secret cannot become known
+    between the check and the last byte."""
+    import fcntl
+    import threading
+
+    from agent_sessions import template_secrets, webterm
+
+    seed = "P" * 8000  # > the shrunken pipe below: the write blocks until the reader drains
+    key = handoff.commit(
+        handoff.create_handle("", "claude", "dispatch", seed, cwd="/tmp", guard_secrets=True)
+    )["id"]
+    r, w = os.pipe()
+    fcntl.fcntl(w, 1031, 4096)  # F_SETPIPE_SZ
+    result: list[bool] = []
+    writer = threading.Thread(target=lambda: result.append(webterm._deliver_seed(w, key, None)))
+    writer.start()
+    try:
+        time.sleep(0.2)  # the writer is mid-paste, blocked on a full pipe
+        reg = threading.Thread(target=template_secrets.register_typed, args=(["late-value-xyz"],))
+        reg.start()
+        reg.join(0.3)
+        assert reg.is_alive()  # waits for the write…
+        got = b""
+        while len(got) < len(seed) + 13:
+            got += os.read(r, 65536)
+        writer.join(5)
+        reg.join(5)
+        assert not reg.is_alive() and result == [True]  # …and lands once it is done
+    finally:
+        os.close(r)
+        os.close(w)
+
+
+@pytest.mark.parametrize("register", [True, False], ids=["secret-registered", "retired-only"])
+def test_a_guarded_seed_retired_between_claim_and_delivery_is_never_typed(
+    tmp_home, monkeypatch, register
+):
+    """Hermes round 3 on #1491: claim → retire (a launch given up) → register → deliver. The
+    guard policy comes WITH the claim, so a retired entry never reads as "unguarded"; and a
+    guarded seed retired under its claim is not typed at all."""
+    from agent_sessions import template_secrets, webterm
+
+    secret = "purple-monkey-dishwasher-tag"
+    key = handoff.commit(
+        handoff.create_handle(
+            "", "claude", "dispatch", f"Deploy with {secret}", cwd="/tmp", guard_secrets=True
+        )
+    )["id"]
+    real = handoff.claim_seed_guarded
+
+    def claim_then_retire(k):
+        got = real(k)
+        handoff.retire_seed(k)
+        if register:
+            template_secrets.register_typed([secret])
+        return got
+
+    monkeypatch.setattr(handoff, "claim_seed_guarded", claim_then_retire)
+    r, w = os.pipe()
+    try:
+        assert webterm._deliver_seed(w, key, None) is False
+        os.set_blocking(r, False)
+        with pytest.raises(BlockingIOError):
+            os.read(r, 65536)  # zero bytes
+    finally:
+        os.close(r)
+        os.close(w)
+
+
+def test_a_guarded_seed_retired_while_its_writer_waits_for_the_pty_is_never_typed(tmp_home):
+    """Hermes round 4 on #1491: retirement AFTER every pre-write check, while the writer waits for
+    the PTY's write lock. The first byte is serialized with `retire_seed`, so nothing is typed."""
+    import threading
+
+    from agent_sessions import webterm
+
+    key = handoff.commit(
+        handoff.create_handle("", "claude", "dispatch", "BRIEF", cwd="/tmp", guard_secrets=True)
+    )["id"]
+    write_lock = threading.Lock()
+    write_lock.acquire()  # another writer holds the PTY
+    r, w = os.pipe()
+    result: list[bool] = []
+    t = threading.Thread(
+        target=lambda: result.append(webterm._deliver_seed(w, key, None, write_lock))
+    )
+    try:
+        t.start()
+        time.sleep(0.3)  # claimed, checked, now waiting for the write lock
+        assert handoff.retire_seed(key) == "unknown"  # the claim is still outstanding
+        write_lock.release()
+        t.join(5)
+        assert result == [False]
+        os.set_blocking(r, False)
+        with pytest.raises(BlockingIOError):
+            os.read(r, 65536)  # zero bytes
+    finally:
+        if write_lock.locked():
+            write_lock.release()
+        os.close(r)
+        os.close(w)

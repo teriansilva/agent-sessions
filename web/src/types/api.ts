@@ -909,7 +909,7 @@ export interface AskQuestionCard {
 
 /** A message Ask proposed for a session (#1443 Phase 2), with the ledger action's LIVE state —
  *  `projection` / `can_*` are `project_for_operator`'s contract, never derived here. */
-export interface AskProposalCard {
+export interface AskNudgeCard {
   action_id: string;
   kind: "nudge";
   key: string;
@@ -927,6 +927,58 @@ export interface AskProposalCard {
   can_reject: boolean;
   detail: string;
 }
+
+/** A session Ask proposed to start (#1443 Phase 3a). `title` is the project, `text` the brief —
+ *  as shown; what a tap launches is the server's own entry. Its state is the server's:
+ *  `unknown` = the entry could not be read just now, `gone` = there is no entry to decide. */
+export interface AskSessionCard {
+  action_id: string;
+  kind: "session";
+  title: string;
+  agent: string;
+  text: string;
+  state:
+    | "pending"
+    | "deciding"
+    | "started"
+    | "unconfirmed"
+    | "failed"
+    | "stale"
+    | "dismissed"
+    | "interrupted"
+    | "unknown"
+    | "gone";
+  engine: string;
+  /** The new-session form's starting value for permission bypass — the card's toggle starts here. */
+  bypass_default: boolean;
+  /** What the tap carried, once decided. */
+  bypass: boolean | null;
+  /** The session it started (or may have started), for a way in. */
+  session_key: string;
+  reason: string;
+  /** `default_changed`: the bypass default moved since this was proposed; check and start again.
+   *  `busy`: the project was being changed as it started; nothing started, tap again. */
+  notice: "" | "default_changed" | "busy";
+  can_start: boolean;
+  can_dismiss: boolean;
+}
+
+/** What `POST /api/ask/proposals/{id}/decide` answers with (and a 409 carries under `proposal`):
+ *  the entry's STATE, never the card's display fields. */
+export type AskSessionDecision = Pick<
+  AskSessionCard,
+  | "state"
+  | "engine"
+  | "bypass_default"
+  | "bypass"
+  | "session_key"
+  | "reason"
+  | "notice"
+  | "can_start"
+  | "can_dismiss"
+>;
+
+export type AskProposalCard = AskNudgeCard | AskSessionCard;
 
 /** One question and what became of it. `status` is the server's: a `pending` turn is still
  *  running there (or in another tab), whatever this page is doing. */

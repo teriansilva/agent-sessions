@@ -94,6 +94,21 @@ opens the Dashboard with the sidebar open.
   text, not that the agent acted on it. The same decision also appears in Needs you. Sending
   needs Session assistance on (Suggest or YOLO) in Settings; Ask never sends on its own, whatever
   the autonomy level. A mission's sessions are messaged from that mission's own console.
+- Ask can **propose a new session** ("start a Claude session on api to rebase onto main"). The
+  card shows the project, the agent and the brief, the agent's first message, exactly as it will
+  be typed. Nothing starts until you tap **Start session in …**.
+  - **Permission bypass** is a switch on the card. It starts at the default from your new-session
+    form; *On* means the agent runs commands and edits files without asking you first. What the card
+    shows when you tap is what the session gets.
+  - If that default changed after the card appeared, the card asks you to check the switch and
+    tap again, and nothing starts.
+  - The card then shows *Starting*, and *Started* with **Open** once the agent has the session and
+    received the brief. *Started* is not the work done.
+  - If the launch can't be confirmed, the card says *Not confirmed*: check your sessions. Ask never
+    tries it again.
+  - If the project, its folder, the agent or Session assistance changed since the card appeared,
+    it says *Out of date* and starts nothing.
+  - Starting needs Session assistance on (Suggest or YOLO). Ask doesn't create missions yet.
 - An answer that names a session needing you carries the same *Needs you* marker and ⓘ as the
   list, whatever the list's filter.
 

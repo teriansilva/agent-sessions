@@ -36,6 +36,7 @@ import termios
 import threading
 import time  # noqa: F401 — kept so `webterm.time` stays patchable by tests
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 from . import opencode_admission, perfstats, scrollback, session_input, sessionlock, tty_health
 from .scrollback import (  # noqa: F401 — re-exported so `webterm.<name>` stays the public surface
@@ -453,9 +454,46 @@ def _deliver_seed(
     Returns True when the seed was fully delivered."""
     from . import handoff  # late import: webterm is imported by handoff's route layer
 
-    seed = handoff.claim_seed(seed_key)
-    if seed is None:
+    claimed = handoff.claim_seed_guarded(seed_key)
+    if claimed is None:
         return False  # consumed or claimed by another viewer — single delivery held
+    seed, guarded = claimed  # the policy comes WITH the claim, never looked up after it
+    if guarded:
+        # A guarded seed (an Ask launch, #1443) is checked against the secrets known NOW, with the
+        # registration fence held across the whole write: a secret registered before this check is
+        # caught, and one registered meanwhile waits until the bytes are typed. Withheld, never
+        # typed — and consumed, so no later attach types it either.
+        from . import template_secrets
+
+        with template_secrets.registration_fence():
+            try:
+                clean = template_secrets.redact_text(seed) == seed
+            except template_secrets.RedactionUnavailable:
+                clean = False
+            if not clean:
+                handoff.ack_seed(seed_key, "withheld")
+                log.warning("seed for %s withheld: it carries a known secret", seed_key)
+                return False
+            # A guarded seed retired under its claim (the launch given up) is never typed: the
+            # FIRST byte is written in the same critical section as `retire_seed`
+            # (`handoff.first_write_if_claimed`), so retirement lands wholly before it (nothing is
+            # typed) or after it (the paste completes and the launch's record says `unknown`).
+            return _write_seed(fd, seed_key, buf_key, write_lock, seed, guarded=True)
+    return _write_seed(fd, seed_key, buf_key, write_lock, seed)
+
+
+def _write_seed(
+    fd: int,
+    seed_key: str,
+    buf_key: str | None,
+    write_lock: threading.Lock | None,
+    seed: str,
+    *,
+    guarded: bool = False,
+) -> bool:
+    """The bounded write of a CLAIMED seed, and its ack (``_deliver_seed``'s protocol)."""
+    from . import handoff
+
     lock = write_lock if write_lock is not None else threading.Lock()
     data = b"\x1b[200~" + seed.encode("utf-8", "replace") + b"\x1b[201~\r"
     written = 0
@@ -481,7 +519,17 @@ def _deliver_seed(
                 _, writable, _ = select.select([], [fd], [], 0)
                 if not writable:
                     continue
-                written += os.write(fd, view[written : written + _SEED_WRITE_CHUNK])
+                chunk = view[written : written + _SEED_WRITE_CHUNK]
+                if guarded and written == 0:
+                    # Confirmed room and a chunk at the guarantee floor: this write cannot block,
+                    # so it may run under the handoff store's lock, serialized with retirement.
+                    n = handoff.first_write_if_claimed(seed_key, partial(os.write, fd, chunk))
+                    if n is None:
+                        log.warning("seed for %s not typed: it was retired while claimed", seed_key)
+                        return False
+                    written += n
+                else:
+                    written += os.write(fd, chunk)
             finally:
                 lock.release()
         except OSError:

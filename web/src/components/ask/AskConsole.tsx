@@ -73,7 +73,7 @@ import { Link, useNavigate } from "react-router-dom";
 
 import { MAP_PATH, useMapWindows } from "../../app/workspaceWindows";
 import { ACTION_RESOLVED_EVENT, announceActionResolved } from "../../lib/actionEvents";
-import { api } from "../../lib/api";
+import { ApiError, api } from "../../lib/api";
 import { blockMarkup } from "../../lib/blockMarkup";
 import { useIsMobile } from "../../lib/useIsMobile";
 import { missionLink } from "../../lib/missionLink";
@@ -82,6 +82,7 @@ import type {
   AskConversationSummary,
   AskConversationTurn,
   AskProposalCard,
+  AskSessionDecision,
   AskQuestionCard,
   AskStoredMatch,
   AskStoredMissionMatch,
@@ -89,7 +90,7 @@ import type {
 } from "../../types/api";
 
 import styles from "../pulse/mission.module.css";
-import { NudgeCard, QuestionCard } from "./AskCards";
+import { NudgeCard, QuestionCard, SessionCard } from "./AskCards";
 import { AskComposer } from "./AskComposer";
 import { mapBatch, matchRoute, matchSeed } from "./askMatches";
 import a from "./AskConsole.module.css";
@@ -116,7 +117,8 @@ export interface AskTurn {
   /** Its answer arrived while this page watched — the only answer that writes itself out. One read
    *  back from the server is history and shows at once. */
   live?: boolean;
-  /** The question this turn ended on, and the nudges it proposed (#1443 Phase 2). */
+  /** The question this turn ended on, and what it proposed: nudges (#1443 Phase 2) and sessions
+   *  to start (Phase 3a). */
   ask: AskQuestionCard | null;
   proposals: AskProposalCard[];
 }
@@ -134,6 +136,12 @@ const LIVE_PROJECTIONS = new Set([
   "in_flight_locked",
   "unknown",
 ]);
+/** A session card's states that can still change: undecided, launching, or unreadable. */
+const LIVE_SESSION_STATES = new Set(["pending", "deciding", "unknown"]);
+
+function cardLive(p: AskProposalCard): boolean {
+  return p.kind === "session" ? LIVE_SESSION_STATES.has(p.state) : LIVE_PROJECTIONS.has(p.projection);
+}
 
 function fromServer(t: AskConversationTurn): AskTurn {
   return {
@@ -355,17 +363,22 @@ export function AskConsole({
   // you, the bell, another tab) or the proposal's TTL can settle it under an open card, so while
   // any card is undecided or in flight the conversation is read again: on the app's own
   // action-resolved event at once, and on a timer for everything that event cannot see.
-  const cardsLive = turns.some((t) => t.proposals.some((p) => LIVE_PROJECTIONS.has(p.projection)));
+  const cardsLive = turns.some((t) => t.proposals.some(cardLive));
+  // A session being started settles in seconds, not minutes: follow it at the turn poll's pace.
+  const launching = turns.some((t) =>
+    t.proposals.some((p) => p.kind === "session" && p.state === "deciding"),
+  );
+  const every = launching ? Math.min(POLL_MS, cardPollMs) : cardPollMs;
   useEffect(() => {
     if (!cardsLive || streaming || !cid) return;
-    const timer = window.setInterval(() => void load(cid), cardPollMs);
+    const timer = window.setInterval(() => void load(cid), every);
     const onResolved = () => void load(cid);
     window.addEventListener(ACTION_RESOLVED_EVENT, onResolved);
     return () => {
       window.clearInterval(timer);
       window.removeEventListener(ACTION_RESOLVED_EVENT, onResolved);
     };
-  }, [cardsLive, streaming, cid, load, cardPollMs]);
+  }, [cardsLive, streaming, cid, load, every]);
 
   const ask = useCallback(
     async (q: string, reply?: { answers: string; option?: number }) => {
@@ -494,6 +507,58 @@ export function AskConsole({
         });
         // Only the conversation still on screen is re-read: a decision that settles after the
         // operator switched away must not disturb the one they are now reading.
+        if (id && cidRef.current === id) void load(id);
+      }
+    },
+    [load],
+  );
+
+  /** A session card's tap (#1443 Phase 3a): the decision and the bypass value the card showed —
+   *  never what to start. 202 = launching; the re-read follows it. A refusal that changed the
+   *  card (the default moved) shows on the card; one that did not is said under it. */
+  const [cardErrors, setCardErrors] = useState<ReadonlyMap<string, string>>(new Map());
+  const decideSession = useCallback(
+    async (pid: string, decision: "start" | "dismiss", bypass: boolean) => {
+      const id = cidRef.current;
+      setDeciding((s) => new Set(s).add(pid));
+      let error: string | null = null;
+      // The server's answer about THIS card — applied at once, so an accepted Start never stays
+      // clickable (nor a changed default unseen) if the re-read below fails; the re-read and the
+      // poll reconcile it.
+      let decided: AskSessionDecision | null = null;
+      try {
+        decided = (await api.decideAskProposal(pid, decision, bypass)).proposal;
+      } catch (e) {
+        const carried =
+          e instanceof ApiError
+            ? ((e.record as { proposal?: AskSessionDecision } | undefined)?.proposal ?? null)
+            : null;
+        if (carried) decided = carried;
+        else error = e instanceof Error && e.message ? e.message : "That did not go through.";
+      } finally {
+        if (decided && id && cidRef.current === id) {
+          const view = decided;
+          gen.current++; // a read already in flight must not land over this answer
+          setTurns((prev) =>
+            prev.map((t) => ({
+              ...t,
+              proposals: t.proposals.map((p) =>
+                p.kind === "session" && p.action_id === pid ? { ...p, ...view } : p,
+              ),
+            })),
+          );
+        }
+        setDeciding((s) => {
+          const n = new Set(s);
+          n.delete(pid);
+          return n;
+        });
+        setCardErrors((m) => {
+          const n = new Map(m);
+          if (error) n.set(pid, error);
+          else n.delete(pid);
+          return n;
+        });
         if (id && cidRef.current === id) void load(id);
       }
     },
@@ -768,15 +833,57 @@ export function AskConsole({
                       }
                     />
                   ) : null}
-                  {t.proposals.map((p) => (
-                    <NudgeCard
-                      key={p.action_id}
-                      p={p}
-                      deciding={deciding.has(p.action_id)}
-                      onApprove={() => void decide(p.action_id, true)}
-                      onDismiss={() => void decide(p.action_id, false)}
-                    />
-                  ))}
+                  {t.proposals.map((p) =>
+                    p.kind === "session" ? (
+                      <SessionCard
+                        // A new starting value (the card asks again) starts the control afresh.
+                        key={`${p.action_id}:${p.bypass_default}`}
+                        p={p}
+                        deciding={deciding.has(p.action_id)}
+                        error={cardErrors.get(p.action_id) ?? null}
+                        onStart={(bypass) => void decideSession(p.action_id, "start", bypass)}
+                        onDismiss={() => void decideSession(p.action_id, "dismiss", false)}
+                        ways={
+                          p.session_key ? (
+                            <>
+                              <Link
+                                className={styles.openSession}
+                                to={matchRoute(p.session_key)}
+                                aria-label={`Open the session started in ${p.title}`}
+                                data-testid="ask-session-open"
+                              >
+                                Open
+                              </Link>
+                              {canMap ? (
+                                <button
+                                  type="button"
+                                  className={`${styles.openSession} ${a.mapBtn}`}
+                                  aria-label={`Open the session started in ${p.title} in map`}
+                                  disabled={
+                                    !map?.openKeys.has(p.session_key) && (map?.room ?? 0) < 1
+                                  }
+                                  onClick={() =>
+                                    openInMap([{ id: p.session_key, title: p.title, why: "" }])
+                                  }
+                                  data-testid="ask-session-map"
+                                >
+                                  Open in map
+                                </button>
+                              ) : null}
+                            </>
+                          ) : null
+                        }
+                      />
+                    ) : (
+                      <NudgeCard
+                        key={p.action_id}
+                        p={p}
+                        deciding={deciding.has(p.action_id)}
+                        onApprove={() => void decide(p.action_id, true)}
+                        onDismiss={() => void decide(p.action_id, false)}
+                      />
+                    ),
+                  )}
                 </article>
               </div>
             ))}

@@ -10,11 +10,16 @@
  *  re-checked before the first byte) is the existing one. Once decided, the controls give way to
  *  an outcome row — an LED plus a WORD, never colour alone — and the words are honest: "Delivered"
  *  means the terminal accepted the text, not that the agent did anything with it.
+ *
+ *  **Session** (#1443 Phase 3a) — a session Ask proposed to start: the project, the agent and the
+ *  brief, verbatim. Permission bypass is a control ON the card, starting from the new-session
+ *  form's default; the tap carries what it shows. "Started" means the agent's own store has the
+ *  session and it received the brief; anything less proved says so, and nothing is retried.
  */
-import { Eye, Send } from "lucide-react";
-import { useState } from "react";
+import { Eye, Play, Send } from "lucide-react";
+import { type ReactNode, useState } from "react";
 
-import type { AskProposalCard, AskQuestionCard } from "../../types/api";
+import type { AskNudgeCard, AskQuestionCard, AskSessionCard } from "../../types/api";
 
 import c from "./AskCards.module.css";
 
@@ -91,7 +96,7 @@ export function QuestionCard({
 type Tone = "ok" | "warn" | "bad" | "neutral";
 
 /** The outcome words for a settled or in-flight proposal — from the ledger's own state. */
-function outcome(p: AskProposalCard): { word: string; tone: Tone; detail: string } | null {
+function outcome(p: AskNudgeCard): { word: string; tone: Tone; detail: string } | null {
   if (p.projection === "actionable") return null;
   if (p.projection === "unknown")
     return {
@@ -147,7 +152,7 @@ export function NudgeCard({
   onApprove,
   onDismiss,
 }: {
-  p: AskProposalCard;
+  p: AskNudgeCard;
   deciding: boolean;
   onApprove: () => void;
   onDismiss: () => void;
@@ -226,6 +231,179 @@ export function NudgeCard({
             </div>
           ) : null}
         </>
+      )}
+    </div>
+  );
+}
+
+/** The outcome words for a session proposal — from the server's own state. */
+function sessionOutcome(p: AskSessionCard): { word: string; tone: Tone; detail: string } | null {
+  switch (p.state) {
+    case "pending":
+      return null;
+    case "deciding":
+      return {
+        word: "Starting",
+        tone: "neutral",
+        detail: "Launching, and waiting for the agent to confirm it started and got the brief.",
+      };
+    case "started":
+      return {
+        word: "Started",
+        tone: "ok",
+        detail: "The agent has the session and received the brief. That is not the work done.",
+      };
+    case "unconfirmed":
+      return { word: "Not confirmed", tone: "bad", detail: p.reason || "Check your sessions." };
+    case "failed":
+      return { word: "Failed", tone: "bad", detail: p.reason || "Nothing was started." };
+    case "stale":
+      return {
+        word: "Out of date",
+        tone: "warn",
+        detail: p.reason ? `${p.reason}. Nothing was started.` : "Nothing was started.",
+      };
+    case "dismissed":
+      return { word: "Dismissed", tone: "neutral", detail: "Nothing was started." };
+    case "interrupted":
+      return { word: "Interrupted", tone: "bad", detail: p.reason || "Check your sessions." };
+    case "unknown":
+      return {
+        word: "Status unavailable",
+        tone: "warn",
+        detail: "This proposal could not be read just now; this updates on its own.",
+      };
+    default:
+      return {
+        word: "No longer tracked",
+        tone: "neutral",
+        detail: "There is no record to decide, so nothing will start.",
+      };
+  }
+}
+
+export function SessionCard({
+  p,
+  deciding,
+  error,
+  onStart,
+  onDismiss,
+  ways,
+}: {
+  p: AskSessionCard;
+  deciding: boolean;
+  /** Why the last tap was refused, when the card itself did not change. */
+  error: string | null;
+  onStart: (bypass: boolean) => void;
+  onDismiss: () => void;
+  /** Open / Open in map, for a started session. */
+  ways?: ReactNode;
+}) {
+  // The control starts from the card's starting value. A NEW starting value (the default changed
+  // and the card asks again) remounts the card — its parent keys it on that value.
+  const [bypass, setBypass] = useState(p.bypass_default);
+  const out = sessionOutcome(p);
+  const edge = out?.tone === "warn" ? c.edgeWarn : out?.tone === "bad" ? c.edgeBad : "";
+  const name = p.title || "this project";
+  return (
+    <div className={`${c.card} ${edge}`} data-testid="ask-session" data-state={p.state}>
+      <div className={c.head}>
+        <span className={c.k}>Proposal</span>
+        Session
+        <span className={c.st}>{out ? out.word : "Waiting for you"}</span>
+      </div>
+      <div className={`${c.body} ${out && p.state !== "deciding" ? c.muted : ""}`}>
+        <dl className={c.kv}>
+          <dt>Project</dt>
+          <dd>{p.title}</dd>
+          <dt>Agent</dt>
+          <dd>{p.agent}</dd>
+          {out && p.bypass !== null ? (
+            <>
+              <dt>Bypass</dt>
+              <dd data-testid="ask-session-bypass-used">
+                {p.bypass ? "On — it does not ask before acting" : "Off — it asks before acting"}
+              </dd>
+            </>
+          ) : null}
+        </dl>
+        <div className={c.blockLabel}>Brief, verbatim</div>
+        <div className={c.verbatim} data-testid="ask-session-brief">
+          {p.text}
+        </div>
+        {!out ? (
+          <>
+            <label className={c.switchRow} data-testid="ask-session-bypass">
+              <input
+                type="checkbox"
+                role="switch"
+                checked={bypass}
+                disabled={deciding || !p.can_start}
+                onChange={(e) => setBypass(e.target.checked)}
+                aria-describedby={`bypass-${p.action_id}`}
+              />
+              <span className={c.switchText}>
+                <span className={c.switchName}>Permission bypass · {bypass ? "On" : "Off"}</span>
+                <span id={`bypass-${p.action_id}`} className={c.switchRisk}>
+                  {bypass
+                    ? "The agent runs commands and edits files without asking you first."
+                    : "The agent asks you before it runs commands or edits files."}
+                </span>
+              </span>
+            </label>
+            {p.notice === "busy" ? (
+              <div className={c.note} role="status" data-testid="ask-session-notice">
+                <span>
+                  The project was being changed just as this started, so nothing started. Start
+                  it again.
+                </span>
+              </div>
+            ) : null}
+            {p.notice === "default_changed" ? (
+              <div className={c.note} role="status" data-testid="ask-session-notice">
+                <span>
+                  Your default for permission bypass changed since this was proposed. Check the
+                  setting above and start again.
+                </span>
+              </div>
+            ) : null}
+            {error ? (
+              <div className={c.note} role="alert" data-testid="ask-session-error">
+                <span>{error}</span>
+              </div>
+            ) : null}
+          </>
+        ) : null}
+      </div>
+      {!out ? (
+        <div className={c.actions}>
+          <button
+            type="button"
+            className={c.cta}
+            disabled={deciding || !p.can_start}
+            onClick={() => onStart(bypass)}
+            data-testid="ask-session-start"
+          >
+            <Play size={15} aria-hidden="true" />
+            Start session in {name}
+          </button>
+          <button
+            type="button"
+            className={c.ghost}
+            disabled={deciding || !p.can_dismiss}
+            onClick={onDismiss}
+            data-testid="ask-session-dismiss"
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : (
+        <div className={c.outcome} role="status" data-testid="ask-session-outcome">
+          <span className={`${c.led} ${c[`led_${out.tone}`]}`} aria-hidden="true" />
+          <span className={`${c.ow} ${c[`ow_${out.tone}`]}`}>{out.word}</span>
+          <span className={c.od}>{out.detail}</span>
+          {p.state === "started" && ways ? <span className={c.ways}>{ways}</span> : null}
+        </div>
       )}
     </div>
   );

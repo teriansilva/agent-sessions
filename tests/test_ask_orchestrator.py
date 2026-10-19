@@ -249,8 +249,9 @@ def test_the_store_is_private():
 
 
 def test_the_tool_list_and_each_tools_kind_are_pinned():
-    """Phase 2 (#1443) adds asking back and ONE proposal kind — a nudge, which only stages a card.
-    Nothing here launches, dispatches or sends; a new tool or kind has to say so here."""
+    """Phase 2 (#1443) adds asking back and a nudge; Phase 3a a session to start. Both proposals
+    only stage a card — nothing here launches, dispatches or sends; a new tool or kind has to say
+    so here."""
     assert {n: t.kind for n, t in ask_orchestrator.TOOLS.items()} == {
         "find_sessions": "read",
         "session_status": "read",
@@ -260,6 +261,7 @@ def test_the_tool_list_and_each_tools_kind_are_pinned():
         "ask_operator": "ends_turn",
         "propose_nudge": "proposal",
         "list_agents": "read",
+        "propose_session": "proposal",
     }
     names = [s["function"]["name"] for s in ask_orchestrator.tool_specs()]
     assert names == list(ask_orchestrator.TOOLS)
@@ -617,9 +619,10 @@ def test_the_worst_case_conversation_fits_the_read_cap():
                 "type": "proposal",
                 "turn_id": tid,
                 "action_id": "a" * 32,
-                "kind": "nudge",
-                "key": key,
+                # The larger card (#1443 Phase 3a): a session's brief outweighs a nudge's text.
+                "kind": "session",
                 "title": big,
+                "agent": big,
                 "text": big,
             }
             for _ in range(ask_orchestrator.MAX_PROPOSALS_PER_TURN)

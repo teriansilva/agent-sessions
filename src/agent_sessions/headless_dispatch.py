@@ -512,6 +512,8 @@ async def dispatch(
     authorize: Callable[[int], str | None] | None = None,
     nonce: str | None = None,
     model: object = None,
+    spawn_fence: Callable[[], contextlib.AbstractContextManager] | None = None,
+    guard_secrets: bool = False,
 ) -> Dispatch:
     """Launch `engine` in `cwd` with nobody watching, and deliver `brief`.
 
@@ -541,6 +543,14 @@ async def dispatch(
     completes before the fence is entered — in which case the epoch has moved and the caller
     refuses — or waits for the spawn it could not have prevented anyway. See
     `session_input.launch_fence`.
+
+    **`spawn_fence` is held around `authorize` AND the spawn**, inside the launch fence, for a
+    caller whose check has to stay true until the process exists — not just until the check
+    returns. It must never WAIT on a lock that may be held by someone waiting on the launch fence;
+    a lock ordered outside this fence has to be tried, not waited for.
+
+    **`guard_secrets`** marks the brief's seed so its delivery withholds it if it carries a secret
+    known when it is typed (`handoff.claim_seed_guarded`).
 
     **`registry` is required**, not optional. A `dtach -n` master has no reader, so nothing drains
     it, nothing observes first paint and no writer is registered — and the seed delivery then
@@ -703,7 +713,12 @@ async def dispatch(
         # and the socket is named after it. So the handle is bound to the id we hold rather than
         # to a second one, through `bind_target`, which is `commit`'s body minus the minting.
         handle = handoff.create_handle(
-            source_key="", target_engine=engine, mode="dispatch", seed=cleaned, cwd=cwd
+            source_key="",
+            target_engine=engine,
+            mode="dispatch",
+            seed=cleaned,
+            cwd=cwd,
+            guard_secrets=guard_secrets,
         )
         handoff.bind_target(handle, key)
 
@@ -985,42 +1000,45 @@ async def dispatch(
                     if guard.reason:
                         return None, guard.reason
                     with session_input.launch_fence(timeout=SPAWN_TIMEOUT_S) as policy_epoch:
-                        if authorize is not None:
-                            why = authorize(policy_epoch)
-                            if why:
-                                return None, why
-                        # Abandonment is a refusal. The caller sets this when it has given up;
-                        # the check is inside the fence, immediately before the spawn: the common
-                        # shape of a late worker is one still queued for the fence when the deadline
-                        # passes, and it must not start an agent for a dispatch already reported as
-                        # having launched nothing. Losing this race is survivable — the caller waits
-                        # for this thread before tearing down — but not starting is much better than
-                        # starting and killing.
-                        if abandoned.is_set():
-                            return None, "the launch was abandoned before anything was spawned"
-                        # A new agent process: its project's memory paths if memory is on (#1441),
-                        # resolved from the dispatch's own folder. `launch_env` never raises.
-                        spawn_env = {**env, **memory.launch_env(key, cwd, kind="terminal")}
-                        may_have_inherited = True
-                        return (
-                            _popen(  # noqa: S603 — literal argv, no shell
-                                argv,
-                                stdin=subprocess.DEVNULL,
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL,
-                                cwd=spawn_cwd,
-                                env=spawn_env,
-                                start_new_session=True,
-                                close_fds=True,
-                                # The dtach master inherits the lock fd, so the flock lives as
-                                # long as the agent and survives an app restart. The DIRECTORY fd
-                                # rides along: `cwd=/proc/self/fd/N` is resolved by the child,
-                                # which must inherit it — `close_fds=True` would otherwise
-                                # take it.
-                                pass_fds=((lock.fd,) if dirfd is None else (lock.fd, dirfd)),
-                            ),
-                            "",
-                        )
+                        # The caller's own hold, across its check AND the spawn (`spawn_fence`).
+                        with spawn_fence() if spawn_fence is not None else contextlib.nullcontext():
+                            if authorize is not None:
+                                why = authorize(policy_epoch)
+                                if why:
+                                    return None, why
+                            # Abandonment is a refusal. The caller sets this when it has given up;
+                            # the check is inside the fence, immediately before the spawn: the
+                            # common shape of a late worker is one still queued for the fence when
+                            # the deadline passes, and it must not start an agent for a dispatch
+                            # already reported as having launched nothing. Losing this race is
+                            # survivable — the caller waits for this thread before tearing down —
+                            # but not starting is much better than starting and killing.
+                            if abandoned.is_set():
+                                return None, "the launch was abandoned before anything was spawned"
+                            # A new agent process: its project's memory paths if memory is on
+                            # (#1441), resolved from the dispatch's own folder. `launch_env` never
+                            # raises.
+                            spawn_env = {**env, **memory.launch_env(key, cwd, kind="terminal")}
+                            may_have_inherited = True
+                            return (
+                                _popen(  # noqa: S603 — literal argv, no shell
+                                    argv,
+                                    stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL,
+                                    cwd=spawn_cwd,
+                                    env=spawn_env,
+                                    start_new_session=True,
+                                    close_fds=True,
+                                    # The dtach master inherits the lock fd, so the flock lives as
+                                    # long as the agent and survives an app restart. The DIRECTORY
+                                    # fd rides along: `cwd=/proc/self/fd/N` is resolved by the
+                                    # child, which must inherit it — `close_fds=True` would
+                                    # otherwise take it.
+                                    pass_fds=((lock.fd,) if dirfd is None else (lock.fd, dirfd)),
+                                ),
+                                "",
+                            )
 
             # THE WORKER STAYS OURS UNTIL IT HAS DEFINITIVELY FINISHED (#904 review 8, finding
             # 2). `wait_for(to_thread(...))` reads like a bounded spawn and is not one: cancelling

@@ -5,9 +5,11 @@ proposals and follow-up updates vanish on a reload cannot keep an audit trail, s
 conversation is now an append-only JSONL file on the server:
 
     <root>/<cid>.jsonl            the records, one JSON object per LF-terminated line
-    <root>/proposals/<cid>.json   Phase 3's proposal sidecar (read here by retention only)
+    <root>/proposals/<cid>.json   Phase 3's session proposals (``ask_proposals`` writes them)
     <root>/follows/<cid>.json     Phase 4's follow sidecar (read here by retention only)
     <root>/.locks/<cid>.lock      the turn lock: held for as long as a turn runs
+    <root>/.locks/<cid>.proposals.lock   held across every read-modify-write of the sidecar
+    <root>/.locks/<cid>.decide.lock      held for as long as a launch from this conversation runs
 
 ``root`` is ``AGENT_SESSIONS_ASK_DIR`` (default ``~/.config/agent-sessions/ask``), kept 0700 with
 0600 files. Its parent is the app's config dir (often 0775 by umask), so the chain is not held to
@@ -101,8 +103,11 @@ OPTION_MAX = 120
 OPTIONS_MAX = 4
 #: A nudge's text — the orchestrator's own `answer` cap, so the ledger never cuts what was shown.
 NUDGE_MAX = 800
+#: A session proposal's brief (#1443 Phase 3a), well under the seed cap so the attempt's own
+#: identifying line always fits beside it.
+BRIEF_MAX = 2_000
 _ACTION_ID_RE = re.compile(r"^[0-9a-f]{32}$")
-PROPOSAL_KINDS = frozenset({"nudge"})
+PROPOSAL_KINDS = frozenset({"nudge", "session"})
 
 
 class StoreRefused(Exception):
@@ -146,6 +151,14 @@ def _follows_path(cid: str) -> Path:
 
 def _lock_path(cid: str) -> Path:
     return root() / ".locks" / f"{cid}.lock"
+
+
+def _proposals_lock_path(cid: str) -> Path:
+    return root() / ".locks" / f"{cid}.proposals.lock"
+
+
+def _decide_lock_path(cid: str) -> Path:
+    return root() / ".locks" / f"{cid}.decide.lock"
 
 
 def _ensure_dir(path: Path) -> None:
@@ -264,13 +277,21 @@ def _admit(rec: dict, secrets: list[str]) -> dict:
         aid, key, pkind = rec.get("action_id"), rec.get("key"), rec.get("kind")
         if not (isinstance(aid, str) and _ACTION_ID_RE.match(aid)):
             raise ValueError("malformed action id")
-        if not (isinstance(key, str) and _KEY_RE.match(key)):
-            raise ValueError("malformed proposal session key")
         if pkind not in PROPOSAL_KINDS:
             raise ValueError("unknown proposal kind")
-        out.update(action_id=aid, key=key, kind=pkind)
-        out["title"] = text(rec.get("title"), TITLE_MAX)
-        out["text"] = text(rec.get("text"), NUDGE_MAX)
+        if pkind == "nudge":
+            if not (isinstance(key, str) and _KEY_RE.match(key)):
+                raise ValueError("malformed proposal session key")
+            out.update(action_id=aid, key=key, kind=pkind)
+            out["title"] = text(rec.get("title"), TITLE_MAX)
+            out["text"] = text(rec.get("text"), NUDGE_MAX)
+        else:
+            # A session to start: the project's name, the agent's name and the brief, for the
+            # card. What a tap launches is the sidecar's entry (``ask_proposals``), never this.
+            out.update(action_id=aid, kind=pkind)
+            out["title"] = text(rec.get("title"), TITLE_MAX)
+            out["agent"] = text(rec.get("agent"), TITLE_MAX)
+            out["text"] = text(rec.get("text"), BRIEF_MAX)
     elif kind == "status":
         out["turn_id"] = _turn_id(rec)
         status = rec.get("status")
@@ -489,6 +510,44 @@ def turn_lock(cid: str) -> Iterator[bool]:
             os.close(fd)
 
 
+def _open_lock(path: Path) -> int:
+    _ensure_root()
+    return os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+
+
+@contextlib.contextmanager
+def proposals_lock(cid: str) -> Iterator[None]:
+    """The proposal sidecar's lock, BLOCKING and short: held across one read-modify-write of
+    ``proposals/<cid>.json``, and by retention across its last look and the delete. Lock order:
+    the turn lock, then the decide lock, then this one."""
+    if not valid_cid(cid):
+        raise ConversationNotFound(cid)
+    fd = _open_lock(_proposals_lock_path(cid))
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def try_decide_lock(cid: str) -> int | None:
+    """Held for as long as a launch from this conversation runs (``ask_proposals``), non-blocking:
+    an fd to hold and close, or None while another launch — in this process or another — holds
+    it. A ``deciding`` proposal whose lock is free is one nobody is still deciding."""
+    if not valid_cid(cid):
+        raise ConversationNotFound(cid)
+    fd = _open_lock(_decide_lock_path(cid))
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        return None
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
 # ---- the conversation list ---------------------------------------------------------------------
 
 
@@ -549,6 +608,194 @@ def list_conversations() -> list[dict]:
     return [summary(cid, path, mtime) for cid, path, mtime in _conversation_files()]
 
 
+# ---- the session-proposal sidecar (#1443 Phase 3a) ---------------------------------------------
+
+#: A session proposal's life. ``pending`` waits for a tap; ``deciding`` is a launch in flight; every
+#: other state is settled and never left again — an uncertain launch is never retried.
+SESSION_PROPOSAL_STATES = frozenset(
+    {
+        "pending",
+        "deciding",
+        "started",
+        "unconfirmed",
+        "failed",
+        "stale",
+        "dismissed",
+        "interrupted",
+    }
+)
+#: Proposals one conversation may hold — the most its turns can make.
+MAX_SESSION_PROPOSALS = MAX_TURNS * 3
+NOTICES = frozenset({"", "default_changed", "busy"})
+_ENGINE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
+_PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+PATH_MAX = 4_096
+#: The reason a pending brief becomes ``stale`` when a secret it contains is registered later.
+BRIEF_NOW_SECRET = "the brief now contains a secret, so it will not be sent — ask again"  # noqa: S105 — a message, not a credential
+
+
+class SidecarUnreadable(Exception):
+    """The proposal sidecar exists and cannot be read: nothing in it can be decided."""
+
+
+class Withheld(Exception):
+    """A new proposal whose text the boundary would change: it is refused, never stored altered —
+    a redacted brief would be a different launch from the one shown."""
+
+
+def ensure_proposals_dir() -> Path:
+    _ensure_root()
+    d = root() / "proposals"
+    _ensure_dir(d)
+    return d
+
+
+def read_proposals(cid: str) -> list[dict]:
+    """The sidecar's entries, in order; ``[]`` when there is none. SidecarUnreadable otherwise —
+    never a partial list, so nothing is decided on a guess."""
+    if not valid_cid(cid):
+        raise ConversationNotFound(cid)
+    try:
+        fd = os.open(_proposals_path(cid), os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return []
+    except OSError as e:
+        raise SidecarUnreadable(type(e).__name__) from None
+    try:
+        raw = b""
+        while chunk := os.read(fd, 1 << 16):
+            raw += chunk
+            if len(raw) > READ_MAX_BYTES:
+                raise SidecarUnreadable("too large")
+    finally:
+        os.close(fd)
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        raise SidecarUnreadable("not JSON") from None
+    rows = data.get("proposals") if isinstance(data, dict) else None
+    if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
+        raise SidecarUnreadable("malformed")
+    return rows
+
+
+def _admit_entry(e: dict, secrets: list[str], *, fresh: bool) -> dict:
+    """One sidecar entry as it may be written; ValueError for a shape no caller should produce."""
+    pid, tid = e.get("id"), e.get("turn_id")
+    if not (isinstance(pid, str) and _ACTION_ID_RE.match(pid)):
+        raise ValueError("malformed proposal id")
+    if not valid_turn_id(tid):
+        raise ValueError("malformed turn id")
+    if e.get("kind") != "session":
+        raise ValueError("unknown proposal kind")
+    state = e.get("state")
+    if state not in SESSION_PROPOSAL_STATES:
+        raise ValueError("unknown proposal state")
+    engine, project_id, cwd = e.get("engine"), e.get("project_id"), e.get("cwd")
+    if not (isinstance(engine, str) and _ENGINE_RE.match(engine)):
+        raise ValueError("malformed engine id")
+    if not (isinstance(project_id, str) and _PROJECT_ID_RE.match(project_id)):
+        raise ValueError("malformed project id")
+    # The project's own folder, from the project store — a path, not model text.
+    if not (
+        isinstance(cwd, str)
+        and cwd.startswith("/")
+        and len(cwd) <= PATH_MAX
+        and not any(c in cwd for c in "\x00\n\r")
+    ):
+        raise ValueError("malformed project folder")
+    # Where the folder RESOLVED when the card was shown: a start compares against it, so a
+    # symlink repointed before the tap is refused rather than taken as the new baseline.
+    real = e.get("real")
+    if not (
+        isinstance(real, str)
+        and real.startswith("/")
+        and len(real) <= PATH_MAX
+        and not any(c in real for c in "\x00\n\r")
+    ):
+        raise ValueError("malformed resolved folder")
+    for k in ("bypass_default",):
+        if not isinstance(e.get(k), bool):
+            raise ValueError(f"{k} must be a boolean")
+    bypass = e.get("bypass")
+    if bypass is not None and not isinstance(bypass, bool):
+        raise ValueError("bypass must be a boolean")
+    skey = e.get("session_key") or ""
+    if skey and not (isinstance(skey, str) and _KEY_RE.match(skey)):
+        raise ValueError("malformed session key")
+    notice = e.get("notice") or ""
+    if notice not in NOTICES:
+        raise ValueError("unknown notice")
+    out = {
+        "id": pid,
+        "turn_id": tid,
+        "kind": "session",
+        "state": state,
+        "engine": engine,
+        "project_id": project_id,
+        "cwd": cwd,
+        "real": real,
+        "bypass_default": e["bypass_default"],
+        "bypass": bypass,
+        "session_key": skey,
+        "notice": notice,
+        "project": guard_text(e.get("project"), TITLE_MAX, secrets=secrets),
+        "agent": guard_text(e.get("agent"), TITLE_MAX, secrets=secrets),
+        "reason": guard_text(e.get("reason") or "", DETAIL_MAX, secrets=secrets),
+    }
+    for k in ("ts", "decided_at", "settled_at"):
+        v = e.get(k)
+        if isinstance(v, int | float) and not isinstance(v, bool):
+            out[k] = float(v)
+    brief = e.get("brief")
+    if not isinstance(brief, str) or not brief:
+        raise ValueError("a session proposal needs its brief")
+    guarded = guard_text(brief, BRIEF_MAX, secrets=secrets)
+    if guarded != brief:
+        if fresh:
+            raise Withheld("the brief contains a secret or looks like a credential")
+        # An entry written earlier whose brief NOW matches a secret registered since: kept only
+        # in its scrubbed form, and a pending one can no longer be started — what would launch is
+        # no longer what was shown.
+        if out["state"] == "pending":
+            out["state"], out["reason"] = "stale", BRIEF_NOW_SECRET
+    out["brief"] = guarded
+    return out
+
+
+def write_proposals(cid: str, rows: list[dict], *, fresh: str | None = None) -> list[dict]:
+    """Replace the sidecar, atomically and durably, through the store boundary. The CALLER holds
+    :func:`proposals_lock`. ``fresh`` names a NEW entry, which is refused (Withheld) rather than
+    stored altered. Returns the entries as written."""
+    if not valid_cid(cid):
+        raise ConversationNotFound(cid)
+    if len(rows) > MAX_SESSION_PROPOSALS:
+        raise StoreRefused("this conversation holds as many proposals as it can")
+    d = ensure_proposals_dir()
+    with template_secrets.registration_fence():
+        try:
+            secrets = template_secrets.redaction_values()
+        except template_secrets.RedactionUnavailable as e:
+            raise StoreRefused(f"{e} — nothing was stored") from None
+        admitted = [_admit_entry(r, secrets, fresh=r.get("id") == fresh) for r in rows]
+        data = json.dumps({"proposals": admitted}, ensure_ascii=False).encode("utf-8", "replace")
+        tmp = d / f".{cid}.{uuid.uuid4().hex}.tmp"
+        fd = os.open(
+            tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600
+        )
+        try:
+            try:
+                _write_all(fd, data)
+            finally:
+                os.close(fd)
+            os.replace(tmp, _proposals_path(cid))
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+    _sync_dir(d)
+    return admitted
+
+
 # ---- retention ---------------------------------------------------------------------------------
 
 
@@ -578,7 +825,8 @@ def delete(cid: str) -> None:
     for p in (_proposals_path(cid), _follows_path(cid)):
         p.unlink(missing_ok=True)
     _path(cid).unlink(missing_ok=True)
-    _lock_path(cid).unlink(missing_ok=True)
+    for p in (_lock_path(cid), _decide_lock_path(cid), _proposals_lock_path(cid)):
+        p.unlink(missing_ok=True)
 
 
 def _still_expired(cid: str, cutoff: float) -> bool:
@@ -602,11 +850,13 @@ def sweep(now: float | None = None) -> list[str]:
         with turn_lock(cid) as free:
             if not free:
                 continue  # a turn is running in it
-            # Decided AGAIN under the lock — every writer holds it — so a turn that settled while
-            # this waited is seen: fresh age and rank, and the proposal pin.
-            if not _still_expired(cid, cutoff) or _pinned_by_proposals(cid):
-                continue
-            delete(cid)
+            # Decided AGAIN under the locks — every writer holds one — so a turn that settled or
+            # a tap that started deciding while this waited is seen: fresh age and rank, and the
+            # proposal pin read under the sidecar's own lock.
+            with proposals_lock(cid):
+                if not _still_expired(cid, cutoff) or _pinned_by_proposals(cid):
+                    continue
+                delete(cid)
         removed.append(cid)
     # Sidecars whose conversation is gone (a crash between deletes) follow it.
     for sub in ("proposals", "follows"):

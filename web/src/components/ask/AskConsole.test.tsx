@@ -35,7 +35,8 @@ import { api, ApiError } from "../../lib/api";
 import type {
   AskConversation,
   AskConversationTurn,
-  AskProposalCard,
+  AskNudgeCard,
+  AskSessionCard,
   AskStoredMatch,
   AskStoredMissionMatch,
   AskTurnEvent,
@@ -56,6 +57,7 @@ vi.mock("../../lib/api", async () => {
       askMessageStream: vi.fn(),
       approveAction: vi.fn(),
       rejectAction: vi.fn(),
+      decideAskProposal: vi.fn(),
     },
   };
 });
@@ -878,7 +880,7 @@ function askedTurn(answered = false, allowText = true): AskConversationTurn {
   };
 }
 
-function nudge(over: Partial<AskProposalCard> = {}): AskProposalCard {
+function nudge(over: Partial<AskNudgeCard> = {}): AskNudgeCard {
   return {
     action_id: AID,
     kind: "nudge",
@@ -1016,10 +1018,13 @@ test("an open card follows a decision taken elsewhere (the app's action-resolved
       { ...turn, proposals: [nudge({ state: "rejected", projection: "settled", can_approve: false, can_reject: false })] },
     ]),
   );
-  act(() => {
-    window.dispatchEvent(new CustomEvent(ACTION_RESOLVED_EVENT));
+  // Fired until it is heard (the listener is attached by a passive effect).
+  await waitFor(() => {
+    act(() => {
+      window.dispatchEvent(new CustomEvent(ACTION_RESOLVED_EVENT));
+    });
+    expect(screen.getByTestId("ask-nudge-outcome")).toHaveTextContent("Dismissed");
   });
-  expect(await screen.findByTestId("ask-nudge-outcome")).toHaveTextContent("Dismissed");
   expect(screen.queryByTestId("ask-nudge-send")).toBeNull();
 });
 
@@ -1175,12 +1180,14 @@ test("a background re-read never pulls someone reading earlier turns to the bott
   pane.scrollTop = 100; // reading earlier turns
   fireEvent.scroll(pane);
   const reads = vi.mocked(api.askConversation).mock.calls.length;
-  act(() => {
-    window.dispatchEvent(new CustomEvent(ACTION_RESOLVED_EVENT));
+  // Fired until it is heard: the listener is attached by a passive effect, which a loaded runner
+  // can run after the card is already on screen.
+  await waitFor(() => {
+    act(() => {
+      window.dispatchEvent(new CustomEvent(ACTION_RESOLVED_EVENT));
+    });
+    expect(vi.mocked(api.askConversation).mock.calls.length).toBeGreaterThan(reads);
   });
-  await waitFor(() =>
-    expect(vi.mocked(api.askConversation).mock.calls.length).toBeGreaterThan(reads),
-  );
   await act(async () => {});
   expect(pane.scrollTop).toBe(100);
 });
@@ -1197,11 +1204,237 @@ test("…while someone already at the bottom keeps following it", async () => {
   fireEvent.scroll(pane);
   geometry(pane, 1300, 200); // the re-read grows the thread
   const reads = vi.mocked(api.askConversation).mock.calls.length;
-  act(() => {
-    window.dispatchEvent(new CustomEvent(ACTION_RESOLVED_EVENT));
+  // Fired until it is heard: the listener is attached by a passive effect, which a loaded runner
+  // can run after the card is already on screen.
+  await waitFor(() => {
+    act(() => {
+      window.dispatchEvent(new CustomEvent(ACTION_RESOLVED_EVENT));
+    });
+    expect(vi.mocked(api.askConversation).mock.calls.length).toBeGreaterThan(reads);
   });
-  await waitFor(() =>
-    expect(vi.mocked(api.askConversation).mock.calls.length).toBeGreaterThan(reads),
-  );
   await waitFor(() => expect(pane.scrollTop).toBe(1300));
+});
+
+// --- #1443 Phase 3a: a session to start ---------------------------------------------------------
+
+const PID = "b".repeat(32);
+const BRIEF = "Rebase the api branch onto main and run the test suite.";
+
+function sessionCard(over: Partial<AskSessionCard> = {}): AskSessionCard {
+  return {
+    action_id: PID,
+    kind: "session",
+    title: "api",
+    agent: "Claude Code",
+    text: BRIEF,
+    state: "pending",
+    engine: "claude",
+    bypass_default: false,
+    bypass: null,
+    session_key: "",
+    reason: "",
+    notice: "",
+    can_start: true,
+    can_dismiss: true,
+    ...over,
+  };
+}
+
+function sessionTurn(card: AskSessionCard): AskConversationTurn {
+  return { ...turnOf("start a session on api", "t-s", { answer: "Proposed." }), proposals: [card] };
+}
+
+const settled = (over: Partial<AskSessionCard>) =>
+  sessionCard({ can_start: false, can_dismiss: false, ...over });
+
+test("a session card shows the project, agent and exact brief, and the bypass starts at the default", async () => {
+  withConversation([sessionTurn(sessionCard({ bypass_default: true }))]);
+  mount(<AskConsole configured />);
+  const card = await screen.findByTestId("ask-session");
+  expect(card).toHaveTextContent("api");
+  expect(card).toHaveTextContent("Claude Code");
+  expect(within(card).getByTestId("ask-session-brief")).toHaveTextContent(BRIEF);
+  const toggle = within(card).getByRole("switch");
+  expect(toggle).toBeChecked();
+  expect(within(card).getByTestId("ask-session-bypass")).toHaveTextContent(
+    "Permission bypass · On",
+  );
+  expect(within(card).getByTestId("ask-session-bypass")).toHaveTextContent(
+    "without asking you first",
+  );
+});
+
+test("Start sends the decision and the bypass value the card shows — and nothing it starts", async () => {
+  withConversation([sessionTurn(sessionCard())]);
+  vi.mocked(api.decideAskProposal).mockResolvedValue({
+    proposal: settled({ state: "deciding" }),
+  });
+  mount(<AskConsole configured />);
+  const card = await screen.findByTestId("ask-session");
+  await userEvent.click(within(card).getByRole("switch"));
+  vi.mocked(api.askConversation).mockResolvedValue(
+    conversation(CID, [
+      sessionTurn(settled({ state: "started", bypass: true, session_key: "claude:abc-1" })),
+    ]),
+  );
+  await userEvent.click(within(card).getByRole("button", { name: "Start session in api" }));
+  expect(api.decideAskProposal).toHaveBeenCalledWith(PID, "start", true);
+  const outcome = await screen.findByTestId("ask-session-outcome");
+  expect(outcome).toHaveTextContent("Started");
+  expect(outcome).toHaveTextContent("That is not the work done.");
+  expect(within(outcome).getByTestId("ask-session-open")).toHaveAttribute("href", "/s/claude/abc-1");
+  expect(screen.getByTestId("ask-session-bypass-used")).toHaveTextContent("On");
+  expect(screen.queryByTestId("ask-session-start")).toBeNull();
+});
+
+test("an untouched switch starts with the default it shows", async () => {
+  withConversation([sessionTurn(sessionCard())]);
+  vi.mocked(api.decideAskProposal).mockResolvedValue({ proposal: settled({ state: "deciding" }) });
+  mount(<AskConsole configured />);
+  await userEvent.click(await screen.findByTestId("ask-session-start"));
+  expect(api.decideAskProposal).toHaveBeenCalledWith(PID, "start", false);
+});
+
+test("a changed default asks again: the card shows the new starting value and a notice", async () => {
+  withConversation([sessionTurn(sessionCard())]);
+  const fresh = sessionCard({ bypass_default: true, notice: "default_changed" });
+  vi.mocked(api.decideAskProposal).mockRejectedValue(
+    new ApiError(409, "your default for permission bypass changed", { proposal: fresh }),
+  );
+  mount(<AskConsole configured />);
+  const before = await screen.findByTestId("ask-session");
+  expect(within(before).getByRole("switch")).not.toBeChecked();
+  vi.mocked(api.askConversation).mockResolvedValue(conversation(CID, [sessionTurn(fresh)]));
+  await userEvent.click(within(before).getByTestId("ask-session-start"));
+  expect(await screen.findByTestId("ask-session-notice")).toHaveTextContent(
+    "changed since this was proposed",
+  );
+  expect(screen.getByRole("switch")).toBeChecked();
+  expect(screen.queryByTestId("ask-session-error")).toBeNull();
+  expect(screen.getByTestId("ask-session-start")).toBeEnabled();
+});
+
+test("a refusal that did not change the card is said under it", async () => {
+  withConversation([sessionTurn(sessionCard())]);
+  vi.mocked(api.decideAskProposal).mockRejectedValue(
+    new ApiError(409, "another session from this conversation is still starting"),
+  );
+  mount(<AskConsole configured />);
+  await userEvent.click(await screen.findByTestId("ask-session-start"));
+  expect(await screen.findByTestId("ask-session-error")).toHaveTextContent(
+    "still starting",
+  );
+  expect(screen.getByTestId("ask-session-start")).toBeEnabled();
+});
+
+test("Dismiss sends dismiss", async () => {
+  withConversation([sessionTurn(sessionCard())]);
+  vi.mocked(api.decideAskProposal).mockResolvedValue({ proposal: settled({ state: "dismissed" }) });
+  mount(<AskConsole configured />);
+  await userEvent.click(await screen.findByTestId("ask-session-dismiss"));
+  expect(api.decideAskProposal).toHaveBeenCalledWith(PID, "dismiss", false);
+});
+
+test.each([
+  ["unconfirmed", "Not confirmed", "it may be running; check your sessions"],
+  ["failed", "Failed", "nothing was started"],
+  ["stale", "Out of date", "Nothing was started."],
+  ["interrupted", "Interrupted", "It is not retried."],
+  ["unknown", "Status unavailable", "updates on its own"],
+  ["gone", "No longer tracked", "nothing will start"],
+  ["dismissed", "Dismissed", "Nothing was started."],
+] as const)("a %s session card says %s and offers no Start", async (state, word, detail) => {
+  const reason =
+    state === "unconfirmed"
+      ? "no start evidence — it may be running; check your sessions. It is not retried."
+      : state === "failed"
+        ? "dtach exited 1 — nothing was started"
+        : state === "stale"
+          ? "the chosen project no longer exists"
+          : state === "interrupted"
+            ? "the server stopped while this was starting. It is not retried."
+            : "";
+  // An unconfirmed launch names the session it may have become, and still offers no way in as if
+  // it had started.
+  const session_key = state === "unconfirmed" ? "claude:abc-9" : "";
+  withConversation([sessionTurn(settled({ state, reason, session_key }))]);
+  mount(<AskConsole configured />);
+  const outcome = await screen.findByTestId("ask-session-outcome");
+  expect(outcome).toHaveTextContent(word);
+  expect(outcome).toHaveTextContent(detail);
+  expect(screen.queryByTestId("ask-session-start")).toBeNull();
+  expect(screen.queryByTestId("ask-session-open")).toBeNull();
+});
+
+test("a launch in flight is followed at the turn poll's pace, not the card timer's", async () => {
+  withConversation([sessionTurn(settled({ state: "deciding", bypass: false }))]);
+  mount(<AskConsole configured cardPollMs={60_000} />);
+  expect(await screen.findByTestId("ask-session-outcome")).toHaveTextContent("Starting");
+  vi.mocked(api.askConversation).mockResolvedValue(
+    conversation(CID, [sessionTurn(settled({ state: "started", session_key: "claude:abc-1" }))]),
+  );
+  await waitFor(
+    () => expect(screen.getByTestId("ask-session-outcome")).toHaveTextContent("Started"),
+    { timeout: 5000 },
+  );
+});
+
+test("a settled session card stops re-reading", async () => {
+  withConversation([sessionTurn(settled({ state: "started", session_key: "claude:abc-1" }))]);
+  mount(<AskConsole configured cardPollMs={20} />);
+  await screen.findByTestId("ask-session-outcome");
+  const reads = vi.mocked(api.askConversation).mock.calls.length;
+  await new Promise((r) => setTimeout(r, 200));
+  expect(vi.mocked(api.askConversation).mock.calls.length).toBe(reads);
+});
+
+
+test("a session card that could not be read keeps re-reading until it can", async () => {
+  withConversation([sessionTurn(settled({ state: "unknown" }))]);
+  mount(<AskConsole configured cardPollMs={40} />);
+  expect(await screen.findByTestId("ask-session-outcome")).toHaveTextContent("Status unavailable");
+  vi.mocked(api.askConversation).mockResolvedValue(conversation(CID, [sessionTurn(sessionCard())]));
+  expect(await screen.findByTestId("ask-session-start", {}, { timeout: 5000 })).toBeEnabled();
+});
+
+// Hermes on #1491, 5: the decision's own answer is applied to its card, whatever the re-read does.
+
+test("an accepted Start shows Starting at once, even when the re-read fails", async () => {
+  withConversation([sessionTurn(sessionCard())]);
+  mount(<AskConsole configured cardPollMs={60_000} />);
+  const card = await screen.findByTestId("ask-session");
+  vi.mocked(api.decideAskProposal).mockResolvedValue({
+    proposal: settled({ state: "deciding", bypass: false }),
+  });
+  vi.mocked(api.askConversation).mockRejectedValue(new ApiError(503, "unavailable"));
+  await userEvent.click(within(card).getByTestId("ask-session-start"));
+  expect(await screen.findByTestId("ask-session-outcome")).toHaveTextContent("Starting");
+  expect(screen.queryByTestId("ask-session-start")).toBeNull();
+});
+
+test("a changed default shows its notice and new value at once, even when the re-read fails", async () => {
+  withConversation([sessionTurn(sessionCard())]);
+  mount(<AskConsole configured cardPollMs={60_000} />);
+  const card = await screen.findByTestId("ask-session");
+  vi.mocked(api.decideAskProposal).mockRejectedValue(
+    new ApiError(409, "your default for permission bypass changed", {
+      proposal: { ...sessionCard({ bypass_default: true, notice: "default_changed" }) },
+    }),
+  );
+  vi.mocked(api.askConversation).mockRejectedValue(new ApiError(503, "unavailable"));
+  await userEvent.click(within(card).getByTestId("ask-session-start"));
+  expect(await screen.findByTestId("ask-session-notice")).toHaveTextContent(
+    "changed since this was proposed",
+  );
+  expect(screen.getByRole("switch")).toBeChecked();
+  expect(screen.queryByTestId("ask-session-error")).toBeNull();
+});
+
+test("a start refused because the project was being changed says so and can be tapped again", async () => {
+  withConversation([sessionTurn(sessionCard({ notice: "busy" }))]);
+  mount(<AskConsole configured />);
+  expect(await screen.findByTestId("ask-session-notice")).toHaveTextContent(
+    "nothing started. Start it again.",
+  );
+  expect(screen.getByTestId("ask-session-start")).toBeEnabled();
 });

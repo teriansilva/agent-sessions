@@ -1,4 +1,4 @@
-"""Ask as a conversation that can look things up, ask back and propose (#1443 Phases 1–2a).
+"""Ask as a conversation that can look things up, ask back and propose (#1443 Phases 1–3a).
 
 One turn is a bounded tool loop over the configured AI endpoint: the model may call READ tools —
 find sessions, a session's status, the missions, one mission's status, the projects, the agents —
@@ -9,10 +9,12 @@ so the answer survives a reload or a client that went away.
 the registered-prompt check and template-secret redaction apply, and no outbound-HTTP site is
 added. The system prompt is ``prompts.effective("ask_orchestrator")``, a GUARDED prompt.
 
-**Nothing here sends.** :data:`TOOLS` is pinned by name AND kind: read tools, ``ask_operator`` (ends
-the turn on a stored question) and ``propose_nudge`` (Phase 2: stages a ledger action that starts
-``proposed`` whatever the tier; only the operator's tap on its card delivers it, through the
-existing approve route). :data:`MAX_PROPOSALS_PER_TURN` bounds proposals per turn.
+**Nothing here sends or starts.** :data:`TOOLS` is pinned by name AND kind: read tools,
+``ask_operator`` (ends the turn on a stored question), ``propose_nudge`` (Phase 2: stages a ledger
+action that starts ``proposed`` whatever the tier; only the operator's tap on its card delivers it,
+through the existing approve route) and ``propose_session`` (Phase 3a: stages a session to start in
+``ask_proposals``; only the operator's tap launches it). :data:`MAX_PROPOSALS_PER_TURN` bounds
+proposals per turn.
 
 **Model output picks, the server resolves.** A session key is accepted only when this turn's own
 tools returned it (and it parses); a mission id only when this turn's tools returned it. Anything
@@ -146,6 +148,10 @@ class _Turn:
     answering: dict | None = None
     #: The question this turn ends on, once `ask_operator` has been called.
     asked: dict | None = None
+    #: The project and agent lists THIS turn's tools returned (#1443 Phase 3a): what an index in
+    #: `propose_session` means. None until the tool ran in this turn.
+    projects: list[dict] | None = None
+    agents: list[dict] | None = None
     _catalog: list[dict] | None = None
 
     async def catalog(self) -> list[dict]:
@@ -401,11 +407,13 @@ async def _mission_status(turn: _Turn, args: dict) -> tuple[dict, dict]:
 
 async def _list_projects(turn: _Turn, args: dict) -> tuple[dict, dict]:
     options = await asyncio.to_thread(mission_plan.project_options)
+    turn.projects = options
     rows = [{"index": i, "name": p["name"]} for i, p in enumerate(options)]
     return {"projects": rows}, {"count": len(rows)}
 
 
 def _agent_rows() -> list[dict]:
+    from . import automation_runner
     from .engines import registry
 
     rows = []
@@ -414,13 +422,18 @@ def _agent_rows() -> list[dict]:
             continue
         manifest = registry.manifest_of(prov)
         name = getattr(getattr(manifest, "display", None), "name", "") or prov.engine_id
-        rows.append({"index": len(rows), "id": prov.engine_id, "name": str(name)})
+        can_start, _why = automation_runner.engine_state(prov.engine_id)
+        rows.append(
+            {"index": len(rows), "id": prov.engine_id, "name": str(name), "can_start": can_start}
+        )
     return rows
 
 
 async def _list_agents(turn: _Turn, args: dict) -> tuple[dict, dict]:
     rows = await asyncio.to_thread(_agent_rows)
-    return {"agents": rows}, {"count": len(rows)}
+    turn.agents = rows
+    shown = [{"index": r["index"], "name": r["name"], "can_start": r["can_start"]} for r in rows]
+    return {"agents": shown}, {"count": len(rows)}
 
 
 # ---- asking back and nudging (#1443 Phase 2) ---------------------------------------------------
@@ -669,6 +682,112 @@ async def _propose_nudge(turn: _Turn, args: dict) -> tuple[dict, dict]:
     )
 
 
+def _index_arg(args: dict, name: str, rows: list[dict] | None, listed_by: str) -> dict:
+    if rows is None:
+        raise _ToolRefused(f"refused: call {listed_by} in this turn first", "not_listed")
+    v = args.get(name)
+    if isinstance(v, bool) or not isinstance(v, int) or not 0 <= v < len(rows):
+        raise _ToolRefused(
+            f"refused: {name} must be an index {listed_by} returned in this turn", "bad_index"
+        )
+    return rows[v]
+
+
+async def _propose_session(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    """Stage a session to start: a project and an agent BY INDEX into the lists this turn's own
+    tools returned, and a brief. Nothing starts — the operator's tap on its card does, with the
+    permission-bypass setting the card shows (`ask_proposals`)."""
+    from . import ask_proposals, automation_runner, handoff
+
+    project = _index_arg(args, "project_index", turn.projects, "list_projects")
+    agent = _index_arg(args, "engine_index", turn.agents, "list_agents")
+    raw = _str_arg(args, "brief", ask_store.BRIEF_MAX)
+    # The normalization delivery applies (control bytes stripped, trimmed), applied HERE: the
+    # brief the card shows is the brief typed.
+    try:
+        brief = handoff.sanitize_seed(raw)
+    except handoff.HandoffError:
+        raise _ToolRefused(
+            "refused: nothing typeable is left in that brief", "bad_arguments"
+        ) from None
+    if await asyncio.to_thread(ask_store.guard_text, brief, ask_store.BRIEF_MAX) != brief:
+        raise _ToolRefused(
+            "refused: that brief contains a secret or looks like a credential — Ask will not "
+            "start a session with it",
+            "credential",
+        )
+    why = await asyncio.to_thread(ask_proposals.scope_refusal)
+    if why:
+        raise _ToolRefused(
+            f"refused: {why}, so Ask cannot propose a session — the operator can turn it on "
+            "(Suggest) under Settings → Automation",
+            "scope_disabled",
+        )
+    ok, why = await asyncio.to_thread(automation_runner.engine_state, agent["id"])
+    if not ok:
+        raise _ToolRefused(f"refused: {agent['name']} cannot be started from Ask — {why}", "agent")
+    ok, why = await asyncio.to_thread(automation_runner.folder_ok, project["cwd"])
+    if not ok:
+        raise _ToolRefused(f"refused: {why}", "folder")
+    pid = uuid.uuid4().hex
+    entry = {
+        "id": pid,
+        "turn_id": turn.turn_id,
+        "kind": "session",
+        "state": ask_proposals.PENDING,
+        "ts": time.time(),
+        "engine": agent["id"],
+        "agent": agent["name"],
+        "project_id": project["id"],
+        "project": project["name"],
+        "cwd": project["cwd"],
+        # Where it resolves NOW, as the card is shown: what a start is compared against.
+        "real": os.path.realpath(project["cwd"]),
+        "brief": brief,
+        "bypass_default": await asyncio.to_thread(ask_proposals.bypass_default),
+        "bypass": None,
+    }
+    # CARD FIRST, ENTRY SECOND: a card whose entry never landed reads "no longer tracked" and
+    # offers nothing; an entry is only startable from its card.
+    try:
+        await _append(
+            turn.cid,
+            {
+                "type": "proposal",
+                "turn_id": turn.turn_id,
+                "action_id": pid,
+                "kind": "session",
+                "title": project["name"],
+                "agent": agent["name"],
+                "text": brief,
+            },
+        )
+    except Exception:
+        raise _ToolRefused(
+            "refused: the proposal could not be recorded; nothing will start", "not_recorded"
+        ) from None
+    try:
+        await asyncio.to_thread(ask_proposals.add, turn.cid, entry)
+    except ask_store.Withheld:
+        raise _ToolRefused(
+            "refused: that brief contains a secret or looks like a credential — Ask will not "
+            "start a session with it",
+            "credential",
+        ) from None
+    except Exception:
+        raise _ToolRefused(
+            "refused: the proposal could not be recorded; nothing will start", "not_recorded"
+        ) from None
+    return (
+        {
+            "proposed": True,
+            "note": "The operator now sees a card with this project, agent and brief, chooses "
+            "the permission setting and starts it or not. Nothing has started; never say it has.",
+        },
+        {"count": 1},
+    )
+
+
 _KEY_PROP = {"key": {"type": "string", "description": "a session key a tool returned"}}
 
 TOOLS: dict[str, Tool] = {
@@ -766,8 +885,31 @@ TOOLS: dict[str, Tool] = {
         Tool(
             "list_agents",
             "read",
-            _spec("list_agents", "The coding agents available here, by index and name.", {}, []),
+            _spec(
+                "list_agents",
+                "The coding agents available here, by index and name, and whether Ask can start "
+                "one (can_start).",
+                {},
+                [],
+            ),
             _list_agents,
+        ),
+        Tool(
+            "propose_session",
+            "proposal",
+            _spec(
+                "propose_session",
+                "Propose starting a new session: a project and an agent by the indexes "
+                "list_projects and list_agents returned in this turn, and the brief the agent "
+                "gets as its first message. Nothing starts: the operator sees a card and decides.",
+                {
+                    "project_index": {"type": "integer"},
+                    "engine_index": {"type": "integer"},
+                    "brief": {"type": "string", "description": "the first message, in full"},
+                },
+                ["project_index", "engine_index", "brief"],
+            ),
+            _propose_session,
         ),
     )
 }
@@ -1142,6 +1284,7 @@ def turn_views(records: list[dict]) -> list[dict]:
                     "kind": r.get("kind"),
                     "key": r.get("key"),
                     "title": r.get("title") or "",
+                    "agent": r.get("agent") or "",
                     "text": r.get("text") or "",
                 }
             )
@@ -1155,18 +1298,40 @@ def turn_views(records: list[dict]) -> list[dict]:
     return out
 
 
-def with_live(views: list[dict]) -> list[dict]:
-    """Each proposal card's LIVE state, read from the ledger it lives in — never a copy kept here,
-    so the card can only ever say what the delivery path says (`project_for_operator`'s contract:
-    no control the backend would refuse). An unreadable ledger is `unknown`, not `gone`.
-    Blocking."""
+def with_live(views: list[dict], cid: str) -> list[dict]:
+    """Each proposal card's LIVE state, read from where it lives — the ledger for a nudge, the
+    proposal sidecar for a session (`ask_proposals`) — never a copy kept here, so the card can
+    only ever say what the deciding path says (`project_for_operator`'s contract: no control the
+    backend would refuse). An unreadable store is `unknown`, not `gone`. Blocking."""
+    from . import ask_proposals
     from . import orchestrator_ledger as ledger
 
-    if not any(t.get("proposals") for t in views):
+    cards = [p for t in views for p in t.get("proposals") or []]
+    sessions = [p for p in cards if p.get("kind") == "session"]
+    if sessions:
+        status, entries = ask_proposals.views(cid)
+        for p in sessions:
+            got = entries.get(p["action_id"])
+            if got is not None:
+                p.update(got)
+            else:
+                # Unreadable → unknown (it may yet be read); readable but absent → the entry
+                # never landed or left with retention: nothing to decide.
+                p.update(
+                    state="unknown" if status != "ok" else "gone",
+                    can_start=False,
+                    can_dismiss=False,
+                    session_key="",
+                    reason="",
+                    notice="",
+                )
+    if not any(p.get("kind") != "session" for p in cards):
         return views
     status, latest = ledger.latest_by_id_checked()
     for t in views:
         for p in t.get("proposals") or []:
+            if p.get("kind") == "session":
+                continue
             rec = latest.get(p["action_id"]) if status == "ok" else None
             p.update(
                 ledger.project_for_operator(rec.get("state") if rec else None, known=status == "ok")
@@ -1207,7 +1372,7 @@ async def _settle(turn: _Turn, lock_fd: int) -> dict:
             await _append(turn.cid, _status(turn, "failed", str(e)))
         stored = await asyncio.to_thread(ask_store.read, turn.cid)
         view = _view_of(stored, turn.turn_id) or {}
-        return (await asyncio.to_thread(with_live, [view]))[0] if view else view
+        return (await asyncio.to_thread(with_live, [view], turn.cid))[0] if view else view
     finally:
         async with _lock(turn.cid):
             running = _RUNNING.get(turn.cid)

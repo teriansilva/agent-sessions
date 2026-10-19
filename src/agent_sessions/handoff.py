@@ -36,6 +36,7 @@ import secrets
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -553,6 +554,9 @@ class _Handoff:
     # the injector's statement that the claim wrote zero bytes.
     seed_claims: int = 0
     seed_result: str | None = None
+    #: Checked against the redaction set at delivery, with the registration fence held across the
+    #: write (#1443 Phase 3a): a seed that now carries a known secret is withheld, never typed.
+    guard_secrets: bool = False
     spawned: bool = False  # aliveness gate passed (master alive past the instant-exit window)
     watch_armed: bool = False  # a spawn-watch task exists (never arm two)
     real_target_key: str | None = None  # reconciled real id (mint-own-id engines)
@@ -604,9 +608,18 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
-def create_handle(source_key: str, target_engine: str, mode: str, seed: str, *, cwd: str) -> str:
+def create_handle(
+    source_key: str,
+    target_engine: str,
+    mode: str,
+    seed: str,
+    *,
+    cwd: str,
+    guard_secrets: bool = False,
+) -> str:
     """Store a prepared handoff; returns the opaque handle. Nothing is spawned or persisted
-    — an abandoned preview just expires."""
+    — an abandoned preview just expires. ``guard_secrets`` makes the delivery withhold a seed that
+    carries a secret known when it is typed (``webterm._deliver_seed``)."""
     handle = secrets.token_urlsafe(24)
     with _lock:
         _sweep_locked()
@@ -617,6 +630,7 @@ def create_handle(source_key: str, target_engine: str, mode: str, seed: str, *, 
             mode=mode,
             cwd=cwd,
             seed=seed,
+            guard_secrets=guard_secrets,
         )
     return handle
 
@@ -700,6 +714,14 @@ def claim_seed(target_key: str) -> str | None:
     (so two viewers can never double-write), and the seed is consumed only by
     ``ack_seed(..., "delivered")`` / ``"abort"`` — a failed delivery releases the claim
     with ``"retry"`` and the seed stays pending for the next attach."""
+    claimed = claim_seed_guarded(target_key)
+    return None if claimed is None else claimed[0]
+
+
+def claim_seed_guarded(target_key: str) -> tuple[str, bool] | None:
+    """:func:`claim_seed`, returning the seed's ``guard_secrets`` policy WITH it, read in the same
+    critical section: a policy looked up separately can be gone (the seed retired in between) and
+    must never read as "unguarded" for a text already claimed."""
     with _lock:
         _sweep_locked()
         h = _entry_locked(target_key)
@@ -707,7 +729,19 @@ def claim_seed(target_key: str) -> str | None:
             return None
         h.seed_claimed = True
         h.seed_claims += 1
-        return h.seed
+        return h.seed, h.guard_secrets
+
+
+def first_write_if_claimed(target_key: str, write: Callable[[], int]) -> int | None:
+    """Run ``write`` (a guarded seed's FIRST, non-blocking chunk) only while its claim is still
+    outstanding, in the same critical section :func:`retire_seed` takes: retirement lands wholly
+    before the first byte (``None``: nothing is written) or after it. ``write`` must not block —
+    the caller has confirmed room for exactly the chunk it writes."""
+    with _lock:
+        h = _entry_locked(target_key)
+        if h is None or not h.seed_claimed or h.seed is None:
+            return None
+        return write()
 
 
 def ack_seed(target_key: str, outcome: str) -> None:
@@ -718,13 +752,15 @@ def ack_seed(target_key: str, outcome: str) -> None:
     - ``"abort"`` — a PARTIAL write reached the PTY: consume the seed without retry (an
       unterminated bracketed paste already polluted the input; a blind replay would
       corrupt the prompt — the caller logs this explicitly).
+    - ``"withheld"`` — NOTHING was written because the seed now carries a known secret: consume
+      it without retry, so no later attach can type it either.
     """
     with _lock:
         h = _entry_locked(target_key)
         if h is None:
             return
         h.seed_claimed = False
-        if outcome in ("delivered", "abort"):
+        if outcome in ("delivered", "abort", "withheld"):
             h.seed = None
             h.seed_result = outcome
             _release_if_done_locked(h)
@@ -737,7 +773,8 @@ def retire_seed(target_key: str) -> str:
     party that knows whether bytes reached the PTY, and it is deliberately one-sided:
 
     * ``not_attempted`` — the seed is intact and was never claimed. Nothing writes without a claim.
-    * ``zero_write`` — every claim was released with ``retry``, the injector's zero-bytes ack.
+    * ``zero_write`` — every claim was released with ``retry``, the injector's zero-bytes ack, or
+      the seed was ``withheld`` before its first byte.
     * ``partial`` — a claim acked ``abort``: part of the paste reached the PTY.
     * ``delivered`` — a claim acked ``delivered``.
     * ``unknown`` — anything else: a claim is still outstanding (a write may have completed before
@@ -758,6 +795,8 @@ def retire_seed(target_key: str) -> str:
             outcome = "delivered"
         elif h.seed_result == "abort":
             outcome = "partial"
+        elif h.seed_result == "withheld":
+            outcome = "zero_write"  # refused before the first byte
         elif h.seed is None:
             outcome = "unknown"
         elif h.seed_claims == 0:

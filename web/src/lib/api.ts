@@ -83,6 +83,7 @@ import type {
   PromptEntry,
   PulseAskEvent,
   AskConversation,
+  AskSessionDecision,
   AskConversationSummary,
   AskConversationTurn,
   AskTurnEvent,
@@ -1538,6 +1539,14 @@ export const api = {
   askNewConversation: () =>
     mutateJson<AskConversation>("POST", "/api/ask/conversations", {}),
   askMessageStream: streamAskTurn,
+  /** Start or dismiss a session Ask proposed (#1443 Phase 3a). The body names the decision and
+   *  the bypass value the operator saw — never what to start; 202 while it launches. */
+  decideAskProposal: (id: string, decision: "start" | "dismiss", bypass = false) =>
+    mutateJson<{ proposal: AskSessionDecision }>(
+      "POST",
+      `/api/ask/proposals/${enc(id)}/decide`,
+      { decision, bypass },
+    ),
   /** Pulse orchestrator state (#726): config + pending actions + the activity feed. Like
    *  `pulse()` this is CACHE-ONLY — it never runs a pass. */
   orchestrator: () => getJson<OrchestratorState_>("/api/pulse/orchestrator"),

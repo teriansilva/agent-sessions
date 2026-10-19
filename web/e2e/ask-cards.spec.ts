@@ -1,9 +1,12 @@
-/** Ask's question and nudge cards (#1443 Phase 2a), in a real browser, desktop and mobile.
+/** Ask's question, nudge and session cards (#1443 Phases 2a, 3a), in a real browser, desktop and
+ *  mobile.
  *
  *  A DOM emulator cannot show what these pin: an option tapped by pointer AND by keyboard sends
  *  its INDEX; the nudge's controls post the existing approve / reject routes and the card then
- *  reads the ledger's verdict back (Delivered / Out of date) as an LED plus a word; the controls
- *  sit at the 44px floor and stack full width at ≤800px; and nothing scrolls sideways.
+ *  reads the ledger's verdict back (Delivered / Out of date) as an LED plus a word; a session
+ *  card's permission-bypass switch is operable by keyboard and the tap carries what it shows, then
+ *  the card follows the launch to Started with a way in; the controls sit at the 44px floor and
+ *  stack full width at ≤800px; and nothing scrolls sideways.
  */
 import { expect, test, type Page } from "@playwright/test";
 
@@ -201,4 +204,146 @@ test("a screen that moved: the refused approve reads back as Out of date, nothin
   await expect(outcome).toContainText("Out of date");
   await expect(outcome).toContainText("nothing was sent");
   await expect(panel.getByTestId("ask-error")).toHaveCount(0);
+});
+
+// --- #1443 Phase 3a: a session to start ---------------------------------------------------------
+
+const PID = "c".repeat(32);
+const BRIEF =
+  "Rebase the api branch onto main, resolve the conflicts in routes/sessions.py and run the suite.";
+
+function sessionProposal(over: Record<string, unknown> = {}) {
+  const state = (over.state as string | undefined) ?? "pending";
+  return {
+    action_id: PID,
+    kind: "session",
+    title: "agent-sessions",
+    agent: "Claude Code",
+    text: BRIEF,
+    state,
+    engine: "claude",
+    bypass_default: false,
+    bypass: null,
+    session_key: "",
+    reason: "",
+    notice: "",
+    can_start: state === "pending",
+    can_dismiss: state === "pending",
+    ...over,
+  };
+}
+
+function proposedSession(): FakeConversation {
+  return {
+    id: "ask_" + "c".repeat(32),
+    created_at: 1,
+    updated_at: 2,
+    turns: [
+      {
+        ...turnOf("start a claude session on agent-sessions to rebase", {
+          answer: "Here is the session; choose the permission setting and start it.",
+        }),
+        proposals: [sessionProposal()],
+      },
+    ],
+  };
+}
+
+test("a session card starts with the bypass value it shows, by keyboard, and follows the launch to Started", async ({
+  page,
+}) => {
+  const fake = await mockShell(page, [proposedSession()]);
+  const decided: unknown[] = [];
+  await page.route(/\/api\/ask\/proposals\/[0-9a-f]{32}\/decide$/, async (r) => {
+    decided.push(r.request().postDataJSON());
+    const t = fake.conversations[0].turns[0];
+    t.proposals = [sessionProposal({ state: "deciding", bypass: true })];
+    // The launch settles a moment later, as the real one does behind its 202.
+    setTimeout(() => {
+      t.proposals = [
+        sessionProposal({
+          state: "started",
+          bypass: true,
+          session_key: "claude:11111111-2222-4333-8444-555555555555",
+        }),
+      ];
+    }, 300);
+    await r.fulfill({ status: 202, json: { proposal: t.proposals[0] } });
+  });
+  await page.goto("/dashboard");
+  const panel = await openAsk(page);
+  const card = panel.getByTestId("ask-session");
+  await expect(card.getByTestId("ask-session-brief")).toHaveText(BRIEF);
+  await expect(card).toContainText("Claude Code");
+  const row = card.getByTestId("ask-session-bypass");
+  const toggle = card.getByRole("switch");
+  await expect(toggle).not.toBeChecked();
+  await expect(row).toContainText("Permission bypass · Off");
+  expect((await row.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  const start = card.getByRole("button", { name: "Start session in agent-sessions" });
+  const dismiss = card.getByTestId("ask-session-dismiss");
+  const [s, d] = [(await start.boundingBox())!, (await dismiss.boundingBox())!];
+  expect(s.height).toBeGreaterThanOrEqual(44);
+  if (page.viewportSize()!.width <= 800) {
+    expect(d.y).toBeGreaterThan(s.y);
+    expect(Math.abs(d.width - s.width)).toBeLessThanOrEqual(1);
+  }
+
+  // Keyboard: the switch is REACHED by Tab with a visible ring, Space turns bypass on and says so.
+  await toggle.focus();
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Tab");
+  await expect(toggle).toBeFocused();
+  expect(await toggle.evaluate((el) => getComputedStyle(el).outlineStyle)).not.toBe("none");
+  await page.keyboard.press("Space");
+  await expect(toggle).toBeChecked();
+  await expect(row).toContainText("Permission bypass · On");
+  await expect(row).toContainText("without asking you first");
+  await page.keyboard.press("Tab");
+  await expect(start).toBeFocused();
+  await page.keyboard.press("Enter");
+
+  expect(decided).toEqual([{ decision: "start", bypass: true }]);
+  const outcome = card.getByTestId("ask-session-outcome");
+  await expect(outcome).toContainText("Started", { timeout: 10_000 });
+  await expect(outcome).toContainText("That is not the work done.");
+  await expect(outcome.getByTestId("ask-session-open")).toHaveAttribute(
+    "href",
+    "/s/claude/11111111-2222-4333-8444-555555555555",
+  );
+  await expect(card.getByTestId("ask-session-bypass-used")).toContainText("On");
+  await expect(card.getByTestId("ask-session-start")).toHaveCount(0);
+  await noSidewaysScroll(page);
+});
+
+test("a changed bypass default asks again: the card shows the new starting value and starts nothing", async ({
+  page,
+}) => {
+  const fake = await mockShell(page, [proposedSession()]);
+  let taps = 0;
+  await page.route(/\/api\/ask\/proposals\/[0-9a-f]{32}\/decide$/, async (r) => {
+    taps += 1;
+    const fresh = sessionProposal({ bypass_default: true, notice: "default_changed" });
+    fake.conversations[0].turns[0].proposals = [fresh];
+    await r.fulfill({
+      status: 409,
+      json: {
+        detail: "your default for permission bypass changed since this was proposed",
+        proposal: fresh,
+      },
+    });
+  });
+  await page.goto("/dashboard");
+  const panel = await openAsk(page);
+  const card = panel.getByTestId("ask-session");
+  await expect(card.getByRole("switch")).not.toBeChecked();
+  await card.getByTestId("ask-session-start").click();
+  await expect(card.getByTestId("ask-session-notice")).toContainText(
+    "changed since this was proposed",
+  );
+  await expect(card.getByRole("switch")).toBeChecked();
+  await expect(card.getByTestId("ask-session-start")).toBeEnabled();
+  await expect(card.getByTestId("ask-session-error")).toHaveCount(0);
+  expect(taps).toBe(1);
+  await noSidewaysScroll(page);
 });

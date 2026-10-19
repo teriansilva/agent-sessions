@@ -31,6 +31,7 @@ from . import (
     agent_catalog_refresh,
     ai_review_loop,
     ask_orchestrator,
+    ask_proposals,
     automation_loop,
     autosort_loop,
     engines,
@@ -428,6 +429,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             # …and Ask's (#1443), for the same reason: a turn whose reader left has no request.
             with contextlib.suppress(Exception):
                 await ask_orchestrator.drain_turns()
+            # …and Ask's launches in flight (#1443 Phase 3a): one cut short reads `interrupted`.
+            with contextlib.suppress(Exception):
+                await ask_proposals.drain()
             # Interrupt compaction, then drain its actual SQLite worker before its task/runner
             # or launch-admission lock can be released.
             await _app.state.opencode_compaction.shutdown()

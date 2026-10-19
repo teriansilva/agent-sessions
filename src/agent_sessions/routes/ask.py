@@ -8,6 +8,11 @@
   lines while it runs, then exactly ONE ``{"type": "turn", "status", "turn"}`` or
   ``{"type": "error", "status", "detail"}``.
 
+* ``POST /api/ask/proposals/{id}/decide`` — ``{"decision": "start" | "dismiss", "bypass": bool}``
+  for a session proposal (#1443 Phase 3a). ``start`` answers 202 while the launch runs and the card
+  follows it on the next read; a repeat returns the entry as it is, never a second launch. An
+  absent ``bypass`` is ``false``. The client names the proposal, never what it starts.
+
 Both message routes take ``{"turn_id": <uuid>, "text"}``. A repeat of a settled ``turn_id`` returns
 it without running the model again; a repeat while it runs watches the same turn. Leaving never
 cancels a turn (``ask_orchestrator``'s module note). ``/api/pulse/ask[/stream]`` is unchanged: the
@@ -24,7 +29,7 @@ from collections.abc import AsyncIterator
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from .. import actuator, ask_orchestrator, ask_store, prefs
+from .. import actuator, ask_orchestrator, ask_proposals, ask_store, prefs
 
 
 def _ndjson(ev: dict) -> str:
@@ -40,7 +45,7 @@ def _conversation_body(cid: str, records: list[dict]) -> dict:
     return {
         "id": cid,
         "title": title,
-        "turns": ask_orchestrator.with_live(ask_orchestrator.turn_views(records)),
+        "turns": ask_orchestrator.with_live(ask_orchestrator.turn_views(records), cid),
         "running": ask_orchestrator.running(cid),
     }
 
@@ -161,7 +166,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # Shielded: a client that goes away ends this wait, never the turn.
             view = await asyncio.shield(task)
         else:
-            view = (await asyncio.to_thread(ask_orchestrator.with_live, [view]))[0]
+            view = (await asyncio.to_thread(ask_orchestrator.with_live, [view], cid))[0]
         return JSONResponse({"turn": view})
 
     async def _watch(cid: str, task: asyncio.Task) -> AsyncIterator[str]:
@@ -206,7 +211,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             return started
         task, view = started
         if task is None:
-            view = (await asyncio.to_thread(ask_orchestrator.with_live, [view]))[0]
+            view = (await asyncio.to_thread(ask_orchestrator.with_live, [view], cid))[0]
 
         async def settled() -> AsyncIterator[str]:
             yield _ndjson({"type": "turn", "status": 200, "turn": view})
@@ -216,3 +221,42 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             media_type="application/x-ndjson",
             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )
+
+    @app.post("/api/ask/proposals/{pid}/decide")
+    async def decide_proposal(
+        pid: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        if not ask_proposals.valid_pid(pid):
+            return JSONResponse({"detail": "no such proposal"}, status_code=404)
+        body: object = None
+        with contextlib.suppress(Exception):
+            body = await request.json()
+        if not isinstance(body, dict):
+            return JSONResponse({"detail": "body must be a JSON object"}, status_code=422)
+        decision, bypass = body.get("decision"), body.get("bypass", False)
+        if decision not in ("start", "dismiss"):
+            return JSONResponse({"detail": "decision must be start or dismiss"}, status_code=422)
+        if not isinstance(bypass, bool):
+            return JSONResponse({"detail": "bypass must be true or false"}, status_code=422)
+        if registry is None:
+            return JSONResponse(
+                {"detail": "the session runner isn't available in this process"}, status_code=503
+            )
+        try:
+            status, view = await ask_proposals.decide(
+                pid, decision, bypass=bypass, registry=registry
+            )
+        except ask_proposals.ProposalError as e:
+            extra = {"proposal": e.view} if e.view is not None else {}
+            return JSONResponse({"detail": e.detail, **extra}, status_code=e.status)
+        except ask_store.StoreRefused as e:
+            return _refused(e)
+        except ask_store.SidecarUnreadable:
+            return JSONResponse(
+                {"detail": "the proposal could not be read just now; nothing was started"},
+                status_code=503,
+            )
+        return JSONResponse({"proposal": view}, status_code=status)

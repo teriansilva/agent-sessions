@@ -1588,3 +1588,53 @@ async def test_project_memory_reaches_the_headless_spawn_only_when_on(env, prov,
     )
     assert not refused.ok and len(observed) == 2
     assert len(list((memory.root() / pid / "inbox").iterdir())) == 1
+
+
+@pytest.mark.anyio
+async def test_spawn_fence_holds_across_authorize_and_the_spawn_and_guard_marks_the_seed(
+    env, prov, reg, monkeypatch
+):
+    """#1443 Phase 3a (Hermes round 2 on #1491): a caller's `spawn_fence` is held from its
+    `authorize` THROUGH the spawn, inside the launch fence — so what the check read stays true
+    until the process exists — and `guard_secrets` marks the brief's seed for the delivery."""
+    import contextlib as _cl
+
+    _stub_spawn(monkeypatch)
+    _stub_started(monkeypatch)
+    state: dict = {"held": False, "seen": []}
+
+    @_cl.contextmanager
+    def fence():
+        state["held"] = True
+        try:
+            yield
+        finally:
+            state["held"] = False
+
+    original = headless_dispatch._popen
+
+    def capture(argv, **kwargs):
+        state["seen"].append(("spawn", state["held"]))
+        return original(argv, **kwargs)
+
+    monkeypatch.setattr(headless_dispatch, "_popen", capture)
+    marked: list = []
+    real_create = headless_dispatch.handoff.create_handle
+
+    def create(*a, **k):
+        marked.append(k.get("guard_secrets"))
+        return real_create(*a, **k)
+
+    monkeypatch.setattr(headless_dispatch.handoff, "create_handle", create)
+    out = await headless_dispatch.dispatch(
+        registry=reg,
+        engine="claude",
+        cwd=str(env),
+        brief="go",
+        authorize=lambda _e: state["seen"].append(("authorize", state["held"])) or None,
+        spawn_fence=fence,
+        guard_secrets=True,
+    )
+    assert out.ok
+    assert state["seen"] == [("authorize", True), ("spawn", True)]
+    assert marked == [True]

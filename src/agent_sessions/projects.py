@@ -22,6 +22,7 @@ visibility resolver):
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
@@ -249,6 +250,41 @@ def _read_locked(fh) -> dict:
         data["projects"] = {}
     data["version"] = 1
     return data
+
+
+@contextmanager
+def try_locked_index(timeout: float, path: Path | None = None):
+    """:func:`locked_index` for a caller ALREADY holding an inner lock, which must therefore never
+    wait on this OUTERMOST flock: it is tried without blocking until ``timeout`` and the block gets
+    ``None`` when it stays busy, so the lock order can never close into a deadlock. Hold it only
+    around a short synchronous section; nothing inside may mutate projects."""
+    path = path or _default_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch(exist_ok=True)
+    fh = path.open("r+")
+    try:
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    yield None
+                    return
+                time.sleep(0.02)
+        try:
+            fh.seek(0)
+            data = _read_locked(fh)
+            yield {
+                pid: _from_raw(pid, raw)
+                for pid, raw in data["projects"].items()
+                if isinstance(pid, str) and isinstance(raw, dict)
+            }
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    finally:
+        fh.close()
 
 
 @contextmanager
