@@ -135,7 +135,7 @@ export function ImportCard({ pid, projectName, disabled = false, onImported }: P
               </ul>
             </details>
           )}
-          <p className={styles.small}>Read only — BattleLab never changes an agent's own memory, and agents can keep writing to it.</p>
+          <p className={styles.small}>Read only — BattleLab never changes an agent's own memory, and agents can keep writing to it. To move them over, paste the agent paragraph into the project's instruction file and start new sessions.</p>
         </>
       )}
       {open && preview && (

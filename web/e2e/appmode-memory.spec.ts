@@ -137,4 +137,13 @@ test("existing Claude Code memory is found, imported through the real store, and
   await expect(card.getByRole("status")).toContainText(
     "2 notes from 1 place: 2 unchanged. 1 file is held back — fix it in Claude Code's memory, then import again.",
   );
+
+  // The take-over (#1471 P3): the paragraph the page shows — and the one Copy puts on the
+  // clipboard — is the server's, and it moves agents over to shared memory.
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  const paragraph = page.getByRole("region", { name: "Agent instructions" });
+  await expect(paragraph.locator("pre")).toHaveText(view.instructions);
+  expect(view.instructions).toContain("leave what you learn in the inbox rather than in your own memory");
+  await paragraph.getByRole("button", { name: "Copy paragraph" }).click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(view.instructions);
 });
